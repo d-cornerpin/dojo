@@ -14,7 +14,7 @@ import { resolveLocalWallClock } from '../tools.js';
 function expectRefused(r: ReturnType<typeof resolveLocalWallClock>) {
   expect(r.ok).toBe(false);
   if (r.ok) return;
-  expect(r.error).toContain('did not resolve to a valid instant');
+  expect(r.error).toContain('is not a real date or clock time');
 }
 
 describe('resolveLocalWallClock refuses dates that do not exist', () => {

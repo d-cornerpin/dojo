@@ -187,7 +187,7 @@ export function resolveLocalWallClock(
       wall.hour > 23 || wall.minute > 59 || wall.second > 59 ||
       back.year !== wall.year || back.month !== wall.month || back.day !== wall.day
     ) {
-      return { ok: false, error: `Error: local_time="${localTime}" in timezone "${zone}" did not resolve to a valid instant.` };
+      return { ok: false, error: `Error: local_time="${localTime}" is not a real date or clock time (check the month, day and hour). Nothing was scheduled; re-call with a real local_time.` };
     }
     return { ok: true, iso: instant.toISOString(), zone };
   } catch (err) {
