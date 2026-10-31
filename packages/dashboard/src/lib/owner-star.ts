@@ -12,4 +12,4 @@ export const ownerChanged = (
 ): boolean => ownerKey(before) !== ownerKey(after);
 
 export const confirmRemoveOwner = (label: string): boolean =>
-  window.confirm(`${label} is marked as you, the owner. Removing it leaves your list with no owner until you star someone again. Remove it anyway?`);
+  window.confirm(`${label} is marked as you, the owner. Removing it leaves your list with no owner until you star someone again, and with no owner marked the watchdog will text nobody. Remove it anyway?`);
