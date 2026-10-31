@@ -69,28 +69,56 @@ const typeAndSend = async (text: string) => {
 beforeEach(() => { resetFrames(); toasts().length = 0; });
 afterEach(() => { vi.resetAllMocks(); });
 
+const box = () => screen.getByPlaceholderText('Message the Dojo') as HTMLTextAreaElement;
+const errorToast = () => toasts().find((t) => t.level === 'error')!.message;
+
 describe('a refused chat message', () => {
-  it('leaves no sent bubble and the toast carries the owner text', async () => {
+  it('leaves no sent bubble, puts the text back in the box, and the toast says so without the text', async () => {
     history(); agent();
     vi.mocked(api).sendMessage.mockResolvedValue({ ok: false, error: 'Agent is terminated' } as never);
     render(shell(<Chat />));
     await typeAndSend('hello there');
-    await waitFor(() => expect(vi.mocked(api).sendMessage).toHaveBeenCalled());
     await waitFor(() => expect(toasts().some((t) => t.level === 'error')).toBe(true));
-    const msg = toasts().find((t) => t.level === 'error')!.message;
-    expect(msg).toContain('Agent is terminated');
-    expect(msg).toContain('hello there');
-    expect(screen.queryByText('hello there')).toBeNull();
+    expect(errorToast()).toContain('Agent is terminated');
+    expect(errorToast()).toContain('not sent');
+    expect(errorToast()).toContain('back in the box');
+    expect(errorToast()).not.toContain('hello there');
+    expect(screen.queryByText('hello there', { selector: ':not(textarea)' })).toBeNull();
+    await waitFor(() => expect(box().value).toBe('hello there'));
   });
 
-  it('a long refused message comes back whole', async () => {
+  it('attachments come back too and go out with the resend', async () => {
     history(); agent();
-    vi.mocked(api).sendMessage.mockResolvedValue({ ok: false, error: 'Agent is terminated' } as never);
-    const long = 'word '.repeat(150).trim() + ' THE-END';
+    const att = { fileId: 'f1', filename: 'notes.txt', mimeType: 'text/plain', size: 3, path: '/x/notes.txt', category: 'text' };
+    vi.mocked(api).uploadFiles.mockResolvedValue({ ok: true, data: [att] } as never);
+    vi.mocked(api).sendMessage.mockResolvedValueOnce({ ok: false, error: 'Agent is terminated' } as never);
+    const { container } = render(shell(<Chat />));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(['abc'], 'notes.txt', { type: 'text/plain' })] } });
+    await typeAndSend('see file');
+    await waitFor(() => expect(box().value).toBe('see file'));
+    await screen.findByLabelText('Remove notes.txt');
+    vi.mocked(api).sendMessage.mockResolvedValueOnce({ ok: true, data: {} } as never);
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    await waitFor(() => expect(vi.mocked(api).sendMessage).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api).sendMessage.mock.calls[1][2]).toEqual([att]);
+  });
+
+  it('keeps what he typed since: the box is not overwritten and the toast carries a short preview', async () => {
+    history(); agent();
+    let refuse: (v: unknown) => void = () => {};
+    vi.mocked(api).sendMessage.mockReturnValue(new Promise((r) => { refuse = r; }) as never);
+    const long = 'abc '.repeat(60);
     render(shell(<Chat />));
     await typeAndSend(long);
+    await waitFor(() => expect(vi.mocked(api).sendMessage).toHaveBeenCalled());
+    fireEvent.change(box(), { target: { value: 'something new' } });
+    await act(async () => { refuse({ ok: false, error: 'Agent is terminated' }); });
     await waitFor(() => expect(toasts().some((t) => t.level === 'error')).toBe(true));
-    expect(toasts().find((t) => t.level === 'error')!.message).toContain('THE-END');
+    expect(box().value).toBe('something new');
+    expect(errorToast()).toContain('not sent');
+    expect(errorToast()).toContain('abc abc');
+    expect(errorToast().length).toBeLessThan(200);
   });
 
   it('a sent message keeps its bubble', async () => {

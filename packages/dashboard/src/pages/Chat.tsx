@@ -22,6 +22,7 @@ import { stripAttachmentTags } from '../lib/attachment-tags';
 import { parseMailboxEvent } from '../lib/mailbox-event';
 import { Markdown } from '../components/Markdown';
 import { Dojo3Composer } from '../components/Dojo3Composer';
+import type { RefusedDraft } from '../components/composer-restore';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
 import { useTechniqueSession, stripBuilderContext } from '../components/TechniqueSessionProvider';
 import { useToast } from '../hooks/useToast';
@@ -1531,6 +1532,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
     };
   }, [subscribe, AGENT_ID, applyMood]);
 
+  const [refused, setRefused] = useState<RefusedDraft>();
+  const refusedSeq = useRef(0);
+
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setIsWorking(true);
     setAwaitingUserReply(true); // user is now waiting on a reply — keep the working UI up through any a2a sub-work
@@ -1557,10 +1561,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
     if (!result.ok) {
       plan?.rollback();
       setIsWorking(false);
-      // The server refused it: take the bubble back out and hand the owner's text back in the toast
-      // (the composer already cleared its box), so a refused message never reads as sent.
+      // The server refused it: take the bubble back out and put the text (and attachments) back in the
+      // composer. If he has typed something new since, keep his work and show a short preview instead.
       setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
-      toast.error(`${result.error} Your message was not sent: "${content}"`);
+      setRefused({ id: ++refusedSeq.current, agentId: AGENT_ID, text: content, attachments, done: (restored) => toast.error(restored
+        ? `${result.error} Your message was not sent. It is back in the box so you can edit and resend.`
+        : `${result.error} Your message was not sent: "${content.slice(0, 80)}${content.length > 80 ? '…' : ''}"`) });
     } else {
       plan?.commit();
     }
@@ -1777,6 +1783,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     <Dojo3Composer
       agentId={AGENT_ID}
       onSend={handleSend}
+      refused={refused}
       isWorking={showWorkingUi}
       canStop={canStop}
       placeholder={activeAgentName ? `Message ${activeAgentName}` : undefined}

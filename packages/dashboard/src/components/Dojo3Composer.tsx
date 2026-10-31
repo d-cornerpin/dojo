@@ -19,6 +19,7 @@ import { useToast } from '../hooks/useToast';
 import { usePresence } from './PresenceProvider';
 import { composerStopControl } from '../lib/stop-affordance';
 import { useAgentState } from '../hooks/useAgentScopedState';
+import { formatFileSize, truncateName, useRestoredDraft, type RefusedDraft } from './composer-restore';
 
 const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.mkv,.avi';
 // 1 GB per file, 2 GB per message. Mirrors ChatInput's caps for early UI
@@ -43,16 +44,8 @@ interface Dojo3ComposerProps {
   canStop?: boolean;
   onStop?: () => void;
   placeholder?: string;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function truncateName(name: string): string {
-  return name.length > 26 ? `${name.slice(0, 24)}…` : name;
+  /** A message the server refused, handed back so the owner can edit and resend. */
+  refused?: RefusedDraft;
 }
 
 const WAVE_BARS = 18;
@@ -68,6 +61,7 @@ export function Dojo3Composer({
   canStop,
   onStop,
   placeholder,
+  refused,
 }: Dojo3ComposerProps) {
   // Unsent work stays with the agent it was written for (GitHub #14).
   const [input, setInput] = useAgentState(agentId, '', true);
@@ -76,6 +70,7 @@ export function Dojo3Composer({
   const [uploading, setUploading] = useAgentState(agentId, false, true);
   const [mode, setMode] = useAgentState<'text' | 'file'>(agentId, 'text', true);
   const [dragOver, setDragOver] = useState(false);
+  const restored = useRestoredDraft(agentId, refused, input, pendingFiles.length, setInput);
 
   const composerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -377,10 +372,10 @@ export function Dojo3Composer({
   /* ---- submit ---- */
   const handleSend = useCallback(async () => {
     const content = input.trim();
-    if (!content && pendingFiles.length === 0) return;
+    if (!content && pendingFiles.length === 0 && restored.kept.length === 0) return;
     if (uploading) return;
 
-    let attachments: AttachmentInfo[] | undefined;
+    let attachments: AttachmentInfo[] | undefined = restored.kept.length ? restored.kept : undefined;
 
     if (pendingFiles.length > 0) {
       setUploading(true);
@@ -390,7 +385,7 @@ export function Dojo3Composer({
         toastWarning(result.error || 'Upload failed — your files were not attached. Try again.');
         return;
       }
-      attachments = result.data;
+      attachments = [...(attachments ?? []), ...result.data];
       pendingFiles.forEach((pf) => {
         if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
       });
@@ -398,11 +393,12 @@ export function Dojo3Composer({
     }
 
     setInput('');
+    restored.clearKept();
     setMode('text');
     launchMote();
     dojoOrb.setState('thinking');
     onSend(content || '(attached files)', attachments);
-  }, [input, pendingFiles, uploading, agentId, launchMote, dojoOrb, onSend]);
+  }, [input, pendingFiles, restored.kept, uploading, agentId, launchMote, dojoOrb, onSend]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -490,7 +486,7 @@ export function Dojo3Composer({
   const ss = String(Math.floor(elapsed % 60)).padStart(2, '0');
   const timerLabel = `${mm}:${ss}`;
 
-  const canSend = !uploading && (input.trim().length > 0 || pendingFiles.length > 0);
+  const canSend = !uploading && (input.trim().length > 0 || pendingFiles.length > 0 || restored.kept.length > 0);
 
   return (
     <>
@@ -505,6 +501,7 @@ export function Dojo3Composer({
         {/* BODY: the message area — cross-fading text / file (drop-zone) layers */}
         <div className="composer__body">
           <div className="composer__layer composer__layer--text">
+            {restored.node}
             {pendingFiles.length > 0 && (
               <div className="composer__thumbs" aria-label="Attached files">
                 {pendingFiles.map((pf, i) => {
