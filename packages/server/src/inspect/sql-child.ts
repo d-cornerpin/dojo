@@ -55,8 +55,11 @@ const CHILD_SOURCE = `
   function query() {
     const { workerData: req, parentPort } = require('node:worker_threads');
     let out;
+    // The statement past its leading comments, its EXPLAIN [QUERY PLAN], and any comments after that.
+    const LEAD = /^(\\s+|--[^\\n]*(\\n|$)|\\/\\*[\\s\\S]*?\\*\\/)+/;
+    const readBody = (sql) => String(sql).replace(LEAD, '').replace(/^explain(\\s+query\\s+plan)?\\s+/i, '').replace(LEAD, '');
     try {
-      const lead = String(req.sql).replace(/^(\\s+|--[^\\n]*(\\n|$)|\\/\\*[\\s\\S]*?\\*\\/)+/, '').replace(/^explain(\\s+query\\s+plan)?\\s+/i, '');
+      const lead = readBody(req.sql);
       if (!/^(select|with|values)\\b/i.test(lead)) throw new Error('only a read runs here');
       const Database = require(req.betterSqlitePath);
       const db = new Database(req.dbPath, { readonly: true, fileMustExist: true });
@@ -79,7 +82,7 @@ const CHILD_SOURCE = `
           try { db.exec(String(v.sql).replace(/^\\s*CREATE\\s+VIEW/i, 'CREATE TEMP VIEW')); } catch (e) { if (/config/i.test(String(v.sql))) throw new Error('a view of config could not be made safe: ' + e.message); }
         }
         const roots = new Set(db.prepare("SELECT rootpage FROM main.sqlite_master WHERE (type = 'table' AND name = 'config') OR (type = 'index' AND tbl_name = 'config')").all().map((r) => r.rootpage));
-        const inner = String(req.sql).replace(/^(\\s+|--[^\\n]*(\\n|$)|\\/\\*[\\s\\S]*?\\*\\/)+/, '').replace(/^explain(\\s+query\\s+plan)?\\s+/i, '');
+        const inner = readBody(req.sql);
         for (const op of db.prepare('EXPLAIN ' + inner).all()) {
           if ((op.opcode === 'OpenRead' || op.opcode === 'OpenWrite' || op.opcode === 'ReopenIdx') && op.p3 === 0 && roots.has(op.p2)) {
             throw new Error('Refused: the statement reads the real config table; name config without a schema (from config, not main.config).');

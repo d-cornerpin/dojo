@@ -170,6 +170,13 @@ describe('sql', () => {
     expect(() => mod.connection.getReadOnlyDb().prepare("DELETE FROM messages WHERE id = 'm-1'").run()).toThrow(/read-only connection/);
   });
 
+  it('runs a read that has a comment before EXPLAIN and another after it', async () => {
+    const out = await q("/* look */ EXPLAIN /* plan */ select 1");
+    expect(out).toMatch(/rows?\./);
+    expect(out).not.toMatch(/only a read runs here/);
+    expect(await q("-- first\nexplain query plan -- second\nselect * from messages where id = 'm-1'")).toMatch(/rows?\./);
+  });
+
   it('allows EXPLAIN, and the extension loader is not reachable', async () => {
     expect(await q("explain query plan select * from messages where id = 'm-1'")).toMatch(/rows?\./);
     expect(await q("select load_extension('x')")).toMatch(/SQLite (refused the statement|stopped the query): not authorized/);

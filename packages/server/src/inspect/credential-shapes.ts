@@ -38,6 +38,17 @@ export function notAPairedCredential(v: string, match: string): boolean {
   return /^[?:@]\w*$/.test(v) || /^[$({[`<]|^\/[^/]|^\/\^/.test(v) || (/^[A-Za-z_$][A-Za-z_$]*$/.test(v) && (v.length <= 20 || v.includes('_'))) || v.length < 6;
 }
 
+/** The short password flag `-p <value>` (a sshpass or mysql-style call). `-p` is also a port, a
+ *  "make parents" flag and a path flag, so a value is blanked only when it is not code, not a number,
+ *  not a path or a phrase with spaces, and carries both a letter and a digit the way a generated password does. */
+function notAShortFlagPassword(v: string, match: string): boolean {
+  if (notAPairedCredential(v, match)) return true;
+  if (/[\\/]/.test(v)) return true;
+  return /\s/.test(v) || !(/\d/.test(v) && /[A-Za-z]/.test(v));
+}
+/** A query-parameter value that looks like a key: long, one unbroken run, letters and digits both. */
+const KEY_LIKE = String.raw`(?=[A-Za-z0-9_.~+/=-]*\d)(?=[A-Za-z0-9_.~+/=-]*[A-Za-z])[A-Za-z0-9_.~+/=-]{16,}`;
+
 const PAIR_VALUE = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s,;"'}\])]+))`;
 export const INSPECT_PATTERNS: ReadonlyArray<InspectPattern> = [
   // Whole PEM block; a block cut off before its END line is blanked to the end of the text.
@@ -58,6 +69,15 @@ export const INSPECT_PATTERNS: ReadonlyArray<InspectPattern> = [
   { name: 'cookie-header', regex: /\b(?:set-)?cookie\s*:[ \t]*([^\r\n]+)/gi },
   // A command-line flag naming a credential, value after a space or `=`: --token <v>, --api-key=<v>.
   { name: 'credential-flag', regex: /(?<![\w-])--?[\w-]*(?:token|password|passwd|secret|api-?key)(?:[ \t]+|=)(?!-)(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"']+))/gi, keep: notAPairedCredential },
+  // Google OAuth client secret, and Google API keys (the shapes of the Google accounts the Dojo stores).
+  { name: 'google-client-secret', regex: /\bGOCSPX-[A-Za-z0-9_-]{10,}/g },
+  { name: 'google-api-key', regex: /\bAIza[0-9A-Za-z_-]{30,}/g },
+  // The short password flag with its value after a space: -p <value>.
+  { name: 'password-short-flag', regex: /(?<![\w-])-p[ \t]+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"']+))/g, keep: notAShortFlagPassword },
+  // A credential written as an XML element: <password>value</password>, with or without CDATA.
+  { name: 'credential-xml-element', regex: new RegExp(String.raw`<(${CREDENTIAL_NAME})(?:\s[^>]*)?>\s*(?:<!\[CDATA\[([^\]]*)\]\]>|([^<]*?))\s*</\1\s*>`, 'gi'), keep: notAPairedCredential },
+  // A generic key= query parameter (?key=, &access_key=), blanked only when the value looks like a key.
+  { name: 'key-query-parameter', regex: new RegExp(String.raw`(?<=[?&])[\w.-]*key=(${KEY_LIKE})`, 'gi') },
   // JSON that is itself inside a JSON string: \"access_token\":\"...\".
   { name: 'credential-pair-escaped', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}\\"\s*:\s*\\"((?:[^"\\]|\\(?!"))+)\\"`, 'gi'), keep: notAPairedCredential },
   // A name that ENDS in a credential word, in JSON, `name=value` or `name: value`, any case.
