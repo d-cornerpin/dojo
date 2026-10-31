@@ -21,9 +21,10 @@
 //
 // NEVER A CHOICE: the Dojo's DECISION model — it answers yes/no questions and cannot run an agent or a job.
 // NOT JUDGED: a cloud model, `auto`, re-saving the model already in place, a remote Ollama with no RAM
-// entered. CHECKED LATER (owner ruling, fix round 1): when Ollama is not answering or the model is not
-// downloaded yet, the selection is ALLOWED, the owner is told in a plain sentence that the fit will be
-// checked when the model first loads, and it IS checked then (`refuseUncheckedAtFirstLoad`).
+// entered. CHECKED LATER (owner ruling, fix round 1; 29b adds the unreadable architecture): when Ollama is
+// not answering, the model is not downloaded yet, or `/api/show` cannot say what its working memory costs,
+// the selection is ALLOWED, the owner is told in a plain sentence that the fit will be checked when the
+// model first loads, and it IS checked then (`refuseUncheckedAtFirstLoad`).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -124,7 +125,10 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
 
   const arch = await fetchModelArchInfo(baseUrl, row.api_model_id);
   const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
-  const kvBytes = typeof kv === 'number' ? kv * contextTokens : 0;
+  // 29b: a third case Ollama cannot size — `/api/show` unreadable, or missing the fields the KV cost needs.
+  // Unknown working memory is never charged as 0 (the writer's row included): checked when it first loads.
+  if (typeof kv !== 'number') return unchecked();
+  const kvBytes = kv * contextTokens;
   // The Dojo's own models live on the LOCAL Ollama: they are charged to that box only, measured when listed.
   const dojoBox = isLocalOllamaBaseUrl(row.base_url) && localOllamaProvider()?.id === row.provider_id;
   const pair = (sizes.get(STANDARD_DECISION_MODEL.tag) ?? STANDARD_DECISION_MODEL.bytes) + (sizes.get(STANDARD_WRITER_MODEL.tag) ?? STANDARD_WRITER_MODEL.bytes);
@@ -134,7 +138,7 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
   // t268 (I-2): as an agent, beyond the room its jobs reserve now; as a job (the Summarization pick), beyond the room that pick reserves.
   const configured = resolveNumCtx({ numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended }).effective ?? null;
   const writerJob = !isWriter ? 0 : use === 'job' ? await writerJobWindowTokens(configured) : await writerReservedWindowTokens(configured);
-  const chargedKv = isWriter ? (typeof kv === 'number' ? kv * Math.max(0, contextTokens - writerJob) : 0) : kvBytes;
+  const chargedKv = isWriter ? kv * Math.max(0, contextTokens - writerJob) : kvBytes;
   const needBytes = (isWriter ? 0 : weights) + chargedKv;
   const openBytes = totalRamBytes - pickDesktopReserve(totalRamBytes) - ENGINE_RESERVE_BYTES
     - (dojoBox ? (sizeOf(sizes, embedderName()) ?? 0) + pair + await dojoWorkingBytes(baseUrl) : 0);
