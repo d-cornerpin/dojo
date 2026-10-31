@@ -1008,29 +1008,37 @@ export async function executeMicrosoftReadTool(
 
       const metaData = meta.data as { id: string; name: string; size?: number; file?: { mimeType: string }; webUrl?: string };
 
-      // For text-based files, download content
+      // For text-based files, download content. A failed download is REPORTED, not
+      // swallowed: this file is text, so answering "(Binary file …)" here would hand
+      // the agent a wrong reason for a 403/timeout/dead-token, and send it reaching
+      // for a download tool that does not apply. The metadata fall-through below
+      // stays for genuinely binary files only.
       const mimeType = metaData?.file?.mimeType ?? '';
       if (mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('xml') || mimeType.includes('csv')) {
         try {
           const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
-          if (token) {
-            const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
-              headers: { Authorization: `Bearer ${token}` },
-              signal: AbortSignal.timeout(30000),
-            });
-            if (resp.ok) {
-              const text = await resp.text();
-              const paged = applyTextPagination(
-                text,
-                'onedrive_read',
-                { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
-                { file_id: args.file_id },
-                16_000,
-              );
-              return `File: ${outsideSpan(metaData.name)}\n\n${paged}`;
-            }
+          if (!token) return `Error reading ${outsideSpan(metaData.name)}: not authenticated with Microsoft.`;
+          const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!resp.ok) {
+            const detail = await resp.text().catch(() => '');
+            return `Error reading ${outsideSpan(metaData.name)}: OneDrive answered HTTP ${resp.status}.${detail ? ` ${outsideSpan(detail.slice(0, 200))}` : ''}`;
           }
-        } catch { /* fall through to metadata */ }
+          const text = await resp.text();
+          const paged = applyTextPagination(
+            text,
+            'onedrive_read',
+            { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+            { file_id: args.file_id },
+            16_000,
+          );
+          return `File: ${outsideSpan(metaData.name)}\n\n${paged}`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return `Error reading ${outsideSpan(metaData.name)}: ${msg}.`;
+        }
       }
 
       return `File: ${outsideSpan(metaData.name)}\nSize: ${metaData.size ? Math.round(metaData.size / 1024) + 'KB' : 'unknown'}\nType: ${mimeType || 'unknown'}${metaData.webUrl ? `\nURL: ${metaData.webUrl}` : ''}\n\n(Binary file — use onedrive_download_attachment or open the URL above in a browser)`;

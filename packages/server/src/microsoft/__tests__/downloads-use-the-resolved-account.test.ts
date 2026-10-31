@@ -78,13 +78,12 @@ describe('downloads use the resolved account token', () => {
     expect(out).toContain('saved to');
   });
 
-  it('onedrive_read falls back to metadata when the resolved account token is null', async () => {
+  it('onedrive_read answers "not authenticated" when the resolved account token is null', async () => {
     vi.mocked(msGraphRead).mockResolvedValue(ok({ id: 'f1', name: 'a.txt', size: 5, file: { mimeType: 'text/plain' } }));
     vi.mocked(getValidAccessTokenForAccount).mockResolvedValueOnce(null);
     const out = await executeMicrosoftReadTool('user_onedrive_read', { file_id: 'f1' }, 'agent-1', 'Agent One');
     expect(graphFetch).not.toHaveBeenCalled();
-    expect(out).toMatch(/^File:/);
-    expect(out).toContain('Type: text/plain');
+    expect(out).toMatch(/^Error reading .*a\.txt.*: not authenticated with Microsoft\.$/);
   });
 
   it('teams_download_attachment answers "not authenticated" when the resolved account token is null', async () => {
