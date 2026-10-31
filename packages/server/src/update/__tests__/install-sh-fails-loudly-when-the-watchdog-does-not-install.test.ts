@@ -22,6 +22,8 @@ beforeEach(() => {
   fs.writeFileSync(path.join(scratch, 'pkg', 'scripts', 'a.sh'), '#!/bin/sh\n');
   fs.writeFileSync(path.join(scratch, 'pkg', 'uninstall.sh'), '#!/bin/sh\n');
   fs.mkdirSync(path.join(scratch, 'bin'));
+  // Never the real launchctl: by default nothing is loaded.
+  fs.writeFileSync(path.join(scratch, 'bin', 'launchctl'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
 });
 afterEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
 
@@ -65,5 +67,34 @@ describe('install.sh and the watchdog', () => {
     expect(status).not.toBe(0);
     expect(out).toContain('watchdog');
     expect(out).not.toContain('BLOCK_PASSED');
+  });
+
+  // Review FIX 6: "Dojo was not started" must be true. On a reinstall the earlier services are still
+  // loaded and the new platform is already switched in, so the message says what state the box is in.
+  it('on a reinstall (Dojo already loaded) the failure says what is still running, not "was not started"', () => {
+    stub('npm', 'exit 1');
+    stub('launchctl', 'if [ "$1" = list ]; then echo "123 0 com.dojo.platform"; echo "124 0 com.dojo.watchdog"; fi; exit 0');
+    const { status, out } = run();
+    expect(status).not.toBe(0);
+    expect(out).not.toContain('was not started');
+    expect(out).toContain('new platform is installed');
+    expect(out).toContain('still running');
+  });
+
+  it('on a first install (nothing loaded) it still says Dojo was not started', () => {
+    stub('npm', 'exit 1');
+    stub('launchctl', 'exit 0');
+    const { status, out } = run();
+    expect(status).not.toBe(0);
+    expect(out).toContain('was not started');
+  });
+
+  it('a failed watchdog copy on a reinstall also says what state the box is in', () => {
+    stub('npm', 'exit 0');
+    stub('rsync', 'exit 23');
+    stub('launchctl', 'if [ "$1" = list ]; then echo "123 0 com.dojo.platform"; fi; exit 0');
+    const { out } = run();
+    expect(out).not.toContain('was not started');
+    expect(out).toContain('new platform is installed');
   });
 });

@@ -154,10 +154,21 @@ if ! node "$SCRIPT_DIR/platform/packages/server/dist/update/install-tree-cli.js"
 fi
 
 # Copy watchdog
+# What to tell the person when the watchdog step fails. On a FIRST install nothing is loaded, so
+# "not started" is true. On a reinstall the earlier services are still loaded and the new platform
+# is already switched in, so say what is installed and what is still running.
+say_watchdog_stop_state() {
+    if launchctl list 2>/dev/null | grep -q 'com\.dojo\.platform'; then
+        echo "   The new platform is installed, but the watchdog could not be updated. The Dojo that was already running is still running (it has not been restarted), with the watchdog it had before."
+    else
+        echo "   Dojo was not started."
+    fi
+}
 if [[ -d "$SCRIPT_DIR/watchdog" ]]; then
     if ! rsync -a "$SCRIPT_DIR/watchdog/" "$DOJO_DIR/watchdog/"; then
         echo "❌ The watchdog (the part that repairs Dojo if an update goes wrong) could not be copied into $DOJO_DIR/watchdog."
-        echo "   Dojo was not started. Check that the disk is not full, then run the installer again."
+        say_watchdog_stop_state
+        echo "   Check that the disk is not full, then run the installer again."
         exit 1
     fi
 fi
@@ -181,7 +192,8 @@ if [[ -f "$DOJO_DIR/watchdog/package.json" ]]; then
     cd "$DOJO_DIR/watchdog"
     if ! { npm ci --production 2>/dev/null || npm install --production; }; then
         echo "❌ The watchdog's supporting files could not be installed (the reason is above)."
-        echo "   The watchdog repairs Dojo if an update goes wrong, so the install is stopped and Dojo was not started."
+        echo "   The watchdog repairs Dojo if an update goes wrong, so the install is stopped."
+        say_watchdog_stop_state
         echo "   Check your internet connection and the disk space, then run the installer again."
         exit 1
     fi
