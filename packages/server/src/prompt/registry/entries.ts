@@ -10,6 +10,7 @@ import { isPresenceCheck, PRESENCE_HINT } from '../presence-check.js';
 import { register } from './registry.js';
 import { SystemSlot, MessageSlot, type SystemInjection, type MessageInjection, type AssemblyContext, type EngineMessage } from './types.js';
 import { renderCounterpartyHeader } from '../../agent/v2/counterparty.js';
+import { renderTailRestatement } from '../../agent/v2/turn-address.js';
 import { isIMBridgeRunning } from '../../services/imessage-bridge.js';
 import {
   renderTimeHeader,
@@ -603,7 +604,14 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'carries date-only (stable, cacheable); the per-minute clock time lives here ' +
       'so its per-call churn falls after the entire cached prefix (system + tools + ' +
       'conversation history) instead of breaking it. Always rendered.',
-    render: () => ({ role: 'user', content: renderCurrentTimeMessage() }),
+    // 3.5: on a routed channel, the clock message also restates who the written reply goes to.
+    // The clock changes on every call, so it is re-sent on every call, below every newer tool
+    // result and steer, and a one-line addition here costs no extra cache (it is already past
+    // the breakpoint).
+    render: (ctx) => {
+      const restated = renderTailRestatement(ctx.turnContext?.address);
+      return { role: 'user', content: restated ? `${renderCurrentTimeMessage()}\n${restated}` : renderCurrentTimeMessage() };
+    },
   },
 ];
 
