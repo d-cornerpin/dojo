@@ -10,7 +10,34 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('path-migration');
 
-export function migratePaths(oldHome: string, newHome: string, dojoDir: string): void {
+/**
+ * Replace `oldHome` with `newHome` in `text`, but only where `oldHome` is a whole
+ * path prefix: the next character must not continue a folder name (letter, digit,
+ * `.`, `_`, `-`). So `/Users/dan/x` and a bare `/Users/dan` are swapped while
+ * `/Users/daniel/x` is left alone. `oldHome` is matched literally and `newHome`
+ * is inserted literally (a `$` in it is never read as a pattern).
+ */
+export function swapHome(text: string, oldHome: string, newHome: string): string {
+  if (!oldHome) return text;
+  const escaped = oldHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`${escaped}(?![A-Za-z0-9._-])`, 'g'), () => newHome);
+}
+
+export function migratePaths(rawOldHome: string, rawNewHome: string, dojoDir: string): void {
+  if (rawOldHome === rawNewHome) {
+    logger.info('Same home directory, no path migration needed');
+    return;
+  }
+  if (typeof rawOldHome !== 'string' || rawOldHome.trim() === '') {
+    logger.warn('Backup has no old home folder, skipping path migration');
+    return;
+  }
+  const oldHome = rawOldHome.replace(/\/+$/, '');
+  const newHome = rawNewHome.replace(/\/+$/, '');
+  if (oldHome === '') {
+    logger.warn('Backup has no old home folder, skipping path migration');
+    return;
+  }
   if (oldHome === newHome) {
     logger.info('Same home directory, no path migration needed');
     return;
@@ -63,7 +90,7 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       const techniques = db.prepare("SELECT id, directory_path FROM techniques WHERE directory_path LIKE ?").all(`${oldHome}%`) as Array<{ id: string; directory_path: string }>;
       const updateTech = db.prepare('UPDATE techniques SET directory_path = ? WHERE id = ?');
       for (const t of techniques) {
-        updateTech.run(t.directory_path.replace(oldHome, newHome), t.id);
+        updateTech.run(swapHome(t.directory_path, oldHome, newHome), t.id);
       }
       if (techniques.length > 0) {
         logger.info('Updated technique paths', { count: techniques.length });
@@ -75,7 +102,7 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       const configs = db.prepare("SELECT key, value FROM config WHERE value LIKE ?").all(`%${oldHome}%`) as Array<{ key: string; value: string }>;
       const updateConfig = db.prepare('UPDATE config SET value = ? WHERE key = ?');
       for (const c of configs) {
-        updateConfig.run(c.value.replaceAll(oldHome, newHome), c.key);
+        updateConfig.run(swapHome(c.value, oldHome, newHome), c.key);
       }
       if (configs.length > 0) {
         logger.info('Updated config paths', { count: configs.length });
@@ -87,8 +114,8 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       const agents = db.prepare("SELECT id, system_prompt_path, config FROM agents WHERE system_prompt_path LIKE ? OR config LIKE ?").all(`${oldHome}%`, `%${oldHome}%`) as Array<{ id: string; system_prompt_path: string | null; config: string | null }>;
       const updateAgent = db.prepare('UPDATE agents SET system_prompt_path = ?, config = ? WHERE id = ?');
       for (const a of agents) {
-        const newPromptPath = a.system_prompt_path?.replaceAll(oldHome, newHome) ?? null;
-        const newConfig = a.config?.replaceAll(oldHome, newHome) ?? null;
+        const newPromptPath = a.system_prompt_path ? swapHome(a.system_prompt_path, oldHome, newHome) : null;
+        const newConfig = a.config ? swapHome(a.config, oldHome, newHome) : null;
         updateAgent.run(newPromptPath, newConfig, a.id);
       }
       if (agents.length > 0) {
@@ -114,7 +141,7 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       const msgs = db.prepare("SELECT id, attachments FROM messages WHERE attachments LIKE ?").all(`%${oldHome}%`) as Array<{ id: string; attachments: string }>;
       const updateMsg = db.prepare('UPDATE messages SET attachments = ? WHERE id = ?');
       for (const m of msgs) {
-        updateMsg.run(m.attachments.replaceAll(oldHome, newHome), m.id);
+        updateMsg.run(swapHome(m.attachments, oldHome, newHome), m.id);
       }
       if (msgs.length > 0) {
         logger.info('Updated message attachment paths', { count: msgs.length });
@@ -131,7 +158,8 @@ function migrateTextFile(filePath: string, oldHome: string, newHome: string): vo
 
   const content = fs.readFileSync(filePath, 'utf-8');
   if (content.includes(oldHome)) {
-    fs.writeFileSync(filePath, content.replaceAll(oldHome, newHome));
+    const updated = swapHome(content, oldHome, newHome);
+    if (updated !== content) fs.writeFileSync(filePath, updated);
     logger.info('Updated paths in file', { file: path.basename(filePath) });
   }
 }
