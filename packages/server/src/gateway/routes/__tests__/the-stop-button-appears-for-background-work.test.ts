@@ -65,8 +65,9 @@ import {
 import { liveWork, hasLiveWork } from '../../../agent/live-work.js';
 import { createGenerationJob, setCancelled } from '../../../services/generation-jobs.js';
 import type { AgentDetail } from '@dojo/shared';
+import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo-a5b';
+const AGENT = `${FXID.n4}-a5b`;
 
 const MODEL = 'model-a5b';
 const PROVIDER = 'prov-a5b';
@@ -81,7 +82,7 @@ function seed(): void {
      VALUES (?, ?, 'Media', 'api/media', '["audio_generation","video_generation"]', 1, 'token', 0)`,
   ).run(MODEL, PROVIDER);
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
 }
 

@@ -86,6 +86,7 @@ vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unkn
 import { runMigrations } from '../../../db/migrations.js';
 import { clearSecretsCache, getProviderCredential, setProviderCredential } from '../../../config/loader.js';
 import { configRouter } from '../config.js';
+import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t66b-edit-door', '.dojo');
 
@@ -366,14 +367,14 @@ describe('T66b — a rename is display-only: the id is the key everywhere', () =
     `).run();
     db.prepare(`
       INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-      VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+      VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
     `).run();
 
     await patch('/providers/local-ds4', { name: 'Completely Different Name' });
 
     expect(db.prepare('SELECT provider_id FROM models WHERE id = ?').get('m-local'))
       .toEqual({ provider_id: 'local-ds4' });
-    expect(db.prepare('SELECT model_id FROM agents WHERE id = ?').get('zargo'))
+    expect(db.prepare('SELECT model_id FROM agents WHERE id = ?').get(FXID.n4))
       .toEqual({ model_id: 'm-local' });
     expect(getProviderCredential('local-ds4')).toBe('sk-original-key');
     expect(await data(await get('/providers/local-ds4')))
