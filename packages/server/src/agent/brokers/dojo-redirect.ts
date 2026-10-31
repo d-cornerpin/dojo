@@ -62,6 +62,9 @@ const CONTENT_READERS = new Set(['cat', 'less', 'more', 'head', 'tail', 'bat', '
 const WRITES_EVERY_OPERAND = new Set(['rm', 'unlink', 'truncate', 'shred', 'tee', 'mv']);
 const WRITES_LAST_OPERAND = new Set(['cp', 'rsync', 'install', 'ln', 'scp']);
 const PREFIXES = new Set(['sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'command']);
+/** The duration `timeout` consumes before its command; and the `sudo` flags that take a value of their own. */
+const TIMEOUT_DURATION = /^\d+(\.\d+)?[smhd]?$/;
+const SUDO_VALUE_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U']);
 
 const unquote = (w: string): string => w.replace(/^['"]+|['"]+$/g, '');
 const namesDb = (w: string): boolean => DOJO_DB.test(` ${unquote(w)}`) || DATA_GLOB.test(w);
@@ -71,10 +74,44 @@ const namesLog = (w: string): boolean => DOJO_LOG.test(` ${unquote(w)}`);
 export type DojoLineClass = 'write' | 'repair' | 'schema' | 'sql' | 'logs';
 const RANK: Record<DojoLineClass, number> = { logs: 1, sql: 2, schema: 2, repair: 3, write: 4 };
 
+/** Remove leading wrappers AND their own arguments, until the first word left is the program itself. */
+function stripWrappers(words: string[]): string[] {
+  while (words.length > 0) {
+    const head = words[0];
+    if (/^\w+=/.test(head)) { words.shift(); continue; }   // a leading FOO=1 assignment
+    if (!PREFIXES.has(head)) break;
+    words.shift();
+    if (head === 'timeout') {
+      while (words.length > 0 && words[0].startsWith('-')) {
+        const flag = words[0];
+        words.shift();
+        if (flag === '-k' || flag === '-s') words.shift();  // these take a value of their own
+      }
+      if (words.length > 0 && TIMEOUT_DURATION.test(words[0])) words.shift();
+    } else if (head === 'nice') {
+      if (words[0] === '-n') { words.shift(); words.shift(); }
+      else if (/^-\d+$/.test(words[0] ?? '') || (words[0] ?? '').startsWith('--adjustment=')) words.shift();
+    } else if (head === 'sudo') {
+      while (words.length > 0 && words[0].startsWith('-')) {
+        const flag = words[0];
+        words.shift();
+        if (SUDO_VALUE_FLAGS.has(flag)) words.shift();
+      }
+    } else if (head === 'env') {
+      while (words.length > 0 && (words[0].startsWith('-') || /^\w+=/.test(words[0]))) {
+        const flag = words[0];
+        words.shift();
+        if (flag === '-u') words.shift();   // -u NAME
+      }
+    }
+    // nohup, time, command take nothing of their own
+  }
+  return words;
+}
+
 /** What one simple command does to the Dojo's own database or log, or null. */
 function classifySegment(segment: string, line: string): DojoLineClass | null {
-  const words = segment.trim().split(/\s+/).filter(Boolean);
-  while (words.length > 0 && (PREFIXES.has(words[0]) || /^\w+=/.test(words[0]))) words.shift();
+  const words = stripWrappers(segment.trim().split(/\s+/).filter(Boolean));
   const program = (words[0] ?? '').split('/').pop() ?? '';
   const operands = words.slice(1).filter((w) => !w.startsWith('-'));
   if (operands.some(namesDb)) {
