@@ -24,7 +24,7 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 const PASS = 'mx.google.com; dmarc=pass header.from=home.test';
 const arrival = (extra: Array<{ name: string; value: string }>) => judgeOwnerEmail({
-  provider: 'gmail', kind: 'agent', from: 'owner@home.test',
+  provider: 'gmail', kind: 'agent', placement: 'to', from: 'owner@home.test',
   headers: async () => [{ name: 'From', value: 'owner@home.test' }, { name: 'Authentication-Results', value: PASS }, ...extra],
   newBody: async () => 'close it',
 });

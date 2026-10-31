@@ -356,7 +356,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   // provider's own check confirmed it — and then ONLY his new words (`ownerWords`, quoted text already cut) count.
   const verifiedEmailRow = (words: string | undefined, over: Record<string, unknown> = {}): Record<string, unknown> => ({
     channel: 'email', lane: 'owner',
-    inbound_meta: JSON.stringify({ channel: 'email', accountKind: 'agent', authorized: true, sender: 'owner@home.example', emailService: 'gmail', relation: 'owner', ...(words === undefined ? {} : { ownerWords: words }), ...over }),
+    inbound_meta: JSON.stringify({ channel: 'email', accountKind: 'agent', authorized: true, sender: 'owner@home.example', emailService: 'gmail', relation: 'owner', ownerWordsAt: Date.now() + 60_000, ...(words === undefined ? {} : { ownerWords: words }), ...over }),
   });
   it('P44: an email the provider confirmed as the owner\'s verifies his new words, like his text', async () => {
     const r = await verdictOn(emailBody('Yes. Close it. (preview, quoted: Close it now)'), 'close it', verifiedEmailRow('Yes. Close it.'));
@@ -368,6 +368,8 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     ['a quoted older sentence that is not in his new words', emailBody('Close it.'), 'close it now', verifiedEmailRow('Not yet.')],
     ['a stamped owner with no new words at all', emailBody('Close it.'), 'close it', verifiedEmailRow('')],
     ['a row stamped owner but carrying no ownerWords field', emailBody('Close it.'), 'close it', verifiedEmailRow(undefined)],
+    ['an owner email the provider received BEFORE the question was asked (a replay with a fresh Date header)', emailBody('Close it.'), 'close it', verifiedEmailRow('Close it.', { ownerWordsAt: 1_000 })],
+    ['an owner email with no provider receive time', emailBody('Close it.'), 'close it', verifiedEmailRow('Close it.', { ownerWordsAt: undefined })],
     ['ownerWords without the watcher\'s owner stamp (unconfirmed email)', emailBody('Close it.'), 'close it', verifiedEmailRow('Close it.', { relation: 'known_contact' })],
     ['ownerWords on the owner\'s own inbox (user slot) row', emailBody('Close it.'), 'close it', verifiedEmailRow('Close it.', { accountKind: 'user' })],
     ['ownerWords on a text-message row (the field means nothing off email)', '[SOURCE: IMESSAGE FROM x] Hello', 'hello', { channel: 'imessage', inbound_meta: JSON.stringify({ channel: 'imessage', sender: '+15550100', authorized: true, relation: 'known_contact', ownerWords: 'Hello' }) }],

@@ -106,13 +106,13 @@ const PASS = (domain: string): string => `${MS}; spf=pass smtp.mailfrom=${domain
 function arrives(id: string, address: string, auth: string[] | null | 'unavailable', html = '<div>Yes, close it.</div>'): Array<Record<string, unknown>> {
   if (auth !== 'unavailable') {
     details.set(id, {
-      internetMessageHeaders: [{ name: 'Received', value: 'from x' }, { name: 'From', value: address }, ...(auth ?? []).map((value) => ({ name: 'Authentication-Results', value }))],
+      internetMessageHeaders: [{ name: 'Received', value: 'from x' }, { name: 'From', value: address }, { name: 'Message-ID', value: `<${id}@mail.home.test>` }, ...(auth ?? []).map((value) => ({ name: 'Authentication-Results', value }))],
       uniqueBody: { contentType: 'html', content: html },
     });
   }
   return [{
-    id, from: { emailAddress: { name: 'The Owner', address } }, subject: 'Re: verdict', bodyPreview: 'Yes, close it. On Mon, Agent wrote: I will close the task now.',
-    toRecipients: [{ emailAddress: { name: 'Agent', address: 'agent@x.com' } }], ccRecipients: [{ emailAddress: { address: 'carol@z.test' } }],
+    id, from: { emailAddress: { name: 'The Owner', address } }, subject: 'Re: verdict', receivedDateTime: '2026-10-31T09:00:00Z', bodyPreview: 'Yes, close it. On Mon, Agent wrote: I will close the task now.',
+    toRecipients: [{ emailAddress: { name: 'Agent', address: 'agent@x.com' } }], ccRecipients: [{ emailAddress: { address: 'third@z.test' } }],
   }];
 }
 
@@ -147,7 +147,7 @@ describe('P44 Outlook — a known contact\'s email in the agent\'s own mailbox',
     expect(meta.relation).toBeUndefined();
     const inside = fenceRanges(content).map((r) => content.slice(r.bodyStart, r.bodyEnd)).join('\n');
     expect(inside).toContain('To: Agent <agent@x.com>');
-    expect(inside).toContain('Cc: carol@z.test');
+    expect(inside).toContain('Cc: third@z.test');
     expect(content).toMatch(/possibly/);
     expect(content).toMatch(/outlook_reply[^.]*reply_all/);
     expect(content).not.toMatch(/addressed to YOU/);
@@ -205,6 +205,31 @@ describe('P44 Outlook R2 — nothing but the confirmed owner address is the owne
     await outlookPoll(arrives('f3', 'stranger@y.test', [PASS('y.test')]));
     expect(pollEndpoints.some((e) => e.includes('internetMessageHeaders'))).toBe(false);
     NOT_OWNER('f3');
+  });
+});
+
+describe('P44 Outlook I1 — replay, blind copies, receive time', () => {
+  it('the agent on neither To nor Cc: not the owner, and no extra Graph read', async () => {
+    ownerAccount('owner@home.test');
+    const rows = arrives('r1', 'owner@home.test', [PASS('home.test')]);
+    rows[0].toRecipients = [{ emailAddress: { address: 'third@z.test' } }]; rows[0].ccRecipients = [];
+    await outlookPoll(rows);
+    NOT_OWNER('r1');
+    expect(pollEndpoints.some((e) => e.includes('internetMessageHeaders'))).toBe(false);
+  });
+  it('the same Message-ID delivered again counts once only', async () => {
+    ownerAccount('owner@home.test');
+    await outlookPoll(arrives('r2', 'owner@home.test', [PASS('home.test')]));
+    expect(readStored('r2').meta.relation).toBe('owner');
+    const again = arrives('r2b', 'owner@home.test', [PASS('home.test')]);
+    (details.get('r2b') as { internetMessageHeaders: Array<{ name: string; value: string }> }).internetMessageHeaders.find((x) => x.name === 'Message-ID')!.value = '<r2@mail.home.test>';
+    await outlookPoll(again);
+    NOT_OWNER('r2b');
+  });
+  it('the stored time is the provider\'s receivedDateTime', async () => {
+    ownerAccount('owner@home.test');
+    await outlookPoll(arrives('r3', 'owner@home.test', [PASS('home.test')]));
+    expect(readStored('r3').meta.ownerWordsAt).toBe(Date.parse('2026-10-31T09:00:00Z'));
   });
 });
 

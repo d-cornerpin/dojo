@@ -400,6 +400,8 @@ export interface InboundMeta {
   mailAddressing?: { to: Array<{ address: string; display: string | null }>; cc: Array<{ address: string; display: string | null }>; placement: 'to' | 'cc' | 'neither'; authenticationResults: string[] };
   /** P44: the owner's NEW words in an email the provider confirmed as the owner's (quoted text left out). Stamped only by the mail watchers, beside `relation: 'owner'`; the one place an email's words count as the owner's. */
   ownerWords?: string;
+  /** P44: when the PROVIDER received that email (ms) — never the sender-written Date. The owner door counts the words only if this is not before the verdict was asked. */
+  ownerWordsAt?: number;
 }
 
 export interface OutboundRoutingMatch {

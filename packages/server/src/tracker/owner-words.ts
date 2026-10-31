@@ -27,16 +27,18 @@ interface Row {
 
 /** The owner's new words in an email row the watcher stamped as the owner's, or null. Every stamp must agree: the
  *  watcher's own owner relation, the agent's mailbox (never the owner's inbox), and a non-empty `ownerWords`. */
-function confirmedOwnerEmailWords(raw: string | null): string | null {
+function confirmedOwnerEmailWords(raw: string | null, askedAtMs: number): string | null {
   let meta: Partial<InboundMeta> | null = null;
   try { meta = raw ? JSON.parse(raw) as Partial<InboundMeta> : null; } catch { return null; }
   if (!meta || meta.channel !== 'email' || meta.relation !== 'owner' || meta.accountKind !== 'agent') return null;
+  // The PROVIDER's receive time, never the sender-written Date: an owner email received before the question was asked is not an answer to it.
+  if (typeof meta.ownerWordsAt !== 'number' || !(meta.ownerWordsAt >= askedAtMs)) return null;
   return typeof meta.ownerWords === 'string' && meta.ownerWords.trim() !== '' ? meta.ownerWords : null;
 }
 
 /** The owner's own words in this row, or null when the row is not the owner writing. */
-function ownerWords(m: Row): string | null {
-  if (m.channel === 'email') return confirmedOwnerEmailWords(m.inbound_meta);
+function ownerWords(m: Row, askedAtMs: number): string | null {
+  if (m.channel === 'email') return confirmedOwnerEmailWords(m.inbound_meta, askedAtMs);
   const o = deriveOrigin({
     role: 'user', content: m.content, ...legacyOriginInputs(m.lane, m.channel),
     sourceAgentId: m.source_agent_id, a2aThreadId: m.a2a_thread_id, a2aIntent: m.a2a_intent,
@@ -69,14 +71,15 @@ export function ownerSaidSinceVerdictAsked(taskId: string, quote: string): boole
     'SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = ?',
   ).get(taskId, WORK_EVENT.userVerdictRequested) as { at: number | null };
   if (asked.at === null) return false;
+  const askedFloor = Math.floor(asked.at / 1000) * 1000;
   const rows = getDb().prepare(
     `SELECT content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
             inbound_meta, origin_intent
        FROM messages
       WHERE role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL AND sent_at >= ?`,
-  ).all(Math.floor(asked.at / 1000) * 1000) as Row[];   // floored to the second: `sent_at`'s default is second-resolution
+  ).all(askedFloor) as Row[];   // floored to the second: `sent_at`'s default is second-resolution
   return rows.some((m) => {
-    const words = ownerWords(m);
+    const words = ownerWords(m, askedFloor);
     return words !== null && quotableUnits(words).includes(q);
   });
 }

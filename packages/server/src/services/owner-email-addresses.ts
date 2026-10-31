@@ -1,12 +1,10 @@
 // ════════════════════════════════════════
-// services/owner-email-addresses.ts — the email-shaped entries in the owner's
-// saved details.
+// services/owner-email-addresses.ts — the one cleaner for email addresses that stand for the owner.
 //
-// The owner's details hold free-form contact text: phone numbers, names,
-// blanks, and the occasional real address. A later owner-email check compares
-// these EXACTLY with a message's From address, so the candidates must be
-// cleaned the same way every time: trimmed, lowercased, and kept only when the
-// WHOLE string is a bare email address. No fuzzy matching and no stripped
+// Its input is the email column of the owner's connected Google and Microsoft accounts of kind 'user'
+// (`owner-mailboxes.ts`; owner ruling 2026-10-27 — NOT free-form saved details). Each candidate is cleaned the
+// same way every time so the owner-email check can compare EXACTLY with a message's From address: trimmed,
+// lowercased, and kept only when the WHOLE string is a bare email address. No fuzzy matching and no stripped
 // punctuation — 'own-er@x.com' and 'owner@x.com' are two different addresses.
 //
 // Pure + dependency-free on purpose, so it is unit-testable in isolation.

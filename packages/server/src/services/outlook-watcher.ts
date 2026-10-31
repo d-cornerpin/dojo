@@ -330,7 +330,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         continue;
       }
       // P44: the owner's own email, confirmed by the provider (`mail-owner-intake.ts`), is the owner speaking and may be answered.
-      const ownerMail = await judgeOutlookOwnerEmail({ kind, fromAddress, messageId: msg.id, accountId });
+      const ownerMail = await judgeOutlookOwnerEmail({ kind, placement: mailAddressing.placement, fromAddress, messageId: msg.id, accountId });
       const ownerEmail = ownerMail.state === 'none' ? undefined : ownerMail;
       const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
         && getOutlookSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr)));
@@ -356,7 +356,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         emailAccount: notifyAccount,
         emailSubject: subject,
         mailAddressing,
-        ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words } : {}),
+        ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words, ownerWordsAt: Date.parse(date) } : {}),
       };
       // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
       // the meta this watcher just computed — never re-derived. recordInboundMeta
