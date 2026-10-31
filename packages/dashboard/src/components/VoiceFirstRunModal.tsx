@@ -75,6 +75,7 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
       const { kind, modelId, error: reason } = event.data;
+      api.noteVoiceInstallFailure(kind, modelId, reason);
       setError(`${kind} download failed: ${reason}`);
       setInstalling(false);
       setDownloads((prev) => {

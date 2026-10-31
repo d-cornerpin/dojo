@@ -920,6 +920,14 @@ export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>
   return request('/voice/models');
 };
 
+// The server's own "this install failed" word (the `voice:model_install_error` frame). The screens
+// that already listen for that frame hand it here, so a waiting install ends on the real signal
+// instead of a clock (R25: no fixed give-up).
+const voiceInstallFailures = new Map<string, string>();
+export const noteVoiceInstallFailure = (kind: string, modelId: string, reason: string): void => {
+  voiceInstallFailures.set(`${kind}/${modelId}`, reason);
+};
+
 export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
   // The server returns 202 immediately and streams progress over the
   // `voice:model_download` WS broadcast (whisper-large is ~1.5GB; holding the
@@ -929,10 +937,13 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine'
   // without anyone having to refactor.
   const kicked = await request<{ kind: string; id: string }>(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
   if (!kicked.ok) return kicked;
-  const start = Date.now();
-  const TIMEOUT_MS = 15 * 60 * 1000;  // 15 min — generous for slow connections + whisper-large
-  while (Date.now() - start < TIMEOUT_MS) {
+  voiceInstallFailures.delete(`${kind}/${id}`);
+  // No clock: a slow line may take as long as it takes. The loop ends when the model is on disk or
+  // the server reports the install failed.
+  for (;;) {
     await new Promise(r => setTimeout(r, 1500));
+    const failed = voiceInstallFailures.get(`${kind}/${id}`);
+    if (failed !== undefined) { voiceInstallFailures.delete(`${kind}/${id}`); return { ok: false, error: failed }; }
     const models = await request<VoiceModelsResponse>('/voice/models');
     if (!models.ok) continue;  // transient errors during polling are non-fatal
     const installed = kind === 'whisper'
@@ -942,7 +953,6 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine'
         : models.data.kokoro?.installed === true;
     if (installed) return { ok: true, data: { kind, id } };
   }
-  return { ok: false, error: 'install timed out — check server logs' };
 };
 
 export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string; deleted: boolean }>> => {

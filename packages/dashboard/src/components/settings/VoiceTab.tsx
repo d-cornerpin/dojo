@@ -319,6 +319,7 @@ export const VoiceTab = () => {
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
       const { kind, modelId, error: reason } = event.data;
+      api.noteVoiceInstallFailure(kind, modelId, reason);
       const key = `${kind}/${modelId}`;
       setInstallError(`${kind} download failed: ${reason}`);
       setInstalling((cur) => (cur === key ? null : cur));
