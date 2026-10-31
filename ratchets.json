@@ -9808,7 +9808,7 @@
     "packages/server/src/microsoft/auth.ts": 636,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3540,
-    "packages/server/src/microsoft/tools-read.ts": 1654,
+    "packages/server/src/microsoft/tools-read.ts": 1658,
     "packages/server/src/microsoft/tools-write.ts": 2233,
     "packages/server/src/migration/checks.ts": 531,
     "packages/server/src/migration/import.ts": 409,
