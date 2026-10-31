@@ -156,3 +156,18 @@ export function markAlertResolved(state: WatchdogState, alertKey: string): boole
   }
   return false;
 }
+
+/**
+ * Plain-words status for a database so damaged that `PRAGMA integrity_check`
+ * THROWS instead of answering (better-sqlite3 raises SQLITE_CORRUPT / SQLITE_NOTADB
+ * rather than returning rows). Null for anything else: a busy or locked database
+ * (SQLITE_BUSY, SQLITE_LOCKED, the open timeout) or an unopenable path is
+ * transient and must stay quiet.
+ */
+export function integrityFailureFromError(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  if (typeof code !== 'string') return null;
+  if (code.startsWith('SQLITE_CORRUPT')) return 'database disk image is malformed';
+  if (code === 'SQLITE_NOTADB') return 'file is not a database';
+  return null;
+}

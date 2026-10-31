@@ -24,6 +24,7 @@ import {
   readState,
   persistState,
   claimAlert as claimAlertIn,
+  integrityFailureFromError,
   markAlertResolved as markAlertResolvedIn,
   type WatchdogState,
 } from './alert-ledger.js';
@@ -783,6 +784,15 @@ async function checkDiskSpace(): Promise<void> {
   }
 }
 
+async function alertDbIntegrity(status: string): Promise<void> {
+  log('error', 'Database integrity check FAILED', { status });
+  const imRecipient = getImessageRecipient();
+  if (claimAlertFor('db_integrity', imRecipient)) {
+    await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
+    recordAlert(`DB integrity: ${status}`);
+  }
+}
+
 async function checkDatabaseIntegrity(): Promise<void> {
   try {
     if (!fs.existsSync(DB_PATH)) return;
@@ -794,12 +804,7 @@ async function checkDatabaseIntegrity(): Promise<void> {
 
     const status = result[0]?.integrity_check ?? 'unknown';
     if (status !== 'ok') {
-      log('error', 'Database integrity check FAILED', { status });
-      const imRecipient = getImessageRecipient();
-      if (claimAlertFor('db_integrity', imRecipient)) {
-        await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
-        recordAlert(`DB integrity: ${status}`);
-      }
+      await alertDbIntegrity(status);
     } else {
       markAlertResolved('db_integrity');
       log('debug', 'Database integrity OK');
@@ -808,6 +813,10 @@ async function checkDatabaseIntegrity(): Promise<void> {
     log('error', 'Database integrity check error', {
       error: err instanceof Error ? err.message : String(err),
     });
+    // A file too damaged for the check to run THROWS rather than answering; that is the worst
+    // case and must reach the owner like any other integrity failure. Busy/locked stays quiet.
+    const damaged = integrityFailureFromError(err);
+    if (damaged) await alertDbIntegrity(damaged);
   }
 }
 
