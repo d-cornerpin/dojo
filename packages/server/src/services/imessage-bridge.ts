@@ -1517,6 +1517,9 @@ async function pollMessages(): Promise<void> {
   }
 }
 
+// An empty saved list is the owner removing the last sender: nobody is heard. Missing or unreadable is not an explicit list.
+const savedListIsExplicit = (raw: string | undefined) => { try { return Array.isArray(JSON.parse(raw ?? '')); } catch { return false; } };
+
 export function startIMBridge(recipientId: string): void {
   if (pollTimer) {
     logger.warn('iMessage bridge already running');
@@ -1528,14 +1531,14 @@ export function startIMBridge(recipientId: string): void {
   // hid behind per-send warnings for a full day of delivery mysteries).
   checkImsgHealth();
 
-  // Load approved senders from config, falling back to legacy single recipient.
+  // Load approved senders from config, falling back to the legacy recipient only when the value is missing or unreadable.
   // parseSafeSenders accepts both the legacy string[] shape and the new
   // SafeSender[] shape, so an install that hasn't yet re-saved Settings keeps
   // working with bare phone-string entries.
   const db = getDb();
   const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
   approvedSenders = parseSafeSenders(sendersRow?.value ?? null);
-  if (approvedSenders.length === 0) {
+  if (approvedSenders.length === 0 && !savedListIsExplicit(sendersRow?.value)) {
     approvedSenders = [{
       address: recipientId,
       name: recipientId,
@@ -1611,10 +1614,7 @@ export function reloadApprovedSenders(): void {
   const db = getDb();
   const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
   const parsed = parseSafeSenders(sendersRow?.value ?? null);
-  let isList = false;
-  try { isList = Array.isArray(JSON.parse(sendersRow?.value ?? '')); } catch { /* unreadable */ }
-  // An empty saved list is the owner removing the last sender: nobody is heard. Only a missing or unreadable value keeps the list.
-  if (parsed.length === 0 && !isList) {
+  if (parsed.length === 0 && !savedListIsExplicit(sendersRow?.value)) {
     logger.warn('reloadApprovedSenders called but config key missing/unreadable - leaving in-memory list unchanged');
     return;
   }
