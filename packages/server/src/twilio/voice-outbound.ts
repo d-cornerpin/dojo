@@ -27,6 +27,8 @@ import {
 } from './auth.js';
 import { CallSession, getCallSession, registerCallSession, listActiveCallSessions } from './call-session.js';
 import { getTunnelStatus } from '../services/tunnel.js';
+import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
+import { findApprovedNumber } from './approved-number.js';
 
 const logger = createLogger('twilio-voice-outbound');
 
@@ -49,8 +51,24 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
   if (!isVoiceEnabled()) {
     return { ok: false, message: 'Voice NOT placed - Twilio Voice is not enabled. The owner needs to configure and enable Twilio in Settings → Integrations.' };
   }
-  const to = (input.to ?? '').trim();
+  let to = (input.to ?? '').trim();
   if (!to) return { ok: false, message: 'Voice NOT placed - to (recipient number) is required.' };
+
+  // Only a number the owner approved may be rung, matched exactly; the SAVED number is the one dialled.
+  const callers = getTwilioVoiceSafeCallers();
+  const approved = findApprovedNumber(callers, to);
+  if (!approved) {
+    const valid = callers.length === 0 ? '(none configured yet)' : callers.map(s => `${s.name} <${s.address}>`).join(', ');
+    return {
+      ok: false,
+      message: (
+        `Voice NOT placed - recipient "${to}" is not on the Twilio Voice safe-caller allowlist. ` +
+        `Valid recipients: ${valid}. ` +
+        `If you need to call someone new, the owner has to add them in Settings → Channels → Twilio first.`
+      ),
+    };
+  }
+  to = approved.address;
 
   const tunnel = getTunnelStatus();
   if (tunnel.status !== 'active' || !tunnel.url) {
