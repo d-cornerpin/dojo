@@ -89,4 +89,15 @@ describe('a sender removed from the approved list stops reaching the agent', () 
     await new Promise((r) => setTimeout(r, 6500)); // longer than one poll interval
     expect(stored('text-after-last-sender-removed')).toBe(false);
   }, 15000);
+
+  it('texts sent while a person was not approved are never delivered later, when someone is approved again', async () => {
+    await new Promise((r) => setTimeout(r, 5500)); // the poll after the empty list has passed over the waiting text
+    setList([rec(A, true), rec(B, false)]);
+    reloadApprovedSenders();
+    addText(104, 1, 'text-after-approved-again');
+    await until(() => stored('text-after-approved-again'), 8000);
+    expect(stored('text-after-approved-again')).toBe(true);
+    expect(stored('text-from-removed-sender')).toBe(false);
+    expect(stored('text-after-last-sender-removed')).toBe(false);
+  }, 20000);
 });

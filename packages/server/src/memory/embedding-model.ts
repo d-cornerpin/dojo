@@ -61,3 +61,19 @@ export function embeddingIsLocal(cfg: Pick<EmbeddingConfig, 'provider' | 'baseUr
     return false;
   }
 }
+
+/** How many memories (conversation, summary and technique vectors, plus live vault entries) were made by another model. */
+export function countMemoriesOnOtherModels(): number {
+  const db = getDb();
+  const key = embeddingModelKey();
+  const one = (sql: string): number => (db.prepare(sql).get(key) as { c: number }).c;
+  return one('SELECT COUNT(*) AS c FROM embeddings WHERE embedding_model IS NOT ?')
+    + one('SELECT COUNT(*) AS c FROM vault_entries WHERE embedding IS NOT NULL AND is_obsolete = 0 AND embedding_model IS NOT ?');
+}
+
+/** The owner card's words while memories still use a model that is no longer the embedding model. */
+export function embeddingSwitchWords(count: number): string {
+  return `The memory search model was changed. ${count} saved ${count === 1 ? 'memory still uses' : 'memories still use'} the old model, `
+    + 'so search may miss them until they are re-processed. New memories use the new model. '
+    + 'They were not re-processed automatically because the new model is a paid one.';
+}

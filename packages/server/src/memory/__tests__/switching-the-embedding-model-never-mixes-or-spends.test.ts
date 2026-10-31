@@ -26,6 +26,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 const sent = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: Record<string, unknown>) => { sent.push(e); } }));
+import { healerOwnerCards } from '../../healer/owner-notices.js';
 
 import { runMigrations } from '../../db/migrations.js';
 import { setEmbeddingConfig } from '../embeddings.js';
@@ -91,7 +92,8 @@ async function until(cond: () => boolean, ms = 3000): Promise<void> {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
 }
-const notices = (): Array<Record<string, unknown>> => sent.filter((e) => e.code === 'EMBEDDING_MODEL_SWITCHED');
+const notices = (): Array<Record<string, unknown>> => sent.filter((e) => e.cardKey === 'embedding-switch' && e.severity === 'warning');
+const standing = () => healerOwnerCards().filter((c) => c.cardKey === 'embedding-switch');
 
 describe('search never mixes two models', () => {
   it('after a switch, a same-width vector from the old model is not a hit (conversation and vault)', async () => {
@@ -137,13 +139,29 @@ describe('switching to a PAID model', () => {
     expect(modelsOf('embeddings')).toEqual([OLD]);
     expect(modelsOf('vault_entries')).toEqual([OLD]);
     expect(notices()).toHaveLength(1);
-    expect(notices()[0]).toMatchObject({ type: 'chat:error', severity: 'warning', retryable: false });
+    expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: 'platform', severity: 'warning', retryable: false });
+    // A lasting card: a dashboard opened later still finds it, with the live count.
+    expect(standing()).toHaveLength(1);
+    expect(standing()[0].words).toMatch(/4 saved memories still use the old model/);
     expect(String(notices()[0].error)).toMatch(/4 saved memories still use the old model/);
     expect(String(notices()[0].error)).toMatch(/search may miss them until they are re-processed/);
     // Saving the same setting again is not a switch: no second notice.
     setEmbeddingConfig({ model: 'big-hosted' });
     await new Promise((r) => setTimeout(r, 200));
     expect(notices()).toHaveLength(1);
+  });
+
+  it('the card stands until no memory is left on the old model, then ends', async () => {
+    seedOldMemories(2);
+    setEmbeddingConfig({ provider: 'openai', baseUrl: 'https://embeddings.example.test/v1', model: 'big-hosted' });
+    await until(() => notices().length > 0);
+    expect(standing()).toHaveLength(1);
+    sent.length = 0;
+    await runBackfill({ includeStale: true });   // the owner re-processes them
+    await until(() => sent.some((e) => e.cardKey === 'embedding-switch' && e.severity === 'info'));
+    expect(standing()).toEqual([]);
+    expect(sent.some((e) => e.cardKey === 'embedding-switch' && e.severity === 'info')).toBe(true);   // the end frame
+    expect(modelsOf('vault_entries')).toEqual(['openai:big-hosted']);
   });
 
   it('the scheduled drain leaves the old vectors alone; the owner\'s own backfill re-processes them', async () => {

@@ -1170,7 +1170,7 @@ export async function processInboundIMessage(
 }
 
 async function pollMessages(): Promise<void> {
-  if (approvedSenders.length === 0) return;
+  if (!pollTimer) return;   // stopped: nothing is read, nothing is passed over
   // The list as it stood when this poll began: a stop (which empties the live list) or a quick
   // restart mid-batch must not make this poll judge its remaining texts against a different list.
   const sendersThisPoll = approvedSenders;
@@ -1182,14 +1182,10 @@ async function pollMessages(): Promise<void> {
     const chatDb = new Database(CHAT_DB_PATH, { readonly: true, fileMustExist: true });
 
     try {
-      // Build a query that matches ANY approved sender. No text filter -
-      // image-only messages store U+FFFC in `text` and we want them through.
-      // SQL LIKE is intentionally loose (`%address%`); we re-validate
-      // each row against findSafeSenderByAddress below so substring false-
-      // matches (e.g. group-chat synthetic IDs that happen to contain a
-      // safe sender's digits) are dropped before reaching the agent.
-      const placeholders = sendersThisPoll.map(() => 'c.chat_identifier LIKE ?').join(' OR ');
-      const likeParams = sendersThisPoll.map(s => `%${s.address}%`);
+      // Every incoming text after the cursor is read, whoever sent it, and a text from a sender who is
+      // not approved at THIS moment is passed over for good below (the cursor moves past it). So a
+      // removed sender's texts can never be delivered later, even if someone is approved afterwards.
+      // No text filter: image-only messages store U+FFFC in `text` and we want them through.
 
       // associated_message_type / item_type / guid are pulled alongside the
       // existing columns (one query, not a second read) so the contentless-
@@ -1206,10 +1202,9 @@ async function pollMessages(): Promise<void> {
         JOIN chat c ON c.ROWID = cmj.chat_id
         WHERE m.ROWID > ?
           AND m.is_from_me = 0
-          AND (${placeholders})
         ORDER BY m.ROWID ASC
         LIMIT 10
-      `).all(lastSeenRowId, ...likeParams) as Array<{
+      `).all(lastSeenRowId) as Array<{
         ROWID: number;
         text: string | null;
         is_from_me: number;
@@ -1267,6 +1262,11 @@ async function pollMessages(): Promise<void> {
         if (!pollTimer) {
           logger.info('iMessage poll cut short: the bridge was stopped mid-batch; remaining texts stay for the next start');
           break;
+        }
+        // Not approved now (never was, or removed): passed over for good, before anything is copied or stored.
+        if (!findSafeSenderByAddress(sendersThisPoll, msg.chat_identifier)) {
+          advancePastRow(msg.ROWID);
+          continue;
         }
         // ── Offline-replay handling (P5c): ingest-as-note or capped skip ──
         // Placed BEFORE the attachment gate so a beyond-cap stale message never

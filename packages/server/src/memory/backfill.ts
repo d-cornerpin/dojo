@@ -166,8 +166,13 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       data: { ...backfillProgress, status: 'complete' },
     });
 
+    if (includeStale) {   // the vault's entries are memories too
+      const { reembedStaleVaultEntries } = await import('../vault/embedding-refresh.js');
+      while (await reembedStaleVaultEntries() > 0) { /* until none are left or none can be done */ }
+    }
     return { ...backfillProgress };
   } finally {
     backfillRunning = false;
+    if (includeStale) void import('./embedding-switch.js').then((m) => m.embeddingSwitchSettled());
   }
 }

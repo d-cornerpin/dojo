@@ -27,6 +27,7 @@
 
 import { getDb } from '../db/connection.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
+import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
 import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords } from './local-model-notice-words.js';
 export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords };
 
@@ -54,7 +55,7 @@ let routerFloorName: (() => string | null) | null = null;
 /** Called once by `router/router-window.ts` at load: the name of the router's smallest model, or null. */
 export function registerRouterFloorName(read: () => string | null): void { routerFloorName = read; }
 /** The owner cards whose words can change while they stand are matched by their condition key (N42 r2). */
-export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') ? key : undefined);
+export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') || key === 'embedding-switch' ? key : undefined);
 /** t167: "the limit is reached" for one budget window. The budget key is `global_daily` or `agent_<id>`;
  *  the words never name an agent (the card is re-derived from the key alone). */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
@@ -146,6 +147,7 @@ export function wordsOf(key: string): string {
     : kind === 'nofit' ? (isAutoAgent(agentId) ? autoNoFitWords : noFitWords)(nameOf(agentId))
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
+    : kind === 'embedding-switch' ? embeddingSwitchWords(countMemoriesOnOtherModels())
     : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS
     : kind === 'ollama-limit-set' ? OLLAMA_LIMIT_SET_WORDS : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
     : kind === 'ollama-limit-manual' ? ollamaLimitManualWords(Number(agentId))
@@ -216,11 +218,12 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   return rows.filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
     : key.startsWith('fitunchecked:') ? fitStillOwed(key.slice('fitunchecked:'.length))
     : key.startsWith('ollama-limit-manual:') ? true
+    : key === 'embedding-switch' ? countMemoriesOnOtherModels() > 0   // stands until no memory is left on the old model
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

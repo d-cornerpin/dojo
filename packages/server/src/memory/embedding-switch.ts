@@ -8,34 +8,25 @@
 //   · The new model is LOCAL (costs nothing): they are re-embedded in the background, here.
 //   · The new model is PAID (a hosted API): nothing is re-embedded automatically, because that would
 //     spend the owner's money without his say. He is told once, through the dashboard's existing
-//     notification card (the `chat:error` frame every engine card rides), how many memories still
-//     use the old model and that search may miss them until they are re-processed.
+//     persistent owner card (healer/owner-notices.ts, key `embedding-switch`: it is re-derived on every dashboard
+//     load and ends once no memory is left on the old model), how many memories still use the old model and
+//     that search may miss them until they are re-processed.
 //
 // The owner's own backfill request (POST /embeddings/backfill) re-processes them on demand.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId } from '../config/platform.js';
-import { embeddingIsLocal, embeddingModelKey } from './embedding-model.js';
+import { ownerCardFrame } from '../services/owner-card-frames.js';
+import { tellOwnerOnce, ownerConditionCleared, wordsOf, cardKeyOf } from '../healer/owner-notices.js';
+import { embeddingIsLocal, embeddingModelKey, countMemoriesOnOtherModels } from './embedding-model.js';
 
 const logger = createLogger('embedding-switch');
 
-export const EMBEDDING_SWITCH_NOTICE_CODE = 'EMBEDDING_MODEL_SWITCHED' as const;
+export const EMBEDDING_SWITCH_KEY = 'embedding-switch';
 
-/** How many memories (conversation, summary and technique vectors, plus vault entries) were made by another model. */
-export async function countMemoriesOnOtherModels(): Promise<number> {
-  const key = embeddingModelKey();
-  const a = (getDb().prepare('SELECT COUNT(*) AS c FROM embeddings WHERE embedding_model IS NOT ?').get(key) as { c: number }).c;
-  const { countStaleVaultEntries } = await import('../vault/embedding-refresh.js');
-  return a + countStaleVaultEntries();
-}
-
-export function embeddingSwitchNoticeText(count: number): string {
-  return `The memory search model was changed. ${count} saved ${count === 1 ? 'memory still uses' : 'memories still use'} the old model, `
-    + 'so search may miss them until they are re-processed. New memories use the new model. '
-    + 'They were not re-processed automatically because the new model is a paid one.';
+/** No memory is left on another model: the owner card ends (every open dashboard, and the load-time list). */
+export function embeddingSwitchSettled(): void {
+  try { if (countMemoriesOnOtherModels() === 0) ownerConditionCleared(EMBEDDING_SWITCH_KEY); } catch { /* best effort */ }
 }
 
 let reembedding = false;
@@ -59,26 +50,20 @@ async function reembedAllStale(): Promise<void> {
     }
   } finally {
     reembedding = false;
+    embeddingSwitchSettled();
   }
 }
 
 /** Called once, by `setEmbeddingConfig`, when the saved model label changed. */
 export async function handleEmbeddingModelSwitch(previousKey: string): Promise<void> {
-  const count = await countMemoriesOnOtherModels();
+  ownerConditionCleared(EMBEDDING_SWITCH_KEY);   // a new switch starts a new telling
+  const count = countMemoriesOnOtherModels();
   logger.info('Embedding model switched', { from: previousKey, to: embeddingModelKey(), memoriesOnOtherModels: count });
   if (count === 0) return;
   if (embeddingIsLocal()) {
     void reembedAllStale().catch((err) => logger.warn('Background re-embed stopped', { error: err instanceof Error ? err.message : String(err) }));
     return;
   }
-  try {
-    broadcast({
-      type: 'chat:error',
-      agentId: getPrimaryAgentId(),
-      error: embeddingSwitchNoticeText(count),
-      code: EMBEDDING_SWITCH_NOTICE_CODE,
-      severity: 'warning',
-      retryable: false,
-    });
-  } catch { /* a notice is a courtesy; the switch itself has already happened */ }
+  // Paid: nothing is spent. A lasting card, told once per switch.
+  if (tellOwnerOnce(EMBEDDING_SWITCH_KEY)) ownerCardFrame(wordsOf(EMBEDDING_SWITCH_KEY), 'warning', cardKeyOf(EMBEDDING_SWITCH_KEY));
 }

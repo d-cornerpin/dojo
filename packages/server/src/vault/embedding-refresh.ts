@@ -26,13 +26,6 @@ export async function reembedStaleVaultEntries(limit = 200): Promise<number> {
   return reembedVaultEntries('(embedding IS NULL OR embedding_model IS NOT ?)', limit, [embeddingModelKey()]);
 }
 
-/** Live vault entries whose vector was made by another model than the current one. */
-export function countStaleVaultEntries(): number {
-  return (getDb().prepare(
-    'SELECT COUNT(*) AS c FROM vault_entries WHERE embedding IS NOT NULL AND is_obsolete = 0 AND embedding_model IS NOT ?',
-  ).get(embeddingModelKey()) as { c: number }).c;
-}
-
 async function reembedVaultEntries(where: string, limit: number, whereParams: unknown[] = []): Promise<number> {
   const db = getDb();
   const rows = db.prepare(
