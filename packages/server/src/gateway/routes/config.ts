@@ -2200,6 +2200,15 @@ configRouter.put('/models/:id/pricing', async (c) => {
     return c.json({ ok: false, error: 'Model not found' }, 404);
   }
 
+  // A price below zero would make cost totals go down. Refuse the whole save before anything
+  // is written, so a 200 always means everything sent was kept.
+  for (const field of ['inputCostPerM', 'outputCostPerM', 'costPerUnit', 'costPerMegapixel'] as const) {
+    const v = body[field];
+    if (typeof v === 'number' && (!Number.isFinite(v) || v < 0)) {
+      return c.json({ ok: false, error: `${field} must be zero or more` }, 400);
+    }
+  }
+
   const inputCost = typeof body.inputCostPerM === 'number' ? body.inputCostPerM : undefined;
   const outputCost = typeof body.outputCostPerM === 'number' ? body.outputCostPerM : undefined;
   const VALID_UNITS = ['token', 'megapixel', 'second', 'character', 'minute', 'item'] as const;
@@ -2953,6 +2962,9 @@ configRouter.post('/deepseek/threshold', async (c) => {
   if (!body || typeof body.threshold !== 'number') {
     return c.json({ ok: false, error: 'threshold (number) is required' }, 400);
   }
+  if (!Number.isFinite(body.threshold) || body.threshold < 0) {
+    return c.json({ ok: false, error: 'threshold must be zero or more' }, 400);
+  }
   const db = getDb();
   db.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES ('deepseek_warning_threshold', ?, datetime('now'))
@@ -2969,6 +2981,9 @@ configRouter.post('/openrouter/threshold', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.threshold !== 'number') {
     return c.json({ ok: false, error: 'threshold (number) is required' }, 400);
+  }
+  if (!Number.isFinite(body.threshold) || body.threshold < 0) {
+    return c.json({ ok: false, error: 'threshold must be zero or more' }, 400);
   }
   const db = getDb();
   db.prepare(`
