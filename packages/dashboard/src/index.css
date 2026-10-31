@@ -4071,6 +4071,10 @@
   font-size: 46px;
   cursor: pointer;
 }
+.dojo3-stage .media__poster:focus-visible {
+  outline: 2px solid var(--dojo3-amber-ink);
+  outline-offset: 2px;
+}
 .dojo3-stage .media__poster img {
   position: absolute; inset: 0;
   width: 100%; height: 100%;

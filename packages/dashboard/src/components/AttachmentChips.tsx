@@ -243,7 +243,21 @@ const ImageMediaCard = ({ att, onOpen }: { att: Attachment; onOpen: (src: string
   const url = getImageUrl(att);
   return (
     <div className="media">
-      <div className="media__poster" onClick={() => onOpen(url, att.filename)}>
+      <div
+        className="media__poster"
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${att.filename}`}
+        onClick={() => onOpen(url, att.filename)}
+        onKeyDown={(e) => {
+          // A div is not in the tab order, so Enter/Space make the poster a
+          // real control; Space also scrolls, so swallow it.
+          if (e.key === 'Enter' || e.key === ' ') {
+            if (e.key === ' ') e.preventDefault();
+            onOpen(url, att.filename);
+          }
+        }}
+      >
         <img src={url} alt={att.filename} />
       </div>
       <div className="media__meta">
