@@ -147,7 +147,7 @@ export async function performImport(
   // before Step 6 means no backup was taken, and reaching for an older `.dojo-backup-*`
   // some earlier run left behind would delete the user's live ~/.dojo.
   let ownBackup: string | null = null;
-  let servicesStopped = false, restartAttempted = false; // a failure after stop must restart, once
+  let servicesStopped = false; // a failure after stop must put the old tree back and restart onto it
 
   try {
     // Step 2: Stream the encrypted payload out of the outer zip to disk,
@@ -356,24 +356,26 @@ export async function performImport(
 
     // Step 16: Restart services
     broadcastProgress('restart', 90, 'Restarting services...');
-    restartAttempted = true;
-    await restartServices();
+    await restartServices();   // from here the import is COMMITTED: nothing below rolls it back
 
     // Step 17: Run post-migration checks. Cache the manifest first so the
     // dependency installer and the wizard's "re-check" can re-run checks later
     // (after deps install / after the user does a manual action) without the zip.
-    setLastManifest(manifest);
-    broadcastProgress('checks', 95, 'Checking dependencies...');
-    const checks = await runPostMigrationChecks(manifest);
-
-    broadcastProgress('complete', 100, 'Import complete!');
+    // The import is committed: a failure here is logged, never rolled back.
+    let checks: PostMigrationCheck[] = [];
+    try {
+      setLastManifest(manifest);
+      broadcastProgress('checks', 95, 'Checking dependencies...');
+      checks = await runPostMigrationChecks(manifest);
+      broadcastProgress('complete', 100, 'Import complete!');
+    } catch (postErr) { logger.error('Post-import checks failed after a good import', { error: postErr instanceof Error ? postErr.message : String(postErr) }); }
     logger.info('Import complete');
-
-    // Cleanup temp dir
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* temp only */ }
 
     return { manifest, checks };
   } catch (err) {
+    // Close the handle BEFORE the tree under it is swapped; the restart below re-opens it.
+    if (servicesStopped) { try { closeDb(); } catch { /* already closed */ } }
     if (ownBackup && fs.existsSync(ownBackup)) {
       try {
         if (fs.existsSync(DOJO_DIR)) fs.rmSync(DOJO_DIR, { recursive: true, force: true });
@@ -381,7 +383,7 @@ export async function performImport(
         logger.info('Restored backup after failed import');
       } catch (restoreErr) { logger.error('Failed to restore backup', { error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }); }
     }
-    await restartAfterFailedImport({ servicesStopped, restartAttempted, restartServices });
+    await restartAfterFailedImport({ servicesStopped, restartServices });
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
     throw err;

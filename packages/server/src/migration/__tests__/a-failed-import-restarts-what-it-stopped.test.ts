@@ -122,10 +122,27 @@ describe('a failed import restarts what it stopped', () => {
     expect(restart).toHaveBeenCalledTimes(1);
   });
 
-  it('a restart that already ran on the success path is never run a second time', async () => {
+  it('the success-path restart throws: handle closed before the swap, old tree back, restarted again', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
-    const restart = vi.fn(async () => { throw new Error('restart boom'); });
+    const order: string[] = [];
+    closeDb.mockImplementation(() => { order.push('close'); });
+    const restart = vi.fn(async () => {
+      order.push('restart');
+      if (restart.mock.calls.length === 1) throw new Error('restart boom');
+    });
     await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow('restart boom');
+    expect(restart).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(['close', 'restart', 'close', 'restart']);
+    expect(fs.readFileSync(path.join(LIVE_DIR, 'live.txt'), 'utf-8')).toBe('live');
+  });
+
+  it('a failure AFTER a good restart (checks throw) is not rolled back', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    const { runPostMigrationChecks } = await import('../checks.js');
+    (runPostMigrationChecks as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('checks boom'));
+    const restart = vi.fn(async () => {});
+    await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).resolves.toBeTruthy();
     expect(restart).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(LIVE_DIR, 'live.txt'))).toBe(false); // the imported tree stays
   });
 });
