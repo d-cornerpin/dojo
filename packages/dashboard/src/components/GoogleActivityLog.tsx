@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { formatTimeOnly } from '../lib/dates';
 import { request } from '../lib/api';
 
@@ -22,17 +22,22 @@ export const GoogleActivityLog = () => {
   const [filterType, setFilterType] = useState<'all' | 'read' | 'write'>('all');
   const [filterAgent, setFilterAgent] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Only the newest request's answer is applied (older or post-unmount ones are dropped).
+  const seq = useRef(0);
 
-  useEffect(() => { loadEntries(); }, [filterType, filterAgent]);
+  useEffect(() => { loadEntries(); return () => { seq.current++; }; }, [filterType, filterAgent]);
 
   const loadEntries = async () => {
+    const mine = ++seq.current;
     setLoading(true);
     let url = '/google/activity?limit=50';
     if (filterType !== 'all') url += `&type=${filterType}`;
     if (filterAgent) url += `&agent=${encodeURIComponent(filterAgent)}`;
 
     const result = await request<ActivityEntry[]>(url);
-    if (result.ok) setEntries(result.data);
+    if (mine !== seq.current) return;
+    if (result.ok) { setEntries(result.data); setError(null); } else { setEntries([]); setError(result.error); }
     setLoading(false);
   };
 
@@ -80,6 +85,8 @@ export const GoogleActivityLog = () => {
       {/* Table */}
       {loading ? (
         <p className="text-xs text-ui/25">Loading...</p>
+      ) : error ? (
+        <p className="text-xs text-ui/25">Could not load activity: {error}</p>
       ) : entries.length === 0 ? (
         <p className="text-xs text-ui/25">No activity yet.</p>
       ) : (

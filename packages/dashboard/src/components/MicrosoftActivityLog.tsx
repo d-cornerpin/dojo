@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { formatTimeOnly } from '../lib/dates';
 import { request } from '../lib/api';
 
@@ -21,15 +21,20 @@ export const MicrosoftActivityLog = () => {
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [filterType, setFilterType] = useState<'all' | 'read' | 'write'>('all');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Only the newest request's answer is applied (older or post-unmount ones are dropped).
+  const seq = useRef(0);
 
-  useEffect(() => { loadEntries(); }, [filterType]);
+  useEffect(() => { loadEntries(); return () => { seq.current++; }; }, [filterType]);
 
   const loadEntries = async () => {
+    const mine = ++seq.current;
     setLoading(true);
     let url = '/microsoft/activity?limit=50';
     if (filterType !== 'all') url += `&type=${filterType}`;
     const result = await request<ActivityEntry[]>(url);
-    if (result.ok) setEntries(result.data);
+    if (mine !== seq.current) return;
+    if (result.ok) { setEntries(result.data); setError(null); } else { setEntries([]); setError(result.error); }
     setLoading(false);
   };
 
@@ -65,6 +70,8 @@ export const MicrosoftActivityLog = () => {
 
       {loading ? (
         <p className="text-xs text-ui/25">Loading...</p>
+      ) : error ? (
+        <p className="text-xs text-ui/25">Could not load activity: {error}</p>
       ) : entries.length === 0 ? (
         <p className="text-xs text-ui/25">No activity yet.</p>
       ) : (
