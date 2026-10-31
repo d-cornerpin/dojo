@@ -15,10 +15,17 @@ vi.mock('../../db/connection.js', () => ({ closeDb: (...a: unknown[]) => closeDb
 vi.mock('../../config/loader.js', () => ({ clearSecretsCache: vi.fn() }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../checks.js', () => ({ runPostMigrationChecks: vi.fn(), setLastManifest: vi.fn() }));
+const cardFrame = vi.fn();
+const cardEnded = vi.fn();
+vi.mock('../../services/owner-card-frames.js', () => ({
+  ownerCardFrame: (...a: unknown[]) => cardFrame(...a),
+  ownerCardEnded: (...a: unknown[]) => cardEnded(...a),
+}));
 const migratePaths = vi.fn();
 vi.mock('../path-migration.js', () => ({ migratePaths: (...a: unknown[]) => migratePaths(...a) }));
 
 import { performImport } from '../import.js';
+import { importOwnerCards } from '../import-recovery.js';
 
 const PARENT = homeDir();
 const LIVE_DIR = path.join(PARENT, '.dojo');
@@ -74,6 +81,9 @@ beforeEach(() => {
   fs.writeFileSync(path.join(LIVE_DIR, 'live.txt'), 'live');
   closeDb.mockReset();
   migratePaths.mockReset();
+  cardFrame.mockReset();
+  cardEnded.mockReset();
+  for (const c of importOwnerCards()) c.dismiss();
 });
 afterEach(() => {
   cleanup();
@@ -163,5 +173,40 @@ describe('a failed import restarts what it stopped', () => {
     expect(caught?.message).toContain(path.join(PARENT, backup));
     expect(fs.readFileSync(path.join(PARENT, backup, 'live.txt'), 'utf-8')).toBe('live');
     expect(restart).not.toHaveBeenCalled();
+  });
+
+  it('a restart that fails raises an owner card, which stands and is named in the error', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+    const restart = vi.fn(async () => { throw new Error('restart boom'); });
+    await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow(/migrate boom.*could not restart itself/);
+    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining('could not restart itself'), 'error', 'import-failed-not-running');
+    expect(importOwnerCards()).toHaveLength(1);
+  });
+
+  it('a put-back that fails raises an owner card naming the backup path', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+    const real = fs.renameSync;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === LIVE_DIR && String(from).includes('.dojo-backup-')) throw new Error('rename denied');
+      return real(from, to);
+    }) as typeof fs.renameSync);
+    try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); }
+    const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
+    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining(path.join(PARENT, backup)), 'error', 'import-failed-not-running');
+    expect(importOwnerCards()[0].words).toContain(path.join(PARENT, backup));
+  });
+
+  it('a later good import ends the card', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+    await expect(performImport(ZIP_PATH, 'pw', async () => {}, async () => { throw new Error('x'); })).rejects.toThrow();
+    expect(importOwnerCards()).toHaveLength(1);
+    migratePaths.mockReset();
+    fs.mkdirSync(LIVE_DIR, { recursive: true });
+    await performImport(ZIP_PATH, 'pw', async () => {}, async () => {});
+    expect(importOwnerCards()).toHaveLength(0);
+    expect(cardEnded).toHaveBeenCalled();
   });
 });

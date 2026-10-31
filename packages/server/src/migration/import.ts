@@ -14,7 +14,7 @@ import { closeDb } from '../db/connection.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree } from './fs-copy.js';
-import { restartAfterFailedImport, backupStuckWords } from './import-recovery.js';
+import { restartAfterFailedImport, noteBackupStuck, clearImportCard } from './import-recovery.js';
 import { putBackOwnBackup } from './import-safety.js';
 import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
 import { broadcast } from '../gateway/ws.js';
@@ -358,6 +358,7 @@ export async function performImport(
     // Step 16: Restart services
     broadcastProgress('restart', 90, 'Restarting services...');
     await restartServices();   // from here the import is COMMITTED: nothing below rolls it back
+    clearImportCard();
 
     // Step 17: Run post-migration checks. Cache the manifest first so the
     // dependency installer and the wizard's "re-check" can re-run checks later
@@ -377,16 +378,16 @@ export async function performImport(
   } catch (err) {
     // Close the handle BEFORE the tree under it is swapped; the restart below re-opens it.
     if (servicesStopped) { try { closeDb(); } catch { /* already closed */ } }
-    let stuck: string | null = null; // set when the owner's data could not be put back: do NOT restart
+    let stuck: string | null = null; // the owner words, set when the data could not be put back: do NOT restart
     if (ownBackup && fs.existsSync(ownBackup)) {
       const back = putBackOwnBackup(DOJO_DIR, ownBackup);
       if (back.ok) logger.info('Restored backup after failed import');
-      else { logger.error('Failed to restore backup', { error: back.reason }); stuck = back.backup; }
+      else { logger.error('Failed to restore backup', { error: back.reason }); stuck = noteBackupStuck(back.backup); }
     }
-    if (stuck === null) await restartAfterFailedImport({ servicesStopped, restartServices });
+    stuck ??= await restartAfterFailedImport({ servicesStopped, restartServices });
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    if (stuck !== null) throw new Error(`${err instanceof Error ? err.message : String(err)} ${backupStuckWords(stuck)}`, { cause: err });
+    if (stuck !== null) throw new Error(`${err instanceof Error ? err.message : String(err)} ${stuck}`, { cause: err });
     throw err;
   }
 }
