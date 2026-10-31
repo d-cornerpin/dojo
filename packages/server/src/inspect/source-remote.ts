@@ -135,6 +135,16 @@ function hitLines(p: string, got: Got, terms: string[]): string {
     : `${p}\n${hits.map(({ l, n }) => `  ${n}: ${l}`).join('\n')}`;
 }
 
+/** t285 R3 — GitHub search qualifiers a model-sent pattern must not carry. The only qualifiers sent
+ *  are the ones this code adds (`repo:` and `path:`), so a pattern cannot widen the search to
+ *  the owner's other repositories or name private files. */
+const SEARCH_QUALIFIER = /(?:^|\s)-?"?(?:repo|org|user|owner|path|filename|extension|language|lang|in|size|fork|forks|is|symbol|content|enterprise|license|stars|created|pushed|topic|archived|mirror|template|followers|location|sort|order)"?:(?:"[^"]*"|\S*)/gi;
+export function neutraliseQualifiers(pattern: string): string {
+  let prev: string; let out = ` ${pattern}`;
+  do { prev = out; out = out.replace(SEARCH_QUALIFIER, ' '); } while (out !== prev);
+  return out.replace(/\s+/g, ' ').trim();
+}
+
 /** GitHub's own documented page size ceiling for search results. */
 const SEARCH_PER_PAGE = 100;
 
@@ -153,7 +163,9 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
   }
   const prefix = pathPrefix ? repoPath(pathPrefix) : null;
   if (pathPrefix && prefix === null) return `${REFUSED_PATH(pathPrefix)}\n\n${pointerLine(ref)}`;
-  const q = `${pattern} repo:${ref.owner}/${ref.repo}${prefix ? ` path:${prefix}` : ''}`;
+  const terms0 = neutraliseQualifiers(pattern);
+  if (!terms0) return `Nothing to search for: the pattern held only search qualifiers (repo:, org:, path: and the like), which this search does not accept. Send the words or code to find; use the path argument to narrow to a folder.\n\n${pointerLine(ref)}`;
+  const q = `${terms0} repo:${ref.owner}/${ref.repo}${prefix ? ` path:${prefix}` : ''}`;
   const headers = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: `Bearer ${token}` };
   const paths: string[] = [];
   let total = 0; let stopped = '';
@@ -176,7 +188,7 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
   }
   if (paths.length === 0 && stopped) return `${stopped} Browse the source at ${ref.url}.\n\n${pointerLine(ref)}`;
   if (paths.length === 0) return `No match for "${pattern}"${prefix ? ` under ${prefix}` : ''} in the Dojo's source.\n\n${pointerLine(ref)}`;
-  const terms = pattern.toLowerCase().split(/\s+/).filter((t) => t && !t.includes(':'));
+  const terms = terms0.toLowerCase().split(/\s+/).filter((t) => t && !t.includes(':'));
   // One file at a time: no helper in this tree bounds a fan-out, and a broad pattern names up to
   // a thousand files, which must not become a thousand simultaneous reads. Sequential is the
   // bound that needs no number, and a stop pressed part-way ends the search there.

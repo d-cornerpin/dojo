@@ -25,6 +25,7 @@
 import type Database from 'better-sqlite3';
 import { isReadStatement, stripExplain } from '../db/read-only-door.js';
 import { PATTERNS } from '../techniques/scrub.js';
+import { INSPECT_PATTERNS } from './credential-shapes.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 
 export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries' /* owner's private memory stays behind vault_* tools */];
@@ -110,8 +111,9 @@ function schemaTrees(db: Database.Database): Map<number, Tree> {
 }
 
 /** `table.column` pairs this statement's compiled program reads, plus every table it opens. */
-function reads(sql: string, db: Database.Database): { tables: Set<string>; columns: Set<string> } {
+function reads(sql: string, db: Database.Database): { tables: Set<string>; columns: Set<string>; configValueRead: boolean; configCursors: number } {
   const tables = new Set<string>(); const columns = new Set<string>();
+  let configValueRead = false; let configCursors = 0;
   const program = db.prepare(`EXPLAIN ${sql}`).all() as Op[];
   const trees = schemaTrees(db);
   // A cursor number can be reused by another part of the program, so a cursor stands for EVERY
@@ -120,7 +122,10 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
   for (const op of program) {
     if ((op.opcode === 'OpenRead' || op.opcode === 'ReopenIdx') && op.p3 === 0) {
       const tree = trees.get(op.p2);
-      if (tree) { cursors.set(op.p1, [...(cursors.get(op.p1) ?? []), tree]); tables.add(tree.table); }
+      if (tree) {
+        cursors.set(op.p1, [...(cursors.get(op.p1) ?? []), tree]); tables.add(tree.table);
+        if (tree.table === 'config' && !tree.isIndex) configCursors++;
+      }
     }
   }
   for (const op of program) {
@@ -131,9 +136,10 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
       };
       if (op.opcode === 'Column') denied(tree.columns[op.p2]);
       else if (tree.isIndex) tree.columns.forEach(denied);
+      if (tree.table === 'config' && (op.opcode === 'Column' ? tree.columns[op.p2]?.name === 'value' : tree.isIndex && tree.columns.some((c) => c.name === 'value'))) configValueRead = true;
     }
   }
-  return { tables, columns };
+  return { tables, columns, configValueRead, configCursors };
 }
 
 /**
@@ -158,9 +164,25 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
   const opened = [...reached.tables].find(isDeniedTable);
   if (opened) return tableRefusal(opened);
   const [column] = [...reached.columns].sort();
+  if (!column && !explained && reached.configValueRead) {
+    // t285 R2: a config value is blanked by its row's KEY, so the key must come out in the same row.
+    // One reference to the table, one scan of it, and its key in the output: a second reference (a self-join,
+    // a subquery) could pair one row's key with another row's value.
+    const references = identifiers(inner).filter((i) => i === 'config').length;
+    if (references !== 1 || reached.configCursors !== 1 || !outputsConfigKey(inner, db)) {
+      return 'Refused: the statement reads config.value without selecting config.key from the same row, so it cannot be told whether the setting holds a credential. Select key and value together (select key, value from config where ...).';
+    }
+  }
   return column
     ? `Refused: the statement reads ${column}, which holds a credential and is not readable through dojo_inspect. Name the columns you need without it.`
     : null;
+}
+
+/** Does the statement's own output list carry `config.key` as a plain column? */
+function outputsConfigKey(sql: string, db: Database.Database): boolean {
+  try {
+    return db.prepare(sql).columns().some((c) => c.table === 'config' && c.column === 'key');
+  } catch { return false; }
 }
 
 function tableRefusal(table: string): string {
@@ -172,7 +194,7 @@ function tableRefusal(table: string): string {
 export function redactText(s: string, agentIds: readonly string[] = []): string {
   if (!s) return s;
   let out = s;
-  for (const p of PATTERNS) {
+  for (const p of [...INSPECT_PATTERNS, ...PATTERNS]) {
     out = out.replace(p.regex, (match: string, ...rest: unknown[]) => {
       const groups = rest.slice(0, -2).filter((g): g is string => typeof g === 'string' && g.length > 0);
       const value = groups[groups.length - 1];

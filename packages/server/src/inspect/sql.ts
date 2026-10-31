@@ -21,8 +21,9 @@
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
 import { isReadStatement } from '../db/read-only-door.js';
-import { columnNamesCredential, keyNamesCredential, redactCell, refuseDeniedSql, rowAgents } from './redact.js';
-import { readInChild, type OutColumn } from './sql-child.js';
+import { refuseDeniedSql } from './redact.js';
+import { redactResultRow } from './result-row.js';
+import { readInChild } from './sql-child.js';
 
 const READ_ONLY = 'Refused: only a read runs here (a statement starting with SELECT, WITH or EXPLAIN). dojo_inspect never changes anything.';
 
@@ -30,10 +31,6 @@ function show(v: unknown): string {
   if (v === null || v === undefined) return 'NULL';
   return String(v).replace(/\r?\n/g, '\\n');
 }
-
-/** The name a cell is redacted under: the SOURCE column it was read from when that names a
- *  credential, so an alias can never carry one out unblanked; otherwise its output name. */
-const redactionName = (c: OutColumn): string => (c.column && columnNamesCredential(c.column) ? c.column : c.name);
 
 /**
  * Run one read and render its rows. The checks and the compile run here, on the same database
@@ -56,14 +53,7 @@ export async function sql(args: { query: string }): Promise<string> {
   const out = await readInChild(query);
   if ('ended' in out) return out.ended;
   if ('error' in out) return `SQLite stopped the query: ${out.error}`;
-  const names = out.columns.map(redactionName);
-  const keyAt = out.columns.findIndex((c) => (c.column ?? c.name) === 'key');
-  const rows: string[][] = out.rows.map((raw) => {
-    const cells = names.map((c, i) => [c, raw[i]] as [string, unknown]);
-    const agents = rowAgents(cells);
-    const keyed = keyAt !== -1 && keyNamesCredential(raw[keyAt]);
-    return cells.map(([c, v]) => show(redactCell(c, v, agents, keyed)));
-  });
+  const rows: string[][] = out.rows.map((raw) => redactResultRow(out.columns, raw).map(show));
   const columns = out.columns.map((c) => c.name);
   const count = `${rows.length.toLocaleString('en-US')} row${rows.length === 1 ? '' : 's'}.`;
   // Every column but the last is padded to its widest cell; the last is never padded.
