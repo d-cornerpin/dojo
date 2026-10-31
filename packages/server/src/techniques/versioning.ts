@@ -7,6 +7,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { broadcast } from '../gateway/ws.js';
 import { getTechnique } from './store.js';
 
 const logger = createLogger('technique-versioning');
@@ -126,6 +127,9 @@ export function restoreVersion(techniqueId: string, versionId: string): boolean 
   });
 
   logger.info('Technique version restored', { techniqueId, restoredFrom: version.versionNumber, newVersion });
+
+  broadcast({ type: 'technique:updated', data: { id: techniqueId, name: technique.name, version: newVersion } });
+
   return true;
 }
 
