@@ -3,7 +3,7 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Provider, Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
@@ -18,7 +18,7 @@ import {
 
 // ── Browse Models (for aggregator providers like OpenRouter) ──
 
-const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: string; providerName: string; onModelAdded: () => void }) => {
+export const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: string; providerName: string; onModelAdded: () => void }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<api.BrowseModelResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -27,11 +27,15 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
   // is confirmed from inside the modal so the user can pull/enter a price.
   const [pricingModalModel, setPricingModalModel] = useState<api.BrowseModelResult | null>(null);
 
+  const latestSearch = useRef(0);
+
   const handleSearch = async () => {
     if (!query.trim()) return;
+    const mine = ++latestSearch.current;
     setSearching(true);
     setSearched(true);
     const result = await api.browseProviderModels(providerId, query.trim());
+    if (mine !== latestSearch.current) return; // a newer search owns the box now
     if (result.ok) setResults(result.data);
     else setResults([]);
     setSearching(false);

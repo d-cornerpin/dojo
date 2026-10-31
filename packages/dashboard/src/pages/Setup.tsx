@@ -592,11 +592,15 @@ export const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: {
   const [searched, setSearched] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  const latestSearch = useRef(0);
+
   const handleSearch = async () => {
     if (!query.trim()) return;
+    const mine = ++latestSearch.current;
     setSearching(true);
     setSearched(true);
     const result = await api.browseProviderModels(providerId, query.trim());
+    if (mine !== latestSearch.current) return; // a newer search owns the box now
     if (result.ok) setResults(result.data);
     else setResults([]);
     setSearching(false);
