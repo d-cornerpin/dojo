@@ -28,7 +28,7 @@ export function formatForPlainTextChannel(input: string): string {
   // (snake_case_word): no letter or digit on the open side or after the close.
   s = s.replace(/(\*\*)(?=\S)(.*?)(?<=\S)\1/g, '$2');
   s = s.replace(/(?<![A-Za-z0-9])(__)(?=\S)(.*?)(?<=\S)\1(?![A-Za-z0-9])/g, '$2');
-  s = s.replace(/(\*)(?=\S)(.*?)(?<=\S)\1/g, '$2');
+  s = s.replace(/(?<![A-Za-z0-9*])(\*)(?=\S)(.*?)(?<=\S)\1(?![A-Za-z0-9*])/g, '$2');
   s = s.replace(/(?<![A-Za-z0-9])(_)(?=\S)(.*?)(?<=\S)\1(?![A-Za-z0-9])/g, '$2');
   // Strikethrough keeps its inner text (the regex has one capture group).
   s = s.replace(/~~(.*?)~~/g, '$1');
