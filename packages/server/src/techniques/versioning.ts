@@ -38,14 +38,15 @@ export function versionMetaPath(techniqueDir: string, versionNumber: number): st
 /**
  * Write a snapshot of a technique's TECHNIQUE.md content to disk so the
  * Trainer can reach it via file_read later. Best-effort: failure here
- * does NOT block the DB-side version row from being written.
+ * does NOT block the DB-side version row from being written. Returns
+ * whether both files actually landed on disk.
  */
 export function writeDiskVersionSnapshot(
   techniqueDir: string,
   versionNumber: number,
   content: string,
   meta: { changedBy: string | null; changeSummary: string | null; createdAt: string },
-): void {
+): boolean {
   try {
     const dir = versionsDir(techniqueDir);
     fs.mkdirSync(dir, { recursive: true });
@@ -55,11 +56,13 @@ export function writeDiskVersionSnapshot(
       JSON.stringify({ versionNumber, ...meta }, null, 2),
       'utf-8',
     );
+    return true;
   } catch (err) {
     logger.warn('Failed to write disk version snapshot', {
       techniqueDir, versionNumber,
       error: err instanceof Error ? err.message : String(err),
     });
+    return false;
   }
 }
 
@@ -142,7 +145,12 @@ export function restoreVersion(techniqueId: string, versionId: string): boolean 
  */
 export function backfillDiskVersionsFromDb(techniqueId: string, techniqueDir: string): number {
   const dir = versionsDir(techniqueDir);
-  if (fs.existsSync(dir)) {
+  // existsSync alone is not enough: a plain file at the versions path holds
+  // no snapshot and makes readdirSync throw. Skip the check there and let
+  // the write below fail and report itself.
+  let isVersionsDir = false;
+  try { isVersionsDir = fs.statSync(dir).isDirectory(); } catch { /* missing */ }
+  if (isVersionsDir) {
     // Already has any disk version → assume this technique is on the
     // forward path and don't risk overwriting more recent work.
     const existing = fs.readdirSync(dir).some(n => /^TECHNIQUE_v\d+\.md$/.test(n));
@@ -152,12 +160,11 @@ export function backfillDiskVersionsFromDb(techniqueId: string, techniqueDir: st
   if (versions.length === 0) return 0;
   let written = 0;
   for (const v of versions) {
-    writeDiskVersionSnapshot(techniqueDir, v.versionNumber, v.techniqueMd, {
+    if (writeDiskVersionSnapshot(techniqueDir, v.versionNumber, v.techniqueMd, {
       changedBy: v.changedBy,
       changeSummary: v.changeSummary,
       createdAt: v.createdAt,
-    });
-    written++;
+    })) written++;
   }
   if (written > 0) {
     logger.info('Backfilled disk version snapshots from DB', { techniqueId, written });
