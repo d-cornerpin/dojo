@@ -176,7 +176,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'drive_list',
-    description: 'List files in Google Drive. Default returns one compact line per file (name + size + short type + id + date). For full mime types and timestamps on every result, pass verbose=true; for the content of ONE file, use drive_read(file_id).',
+    description: 'List files in Google Drive. Files in the Trash are left out; add trashed = true to the query to search the Trash. Default returns one compact line per file (name + size + short type + id + date). For full mime types and timestamps on every result, pass verbose=true; for the content of ONE file, use drive_read(file_id).',
     effects: [],
     input_schema: {
       type: 'object',
@@ -696,8 +696,9 @@ export async function executeGoogleReadTool(
       }
       // Drive lists trashed files unless the query says otherwise. A query that already
       // mentions trashed is the model's own and passes through; every other one excludes the Trash.
-      if (!q) q = 'trashed = false';
-      else if (!/\btrashed\b/i.test(withoutQuotedValues(q))) q = `${q} and trashed = false`;
+      let trashLeftOut = false;
+      if (!q) { q = 'trashed = false'; trashLeftOut = true; }
+      else if (!/\btrashed\b/i.test(withoutQuotedValues(q))) { q = `${q} and trashed = false`; trashLeftOut = true; }
 
       const params = new URLSearchParams({
         q,
@@ -712,7 +713,7 @@ export async function executeGoogleReadTool(
       if (!result.ok) return `Error listing Drive files: ${result.error}`;
 
       const data = result.data as { files?: Array<{ id: string; name: string; mimeType: string; modifiedTime: string; size?: string }> };
-      if (!data?.files || data.files.length === 0) return `No files found${acctLabel ? ` in ${acctLabel}` : ''}.`;
+      if (!data?.files || data.files.length === 0) return `No files found${acctLabel ? ` in ${acctLabel}` : ''}.${trashLeftOut ? ' Files in the Trash were left out; to search the Trash, add trashed = true to the query.' : ''}`;
 
       const files = data.files.map(f => {
         const size = f.size ? ` (${Math.round(parseInt(f.size) / 1024)}KB)` : '';
