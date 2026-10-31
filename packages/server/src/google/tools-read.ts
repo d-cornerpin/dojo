@@ -8,6 +8,7 @@ import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { googleRead } from './client.js';
+import { firstTabRange } from './sheets-first-tab.js';
 import { extractGmailBodyText } from './gmail-body.js';
 import { driveSearchQuery } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
@@ -700,7 +701,7 @@ export async function executeGoogleReadTool(
 
       // Google Sheets: use Sheets API (range is sheet-native pagination; offset/limit also forwarded)
       if (mimeType === 'application/vnd.google-apps.spreadsheet') {
-        return executeGoogleReadTool(kind === 'user' ? 'user_sheets_read' : 'sheets_read', { spreadsheet_id: fileId, range: 'Sheet1', offset: args.offset, limit: args.limit, account: args.account }, agentId, agentName);
+        return executeGoogleReadTool(kind === 'user' ? 'user_sheets_read' : 'sheets_read', { spreadsheet_id: fileId, offset: args.offset, limit: args.limit, account: args.account }, agentId, agentName);
       }
 
       // Other files: export as text and paginate.
@@ -759,7 +760,7 @@ export async function executeGoogleReadTool(
 
     case 'sheets_read': {
       const spreadsheetId = args.spreadsheet_id as string;
-      const range = (args.range as string) ?? 'Sheet1';
+      const range = (args.range as string) ?? await firstTabRange(spreadsheetId, agentId, agentName, slot);
       const url = `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
       const result = await googleRead(url, agentId, agentName, 'sheets_read', { spreadsheetId, range }, slot);
       if (!result.ok) return `Error reading spreadsheet: ${result.error}`;

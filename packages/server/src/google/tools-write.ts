@@ -5,6 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
+import { firstTabRange } from './sheets-first-tab.js';
 import { extractGmailBodyText } from './gmail-body.js';
 import { executeGmailLabel } from './gmail-label.js';
 import { BATCH_MODIFY_IDS } from './gmail-limits.js';
@@ -1925,7 +1926,7 @@ export async function executeGoogleWriteTool(
 
     case 'sheets_append': {
       const sheetId = args.spreadsheet_id as string;
-      const range = (args.range as string) ?? 'Sheet1';
+      const range = (args.range as string) ?? await firstTabRange(sheetId, agentId, agentName, slot);
       const values = (args.values as string).split(',').map(v => v.trim());
 
       const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
