@@ -106,6 +106,16 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'the update\'s disk-space pre-flight (SWEEP CORE-2 item 3, the owner\'s 2026-08-06 ask). Same class and same reasoning as gateway/routes/update.ts, which is its only caller: an agent can ask for an update, and this measures whether there is room for one. It is READ-ONLY — statfs on the data directory, statSync on the database and a walk of the installed platform tree — and every path is a platform literal (~/.dojo/data/dojo.db, ~/.dojo/platform) or is derived from it. The two parameters that can name a different path exist so a constrained-volume rehearsal and the unit suite can point it at a body of a known size; no agent-facing surface passes them. It writes nothing.',
   },
   {
+    file: 'update/copy-tree.ts',
+    klass: 'agent-triggered',
+    why: 'the dependency-tree copy, split out of update/install-tree.ts (same class, same reasoning): it runs `cp` on the live node_modules and the staged tree, both platform paths derived from ~/.dojo/platform. No argument an agent supplies forms a path or a command.',
+  },
+  {
+    file: 'update/leftovers.ts',
+    klass: 'agent-triggered',
+    why: 'the boot sweep of what a killed update left behind, split out of gateway/routes/update.ts (same class, same reasoning): it lists ~/.dojo and removes platform.staging-* work dirs of dead installers and update-state.json temp files of dead writers. Every name is a platform pattern; nothing an agent supplies is read.',
+  },
+  {
     file: 'update/install-tree.ts',
     klass: 'agent-triggered',
     why: 'the ONE platform installer (v3.4 t197), which the self-update and rollback routes and deploy/install.sh all call. Same class and reasoning as gateway/routes/update.ts, out of which it was moved: an agent can ask for an update, and every path here is a platform literal (~/.dojo/platform, its platform.backup-*/platform.staging-* siblings, the rollback.lock) or the release the platform downloaded. It clones dependencies, runs npm in the staged tree, loads the database module as a check, and renames trees. No argument an agent supplies forms a path or a command.',
@@ -236,6 +246,7 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   { file: 'migration/fs-copy.ts', klass: 'platform-internal', why: 'the migration tree copier: it walks the install tree and the export bundle, both platform-named, for the operator-run migration utility. No tool reaches it.' },
   { file: 'migration/import.ts', klass: 'platform-internal', why: 'the machine-to-machine migration IMPORT reader: it unpacks an export bundle onto a fresh install for the operator. Its paths are the bundle and the install tree, never an argument.' },
   { file: 'migration/manifest.ts', klass: 'platform-internal', why: 'the migration manifest builder: it shells out to enumerate and checksum the install tree for the operator-run migration utility. The commands and the paths are both literals.' },
+  { file: 'migration/path-migration-db.ts', klass: 'platform-internal', why: 'the database step of the migration path rewriter, split out of migration/path-migration.ts (same class, same reasoning): it opens the imported database file under the install tree and rewrites old-box home paths in one transaction. Operator-run, outside the tool surface.' },
   { file: 'migration/path-migration.ts', klass: 'platform-internal', why: 'the migration path rewriter: it rewrites absolute paths recorded on the old box to the new box install root. Operator-run, outside the tool surface, on the install tree alone.' },
   { file: 'migration/step-classify.ts', klass: 'platform-internal', why: 'the migration step classifier: it inspects the source install and the environment to decide which migration steps apply. Operator-run, on platform-named paths and fixed commands.' },
 
