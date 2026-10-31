@@ -31,25 +31,32 @@ export function embeddingSwitchSettled(): void {
 
 let reembedding = false;
 
-/** Re-embed everything made by another model until nothing is left or nothing more can be done. */
+/**
+ * Re-embed everything made by another model. It ends when none is left, or when a whole pass leaves the
+ * count of memories on other models where it was (nothing more can be done now: the embedder is down, or a
+ * source cannot be embedded). The count is the real signal; the number of calls that returned is not.
+ */
 async function reembedAllStale(): Promise<void> {
   if (reembedding) return;
   reembedding = true;
   const startedWith = embeddingModelKey();
+  let why = 'none left';
   try {
-    const { runBackfill, isBackfillRunning } = await import('./backfill.js');
+    const { runBackfill } = await import('./backfill.js');
     const { reembedStaleVaultEntries } = await import('../vault/embedding-refresh.js');
+    let before = countMemoriesOnOtherModels();
     for (;;) {
-      if (embeddingModelKey() !== startedWith) return;   // switched again: that switch decides
-      let progress = 0;
-      if (!isBackfillRunning()) {
-        try { progress += (await runBackfill({ includeStale: true })).completed; } catch { /* already running, or the embedder is down */ }
-      }
-      progress += await reembedStaleVaultEntries();
-      if (progress === 0) return;
+      if (embeddingModelKey() !== startedWith) { why = 'switched again; that switch decides'; return; }
+      try { await runBackfill({ includeStale: true }); } catch { /* already running, or the embedder is down */ }
+      await reembedStaleVaultEntries();
+      const after = countMemoriesOnOtherModels();
+      if (after === 0) return;
+      if (after >= before) { why = `${after} memories on other models, and the last pass did not lower the count`; return; }
+      before = after;
     }
   } finally {
     reembedding = false;
+    logger.info('Re-embed finished', { reason: why });
     embeddingSwitchSettled();
   }
 }
