@@ -76,7 +76,7 @@ interface SavedVoiceSettings {
 /** Pull voice settings from the config table. Cached for the page lifetime. */
 let savedPromise: Promise<SavedVoiceSettings> | null = null;
 export function invalidateSavedVoiceSettings(): void { savedPromise = null; }
-async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
+export async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
   if (savedPromise) return savedPromise;
   savedPromise = (async () => {
     const [v, s, vad, stt, wake, wp, sp, primaryName, bargeIn, sfx] = await Promise.all([
@@ -91,6 +91,9 @@ async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
       api.getSetting('voice.barge_in_enabled'),
       api.getSetting('voice.sound_effects_enabled'),
     ]);
+    // A read that failed says nothing about what the owner saved: use defaults for this call
+    // only, and read again next time rather than remembering them for the page's life.
+    if (![v, s, vad, stt, wake, wp, sp, primaryName, bargeIn, sfx].every((r) => r.ok)) savedPromise = null;
     const speedNum = s.ok && s.data.value ? Number(s.data.value) : NaN;
     const vadVal = vad.ok && vad.data.value;
     const primary = (primaryName.ok && primaryName.data.value && primaryName.data.value.trim()) || 'agent';
