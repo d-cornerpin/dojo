@@ -61,10 +61,7 @@ const CONTENT_READERS = new Set(['cat', 'less', 'more', 'head', 'tail', 'bat', '
   'sed', 'awk', 'xxd', 'od', 'hexdump', 'base64', 'cp', 'rsync', 'scp', 'tar', 'zip', 'gzip', 'jq', 'sort', 'uniq', 'cut']);
 const WRITES_EVERY_OPERAND = new Set(['rm', 'unlink', 'truncate', 'shred', 'tee', 'mv']);
 const WRITES_LAST_OPERAND = new Set(['cp', 'rsync', 'install', 'ln', 'scp']);
-const PREFIXES = new Set(['sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'command']);
-/** The duration `timeout` consumes before its command; and the `sudo` flags that take a value of their own. */
-const TIMEOUT_DURATION = /^\d+(\.\d+)?[smhd]?$/;
-const SUDO_VALUE_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish']);
 
 const unquote = (w: string): string => w.replace(/^['"]+|['"]+$/g, '');
 const namesDb = (w: string): boolean => DOJO_DB.test(` ${unquote(w)}`) || DATA_GLOB.test(w);
@@ -74,44 +71,101 @@ const namesLog = (w: string): boolean => DOJO_LOG.test(` ${unquote(w)}`);
 export type DojoLineClass = 'write' | 'repair' | 'schema' | 'sql' | 'logs';
 const RANK: Record<DojoLineClass, number> = { logs: 1, sql: 2, schema: 2, repair: 3, write: 4 };
 
+// WRAPPERS: a program that launches the command it is given. Each is described by the options it
+// owns: SHORT flags (a letter, no value), SHORT values (a letter whose value is the next word, or the
+// rest of the same word), LONG flags, LONG values (the value is the next word, or after `=`), and how
+// many plain words it takes before the command (timeout's duration). An option the table does not
+// list means the door cannot tell where the command begins, so the segment is read conservatively.
+interface WrapperSpec { flags: string; values: string; longFlags: string[]; longValues: string[]; positionals?: number; digitFlag?: boolean }
+const WRAPPERS: Record<string, WrapperSpec> = {
+  timeout: { flags: 'fpv', values: 'ks', longFlags: ['foreground', 'preserve-status', 'verbose'], longValues: ['kill-after', 'signal'], positionals: 1 },
+  nice: { flags: '', values: 'n', longFlags: [], longValues: ['adjustment'], digitFlag: true },
+  sudo: { flags: 'AbEeHiKklnPSsVvB', values: 'ughpCDRTU', longFlags: ['askpass', 'background', 'preserve-env', 'edit', 'set-home', 'login', 'non-interactive', 'reset-timestamp', 'stdin', 'shell', 'validate', 'remove-timestamp', 'list', 'version', 'help', 'bell'], longValues: ['user', 'group', 'host', 'prompt', 'close-from', 'chdir', 'chroot', 'type', 'role', 'other-user'] },
+  env: { flags: 'iv0', values: 'uCPSa', longFlags: ['ignore-environment', 'null', 'debug'], longValues: ['unset', 'chdir', 'split-string', 'argv0'] },
+  nohup: { flags: '', values: '', longFlags: [], longValues: [] },
+  time: { flags: 'plhav', values: 'fo', longFlags: ['portability', 'verbose', 'append'], longValues: ['format', 'output'] },
+  command: { flags: 'pvV', values: '', longFlags: [], longValues: [] },
+  setsid: { flags: 'cfwhV', values: '', longFlags: ['ctty', 'fork', 'wait'], longValues: [] },
+  stdbuf: { flags: '', values: 'ioe', longFlags: [], longValues: ['input', 'output', 'error'] },
+  ionice: { flags: 'tchV', values: 'cnpPu', longFlags: ['ignore'], longValues: ['class', 'classdata', 'pid', 'pgid', 'uid'] },
+  exec: { flags: 'cl', values: 'a', longFlags: [], longValues: [] },
+  xargs: { flags: 'oprtxZ0', values: 'aEdIJLnPsS', longFlags: ['null', 'open-tty', 'no-run-if-empty', 'interactive', 'verbose', 'exit', 'show-limits', 'process-slot-var'], longValues: ['arg-file', 'eof', 'delimiter', 'replace', 'max-lines', 'max-args', 'max-procs', 'max-chars'] },
+};
+const SHELL_VALUE_OPTS = new Set(['-o', '+o', '-O', '+O', '--rcfile', '--init-file']);
+
+/** The wrapper's own name, from a bare or path-qualified first word. */
+const wrapperName = (w: string): string | null => {
+  const base = w.split('/').pop() ?? '';
+  return Object.prototype.hasOwnProperty.call(WRAPPERS, base) ? base : null;
+};
+
+/** One option word of a wrapper: how many following words it takes (0 or 1), or null when unknown. */
+function optionTakes(spec: WrapperSpec, w: string): number | null {
+  if (w.startsWith('--')) {
+    const [name, ...val] = w.slice(2).split('=');
+    if (spec.longValues.includes(name)) return val.length > 0 ? 0 : 1;
+    return spec.longFlags.includes(name) ? 0 : null;
+  }
+  if (spec.digitFlag && /^-\d+$/.test(w)) return 0;
+  for (let i = 1; i < w.length; i++) {
+    if (spec.values.includes(w[i])) return i === w.length - 1 ? 1 : 0;   // the rest of the word is its value
+    if (!spec.flags.includes(w[i])) return null;
+  }
+  return 0;
+}
+
+interface Resolved {
+  /** What is left: the command and its arguments, or (opaque) everything after the part not understood. */
+  words: string[];
+  /** A wrapper option the door does not know was met: the command's position is a guess. */
+  opaque: boolean;
+  /** The command string of a shell run with -c: classified as a line of its own. */
+  shellText?: string;
+}
+
 /** Remove leading wrappers AND their own arguments, until the first word left is the program itself. */
-function stripWrappers(words: string[]): string[] {
+function resolveCommand(input: string[]): Resolved {
+  const words = [...input];
   while (words.length > 0) {
     const head = words[0];
     if (/^\w+=/.test(head)) { words.shift(); continue; }   // a leading FOO=1 assignment
-    if (!PREFIXES.has(head)) break;
+    const shell = SHELLS.has(head.split('/').pop() ?? '');
+    const name = wrapperName(head);
+    if (!name && !shell) break;
     words.shift();
-    if (head === 'timeout') {
-      while (words.length > 0 && words[0].startsWith('-')) {
-        const flag = words[0];
-        words.shift();
-        if (flag === '-k' || flag === '-s') words.shift();  // these take a value of their own
+    if (shell) {
+      // A shell run with -c (alone or in a cluster such as -lc): its next word starts the command text.
+      while (words.length > 0 && /^[-+]/.test(words[0]) && words[0] !== '--') {
+        const flag = words.shift() as string;
+        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(flag)) return { words: [], opaque: false, shellText: unquote(words.join(' ')) };
+        if (SHELL_VALUE_OPTS.has(flag)) words.shift();
       }
-      if (words.length > 0 && TIMEOUT_DURATION.test(words[0])) words.shift();
-    } else if (head === 'nice') {
-      if (words[0] === '-n') { words.shift(); words.shift(); }
-      else if (/^-\d+$/.test(words[0] ?? '') || (words[0] ?? '').startsWith('--adjustment=')) words.shift();
-    } else if (head === 'sudo') {
-      while (words.length > 0 && words[0].startsWith('-')) {
-        const flag = words[0];
-        words.shift();
-        if (SUDO_VALUE_FLAGS.has(flag)) words.shift();
-      }
-    } else if (head === 'env') {
-      while (words.length > 0 && (words[0].startsWith('-') || /^\w+=/.test(words[0]))) {
-        const flag = words[0];
-        words.shift();
-        if (flag === '-u') words.shift();   // -u NAME
+      return { words: [head, ...words], opaque: false };   // a script or stdin: the shell itself is the program
+    }
+    const spec = WRAPPERS[name as string];
+    let positionals = spec.positionals ?? 0;
+    while (words.length > 0) {
+      const w = words[0];
+      if (w === '--') { words.shift(); break; }
+      if (/^\w+=/.test(w) && name === 'env') { words.shift(); continue; }
+      if (!w.startsWith('-') || w === '-') break;
+      const takes = optionTakes(spec, w);
+      if (takes === null) return { words, opaque: true };
+      words.shift();
+      if (takes === 1) {
+        const value = words.shift();
+        if (name === 'env' && (w === '-S' || w.startsWith('--split-string')) && value !== undefined) words.unshift(...unquote(value).split(/\s+/).filter(Boolean));
+      } else if (name === 'env' && (w.startsWith('-S') || w.startsWith('--split-string=')) && w.length > 2) {
+        words.unshift(...unquote(w.replace(/^(?:-S|--split-string=)/, '')).split(/\s+/).filter(Boolean));
       }
     }
-    // nohup, time, command take nothing of their own
+    for (; positionals > 0 && words.length > 0; positionals--) words.shift();   // timeout's duration
   }
-  return words;
+  return { words, opaque: false };
 }
 
-/** What one simple command does to the Dojo's own database or log, or null. */
-function classifySegment(segment: string, line: string): DojoLineClass | null {
-  const words = stripWrappers(segment.trim().split(/\s+/).filter(Boolean));
+/** What a program (first word) and its operands do to the Dojo's own database or log, or null. */
+function classifyWords(words: string[], line: string): DojoLineClass | null {
   const program = (words[0] ?? '').split('/').pop() ?? '';
   const operands = words.slice(1).filter((w) => !w.startsWith('-'));
   if (operands.some(namesDb)) {
@@ -123,6 +177,27 @@ function classifySegment(segment: string, line: string): DojoLineClass | null {
     if (CONTENT_READERS.has(program)) return 'sql';
   }
   return operands.some(namesLog) && CONTENT_READERS.has(program) ? 'logs' : null;
+}
+
+const KNOWN_PROGRAMS = new Set([...SQL_PROGRAMS, ...CONTENT_READERS, ...WRITES_EVERY_OPERAND, ...WRITES_LAST_OPERAND, 'dd']);
+
+/** A segment whose wrapper arguments are not understood: find a program the door knows among its
+ *  words; failing that, a segment that names the database or log counts as touching it. */
+function classifyUnderstood(words: string[], line: string): DojoLineClass | null {
+  for (let i = 0; i < words.length; i++) {
+    if (!KNOWN_PROGRAMS.has(words[i].split('/').pop() ?? '')) continue;
+    const c = classifyWords(words.slice(i), line);
+    if (c) return c;
+  }
+  if (words.some(namesDb)) return WRITE_STATEMENT.test(line) ? 'write' : 'sql';
+  return words.some(namesLog) ? 'logs' : null;
+}
+
+/** What one simple command does to the Dojo's own database or log, or null. */
+function classifySegment(segment: string, line: string): DojoLineClass | null {
+  const r = resolveCommand(segment.trim().split(/\s+/).filter(Boolean));
+  if (r.shellText !== undefined) return classifyDojoLine(r.shellText);
+  return r.opaque ? classifyUnderstood(r.words, line) : classifyWords(r.words, line);
 }
 
 /** What a command line does to the Dojo's own database or log, or null when it reads and changes neither. */
