@@ -7,6 +7,7 @@ import type { ToolDefinition } from '../agent/tools/types.js';
 import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
+import { toRfc3339WithOffset } from '../services/rfc3339-offset.js';
 import { sendMarkedDraft } from './send-as-draft.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import { safeAttachmentName } from '../services/safe-attachment-name.js';
@@ -1940,8 +1941,12 @@ export async function executeMicrosoftWriteTool(
 
     case 'online_meeting_create': {
       const subject = args.subject as string;
-      const start = args.start as string;
-      const end = args.end as string;
+      // Graph reads a startDateTime/endDateTime WITHOUT an offset as UTC, so an
+      // offset-less '2026-05-10T14:00:00' would land hours off for the owner.
+      // Re-emit it as an exact UTC instant from host-local time (same rule as
+      // the Google freebusy tool).
+      const start = toRfc3339WithOffset(args.start as string);
+      const end = toRfc3339WithOffset(args.end as string);
       const result = await msGraphWrite('POST', 'me/onlineMeetings', {
         subject,
         startDateTime: start,
@@ -1964,8 +1969,8 @@ export async function executeMicrosoftWriteTool(
       const meetingId = encodeURIComponent(args.meeting_id as string);
       const patch: Record<string, unknown> = {};
       if (args.subject) patch.subject = args.subject as string;
-      if (args.start) patch.startDateTime = args.start as string;
-      if (args.end) patch.endDateTime = args.end as string;
+      if (args.start) patch.startDateTime = toRfc3339WithOffset(args.start as string);
+      if (args.end) patch.endDateTime = toRfc3339WithOffset(args.end as string);
       if (Object.keys(patch).length === 0) return 'Error: provide at least one of subject, start, end';
       const result = await msGraphWrite('PATCH', `me/onlineMeetings/${meetingId}`, patch, agentId, agentName, 'online_meeting_update', { meetingId: args.meeting_id, ...patch }, slot);
       if (!result.ok) return `Error updating online meeting: ${result.error}`;
