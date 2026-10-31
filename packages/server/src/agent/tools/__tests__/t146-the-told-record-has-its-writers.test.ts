@@ -109,7 +109,15 @@ describe('§2 the told record is written by exactly the two doors, each in its o
 describe('§3 one reader of "who is the owner on iMessage"', () => {
   it('the three old readers are gone and every caller reads the one rule', () => {
     expect(filesMatching(/\brecipientIsChannelOwner\b/)).toEqual([]);
-    expect(filesMatching(/\bownerAddresses\b/)).toEqual([]);
+    // The old iMessage reader named `ownerAddresses` is gone. The word survives in exactly two EMAIL files (P44), where it names a
+    // different rule on purpose: "which email addresses are the owner's" = the connected user-kind Google/Microsoft accounts
+    // (`services/owner-mailboxes.ts`), checked against the provider's own DMARC result. It is not an iMessage reader: the
+    // intake takes its list ONLY from `ownerMailboxes()`, and neither file touches the iMessage safe-sender rule.
+    expect(filesMatching(/\bownerAddresses\b/)).toEqual(['services/mail-owner-intake.ts', 'services/mail-owner-verdict.ts']);
+    expect(files.get('services/mail-owner-intake.ts')).toMatch(/const ownerAddresses = ownerMailboxes\(\)\.map\(/);
+    for (const f of ['services/mail-owner-intake.ts', 'services/mail-owner-verdict.ts']) {
+      expect(files.get(f)).not.toMatch(/safe-senders|ownerIMessageRecord|isOwnerIMessageRecipient|getSafeSenders/);
+    }
     expect(fnBody('services/imessage-bridge.ts', 'getDefaultSender')).toMatch(/ownerIMessageRecord\(getSafeSenders\(\)\)/);
     // By file name (the refusal gate lives under the engine's step packages, which only the
     // shared corpus walks by path — guard-corpus-census).

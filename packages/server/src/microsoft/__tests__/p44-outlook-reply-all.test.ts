@@ -21,6 +21,7 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../tools/unified-read.js', () => ({ otherMailboxesCountSection: vi.fn(async () => '') }));
 
 import { msGraphWrite } from '../client.js';
+import { sendMarkedDraft } from '../send-as-draft.js';
 import { judgeOwnerEmail } from '../../services/mail-owner-intake.js';
 import { isPlatformSent } from '../../services/platform-sends.js';
 import Database from 'better-sqlite3';
@@ -71,7 +72,6 @@ describe('P44 — outlook_reply: the sender or everyone, as the agent chooses', 
   it('P44 C2: with a payload message (attachments), the marker is added to it and nothing else is lost', async () => {
     const sent: Array<unknown> = [];
     vi.mocked(msGraphWrite).mockImplementation((async (_m: string, _e: string, body: unknown) => { sent.push(body); return ok({ id: 'draft-1' }); }) as never);
-    const { sendMarkedDraft } = await import('../send-as-draft.js');
     await sendMarkedDraft('forward', 'm1', { toRecipients: [{ emailAddress: { address: 'a@b.test' } }], message: { body: { contentType: 'Text', content: 'x' }, attachments: [] } }, 'a1', 'A', 'outlook_forward', {}, 'agent');
     const m = (sent[0] as { toRecipients: unknown[]; message: Record<string, unknown> });
     expect(m.toRecipients).toHaveLength(1);
