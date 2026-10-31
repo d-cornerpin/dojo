@@ -9813,7 +9813,7 @@
     "packages/server/src/migration/checks.ts": 531,
     "packages/server/src/migration/import.ts": 409,
     "packages/server/src/prompt/agent-rename.ts": 248,
-    "packages/server/src/prompt/assembler.ts": 1955,
+    "packages/server/src/prompt/assembler.ts": 1956,
     "packages/server/src/prompt/registry/entries.ts": 620,
     "packages/server/src/prompt/registry/types.ts": 473,
     "packages/server/src/providers/anthropic-sdk.ts": 595,
