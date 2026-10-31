@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { identityOfPid } from '../../process-identity.js';
 import { homeDir } from '../../home.js';
 import { createLogger } from '../../logger.js';
 
@@ -23,6 +24,9 @@ const FILE = 'toolbox-groups.json';
 /** Boot times read at two moments differ by clock rounding; a reboot differs by far more. */
 const BOOT_SLACK_MS = 5_000;
 
+/** A group's leader as it was when started: a reused id never matches both fields. */
+export interface GroupEntry { pgid: number; identity: string }
+
 type Send = (pgid: number, signal: NodeJS.Signals | 0) => void;
 
 export function machineBootMs(): number { return Math.round(Date.now() - os.uptime() * 1000); }
@@ -30,7 +34,7 @@ export function machineBootMs(): number { return Math.round(Date.now() - os.upti
 const realSend: Send = (pgid, signal) => { process.kill(pgid, signal); };
 
 /** Replace the ledger with these groups (an empty list removes it). Best effort: never throws. */
-export function recordToolboxGroups(dir: string, groups: number[], bootMs: number = machineBootMs()): void {
+export function recordToolboxGroups(dir: string, groups: GroupEntry[], bootMs: number = machineBootMs()): void {
   const file = path.join(dir, FILE);
   try {
     if (groups.length === 0) { fs.rmSync(file, { force: true }); return; }
@@ -41,21 +45,26 @@ export function recordToolboxGroups(dir: string, groups: number[], bootMs: numbe
 
 /** At boot: end every still-living group the ledger names, then clear it. */
 export function reapLeftoverToolboxGroups(
-  opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number },
+  opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number; identityOf?: (pid: number) => string | null },
 ): { ended: number[] } {
   const file = path.join(opts.dir, FILE);
   const send = opts.send ?? realSend;
   const ended: number[] = [];
-  let groups: number[] = [];
+  let groups: GroupEntry[] = [];
+  const identityOf = opts.identityOf ?? identityOfPid;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { boot?: unknown; groups?: unknown };
     const bootNow = opts.bootMs ?? machineBootMs();
     if (typeof raw.boot === 'number' && Math.abs(raw.boot - bootNow) <= BOOT_SLACK_MS && Array.isArray(raw.groups)) {
-      groups = raw.groups.filter((g): g is number => Number.isInteger(g) && (g as number) > 1);
+      groups = (raw.groups as Array<Partial<GroupEntry>>).filter((g): g is GroupEntry =>
+        !!g && Number.isInteger(g.pgid) && (g.pgid as number) > 1 && typeof g.identity === 'string' && g.identity !== '');
     }
   } catch { /* no ledger, or an unreadable one: nothing to end */ }
   try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
-  for (const g of groups) {
+  for (const { pgid: g, identity } of groups) {
+    // Signal only the very process that was recorded: same start time AND command. A reused id, or a
+    // leader that has since exited, is dropped, never signalled.
+    if (identityOf(g) !== identity) continue;
     try { send(-g, 0); } catch { continue; }   // already gone
     try { send(-g, 'SIGTERM'); ended.push(g); } catch { continue; }
     setTimeout(() => { try { send(-g, 'SIGKILL'); } catch { /* gone */ } }, opts.graceMs ?? 3_000).unref();

@@ -15,6 +15,8 @@ const send = (pgid: number, sig: NodeJS.Signals | 0): void => {
   if (sig === 0) { if (!alive.has(pgid)) throw new Error('ESRCH'); return; }
   sent.push([pgid, sig]);
 };
+const E = { pgid: 4242, identity: 'Mon Oct 26 06:00:00 2026 sleep 600' };
+const same = (): string | null => E.identity;
 const NOW_BOOT = 1_700_000_000_000;
 
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-')); sent = []; alive.clear(); });
@@ -22,39 +24,49 @@ afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('toolbox group ledger', () => {
   it('a group recorded before a hard kill is ended at the next boot', () => {
-    recordToolboxGroups(dir, [4242], NOW_BOOT);
+    recordToolboxGroups(dir, [E], NOW_BOOT);
     alive.add(-4242);
-    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT + 1000, send, graceMs: 0 });
+    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT + 1000, send, graceMs: 0, identityOf: same });
     expect(out.ended).toEqual([4242]);
     expect(sent).toContainEqual([-4242, 'SIGTERM']);
   });
   it('a group that already ended is not signalled', () => {
-    recordToolboxGroups(dir, [4242], NOW_BOOT);
-    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0 });
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same });
     expect(out.ended).toEqual([]);
     expect(sent).toEqual([]);
   });
-  it('after a machine reboot the ledger is stale: nothing is signalled', () => {
-    recordToolboxGroups(dir, [4242], NOW_BOOT);
+  it('a reused pid with a different start time or command is never signalled', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
     alive.add(-4242);
-    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT + 3_600_000, send, graceMs: 0 });
+    for (const other of ['Tue Oct 27 09:00:00 2026 sleep 600', 'Mon Oct 26 06:00:00 2026 /Applications/Some.app/run', null]) {
+      recordToolboxGroups(dir, [E], NOW_BOOT);
+      const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: () => other });
+      expect(out.ended).toEqual([]);
+    }
+    expect(sent).toEqual([]);
+  });
+  it('after a machine reboot the ledger is stale: nothing is signalled', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    alive.add(-4242);
+    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT + 3_600_000, send, graceMs: 0, identityOf: same });
     expect(out.ended).toEqual([]);
     expect(sent).toEqual([]);
   });
   it('the ledger is emptied after a reap, and an empty list clears it', () => {
-    recordToolboxGroups(dir, [4242], NOW_BOOT);
-    reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0 });
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same });
     alive.add(-4242);
-    expect(reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0 }).ended).toEqual([]);
+    expect(reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same }).ended).toEqual([]);
     recordToolboxGroups(dir, [], NOW_BOOT);
     expect(fs.existsSync(path.join(dir, 'toolbox-groups.json'))).toBe(false);
   });
   it('never signals group 0, 1 or a negative number, and survives a corrupt file', () => {
-    fs.writeFileSync(path.join(dir, 'toolbox-groups.json'), JSON.stringify({ boot: NOW_BOOT, groups: [0, 1, -5, 'x'] }));
+    fs.writeFileSync(path.join(dir, 'toolbox-groups.json'), JSON.stringify({ boot: NOW_BOOT, groups: [{ pgid: 0, identity: 'a' }, { pgid: 1, identity: 'a' }, { pgid: -5, identity: 'a' }, 'x'] }));
     alive.add(0); alive.add(-1);
-    expect(reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0 }).ended).toEqual([]);
+    expect(reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same }).ended).toEqual([]);
     fs.writeFileSync(path.join(dir, 'toolbox-groups.json'), '{nope');
-    expect(() => reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0 })).not.toThrow();
+    expect(() => reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same })).not.toThrow();
     expect(sent).toEqual([]);
   });
 });

@@ -10,7 +10,8 @@
 import { untilUserStop } from '../stop-waiters.js';
 import path from 'node:path';
 import { homeDir } from '../../home.js';
-import { recordToolboxGroups } from './toolbox-ledger.js';
+import { recordToolboxGroups, type GroupEntry } from './toolbox-ledger.js';
+import { identityOfPid } from '../../process-identity.js';
 
 // ════════════════════════════════════════
 // t203 (B6) — THE OWNER'S STOP REACHES EVERY PROCESS THE TOOLBOX STARTED.
@@ -48,6 +49,8 @@ export const KILL_GRACE_MS = 3_000;
 
 /** Every process group this door has started and that may still have members. */
 const toolboxGroups = new Set<number>();
+/** Each recorded group's leader identity (start time + command), taken when it started. */
+const groupIdentity = new Map<number, string>();
 let exitHooked = false;
 
 /** The members of a spawned child this module touches — structural, so it holds no `child_process`. */
@@ -107,12 +110,15 @@ export function endAgentCommands(agentId: string): number {
 
 function rememberGroup(pgid: number): void {
   for (const g of toolboxGroups) {
-    try { process.kill(-g, 0); } catch { toolboxGroups.delete(g); }
+    try { process.kill(-g, 0); } catch { toolboxGroups.delete(g); groupIdentity.delete(g); }
   }
   if (!exitHooked) { exitHooked = true; process.once('exit', endToolboxGroups); }
   toolboxGroups.add(pgid);
+  const identity = identityOfPid(pgid);
+  if (identity !== null) groupIdentity.set(pgid, identity);
   // v3.5 P6c: a hard kill runs no exit hook, so the next boot ends what this file still names.
-  recordToolboxGroups(path.join(homeDir(), 'data'), [...toolboxGroups]);
+  const entries: GroupEntry[] = [...groupIdentity].map(([g, identity]) => ({ pgid: g, identity }));
+  recordToolboxGroups(path.join(homeDir(), 'data'), entries);
 }
 
 function endToolboxGroups(): void {
@@ -120,5 +126,6 @@ function endToolboxGroups(): void {
     try { process.kill(-g, 'SIGTERM'); } catch { /* already gone */ }
   }
   toolboxGroups.clear();
+  groupIdentity.clear();
   recordToolboxGroups(path.join(homeDir(), 'data'), []);
 }
