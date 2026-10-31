@@ -462,6 +462,8 @@ export class CallSession {
       return;
     }
     if (!text) return;
+    // The call may have ended while this was being transcribed: those words wake nothing.
+    if (this.ended) return;
     this.transcript.push({ at: new Date().toISOString(), speaker: 'caller', text });
     logger.info('Caller utterance', { callSid: this.callSid, text: text.slice(0, 200) });
 
