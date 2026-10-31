@@ -24,6 +24,8 @@ import { runMigrations } from '../../db/migrations.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { setMeasure, recordMeasured, recordTouched } from '../../work/ledger-store.js';
 import { recordNamedRemainder } from '../measure-gate.js';
+import { validationMeasureLines } from '../job-loop-facts.js';
+import { unvalidatedCompleteText } from '../validation-request.js';
 
 const db = (): Database.Database => mockDb.current!;
 const TASK = 'task-validation-measure';
@@ -39,7 +41,7 @@ beforeEach(() => {
   seedTrackerTask(db(), { id: TASK, agentId: 'helper', status: 'in_progress', title: 'the mailbox sweep', opened_at: Date.now(), updated_at: Date.now(), priority: 'normal' } as never);
 });
 
-const lines = async (): Promise<string> => (await import('../job-loop-facts.js')).validationMeasureLines(TASK);
+const lines = async (): Promise<string> => validationMeasureLines(TASK);
 
 describe('E1: the Measure line, in its four shapes', () => {
   it('a measure that reads 0: the count at the start and when it was read', async () => {
@@ -97,7 +99,6 @@ describe('E1: the request text itself, from the real assembly', () => {
     setMeasure(TASK, MEASURE, { ok: true, count: 25 }, T0 - 60_000);
     recordMeasured(TASK, { ok: true, count: 0 }, T0);
     recordTouched(TASK, 'gmail_label', ['a', 'b']);
-    const { unvalidatedCompleteText } = await import('../validation-request.js');
     const text = unvalidatedCompleteText(TASK, parts());
     const at = (needle: string): number => { const i = text.indexOf(needle); expect(i, needle).toBeGreaterThan(-1); return i; };
     const order = ['UNVALIDATED_COMPLETE: "the mailbox sweep"', '\n  Goal: no message carries the label\n', '\n  Result: done\n', '\n  Evidence:\n    1. [receipt] cleared @ x\n  Measure: gmail_search "label:Sweep-1": 0 remaining of 25 at start',
@@ -105,7 +106,6 @@ describe('E1: the request text itself, from the real assembly', () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
   it('states how a measured and an unmeasured close are judged, and the real escalation route', async () => {
-    const { unvalidatedCompleteText } = await import('../validation-request.js');
     const text = unvalidatedCompleteText(TASK, parts());
     expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the ledger and receipts above, not the result text.');
     expect(text).not.toContain('the same escalation you use for a block');

@@ -23,6 +23,7 @@ vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessa
 import { runMigrations } from '../../db/migrations.js';
 import { buildPokeMessage } from '../pm-agent.js';
 import { getTask } from '../schema.js';
+import { validationMeasureLines } from '../job-loop-facts.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { engineText } from '../../agent/v2/__tests__/engine-sources.js';
 
@@ -95,7 +96,6 @@ describe('the tracker lines around a close', () => {
     expect(pm).toContain('Judge it now on its record (the measure, ');
   });
   it('orchestrator ruling: the validation record names the measure and what was touched (E1 renders it as Measure/Ledger lines)', async () => {
-    const { validationMeasureLines } = await import('../job-loop-facts.js');
     expect(validationMeasureLines(TASK)).toBe('\n  Measure: none set\n  Ledger: 0 items touched (none)');
     db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = 0 WHERE id = ?')
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), TASK);

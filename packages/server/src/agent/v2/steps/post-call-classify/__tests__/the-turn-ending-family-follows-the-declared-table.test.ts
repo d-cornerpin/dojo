@@ -63,6 +63,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { initState, type AgentTurnState } from '../../../state.js';
 import { STEER_PRECEDENCE, steerPriority } from '../../../steer-queue.js';
 import { TURN_ENDING_FAMILY, runNoToolCalls } from '../no-tool-calls.js';
+import { runGoingIdle } from '../going-idle.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
 const AGENT = 'zargo';
@@ -193,7 +194,6 @@ describe('§1 an owed person is not starved by a housekeeping floor that ranks b
   it('BOTH floors really do qualify on this turn — neither arm of the comparison is vacuous', async () => {
     // Stated first because §1's verdict is meaningless if only one floor was ever
     // eligible. Each is run ALONE, out of the family, against the same state.
-    const { runGoingIdle } = await import('../going-idle.js');
     const { runOwedInterrupt } = await import('../owed-interrupt.js');
 
     owedArrivals.current = [{ id: 'm-b', content: 'actually, can you also check the invoice?' }];
