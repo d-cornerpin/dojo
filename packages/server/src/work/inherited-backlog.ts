@@ -32,9 +32,18 @@ const logger = createLogger('inherited-backlog');
 export const PROCESS_STARTED_AT = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 
-/** What the last pass did, for the release step's report (its denominator). */
-let lastPass = { examined: 0, parked: 0 };
-export function lastInheritedBacklogPass(): { examined: number; parked: number } { return { ...lastPass }; }
+/** Where THIS boot's pass records itself (review R3-2): the release step reads it, and only a completed pass of
+ *  this very process lets the boundary marker move. Durable, so a lost process cannot fake a completion. */
+const PASS_KEY = 'orphaned_ask_backlog_pass';
+
+interface PassRecord { at: string; examined: number; parked: number; completed: boolean }
+
+/** This process's completed pass, or null — the release step throws on null so its marker stays and the next boot parks. */
+export function completedInheritedBacklogPass(): PassRecord | null {
+  const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(PASS_KEY) as { value: string } | undefined;
+  const rec = row ? JSON.parse(row.value) as PassRecord : null;
+  return rec && rec.at === PROCESS_STARTED_AT && rec.completed ? rec : null;
+}
 
 interface Inherited {
   id: string; agent_id: string; content: string | null; received_at: number | null;
@@ -62,19 +71,32 @@ export function parkInheritedBacklog(deadTurn: string, bootAt = PROCESS_STARTED_
   `).all(bootAt) as Inherited[];
   const byAgent = new Map<string, Inherited[]>();
   for (const r of rows) {
-    const res = transition(r.id, {
-      to: 'blocked', by: 'agent', actorId: 'engine', expectedState: 'claimed',
-      reason: 'inherited from an older version: the run serving it died before this build, and older builds never handed '
-        + 'it back. Held OWED and shown, not served automatically; the agent was told and decides',
-    });
+    let res: ReturnType<typeof transition>;
+    try {
+      res = transition(r.id, {
+        to: 'blocked', by: 'agent', actorId: 'engine', expectedState: 'claimed',
+        reason: 'inherited from an older version: the run serving it died before this build, and older builds never handed '
+          + 'it back. Held OWED and shown, not served automatically; the agent was told and decides',
+      });
+    } catch (err) {
+      logger.warn('an inherited orphan could not be parked; the pass is incomplete', { workId: r.id, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
     if (res.kind !== 'applied') continue;
     appendWorkEvent(r.id, 'audit', 'inherited-backlog', { marker: INHERITED_BACKLOG_MARKER });
     byAgent.set(r.agent_id, [...(byAgent.get(r.agent_id) ?? []), r]);
   }
   for (const [agentId, owed] of byAgent) tellAgentOwed(agentId, owed);
-  lastPass = { examined: rows.length, parked: [...byAgent.values()].reduce((n, a) => n + a.length, 0) };
-  if (lastPass.parked > 0) logger.warn('inherited orphaned asks parked owed (first boot of this build)', { ...lastPass, agents: byAgent.size });
-  return lastPass;
+  const parked = [...byAgent.values()].reduce((n, a) => n + a.length, 0);
+  // COMPLETE means every orphan this pass found was parked; one that refused the move is still `claimed`, and a
+  // marker moved past it would let the next boot hand it back as fresh.
+  const rec: PassRecord = { at: bootAt, examined: rows.length, parked, completed: parked === rows.length };
+  db.prepare(
+    `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(PASS_KEY, JSON.stringify(rec));
+  if (parked > 0 || !rec.completed) logger.warn('inherited orphaned asks parked owed (first boot of this build)', { ...rec, agents: byAgent.size });
+  return { examined: rec.examined, parked };
 }
 
 /** ONE deliverable notice per agent. The STORED row carries ask ids and instructions only — no sender, no words

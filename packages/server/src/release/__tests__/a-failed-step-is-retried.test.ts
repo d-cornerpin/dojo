@@ -13,6 +13,9 @@ vi.mock('../../db/connection.js', () => ({
 
 const reconcile = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../../tracker/version-gap-reconcile.js', () => ({ runVersionGapReconcile: reconcile.run }));
+// The orphaned-ask step only reports the boot's own pass (it throws when that pass did not complete — proof-fix-f
+// R3-2, covered in work/__tests__/inherited-orphans-are-owed-not-served.test.ts); here it is a completed pass.
+vi.mock('../../work/inherited-backlog.js', () => ({ completedInheritedBacklogPass: () => ({ at: 'boot', examined: 0, parked: 0, completed: true }) }));
 
 import { runReleaseSteps, RELEASE_STEPS, RELEASE_STEPS_VERSION_KEY, type ReleaseStep } from '../release-steps.js';
 

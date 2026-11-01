@@ -30,7 +30,7 @@ import { createLogger } from '../logger.js';
 import { settleAsk } from './ask-settlement.js';
 import { transition, abandonUnservableAsks } from './store.js';
 import { recordHandBack } from './hand-back-facts.js';
-import { parkInheritedBacklog } from './inherited-backlog.js';
+import { parkInheritedBacklog, PROCESS_STARTED_AT } from './inherited-backlog.js';
 export { handBackFactsFor } from './hand-back-facts.js';
 
 const logger = createLogger('orphaned-claims');
@@ -76,7 +76,8 @@ export function reconcileOrphanedClaims(scope: { agentId?: string; inheritedBack
     const s = settleAsk(a.id, { agentId: a.agent_id, turnNumber: a.turn_number, at: 'boot', actorId: 'boot-reconciliation' });
     if (s.verdict === 'closed') closed++;
   }
-  const parked = scope.inheritedBacklog === true && agent === null ? parkInheritedBacklog(DEAD_TURN).parked : 0;
+  const backlog = scope.inheritedBacklog === true && agent === null;
+  const parked = backlog ? parkInheritedBacklog(DEAD_TURN).parked : 0;
 
   const rows = db.prepare(`
     SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number,
@@ -85,7 +86,10 @@ export function reconcileOrphanedClaims(scope: { agentId?: string; inheritedBack
       LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
      WHERE w.kind = 'ask' AND w.state = 'claimed' AND (? IS NULL OR w.agent_id = ?)
        AND (t.turn_number IS NULL OR ${DEAD_TURN})
-  `).all(agent, agent) as Orphan[];
+       -- On the boundary boot only what THIS process closed (the just-died process's orphans) is handed back; an
+       -- inherited one the park could not move stays claimed for the next owed boot, never served (review R3-2).
+       AND (? = 0 OR (t.exit_reason IS 'terminated' AND t.ended_at >= ?))
+  `).all(agent, agent, backlog ? 1 : 0, PROCESS_STARTED_AT) as Orphan[];
   let reArmed = 0;
   for (const r of rows) if (reArm(r, agent === null ? 'boot reconciliation' : 'stuck-run reconciliation')) reArmed++;
   // ── THE CRASH WINDOW (SWEEP-A TB3) ──

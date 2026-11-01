@@ -108,8 +108,11 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
       + "boot reconcile (index.ts 4b1, before any turn can run), keyed on this step being owed; this entry is that pass's "
       + 'marker and report, so it runs once per version boundary and a repeated boot finds nothing (proof-fix-f, review B2).',
     run: async () => {
-      const { lastInheritedBacklogPass } = await import('../work/inherited-backlog.js');
-      const r = lastInheritedBacklogPass();
+      // REPORT ONLY, never a second park: by now the re-drain may have started turns, and a live turn's open row
+      // would read as dead. A pass this boot did not complete leaves the step owed (the throw keeps the marker).
+      const { completedInheritedBacklogPass } = await import('../work/inherited-backlog.js');
+      const r = completedInheritedBacklogPass();
+      if (r === null) throw new Error('the boot pass that parks inherited orphans did not complete on this boot; the step stays owed');
       return { examined: r.examined, flagged: r.parked, repaired: 0 };
     },
   },

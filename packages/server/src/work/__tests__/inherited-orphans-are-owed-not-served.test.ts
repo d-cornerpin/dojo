@@ -43,7 +43,7 @@ import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { getWaitingHumanConversations, getPendingEngineEvent } from '../../agent/v2/counterparty.js';
-import { RELEASE_STEPS, stepsInGap } from '../../release/release-steps.js';
+import { RELEASE_STEPS, stepsInGap, runReleaseSteps, RELEASE_STEPS_VERSION_KEY } from '../../release/release-steps.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -164,5 +164,36 @@ describe('the boundary is a declared release step, run once per version boundary
     expect(ids('3.4.1', '3.5.0')).toContain('orphaned-ask-backlog');
     expect(ids('3.5.0', '3.5.1')).not.toContain('orphaned-ask-backlog');
     expect(ids('3.4.1', '3.5.0-preflight.1'), 'a preflight build of the release owes it too').toContain('orphaned-ask-backlog');
+  });
+});
+
+describe('the marker moves only when the boot pass completed (review R3-2)', () => {
+  const marker = (): string | undefined => (db().prepare('SELECT value FROM config WHERE key = ?').get(RELEASE_STEPS_VERSION_KEY) as { value: string } | undefined)?.value;
+  const step = RELEASE_STEPS.find((s) => s.id === 'orphaned-ask-backlog')!;
+
+  it('a pass that parked every inherited orphan lets the step report, and the marker is recorded', async () => {
+    boot(true);
+    const r = await step.run();
+    expect(r).toMatchObject({ examined: 2, flagged: 2 });
+    await runReleaseSteps({ currentVersion: '3.5.0' });
+    expect(marker()).toBe('3.5.0');
+  });
+
+  it('a pass that did not complete makes the step throw, so the marker stays and the next boot parks again', async () => {
+    // One park fails part-way (the row refuses the move): the pass is not complete.
+    db().exec(`CREATE TRIGGER refuse_one BEFORE UPDATE OF state ON work
+               WHEN NEW.state = 'blocked' AND OLD.id = '${askIdForMessage('m-old-contact')}'
+               BEGIN SELECT RAISE(ABORT, 'refused for the test'); END;`);
+    try { boot(true); } catch { /* the boot step is non-fatal in index.ts */ }
+    await expect(Promise.resolve().then(() => step.run())).rejects.toThrow(/did not complete/);
+    const report = await runReleaseSteps({ currentVersion: '3.5.0' });
+    expect(report.failed.map((f) => f.id)).toContain('orphaned-ask-backlog');
+    expect(marker(), 'the step stays owed').toBeUndefined();
+    expect(stateOf('m-old-contact'), 'never handed back: still claimed for the next owed boot').toBe('claimed');
+  });
+
+  it('run() never parks by itself: with no boot pass it throws and moves nothing', async () => {
+    await expect(Promise.resolve().then(() => step.run())).rejects.toThrow(/did not complete/);
+    expect(stateOf('m-old-owner')).toBe('claimed');
   });
 });
