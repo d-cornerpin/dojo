@@ -98,13 +98,25 @@ describe('one runner for every platform program the Stop can cut', () => {
   });
 
   it('the runner: a program that ignores SIGTERM at its bound is killed after the grace (the screen-control shape, with stdin)', async () => {
-    const t0 = Date.now();
-    await expect(runBoundToTheStop(path.join(BIN, 'deaf'), [], { timeout: 200, agentId: AGENT, input: 'tell application "Finder" to quit' }))
-      .rejects.toThrow(/timed out after 200 ms/);
-    expect(Date.now() - t0, 'ended by the kill after its grace').toBeLessThan(10_000);
-    expect(pids().length).toBe(1);
-    expect(alive(pids()[0]), 'the deaf program is gone').toBe(false);
-    expect(stopWaiterCount(AGENT)).toBe(0);
+    // The bound is measured from the spawn, so on a loaded box a real 200 ms can pass before the
+    // stand-in has installed its SIGTERM trap and the SIGTERM simply kills it. The clock is therefore
+    // the test's to advance, and it advances only once the program has announced that it is deaf.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const p = runBoundToTheStop(path.join(BIN, 'deaf'), [], { timeout: 200, agentId: AGENT, input: 'tell application "Finder" to quit' });
+      const rejection = p.then(() => null, (e: unknown) => e);
+      await untilChildIsListening();
+      await vi.advanceTimersByTimeAsync(200);                     // the bound fires: SIGTERM, ignored
+      expect(alive(pids()[0]), 'the deaf program outlives its SIGTERM').toBe(true);
+      await vi.advanceTimersByTimeAsync(3_000);                   // the grace passes: SIGKILL
+      expect(String(await rejection), 'ended by its bound').toMatch(/timed out after 200 ms/);
+      expect(pids().length).toBe(1);
+      expect(alive(pids()[0]), 'the deaf program is gone').toBe(false);
+      expect(stopWaiterCount(AGENT)).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('the runner: a Stop and the time bound on one run arm one SIGKILL follow-up', async () => {
