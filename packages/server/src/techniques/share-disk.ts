@@ -127,7 +127,25 @@ export function packageNotes(entries: FileEntry[], skippedLinks: string[]): stri
 
 // ── Import-side unpacking ──
 
-export function extractPackageEntries(zip: AdmZip, dirPath: string): { extractedCount: number; hasInstructions: boolean } {
+/** One file an import wrote: its path, and the bytes it replaced (null when it did not exist before). */
+export interface ExtractedWrite { dest: string; prior: Buffer | null }
+
+/**
+ * Put back every file the import overwrote (original bytes) and remove only the files it newly made,
+ * newest first. Nothing else is touched: a failed import never damages what it did not create.
+ */
+export function undoExtraction(journal: ExtractedWrite[]): void {
+  for (const w of [...journal].reverse()) {
+    try {
+      if (w.prior !== null) fs.writeFileSync(w.dest, w.prior);
+      else fs.rmSync(w.dest, { force: true });
+    } catch (err) {
+      logger.warn('Could not undo an imported file', { dest: w.dest, err: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+export function extractPackageEntries(zip: AdmZip, dirPath: string, journal: ExtractedWrite[] = []): { extractedCount: number; hasInstructions: boolean } {
   let extractedCount = 0;
   let hasInstructions = false;
   for (const entry of zip.getEntries()) {
@@ -136,6 +154,9 @@ export function extractPackageEntries(zip: AdmZip, dirPath: string): { extracted
     if (!entryPath || entryPath === 'manifest.json') continue;
     const dest = path.resolve(dirPath, entryPath);   // the Mac belongs to the agent: extract where the package says
     fs.mkdirSync(path.dirname(dest), { recursive: true });
+    let prior: Buffer | null = null;
+    try { prior = fs.readFileSync(dest); } catch { /* not there yet */ }
+    journal.push({ dest, prior });   // recorded before the write, so a failure mid-write is covered too
     fs.writeFileSync(dest, entry.getData());
     extractedCount++;
     if (entryPath === 'TECHNIQUE.md') hasInstructions = true;

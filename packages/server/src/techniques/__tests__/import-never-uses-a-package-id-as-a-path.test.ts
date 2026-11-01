@@ -19,7 +19,7 @@ vi.mock('../../memory/message-store.js', () => ({ insertMessage: vi.fn() }));
 import { runMigrations } from '../../db/migrations.js';
 import { TECHNIQUES_DIR } from '../store.js';
 import { importTechnique } from '../share-import.js';
-import { extractPackageEntries } from '../share-disk.js';
+import { extractPackageEntries, undoExtraction, type ExtractedWrite } from '../share-disk.js';
 
 let tmp: string;
 beforeEach(() => {
@@ -81,6 +81,33 @@ describe('importing a package whose id is not a plain name', () => {
     ] };
     extractPackageEntries(zip as never, dir);
     expect(fs.readFileSync(path.join(TECHNIQUES_DIR, 'landed-by-package.txt'), 'utf-8')).toBe('hi');
+  });
+
+  it('a failed import puts back a file it overwrote outside its folder, byte for byte, and removes files it newly made', async () => {
+    const outside = path.join(TECHNIQUES_DIR, 'precious-outside.bin');
+    const original = Buffer.from([0, 1, 2, 250, 251, 10, 13]);
+    fs.writeFileSync(outside, original);
+    // AdmZip drops '..' from names, so the extractor is driven with a stub zip.
+    const dir = path.join(TECHNIQUES_DIR, 'fails-after-writing');
+    const entries = [
+      { isDirectory: false, entryName: '../precious-outside.bin', getData: () => Buffer.from('OVERWRITTEN') },
+      { isDirectory: false, entryName: '../brand-new-outside.txt', getData: () => Buffer.from('fresh') },
+    ];
+    const journal: ExtractedWrite[] = [];
+    fs.mkdirSync(dir);
+    extractPackageEntries({ getEntries: () => entries } as never, dir, journal);
+    expect(fs.readFileSync(outside, 'utf-8')).toBe('OVERWRITTEN');
+    undoExtraction(journal);
+    expect(fs.readFileSync(outside).equals(original)).toBe(true);
+    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'brand-new-outside.txt'))).toBe(false);
+    fs.rmSync(outside, { force: true });
+  });
+
+  it('WIRE: importTechnique undoes the extraction on every failure path', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'share-import.ts'), 'utf8');
+    expect(src).toContain('extractPackageEntries(zip, dirPath, journal)');
+    expect(src.match(/undoExtraction\(journal\)/g)?.length).toBeGreaterThanOrEqual(1);
+    expect(src).not.toMatch(/hasInstructions\) \{\s*\/\/[^\n]*\n\s*removeFolder/);
   });
 
   it('still imports a plain id', async () => {

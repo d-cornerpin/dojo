@@ -15,7 +15,7 @@ import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { TECHNIQUES_DIR, embedTechniqueIntent } from './store.js';
-import { extractPackageEntries, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './share-disk.js';
+import { extractPackageEntries, undoExtraction, type ExtractedWrite, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './share-disk.js';
 
 const logger = createLogger('technique-share-import');
 
@@ -112,16 +112,16 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   let extractedCount = 0;
   let needsSetup = false;
   let initialState = 'draft';
+  const journal: ExtractedWrite[] = [];
   try {
 
     // ── 3. Extract every entry except manifest.json (we store it separately) ──
-    const extracted = extractPackageEntries(zip, dirPath);
+    const extracted = extractPackageEntries(zip, dirPath, journal);
     extractedCount = extracted.extractedCount;
     const hasInstructions = extracted.hasInstructions;
 
     if (!hasInstructions) {
-      // Clean up and bail — every technique needs TECHNIQUE.md
-      removeFolder(dirPath);
+      // Every technique needs TECHNIQUE.md (the catch below undoes the extraction)
       throw new Error('Package is missing TECHNIQUE.md.');
     }
 
@@ -182,6 +182,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
       `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
     })();
   } catch (err) {
+    undoExtraction(journal);   // overwritten files go back byte for byte; files this import newly made are removed
     removeFolder(dirPath);
     throw err;
   }
