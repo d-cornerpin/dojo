@@ -47,7 +47,9 @@ describe('a failed release step is retried', () => {
     try {
       reconcile.run.mockRejectedValue(new Error('boom'));
       const report = await runReleaseSteps({ currentVersion: '9.9.9' });
-      expect(report.ran.map((r) => r.id)).toEqual(['extra-ok']);
+      // Every declared step that did not fail ran (proof-fix-f added `orphaned-ask-backlog`); the failed one did not.
+      expect(report.ran.map((r) => r.id)).toContain('extra-ok');
+      expect(report.ran.map((r) => r.id)).not.toContain('version-gap-reconcile');
       expect(report.failed).toHaveLength(1);
       expect(marker(), 'the failed step would never be tried again').toBeUndefined();
     } finally {

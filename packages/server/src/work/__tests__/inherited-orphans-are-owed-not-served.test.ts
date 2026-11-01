@@ -1,0 +1,165 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// AN ORPHANED ASK INHERITED FROM AN OLDER VERSION IS OWED AND SHOWN, NEVER AUTO-SERVED.
+//
+// Review B2 on proof-fix-f, coordinator ruling 2026-11-01. Since t93 (v3.3.0) every restart
+// mid-turn has stranded an ask `claimed`, and older builds never handed them back. With no
+// window, the first boot of this build would hand back that whole backlog and the re-drain
+// would serve it, message after message — texts to contacts about weeks-old asks.
+//
+// THE SIGNAL IS THE VERSION BOUNDARY, NEVER A CLOCK OR A CAP:
+//   * asks stranded by the process that JUST died (its turn closed `terminated` by this boot)
+//     are handed back exactly as before;
+//   * on the first boot of this build (the release step `orphaned-ask-backlog` is owed), the
+//     backlog an older version left goes to `blocked` — owed and shown, not auto-served — and
+//     each affected agent gets ONE notice, a deliverable engine event (shown whole on the turn it
+//     drives), listing each message: who it is from, the conversation, its age and a snippet.
+//     The agent judges what still matters and acts. The engine texts nobody.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+const mockDb: { current: Database.Database | null } = { current: null };
+
+vi.mock('../../db/connection.js', async () => {
+  const p = await import('node:path');
+  const o = await import('node:os');
+  return {
+    getDb: () => {
+      if (!mockDb.current) throw new Error('test DB not initialized');
+      return mockDb.current;
+    },
+    closeDb: vi.fn(),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-inherited-orphans', 'dojo.db'),
+  };
+});
+vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
+
+import { runMigrations } from '../../db/migrations.js';
+import { askIdForMessage, claimAsk, stampClaimingTurn, abandonUnservableAsks } from '../store.js';
+import { reconcileOrphanedClaims } from '../orphaned-claims.js';
+import { sweepBootStaleness } from '../work-reaper.js';
+import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
+import { insertMessage } from '../../memory/message-store.js';
+import { getWaitingHumanConversations, getPendingEngineEvent } from '../../agent/v2/counterparty.js';
+import { RELEASE_STEPS, stepsInGap } from '../../release/release-steps.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
+
+const AGENT = FXID.n4;
+const db = (): Database.Database => mockDb.current!;
+const stateOf = (m: string): string =>
+  (db().prepare('SELECT state FROM work WHERE id = ?').get(askIdForMessage(m)) as { state: string }).state;
+const owedNotices = (): string[] =>
+  (db().prepare("SELECT content FROM messages WHERE agent_id = ? AND lane = 'events' AND origin_intent = 'owed_messages_inherited' ORDER BY seq")
+    .all(AGENT) as Array<{ content: string }>).map((r) => r.content);
+
+function ask(id: string, content: string, who: { channel: string; senderId: string; conv: string; relation: string }): void {
+  insertMessage({
+    id, agentId: AGENT, role: 'user', content, lane: 'owner', channel: who.channel, senderId: who.senderId,
+    authorized: true, conversationId: who.conv,
+    inboundMeta: JSON.stringify({ channel: who.channel, relation: who.relation, sender: who.senderId, authorized: true }),
+  } as never);
+}
+const OWNER = { channel: 'dashboard', senderId: 'owner', conv: 'conv-owner', relation: 'owner' };
+const CONTACT = { channel: 'imessage', senderId: '+15550100', conv: 'conv-contact', relation: 'known_contact' };
+
+/** An ask an OLDER build stranded: claimed by a turn a previous boot closed `terminated`, weeks ago. */
+function inheritedStrandedAsk(id: string, content: string, who: typeof OWNER, turn: number, daysAgo: number): void {
+  ask(id, content, who);
+  const at = Date.now() - daysAgo * 86_400_000;
+  db().prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(at, id);
+  db().prepare('UPDATE work SET opened_at = ?, updated_at = ? WHERE id = ?').run(at, at, askIdForMessage(id));
+  claimAsk(askIdForMessage(id), AGENT);
+  stampClaimingTurn(askIdForMessage(id), turn);
+  db().prepare(
+    `INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, ended_at, exit_reason, answered)
+     VALUES (?, ?, 'user', 'ask', ?, datetime('now', '-${daysAgo} days'), datetime('now', '-${daysAgo} days'), 'terminated', 0)`,
+  ).run(AGENT, turn, id);
+}
+
+/** The ask the process that just died was serving: its turn is still open at boot. */
+function freshlyStrandedAsk(id: string, content: string, turn: number): void {
+  ask(id, content, OWNER);
+  claimAsk(askIdForMessage(id), AGENT);
+  stampClaimingTurn(askIdForMessage(id), turn);
+  db().prepare(
+    `INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, answered) VALUES (?, ?, 'user', 'ask', ?, datetime('now'), 0)`,
+  ).run(AGENT, turn, id);
+  db().prepare("UPDATE agents SET status = 'working' WHERE id = ?").run(AGENT);
+}
+
+function boot(inheritedBacklog: boolean): void {
+  resetWorkingAgentsToIdleAtBoot();
+  sweepBootStaleness();
+  abandonUnservableAsks();
+  reconcileOrphanedClaims({ inheritedBacklog });
+}
+
+beforeEach(() => {
+  const d = new Database(':memory:');
+  d.pragma('foreign_keys = ON');
+  mockDb.current = d;
+  runMigrations();
+  d.pragma('foreign_keys = ON');
+  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`).run(AGENT);
+  d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-owner', ?, 'dashboard', 'owner'), ('conv-contact', ?, 'imessage', '+15550100')`).run(AGENT, AGENT);
+  inheritedStrandedAsk('m-old-owner', 'Can you find the warranty card for the dishwasher?', OWNER, 5, 20);
+  inheritedStrandedAsk('m-old-contact', 'Are we still on for the garden party on Saturday?', CONTACT, 6, 9);
+  freshlyStrandedAsk('m-fresh', 'Please check the roof quote.', 7);
+});
+afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
+
+describe('the first boot of this build', () => {
+  it('parks the inherited backlog OWED (blocked), hands back only what the process that just died stranded', () => {
+    boot(true);
+    expect(stateOf('m-old-owner')).toBe('blocked');
+    expect(stateOf('m-old-contact')).toBe('blocked');
+    expect(stateOf('m-fresh'), 'the just-died process\'s ask is handed back as before').toBe('open');
+    const waiting = getWaitingHumanConversations(AGENT).map((w) => w.workId);
+    expect(waiting, 'nothing inherited is auto-served').toEqual([askIdForMessage('m-fresh')]);
+  });
+
+  it('tells the agent ONCE, listing each owed message: who, which conversation, its age, a snippet', () => {
+    boot(true);
+    const n = owedNotices();
+    expect(n).toHaveLength(1);
+    const text = n[0];
+    expect(text).toContain('dishwasher');
+    expect(text).toContain('garden party');
+    expect(text).toContain('+15550100');
+    expect(text).toMatch(/dashboard/);
+    expect(text).toMatch(/imessage/);
+    expect(text).toContain('20 days');
+    expect(text).toContain('9 days');
+    expect(text, 'the handed-back fresh ask is not on the list').not.toContain('roof quote');
+    expect(text, 'the engine texts nobody: the agent decides').toMatch(/decide/i);
+  });
+
+  it('the notice is a deliverable: it drives the agent\'s own turn, where it is shown whole', () => {
+    boot(true);
+    const pending = getPendingEngineEvent(AGENT);
+    expect(pending?.content ?? '').toContain('dishwasher');
+  });
+
+  it('is idempotent across repeated boots at the same boundary: no second notice, nothing moves', () => {
+    boot(true);
+    boot(true);
+    expect(owedNotices()).toHaveLength(1);
+    expect(stateOf('m-old-owner')).toBe('blocked');
+  });
+
+  it('a later boot (past the boundary) parks nothing and tells nobody', () => {
+    boot(false);
+    expect(owedNotices()).toHaveLength(0);
+    expect(stateOf('m-old-owner'), 'past the boundary every dead claim is handed back, as before').toBe('open');
+  });
+});
+
+describe('the boundary is a declared release step, run once per version boundary', () => {
+  it('a box arriving from 3.4.1 owes it; a box already past it does not', () => {
+    const ids = (from: string | null, to: string): string[] => stepsInGap(RELEASE_STEPS, { from, to }).map((s) => s.id);
+    expect(ids('3.4.1', '3.5.0')).toContain('orphaned-ask-backlog');
+    expect(ids('3.5.0', '3.5.1')).not.toContain('orphaned-ask-backlog');
+    expect(ids('3.4.1', '3.5.0-preflight.1'), 'a preflight build of the release owes it too').toContain('orphaned-ask-backlog');
+  });
+});

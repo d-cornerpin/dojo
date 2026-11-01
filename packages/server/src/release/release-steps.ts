@@ -98,7 +98,27 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
       return { examined: r.projectsExamined + r.tasksExamined, flagged: r.findings.length, repaired: r.repaired };
     },
   },
+  {
+    id: 'orphaned-ask-backlog',
+    // The first release AFTER 3.4.1, preflights included: the build that hands orphaned asks back with no window.
+    sinceVersion: '3.4.2',
+    pays:
+      'since t93 (v3.3.0) every restart mid-turn stranded an owner or contact message `claimed`, and no build handed '
+      + 'those back. The build that does would serve the whole backlog on its first boot. The PARKING happens in the '
+      + "boot reconcile (index.ts 4b1, before any turn can run), keyed on this step being owed; this entry is that pass's "
+      + 'marker and report, so it runs once per version boundary and a repeated boot finds nothing (proof-fix-f, review B2).',
+    run: async () => {
+      const { lastInheritedBacklogPass } = await import('../work/inherited-backlog.js');
+      const r = lastInheritedBacklogPass();
+      return { examined: r.examined, flagged: r.parked, repaired: 0 };
+    },
+  },
 ];
+
+/** Is this boot on the version boundary that owes step `id`? Read by the boot steps that must act before the pass. */
+export function releaseStepOwed(id: string): boolean {
+  return stepsInGap(RELEASE_STEPS, { from: readLastVersion(), to: getCurrentVersion() }).some((s) => s.id === id);
+}
 
 /**
  * Which declared steps a box crossing `from` -> `to` owes.

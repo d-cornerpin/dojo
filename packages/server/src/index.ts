@@ -538,10 +538,9 @@ async function main(): Promise<void> {
   // the delivery that answered it instead of being re-answered or stranded.
   {
     reapToolboxGroupsAtBoot();   // v3.5 P6c: a hard kill left no exit hook to end what agents backgrounded
-    // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed — no conversation
-    // identity, or a root message that no longer exists — get an honest terminal state instead of sitting `open`
-    // forever and telling every settled read that a person is waiting. Same once-guard: `transition()`'s CAS.
-    // BEFORE the hand-back (proof-fix-f review M3): an agent is never handed a message it may not serve.
+    // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed — no conversation identity,
+    // or a root message that no longer exists — get an honest terminal state instead of sitting `open` forever, telling
+    // every settled read a person is waiting (`transition()`'s CAS). BEFORE the hand-back (review M3).
     try {
       const { abandoned } = abandonUnservableAsks();
       if (abandoned > 0) {
@@ -551,7 +550,8 @@ async function main(): Promise<void> {
       logger.warn('Boot unservable-ask sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
     try {
-      const { reArmed, closed } = reconcileOrphanedClaims();
+      const { releaseStepOwed } = await import('./release/release-steps.js');   // proof-fix-f B2: the version boundary
+      const { reArmed, closed } = reconcileOrphanedClaims({ inheritedBacklog: releaseStepOwed('orphaned-ask-backlog') });
       if (reArmed > 0 || closed > 0) {
         logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the re-drain, each carrying its age and any effects the dead turn already made for the turn that serves it (tracker untouched)`);
       }

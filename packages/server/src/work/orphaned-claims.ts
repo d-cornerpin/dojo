@@ -30,6 +30,7 @@ import { createLogger } from '../logger.js';
 import { settleAsk } from './ask-settlement.js';
 import { transition, abandonUnservableAsks } from './store.js';
 import { recordHandBack } from './hand-back-facts.js';
+import { parkInheritedBacklog } from './inherited-backlog.js';
 export { handBackFactsFor } from './hand-back-facts.js';
 
 const logger = createLogger('orphaned-claims');
@@ -55,10 +56,12 @@ function reArm(o: Orphan, by: string): boolean {
 /**
  * Adjudicate every ask whose serving turn is dead. `agentId` narrows it to one agent — the
  * stuck-run reaper's scope, where only that agent's run has been judged dead; the boot passes
- * nothing, because at boot every turn of the previous process is dead.
+ * nothing, because at boot every turn of the previous process is dead. `inheritedBacklog` is the
+ * boot on the version boundary (`work/inherited-backlog.ts`): what an older version stranded is
+ * parked owed, after the answered arm and before anything is handed back.
  */
-export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
-{ reArmed: number; closed: number; handedBack: number } {
+export function reconcileOrphanedClaims(scope: { agentId?: string; inheritedBacklog?: boolean } = {}):
+{ reArmed: number; closed: number; handedBack: number; parked: number } {
   const db = getDb();
   const agent = scope.agentId ?? null;
   const answered = db.prepare(`
@@ -73,6 +76,7 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
     const s = settleAsk(a.id, { agentId: a.agent_id, turnNumber: a.turn_number, at: 'boot', actorId: 'boot-reconciliation' });
     if (s.verdict === 'closed') closed++;
   }
+  const parked = scope.inheritedBacklog === true && agent === null ? parkInheritedBacklog(DEAD_TURN).parked : 0;
 
   const rows = db.prepare(`
     SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number,
@@ -105,10 +109,10 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
     if (s.verdict === 'held' || s.verdict === 'reopened') handedBack++;
   }
 
-  if (reArmed > 0 || closed > 0 || handedBack > 0) {
-    logger.warn('reconciliation of orphaned ask claims', { agentId: agent, reArmed, closed, handedBack });
+  if (reArmed > 0 || closed > 0 || handedBack > 0 || parked > 0) {
+    logger.warn('reconciliation of orphaned ask claims', { agentId: agent, reArmed, closed, handedBack, parked });
   }
-  return { reArmed, closed, handedBack };
+  return { reArmed, closed, handedBack, parked };
 }
 
 /**
