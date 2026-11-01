@@ -49,27 +49,11 @@ export async function surfaceStrandedAttachments(
     // surfaces again (the old filename-history scan suppressed genuine
     // updated versions along with the spam it targeted).
     if (stranded.attachments.length > 0 && counterparty.kind !== 'agent') {
-      // Caption: prefer the model's own caption. Otherwise derive an INFORMATIVE
-      // line from the deliverables themselves, never a content-free generic
-      // "Here are the files for you.". Root reason: that generic line is identical
-      // for every uncaptioned deliverable, so two distinct files (blog_migration_plan,
-      // team_offsite_july_2026) surfaced on different turns read as duplicate spam in
-      // the owner's chat (the owner's run-#9 report). Naming the file makes each surface
-      // distinct and tells the owner WHAT it is. We are not hiding a duplicate; we are
-      // making the message say what it always should have.
-      const describeDeliverables = (atts: Array<{ filename?: string }>): string => {
-        const names = atts
-          .map(a => (a.filename ?? '').trim())
-          .filter(Boolean)
-          .map(fn => fn.replace(/\.[a-z0-9]+$/i, '').replace(/[_-]+/g, ' ').trim())
-          .filter(Boolean);
-        if (names.length === 0) return 'Here you go.';
-        if (names.length === 1) return `Here's the ${names[0]}.`;
-        return `Here are the files:\n${names.map(n => `• ${n}`).join('\n')}`;
-      };
+      // Caption: only the model's own words. The engine writes none (P12/R1): a surfaced file with no
+      // caption goes out bare and the agent is told below so it can add its own words.
       const captionText = stranded.captions.length > 0
         ? stranded.captions.join('\n\n')
-        : describeDeliverables(stranded.attachments);
+        : '';
       const synthId = uuidv4();
       insertMessageIfAbsent({
         id: synthId, agentId, role: 'assistant', content: captionText,
@@ -88,6 +72,15 @@ export async function surfaceStrandedAttachments(
           attachments: stranded.attachments,
         },
       });
+      if (stranded.captions.length === 0) {
+        try {
+          const { postAgentNotice } = await import('../../../agent-notice.js');
+          postAgentNotice({
+            toAgentId: agentId, fromName: 'File delivery', intent: 'file_delivery_outcome', selfIntro: false,
+            brief: `your file(s) ${stranded.attachments.map((a: { filename?: string }) => a.filename ?? 'file').join(', ')} were delivered to the person with no caption: the Dojo wrote no words around them. If you want to say something about them, say it in your own words.`,
+          });
+        } catch { /* awareness note is best-effort */ }
+      }
       logger.warn('show_to_user safety net fired - surfaced stranded attachments', {
         agentId,
         fileCount: stranded.attachments.length,

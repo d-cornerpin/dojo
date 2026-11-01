@@ -356,9 +356,9 @@ const handlers = {
           // generated from one prompt.
           //
           // Now we just write a synthetic assistant message
-          // with a short delivery caption and the image inline,
+          // with the image inline and NO engine caption,
           // no model call. The user sees ONE clean bubble with
-          // "Here you go." and the image thumbnail. Loop killed.
+          // the image thumbnail. Loop killed.
           const stat = effectFs.statSync(deliveredPath);
           const filename = path.basename(deliveredPath);
           const ext = path.extname(filename).toLowerCase();
@@ -377,18 +377,8 @@ const handlers = {
             category: 'image' as const,
           };
 
-          // Small pool of delivery captions, generic enough to
-          // fit any image request without sounding contextual.
-          const DELIVERY_CAPTIONS = [
-            'Here you go.',
-            'Here it is.',
-            'All done.',
-            'Done.',
-            'Got it for you.',
-          ];
-          const caption = DELIVERY_CAPTIONS[
-            Math.floor(Math.random() * DELIVERY_CAPTIONS.length)
-          ];
+          // P12/R1: the engine writes NO caption in the agent's voice (the old "Here you go." pool is gone); the agent is told below.
+          const caption = '';
 
           const deliveryMsgId = uuidv4();
           const attachmentsJson = JSON.stringify([attachment]);
@@ -414,6 +404,13 @@ const handlers = {
           setImgSucceeded(imgJobId, { assetPath: deliveredPath, assetMime: mimeType });
           settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: deliveryMsgId });   // t152: the job is finished and its result reached the owner
 
+          try {
+            postAgentNotice({
+              toAgentId: agentId, fromName: 'Image delivery', intent: 'image_delivery_outcome', selfIntro: false,
+              brief: `the finished image was delivered (posted in the dashboard${triggeredByIMessage ? ' and being texted to the requester' : ''}) with no caption: the Dojo wrote no words around it. ` +
+                'If you want to say something about it, say it in your own words.',
+            });
+          } catch { /* awareness note is best-effort */ }
           logger.info('image_create: image delivered via synthetic assistant message', {
             requestId, requesterId: agentId, filePath: deliveredPath,
             sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
@@ -473,7 +470,7 @@ const handlers = {
                 // silently failed on a broken imsg, so the requester got nothing
                 // and could not see the dashboard). sendIMessageWithAttachment
                 // returns true only when the file actually went out.
-                const iMessageDelivered = await sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
+                const iMessageDelivered = await sendIMessageWithAttachment(recipient, result.filePath, '');
                 const deliveryOutcome = iMessageDelivered
                   ? 'the finished image was texted to the requester over iMessage'
                   : 'texting the image to the requester failed (the iMessage attachment channel is unavailable), it is available in the dashboard only';

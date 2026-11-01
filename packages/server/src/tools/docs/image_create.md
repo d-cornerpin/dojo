@@ -14,7 +14,7 @@ Generate an image from a text description. **The engine owns the whole delivery 
 Exactly one acknowledgement reaches the user per image, and it is not yours.
 
 1. **The waiting ack is the engine's.** When someone is waiting on the other end, the engine posts the short "On it." itself. You do not write it.
-2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message — the image, with a short caption ("Here you go."). No model turn is involved.
+2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message — the image alone, with NO caption (the engine writes no words in your voice). You are told it was delivered, on your next turn; add your own words then if they help. No model turn is involved in the delivery.
 3. **You get no second turn.** This is a fire-and-forget generator: the engine ends your tool phase the moment you call it. There is no later round in which you could present the image, and you do not need one.
 
 So: **no preamble before the call, no follow-up after it.** Do not write "I'm generating that now", do not write "here's your image", do not describe the image. Anything you write is a second message about an event the user has already been told about twice — it reads as the Dojo repeating itself, and it is the single most common failure on this tool. The tool result you get back says `End your turn now.` It means it.

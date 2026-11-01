@@ -47,13 +47,20 @@ vi.mock('../../../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => null,
 }));
 vi.mock('../../../access/read.js', () => ({ mayUseChannel: () => true }));
-vi.mock('../../../agent-notice.js', () => ({ tellAgentAndWake: vi.fn() }));
+vi.mock('../../../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
 vi.mock('../../../wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn(async () => undefined) }));
+vi.mock('../../../../home.js', async () => {
+  const p = await import('node:path'); const o = await import('node:os');
+  const dir = p.join(process.env.DOJO_TEST_HOME_ROOT || o.tmpdir(), 'dojo-image-no-caption');
+  return { homeDir: (): string => dir, dojoDir: (...a: string[]): string => p.join(dir, '.dojo', ...a), isTestRun: (): boolean => true };
+});
+vi.mock('../../../effects/fs.js', () => ({ existsSync: () => true, mkdirSync: () => undefined, copyFileSync: () => undefined, statSync: () => ({ size: 3 }) }));
 vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 import { mediaHandlers } from '../media.js';
 import { sendResponseViaIMessage } from '../../../../services/imessage-bridge.js';
 import { tellAgentAndWake } from '../../../wake-with-notice.js';
+import { postAgentNotice } from '../../../agent-notice.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { generateImage } from '../../../../services/image-generation.js';
 
@@ -65,6 +72,7 @@ beforeEach(() => {
     INSERT INTO agents VALUES ('a1', 'idle', NULL);`);
   sendSpy.mockClear();
   vi.mocked(tellAgentAndWake).mockClear();
+  vi.mocked(postAgentNotice).mockClear();
   vi.mocked(insertMessageIfAbsent).mockClear();
   vi.mocked(generateImage).mockClear();
   hoisted.recipient = null;
@@ -100,5 +108,28 @@ describe('image_create failure', () => {
     expect(vi.mocked(tellAgentAndWake).mock.calls[0][0].brief).toContain('provider said no');
     expect(sendSpy).not.toHaveBeenCalled();
     expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();
+  });
+});
+
+describe('image_create success: no engine-written words in the agent\'s voice (P12/item 5)', () => {
+  const okImage = async () => {
+    const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+    const f = path.join(os.tmpdir(), `dojo-img-${Date.now()}.png`); fs.writeFileSync(f, 'png');
+    vi.mocked(generateImage).mockResolvedValueOnce({ ok: true, filePath: f, filename: 'x.png', sizeBytes: 3, latencyMs: 1, providerId: 'p', width: 1, height: 1, inputTokens: 0, outputTokens: 0 } as never);
+  };
+  it('posts the image with NO caption text, texts it with NO caption, and tells the agent it was delivered', async () => {
+    hoisted.recipient = '+15550100';
+    await okImage();
+    const attach = await import('../../../../services/imessage-bridge.js');
+    await call();
+    await vi.waitFor(() => expect(vi.mocked(insertMessageIfAbsent)).toHaveBeenCalled());
+    const row = vi.mocked(insertMessageIfAbsent).mock.calls[0][0] as { content: string; attachments?: string };
+    expect(row.content).toBe('');
+    expect(row.attachments).toBeTruthy();
+    await vi.waitFor(() => expect(vi.mocked(attach.sendIMessageWithAttachment)).toHaveBeenCalled());
+    expect(vi.mocked(attach.sendIMessageWithAttachment).mock.calls[0][2]).toBe('');
+    await vi.waitFor(() => expect(vi.mocked(postAgentNotice)).toHaveBeenCalled());
+    expect(vi.mocked(postAgentNotice).mock.calls[0][0].brief).toMatch(/delivered/i);
+    expect(vi.mocked(tellAgentAndWake)).not.toHaveBeenCalled();   // success never wakes (the 2026-06-09 re-generation loop)
   });
 });

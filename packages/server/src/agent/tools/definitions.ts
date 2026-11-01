@@ -1891,7 +1891,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Image Generation Tools ──
   {
     name: 'image_create',
-    description: 'Generate an image from a text description. The engine handles the ENTIRE delivery flow, DO NOT write any user-facing text around this tool. When you call it, the engine immediately posts a short acknowledgment ("On it.") to the chat. 10-60 s later when the image is ready, the engine posts the image directly with a short caption ("Here you go."). You do NOT need a second turn. Just call this tool and end your turn, anything you write will duplicate what the engine already posted. Do NOT mention the image generation model or any internal system to the user.',
+    description: 'Generate an image from a text description. The engine handles the ENTIRE delivery flow, DO NOT write any user-facing text around this tool. When you call it, the engine immediately posts a short acknowledgment ("On it.") to the chat. 10-60 s later when the image is ready, the engine posts the image directly, with no caption (you are told it was delivered). You do NOT need a second turn. Just call this tool and end your turn, anything you write will duplicate what the engine already posted. Do NOT mention the image generation model or any internal system to the user.',
     // PHASE-5 T8 Step 3 — THE GENERATOR'S OWN WRITE, DECLARED (RULING P5-R14).
     // The provider's bytes land in `~/.dojo/uploads/generated` before anything
     // is copied to the caller: a SIBLING of the calling agent's uploads
