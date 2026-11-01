@@ -85,6 +85,7 @@ const THE_DRIVER_CARRIES = [
   'toolPhaseEndedBySpinBrake',
   'toolLoopCapReached',
   'spinBrakeGraceCalls',
+  'mediaWordsStepOwed',   // proof-fix K: set by `execute` after a generator, read by `execute` and its tool door on the next iteration
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',
