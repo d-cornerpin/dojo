@@ -27,13 +27,15 @@ export function recordStalled(taskId: string, f: StalledFacts): void {
   appendWorkEvent(taskId, STALLED_EVENT, 'engine', f);
 }
 
-/** How the task's last turn ended, as its spine records it: the latest `continued`, `stalled` or
- *  `claim_turn` event (the plan's "previous turn's kind"), with its payload and when it was written.
- *  null when none. */
-export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled' | 'claim_turn'; payload: Record<string, unknown>; at: number } | null {
+/** How the task's last turn ended, as its spine records it: the latest `continued` or `stalled` event
+ *  (the plan's "previous turn's kind"), with its payload and when it was written. null when none.
+ *  ONLY those two: a `claim_turn` on a task (`work/task-turns.ts`) says a turn worked it, not how that
+ *  turn ended, and a turn that parked by another door or only noted the task must not hide the job's
+ *  last `continued` or the stall from the readers that ask "was the last end a continuation / a stall". */
+export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled'; payload: Record<string, unknown>; at: number } | null {
   const r = getDb().prepare(
-    `SELECT kind, payload, created_at AS at FROM work_events WHERE work_id = ? AND kind IN ('continued', 'stalled', 'claim_turn') ORDER BY id DESC LIMIT 1`,
-  ).get(taskId) as { kind: 'continued' | 'stalled' | 'claim_turn'; payload: string | null; at: number } | undefined;
+    `SELECT kind, payload, created_at AS at FROM work_events WHERE work_id = ? AND kind IN ('continued', 'stalled') ORDER BY id DESC LIMIT 1`,
+  ).get(taskId) as { kind: 'continued' | 'stalled'; payload: string | null; at: number } | undefined;
   if (!r) return null;
   let payload: Record<string, unknown> = {};
   try { payload = r.payload ? JSON.parse(r.payload) as Record<string, unknown> : {}; } catch { /* an unreadable payload reads as empty */ }

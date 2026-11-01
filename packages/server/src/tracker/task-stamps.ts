@@ -21,33 +21,13 @@ import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
 import { turnWorkIds, servedByNotice } from '../work/task-freshness.js';
+import { recordTurnOnTasks } from '../work/task-turns.js';
+import { relAgoFromNow, absInstant } from './task-stamp-time.js';
 // T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
 // never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
 
 const logger = createLogger('task-stamps');
-
-function relAgoFromNow(sqliteUtc: string | null): string {
-  if (!sqliteUtc) return '';
-  const ms = Date.parse(sqliteUtc.replace(' ', 'T') + 'Z');
-  if (!Number.isFinite(ms)) return '';
-  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (s < 60) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-/** The same fact with no clock in it: the recorded instant, minute precision, UTC. Pure in
- *  its argument, which is the whole point — see `renderTaskStamps`' header. */
-function absInstant(sqliteUtc: string | null): string {
-  if (!sqliteUtc) return '';
-  const ms = Date.parse(sqliteUtc.replace(' ', 'T') + 'Z');
-  if (!Number.isFinite(ms)) return '';
-  return `at ${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`;
-}
 
 /**
  * ⚠ UX-REPAIR ROUND 4 T19 (D7) — THE CHANNELS A SUMMARY MAY NAME WITHOUT LICENSING A CLOSE.
@@ -194,6 +174,8 @@ export function stampTasksAtTurnFinalize(input: {
     const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber);
     const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
     const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
+    // Which turns worked a task, on each task's own spine (`work/task-turns.ts`): the same served set, less a notice-only wake.
+    recordTurnOnTasks(input.agentId, input.turnNumber, [...carried, ...(woken || !input.servedTaskId ? [] : [input.servedTaskId])]);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
