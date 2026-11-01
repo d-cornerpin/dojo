@@ -8,7 +8,7 @@ import { createLogger } from '../logger.js';
 import { terminateAgent } from '../agent/spawner.js';
 import { writeAgentStatus } from '../agent/agent-status.js';
 import { getPrimaryAgentId, getPrimaryAgentName } from '../config/platform.js';
-import { dojoVoice, tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
+import { dojoVoice } from '../agent/dojo-voice.js';
 
 const logger = createLogger('imessage-commands');
 
@@ -65,10 +65,7 @@ function parseApproveDeny(trimmed: string): ApproveDenyCommand | null {
 export async function handleIMCommand(text: string, senderAddress: string): Promise<string | null> {
   const reply = await routeIMCommand(text, senderAddress);
   if (reply === null) return null;
-  // OR-ENGINE-LABELLED: the reply is the Dojo speaking, never the agent, and the agent is told exactly what was sent.
-  const labelled = dojoVoice(reply);
-  tellAgentWhatDojoSent({ agentId: getPrimaryAgentId(), recipient: senderAddress, text: labelled, why: 'in reply to the text command they sent' });
-  return labelled;
+  return dojoVoice(reply);   // OR-ENGINE-LABELLED: the Dojo speaking; the bridge tells the agent once the send is done
 }
 
 async function routeIMCommand(text: string, senderAddress: string): Promise<string | null> {

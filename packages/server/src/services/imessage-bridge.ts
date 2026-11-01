@@ -552,12 +552,11 @@ export function maybeSendBusyAck(agentId: string, sender: string): void {
   const key = canonicalContactAddress(sender);
   if (st.ackedSenders.has(key)) return; // at most once per sender per running turn
   st.ackedSenders.add(key);
-  // Attributed to the agent's lane (this agent is why the person is waiting); labelled Dojo, and the agent is told below.
+  // Attributed to the agent's lane (this agent is why the person is waiting); labelled Dojo; the agent is told once the send is done.
   void withOutboundAsyncIfAbsent(
     { agentId, tool: 'busy-ack', channel: 'imessage', recipientId: sender },
     () => sendIMessage(sender, BUSY_ACK_TEXT),
-  );
-  tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived' });
+  ).then((ok) => tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived', sent: ok === true }), () => tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived', sent: false }));
   // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying 'queued' — not an agent status, zero subscribers branch on it; Agents/Tracker wrote it into agent.status, blanking the working indicator mid-turn.
   // requirement preserved: the person is told by the busy-ack above, and the 30s status heartbeat re-asserts 'working' on the dashboard.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
@@ -853,7 +852,8 @@ export async function processInboundIMessage(
   if (cleanedText && !input.staleSentAtIso) {
     const commandResponse = await handleIMCommand(cleanedText, sender);
     if (commandResponse) {
-      await sendIMessage(sender, commandResponse);
+      const sentOk = await sendIMessage(sender, commandResponse);
+      tellAgentWhatDojoSent({ agentId: primaryId, recipient: sender, text: commandResponse, why: 'in reply to the text command they sent', sent: sentOk === true });
       return { outcome: 'command', reply: commandResponse, messageId: null };
     }
   }

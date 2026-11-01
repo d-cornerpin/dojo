@@ -36,7 +36,7 @@ describe('the busy auto-reply', () => {
     const sent = JSON.stringify(runMock.mock.calls[0]);
     expect(sent).toContain('Dojo: ');
     expect(sent).not.toContain('On it. I am');
-    expect(noticeMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(noticeMock).toHaveBeenCalledTimes(1));
     const n = noticeMock.mock.calls[0][0];
     expect(n.toAgentId).toBe(AGENT);
     expect(n.brief).toContain('Dojo: ');

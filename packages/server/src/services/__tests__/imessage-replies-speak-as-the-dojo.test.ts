@@ -64,15 +64,11 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('replies to text commands are labelled as the Dojo and the agent is told', () => {
-  it('resume: starts "Dojo:" and the primary agent is told the exact text and recipient', async () => {
+  it('resume: starts "Dojo:" (the agent is told later, after the send)', async () => {
     const reply = await handleIMCommand('resume', OWNER);
     expect(reply).toBe('Dojo: Agent resumed.');
-    expect(noticeMock).toHaveBeenCalledTimes(1);
-    const n = noticeMock.mock.calls[0][0];
-    expect(n.toAgentId).toBe('p1');
-    expect(n.brief).toContain('Dojo: Agent resumed.');
-    expect(n.brief).toContain(OWNER);
-    expect(n.intent).toBe('dojo_message_sent');
+    // the agent is told by the BRIDGE, only after the send succeeded (see imessage-dojo-message-told-after-send.test.ts)
+    expect(noticeMock).not.toHaveBeenCalled();
   });
 
   it('an approval with no match is the Dojo speaking, never "I"', async () => {

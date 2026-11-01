@@ -14,17 +14,19 @@ export function dojoVoice(text: string): string {
 }
 
 /**
- * Tell an agent, on its next turn, what the Dojo sent on its behalf: the exact text and the recipient.
+ * Tell an agent, on its next turn, what the Dojo sent on its behalf: the exact text and the recipient. Call it only AFTER the send; pass `sent: false` when it failed.
  * Best effort; never throws. A rider: it never starts a turn of its own.
  * @param why one short plain phrase for why the engine spoke instead of the agent
  */
-export function tellAgentWhatDojoSent(opts: { agentId: string; recipient: string; text: string; why: string }): void {
+export function tellAgentWhatDojoSent(opts: { agentId: string; recipient: string; text: string; why: string; sent?: boolean }): void {
   try {
     postAgentNotice({
       toAgentId: opts.agentId,
       fromName: 'Dojo message sent',
-      brief:
-        `The Dojo itself (not you) sent ${opts.recipient} this text, ${opts.why}: "${opts.text}". ` +
+      brief: opts.sent === false
+        ? `The Dojo itself (not you) tried to text ${opts.recipient} this, ${opts.why}, but the send FAILED and they did NOT get it: "${opts.text}". ` +
+          `If they need to know, tell them in your own words.`
+        : `The Dojo itself (not you) sent ${opts.recipient} this text, ${opts.why}: "${opts.text}". ` +
         `It was labelled as the Dojo. Do not repeat it or claim it as your own words; if the person needs more, follow up in your own words.`,
       intent: 'dojo_message_sent',
       selfIntro: false,
