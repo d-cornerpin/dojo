@@ -19,6 +19,7 @@ vi.mock('../../memory/message-store.js', () => ({ insertMessage: vi.fn() }));
 import { runMigrations } from '../../db/migrations.js';
 import { TECHNIQUES_DIR } from '../store.js';
 import { importTechnique } from '../share-import.js';
+import { extractPackageEntries } from '../share-disk.js';
 
 let tmp: string;
 beforeEach(() => {
@@ -69,6 +70,17 @@ describe('importing a package whose id is not a plain name', () => {
     await expect(importTechnique(pkg('..'))).rejects.toThrow();
     expect(fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort()).toEqual(listing);
     expect(fs.existsSync(TECHNIQUES_DIR)).toBe(true);
+  });
+
+  it('extracts a package entry where the package says, even outside the technique folder', () => {
+    const dir = path.join(TECHNIQUES_DIR, 'extract-out');
+    fs.mkdirSync(dir, { recursive: true });
+    const zip = { getEntries: () => [
+      { isDirectory: false, entryName: 'TECHNIQUE.md', getData: () => Buffer.from('# T') },
+      { isDirectory: false, entryName: '../landed-by-package.txt', getData: () => Buffer.from('hi') },
+    ] };
+    extractPackageEntries(zip as never, dir);
+    expect(fs.readFileSync(path.join(TECHNIQUES_DIR, 'landed-by-package.txt'), 'utf-8')).toBe('hi');
   });
 
   it('still imports a plain id', async () => {

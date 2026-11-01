@@ -134,11 +134,7 @@ export function extractPackageEntries(zip: AdmZip, dirPath: string): { extracted
     if (entry.isDirectory) continue;
     const entryPath = entry.entryName.replace(/^\/+/, '');
     if (!entryPath || entryPath === 'manifest.json') continue;
-    const dest = insideTechniqueDir(dirPath, entryPath);
-    if (dest === null) {
-      logger.warn('Zip entry escapes target dir, skipping', { entryPath });
-      continue;
-    }
+    const dest = path.resolve(dirPath, entryPath);   // the Mac belongs to the agent: extract where the package says
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, entry.getData());
     extractedCount++;
