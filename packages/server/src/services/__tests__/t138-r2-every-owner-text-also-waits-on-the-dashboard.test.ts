@@ -277,8 +277,58 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
     await sendsSettle();
     expectPaired(1);
-    expect(texts()[0]).toContain('[CRITICAL]');
+    expect(texts()[0]).toContain('Dojo: [CRITICAL] The box is nearly out of memory.');   // the label stays first
     expect(cards()[0]).toMatchObject({ error: 'The box is nearly out of memory. Close something.', severity: 'error' });
+  });
+});
+
+describe('OR-ENGINE-LABELLED at the owner-notice door: the text is the Dojo, and the agent is told what went out', () => {
+  /** The awareness notices handed to one agent's lane. */
+  const noticesTo = (agentId: string): string[] =>
+    broadcasts.filter((b) => b.type === 'interagent:message' && b.agentId === agentId)
+      .map((b) => String((b.message as { content: string }).content));
+
+  it('a text about an agent starts "Dojo:", the card keeps the bare words, and that agent is told exactly what was sent', async () => {
+    const { errors } = await boot();
+    let paused = false;
+    for (let i = 0; i < 10 && !paused; i++) paused = errors.recordError('ag');
+    await sendsSettle();
+    expect(texts()).toHaveLength(1);
+    expect(texts()[0]).toContain('Dojo: Helper has been paused after repeated errors.');
+    expect(cards()[0].error.startsWith('Helper has been paused')).toBe(true);
+    const told = noticesTo('ag');
+    expect(told).toHaveLength(1);
+    expect(told[0]).toContain('"Dojo: Helper has been paused after repeated errors.');
+    expect(told[0]).toContain('the owner');
+  });
+
+  it('a critical text about an agent keeps the label first and still tells that agent', async () => {
+    const { bridge } = await boot();
+    await bridge.sendAlert('Helper is stopped: out of credit.', 'critical', { agentId: 'ag' });
+    await sendsSettle();
+    expect(texts()[0]).toContain('Dojo: [CRITICAL] Helper is stopped: out of credit.');
+    expect(noticesTo('ag')[0]).toContain('"Dojo: [CRITICAL] Helper is stopped: out of credit."');
+  });
+
+  it('a platform alert about no agent tells the primary agent', async () => {
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', 'ag')").run();
+    const { bridge } = await boot();
+    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
+    await sendsSettle();
+    expect(noticesTo('ag')[0]).toContain('"Dojo: [CRITICAL] The box is nearly out of memory. Close something."');
+  });
+
+  it('a send that failed is told as failed; with no phone channel nothing was sent and nobody is told', async () => {
+    const { bridge } = await boot();
+    transportFails.on = true;
+    await bridge.sendAlert('Helper is stuck.', 'notice', { agentId: 'ag' });
+    await sendsSettle();
+    expect(noticesTo('ag')[0]).toContain('send FAILED');
+    broadcasts.length = 0;
+    setPhone(null);
+    await bridge.sendAlert('Helper is stuck again.', 'notice', { agentId: 'ag' });
+    await sendsSettle();
+    expect(noticesTo('ag')).toHaveLength(0);
   });
 });
 

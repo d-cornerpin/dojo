@@ -1,6 +1,6 @@
 # image_create
 
-Generate an image from a text description. **The engine owns the whole delivery flow. You write nothing around this call.** Call the tool, end your turn — the finished image arrives in the chat on its own, 10-60 seconds later, in its own message with its own caption.
+Generate an image from a text description. **The engine owns the delivery; the words are yours.** Call the tool and say your line in this turn — the finished image arrives in the chat on its own, 10-60 seconds later, in its own message with no caption.
 
 ## Parameters
 
@@ -13,11 +13,11 @@ Generate an image from a text description. **The engine owns the whole delivery 
 
 The engine writes no words in your voice: no acknowledgement and no caption.
 
-1. **The waiting ack is yours.** If a person is waiting, say ONE short line of your own before you end your turn ("making that now"). If you say nothing, the engine asks you to.
+1. **The words are yours, and they are what the person gets with the image.** Say ONE short line of your own in this turn ("making that now", or what you made it for). The engine adds nothing, so if you say nothing the person gets a bare picture.
 2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message: the image alone, with NO caption. You are told it was delivered, on your next turn; add your own words then only if they help. No model turn is involved in the delivery.
 3. **You get no second turn.** This is a fire-and-forget generator: the engine ends your tool phase the moment you call it. There is no later round in which you could present the image, and you do not need one.
 
-So: **one short line at most, before the call; nothing after it in this turn.** Do not describe the image, and do not announce it a second time ("here's your image") once it is delivered: that reads as the Dojo repeating itself. The tool result you get back says `End your turn now.` It means it.
+So: **one short line of your own in this turn.** Do not describe the image (you cannot see it), and do not announce it a second time ("here's your image") once it is delivered: that reads as the Dojo repeating itself.
 
 Never name the image model or any internal system to the user. As far as they are concerned, the Dojo made the image.
 
@@ -70,7 +70,7 @@ image_create(
 )
 ```
 
-Then end your turn. Nothing else.
+Then write your one line.
 
 ## Error cases
 

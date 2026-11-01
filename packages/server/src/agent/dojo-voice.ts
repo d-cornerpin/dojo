@@ -3,6 +3,7 @@
 // told exactly what was sent. This module is the one place both halves live.
 
 import { postAgentNotice } from './agent-notice.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 
 /** The label every engine-spoken message to a person starts with. */
 export const DOJO_VOICE_PREFIX = 'Dojo:';
@@ -32,6 +33,13 @@ export function tellAgentWhatDojoSent(opts: { agentId: string; recipient: string
       selfIntro: false,
     });
   } catch { /* awareness note is best-effort */ }
+}
+
+/** An owner-notice text went to the owner's phone: tell the agent it is about, or the primary agent when it is about none. */
+export function tellAgentOwnerAlertSent(aboutAgentId: string | undefined, text: string, sent: boolean): boolean {
+  const agentId = aboutAgentId ?? getPrimaryAgentId();
+  if (agentId) tellAgentWhatDojoSent({ agentId, recipient: 'the owner (by iMessage)', text, sent, why: aboutAgentId ? 'because it was about you and you could not say it yourself' : 'as a platform notice' });
+  return sent;
 }
 
 /** The Dojo posted `caption` with the agent's file(s) because the agent's turn ended early; tell the agent exactly that. */
