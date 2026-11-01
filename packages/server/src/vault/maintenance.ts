@@ -780,7 +780,7 @@ ${batchText}`;
 // for credentials, and USER.md (USER.md only for FUNDAMENTAL profile changes),
 // plus its own tracker bookkeeping. SOUL.md is engine-protected
 // (GLOBAL_FILE_WRITE_DENY) and never edited.
-const DREAMER_TOOLS_POLICY = JSON.stringify({
+export const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
     'vault_discard_archives', 'lesson_record',
