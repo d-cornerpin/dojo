@@ -8,18 +8,7 @@ import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } fr
 import { writeToolReceipt } from '../receipts/store.js';
 import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
 import { toRfc3339WithOffset } from '../services/rfc3339-offset.js';
-import { sendMarkedDraft, type DraftRecipients } from './send-as-draft.js';
-
-/** The recipients Graph put on the draft, as the note the agent reads (R4: always know who a message went to). Empty when Graph did not say. */
-function draftRecipientsNote(r: DraftRecipients | undefined): string {
-  if (!r || (r.to.length === 0 && r.cc.length === 0)) return '';
-  const cc = r.cc.length > 0 ? `; Cc: ${r.cc.join(', ')}` : '';
-  return `. To: ${r.to.join(', ')}${cc}`;
-}
-function draftRecipientsForReceipt(r: DraftRecipients | undefined): string | null {
-  const all = r ? [...r.to, ...r.cc] : [];
-  return all.length > 0 ? all.join(', ') : null;
-}
+import { sendMarkedDraft, draftRecipientsNote, draftRecipientsForReceipt } from './send-as-draft.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import { safeAttachmentName } from '../services/safe-attachment-name.js';
 import {

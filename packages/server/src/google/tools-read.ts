@@ -176,6 +176,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'drive_list',
+    advertisedNotDeclared: { trashed: "a Google Drive API query term (`trashed = true`) the description tells the model to put inside the `query` string, not a parameter of this tool" },
     description: 'List files in Google Drive. Files in the Trash are left out; add trashed = true to the query to search the Trash. Default returns one compact line per file (name + size + short type + id + date). For full mime types and timestamps on every result, pass verbose=true; for the content of ONE file, use drive_read(file_id).',
     effects: [],
     input_schema: {

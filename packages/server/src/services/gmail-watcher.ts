@@ -394,8 +394,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
         && getGmailSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr)));
       const content = mailNoticeContent({ provider: 'GMAIL', accountSuffix, account: notifyAccount, ownerName, kind, fromAddr, from, subject, date, snippet,
-        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail })
-        + await ownerEmailCommandNote(ownerMail);
+        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail }) + await ownerEmailCommandNote(ownerMail);
 
       const msgId = uuidv4();
       // P5: email conversation identity = provider + sender + THREAD, so two

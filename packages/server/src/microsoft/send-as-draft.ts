@@ -28,6 +28,17 @@ function shownRecipients(list: unknown): string[] {
   });
 }
 
+/** The recipients Graph put on the draft, as the note the agent reads (R4: always know who a message went to). Empty when Graph did not say. */
+export function draftRecipientsNote(r: DraftRecipients | undefined): string {
+  if (!r || (r.to.length === 0 && r.cc.length === 0)) return '';
+  const cc = r.cc.length > 0 ? `; Cc: ${r.cc.join(', ')}` : '';
+  return `. To: ${r.to.join(', ')}${cc}`;
+}
+export function draftRecipientsForReceipt(r: DraftRecipients | undefined): string | null {
+  const all = r ? [...r.to, ...r.cc] : [];
+  return all.length > 0 ? all.join(', ') : null;
+}
+
 /** Send a reply, reply-all or forward of message `messageId` (already URL-encoded) through a marked draft. Returns the failing step's result, or the send's. */
 export async function sendMarkedDraft(kind: 'reply' | 'replyAll' | 'forward', messageId: string, body: Record<string, unknown>, agentId: string, agentName: string, action: string, details: Record<string, unknown>, slot: string): Promise<SentResult> {
   const draftEndpoint = kind === 'forward' ? `me/messages/${messageId}/createForward` : kind === 'replyAll' ? `me/messages/${messageId}/createReplyAll` : `me/messages/${messageId}/createReply`;

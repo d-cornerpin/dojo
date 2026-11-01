@@ -370,7 +370,7 @@ interface CallSite { file: string; kind: 'read' | 'write' | 'fetch'; verb?: stri
 
 function findCallSites(file: string, fileText: string): CallSite[] {
   const sites: CallSite[] = [];
-  const re = /\b(msGraphRead|msGraphWrite|fetch)\s*\(/g;
+  const re = /\b(msGraphRead|readAllPages|msGraphWrite|fetch)\s*(?:<[^>()]*>)?\s*\(/g;   // readAllPages(firstEndpoint, ...) is msGraphRead walked page by page: same endpoint, same scope
   let m: RegExpExecArray | null;
   while ((m = re.exec(fileText))) {
     const name = m[1];
@@ -378,7 +378,7 @@ function findCallSites(file: string, fileText: string): CallSite[] {
     const afterClose = skipParens(fileText, openIdx);
     const inner = fileText.slice(openIdx + 1, afterClose - 1);
     const args = splitTopLevelArgs(inner);
-    if (name === 'msGraphRead' && args[0] !== undefined) {
+    if ((name === 'msGraphRead' || name === 'readAllPages') && args[0] !== undefined) {
       sites.push({ file, kind: 'read', endpointExprText: args[0], index: openIdx });
     } else if (name === 'msGraphWrite' && args[1] !== undefined) {
       const verbMatch = args[0]?.trim().match(/^['"]([A-Z]+)['"]$/);

@@ -7,7 +7,7 @@
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { stripHtmlTags } from '../agent/html-text.js';
-import { readAllPages } from './graph-pages.js';
+import { readAllPages, teamsBodyShown, type TeamsMessage } from './graph-pages.js';
 import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { conversationLine } from './outlook-conversation.js';
 
@@ -714,11 +714,6 @@ export async function searchMailForAccountMs(
 // unifiedCoverageNote encoded — a narrow result must never read as the whole
 // picture — is preserved, strictly better, by carrying the data itself.
 
-/** A Teams message body for the read result: cut at 500 characters, and a cut says so (P7: the agent must be able to tell it was shortened). */
-function teamsBodyShown(body: string): string {
-  return body.length > 500 ? `${body.slice(0, 500)}… [truncated; ${body.length} chars]` : body;
-}
-
 export async function executeMicrosoftReadTool(
   name: string,
   args: Record<string, unknown>,
@@ -903,7 +898,6 @@ export async function executeMicrosoftReadTool(
         agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
       slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
-
       const data = { value: result.value };
       if (data.value.length === 0) return `No events matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
@@ -1075,18 +1069,16 @@ export async function executeMicrosoftReadTool(
         return `Teams chats:\n\n${chats.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse teams_read_messages with a chat_id to read messages.`;
       }
 
-      type TeamsMsg = { id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string };
-      const result = await readAllPages<TeamsMsg>(
+      const result = await readAllPages<TeamsMessage>(
         `chats/${encodeURIComponent(chatId)}/messages?$top=${pageSize}&$orderby=createdDateTime desc`,
         agentId, agentName, 'teams_read_messages', { chatId, maxResults }, slot, maxResults,
       );
       if (!result.ok) return `Error reading Teams messages: ${result.error}`;
 
-      const data = { value: result.value };
-      if (data.value.length === 0) return 'No messages in this chat.';
+      if (result.value.length === 0) return 'No messages in this chat.';
 
       const { formatTimeForAgent: fmtTime6 } = await import('../services/format-time.js');
-      const messages = data.value.map(m => {
+      const messages = result.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = stripHtmlTags(body);
@@ -1295,17 +1287,15 @@ export async function executeMicrosoftReadTool(
       const maxResults = Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1);
       const pageSize = Math.min(maxResults, 50);
 
-      type ChannelMsg = { id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string };
-      const result = await readAllPages<ChannelMsg>(
+      const result = await readAllPages<TeamsMessage>(
         `teams/${teamId}/channels/${channelId}/messages?$top=${pageSize}`,
         agentId, agentName, 'teams_read_channel_messages', { teamId: args.team_id, channelId: args.channel_id, maxResults }, slot, maxResults,
       );
       if (!result.ok) return `Error reading channel messages: ${result.error}`;
 
-      const data = { value: result.value };
-      if (data.value.length === 0) return 'No messages in this channel.';
+      if (result.value.length === 0) return 'No messages in this channel.';
 
-      const messages = data.value.map(m => {
+      const messages = result.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = stripHtmlTags(body);
