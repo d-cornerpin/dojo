@@ -179,6 +179,8 @@ export interface SettlementContext {
    *  closed" record can never disagree. `setAnswerMessageId` keys on exactly this column. */
   rowid?: number | null;
   actorId?: string | null;
+  /** The agent NAMED this inherited ask answered (`kept` through the tracker door); the engine checks the receipt. */
+  inheritedKept?: true;
   /** JOIN MOMENT ONLY: the delivery the relay just recorded, when the caller holds one. It is
    *  still CHECKED here (delivered, this agent, not a chip, postdating `join_complete`) — the
    *  caller narrows the scope, the authority decides. */
@@ -403,24 +405,35 @@ const NOT_A_START_ACK =
   `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
                  AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
 
+/**
+ * EVERY delivery tool the ENGINE writes rather than the agent (review R4-1), re-derived from the outbound tool names:
+ * the start-ack, the join relay and its failed/late notices, the Dojo alert, the owner card and the owner's own close,
+ * the first-run welcome, the healer's approval prompt and the busy auto-reply. An unscoped door crossing is written as
+ * `<channel>-door` and is excluded by pattern in the read. None of them is the agent answering a person.
+ */
+export const ENGINE_SENT_TOOLS: ReadonlySet<string> = new Set([
+  ...NON_ANSWERING_DELIVERY_TOOLS, ...ENGINE_JOIN_RELAY_TOOLS, 'a2a-join-failed', 'a2a-join-late',
+  'alert', 'owner-card', 'owner-close', 'oobe-welcome', 'healer-approval', 'busy-ack',
+]);
+
 /** The `audit` marker the inherited-backlog park writes (`work/inherited-backlog.ts`). Declared here: the authority reads it. */
 export const INHERITED_BACKLOG_MARKER = 'inherited_backlog';
 
 /**
  * A REAL answer delivered in `conversationId` since `notBefore` (`deliveries.created_at` form), with NO turn match:
- * an answering tool, never an engine ack, a tool-call chip or a start-ack. ONE read, shared: the ledger remediation's
- * triage asks it (`ask-remediation.ts anyLaterRealDelivery`) and so does the inherited-ask close below.
+ * the agent's own delivery, never an engine-sent row, a tool-call chip or a start-ack. ONE read, shared: the ledger
+ * remediation's triage asks it (`ask-remediation.ts anyLaterRealDelivery`) and so does the agent-named inherited close.
  */
 export function realAnswerInConversationSince(
   agentId: string, conversationId: string | null, notBefore: string,
 ): { id: string; tool: string } | null {
   if (conversationId == null) return null;
-  const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
+  const excluded = [...ENGINE_SENT_TOOLS];
   return (getDb().prepare(
     `SELECT d.id AS id, d.tool AS tool FROM deliveries d
       WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
         AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
-        AND ${NOT_A_TOOL_CHIP} AND ${NOT_A_START_ACK}
+        AND d.tool NOT LIKE '%-door' AND ${NOT_A_TOOL_CHIP} AND ${NOT_A_START_ACK}
         AND d.created_at >= ?
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
@@ -672,11 +685,15 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   if (!ask) return out('unchanged', 'no such work row');
   if (ask.kind !== 'ask') return out('unchanged', `not an ask (kind=${ask.kind})`);
 
-  // ── proof-fix-f R3-1(a): AN INHERITED ASK CLOSES ON A LATE REAL ANSWER IN ITS OWN CONVERSATION. ──
-  // Parked `blocked` on the version boundary (owed, not auto-served), its claiming turn is dead, so the
-  // turn-bound evidence below can never match; a real answer delivered in its conversation after the park can.
-  const parkedAt = ask.state === 'blocked' && ctx.at === 'delivery' ? inheritedParkedAt(workId) : null;
-  if (parkedAt !== null) {
+  // ── proof-fix-f R3-1(a), R4-1: AN INHERITED ASK CLOSES ONLY WHEN THE AGENT NAMES IT. ──
+  // Parked `blocked` on the version boundary (owed, not auto-served), its claiming turn is dead, so the turn-bound
+  // evidence below can never match. A conversation-wide close let ANY later reply — the notice turn's own bubble,
+  // an answer to a newer question — mark it answered. So nothing closes it on its own: the agent says `kept`
+  // (`work/inherited-backlog.ts inheritedAskDoor`), and the engine closes it only on a real delivery it can point
+  // at, in that ask's conversation, since the park (G6: assert only what the record shows).
+  const parkedAt = ask.state === 'blocked' && ctx.inheritedKept === true ? inheritedParkedAt(workId) : null;
+  if (ctx.inheritedKept === true) {
+    if (parkedAt === null) return out('unchanged', 'not an inherited owed ask');
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, parkedAt);
     if (!late) return out('unchanged', 'inherited and owed: no real answer in its conversation since it was parked');
     const r = transition(workId, {
@@ -1369,13 +1386,8 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
       WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed'
         AND claimed_by_turn = ? AND conversation_id = ?`,
   ).all(p.agentId, p.turnNumber, p.conversationId) as Array<{ id: string }>;
-  // proof-fix-f R3-1(a): and the inherited asks parked owed in this conversation (the arm in `settleAsk` decides).
-  const inherited = getDb().prepare(
-    `SELECT w.id FROM work w WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'blocked' AND w.conversation_id = ?
-        AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'audit' AND json_extract(e.payload, '$.marker') = ?)`,
-  ).all(p.agentId, p.conversationId, INHERITED_BACKLOG_MARKER) as Array<{ id: string }>;
   let closed = 0;
-  for (const r of [...rows, ...inherited]) {
+  for (const r of rows) {
     const s = settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'delivery' });
     if (s.verdict === 'closed') closed++;
   }

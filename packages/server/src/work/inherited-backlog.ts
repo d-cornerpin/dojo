@@ -22,7 +22,7 @@ import { createLogger } from '../logger.js';
 import { appendWorkEvent, dismissCommitment, transition } from './store.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { ageInWords } from './hand-back-facts.js';
-import { INHERITED_BACKLOG_MARKER } from './ask-settlement.js';
+import { INHERITED_BACKLOG_MARKER, settleAsk } from './ask-settlement.js';
 export { INHERITED_BACKLOG_MARKER };
 
 const logger = createLogger('inherited-backlog');
@@ -108,13 +108,15 @@ function tellAgentOwed(agentId: string, owed: Inherited[]): void {
     content: `[SOURCE: AGENT NOTICE from Dojo] After this update the Dojo found ${owed.length} message(s) an older version left `
       + `unanswered, now held owed and NOT answered automatically: ${owed.map((o) => `[${o.id}]`).join(', ')}. `
       + 'Who sent each and what it says is listed for you on this turn. '
-      + 'Decide which still matter. To answer one, reply in its own conversation and say plainly the reply is late: it closes '
-      + 'itself when your answer is delivered there. If one no longer needs an answer, call work_close_request with its id, '
-      + 'disposition "dropped" and your reason as the note. The Dojo has sent nothing to anyone.',
+      + `Decide which still matter, and settle each one: ${SETTLE_BOTH_WAYS} (say plainly that a reply is late). `
+      + 'Nothing closes them on its own. The Dojo has sent nothing to anyone.',
   });
 }
 
 export const INHERITED_NOTICE_INTENT = 'owed_messages_inherited';
+
+/** The two honest ways out, in the words the notice and every refusal use (review R4-1). */
+const SETTLE_BOTH_WAYS = 'answer it in its own conversation, then call work_close_request(<id>, kept); or dropped with your reason';
 
 /** The list for the turn a notice row drives: each ask it names that is still owed — who, conversation, age, words. */
 export function inheritedOwedListFor(noticeContent: string): string | null {
@@ -154,11 +156,15 @@ function isInheritedOwed(workId: string): boolean {
 export function inheritedAskDoor(workId: string, disposition: string, note: string | null, agentId: string):
 { content: string; isError: boolean } | null {
   if (!isInheritedOwed(workId)) return null;
-  if (disposition !== 'dropped') {
-    return { isError: true, content: `Not closed: ${workId} is a message an older version left unanswered. It closes itself the moment you `
-      + 'deliver a real answer in its own conversation. If it no longer needs an answer, call work_close_request with '
-      + 'disposition "dropped" and your own reason as the note.' };
+  if (disposition === 'kept') {
+    // Review R4-1: the agent names it; the engine closes it only on a real delivery of the agent's own in that ask's
+    // conversation since the park, and that delivery is the receipt. Nothing else closes it.
+    const v = settleAsk(workId, { agentId, actorId: agentId, turnNumber: null, at: 'delivery', inheritedKept: true });
+    if (v.verdict === 'closed') return { isError: false, content: `[OK] Closed: ${workId} — answered late, on your delivery ${v.deliveryId}.` };
+    return { isError: true, content: `Not closed: nothing you delivered in ${workId}'s own conversation since it was held owed. `
+      + `${SETTLE_BOTH_WAYS}.` };
   }
+  if (disposition !== 'dropped') return { isError: true, content: `Not closed: ${workId} is an inherited message. ${SETTLE_BOTH_WAYS}.` };
   if (!note) {
     return { isError: true, content: `Not dropped: pass \`note\` with your own reason why ${workId} no longer needs an answer. `
       + 'It goes on the record as your judgement (nobody called it off).' };

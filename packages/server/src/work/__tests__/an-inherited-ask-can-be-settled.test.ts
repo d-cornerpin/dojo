@@ -40,7 +40,7 @@ vi.mock('../../tracker/pm-agent.js', async (importOriginal) => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertMessageIfAbsent } from '../../memory/message-store.js';
-import { askIdForMessage, claimAsk, stampClaimingTurn, transition } from '../store.js';
+import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { recordDelivery } from '../../agent/v2/deliveries.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
@@ -96,29 +96,62 @@ beforeEach(() => {
 });
 afterEach(() => { endTurnContext(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
-describe('(a) a late real answer in its own conversation closes it', () => {
-  it('a delivered answer after the park closes the inherited ask on that delivery, with no claiming-turn match', () => {
-    const id = deliverFromALiveTurn('conv-a');
-    expect(row('m-old')).toEqual({ state: 'done', result_delivery_id: id });
-  });
-
-  it('the usual exclusions hold: an engine ack, a tool-call chip, or another conversation closes nothing', () => {
-    deliverFromALiveTurn('conv-a', { tool: 'engine-ack' });
-    insertMessageIfAbsent({ id: 'chip-1', agentId: AGENT, role: 'assistant', turnNumber: 60,
-      content: JSON.stringify([{ type: 'tool_use', id: 'x', name: 'file_read', input: {} }]) } as never);
-    deliverFromALiveTurn('conv-a', { messageId: 'chip-1' });
-    deliverFromALiveTurn('conv-b');
+describe('(a) nothing closes an inherited ask on its own (review R4-1): a reply is not an answer to THAT message', () => {
+  it('an unrelated reply in the same conversation leaves it owed', () => {
+    deliverFromALiveTurn('conv-a');
     expect(row('m-old').state).toBe('blocked');
   });
 
-  it('NEGATIVE CONTROL: a blocked ask that was NOT inherited (a stood-down re-serve) is not closed this way', () => {
-    insertMessage({
-      id: 'm-held', agentId: AGENT, role: 'user', content: 'Another question', lane: 'owner', channel: 'dashboard',
-      senderId: 'owner', authorized: true, conversationId: 'conv-a', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
-    } as never);
-    expect(transition(askIdForMessage('m-held'), { to: 'blocked', by: 'agent', actorId: 'test', reason: 'stood down (test)' }).kind).toBe('applied');
-    deliverFromALiveTurn('conv-a');
-    expect(row('m-held').state).toBe('blocked');
+  it('the notice turn\'s own bubble closes nothing', () => {
+    // The notice drives an engine turn whose reply bubble lands in the owner's dashboard conversation.
+    endTurnContext(AGENT);
+    const t = openTurnContext(AGENT);
+    t.turnNumber = 61;
+    t.root = { kind: 'engine', id: 'notice-row', sourceMessageId: 'notice-row', conversationId: null } as never;
+    recordDelivery({ agentId: AGENT, tool: 'dashboard', channel: 'dashboard', conversationId: 'conv-a', outcome: 'delivered' });
+    endTurnContext(AGENT);
+    expect(row('m-old').state).toBe('blocked');
+  });
+
+  it('an engine relay, a failure notice or any engine-sent row closes nothing, and is no receipt for kept', async () => {
+    for (const tool of ['a2a-join-relay', 'a2a-join-failed', 'a2a-join-late', 'engine-ack', 'alert', 'busy-ack', 'imessage-door']) {
+      deliverFromALiveTurn('conv-a', { tool });
+    }
+    expect(row('m-old').state).toBe('blocked');
+    const r = await closeRequest({ id: askIdForMessage('m-old'), disposition: 'kept' });
+    expect(r.isError, 'an engine-sent row is not the agent answering').toBe(true);
+    expect(row('m-old').state).toBe('blocked');
+  });
+});
+
+describe('(a) the agent names it: kept closes it on the real delivery it can point at', () => {
+  it('kept with no real delivery in its conversation since the park is refused, and it stays owed', async () => {
+    const r = await closeRequest({ id: askIdForMessage('m-old'), disposition: 'kept' });
+    expect(r.isError).toBe(true);
+    expect(r.content).toMatch(/answer it in its own conversation, then call work_close_request/);
+    expect(row('m-old').state).toBe('blocked');
+  });
+
+  it('kept after a real answer in its own conversation closes it, that delivery as its receipt', async () => {
+    const id = deliverFromALiveTurn('conv-a');
+    const r = await closeRequest({ id: askIdForMessage('m-old'), disposition: 'kept' });
+    expect(r.isError).toBeFalsy();
+    expect(row('m-old')).toEqual({ state: 'done', result_delivery_id: id });
+  });
+
+  it('a delivery in ANOTHER conversation is no receipt for it', async () => {
+    deliverFromALiveTurn('conv-b');
+    const r = await closeRequest({ id: askIdForMessage('m-old'), disposition: 'kept' });
+    expect(r.isError).toBe(true);
+    expect(row('m-old').state).toBe('blocked');
+  });
+
+  it('a tool-call chip is no receipt for it', async () => {
+    insertMessageIfAbsent({ id: 'chip-1', agentId: AGENT, role: 'assistant', turnNumber: 60,
+      content: JSON.stringify([{ type: 'tool_use', id: 'x', name: 'file_read', input: {} }]) } as never);
+    deliverFromALiveTurn('conv-a', { messageId: 'chip-1' });
+    const r = await closeRequest({ id: askIdForMessage('m-old'), disposition: 'kept' });
+    expect(r.isError).toBe(true);
   });
 });
 
@@ -141,21 +174,13 @@ describe('(b) the agent may stand it down with its own reason, recorded as its j
     expect(row('m-old').state).toBe('blocked');
   });
 
-  it('kept is refused truthfully: it names both ways this ask can be settled', async () => {
-    const r = await closeRequest({ id: askIdForMessage('m-old'), disposition: 'kept' });
-    expect(r.isError).toBe(true);
-    expect(r.content, 'the generic refusal is false for an inherited ask').not.toMatch(/there is nothing to call here/);
-    expect(r.content).toMatch(/its own conversation/);
-    expect(r.content).toMatch(/dropped/);
-  });
 });
 
 describe('the one notice names each ask and both ways to settle it', () => {
-  it('lists each ask id, and says answering closes it while dropped-with-a-reason stands it down', () => {
+  it('lists each ask id, and names both ways: kept after answering, or dropped with a reason', () => {
     const n = (db().prepare("SELECT content FROM messages WHERE agent_id = ? AND origin_intent = 'owed_messages_inherited'").all(AGENT) as Array<{ content: string }>);
     expect(n).toHaveLength(1);
     expect(n[0].content).toContain(askIdForMessage('m-old'));
-    expect(n[0].content).toMatch(/closes itself/);
-    expect(n[0].content).toMatch(/work_close_request/);
+    expect(n[0].content).toMatch(/answer it in its own conversation, then call work_close_request\(<id>, kept\); or dropped with your reason/);
   });
 });
