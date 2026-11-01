@@ -66,3 +66,16 @@ describe('decodeHtmlEntities — every numeric and the standard named entities, 
     expect(stripHtmlTags('<p>caf&eacute; &#65;</p>')).toBe('café A');
   });
 });
+
+describe('decodeHtmlEntities — numeric references 128-159 are Windows-1252, control characters stay written', () => {
+  it('maps the 1252 range the way browsers do', async () => {
+    const { decodeHtmlEntities } = await import('../html-text.js');
+    expect(decodeHtmlEntities('it&#146;s &#150; &#147;ok&#148; &#128;5 &#133;')).toBe('it\u2019s \u2013 \u201cok\u201d \u20ac5 \u2026');
+    expect(decodeHtmlEntities('&#x92;')).toBe('\u2019');
+  });
+  it('the five undefined slots and other control characters are left as written; tab and newline decode', async () => {
+    const { decodeHtmlEntities } = await import('../html-text.js');
+    expect(decodeHtmlEntities('&#129; &#141; &#27; &#127; &#x1B;')).toBe('&#129; &#141; &#27; &#127; &#x1B;');
+    expect(decodeHtmlEntities('a&#9;b&#10;c')).toBe('a\tb\nc');
+  });
+});

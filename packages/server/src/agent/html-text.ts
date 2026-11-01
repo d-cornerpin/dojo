@@ -40,16 +40,26 @@ const NAMED_ENTITIES: Record<string, string> = (() => {
   return t;
 })();
 
+/** Numeric references 128-159 mean the Windows-1252 characters, as browsers read them (old Outlook/Word HTML writes `&#146;` for an apostrophe). The five slots 1252 leaves undefined are not listed. */
+const WINDOWS_1252: Record<number, number> = {
+  128: 0x20ac, 130: 0x201a, 131: 0x192, 132: 0x201e, 133: 0x2026, 134: 0x2020, 135: 0x2021, 136: 0x2c6, 137: 0x2030, 138: 0x160,
+  139: 0x2039, 140: 0x152, 142: 0x17d, 145: 0x2018, 146: 0x2019, 147: 0x201c, 148: 0x201d, 149: 0x2022, 150: 0x2013, 151: 0x2014,
+  152: 0x2dc, 153: 0x2122, 154: 0x161, 155: 0x203a, 156: 0x153, 158: 0x17e, 159: 0x178,
+};
+
 /**
  * Decode HTML character references in ONE pass, so a decoded value is never decoded again
  * (`&amp;lt;` stays `&lt;`). Handles every decimal (`&#39;`) and hex (`&#x27;`) reference that names a real
- * character, and the HTML 4 named set. An unknown name, or a number that is not a character, is left as written.
+ * character (128-159 as Windows-1252), and the HTML 4 named set. An unknown name, a control character other than tab, newline
+ * and carriage return, or a number that is not a character, is left as written.
  */
 export function decodeHtmlEntities(text: string): string {
   return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,9}));/g, (match, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
     if (name !== undefined) return NAMED_ENTITIES[name] ?? match;
     const cp = dec !== undefined ? parseInt(dec, 10) : parseInt(hex as string, 16);
-    if (cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return match;
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return match;
+    if (cp >= 128 && cp <= 159 && WINDOWS_1252[cp] !== undefined) return String.fromCodePoint(WINDOWS_1252[cp]);
+    if (cp < 32 ? (cp !== 9 && cp !== 10 && cp !== 13) : (cp >= 127 && cp <= 159)) return match;
     return String.fromCodePoint(cp);
   });
 }

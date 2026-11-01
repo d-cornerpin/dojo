@@ -85,3 +85,14 @@ describe('doubt 3: a bottom-posted reply', () => {
     expect(extractOwnGmailText(plain('Fwd'))).toBe('Fwd\n> blah\nYes, close it.');
   });
 });
+
+describe('an impossible numeric reference in the mail cannot crash the reader', () => {
+  it('&#99999999; in the plain part is just text; the cut still works', () => {
+    const tree = alternative('Fine &#99999999; &#xD800; ok\n\nLe lun. a \u00e9crit :\nq', '<div>Fine &#99999999; &#xD800; ok</div><div class="gmail_quote">q</div>');
+    expect(extractOwnGmailText(tree)).toBe('Fine &#99999999; &#xD800; ok');
+  });
+  it('numeric and named entities still compare equal across the two parts', () => {
+    const tree = alternative('Caf&#233; &#x26; it&#146;s\n\nLe lun. a \u00e9crit :\nq', '<div>Caf&eacute; &amp; it&rsquo;s</div><div class="gmail_quote">q</div>');
+    expect(extractOwnGmailText(tree)).toBe('Caf\u00e9 & it\u2019s');   // the comparison matched, so the cut is taken (the html head, decoded)
+  });
+});
