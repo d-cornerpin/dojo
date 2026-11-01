@@ -217,3 +217,22 @@ describe('the hand-back carries the message\'s real age — no timer decides its
     expect(noticesToAgent().some((c) => c.includes('handed back'))).toBe(false);
   });
 });
+
+describe('a send the process died inside is "may have been delivered", never silently re-sent', () => {
+  it('hands the message back saying a reply may already have reached the person, by which channel, with what text', () => {
+    ownerAskClaimedBy(7);
+    // The intent the outbound scope writes BEFORE an outside send; the door never came back.
+    db().prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, conversation_id, outcome, detail)
+       VALUES ('d-maybe', ?, 7, 'auto-route', 'imessage', '+15550000', 'conv-1', 'pending', 'The roof quote is fine.')`,
+    ).run(AGENT);
+    restart();
+    expect(askOf('m-1').state, 'not closed: nobody knows it arrived').toBe('open');
+    const notice = noticesToAgent().find((c) => c.includes('handed back'))!;
+    expect(notice).toMatch(/may already have reached/);
+    expect(notice).toContain('imessage');
+    expect(notice).toContain('+15550000');
+    expect(notice).toContain('The roof quote is fine.');
+    expect(notice).toMatch(/check/i);
+  });
+});

@@ -47,14 +47,45 @@ export interface DeliveryInput {
   messageId?: string | null;
   receiptId?: string | null;
   /** `owner_closed` is NOT a send and never claims to be one — see
-   *  `recordOwnerCloseReceipt` below for the whole argument. */
-  outcome: 'delivered' | 'suppressed' | 'failed' | 'held' | 'owner_closed';
+   *  `recordOwnerCloseReceipt` below for the whole argument. `pending` is an outside send's
+   *  INTENT, written before its transport runs (`agent/v2/delivery-intent.ts`). */
+  outcome: 'delivered' | 'suppressed' | 'failed' | 'held' | 'owner_closed' | 'pending';
   detail?: string | null;
   /** Explicit conversation identity. Auto-route/ack replies go to the TURN's
    *  own conversation (the turn root carries it exactly); pass it and no
    *  resolution happens. Omit for cross-conversation explicit sends, where
    *  the recipient's conversation resolves from channel + recipient. */
   conversationId?: string | null;
+}
+
+/** The RECIPIENT's conversation row: same identity the inbound producers stamp, so a send and the
+ *  reply it provokes land on one conversation. Dashboard/voice deliveries belong to the owner's
+ *  per-agent conversation. */
+export function conversationFor(input: DeliveryInput): string | null {
+  let conversationId: string | null = input.conversationId ?? null;
+  if (conversationId !== null) {
+    // explicit identity from the caller; nothing to resolve
+  } else if (input.channel === 'dashboard' || input.channel === 'voice') {
+    conversationId = resolveOrCreateConversation(input.agentId, {
+      channel: input.channel, provider: null, counterpartyId: 'owner', threadRoot: null,
+    });
+  } else if (input.channel === 'none' || input.channel === 'a2a') {
+    // The peer lane has no `conversations` row and must not mint one: conversation identity
+    // is a HUMAN counterparty fact (party labels, recall scoping, the waiting set all read
+    // it), and inventing an a2a conversation would put coordination traffic inside it.
+    // `none` is here for the same reason from the other direction: nothing crossed a door,
+    // so there is no counterparty to resolve and minting a conversation would invent one.
+    conversationId = null;
+  } else if (input.recipientId) {
+    conversationId = resolveOrCreateConversation(input.agentId, {
+      channel: input.channel,
+      provider: input.provider ?? (input.channel === 'imessage' ? 'imessage' : null),
+      counterpartyId: input.recipientId,
+      counterpartyName: input.recipientDisplay ?? null,
+      threadRoot: input.threadRoot ?? null,
+    });
+  }
+  return conversationId;
 }
 
 /**
@@ -83,32 +114,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
     const db = getDb();
     const id = uuidv4();
     return withUnit((): LedgerOutcome => {
-      // The RECIPIENT's conversation row: same identity the inbound producers
-      // stamp, so a send and the reply it provokes land on one conversation.
-      // Dashboard/voice deliveries belong to the owner's per-agent conversation.
-      let conversationId: string | null = input.conversationId ?? null;
-      if (conversationId !== null) {
-        // explicit identity from the caller; nothing to resolve
-      } else if (input.channel === 'dashboard' || input.channel === 'voice') {
-        conversationId = resolveOrCreateConversation(input.agentId, {
-          channel: input.channel, provider: null, counterpartyId: 'owner', threadRoot: null,
-        });
-      } else if (input.channel === 'none' || input.channel === 'a2a') {
-        // The peer lane has no `conversations` row and must not mint one: conversation identity
-        // is a HUMAN counterparty fact (party labels, recall scoping, the waiting set all read
-        // it), and inventing an a2a conversation would put coordination traffic inside it.
-        // `none` is here for the same reason from the other direction: nothing crossed a door,
-        // so there is no counterparty to resolve and minting a conversation would invent one.
-        conversationId = null;
-      } else if (input.recipientId) {
-        conversationId = resolveOrCreateConversation(input.agentId, {
-          channel: input.channel,
-          provider: input.provider ?? (input.channel === 'imessage' ? 'imessage' : null),
-          counterpartyId: input.recipientId,
-          counterpartyName: input.recipientDisplay ?? null,
-          threadRoot: input.threadRoot ?? null,
-        });
-      }
+      const conversationId = conversationFor(input);
       const root = turnContext(input.agentId)?.root;
       db.prepare(`
         INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display,

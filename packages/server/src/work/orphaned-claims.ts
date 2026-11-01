@@ -18,7 +18,9 @@
 //   * it did not answer -> the ask goes back to the agent, with a notice saying when it arrived
 //     and naming, from the ledger, every effect the dead turn had already made so the agent
 //     does not repeat it. P6b's boot HOLD is retired here: it left the message `claimed` for
-//     ever, and the agent can act (coordinator ruling on proof-fix-f, under OR-ENGINE-LABELLED);
+//     ever, and the agent can act (coordinator ruling on proof-fix-f, under OR-ENGINE-LABELLED).
+//     A send it had begun on an outside channel with no door verdict (a `pending` intent row)
+//     is named as "may already have reached the person", so the agent checks, never re-sends blind;
 //   * it closed the ask and then DELEGATED under it (SWEEP-A TB3's crash window) -> handed back
 //     through the authority so the join's nets have something to catch.
 // Each row is adjudicated once: the first look moves it out of the state the queries select.
@@ -85,6 +87,18 @@ function effectsOf(agentId: string, turnNumber: number | null): DeadTurnEffect[]
     .map((c) => ({ name: c.name, input: c.input, finished: results.has(c.id) }));
 }
 
+/** A send the dead turn had begun on an outside channel and no door ever answered for: the intent row
+ *  (`outcome='pending'`, `agent/v2/deliveries.ts`). It may have reached the person. */
+interface MaybeSent { channel: string; recipient: string | null; text: string | null }
+
+function maybeSentBy(agentId: string, turnNumber: number | null): MaybeSent[] {
+  if (turnNumber == null) return [];
+  return getDb().prepare(
+    `SELECT channel, COALESCE(recipient_display, recipient_id) AS recipient, detail AS text FROM deliveries
+      WHERE agent_id = ? AND turn_number = ? AND outcome IN ('pending') ORDER BY rowid`,
+  ).all(agentId, turnNumber) as MaybeSent[];
+}
+
 function describeEffect(e: DeadTurnEffect): string {
   const args = e.input && typeof e.input === 'object'
     ? redactDeclaredSecretArgs(e.name, e.input as Record<string, unknown>) : e.input;
@@ -94,7 +108,7 @@ function describeEffect(e: DeadTurnEffect): string {
 
 /** The agent is told, on the turn that serves it again, why it has this message back, how old it is,
  *  and exactly what the dead turn had already done. */
-function tellAgentHandedBack(o: Orphan, effects: DeadTurnEffect[]): void {
+function tellAgentHandedBack(o: Orphan, effects: DeadTurnEffect[], maybe: MaybeSent[]): void {
   const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
   const when = o.received_at != null
     ? `received ${formatTimeForAgent(o.received_at)} (${ageInWords(Date.now() - o.received_at)} ago)`
@@ -102,12 +116,16 @@ function tellAgentHandedBack(o: Orphan, effects: DeadTurnEffect[]): void {
   const done = effects.length === 0 ? ''
     : ` Before it stopped, that turn had already done this, and it is on the record: ${effects.map((e, i) => `(${i + 1}) ${describeEffect(e)}`).join('; ')}. `
       + 'Do not repeat any of it: finish only what is left, and tell the person what was already done.';
+  const sent = maybe.length === 0 ? ''
+    : ` A reply may already have reached the person: the run stopped in the middle of sending ${maybe.map((m) =>
+      `by ${m.channel}${m.recipient ? ` to ${m.recipient}` : ''}${m.text ? `: "${m.text.slice(0, 300)}"` : ''}`).join('; and ')}. `
+      + 'Check whether it arrived before you answer again, and do not send the same thing twice.';
   postAgentNotice({
     toAgentId: o.agent_id, fromName: 'Dojo', selfIntro: false,
     brief: `Your turn ${o.turn_number ?? '(unrecorded)'} stopped before it answered (the Dojo restarted or that run `
       + `stopped responding), so the message it was answering is handed back to you: "${snippet}", ${when}. `
       + 'Answer it now. If it is old, judge whether it still matters and say what has changed rather than acting on it blindly.'
-      + done,
+      + done + sent,
   });
 }
 
@@ -115,14 +133,16 @@ function tellAgentHandedBack(o: Orphan, effects: DeadTurnEffect[]): void {
  *  the notice names them). Returns whether the row moved. */
 function reArm(o: Orphan, by: string): boolean {
   const effects = effectsOf(o.agent_id, o.turn_number);
+  const maybe = maybeSentBy(o.agent_id, o.turn_number);
   const acted = effects.length > 0 || o.effectful_calls > 0;
   const res = transition(o.id, {
     to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed',
     reason: `${by}: the claiming turn died with its process before it answered`
-      + (acted ? ` (it had already made ${Math.max(effects.length, o.effectful_calls)} effectful call(s); the hand-back names them)` : ''),
+      + (acted ? ` (it had already made ${Math.max(effects.length, o.effectful_calls)} effectful call(s); the hand-back names them)` : '')
+      + (maybe.length > 0 ? ` (${maybe.length} outside send(s) may have been delivered; the hand-back says so)` : ''),
   });
   if (res.kind !== 'applied') return false;
-  tellAgentHandedBack(o, effects);
+  tellAgentHandedBack(o, effects, maybe);
   return true;
 }
 

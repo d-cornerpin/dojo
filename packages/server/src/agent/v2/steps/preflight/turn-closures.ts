@@ -389,7 +389,7 @@ export function runTurnClosures(
         const { sendResponseViaIMessage } = await import('../../../../services/imessage-bridge.js');
         const delivered = await withOutboundAsync(
           {
-            agentId, tool: 'engine-ack', channel: 'imessage',
+            agentId, tool: 'engine-ack', channel: 'imessage', text,
             recipientId: counterparty.senderId,
             conversationId: turnCtx.root?.conversationId ?? null,
           },
@@ -420,7 +420,7 @@ export function runTurnClosures(
         const { executeTool } = await import('../../../tools/index.js');
         const result = await withOutboundAsync(
           {
-            agentId, tool: 'engine-ack', channel: 'teams',
+            agentId, tool: 'engine-ack', channel: 'teams', text,
             recipientId: chatId, threadRoot: chatId,
             conversationId: turnCtx.root?.conversationId ?? null,
           },
@@ -441,7 +441,7 @@ export function runTurnClosures(
         if (session && !session.isEnded()) {
           await withOutboundAsync(
             {
-              agentId, tool: 'engine-ack', channel: 'phone',
+              agentId, tool: 'engine-ack', channel: 'phone', text,
               recipientId: turnCtx.state!.inboundContext.phoneFromNumber ?? counterparty.senderId ?? null,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
@@ -460,7 +460,7 @@ export function runTurnClosures(
           // as the end-of-turn SMS reply does in `finalize/channel-push.ts`.
           const sent = await withOutboundAsync(
             {
-              agentId, tool: 'engine-ack', channel: 'sms', recipientId: smsTo,
+              agentId, tool: 'engine-ack', channel: 'sms', recipientId: smsTo, text,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
             () => sendSms(smsTo, text, fromNumber),

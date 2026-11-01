@@ -31,14 +31,16 @@
 // while an ALS store travels with the async work that created it.
 // ════════════════════════════════════════════════════════════════════════════════
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { channelOfSendTool, type WsEvent } from '@dojo/shared';
+import type { WsEvent } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { turnContext } from '../turn-context.js';
 import { linkArtifactsToDelivery } from '../pending-attachments.js';
 import { recordDelivery, type DeliveryInput } from './deliveries.js';
+import { resolvePendingDelivery, dropPendingDelivery } from './delivery-intent.js';
 import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
 export { recordedId, deliveryIdOf } from './delivery-outcome.js';
+export { outboundChannelForTool, outboundRecipientForTool, outboundIntentForTool } from './outbound-tool-identity.js';
 
 const logger = createLogger('outbound');
 
@@ -66,6 +68,8 @@ export interface OutboundIntent {
    *  and recipient exactly as it always has. */
   conversationId?: string | null;
   messageId?: string | null;
+  /** What is being sent, as the person would read it — kept on an outside send's intent row. */
+  text?: string | null;
 }
 
 /** What a door observed. The door owns the outcome; everything else is a fallback used only
@@ -92,13 +96,32 @@ interface OutboundScope {
   receiptId: string | null;
   /** Any door in this scope reported a failure. */
   failed: boolean;
+  /** `deliveryId` is still the INTENT row: no door has said what happened yet. */
+  pending: boolean;
   details: string[];
 }
 
 const outboundContext = new AsyncLocalStorage<OutboundScope>();
 
+/** An outside channel: a transport the process can die inside after the person already has the words. */
+const OUTSIDE_CHANNELS: ReadonlySet<DeliveryChannel> = new Set(['imessage', 'sms', 'email', 'teams', 'phone']);
+
+/** A new scope; on an outside channel its row is written FIRST, as the intent (`pending`, with the text). */
 function newScope(intent: OutboundIntent): OutboundScope {
-  return { intent, deliveryId: null, receiptId: null, failed: false, details: [] };
+  const scope: OutboundScope = { intent, deliveryId: null, receiptId: null, failed: false, details: [], pending: false };
+  if (!OUTSIDE_CHANNELS.has(intent.channel)) return scope;
+  scope.deliveryId = deliveryIdOf(recordDelivery({ ...declared(intent), outcome: 'pending', detail: intent.text?.slice(0, 500) ?? null }));
+  scope.pending = scope.deliveryId !== null;
+  return scope;
+}
+
+/** The caller's declared identity, as `recordDelivery` takes it. */
+function declared(i: OutboundIntent): Omit<DeliveryInput, 'outcome'> {
+  return {
+    agentId: i.agentId, tool: i.tool, channel: i.channel, recipientId: i.recipientId ?? null,
+    recipientDisplay: i.recipientDisplay ?? null, provider: i.provider ?? null, threadRoot: i.threadRoot ?? null,
+    conversationId: i.conversationId ?? null, messageId: i.messageId ?? null,
+  };
 }
 
 function mergedDetail(scope: OutboundScope): string | null {
@@ -115,6 +138,8 @@ function mergedDetail(scope: OutboundScope): string | null {
  */
 function settle(scope: OutboundScope): void {
   if (!scope.deliveryId) return;
+  // The scope ended and no door ever crossed: nothing was sent, so the intent goes (as before intents).
+  if (scope.pending) { dropPendingDelivery(scope.deliveryId); scope.deliveryId = null; scope.pending = false; return; }
   try {
     getDb().prepare(
       `UPDATE deliveries
@@ -136,6 +161,7 @@ function settle(scope: OutboundScope): void {
 function markFailed(scope: OutboundScope, reason: string): void {
   scope.failed = true;
   if (reason) scope.details.push(reason);
+  scope.pending = false;                 // a throw is a verdict: the intent row becomes `failed` below
   if (scope.deliveryId) {
     try {
       getDb().prepare(
@@ -152,18 +178,7 @@ function markFailed(scope: OutboundScope, reason: string): void {
     // attempted and did not complete, and a ledger that only records the sends that worked
     // is the exact dishonesty this task exists to remove.
     scope.deliveryId = deliveryIdOf(recordDelivery({
-      agentId: scope.intent.agentId,
-      tool: scope.intent.tool,
-      channel: scope.intent.channel,
-      recipientId: scope.intent.recipientId ?? null,
-      recipientDisplay: scope.intent.recipientDisplay ?? null,
-      provider: scope.intent.provider ?? null,
-      threadRoot: scope.intent.threadRoot ?? null,
-      conversationId: scope.intent.conversationId ?? null,
-      messageId: scope.intent.messageId ?? null,
-      receiptId: scope.receiptId,
-      outcome: 'failed',
-      detail: mergedDetail(scope),
+      ...declared(scope.intent), receiptId: scope.receiptId, outcome: 'failed', detail: mergedDetail(scope),
     }));
   }
 }
@@ -242,6 +257,17 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
 
   if (observed.outcome === 'failed') scope.failed = true;
   if (observed.detail) scope.details.push(observed.detail);
+  if (scope.pending && scope.deliveryId) {
+    // The FIRST crossing of an outside send: the intent becomes what this door observed.
+    scope.pending = false;
+    const seen = resolvePendingDelivery(scope.deliveryId, {
+      outcome: scope.failed ? 'failed' : observed.outcome as Exclude<DeliveryOutcome, 'pending'>, detail: mergedDetail(scope),
+      messageId: observed.messageId, recipientId: observed.recipientId, recipientDisplay: observed.recipientDisplay,
+      provider: observed.provider, threadRoot: observed.threadRoot, receiptId: scope.receiptId,
+    });
+    if (seen !== null) return seen;
+    scope.deliveryId = null;             // the intent row is gone; write the door's row fresh below
+  }
 
   if (scope.deliveryId) {
     // A later crossing of the same send may know MORE than the first did (which message row
@@ -334,59 +360,14 @@ export function noteReceiptForOutbound(receiptId: string): void {
 
 /** The row the current scope owns, or null outside a scope / before the first crossing. */
 export function currentOutboundDeliveryId(): string | null {
-  return outboundContext.getStore()?.deliveryId ?? null;
+  const scope = outboundContext.getStore();
+  return scope && !scope.pending ? scope.deliveryId : null;   // an intent is not yet a delivery
 }
 
 /** True when a send is in flight under a declared identity. Read by the provider-API doors,
  *  which carry both person-reaching sends and ordinary data writes down the same function. */
 export function inOutboundScope(): boolean {
   return outboundContext.getStore() !== undefined;
-}
-
-/**
- * The channel a send TOOL delivers on, or null when the tool reaches nobody.
- *
- * This is what lets the engine open a scope at the single tool-dispatch door instead of at
- * each of the ten send paths PINNED §8 lists as unrecorded — `gmail_reply`, `gmail_forward`,
- * `outlook_reply`, `outlook_forward`, `teams_send_message`, `teams_send_channel_message`,
- * `voice_call`, and the four that were already partly covered — and it is derived from the
- * shared `channelOfSendTool` map rather than being a second hand-maintained list.
- *
- * `user_` twins run the BASE tool's executor (the same reasoning `RECEIPT_EXEMPT` records),
- * so they resolve to the base name's channel.
- *
- * `send_to_agent` / `broadcast_to_group` deliberately return null: their rows are written
- * inside the A2A transport, one per PEER, by the call PHASE-2 T4 landed. A scope here would
- * fold a fan-out to five agents into one row, which is a worse answer than no scope.
- */
-export function outboundChannelForTool(name: string): DeliveryChannel | null {
-  const base = name.startsWith('user_') ? name.slice('user_'.length) : name;
-  if (base === 'teams_send_channel_message') return 'teams';
-  const ch = channelOfSendTool(base);
-  if (ch === null) return null;
-  // ChannelKind and the deliveries channel union agree on every send channel; the extra
-  // members of the delivery union (dashboard, voice, a2a) have no send tool.
-  return ch as DeliveryChannel;
-}
-
-/** The recipient a send tool named, for the ledger's `recipient_id`. Best-effort: a missing
- *  or reply-shaped argument simply leaves the column null, exactly as it does today. */
-export function outboundRecipientForTool(
-  name: string, args: Record<string, unknown> | undefined,
-): string | null {
-  if (!args) return null;
-  const first = (...keys: string[]): string | null => {
-    for (const k of keys) {
-      const v = args[k];
-      if (typeof v === 'string' && v.trim()) return v.trim();
-    }
-    return null;
-  };
-  const base = name.startsWith('user_') ? name.slice('user_'.length) : name;
-  if (base.startsWith('teams_')) return first('chat_id', 'channel_id', 'team_id');
-  if (base === 'imessage_send') return first('to', 'recipient', 'handle');
-  if (base === 'sms_send' || base === 'voice_call') return first('to', 'number', 'recipient');
-  return first('to', 'recipient');
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
