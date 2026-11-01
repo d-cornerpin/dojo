@@ -148,14 +148,14 @@ describe('T48: "every piece landed with content" is STRUCTURE, never a reading o
 describe('T48: the ONE line the engine composes', () => {
   it('the named preface, verbatim, for the measured two-piece shape', () => {
     expect(engineRelayPreface(2)).toBe(
-      'Both results are in as delivered by the helpers — I could not get them combined, '
+      'Both results are in as the helpers delivered them; they were not combined, '
       + 'so here they are in full:',
     );
   });
 
   it('the same sentence, count-agreeing, past two — the only variable byte is the quantifier', () => {
     expect(engineRelayPreface(3)).toBe(
-      'All 3 results are in as delivered by the helpers — I could not get them combined, '
+      'All 3 results are in as the helpers delivered them; they were not combined, '
       + 'so here they are in full:',
     );
     expect(engineRelayPreface(3).slice(engineRelayPreface(3).indexOf(' results are in')))

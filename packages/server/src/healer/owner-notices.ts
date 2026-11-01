@@ -37,7 +37,7 @@ const DISMISSED = 'owner_dismissed';
 /** The words of each text; the owner card carries the same ones. */
 export const HEALER_BROKEN_WORDS = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
 export const stuckWords = (name: string): string =>
-  `${name} has been stuck for a few tries and auto-recovery isn't unsticking it. I'll keep trying in the background. You can also send a message or reset its session from the detail page.`;
+  `${name} has been stuck for a few tries and auto-recovery isn't unsticking it. The Dojo will keep trying in the background. You can also send a message or reset its session from the detail page.`;
 /** t148 round 3: an agent parked because none of its models can hold it is a broken agent the owner
  *  must act on (OR-V333-SET (3)); the condition is `nofit:<agentId>` and ends when the agent is released. */
 export const noFitWords = (name: string): string =>

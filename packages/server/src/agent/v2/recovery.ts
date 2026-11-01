@@ -16,7 +16,8 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { OWNER_ALERT_HEADS_UP_PREFIX, stripInboundChannelMarker } from '@dojo/shared';
+import { OWNER_ALERT_DOJO_PREFIX, stripInboundChannelMarker } from '@dojo/shared';
+import { tellAgentWhatDojoSent } from '../dojo-voice.js';
 import { createLogger } from '../../logger.js';
 import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -93,7 +94,7 @@ const RATE_LIMIT_RETRY_NOTE =
 // `memory/__tests__/platform-noise.test.ts` (so that suite's fixtures are the ACTUAL generated
 // text, never a hand-typed copy that could quietly drift from what this file really produces).
 export function declaredPatienceStatusLine(): string {
-  return `${OWNER_ALERT_HEADS_UP_PREFIX} I hit my model's size limit — trimming my context and retrying now.`;
+  return `${OWNER_ALERT_DOJO_PREFIX} the agent hit its model's size limit — trimming its context and retrying now.`;
 }
 
 // CASE 3 — the honest failure. Names what was asked (briefly — this is a status line, not a
@@ -133,10 +134,10 @@ export function declaredPatienceHonestFailNote(triggerContent: string | null, di
   const preview = trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed;
   const askClause = preview ? ` "${preview}"` : '';
   const trimClause = didCompact
-    ? 'even after I trimmed it once and tried again'
-    : "and I couldn't trim it down enough to try again";
+    ? 'even after it was trimmed once and tried again'
+    : "and it couldn't be trimmed down enough to try again";
   return (
-    `${OWNER_ALERT_HEADS_UP_PREFIX} I couldn't finish answering${askClause} — my model couldn't process ` +
+    `${OWNER_ALERT_DOJO_PREFIX} the agent couldn't finish answering${askClause} — its model couldn't process ` +
     `this much context in time, ${trimClause}. The Healer is looking into it.`
   );
 }
@@ -809,10 +810,9 @@ async function recordInjury(
   // and keeps today's unclassified path untouched, byte-for-byte.
   const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
   if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
-    persistAndBroadcastSystemNote(
-      agentId,
-      declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact),
-    );
+    const honestFail = declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact);
+    persistAndBroadcastSystemNote(agentId, honestFail);
+    tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: honestFail, why: 'because your model could not finish this answer' });
   } else if (isRateLimit) {
     persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
   } else {

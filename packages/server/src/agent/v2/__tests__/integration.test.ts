@@ -531,7 +531,7 @@ function getBroadcastEventsByType(type: string): unknown[] {
 function headsUpMessages(): string[] {
   return getBroadcastEventsByType('chat:message')
     .map((e) => (e as { message?: { content?: string } }).message?.content ?? '')
-    .filter((c) => c.startsWith('Heads up:'));
+    .filter((c) => c.startsWith('Dojo:'));
 }
 
 beforeEach(() => {
@@ -1953,8 +1953,8 @@ describe('runV2Turn integration', () => {
 
       const statusLines = headsUpMessages();
       expect(statusLines).toHaveLength(1);
-      expect(statusLines[0]).toMatch(/hit my model's size limit/i);
-      expect(statusLines[0]).toMatch(/trimming my context/i);
+      expect(statusLines[0]).toMatch(/hit its model's size limit/i);
+      expect(statusLines[0]).toMatch(/trimming its context/i);
       expect(statusLines[0]).toMatch(/retrying/i);
     });
 

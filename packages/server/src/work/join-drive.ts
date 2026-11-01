@@ -195,8 +195,8 @@ export function everyPieceLandedWithContent(
  */
 export function engineRelayPreface(total: number): string {
   const quantifier = total === 2 ? 'Both' : `All ${total}`;
-  return `${quantifier} results are in as delivered by the helpers — I could not get them `
-    + `combined, so here they are in full:`;
+  return `${quantifier} results are in as the helpers delivered them; they were `
+    + `not combined, so here they are in full:`;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

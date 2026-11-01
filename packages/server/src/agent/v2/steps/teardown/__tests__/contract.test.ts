@@ -410,7 +410,7 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
       .map((call) => call[0] as { type?: string; message?: { content?: string } })
       .filter((e) => e.type === 'chat:message')
       .map((e) => e.message?.content ?? '')
-      .filter((c) => c.startsWith('Heads up:'));
+      .filter((c) => c.startsWith('Dojo:'));
     expect(headsUp).toHaveLength(0);
 
     // Internal reporting is UNCHANGED — the status write `recordInjury` always makes for an
@@ -436,7 +436,7 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
       .map((call) => call[0] as { type?: string; message?: { content?: string } })
       .filter((e) => e.type === 'chat:message')
       .map((e) => e.message?.content ?? '')
-      .filter((c) => c.startsWith('Heads up:'));
+      .filter((c) => c.startsWith('Dojo:'));
     expect(headsUp).toHaveLength(0);
   });
 
@@ -454,7 +454,7 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
       .map((call) => call[0] as { type?: string; message?: { content?: string } })
       .filter((e) => e.type === 'chat:message')
       .map((e) => e.message?.content ?? '')
-      .filter((c) => c.startsWith('Heads up:'));
+      .filter((c) => c.startsWith('Dojo:'));
     expect(headsUp).toHaveLength(1);
   });
 
@@ -481,11 +481,11 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
       .map((call) => call[0] as { type?: string; message?: { content?: string } })
       .filter((e) => e.type === 'chat:message')
       .map((e) => e.message?.content ?? '')
-      .filter((c) => c.startsWith('Heads up:'));
+      .filter((c) => c.startsWith('Dojo:'));
     expect(headsUp).toHaveLength(1);
     expect(headsUp[0]).toMatch(/couldn't finish answering/i);
-    expect(headsUp[0]).not.toContain('even after I trimmed it once and tried again');
-    expect(headsUp[0]).toContain("couldn't trim it down enough to try again");
+    expect(headsUp[0]).not.toContain('even after it was trimmed once and tried again');
+    expect(headsUp[0]).toContain("couldn't be trimmed down enough to try again");
   });
 });
 

@@ -28,7 +28,8 @@ import { isProtectedIdentityPath } from './permissions.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
-import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
+import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { APPROVAL_TTL_MINUTES, deliverGateWake } from './approval-decision.js';
 
 const logger = createLogger('destructive-gate');
@@ -467,15 +468,12 @@ function notifyOwnerApprovalExpired(row: { agent_id: string; request_text: strin
   try {
     const name = (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined)?.name ?? 'a helper';
     const primaryId = getPrimaryAgentId();
-    // The prefix is load-bearing: it is what makes this note render in the owner's DEFAULT
-    // (non-wordy) chat rather than wordy mode only. PHASE-1 T8: it now comes FROM the
-    // allowlist (@dojo/shared OWNER_ALERT_SYSTEM_PREFIXES) instead of being re-typed here,
-    // so "keep the prefix if you reword the message" is no longer advice a rewording can
-    // ignore — and the row is stamped display_kind='owner-alert' at insert.
+    // The prefix is load-bearing: it puts this note in the owner's DEFAULT chat (@dojo/shared
+    // OWNER_ALERT_SYSTEM_PREFIXES) and makes it plainly the Dojo speaking, never the agent.
     const ownerMsg =
-      `${OWNER_ALERT_HEADS_UP_PREFIX} "${name}" asked me to approve a sensitive action (${row.request_text.slice(0, 160)}), ` +
-      `but it went unanswered for over an hour, so I let the request expire. Nothing was changed or deleted. ` +
-      `If you still want it done, just tell me and I'll approve it.`;
+      `${OWNER_ALERT_DOJO_PREFIX} "${name}" asked for approval of a sensitive action (${row.request_text.slice(0, 160)}), ` +
+      `but no answer came within an hour, so the request expired. Nothing was changed or deleted. ` +
+      `To do it, ask the agent again.`;
     const ownerMsgId = uuidv4();
     insertMessage({ id: ownerMsgId, agentId: primaryId, role: 'system', content: ownerMsg });
     broadcast({
@@ -488,6 +486,7 @@ function notifyOwnerApprovalExpired(row: { agent_id: string; request_text: strin
         createdAt: new Date().toISOString(),
       },
     });
+    tellAgentWhatDojoSent({ agentId: primaryId, recipient: 'the owner (on the dashboard)', text: ownerMsg, why: 'because a sensitive-action request went unanswered' });
   } catch (err) {
     logger.warn('destructive-gate: owner expiry notice failed (non-fatal)', {
       agentId: row.agent_id, error: err instanceof Error ? err.message : String(err),

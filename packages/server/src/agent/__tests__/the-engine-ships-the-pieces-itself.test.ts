@@ -349,6 +349,6 @@ describe('T48 CONTROL: the ONE-PIECE relay is byte-identical', () => {
 
     expect(auditEntries(askId), 'one piece is D13\'s relay, not this rung').not.toContain('join_engine_relay');
     expect(ownerFacing().some((m) => /All the delegated pieces are back/.test(m.content))).toBe(true);
-    expect(ownerFacing().some((m) => m.content.includes('results are in as delivered by the helpers'))).toBe(false);
+    expect(ownerFacing().some((m) => m.content.includes('results are in as the helpers delivered them'))).toBe(false);
   });
 });
