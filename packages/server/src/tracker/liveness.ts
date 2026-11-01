@@ -228,7 +228,7 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
     // t146: the notice names a task, so it is ABOUT that work row (the id is data held here, not read
     // from the words); its card stands in the owner-notices list in these exact words (`silent_notice`).
-    void sendAlert(words, 'notice', { aboutWorkId: newestOf(work)?.id });
+    void sendAlert(words, 'notice', { aboutWorkId: newestOf(work)?.id, agentId: a.id });
   }
 }
 

@@ -45,4 +45,22 @@ describe('engine texts to people carry no first person', () => {
     expect(src).not.toContain("I hit my model's size limit");
     expect(src).toMatch(/persistAndBroadcastSystemNote\(agentId, declaredPatienceStatusLine\(\)\);\s*\n\s*tellAgentWhatDojoSent\(/);
   });
+  it('the owner-notice door labels the text and tells the agent; the callers that hold an agent pass it', () => {
+    const door = fs.readFileSync(path.join(SRC, 'services/imessage-bridge.ts'), 'utf8');
+    expect(door).toContain("dojoVoice(urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed)");
+    expect(door).toContain('return tellAgentOwnerAlertSent(opts.agentId, fullMessage, ok)');
+    const voice = fs.readFileSync(path.join(SRC, 'agent/dojo-voice.ts'), 'utf8');
+    expect(voice).toContain('aboutAgentId ?? getPrimaryAgentId()');   // about no agent: the primary is told
+    for (const [file, call] of [
+      ['agent/errors.ts', "sendAlert(words, 'notice', { agentId })"],
+      ['healer/injury-recovery.ts', "sendAlert(broken, 'notice', { agentId })"],
+      ['healer/injury-recovery.ts', "sendAlert(userMsg, 'notice', { agentId })"],
+      ['agent/rate-limit-retry.ts', "'critical', { agentId })"],
+      ['agent/v2/honest-stop.ts', 'agentId }'],
+      ['agent/v2/full-context-wait.ts', "sendAlert(wordsOf(key), 'notice', { agentId })"],
+      ['tracker/liveness.ts', 'agentId: a.id'],
+    ] as const) {
+      expect(fs.readFileSync(path.join(SRC, file), 'utf8'), file).toContain(call);
+    }
+  });
 });

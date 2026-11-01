@@ -10,7 +10,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { handleIMCommand } from './imessage-commands.js';
-import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
+import { dojoVoice, tellAgentWhatDojoSent, tellAgentOwnerAlertSent } from '../agent/dojo-voice.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { activeRuns, agentStartTimes } from '../agent/shared-state.js';
 import { turnContext } from '../agent/turn-context.js';
@@ -2098,7 +2098,7 @@ const ownerNoticeLog = createLogger('owner-notice');
  * escalation ladder does not raise the same row with him again. The id is data the caller holds,
  * never read from the words.
  */
-export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string } = {}): Promise<void> {
+export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string } = {}): Promise<void> {
   try {
     const scrubbed = scrubTechnicalDetail(message);
 
@@ -2110,7 +2110,7 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
       return;
     }
 
-    const fullMessage = urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed;
+    const fullMessage = dojoVoice(urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed);   // "Dojo:" first; the card keeps the bare words
     logger.info(`Sending ${urgency} alert to iMessage`, { message: scrubbed.slice(0, 200) });
 
     // The card is born where the text is (services/owner-card-frames.ts); an all-clear ends one.
@@ -2130,7 +2130,7 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
       async () => {
         const ok = await sendIMessage(recipient, fullMessage);
         if (ok && opts.aboutWorkId) toldAbout(opts.aboutWorkId, 'owner_notice');
-        return ok;
+        return tellAgentOwnerAlertSent(opts.agentId, fullMessage, ok);   // the agent is told what went out
       },
     );
     if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up', card });
