@@ -15,9 +15,14 @@
 //     (being woken is not working it); and
 //   - the tasks the agent itself moved during the turn (a transition or an activity note written
 //     under its name since the turn started: picking a task up, noting progress, closing it).
-// Each is recorded once against the task with the same payload the ask pickup writes. Written at the
-// END, not at the start, so the turn that ends mid-job still finds the PREVIOUS turn's `continued`
-// as the latest record (`lastTurnEnd`).
+// Each is recorded once against the task with the same payload the ask pickup writes.
+//
+// "Held by" is the row's holder as every reader of these turn numbers reads it: `assignee_agent` when
+// set, else `agent_id` (`COALESCE`, as the timeline and the friction census join), so after a hand-off
+// the turn numbers are the new assignee's own.
+//
+// KNOWN GAP, stated in the timeline's note: a turn that works the task only through exec, files or
+// mail, while neither serving it nor touching it in the tracker, is not recorded.
 //
 // Nothing here touches the task's last-moved time: the event is not movement (`taskMovedAtSql`).
 // ════════════════════════════════════════
@@ -34,7 +39,7 @@ function movedByTheTurn(agentId: string, turnNumber: number): string[] {
     `SELECT DISTINCT w.id AS id FROM work w
        JOIN work_events e ON e.work_id = w.id AND e.kind IN ('transition', 'activity') AND e.actor IN (?, 'agent:' || ?)
        JOIN turns t ON t.agent_id = ? AND t.turn_number = ?
-      WHERE ${taskScope('w')} AND w.agent_id = ?
+      WHERE ${taskScope('w')} AND COALESCE(w.assignee_agent, w.agent_id) = ?
         AND e.created_at >= CAST(strftime('%s', t.started_at) AS INTEGER) * 1000`,
   ).all(agentId, agentId, agentId, turnNumber, agentId) as Array<{ id: string }>).map((r) => r.id);
 }
@@ -53,7 +58,7 @@ function write(agentId: string, turnNumber: number, served: string[], written: s
   const db = getDb();
   const ids = [...new Set([...served, ...movedByTheTurn(agentId, turnNumber)])];
   for (const id of ids) {
-    const mine = db.prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${taskScope('w')} AND w.agent_id = ?`).get(id, agentId);
+    const mine = db.prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${taskScope('w')} AND COALESCE(w.assignee_agent, w.agent_id) = ?`).get(id, agentId);
     if (!mine) continue;
     const seen = db.prepare(
       `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'claim_turn' AND json_extract(payload, '$.turn_number') = ? LIMIT 1`,
