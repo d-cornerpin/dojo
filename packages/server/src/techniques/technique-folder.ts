@@ -1,23 +1,14 @@
 // ════════════════════════════════════════
 // THE TECHNIQUE FOLDER'S DISK DOOR — the one "resolve inside this folder" check, in one place.
 //
-// Requirement: a path that comes from outside the platform (an agent's supporting-file name, a
-// package's technique id, an entry found while walking a folder) may only ever land strictly inside
-// the folder it is meant for. Absolute paths, dot segments and links that point out are refused.
+// Requirement: the EXPORT walks a technique folder and never follows an entry that leads outside it
+// (it is reported as a skipped link). Writes and reads the agent asks for are NOT limited to the
+// folder: the Mac belongs to the agent (OR-MAC-BELONGS-TO-THE-AGENT).
 // A pure leaf (node:fs and node:path only) so any module can import it.
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
 import path from 'node:path';
-/**
- * Every id the store has ever made: `createTechnique` (store.ts) slugs a name with
- * `toLowerCase().replace(/[^a-z0-9-]/g, '-')`, so lowercase letters, digits and dashes (a dash may
- * lead). 255 characters is the longest folder name the disk allows.
- */
-export function isSafeTechniqueId(id: unknown): id is string {
-  return typeof id === 'string' && /^[a-z0-9-]+$/.test(id) && id.length <= 255;
-}
-
 /**
  * The real path of the nearest part of `p` that exists (so a link anywhere along it is followed),
  * or null when an entry exists but cannot be resolved (a broken link or a link loop): a write
@@ -51,15 +42,17 @@ export function insideTechniqueDir(dirPath: string, rel: string): string | null 
 }
 
 /**
- * Every supporting-file name resolved inside `dirPath`: a Map of name to full path, or the plain
- * refusal for the first name that does not stay inside (callers write nothing in that case).
+ * Every supporting-file name resolved against `dirPath`: a Map of name to full path. The Mac belongs
+ * to the agent (OR-MAC-BELONGS-TO-THE-AGENT), so an absolute name or one that climbs out is written
+ * where it says. Only a name that cannot be written at all (empty, not text) is refused.
  */
 export function supportingFileTargets(dirPath: string, files: Array<{ path: string }> | undefined): Map<string, string> | string {
   const targets = new Map<string, string>();
   for (const file of files ?? []) {
-    const target = insideTechniqueDir(dirPath, file.path);
-    if (target === null) return `Supporting file path "${file.path}" must stay inside the technique folder.`;
-    targets.set(file.path, target);
+    if (typeof file.path !== 'string' || file.path === '' || file.path.includes('\0')) {
+      return `Supporting file path ${JSON.stringify(file.path)} is not a usable file name.`;
+    }
+    targets.set(file.path, path.resolve(dirPath, file.path));
   }
   return targets;
 }

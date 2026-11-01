@@ -162,11 +162,12 @@ export function runEngineMaintenance(): { pruned: number; decayed: number; unpin
   const db = getDb();
   let pruned = 0;
 
-  // Hard delete entries with confidence < 0.1
-  const hardDeleted = db.prepare(
-    'DELETE FROM vault_entries WHERE confidence < 0.1 AND is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0'
+  // Entries with confidence < 0.1 are marked obsolete, never deleted: an obsolete row is
+  // still searchable, and owner data is never lost by a clean-up.
+  const fadedOut = db.prepare(
+    'UPDATE vault_entries SET is_obsolete = 1, updated_at = datetime(\'now\') WHERE confidence < 0.1 AND is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0'
   ).run();
-  pruned += hardDeleted.changes;
+  pruned += fadedOut.changes;
 
   // Mark obsolete: confidence < 0.5, never retrieved, older than 7 days
   const sevenDaysAgo = sqlUtcStamp(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));

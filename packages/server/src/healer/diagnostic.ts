@@ -22,6 +22,9 @@ import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getHarnessSections } from './harness-sections.js';
 import { collect } from './collect-guard.js';
+import { capItemsByText, capItemsShowingOmissions, type DiagnosticItem } from './item-cap.js';
+export { capItemsByText, capItemsShowingOmissions };
+export type { DiagnosticItem };
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
@@ -63,65 +66,6 @@ const COLLECTOR_CAPS = {
   update_check: 800,
   auto_rollback: 900,
 } as const;
-
-/**
- * Cap the rendered text at `maxChars`; critical items are never dropped (their length still counts),
- * so the lower severities of that check go first.
- */
-// Exported for tests. Pure function — no DB access. See
-// healer/__tests__/healer-hardening.test.ts.
-export function capItemsByText(
-  items: DiagnosticItem[],
-  maxChars: number,
-  collectorLabel: string,
-): DiagnosticItem[] {
-  const renderLength = (xs: DiagnosticItem[]): number =>
-    xs.reduce((sum, i) => sum + i.title.length + i.detail.length + 12, 0);
-
-  if (renderLength(items) <= maxChars) return items;
-
-  // Sort: keep critical, then warning, then info. Truncate from the tail.
-  const sevOrder: Record<DiagnosticItem['severity'], number> = {
-    critical: 0, warning: 1, info: 2,
-  };
-  const sorted = [...items].sort(
-    (a, b) => sevOrder[a.severity] - sevOrder[b.severity],
-  );
-
-  const kept: DiagnosticItem[] = [];
-  let len = 0;
-  let dropped = 0;
-  for (const item of sorted) {
-    const itemLen = item.title.length + item.detail.length + 12;
-    if (item.severity === 'critical' || len + itemLen <= maxChars) {
-      kept.push(item);
-      len += itemLen;
-    } else {
-      dropped++;
-    }
-  }
-
-  if (dropped > 0) {
-    logger.warn('Diagnostic collector cap fired — dropping low-severity items', {
-      collector: collectorLabel,
-      total: items.length,
-      kept: kept.length,
-      dropped,
-      maxChars,
-    });
-  }
-
-  return kept;
-}
-
-export interface DiagnosticItem {
-  severity: 'critical' | 'warning' | 'info';
-  code: string;
-  title: string;
-  detail: string;
-  agentId?: string;
-  agentName?: string;
-}
 
 export interface DiagnosticReport {
   id: string;
@@ -966,19 +910,19 @@ export function compileDiagnosticReport(): DiagnosticReport {
   // Per-collector caps keep a runaway collector from drowning the report (warning/info items drop
   // first); each check runs in `collect`, so one that throws shows as a warning instead of sinking it.
   const items: DiagnosticItem[] = [
-    ...collect('agent status', () => capItemsByText(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
-    ...collect('error digest', () => capItemsByText(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),
-    ...collect('model performance', () => capItemsByText(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance')),
-    ...collect('context health', () => capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
-    ...collect('tracker health', () => capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
-    ...collect('tool health', () => capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
+    ...collect('agent status', () => capItemsShowingOmissions(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
+    ...collect('error digest', () => capItemsShowingOmissions(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),
+    ...collect('model performance', () => capItemsShowingOmissions(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance')),
+    ...collect('context health', () => capItemsShowingOmissions(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
+    ...collect('tracker health', () => capItemsShowingOmissions(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
+    ...collect('tool health', () => capItemsShowingOmissions(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
     ...getHarnessSections(),   // guarded one section at a time inside
-    ...collect('dream health', () => capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
-    ...collect('nudge statistics', () => capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
-    ...collect('provider outage', () => capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage')),
-    ...collect('budget', () => capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
-    ...collect('update check', () => capItemsByText(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
-    ...collect('automatic rollback', () => capItemsByText(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback')),
+    ...collect('dream health', () => capItemsShowingOmissions(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
+    ...collect('nudge statistics', () => capItemsShowingOmissions(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
+    ...collect('provider outage', () => capItemsShowingOmissions(getProviderOutagePatterns(), 1500, 'provider_outage')),
+    ...collect('budget', () => capItemsShowingOmissions(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
+    ...collect('update check', () => capItemsShowingOmissions(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
+    ...collect('automatic rollback', () => capItemsShowingOmissions(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback')),
     ...collect('decision scores', () => getDecisionScoreItems()),   // v3.5: one line per question the decision model shadows (uncapped: the owner reads every one)
   ];
 

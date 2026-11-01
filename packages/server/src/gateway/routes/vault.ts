@@ -9,6 +9,8 @@ import {
   listEntries,
   getEntry,
   createEntry,
+  isOverEntryLimit,
+  ownerEntryTooLongMessage,
   updateEntry,
   markObsolete,
   deleteEntry,
@@ -64,6 +66,10 @@ vaultRouter.post('/entries', async (c) => {
     return c.json({ ok: false, error: `type must be one of: ${VAULT_ENTRY_TYPES.join(', ')}` }, 400);
   }
 
+  if (typeof content === 'string' && isOverEntryLimit(content)) {
+    return c.json({ ok: false, error: ownerEntryTooLongMessage(content) }, 400);
+  }
+
   try {
     const entry = await createEntry({
       agentId: 'manual',
@@ -88,6 +94,9 @@ vaultRouter.put('/entries/:id', async (c) => {
   }
   if (body.content !== undefined && (typeof body.content !== 'string' || body.content.trim() === '')) {
     return c.json({ ok: false, error: 'content must be non-empty text' }, 400);
+  }
+  if (typeof body.content === 'string' && isOverEntryLimit(body.content)) {
+    return c.json({ ok: false, error: ownerEntryTooLongMessage(body.content) }, 400);
   }
   const updated = updateEntry(c.req.param('id'), {
     content: body.content,

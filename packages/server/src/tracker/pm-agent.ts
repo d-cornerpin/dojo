@@ -2375,15 +2375,17 @@ export async function runPokeCheck(): Promise<void> {
   //   - a2a_thread_id IS NOT NULL (engine-injected, not user/agent-made)
   //   - status = 'on_deck'  (not in_progress / not yet handled)
   //   - no schedule (scheduled tasks legitimately wait on_deck)
-  //   - updated_at older than 30 min  (give the receiver time to act)
-  //   - the receiver has SENT a message since the task was created
-  //     (proves they were active, they just didn't update the tracker)
+  //   - the receiver has RECORDED a reply on this ticket's own thread
+  //     (a2a_replies, a FINAL intent only: ANSWER, COMPLETE, DELIVERABLE or FAIL, the
+  //     A2AIntent names in shared/src/a2a-protocol.ts; never STATUS/QUESTION/BLOCK,
+  //     which mean the work is still live (R11); they answered, they just didn't
+  //     update the tracker). No clock: time alone never ends another agent's task
+  //     (R11/R25), and activity elsewhere is a guess, not a record.
   //
   // Marks 'fallen' with an audit note so the row stays queryable but
   // drops off the active kanban. Never touches agent-created or user-
   // created tasks.
   try {
-    const STALE_A2A_GRACE_MS = 30 * 60 * 1000;
     // The receiver-active test lives IN the WHERE clause, not in a per-row check
     // after the limit. It used to run in JavaScript, past LIMIT 50: rows whose
     // receiver stayed silent failed it forever and refilled the window on every
@@ -2400,20 +2402,19 @@ export async function runPokeCheck(): Promise<void> {
         AND t.a2a_thread_id IS NOT NULL
         AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled')
         AND t.is_paused = 0
-        AND t.updated_at < ?
-        AND EXISTS (SELECT 1 FROM messages m
-                    WHERE m.agent_id = t.agent_id AND m.role = 'assistant'
-                      AND m.created_at > t.opened_at)
+        AND EXISTS (SELECT 1 FROM a2a_replies r
+                    WHERE r.agent_id = t.agent_id AND r.thread_id = t.a2a_thread_id
+                      AND r.reply_intent IN ('ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'))
       ORDER BY t.updated_at ASC
       LIMIT 50
-    `).all(Date.now() - STALE_A2A_GRACE_MS) as Array<{ id: string; title: string; assigned_to: string; project_id: string | null }>;
+    `).all() as Array<{ id: string; title: string; assigned_to: string; project_id: string | null }>;
 
     if (candidates.length > 0) {
       // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
       const closeStmt = {
         run: (id: string) => noteUnsettled(setTrackerStatus(id, 'fallen', {
           by: 'pm', actorId: getPMAgentId(), claim: 'authoritative',
-          reason: 'stale A2A assignment: the receiver was active but never moved this ticket',
+          reason: 'A2A assignment answered: the receiver recorded a reply on this ticket\'s thread but never moved the ticket',
         }), 'pm: stale A2A assignment swept', { taskId: id }),
       };
       let swept = 0;
@@ -2429,7 +2430,7 @@ export async function runPokeCheck(): Promise<void> {
           fromStatus: 'on_deck',
           toStatus: 'fallen',
           actionTaken: 'A2A auto-task sweeper',
-          reason: `A2A-assigned on_deck task untouched for >= 30 min while receiver ("${t.assigned_to}") was otherwise active. Handled via reply not via tracker.`,
+          reason: `A2A-assigned on_deck task; receiver ("${t.assigned_to}") recorded a reply on its thread. Handled via reply not via tracker.`,
         });
         swept++;
       }

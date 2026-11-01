@@ -65,13 +65,29 @@ describe('a fact edit keeps the length cap', () => {
     expect(stored.length - SUFFIX.length - 1).toBeLessThanOrEqual(2000);
   });
 
-  it('the dashboard cuts a long edit', async () => {
+  it('the agent tool still cuts a long edit, and says so plainly', async () => {
     const id = await seed();
+    const out = await executeVaultUpdate('manual', { entry_id: id, new_content: 'x'.repeat(10_000), reason: 'test' });
+    expect(out, 'a cut the agent was not told about is a silent loss').toMatch(/cut|shortened|truncated/i);
+    expect(out).toMatch(/500/);
+  });
+
+  it('the dashboard edit door refuses a long edit plainly and changes nothing (owner data is never cut)', async () => {
+    const id = await seed();
+    const before = getEntry(id)!.content;
     const res = await call('PUT', `/entries/${id}`, { content: 'y'.repeat(10_000) });
-    expect(res.status).toBe(200);
-    const stored = getEntry(id)!.content;
-    expect(stored.endsWith(SUFFIX)).toBe(true);
-    expect(stored.length - SUFFIX.length - 1).toBeLessThanOrEqual(2000);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; error: string };
+    expect(body.error).toMatch(/too long/i);
+    expect(body.error).toMatch(/nothing was (saved|changed)/i);
+    expect(getEntry(id)!.content).toBe(before);
+  });
+
+  it('the dashboard create door refuses a long memory plainly and saves nothing', async () => {
+    const res = await call('POST', '/entries', { content: 'z'.repeat(10_000), type: 'fact' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/too long/i);
+    expect(count()).toBe(0);
   });
 
   it('text under the cap is stored unchanged', async () => {

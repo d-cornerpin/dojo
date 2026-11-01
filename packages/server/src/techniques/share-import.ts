@@ -15,8 +15,7 @@ import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { TECHNIQUES_DIR, embedTechniqueIntent } from './store.js';
-import { insideTechniqueDir, isSafeTechniqueId } from './technique-folder.js';
-import { extractPackageEntries, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './share-disk.js';
+import { extractPackageEntries, undoExtraction, type ExtractedWrite, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './share-disk.js';
 
 const logger = createLogger('technique-share-import');
 
@@ -99,35 +98,30 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   if (!manifest.technique?.id || !manifest.technique?.name) {
     throw new Error('manifest.json is missing technique.id or technique.name.');
   }
-  // The package's id becomes a folder name here, so it must be a single plain name (the same shape
-  // the store gives every technique id) and must not be anything else, whatever the package says.
-  if (typeof manifest.technique.name !== 'string' || !isSafeTechniqueId(manifest.technique.id)) {
-    throw new Error('manifest.json technique id must be a single plain name (lowercase letters, digits and dashes, at most 255 characters); nothing was imported.');
+  if (typeof manifest.technique.name !== 'string') {
+    throw new Error('manifest.json technique name must be text; nothing was imported.');
   }
 
   // ── 2. Pick a free slug & make the target directory ──
-  const originalId = manifest.technique.id;
+  const originalId = String(manifest.technique.id);
   const newId = pickAvailableId(originalId);
-  // Prove the folder sits directly inside the techniques folder before anything is made there.
-  const dirPath = insideTechniqueDir(TECHNIQUES_DIR, newId);
-  if (dirPath === null || path.dirname(dirPath) !== path.resolve(TECHNIQUES_DIR)) {
-    throw new Error('Technique folder would fall outside the techniques folder; nothing was imported.');
-  }
-  makeNewFolder(dirPath); // refuses an existing folder (shouldn't happen given pickAvailableId)
+  const dirPath = path.resolve(TECHNIQUES_DIR, newId);
+  // Refuses a folder that already exists, so a failed import can only ever remove a folder it made itself.
+  makeNewFolder(dirPath);
   // From here on, any failure removes the folder THIS import made (and only that one).
   let extractedCount = 0;
   let needsSetup = false;
   let initialState = 'draft';
+  const journal: ExtractedWrite[] = [];
   try {
 
     // ── 3. Extract every entry except manifest.json (we store it separately) ──
-    const extracted = extractPackageEntries(zip, dirPath);
+    const extracted = extractPackageEntries(zip, dirPath, journal);
     extractedCount = extracted.extractedCount;
     const hasInstructions = extracted.hasInstructions;
 
     if (!hasInstructions) {
-      // Clean up and bail — every technique needs TECHNIQUE.md
-      removeFolder(dirPath);
+      // Every technique needs TECHNIQUE.md (the catch below undoes the extraction)
       throw new Error('Package is missing TECHNIQUE.md.');
     }
 
@@ -188,6 +182,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
       `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
     })();
   } catch (err) {
+    undoExtraction(journal);   // overwritten files go back byte for byte; files this import newly made are removed
     removeFolder(dirPath);
     throw err;
   }

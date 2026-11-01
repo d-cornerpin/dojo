@@ -127,19 +127,47 @@ export function packageNotes(entries: FileEntry[], skippedLinks: string[]): stri
 
 // ── Import-side unpacking ──
 
-export function extractPackageEntries(zip: AdmZip, dirPath: string): { extractedCount: number; hasInstructions: boolean } {
+/** One file an import wrote: its path, and the bytes it replaced (null when it did not exist before). */
+export interface ExtractedWrite { dest: string; prior: Buffer | null }
+
+/**
+ * Put back every file the import overwrote (original bytes) and remove only the files it newly made,
+ * newest first. Nothing else is touched: a failed import never damages what it did not create.
+ */
+export function undoExtraction(journal: ExtractedWrite[]): void {
+  for (const w of [...journal].reverse()) {
+    try {
+      if (w.prior !== null) fs.writeFileSync(w.dest, w.prior);
+      else fs.rmSync(w.dest, { force: true });
+    } catch (err) {
+      logger.warn('Could not undo an imported file', { dest: w.dest, err: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+export function extractPackageEntries(zip: AdmZip, dirPath: string, journal: ExtractedWrite[] = []): { extractedCount: number; hasInstructions: boolean } {
   let extractedCount = 0;
   let hasInstructions = false;
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue;
     const entryPath = entry.entryName.replace(/^\/+/, '');
     if (!entryPath || entryPath === 'manifest.json') continue;
-    const dest = insideTechniqueDir(dirPath, entryPath);
-    if (dest === null) {
-      logger.warn('Zip entry escapes target dir, skipping', { entryPath });
-      continue;
-    }
+    const dest = path.resolve(dirPath, entryPath);   // the Mac belongs to the agent: extract where the package says
     fs.mkdirSync(path.dirname(dest), { recursive: true });
+    // "Already existed" is decided by lstat: a link (even a broken one), a folder or an unreadable file EXISTED,
+    // so it is never treated as new and never deleted. Only a missing path or a readable plain file is written.
+    let prior: Buffer | null = null;
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(dest); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Cannot check "${dest}" before writing it; nothing was imported.`);
+    }
+    if (st !== null) {
+      if (!st.isFile()) throw new Error(`"${dest}" already exists and is not a plain file; nothing was imported.`);
+      try { prior = fs.readFileSync(dest); } catch {
+        throw new Error(`"${dest}" already exists and cannot be read, so it cannot be safely replaced; nothing was imported.`);
+      }
+    }
+    journal.push({ dest, prior });   // recorded before the write, so a failure mid-write is covered too
     fs.writeFileSync(dest, entry.getData());
     extractedCount++;
     if (entryPath === 'TECHNIQUE.md') hasInstructions = true;

@@ -6,7 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 import { obligationShape } from '../work/obligation-memory.js';
 import { detectCredentialContent } from './credential-gate.js';
@@ -330,6 +330,7 @@ export async function executeVaultRemember(
   const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
 
   try {
+    const cutNote = isOverEntryLimit(content) ? `\n${AGENT_ENTRY_CUT_NOTE}` : '';
     const entry = await createEntry({
       agentId,
       agentName: agent?.name,
@@ -340,6 +341,7 @@ export async function executeVaultRemember(
       isPermanent: permanent,
       source: 'agent',
       citation,
+      distinct,
     });
 
     const flags: string[] = [];
@@ -358,7 +360,7 @@ export async function executeVaultRemember(
     // FU-2: echo the captured source so the agent can confirm it stuck.
     const citationSuffix = formatCitationSuffix(entry.citation);
 
-    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"${citationSuffix}\nEntry ID: ${entry.id}${compressionNote}`;
+    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"${citationSuffix}\nEntry ID: ${entry.id}${compressionNote}${cutNote}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_remember failed', { error: msg }, agentId);
@@ -559,11 +561,12 @@ export async function executeVaultUpdate(
     return `Error: Entry "${entryId}" is already marked obsolete. Use vault_remember to create a fresh entry instead.`;
   }
 
+  const cutNote = isOverEntryLimit(newContent) ? `\n${AGENT_ENTRY_CUT_NOTE}` : '';
   const updated = updateEntry(entryId, { content: newContent });
   if (!updated) return `Error: Failed to update vault entry "${entryId}".`;
 
   logger.info('Vault entry updated', { id: entryId, reason, agentId });
-  return `Updated [${updated.type}] entry ${entryId}.\nReason: ${reason}\nNew content (first 200 chars): "${updated.content.slice(0, 200)}${updated.content.length > 200 ? '…' : ''}"`;
+  return `Updated [${updated.type}] entry ${entryId}.\nReason: ${reason}\nNew content (first 200 chars): "${updated.content.slice(0, 200)}${updated.content.length > 200 ? '…' : ''}"${cutNote}`;
 }
 
 // Phase 3.5 (2026-05-04), vault_get: return the full content of one

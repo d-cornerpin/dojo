@@ -36,7 +36,14 @@ interface ExportResolution {
   detail: string;
 }
 
-async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: ExportResolution[] }> {
+/** The toast line for links the export left out of the package. */
+export function skippedLinksMessage(paths: string[]): string {
+  const shown = paths.slice(0, 5).join(', ');
+  const more = paths.length > 5 ? ` and ${paths.length - 5} more` : '';
+  return `Technique exported, but ${paths.length} link${paths.length === 1 ? ' was' : 's were'} left out of the package because links are never followed: ${shown}${more}.`;
+}
+
+async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: ExportResolution[]; skippedLinks: string[] }> {
   // `requestRaw`, not `request`: this call's answer is a zip plus two RESPONSE
   // HEADERS (`X-Dojo-Export-Resolutions`, `Content-Disposition`) that no JSON
   // envelope carries (BACKLOG line 31).
@@ -67,6 +74,16 @@ async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: Expo
     } catch { /* malformed header — ignore, still deliver the zip */ }
   }
 
+  // Links inside the technique folder are never followed into the package; the server names them.
+  let skippedLinks: string[] = [];
+  const skippedHeader = res.headers.get('X-Dojo-Export-Skipped-Links');
+  if (skippedHeader) {
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(skippedHeader), ch => ch.charCodeAt(0))));
+      if (Array.isArray(parsed)) skippedLinks = parsed.filter((p): p is string => typeof p === 'string');
+    } catch { /* malformed header: still deliver the zip */ }
+  }
+
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') ?? '';
   const filenameMatch = disposition.match(/filename="?([^";]+)"?/);
@@ -81,7 +98,7 @@ async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: Expo
   a.remove();
   URL.revokeObjectURL(url);
 
-  return { resolutions };
+  return { resolutions, skippedLinks };
 }
 
 export const TechniqueCard = ({
@@ -109,7 +126,8 @@ export const TechniqueCard = ({
     if (sharing) return;
     setSharing(true);
     try {
-      const { resolutions } = await exportTechniqueToBrowser(technique.id);
+      const { resolutions, skippedLinks } = await exportTechniqueToBrowser(technique.id);
+      if (skippedLinks.length > 0) toast.warning(skippedLinksMessage(skippedLinks));
       // Auto-resolver ran when TECHNIQUE.md referenced files we
       // couldn't drop straight into the zip. Summarize: how many got
       // bundled (we found the file and shipped it) vs how many got

@@ -1,5 +1,5 @@
-// A supporting file named by an agent must land inside the technique's own folder: a name that is
-// absolute, climbs out with "..", or goes through a link leading out is refused and nothing is written.
+// OR-MAC-BELONGS-TO-THE-AGENT: a supporting file named by an agent is written where it says, including
+// an absolute path or one that climbs out with "..". (The export's own folder check is still tested below.)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,17 +42,15 @@ const mk = (name: string, files?: Array<{ path: string; content: string }>) =>
   createTechnique({ name, displayName: name, description: 'd', instructions: '# T\nbody', files, validateReferences: false } as never);
 
 describe('createTechnique supporting-file paths', () => {
-  it('refuses a path that climbs out and writes nothing', () => {
-    expect(() => mk('climb-out', [{ path: '../escaped.txt', content: 'x' }])).toThrow(/must stay inside/);
-    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'escaped.txt'))).toBe(false);
-    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'climb-out'))).toBe(false);
+  it('writes a path that climbs out where it says', () => {
+    mk('climb-out', [{ path: '../escaped.txt', content: 'x' }]);
+    expect(fs.readFileSync(path.join(TECHNIQUES_DIR, 'escaped.txt'), 'utf-8')).toBe('x');
   });
 
-  it('refuses an absolute path and writes nothing', () => {
+  it('writes an absolute path where it says', () => {
     const abs = path.join(tmp, 'abs-target.txt');
-    expect(() => mk('abs-path', [{ path: abs, content: 'x' }])).toThrow(/must stay inside/);
-    expect(fs.existsSync(abs)).toBe(false);
-    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'abs-path'))).toBe(false);
+    mk('abs-path', [{ path: abs, content: 'x' }]);
+    expect(fs.readFileSync(abs, 'utf-8')).toBe('x');
   });
 
   it('still writes a normal nested supporting file', () => {
@@ -81,14 +79,12 @@ describe('insideTechniqueDir shapes', () => {
 });
 
 describe('executeUpdateTechnique supporting-file paths', () => {
-  it('returns an Error and writes nothing for an escaping path', () => {
+  it('writes an escaping path where it says', () => {
     const t = mk('update-me');
     const out = executeUpdateTechnique('agent-1', 'A', 'sensei', {
       name: t.id, description: 'changed', files: [{ path: '../escaped.txt', content: 'x' }],
     });
-    expect(out).toMatch(/^Error:/);
-    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'escaped.txt'))).toBe(false);
-    const row = (mockDb.current as Database.Database).prepare('SELECT description FROM techniques WHERE id=?').get(t.id) as { description: string };
-    expect(row.description).toBe('d');
+    expect(out).not.toMatch(/^Error:/);
+    expect(fs.readFileSync(path.join(TECHNIQUES_DIR, 'escaped.txt'), 'utf-8')).toBe('x');
   });
 });

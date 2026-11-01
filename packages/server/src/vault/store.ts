@@ -10,6 +10,8 @@ import { createLogger } from '../logger.js';
 import { embeddingModelKey } from '../memory/embedding-model.js';
 import { generateEmbedding, isEmbeddingBackendUnavailable, warnEmbeddingBackendAbsentOnce } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/budget.js';
+import { capEntryContent } from './entry-limit.js';
+export { capEntryContent, isOverEntryLimit, ownerEntryTooLongMessage, AGENT_ENTRY_CUT_NOTE } from './entry-limit.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
 import {
   scanVaultCandidates, fetchVaultRowsByIds, vaultLikeScan, vaultLikeScanSync,
@@ -17,17 +19,6 @@ import {
 } from './bounded-reads.js';
 
 const logger = createLogger('vault-store');
-
-const MAX_ENTRY_TOKENS = 500;
-
-/** The one length rule for a saved fact: over 500 tokens is cut to 2000 characters plus a pointer line. Create and edit both use it. */
-export function capEntryContent(content: string): string {
-  if (estimateTokens(content) > MAX_ENTRY_TOKENS) {
-    const maxChars = MAX_ENTRY_TOKENS * 4;
-    return content.slice(0, maxChars) + '\n[Truncated -- consider creating a technique for longer procedures]';
-  }
-  return content;
-}
 
 // W3-4: agent_id used by the dashboard vault API (gateway/routes/vault.ts)
 // for owner-authored entries. These form a deliberate OWNER scope: visible to
@@ -353,6 +344,11 @@ export async function createEntry(params: {
    * shared with squad members (Phase 7).
    */
   namespace?: string | null;
+  /**
+   * The writer says this fact is genuinely DIFFERENT from a near-identical older one
+   * (the agent's "distinct: true"). Both are kept; the older entry is never superseded.
+   */
+  distinct?: boolean;
 }): Promise<VaultEntry> {
   const db = getDb();
   const id = uuidv4();
@@ -384,6 +380,10 @@ export async function createEntry(params: {
         logger.debug('Skipping duplicate vault entry', { existingId: duplicate.id, similarity: 'high' });
         return rowToEntry(db.prepare('SELECT * FROM vault_entries WHERE id = ?').get(duplicate.id) as VaultEntryRow);
       }
+      if (params.distinct) {
+        // "This is different": keep BOTH. The refusal text promised the older entry stays.
+        logger.debug('Distinct fact kept beside its near-copy', { existingId: duplicate.id });
+      } else {
       // 2026-07-03: >= 0.92 similarity with DIFFERENT substance is a
       // correction/update of the same fact, and the NEW statement is the more
       // recent one -- it must win. The old "keep whichever is longer" heuristic
@@ -395,6 +395,7 @@ export async function createEntry(params: {
       db.prepare('UPDATE vault_entries SET is_obsolete = 1, superseded_by = ?, updated_at = datetime(\'now\') WHERE id = ?')
         .run(id, duplicate.id);
       logger.info('Superseding older vault entry', { oldId: duplicate.id, newId: id });
+      }
     }
   }
 

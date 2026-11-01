@@ -1,5 +1,5 @@
-// A package's technique id must never decide where files land: an id that is not a single plain name
-// is refused before anything is written; a failed import removes only the folder it made.
+// OR-MAC-BELONGS-TO-THE-AGENT: a package's technique id is not refused for its shape. One rule stays:
+// a failed import never deletes anything it did not create itself.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,7 @@ vi.mock('../../memory/message-store.js', () => ({ insertMessage: vi.fn() }));
 import { runMigrations } from '../../db/migrations.js';
 import { TECHNIQUES_DIR } from '../store.js';
 import { importTechnique } from '../share-import.js';
+import { extractPackageEntries, undoExtraction, type ExtractedWrite } from '../share-disk.js';
 
 let tmp: string;
 beforeEach(() => {
@@ -44,28 +45,62 @@ function pkg(id: unknown, withMd = true, name: unknown = 'Demo'): Buffer {
 const before = () => fs.readdirSync(TECHNIQUES_DIR).sort();
 
 describe('importing a package whose id is not a plain name', () => {
-  for (const bad of ['../escaped-by-id', 'a/b', '..', '.', '/abs/target', 'Has Space', 'UPPER', 5]) {
-    it(`refuses ${JSON.stringify(bad)} and changes nothing`, async () => {
-      const listing = before();
-      const outsideBefore = fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort();
-      await expect(importTechnique(pkg(bad))).rejects.toThrow(/nothing was imported|missing/);
-      expect(before()).toEqual(listing);
-      expect(fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort()).toEqual(outsideBefore);
-    });
-  }
+  it('imports an id with a slash as a nested folder', async () => {
+    const r = await importTechnique(pkg('a/b'));
+    expect(r.techniqueId).toBe('a/b');
+    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'a', 'b', 'TECHNIQUE.md'))).toBe(true);
+  });
 
-  // The store (createTechnique) slugs any name to lowercase letters, digits and dashes of any length,
-  // so a dash-first id or a long one is a real id the store has made and must import.
-  for (const real of ['-starts-with-dash', '---', 'a'.repeat(255)]) {
-    it(`imports an id the store can make: ${real.slice(0, 20)} (${real.length})`, async () => {
-      const r = await importTechnique(pkg(real));
-      expect(r.techniqueId).toBe(real);
-      expect(fs.existsSync(path.join(TECHNIQUES_DIR, real, 'TECHNIQUE.md'))).toBe(true);
-    });
-  }
+  it('imports an id with capitals and a space', async () => {
+    await importTechnique(pkg('Has Space'));
+    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'Has Space', 'TECHNIQUE.md'))).toBe(true);
+  });
 
-  it('refuses an id over 255 characters, with a truthful message', async () => {
-    await expect(importTechnique(pkg('a'.repeat(256)))).rejects.toThrow(/lowercase letters, digits and dashes.*255/);
+  it('an id that names a folder that already exists is refused and that folder is left untouched', async () => {
+    const outside = path.join(path.dirname(TECHNIQUES_DIR), 'precious');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'keep');
+    await expect(importTechnique(pkg('../precious'))).rejects.toThrow(/already exists/);
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf-8')).toBe('keep');
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('an id of ".." (the techniques folder parent) is refused and nothing is deleted', async () => {
+    const listing = fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort();
+    await expect(importTechnique(pkg('..'))).rejects.toThrow();
+    expect(fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort()).toEqual(listing);
+    expect(fs.existsSync(TECHNIQUES_DIR)).toBe(true);
+  });
+
+  it('extracts a package entry where the package says, even outside the technique folder', () => {
+    const dir = path.join(TECHNIQUES_DIR, 'extract-out');
+    fs.mkdirSync(dir, { recursive: true });
+    const zip = { getEntries: () => [
+      { isDirectory: false, entryName: 'TECHNIQUE.md', getData: () => Buffer.from('# T') },
+      { isDirectory: false, entryName: '../landed-by-package.txt', getData: () => Buffer.from('hi') },
+    ] };
+    extractPackageEntries(zip as never, dir);
+    expect(fs.readFileSync(path.join(TECHNIQUES_DIR, 'landed-by-package.txt'), 'utf-8')).toBe('hi');
+  });
+
+  it('a failed import puts back a file it overwrote outside its folder, byte for byte, and removes files it newly made', async () => {
+    const outside = path.join(TECHNIQUES_DIR, 'precious-outside.bin');
+    const original = Buffer.from([0, 1, 2, 250, 251, 10, 13]);
+    fs.writeFileSync(outside, original);
+    // AdmZip drops '..' from names, so the extractor is driven with a stub zip.
+    const dir = path.join(TECHNIQUES_DIR, 'fails-after-writing');
+    const entries = [
+      { isDirectory: false, entryName: '../precious-outside.bin', getData: () => Buffer.from('OVERWRITTEN') },
+      { isDirectory: false, entryName: '../brand-new-outside.txt', getData: () => Buffer.from('fresh') },
+    ];
+    const journal: ExtractedWrite[] = [];
+    fs.mkdirSync(dir);
+    extractPackageEntries({ getEntries: () => entries } as never, dir, journal);
+    expect(fs.readFileSync(outside, 'utf-8')).toBe('OVERWRITTEN');
+    undoExtraction(journal);
+    expect(fs.readFileSync(outside).equals(original)).toBe(true);
+    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'brand-new-outside.txt'))).toBe(false);
+    fs.rmSync(outside, { force: true });
   });
 
   it('still imports a plain id', async () => {

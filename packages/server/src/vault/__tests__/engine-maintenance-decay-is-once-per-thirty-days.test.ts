@@ -111,9 +111,10 @@ describe('engine maintenance fades a memory at most once per 30 unused days', ()
     expect(conf('M')!).toBeGreaterThanOrEqual(0.5);
   });
 
-  it('still removes a memory that started below the floor', () => {
+  it('retires a memory that started below the floor (marks it obsolete, keeps the row)', () => {
     addUnused('L', 0.05, 40);
     runEngineMaintenance();
-    expect(conf('L')).toBeUndefined();
+    const row = mockDb.current!.prepare('SELECT is_obsolete FROM vault_entries WHERE id = ?').get('L') as { is_obsolete: number };
+    expect(row.is_obsolete).toBe(1);
   });
 });

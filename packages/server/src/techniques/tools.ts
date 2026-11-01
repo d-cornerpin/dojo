@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import * as effectFs from '../agent/effects/fs.js';
-import { insideTechniqueDir, supportingFileTargets } from './technique-folder.js';
+import { supportingFileTargets } from './technique-folder.js';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -712,10 +712,9 @@ function formatListFiles(technique: { name: string; files: Array<{ path: string;
 function formatReadFile(technique: { name: string; directoryPath: string }, args: Record<string, unknown>): string {
   const file = args.file as string | undefined;
   if (!file) return 'Error: file is required for action="read_file" (use action="list_files" to see available files).';
-  // The one folder check (also guards the writes): absolute, climbing and link-out paths are refused.
+  // The Mac belongs to the agent: an absolute or climbing name reads where it says.
   const normalized = path.normalize(file);
-  const full = insideTechniqueDir(technique.directoryPath, normalized);
-  if (full === null) return `Error: file must be a relative path that stays inside the technique folder.`;
+  const full = path.resolve(technique.directoryPath, normalized);
   if (!effectFs.existsSync(full)) {
     return `Error: file "${normalized}" not found in "${technique.name}". Use action="list_files" to see available files.`;
   }
