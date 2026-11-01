@@ -13,6 +13,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { deliverPolicyTools, POLICY_DELIVERIES } from '../built-in-policy-delivery.js';
+import { HISTORIC_LISTS } from '../built-in-policy-history.js';
 import { RELEASE_STEPS } from '../release-steps.js';
 import { getAccessGrants } from '../../agent/access/read.js';
 import { canonicalizeToolsPolicy } from '../../agent/access/tools-policy.js';
@@ -111,8 +112,26 @@ describe('built-in agent tool delivery', () => {
     expect(JSON.parse(row('dreamer').tools_policy!).allow).toEqual(OLD_DREAMER);
   });
 
-  it('a row holding old alias names already holds their replacements; only the genuinely new names arrive', () => {
-    const old = ['vault_remember', 'memory_grep', 'memory_describe', 'tracker_add_notes', 'tracker_create_task', 'complete_task'];
+  // Literal copies (not read from the history module) of what 3.1.23 to 3.3.x wrote, so the cases below are not tautologies.
+  const DREAMER_3_1_17 = ['complete_task', 'contact_remember', 'contact_search', 'credential_add', 'credential_list', 'file_read',
+    'file_write', 'get_current_time', 'history_get', 'history_search', 'load_tool_docs', 'vault_discard_archives', 'vault_forget',
+    'vault_remember', 'vault_search', 'work_note', 'work_open', 'work_update'];
+  const PM_3_4_1 = ['broadcast_to_group', 'file_list', 'file_read', 'get_current_time', 'history_get', 'history_search', 'list_agents',
+    'list_groups', 'load_tool_docs', 'send_to_agent', 'tool_result_read', 'vault_get', 'vault_remember', 'vault_search',
+    'work_close_request', 'work_note', 'work_schedule', 'work_update', 'work_validate'];
+  const heldBy = (id: string) => new Set(canonicalizeToolsPolicy({ allow: JSON.parse(row(id).tools_policy!).allow, deny: [] }).allow);
+
+  it('an untouched historic Dreamer row (the 3.1.17 list) gets the full set', () => {
+    addAgent('dreamer', JSON.stringify({ allow: DREAMER_3_1_17 }), JSON.stringify(grantsOf({ allow: DREAMER_3_1_17, deny: [] })));
+    deliverPolicyTools(STEP);
+    expect([...heldBy('dreamer')].sort()).toEqual([...new Set(OLD_DREAMER.concat('lesson_record'))].sort());
+    expect(getAccessGrants('dreamer').tools.allow).toContain('lesson_record');
+  });
+
+  it('an untouched oldest row (alias names, any order) gets the full set without duplicating what its aliases cover', () => {
+    const old = ['tracker_update_status', 'vault_search', 'memory_search', 'complete_task', 'tracker_create_task', 'tracker_add_notes', 'load_tool_docs',
+      'memory_grep', 'vault_forget', 'file_read', 'tracker_create_project', 'file_write', 'memory_describe', 'get_current_time', 'send_to_agent',
+      'tracker_list_projects', 'list_agents', 'tracker_complete_step', 'vault_remember'];
     addAgent('dreamer', JSON.stringify({ allow: old }), null);
     deliverPolicyTools(STEP);
     const got = JSON.parse(row('dreamer').tools_policy!).allow as string[];
@@ -121,13 +140,35 @@ describe('built-in agent tool delivery', () => {
     for (const t of ['vault_discard_archives', 'contact_remember', 'credential_add', 'lesson_record']) expect(got, t).toContain(t);
   });
 
-  it('an old PM row (v1.0.0 names) ends holding every tool the current PM list has', () => {
-    addAgent('pm', JSON.stringify({ allow: ['tracker_list_active', 'tracker_update_status', 'tracker_add_notes', 'tracker_pause_schedule', 'send_to_agent', 'list_agents', 'list_groups', 'get_current_time', 'imessage_send'] }), null);
+  it('an untouched 3.1.17-era PM row gets what it lacked since, including the newest', () => {
+    const pm317 = PM_3_4_1.filter((t) => t !== 'tool_result_read');
+    addAgent('pm', JSON.stringify({ allow: pm317 }), null);
     deliverPolicyTools(STEP);
-    const held = new Set(canonicalizeToolsPolicy({ allow: JSON.parse(row('pm').tools_policy!).allow, deny: [] }).allow);
-    for (const t of PM_ALLOWED_TOOLS) expect(held.has(t), t).toBe(true);
+    expect(heldBy('pm').has('tool_result_read')).toBe(true);
   });
 
+  it('a 3.4-era Dreamer the owner trimmed does not get the removed name back, only the new one', () => {
+    const trimmed = DREAMER_3_1_17.filter((t) => t !== 'credential_add' && t !== 'credential_list');
+    addAgent('dreamer', JSON.stringify({ allow: trimmed }), JSON.stringify(grantsOf({ allow: trimmed, deny: [] })));
+    deliverPolicyTools(STEP);
+    expect(JSON.parse(row('dreamer').tools_policy!).allow).toEqual([...trimmed, 'lesson_record']);
+    expect(getAccessGrants('dreamer').tools.allow).toEqual([...trimmed, 'lesson_record']);
+  });
+
+  it('a trimmed PM keeps its trim (file_read stays out); nothing is added when it already holds the newest', () => {
+    const trimmed = PM_3_4_1.filter((t) => t !== 'file_read' && t !== 'file_list');
+    addAgent('pm', JSON.stringify({ allow: trimmed }), null);
+    expect(deliverPolicyTools(STEP).repaired).toBe(0);
+    expect(heldBy('pm').has('file_read')).toBe(false);
+  });
+
+  it('an owner who denied an old name on an untouched row keeps the denial', () => {
+    addAgent('dreamer', JSON.stringify({ allow: DREAMER_3_1_17, deny: ['credential_add'] }), null);
+    addAgent('pm', JSON.stringify({ allow: PM_3_4_1.filter((t) => t !== 'tool_result_read') }), JSON.stringify(grantsOf({ allow: PM_3_4_1, deny: ['tool_result_read'] })));
+    deliverPolicyTools(STEP);
+    expect(JSON.parse(row('dreamer').tools_policy!).allow).toEqual([...DREAMER_3_1_17, 'lesson_record']);
+    expect(heldBy('pm').has('tool_result_read')).toBe(false);
+  });
 
   it('a box without the agents does nothing', () => {
     expect(deliverPolicyTools(STEP)).toEqual({ examined: 0, flagged: 0, repaired: 0 });
@@ -171,6 +212,13 @@ describe('a tool added to a built-in agent list is delivered to existing rows', 
     for (const d of POLICY_DELIVERIES) {
       expect(RELEASE_STEPS.map((s) => s.id), `${d.tool}: no such step`).toContain(d.stepId);
       expect(lists[d.agent], `${d.tool} is no longer in the ${d.agent} list`).toContain(d.tool);
+    }
+  });
+  it('the latest historic list of each agent plus every delivery is the current list (no name falls between)', () => {
+    for (const agent of ['dreamer', 'pm'] as const) {
+      const latest = HISTORIC_LISTS.filter((h) => h.agent === agent).at(-1)!;
+      const have = new Set(canonicalizeToolsPolicy({ allow: [...latest.allow, ...POLICY_DELIVERIES.filter((d) => d.agent === agent).map((d) => d.tool)], deny: [] }).allow);
+      for (const t of lists[agent]) expect(have.has(t), `${agent}: ${t} is neither in the last historic list nor delivered`).toBe(true);
     }
   });
   it('each step delivers exactly its pinned set (a shipped step never gains a tool)', () => {
