@@ -6,6 +6,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type { InboundMeta } from '@dojo/shared';
+import { decodeHtmlEntities } from '../agent/html-entities.js';
 import { parseAddressList, placeMailbox, type MailAddress } from './mail-addressing.js';
 
 export interface MailAddressingFacts {
@@ -76,4 +77,9 @@ function outlookList(recipients: readonly OutlookRecipient[] | undefined): MailA
     out.push({ address, display: name ? name.trim() || null : null });
   }
   return out;
+}
+
+/** The preview text of a Gmail message. Gmail HTML-escapes its `snippet` field (`&#39;`, `&amp;`), so it is decoded once here, for every reader. */
+export function gmailSnippetText(snippet: string | undefined): string {
+  return decodeHtmlEntities(snippet ?? '');
 }

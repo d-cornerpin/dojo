@@ -26,7 +26,7 @@ import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.j
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { gmailAddressingFacts } from './mail-inbound-facts.js';
+import { gmailAddressingFacts, gmailSnippetText } from './mail-inbound-facts.js';
 import { persistNotifiedIds } from './notified-ids.js';
 import { judgeGmailOwnerEmail, ownerEmailCommandNote } from './mail-owner-intake.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
@@ -355,7 +355,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const from = headers.find(h => h.name === 'From')?.value ?? 'Unknown sender';
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
-      const snippet = (await import('../agent/html-entities.js')).decodeHtmlEntities(msgData?.snippet ?? '');   // Gmail HTML-escapes the snippet field
+      const snippet = gmailSnippetText(msgData?.snippet);
       const labelIds = msgData?.labelIds ?? [];
 
       // Parse the sender address once, up front: it is the decisive signal for
