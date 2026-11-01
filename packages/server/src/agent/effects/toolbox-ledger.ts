@@ -20,7 +20,8 @@ import { createLogger } from '../../logger.js';
 
 const logger = createLogger('toolbox-ledger');
 
-const FILE = 'toolbox-groups.json';
+export const TOOLBOX_LEDGER_FILE = 'toolbox-groups.json';
+const FILE = TOOLBOX_LEDGER_FILE;
 /** Boot times read at two moments differ by clock rounding; a reboot differs by far more. */
 const BOOT_SLACK_MS = 5_000;
 
