@@ -27,15 +27,30 @@ export function recordStalled(taskId: string, f: StalledFacts): void {
   appendWorkEvent(taskId, STALLED_EVENT, 'engine', f);
 }
 
-/** How the task's last turn ended, as its spine records it: the latest `continued`, `stalled` or
- *  `claim_turn` event (the plan's "previous turn's kind"), with its payload and when it was written.
- *  null when none. */
+/** How the task's last turn ended, as its spine records it (the plan's "previous turn's kind"): the
+ *  `continued` or `stalled` that turn wrote, else the `claim_turn` that only says the turn worked the
+ *  task (`work/task-turns.ts`). A turn's record is compared by TURN NUMBER, not by write order: the
+ *  `claim_turn` is written at the turn's end, after its `continued`/`stalled`, and must not hide it.
+ *  A later turn that wrote neither is the last turn, and reads `claim_turn`. null when none. */
 export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled' | 'claim_turn'; payload: Record<string, unknown>; at: number } | null {
-  const r = getDb().prepare(
-    `SELECT kind, payload, created_at AS at FROM work_events WHERE work_id = ? AND kind IN ('continued', 'stalled', 'claim_turn') ORDER BY id DESC LIMIT 1`,
-  ).get(taskId) as { kind: 'continued' | 'stalled' | 'claim_turn'; payload: string | null; at: number } | undefined;
-  if (!r) return null;
-  let payload: Record<string, unknown> = {};
-  try { payload = r.payload ? JSON.parse(r.payload) as Record<string, unknown> : {}; } catch { /* an unreadable payload reads as empty */ }
-  return { kind: r.kind, payload, at: r.at };
+  const db = getDb();
+  type Row = { id: number; kind: 'continued' | 'stalled' | 'claim_turn'; payload: string | null; at: number };
+  const pick = (kinds: string): Row | undefined => db.prepare(
+    `SELECT id, kind, payload, created_at AS at FROM work_events WHERE work_id = ? AND kind IN (${kinds}) ORDER BY id DESC LIMIT 1`,
+  ).get(taskId) as Row | undefined;
+  const parse = (r: Row): Record<string, unknown> => {
+    try { return r.payload ? JSON.parse(r.payload) as Record<string, unknown> : {}; } catch { return {}; }   // an unreadable payload reads as empty
+  };
+  const claim = pick("'claim_turn'");
+  const end = pick("'continued', 'stalled'");
+  if (!claim && !end) return null;
+  let r: Row;
+  if (!claim || !end) r = (claim ?? end)!;
+  else {
+    const endTurn = parse(end).turnNumber;
+    const claimTurn = parse(claim).turn_number;
+    const endIsLast = typeof endTurn === 'number' && typeof claimTurn === 'number' ? endTurn >= claimTurn : end.id > claim.id;
+    r = endIsLast ? end : claim;
+  }
+  return { kind: r.kind, payload: parse(r), at: r.at };
 }

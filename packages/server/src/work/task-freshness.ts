@@ -22,11 +22,13 @@ import { taskScope } from './tracker-view.js';
 import { turnContext } from '../agent/turn-context.js';
 import type { JobOrigin } from './job-origin.js';
 
-/** Epoch ms the task aliased `a` last moved. v3.5: an item its calls touched (the engine's ledger,
+/** (`claim_turn` is deliberately not movement: it records that a turn worked the task, `work/task-turns.ts`, and a
+ *  continuation that made no progress is such a turn.)
+ * Epoch ms the task aliased `a` last moved. v3.5: an item its calls touched (the engine's ledger,
  *  `work/ledger-store.ts`) is movement too, so a job working through a set never reads as idle. */
 export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at,
   COALESCE((SELECT MAX(l.last_at) FROM work_ledger l WHERE l.work_id = ${a}.id), 0), COALESCE((SELECT MAX(e.created_at)
-  FROM work_events e WHERE e.work_id = ${a}.id AND (e.kind IN ('transition', 'activity', 'opened', 'claim_turn')
+  FROM work_events e WHERE e.work_id = ${a}.id AND (e.kind IN ('transition', 'activity', 'opened')
   OR (e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id)
       AND NOT (e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = 'observation')))), 0))`;
 

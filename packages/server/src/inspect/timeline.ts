@@ -7,7 +7,7 @@
 //
 // SCOPE RULES (the plan's):
 //   task_id     the task's own events, plus everything its assignee did in the turns that
-//               claimed it, plus every row anywhere that names it (the PM's pokes and checks).
+//               worked it (`claim_turn`, `work/task-turns.ts`; a task from before that record says so), plus every row anywhere that names it (the PM's pokes and checks).
 //   project_id  every descendant task's timeline, interleaved, plus the project's own events.
 //   turn        that agent's turn row and the calls, deliveries and messages of that turn.
 //   conversation, agent  every record of it in the window.
@@ -27,19 +27,22 @@ export interface TimelineArgs {
   include?: Array<Source | 'logs'>;
 }
 
-interface Resolved { scope: Omit<RecordScope, 'from' | 'to'>; title: string; agents: string[]; narrow: boolean }
+interface Resolved { scope: Omit<RecordScope, 'from' | 'to'>; title: string; agents: string[]; narrow: boolean; note?: string }
 
-function claimedTurns(db: Database.Database, workId: string): number[] {
-  const rows = db.prepare(
-    "SELECT DISTINCT json_extract(payload, '$.turn_number') AS t FROM work_events WHERE work_id = ? AND kind = 'claim_turn' AND json_valid(payload)",
-  ).all(workId) as Array<{ t: number | null }>;
-  return rows.map((r) => r.t).filter((t): t is number => typeof t === 'number');
+/** The turns that worked a task: its `claim_turn` records (`work/task-turns.ts`), and where it has none
+ *  (a task worked before those were written) the turns its own `continued`/`stalled` records name. */
+function claimedTurns(db: Database.Database, workId: string): { turns: number[]; recorded: boolean } {
+  const q = (kinds: string, path: string): number[] => (db.prepare(
+    `SELECT DISTINCT json_extract(payload, '${path}') AS t FROM work_events WHERE work_id = ? AND kind IN (${kinds}) AND json_valid(payload)`,
+  ).all(workId) as Array<{ t: number | null }>).map((r) => r.t).filter((t): t is number => typeof t === 'number');
+  const claimed = q("'claim_turn'", '$.turn_number');
+  return claimed.length > 0 ? { turns: claimed, recorded: true } : { turns: q("'continued', 'stalled'", '$.turnNumber'), recorded: false };
 }
 
-function workTree(db: Database.Database, rootId: string): Array<{ id: string; owner: string }> {
+function workTree(db: Database.Database, rootId: string): Array<{ id: string; kind: string; owner: string }> {
   return db.prepare(`
     WITH RECURSIVE tree(id) AS (SELECT id FROM work WHERE id = ? UNION SELECT w.id FROM work w JOIN tree t ON w.parent_id = t.id)
-    SELECT w.id, coalesce(w.assignee_agent, w.agent_id) AS owner FROM work w JOIN tree USING (id)`).all(rootId) as Array<{ id: string; owner: string }>;
+    SELECT w.id, w.kind, coalesce(w.assignee_agent, w.agent_id) AS owner FROM work w JOIN tree USING (id)`).all(rootId) as Array<{ id: string; kind: string; owner: string }>;
 }
 
 function resolve(db: Database.Database, a: TimelineArgs, names: Map<string, string>): Resolved | string {
@@ -47,10 +50,16 @@ function resolve(db: Database.Database, a: TimelineArgs, names: Map<string, stri
   if (root) {
     const tree = workTree(db, root);
     if (tree.length === 0) return `No task or project with id ${root}. Find ids with sql, e.g. select id, kind, title, state from work order by opened_at desc.`;
-    const turnsOf = tree.map((w) => ({ agent: w.owner, turns: claimedTurns(db, w.id) }));
+    const found = tree.map((w) => ({ w, ...claimedTurns(db, w.id) }));
+    const turnsOf = found.map((f) => ({ agent: f.w.owner, turns: f.turns }));
+    // No silent gaps: a task that was worked before the per-turn record existed shows only its own
+    // events and the calls that name it, and the result says so.
+    const unrecorded = found.filter((f) => !f.recorded && f.w.kind === 'task');
+    const note = unrecorded.length === 0 ? undefined
+      : `Note: ${unrecorded.map((f) => short(f.w.id)).join(', ')} ${unrecorded.length === 1 ? 'has' : 'have'} no per-turn record (worked before turns were recorded against tasks), so the assignee's other calls in the turns that worked ${unrecorded.length === 1 ? 'it are' : 'them are'} not shown; only records that name ${unrecorded.length === 1 ? 'it' : 'them'}, and turns its continue/stall records name, are.`;
     const kind = a.project_id ? 'project' : 'task';
     const owners = [...new Set(tree.map((w) => w.owner))];
-    return { scope: { ids: tree.map((w) => w.id), named: root, turnsOf }, title: `${kind} ${short(root)} (${owners.map((o) => agentLabel(names, o)).join(', ')})`, agents: owners, narrow: true };
+    return { scope: { ids: tree.map((w) => w.id), named: root, turnsOf }, title: `${kind} ${short(root)} (${owners.map((o) => agentLabel(names, o)).join(', ')})`, agents: owners, narrow: true, note };
   }
   const agent = a.agent ? resolveAgent(db, a.agent) : null;
   if (a.turn !== undefined) {
@@ -79,7 +88,8 @@ export function timeline(a: TimelineArgs, db: Database.Database = getReadOnlyDb(
   recs.sort((x, y) => x.at - y.at || (order.get(x.source) ?? 0) - (order.get(y.source) ?? 0));
   const counts = wanted.map((s) => `${s} ${recs.filter((x) => x.source === s).length}`).join(' · ');
   const head = `Timeline of ${r.title}, ${w.note}: ${recs.length} record${recs.length === 1 ? '' : 's'} (${counts}).`;
-  if (recs.length === 0) return `${head}\nNothing was recorded in that scope and window.`;
+  const note = r.note ? `\n${r.note}` : '';
+  if (recs.length === 0) return `${head}${note}\nNothing was recorded in that scope and window.`;
   const body = recs.map((x) => `[${utc(x.at)}] ${x.text}`).join('\n');
-  return `${head}\n\n${body}\n\nEach line names its table and id; follow any of them up with sql (for example select * from audit_log where id = …).`;
+  return `${head}${note}\n\n${body}\n\nEach line names its table and id; follow any of them up with sql (for example select * from audit_log where id = …).`;
 }
