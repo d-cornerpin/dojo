@@ -195,6 +195,16 @@ export function isTerminalTaskStatus(status: string | null | undefined): boolean
 // The compress-by-default-expand-on-request pattern keeps the per-turn
 // context budget tight while leaving the full data one tool call away.
 
+/**
+ * How a compact list says how many results it holds: a count and the FORM they are in, never that they are
+ * "shown". What the agent can actually see of a long result is decided later, where the result is admitted
+ * (`memory/tool-result-view.ts` excerpts it and labels the gap); a tool that claimed "N shown" would be
+ * contradicted by that label whenever the list was long. One phrase, so no list tool words it differently.
+ */
+export function compactCountNote(count: number, noun = 'result'): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'} in compact form`;
+}
+
 export function compactListTrailer(opts: {
   count: number;
   expandTool: string;          // e.g. 'get_agent_profile'
@@ -205,7 +215,7 @@ export function compactListTrailer(opts: {
   if (opts.verbose) return '';
   if (opts.count === 0) return '';
   const idArg = `${opts.expandArg}=<id>`;
-  return `\n\n${opts.count} result${opts.count === 1 ? '' : 's'} shown (compact). For full detail on one: ${opts.expandTool}(${idArg}). For all details on every result: re-call ${opts.listTool} with verbose=true.`;
+  return `\n\n${compactCountNote(opts.count)}. For full detail on one: ${opts.expandTool}(${idArg}). For all details on every result: re-call ${opts.listTool} with verbose=true.`;
 }
 
 // ── atomicWrite — STRIPPED, PHASE-4 T2 (2026-08-02) ──────────────────────

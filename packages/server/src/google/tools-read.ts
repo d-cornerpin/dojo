@@ -314,6 +314,7 @@ for (const baseDef of googleReadBaseTools) {
 // with the v2 partitioner / cap registry. Defs without these fields fall
 // through to the hardcoded TOOL_CATEGORY map (concurrency) or get no cap.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
+import { compactCountNote } from '../agent/tool-helpers.js';
 for (const def of googleReadToolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
@@ -736,7 +737,7 @@ export async function executeGoogleReadTool(
 
       const header = `Found ${data.files.length} file(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${files.map((item) => outsideSpan(item)).join(verbose ? '\n\n' : '\n')}`;
       if (verbose) return header;
-      return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: drive_read(file_id=<id>). For full mime types + timestamps on every result: re-call drive_list with verbose=true.`;
+      return `${header}\n\n${compactCountNote(files.length)}. For file content: drive_read(file_id=<id>). For full mime types + timestamps on every result: re-call drive_list with verbose=true.`;
     }
 
     case 'drive_read': {

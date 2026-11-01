@@ -11,6 +11,7 @@ import { googleRead } from './client.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 import { gmailSnippetText } from '../services/mail-inbound-facts.js';
 import { outsideSpan } from '../tools/external-content.js';
+import { compactCountNote } from '../agent/tool-helpers.js';
 
 export const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
@@ -127,5 +128,5 @@ export async function executeGmailSearch(
   // v3.5 K33: only the emails are outside text; the paging line, the missing-ids note, the other-mailbox counts and the re-call hints are the platform's.
   const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.map((item) => outsideSpan(item)).join(verbose ? '\n---\n' : '\n')}${paging}${note}`;
   if (verbose) return header + others;
-  return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
+  return `${header}\n\n${compactCountNote(details.length)}. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
 }

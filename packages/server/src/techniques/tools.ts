@@ -114,6 +114,7 @@ function authorizeTechniqueMutation(agentId: string, classification: string, ver
 // re-declared the literal, two more inlined it. The literal lives in @dojo/shared now.
 export { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
+import { compactCountNote } from '../agent/tool-helpers.js';
 
 function wrapTechniqueResult(techniqueName: string, body: string): string {
   return (
@@ -225,7 +226,7 @@ export function executeListTechniques(agentId: string, classification: string, a
 
   const header = `Available techniques (${techniques.length}):\n${lines.join('\n')}`;
   if (verbose) return header;
-  return `${header}\n\n${techniques.length} result${techniques.length === 1 ? '' : 's'} shown (compact). For full detail on one: use_technique(name=<id>). For all details on every result: re-call list_techniques with verbose=true.`;
+  return `${header}\n\n${compactCountNote(techniques.length)}. For full detail on one: use_technique(name=<id>). For all details on every result: re-call list_techniques with verbose=true.`;
 }
 
 // ── publish_technique ──

@@ -65,6 +65,22 @@ describe('frictionCensus — deterministic, no model', () => {
     expect(two.eventIds.sort()).toEqual([e3, e4].sort());
   });
 
+  it('a task that ended failed is rough; one that was abandoned or finished is not', () => {
+    task('task-failed', 'agent-x', 'Helper errored out');
+    const ef = event('task-failed', 'transition', { from: 'claimed', to: 'failed' });
+    task('task-dropped', 'agent-y', 'Owner dropped it');
+    event('task-dropped', 'transition', { from: 'claimed', to: 'abandoned' });
+    task('task-fine', 'agent-z', 'Went fine');
+    event('task-fine', 'transition', { from: 'claimed', to: 'done' });
+    task('task-failed-old', 'agent-x', 'Failed long ago');
+    event('task-failed-old', 'transition', { to: 'failed' }, NOW - 3 * DAY);
+
+    const found = frictionCensus(SINCE);
+    expect(found.map((f) => f.taskId)).toEqual(['task-failed']);
+    expect(found[0].kinds).toEqual(['task_failed']);
+    expect(found[0].eventIds).toEqual([ef]);
+  });
+
   it('friction older than the window is not this cycle\'s', () => {
     task('task-old', 'agent-x', 'Old trouble');
     event('task-old', 'claim_rejected', { note: 'n' }, NOW - 3 * DAY);
