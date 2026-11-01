@@ -1322,7 +1322,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "microsoft/tools-write.ts",
-  "line": "description: 'Create a DRAFT email in the connected Microsoft account\\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — Outlook builds the reply draft on that conversation, pre-addressed and quoting the original. Supports attachments on the same rules as outlook_send (3MB per file inline; larger spill to a OneDrive link).',",
+  "line": "description: 'Create a DRAFT email in the connected Microsoft account\\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — Outlook builds the reply draft on that conversation, pre-addressed and quoting the original. Supports attachments on the same rules as outlook_send (files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link).',",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {

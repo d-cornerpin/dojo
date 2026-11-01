@@ -8,7 +8,7 @@ import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } fr
 import { writeToolReceipt } from '../receipts/store.js';
 import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
 import { toRfc3339WithOffset } from '../services/rfc3339-offset.js';
-import { sendMarkedDraft } from './send-as-draft.js';
+import { sendMarkedDraft, draftRecipientsNote, draftRecipientsForReceipt } from './send-as-draft.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import { safeAttachmentName } from '../services/safe-attachment-name.js';
 import {
@@ -32,7 +32,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_send',
     reachesPeople: true,
-    description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files ≤3MB attach inline; anything larger auto-uploads to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
+    description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is uploaded to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
@@ -41,7 +41,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         subject: { type: 'string', description: 'Email subject line' },
         body: { type: 'string', description: 'Email body text' },
         cc: { type: 'string', description: 'CC recipients (comma-separated)' },
-        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
         task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['to', 'subject', 'body'],
@@ -50,7 +50,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_reply',
     reachesPeople: true,
-    description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
+    description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link).',
     effects: [
       { kind: 'send', from: 'derived:the sender of args.message_id' },
       { kind: 'fs_read', from: 'args.attachments[]' },
@@ -61,7 +61,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         message_id: { type: 'string', description: 'Message ID to reply to' },
         body: { type: 'string', description: 'Reply body text' },
         reply_all: { type: 'boolean', description: 'Reply to all recipients (default: false)' },
-        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
         task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'body'],
@@ -70,7 +70,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_forward',
     reachesPeople: true,
-    description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same 3MB per-file threshold applies (overflow → OneDrive link).',
+    description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same rule applies: files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.',
     effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
@@ -78,7 +78,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         message_id: { type: 'string', description: 'Message ID to forward' },
         to: { type: 'string', description: 'Forward to this email address' },
         body: { type: 'string', description: 'Additional text to include' },
-        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach IN ADDITION to the original message\'s attachments (which Graph preserves automatically). Files ≤3MB inline; larger spill to OneDrive link.' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach IN ADDITION to the original message\'s attachments (which Graph preserves automatically). Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
         task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'to'],
@@ -89,7 +89,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     // nobody. It creates a draft in the mailbox and stops, so it passes the
     // integration WRITE grant and consults no channel grant.
     name: 'outlook_draft',
-    description: 'Create a DRAFT email in the connected Microsoft account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — Outlook builds the reply draft on that conversation, pre-addressed and quoting the original. Supports attachments on the same rules as outlook_send (3MB per file inline; larger spill to a OneDrive link).',
+    description: 'Create a DRAFT email in the connected Microsoft account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — Outlook builds the reply draft on that conversation, pre-addressed and quoting the original. Supports attachments on the same rules as outlook_send (files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link).',
     effects: [{ kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
@@ -100,7 +100,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         reply_to_message_id: { type: 'string', description: 'Draft a reply on this message\'s conversation instead of starting a new one.' },
         reply_all: { type: 'boolean', description: 'When replying, address every recipient of the original, not just its sender (default: false)' },
         cc: { type: 'string', description: 'CC recipients (comma-separated). New drafts only.' },
-        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
       },
       required: ['body'],
     },
@@ -1069,11 +1069,11 @@ export async function executeMicrosoftWriteTool(
       // cheaply. Write an accepted-but-unverified receipt (D-4): the turn does
       // NOT fail and the gate passes on accepted=true, but it is honestly not
       // marked verified. See the DONE record for the stated limitation.
-      writeToolReceipt({ agentId, tool: 'outlook_reply', tier: 2, verified: false, basis: 'http-status', recipient: args.message_id as string, detail: { status: 202, accepted: true, note: 'reply target subject/recipient not re-fetched' } });
+      writeToolReceipt({ agentId, tool: 'outlook_reply', tier: 2, verified: false, basis: 'http-status', recipient: draftRecipientsForReceipt(result.recipients) ?? (args.message_id as string), detail: { status: 202, accepted: true, note: 'reply target subject not re-fetched' } });
 
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${attachSummary}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${draftRecipientsNote(result.recipients)}${attachSummary}`;
     }
 
     // ── T77b — THE DRAFT. The same two Graph shapes `outlook_send` / `outlook_reply`
@@ -1183,7 +1183,7 @@ export async function executeMicrosoftWriteTool(
 
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} new inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''} (original attachments preserved automatically)`;
-      return `Email forwarded to ${args.to}${attachSummary}`;
+      return `Email forwarded to ${draftRecipientsForReceipt(result.recipients) ?? args.to}${attachSummary}`;
     }
 
     case 'calendar_create_ms': {

@@ -11,6 +11,8 @@ export async function readAllPages<T = unknown>(
   action: string,
   details: Record<string, unknown>,
   accountId?: string,
+  /** Stop once this many items are read (and give back exactly that many). Absent: read to the end. */
+  limit?: number,
 ): Promise<{ ok: true; value: T[] } | { ok: false; error: string }> {
   const value: T[] = [];
   const seen = new Set<string>();
@@ -22,6 +24,15 @@ export async function readAllPages<T = unknown>(
     const data = page.data as { value?: T[]; '@odata.nextLink'?: string } | null;
     value.push(...(data?.value ?? []));
     next = data?.['@odata.nextLink'];
+    if (limit !== undefined && value.length >= limit) break;
   }
-  return { ok: true, value };
+  return { ok: true, value: limit !== undefined ? value.slice(0, limit) : value };
 }
+
+/** A Teams message body for the read result: cut at 500 characters, and a cut says so (P7: the agent must be able to tell it was shortened). */
+export function teamsBodyShown(body: string): string {
+  return body.length > 500 ? `${body.slice(0, 500)}… [truncated; ${body.length} chars]` : body;
+}
+
+/** A chat or channel message as the Teams reads use it. */
+export type TeamsMessage = { id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string };

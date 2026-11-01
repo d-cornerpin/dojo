@@ -35,21 +35,21 @@ describe('P44 replay guard — the same delivery is not a replay', () => {
 
   it('b. a different delivery carrying the same Message-ID is a replay: not the owner', async () => {
     expect(await judge('gmail:g1:abc')).toEqual(CONFIRMED);
-    expect(await judge('gmail:g1:def')).toEqual({ state: 'unconfirmed' });
+    expect(await judge('gmail:g1:def')).toEqual({ state: 'unconfirmed', reason: 'seen_before' });
     expect(await judge('gmail:g1:abc'), 'the original delivery still holds its verdict').toEqual(CONFIRMED);
   });
 
   it('the same provider item id on another account is another delivery', async () => {
     expect(await judge('gmail:g1:abc')).toEqual(CONFIRMED);
-    expect(await judge('gmail:g2:abc')).toEqual({ state: 'unconfirmed' });
+    expect(await judge('gmail:g2:abc')).toEqual({ state: 'unconfirmed', reason: 'seen_before' });
   });
 
   it('c. no Message-ID never counts', async () => {
-    expect(await judge('gmail:g1:abc', HEADERS.filter((h) => h.name !== 'Message-ID'))).toEqual({ state: 'unconfirmed' });
+    expect(await judge('gmail:g1:abc', HEADERS.filter((h) => h.name !== 'Message-ID'))).toEqual({ state: 'unconfirmed', reason: 'no_message_id' });
   });
 
   it('fail closed: when the record cannot be written, the email is not the owner', async () => {
     mockDb.current!.exec('DROP TABLE config');
-    expect(await judge('gmail:g1:abc')).toEqual({ state: 'unconfirmed' });
+    expect(await judge('gmail:g1:abc')).toEqual({ state: 'unconfirmed', reason: 'check_failed' });
   });
 });

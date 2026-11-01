@@ -7,7 +7,7 @@
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { stripHtmlTags } from '../agent/html-text.js';
-import { readAllPages } from './graph-pages.js';
+import { readAllPages, teamsBodyShown, type TeamsMessage } from './graph-pages.js';
 import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { conversationLine } from './outlook-conversation.js';
 
@@ -898,7 +898,6 @@ export async function executeMicrosoftReadTool(
         agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
       slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
-
       const data = { value: result.value };
       if (data.value.length === 0) return `No events matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
@@ -1047,9 +1046,10 @@ export async function executeMicrosoftReadTool(
 
     case 'teams_read_messages': {
       const chatId = args.chat_id as string | undefined;
-      // Graph caps $top at 50 on message reads; a bigger value answers 400. A non-number falls back to the default 10.
+      // Graph answers 400 above $top=50 on message reads, so a bigger ask is read page by page (the nextLink loop) until the requested count is in hand. A non-number falls back to the default 10.
       const rawTop = args.max_results;
-      const maxResults = Math.min(Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1), 50);
+      const maxResults = Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1);
+      const pageSize = Math.min(maxResults, 50);
 
       // If no chat_id, list available chats
       if (!chatId) {
@@ -1069,21 +1069,20 @@ export async function executeMicrosoftReadTool(
         return `Teams chats:\n\n${chats.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse teams_read_messages with a chat_id to read messages.`;
       }
 
-      const result = await msGraphRead(
-        `chats/${encodeURIComponent(chatId)}/messages?$top=${maxResults}&$orderby=createdDateTime desc`,
-        agentId, agentName, 'teams_read_messages', { chatId, maxResults }, slot,
+      const result = await readAllPages<TeamsMessage>(
+        `chats/${encodeURIComponent(chatId)}/messages?$top=${pageSize}&$orderby=createdDateTime desc`,
+        agentId, agentName, 'teams_read_messages', { chatId, maxResults }, slot, maxResults,
       );
       if (!result.ok) return `Error reading Teams messages: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string }> };
-      if (!data?.value || data.value.length === 0) return 'No messages in this chat.';
+      if (result.value.length === 0) return 'No messages in this chat.';
 
       const { formatTimeForAgent: fmtTime6 } = await import('../services/format-time.js');
-      const messages = data.value.map(m => {
+      const messages = result.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = stripHtmlTags(body);
-        return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${body.slice(0, 500)}`;
+        return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${teamsBodyShown(body)}`;
       });
 
       return `Teams messages:\n\n${messages.map((item) => outsideSpan(item)).join('\n\n')}`;
@@ -1283,24 +1282,24 @@ export async function executeMicrosoftReadTool(
     case 'teams_read_channel_messages': {
       const teamId = encodeURIComponent(args.team_id as string);
       const channelId = encodeURIComponent(args.channel_id as string);
-      // Graph caps $top at 50 on message reads; a bigger value answers 400. A non-number falls back to the default 10.
+      // Graph answers 400 above $top=50 on message reads, so a bigger ask is read page by page (the nextLink loop) until the requested count is in hand. A non-number falls back to the default 10.
       const rawTop = args.max_results;
-      const maxResults = Math.min(Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1), 50);
+      const maxResults = Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1);
+      const pageSize = Math.min(maxResults, 50);
 
-      const result = await msGraphRead(
-        `teams/${teamId}/channels/${channelId}/messages?$top=${maxResults}`,
-        agentId, agentName, 'teams_read_channel_messages', { teamId: args.team_id, channelId: args.channel_id, maxResults }, slot,
+      const result = await readAllPages<TeamsMessage>(
+        `teams/${teamId}/channels/${channelId}/messages?$top=${pageSize}`,
+        agentId, agentName, 'teams_read_channel_messages', { teamId: args.team_id, channelId: args.channel_id, maxResults }, slot, maxResults,
       );
       if (!result.ok) return `Error reading channel messages: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string }> };
-      if (!data?.value || data.value.length === 0) return 'No messages in this channel.';
+      if (result.value.length === 0) return 'No messages in this channel.';
 
-      const messages = data.value.map(m => {
+      const messages = result.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = stripHtmlTags(body);
-        return `[${m.createdDateTime}] ${sender}: ${body.slice(0, 500)}`;
+        return `[${m.createdDateTime}] ${sender}: ${teamsBodyShown(body)}`;
       });
 
       return `Channel messages (newest first):\n\n${messages.map((item) => outsideSpan(item)).join('\n\n')}`;

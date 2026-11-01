@@ -106,7 +106,7 @@ export function isOwnerOn(channel: string, recipient: string): boolean {
 
 /**
  * Rule 2. The note appended to a SUCCESSFUL send's result. Empty when the call named no
- * recipient argument (a reply tool answers the thread it was given; its own result says so).
+ * recipient argument (a reply tool answers the thread it was given; gmail_reply, gmail_draft, outlook_reply and outlook_forward results name their real To/Cc themselves, read back from the sent message or the draft).
  */
 export function recipientNoteFor(
   agentId: string,

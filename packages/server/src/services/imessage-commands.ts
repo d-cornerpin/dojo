@@ -11,42 +11,7 @@ import { getPrimaryAgentId, getPrimaryAgentName } from '../config/platform.js';
 
 const logger = createLogger('imessage-commands');
 
-// ── Parsed command grammar ──────────────────────────────────────────────────
-// Strict commands are unambiguous keywords. Approve/deny are ambiguous with
-// ordinary chat ("ok", "no"), so they are parsed separately and only treated as
-// a command when they actually resolve a pending imessage-surface proposal.
-type StrictCommand =
-  | { kind: 'status' }
-  | { kind: 'kill-all' }
-  | { kind: 'kill-named'; name: string }
-  | { kind: 'pause' }
-  | { kind: 'resume' };
-
-type ApproveDenyCommand = { kind: 'approve' | 'deny'; shortId: string };
-
-function parseStrictCommand(trimmed: string): StrictCommand | null {
-  if (trimmed === 'status') return { kind: 'status' };
-  if (trimmed === 'kill all') return { kind: 'kill-all' };
-  const killMatch = trimmed.match(/^kill\s+(.+)$/);
-  if (killMatch && killMatch[1] !== 'all') return { kind: 'kill-named', name: killMatch[1] };
-  if (trimmed === 'pause') return { kind: 'pause' };
-  if (trimmed === 'resume') return { kind: 'resume' };
-  return null;
-}
-
-// B2: approve/deny of a proposal REQUIRES the hex short id (the outbound text
-// instructs exactly that: Reply "yes 1a2b3c"). The id is the first 8 chars of a
-// uuid, so it is hex-only, which means ordinary chatter can never parse as a
-// command. A bare "yes"/"ok"/"no" (no id) is NEVER an approval: it returns null
-// here and flows through as ordinary chat, so an unrelated "ok" cannot resolve a
-// live destructive proposal that happens to be pending.
-function parseApproveDeny(trimmed: string): ApproveDenyCommand | null {
-  const yes = trimmed.match(/^(?:yes|approve|ok)\s+([0-9a-f]{4,})$/);
-  if (yes) return { kind: 'approve', shortId: yes[1] };
-  const no = trimmed.match(/^(?:no|deny|decline)\s+([0-9a-f]{4,})$/);
-  if (no) return { kind: 'deny', shortId: no[1] };
-  return null;
-}
+import { parseStrictCommand, parseApproveDeny, firstLineOf, type ApproveDenyCommand } from './owner-command-words.js';
 
 /**
  * Handle an inbound iMessage command from a bridged sender.
@@ -70,7 +35,19 @@ export async function handleIMCommand(text: string, senderAddress: string): Prom
   const { getSafeSenders, findSafeSenderByAddress } = await import('./imessage-bridge.js');
   const senderRecord = findSafeSenderByAddress(getSafeSenders(), senderAddress);
   const isOwner = !!senderRecord?.is_primary;
+  return runCommand(trimmed, isOwner, senderRecord);
+}
 
+/**
+ * R24 (P44): a CONFIRMED owner email counts as the owner speaking, including his approvals. The mail provider's own
+ * authentication check has already been the owner gate (`mail-owner-intake.ts`), so this is the SAME command and
+ * approval handler a text reaches, run as the owner. Null when the words are not a command.
+ */
+export async function handleConfirmedOwnerEmailWords(words: string): Promise<string | null> {
+  return runCommand(firstLineOf(words), true, undefined);
+}
+
+async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unknown): Promise<string | null> {
   // 1. Strict, unambiguous platform commands.
   const strict = parseStrictCommand(trimmed);
   if (strict) {

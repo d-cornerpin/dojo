@@ -58,3 +58,47 @@ describe('Teams message reads — $top stays inside what Graph allows', () => {
     });
   }
 });
+
+// C6 (R25: no hard limits): an ask above 50 is paged to the requested count with the existing nextLink loop, not cut to 50.
+describe('Teams message reads — a bigger ask is paged, not cut', () => {
+  const msg = (n: number) => ({ id: `m${n}`, from: { user: { displayName: 'Sam' } }, body: { content: `text${n}`, contentType: 'text' }, createdDateTime: '2026-01-01T00:00:00Z' });
+  const pages = (counts: number[]) => {
+    let n = 0;
+    vi.mocked(msGraphRead).mockImplementation((async (endpoint: string) => {
+      const idx = endpoint.includes('PAGE') ? Number(endpoint.match(/PAGE(\d+)/)![1]) : 0;
+      const value = Array.from({ length: counts[idx] }, () => msg(n++));
+      return { ok: true, data: { value, ...(idx + 1 < counts.length ? { '@odata.nextLink': `x?PAGE${idx + 1}` } : {}) }, error: null };
+    }) as never);
+  };
+  for (const [tool, required] of TOOLS) {
+    it(`${tool}: max_results 120 reads three pages and returns 120`, async () => {
+      pages([50, 50, 50]);
+      const out = await executeMicrosoftReadTool(tool, { ...required, max_results: 120 }, 'agent-1', 'Agent One');
+      expect(vi.mocked(msGraphRead).mock.calls).toHaveLength(3);
+      expect(out.match(/text\d+/g)).toHaveLength(120);
+    });
+    it(`${tool}: a short chat just ends early`, async () => {
+      pages([30]);
+      const out = await executeMicrosoftReadTool(tool, { ...required, max_results: 120 }, 'agent-1', 'Agent One');
+      expect(out.match(/text\d+/g)).toHaveLength(30);
+    });
+  }
+});
+
+// P7 (R6): a body cut at 500 characters says so.
+describe('Teams message reads — a cut body is marked', () => {
+  const one = (content: string) => vi.mocked(msGraphRead).mockImplementation((async () => ({ ok: true, data: { value: [{ id: 'm', from: { user: { displayName: 'Sam' } }, body: { content, contentType: 'text' }, createdDateTime: '2026-01-01T00:00:00Z' }] }, error: null })) as never);
+  for (const [tool, required] of TOOLS) {
+    it(`${tool}: a 700-character body is cut at 500 with a marker giving the full length`, async () => {
+      one('x'.repeat(700));
+      const out = await executeMicrosoftReadTool(tool, { ...required }, 'agent-1', 'Agent One');
+      expect(out).toContain('[truncated; 700 chars]');
+      expect(out).not.toContain('x'.repeat(501));
+    });
+    it(`${tool}: a 500-character body is whole and unmarked`, async () => {
+      one('y'.repeat(500));
+      const out = await executeMicrosoftReadTool(tool, { ...required }, 'agent-1', 'Agent One');
+      expect(out).not.toContain('truncated');
+    });
+  }
+});

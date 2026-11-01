@@ -153,7 +153,7 @@ describe('P44 fix round 1 — the owner\'s notice (C3, I4, M2)', () => {
   });
 
   it('the unconfirmed sentence tells the agent it can ask the owner, on their usual channel, to confirm', () => {
-    const out = mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent: false, fromAddr: 'owner@example.test', from: 'owner@example.test', addressing: ADDRESSING('to'), ownerEmail: { state: 'unconfirmed' } });
+    const out = mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent: false, fromAddr: 'owner@example.test', from: 'owner@example.test', addressing: ADDRESSING('to'), ownerEmail: { state: 'unconfirmed', reason: 'check_failed' } });
     expect(out).toMatch(/ask The owner, on the channel they usually use, to confirm the email was theirs/);
   });
 });
@@ -162,7 +162,7 @@ describe('P44 — the owner\'s address on an email the provider could not confir
   it('says plainly it could not be confirmed, and keeps the outside-text fence', () => {
     for (const directToAgent of [true, false]) {
       const out = mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent, fromAddr: 'owner@example.test', from: 'owner@example.test',
-        addressing: ADDRESSING('to'), ownerEmail: { state: 'unconfirmed' } });
+        addressing: ADDRESSING('to'), ownerEmail: { state: 'unconfirmed', reason: 'check_failed' } });
       expect(out).toMatch(/could not confirm/i);
       expect(fenceRanges(out).length).toBe(1);
     }
@@ -179,5 +179,33 @@ describe('P44 — the notices that must not change', () => {
     expect(user).not.toContain('Cc:');
     expect(user).not.toContain('To:');
     expect(unknown).not.toContain('Cc:');
+  });
+});
+
+describe('C11 — the unconfirmed notice gives the REAL reason for each state', () => {
+  const say = (reason: 'bcc' | 'seen_before' | 'no_message_id' | 'check_failed' | 'outlook_closed') => mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent: true, fromAddr: 'owner@example.test', from: 'owner@example.test',
+    addressing: ADDRESSING('neither'), ownerEmail: { state: 'unconfirmed', reason } });
+  it('a blind copy or list delivery says your mailbox was not on To or Cc, not that the check failed', () => {
+    const out = say('bcc');
+    expect(out).toMatch(/not on its To or Cc/);
+    expect(out).not.toMatch(/could not confirm/);
+  });
+  it('a replayed Message-ID says this email was seen before', () => {
+    const out = say('seen_before');
+    expect(out).toMatch(/already seen/);
+    expect(out).not.toMatch(/could not confirm/);
+  });
+  it('a message with no Message-ID says so', () => expect(say('no_message_id')).toMatch(/no Message-ID/));
+  it('a failed provider check keeps the check-failed wording', () => expect(say('check_failed')).toMatch(/could not confirm/));
+  it('Outlook confirmation being closed says that', () => {
+    const out = say('outlook_closed');
+    expect(out).toMatch(/Outlook/);
+    expect(out).not.toMatch(/could not confirm/);
+  });
+  it('every reason still says it is NOT treated as the owner speaking, and offers asking the owner', () => {
+    for (const r of ['bcc', 'seen_before', 'no_message_id', 'check_failed', 'outlook_closed'] as const) {
+      expect(say(r)).toMatch(/NOT treated as The owner speaking/);
+      expect(say(r)).toMatch(/ask The owner, on the channel they usually use/);
+    }
   });
 });
