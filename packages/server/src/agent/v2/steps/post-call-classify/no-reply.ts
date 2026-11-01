@@ -305,12 +305,13 @@ export async function runNoReply(
           // user WHAT opened); the "Open in canvas" chip rides on it.
           const canvasDoc = noReplyAttachments.find((a) => a.openInCanvas);
           const noReplyCaption = canvasDoc
-            ? `Opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
-            : 'Here you go.';
-          insertMessageIfAbsent({
+            ? `Dojo: opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
+            : '';   // no engine words in the agent's voice (OR-ENGINE-LABELLED)
+          const surfacedRow = insertMessageIfAbsent({
             id: messageId, agentId, role: 'assistant', content: noReplyCaption,
             attachments: JSON.stringify(noReplyAttachments), turnNumber,
           });
+          if (surfacedRow && noReplyCaption) (await import('../../../dojo-voice.js')).tellAgentFilesPostedByDojo(agentId, noReplyAttachments, noReplyCaption, 'because you opened it and ended with no reply');   // the agent is told what the Dojo posted
           noteTerminalAnswer(messageId, 'canvas chip surfaced as the reply');
           broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
           broadcast({

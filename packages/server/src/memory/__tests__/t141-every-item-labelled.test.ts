@@ -556,7 +556,7 @@ describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appe
     expect(label).not.toMatch(/subject not recorded/);
   });
 
-  it('an image the owner asked for that FAILED later reads as a result for his request', async () => {
+  it('an image the owner asked for that FAILED later reaches the AGENT as a notice (C1/P1): the engine posts no bubble in its voice', async () => {
     await submitUserMessage(AGENT, 'Make me an image of a heron at dawn.');
     executeToolSpy.mockImplementationOnce(async (...a: unknown[]) => {
       const tc = a.find((x) => x && typeof x === 'object' && 'id' in (x as object)) as { id: string; name: string; arguments: Record<string, unknown> };
@@ -565,13 +565,13 @@ describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appe
       return { toolCallId: tc.id, name: tc.name, content: out.content, isError: out.isError };
     });
     await turn({ tool: { name: 'image_create', arguments: { description: 'a heron at dawn' } } }, { content: 'It is on its way.' });
-    for (let i = 0; i < 40 && !mockDb.current!.prepare(`SELECT 1 FROM messages WHERE content LIKE 'I wasn''t able to generate%'`).get(); i++) {
+    for (let i = 0; i < 40 && !mockDb.current!.prepare(`SELECT 1 FROM messages WHERE content LIKE '%could not be generated%'`).get(); i++) {
       await new Promise((r) => setTimeout(r, 100));
     }
+    expect(mockDb.current!.prepare(`SELECT 1 FROM messages WHERE role = 'assistant' AND content LIKE 'I wasn%able to generate%'`).get()).toBeUndefined();
     await submitUserMessage(AGENT, 'Did it work?');
     const t = await turn({ content: 'No.' });
-    const label = labelBefore(wireText(t[0]), 'I wasn\'t able to generate that image');
-    expect(label).toMatch(/dashboard conversation with TestUser — result delivered later, for the request of /);
+    expect(wireText(t[0])).toContain('the image you asked for could not be generated');
   });
 });
 

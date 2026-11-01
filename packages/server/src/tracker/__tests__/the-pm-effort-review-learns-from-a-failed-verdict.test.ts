@@ -66,7 +66,7 @@ import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 const db = (): Database.Database => mockDb.current!;
 const GOOD = (id: string): string => JSON.stringify({ advancing: true, reason: 'landing progress', task_id: id });
 const ownerNotes = (id: string): string[] => (db().prepare(
-  "SELECT content FROM messages WHERE task_id = ? AND role = 'assistant' AND agent_id = 'pm'",
+  "SELECT content FROM messages WHERE task_id = ? AND role = 'system' AND agent_id = 'pm'",
 ).all(id) as Array<{ content: string }>).map((r) => r.content);
 const failedRows = (id: string): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'effort_review_failed'",
@@ -135,6 +135,12 @@ describe('a failed effort verdict is learned from, then handed to the owner', ()
     const notes = ownerNotes('t-3');
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain('Sweep the mailbox');
+    // C8 (OR-ENGINE-LABELLED): the Dojo speaking, not the PM; the PM is told the exact text.
+    expect(notes[0]).toMatch(/^Dojo: /);
+    expect(notes[0]).not.toMatch(/\bI\b|\bmy\b/);
+    const told = db().prepare("SELECT content FROM messages WHERE agent_id = 'pm' AND origin_intent = 'dojo_message_sent'").all() as Array<{ content: string }>;
+    expect(told).toHaveLength(1);
+    expect(told[0].content).toContain(notes[0]);
     expect(findPendingEffortReviewTaskIds()).not.toContain('t-3');   // closed: no third ask
     await runEffortReview('t-3');
     expect(asked).toHaveLength(2);

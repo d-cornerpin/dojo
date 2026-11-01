@@ -175,7 +175,7 @@ describe('the refusal surfaces LOUDLY to the relay', () => {
     const at = body.indexOf('const notice = ');
     expect(at, 'the relay composes an owner notice').toBeGreaterThan(-1);
     const notice = body.slice(at, body.indexOf(';', body.indexOf('relayRefusal.why', at)));
-    expect(notice).toContain('${OWNER_ALERT_HEADS_UP_PREFIX}');
+    expect(notice).toContain("${OWNER_ALERT_DOJO_PREFIX}");
     // …and it is put on the wire in the same breath (SWEEP-A TB4: a row nobody is told about
     // is a reload-only row).
     expect(body.slice(at)).toMatch(/type: 'chat:message'/);

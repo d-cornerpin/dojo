@@ -24,6 +24,7 @@ vi.mock('../../config/platform.js', async () => {
   return { ...actual, getOwnerName: () => 'TestUser' };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* not observed */ } }));
+vi.mock('../../agent/runtime.js', async (orig) => ({ ...(await orig<typeof import('../../agent/runtime.js')>()), getAgentRuntime: () => ({ handleMessage: vi.fn(async () => undefined) }) }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
@@ -100,27 +101,26 @@ describe('round 3 — m-a / m-b: the result and unknown wordings are pinned', ()
   }
   const RESULT = /^dashboard conversation with TestUser — result delivered later, for the request of [^"]+: "Make a short song about herons\."$/;
 
-  it('an audio/music result interrupted by a restart is labelled with the request it answers', () => {
+  it('an audio/music job interrupted by a restart is told to the AGENT (no engine bubble in its voice)', () => {
     seedRequest();
     mockDb.current!.prepare(`INSERT INTO generation_jobs (id, kind, agent_id, model_id, provider_id, prompt, status, source_message_id, conversation_id, started_at, updated_at)
                              VALUES ('gen-1', 'music', ?, 'm', 'p', 'herons', 'failed', 'req-media', 'c-owner', datetime('now'), datetime('now'))`).run(A);
     notifyAbandonedGenerationJobs([{ id: 'gen-1' }]);
-    const m = withSubjectKinds(A, getRecentMessages(A, 10)).find((r) => r.role === 'assistant')!;
-    expect(rowSubject(m, new LabelFacts(A))).toMatch(RESULT);
+    expect(withSubjectKinds(A, getRecentMessages(A, 10)).find((r) => r.role === 'assistant')).toBeUndefined();
   });
 
-  it('a video result that failed is labelled with the request it answers', async () => {
+  it('a video that failed is told to the AGENT (a woken failure event), with no engine bubble in its voice', async () => {
     seedRequest();
     mockDb.current!.prepare(`INSERT INTO video_jobs (id, agent_id, model_id, provider_id, prompt, status, source_message_id, conversation_id, started_at, updated_at)
                              VALUES ('vid-1', ?, 'm', 'p', 'herons', 'queued', 'req-media', 'c-owner', datetime('now'), datetime('now'))`).run(A);
     enqueueVideoJob('vid-1');   // no provider job id: the poll loop fails it at once, through deliverError
-    let m: ReturnType<typeof withSubjectKinds>[number] | undefined;
-    for (let i = 0; i < 50 && !m; i++) {
+    let told: unknown;
+    for (let i = 0; i < 50 && !told; i++) {
       await new Promise((r) => setTimeout(r, 20));
-      m = withSubjectKinds(A, getRecentMessages(A, 10)).find((r) => r.role === 'assistant');
+      told = mockDb.current!.prepare(`SELECT 1 FROM messages WHERE agent_id = ? AND origin_intent = 'delivery_failure_owed'`).get(A);
     }
-    expect(m, 'the failure was told in the chat').toBeDefined();
-    expect(rowSubject(m!, new LabelFacts(A))).toMatch(RESULT);
+    expect(told, 'the failure was handed to the agent').toBeTruthy();
+    expect(withSubjectKinds(A, getRecentMessages(A, 10)).find((r) => r.role === 'assistant')).toBeUndefined();
   });
 });
 

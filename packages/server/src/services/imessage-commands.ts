@@ -8,6 +8,7 @@ import { createLogger } from '../logger.js';
 import { terminateAgent } from '../agent/spawner.js';
 import { writeAgentStatus } from '../agent/agent-status.js';
 import { getPrimaryAgentId, getPrimaryAgentName } from '../config/platform.js';
+import { dojoVoice } from '../agent/dojo-voice.js';
 
 const logger = createLogger('imessage-commands');
 
@@ -27,6 +28,12 @@ import { parseStrictCommand, parseApproveDeny, firstLineOf, type ApproveDenyComm
  * @param senderAddress the sender's iMessage address (phone / Apple ID)
  */
 export async function handleIMCommand(text: string, senderAddress: string): Promise<string | null> {
+  const reply = await routeIMCommand(text, senderAddress);
+  if (reply === null) return null;
+  return dojoVoice(reply);   // OR-ENGINE-LABELLED: the Dojo speaking; the bridge tells the agent once the send is done
+}
+
+async function routeIMCommand(text: string, senderAddress: string): Promise<string | null> {
   const trimmed = text.trim().toLowerCase();
 
   // Resolve the sender to a safe-sender row and require the owner mapping.
@@ -109,17 +116,17 @@ async function handleApproveDeny(cmd: ApproveDenyCommand): Promise<string | null
   // proposal; there is no "newest pending" fallback that a bare reply could hit.
   const wanted = cmd.shortId.toLowerCase();
   const targetId = pending.find(p => p.id.toLowerCase().startsWith(wanted))?.id;
-  if (!targetId) return 'I could not find a pending approval matching that.';
+  if (!targetId) return 'No pending approval matches that.';
 
   const { resolveHealerProposal } = await import('../gateway/routes/healer.js');
   const result = resolveHealerProposal({ id: targetId, action: cmd.kind, note: null });
   if (!result.ok) {
     // Raced (resolved on another surface between our read and the write).
-    return 'I could not find a pending approval matching that.';
+    return 'No pending approval matches that.';
   }
   return cmd.kind === 'approve'
-    ? 'Approved. Your helper will make the change shortly and confirm.'
-    : 'Got it, I will not make that change. Nothing was changed.';
+    ? 'Approved. The helper will make the change shortly and confirm.'
+    : 'Denied. Nothing was changed.';
 }
 
 function getStatusReport(): string {
@@ -152,7 +159,7 @@ function getStatusReport(): string {
     const mins = Math.floor((uptime % 3600) / 60);
 
     return [
-      'DOJO Status Report',
+      'Status report',
       `${getPrimaryAgentName()}: ${primaryStatus}`,
       `Agents: ${agentCount} active (${workingCount} working)`,
       `Memory: ${Math.round(freeMem / 1024 / 1024)}MB free / ${Math.round(totalMem / 1024 / 1024)}MB total`,

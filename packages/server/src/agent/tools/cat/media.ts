@@ -78,7 +78,7 @@ import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
-import { settleAskOnAsyncResult } from '../../../work/ask-settlement.js';
+import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../../../work/ask-settlement.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
 import pathModule from 'node:path';
@@ -93,9 +93,10 @@ import { getEffectiveVideoGenModel } from '../../../services/video-gen-model.js'
 import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams, VIDEO_CANONICAL_PARAMS } from '../../../services/generation-params.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
 import { getPresence } from '../../../services/presence.js';
-import { getTurnScopedImRecipient, sendIMessageWithAttachment, sendResponseViaIMessage, getDefaultSender } from '../../../services/imessage-bridge.js';
+import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
+import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobStartedIn } from '../../wake-with-notice.js';
 import { resolvePath } from '../../path-guards.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
@@ -105,17 +106,6 @@ import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
-
-/** Text a short plain-words failure note to whoever the success path would have texted the image to. Never throws. */
-async function textImageFailureNote(agentId: string, requesterIMessage: string | null, triggeredByIMessage: boolean, note: string): Promise<void> {
-  try {
-    if (!mayUseChannel(agentId, 'imessage')) return;
-    let send = triggeredByIMessage;
-    if (!send) { try { send = getPresence() === 'away'; } catch { /* presence unavailable */ } }
-    if (!send) return;
-    await sendResponseViaIMessage(note, agentId, requesterIMessage, requesterIMessage === null);
-  } catch { /* best effort; the dashboard note already stands */ }
-}
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -204,6 +194,7 @@ const handlers = {
     // concurrency). This const is closed over by the IIFE and unaffected by the turn end.
     const requesterIMessage = getTurnScopedImRecipient(agentId);
     const triggeredByIMessage = requesterIMessage !== null;
+    const wokenByFailure = isFailureWokenTurn(agentId);   // captured at CALL time: a failure inside a failure-woken turn does not wake again
     const live = turnContext(agentId);  // t141: captured at CALL time — the result is labelled with the request
     const resultSubject = deliveredResult(live?.conversationId, live?.root?.kind === 'ask' ? live.root.id : null);
 
@@ -268,7 +259,7 @@ const handlers = {
 
         if (!result.ok) {
           // A-5: honest stop identity. The user's own button is not a generation failure —
-          // no `failed` row, no error column, and no "I wasn't able to generate that image"
+          // no `failed` row, no error column, and no failure line
           // bubble for work he called off himself.
           if (result.code === 'STOPPED') {
             setImgCancelled(imgJobId);
@@ -284,28 +275,20 @@ const handlers = {
 
           setImgFailed(imgJobId, result.error);
 
-          // Deliver error directly as an assistant message in the
-          // requesting agent's own chat. No second LLM turn.
-          const errMsgId = uuidv4();
-          const errContent =
-            `I wasn't able to generate that image:\n\n` +
-            `> ${result.error}\n\n` +
-            `You could try simplifying the description or trying again in a moment.`;
-          insertMessageIfAbsent({ id: errMsgId, agentId, role: 'assistant', content: errContent, ...resultSubject });
-          broadcast({
-            type: 'chat:message', agentId,
-            message: {
-              id: errMsgId, agentId, role: 'assistant' as const, content: errContent,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
+          // C1/P1 (R1): the engine writes nothing to the person and nothing in the agent's voice. The
+          // failure reaches the AGENT as a notice on its next turn, so it tells the person in its own
+          // words, on the channel the request came from.
+          const askedBy = requesterIMessage ? 'the person who asked' : 'the person who asked (in the dashboard)';
+          const reach = requesterIMessage ? await requesterReachSentence(requesterIMessage) : 'They asked in the dashboard: write it as your reply.';
+          // The agent is handed the failure AND woken (agent/wake-with-notice.ts) so it tells the person now.
+          void tellAgentAndWake({
+            agentId, from: 'Image generation', inFailureTurn: wokenByFailure,
+            brief:
+              `the image you asked for could not be generated. The provider said: ${result.error}. ` +
+              `Nothing was sent to ${askedBy}. ${reach} Tell them in your own words that it failed and offer a next step; ` +
+              `do not call image_create again with the same description unless they ask.`,
           });
-          broadcast({
-            type: 'chat:chunk', agentId,
-            messageId: errMsgId, content: '', done: true, modelId: null,
-          });
-          await textImageFailureNote(agentId, requesterIMessage, triggeredByIMessage, `I wasn't able to generate that image. ${result.error}`);
-          settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: errMsgId });   // t152: the owner was told; no job out, the ask settles
+          settleAskOnJobEnded(agentId, imgJobId);   // t152: no bubble was posted; the request is re-asked now that the job ended
           return;
         }
 
@@ -373,9 +356,9 @@ const handlers = {
           // generated from one prompt.
           //
           // Now we just write a synthetic assistant message
-          // with a short delivery caption and the image inline,
+          // with the image inline and NO engine caption,
           // no model call. The user sees ONE clean bubble with
-          // "Here you go." and the image thumbnail. Loop killed.
+          // the image thumbnail. Loop killed.
           const stat = effectFs.statSync(deliveredPath);
           const filename = path.basename(deliveredPath);
           const ext = path.extname(filename).toLowerCase();
@@ -394,18 +377,8 @@ const handlers = {
             category: 'image' as const,
           };
 
-          // Small pool of delivery captions, generic enough to
-          // fit any image request without sounding contextual.
-          const DELIVERY_CAPTIONS = [
-            'Here you go.',
-            'Here it is.',
-            'All done.',
-            'Done.',
-            'Got it for you.',
-          ];
-          const caption = DELIVERY_CAPTIONS[
-            Math.floor(Math.random() * DELIVERY_CAPTIONS.length)
-          ];
+          // P12/R1: the engine writes NO caption in the agent's voice (the old "Here you go." pool is gone); the agent is told below.
+          const caption = '';
 
           const deliveryMsgId = uuidv4();
           const attachmentsJson = JSON.stringify([attachment]);
@@ -431,6 +404,13 @@ const handlers = {
           setImgSucceeded(imgJobId, { assetPath: deliveredPath, assetMime: mimeType });
           settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: deliveryMsgId });   // t152: the job is finished and its result reached the owner
 
+          try {
+            postAgentNotice({
+              toAgentId: agentId, fromName: 'Image delivery', intent: 'image_delivery_outcome', selfIntro: false,
+              brief: `the finished image was delivered (posted in the dashboard${triggeredByIMessage ? ' and being texted to the requester' : ''}) with no caption: the Dojo wrote no words around it. ` +
+                'If you want to say something about it, say it in your own words.',
+            });
+          } catch { /* awareness note is best-effort */ }
           logger.info('image_create: image delivered via synthetic assistant message', {
             requestId, requesterId: agentId, filePath: deliveredPath,
             sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
@@ -490,7 +470,7 @@ const handlers = {
                 // silently failed on a broken imsg, so the requester got nothing
                 // and could not see the dashboard). sendIMessageWithAttachment
                 // returns true only when the file actually went out.
-                const iMessageDelivered = await sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
+                const iMessageDelivered = await sendIMessageWithAttachment(recipient, result.filePath, '');
                 const deliveryOutcome = iMessageDelivered
                   ? 'the finished image was texted to the requester over iMessage'
                   : 'texting the image to the requester failed (the iMessage attachment channel is unavailable), it is available in the dashboard only';
@@ -738,7 +718,7 @@ const handlers = {
     } catch { /* best effort */ }
 
     try {
-      enqueueVideoJob(submit.jobId);
+      enqueueVideoJob(submit.jobId); noteJobStartedIn(agentId, submit.jobId);   // loop guard: see wake-with-notice.ts
     } catch (err) {
       logger.error('video_create: failed to enqueue poller (job will resume on next boot)', {
         jobId: submit.jobId, error: err instanceof Error ? err.message : String(err),

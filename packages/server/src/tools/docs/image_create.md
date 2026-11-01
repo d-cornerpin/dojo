@@ -9,15 +9,15 @@ Generate an image from a text description. **The engine owns the whole delivery 
 - **aspect_ratio** (string, optional): one of `1:1` (square), `16:9` (landscape), `9:16` (portrait / vertical), `4:3` (standard), `3:4` (portrait standard). Defaults to `1:1`.
 - **style_hint** (string, optional): a style override such as `photorealistic`, `illustration`, `watercolor`, `3D render`, `pixel art`, `line drawing`. It is appended to your description as an explicit style instruction. Omit it and the style comes from the description itself.
 
-## THE ONE-ACK LAW: the engine speaks, you stay silent
+## HOW THE DELIVERY WORKS: the engine delivers the image, you speak in your own words
 
-Exactly one acknowledgement reaches the user per image, and it is not yours.
+The engine writes no words in your voice: no acknowledgement and no caption.
 
-1. **The waiting ack is the engine's.** When someone is waiting on the other end, the engine posts the short "On it." itself. You do not write it.
-2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message — the image, with a short caption ("Here you go."). No model turn is involved.
+1. **The waiting ack is yours.** If a person is waiting, say ONE short line of your own before you end your turn ("making that now"). If you say nothing, the engine asks you to.
+2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message: the image alone, with NO caption. You are told it was delivered, on your next turn; add your own words then only if they help. No model turn is involved in the delivery.
 3. **You get no second turn.** This is a fire-and-forget generator: the engine ends your tool phase the moment you call it. There is no later round in which you could present the image, and you do not need one.
 
-So: **no preamble before the call, no follow-up after it.** Do not write "I'm generating that now", do not write "here's your image", do not describe the image. Anything you write is a second message about an event the user has already been told about twice — it reads as the Dojo repeating itself, and it is the single most common failure on this tool. The tool result you get back says `End your turn now.` It means it.
+So: **one short line at most, before the call; nothing after it in this turn.** Do not describe the image, and do not announce it a second time ("here's your image") once it is delivered: that reads as the Dojo repeating itself. The tool result you get back says `End your turn now.` It means it.
 
 Never name the image model or any internal system to the user. As far as they are concerned, the Dojo made the image.
 
@@ -75,6 +75,6 @@ Then end your turn. Nothing else.
 ## Error cases
 
 - **No image model configured:** the call returns an error immediately and nothing is generated. This is the one case that IS yours to speak: tell the user image generation is unavailable until a model is picked in Settings → Dojo → Image Generation Model, and do not retry.
-- **Generation failed** (model error, content policy, provider outage): the engine writes the failure into the chat itself, as "I wasn't able to generate that image: …". You do not need to relay it. Do not fire the same description again on a whim; change the description or wait, and only if the user asks.
+- **Generation failed** (model error, content policy, provider outage): the engine says nothing to the person. You get a notice on your next turn naming the provider error; YOU tell the person, in your own words, on the channel they asked from. Do not fire the same description again on a whim; change the description or wait, and only if the user asks.
 - **The user pressed stop:** the generation is cancelled, no image is made, and nothing is said to anyone. Don't announce a cancellation the user just performed.
 - **Delivery failed** (rare): the engine writes a note into the chat carrying the file path of the image it could not attach. If you see one, you may tell the user the image was generated and where it is.

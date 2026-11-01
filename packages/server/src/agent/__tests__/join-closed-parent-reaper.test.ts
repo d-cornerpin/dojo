@@ -77,6 +77,8 @@ vi.mock('../../config/platform.js', () => ({
   isPrimaryAgent: () => false, isPMAgent: () => false, isHealerAgent: () => false,
   isDreamerAgent: () => false, getOwnerName: () => 'Owner', getPrimaryAgentId: () => 'primary',
 }));
+const sendIM = vi.hoisted(() => vi.fn(async () => null as unknown));
+vi.mock('../../services/imessage-bridge.js', () => ({ sendResponseViaIMessage: sendIM }));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn(async () => {}) }) }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -234,12 +236,39 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     const told = agentToldRows();
     expect(told).toHaveLength(1);
     expect(told[0].content).toMatch(/WRITE it to them in your own words/);
+    // P12 (OR-ENGINE-LABELLED): the person's text is plainly the Dojo, and the agent is told the EXACT text and where it went.
+    expect(msgs[0].content).toMatch(/^Dojo: /);
+    expect(told[0].content).toContain(msgs[0].content);
+    expect(told[0].content).toMatch(/dashboard chat/);
+    expect(told[0].content, 'the engine does not claim it spoke in the agent\'s voice').not.toMatch(/in its own voice/);
     // The relay is a real outbound and records one — this is what makes it a delivery rather
     // than a log line.
     const rows = mockDb.current!.prepare(
       `SELECT count(*) c FROM deliveries WHERE tool = 'a2a-join-failed'`,
     ).get() as { c: number };
     expect(rows.c).toBe(1);
+  });
+
+  it('C22: when the iMessage reply did not go and the text fell back to the dashboard, the agent is told exactly that', async () => {
+    seedClosedParentJoin('m-fb');
+    mockDb.current!.prepare(`UPDATE messages SET inbound_meta = ? WHERE id = 'm-fb'`)
+      .run(JSON.stringify({ channel: 'imessage', sender: '+15550100' }));
+    sendIM.mockResolvedValue(null);
+    await sweep();
+    const told = agentToldRows();
+    expect(told).toHaveLength(1);
+    expect(told[0].content, 'never claims the asker was told').not.toMatch(/has told/);
+    expect(told[0].content).toMatch(/did not (go|reach)/i);
+    expect(told[0].content).toMatch(/dashboard/);
+    expect(told[0].content).toMatch(/imessage/i);
+    // The refusal row on the dashboard is the Dojo speaking (never "I"), and the agent is told its exact text.
+    const refusal = ownerFacing().find((m) => /could not send that answer back/i.test(m.content));
+    expect(refusal, 'a refusal row was written').toBeTruthy();
+    expect(refusal!.content).toMatch(/^Dojo: /);
+    expect(/\bI\b/.test(refusal!.content)).toBe(false);
+    expect(refusal!.role).toBe('system');
+    const dojoTold = mockDb.current!.prepare(`SELECT content FROM messages WHERE agent_id = ? AND origin_intent = 'dojo_message_sent'`).all(AGENT) as Array<{ content: string }>;
+    expect(dojoTold.some((r) => r.content.includes(refusal!.content))).toBe(true);
   });
 
   it('POSITIVE: the parent\'s delivered answer is not disturbed — no state move, no re-close', async () => {

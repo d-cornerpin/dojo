@@ -26,6 +26,21 @@ export const SWEEP: readonly SweepEntry[] = [
 
 export const ALLOW: readonly AllowEntry[] = [
  {
+  "file": "agent/join-failure-notice.ts",
+  "line": "+ `the text is in the dashboard chat only, so ${asker} may not have seen it. It read: \"${sent.text}\"`;",
+  "reason": "a fact about where the Dojo's own message really landed (the send to the asker's channel did not go), not a recipient instruction (C22)"
+ },
+ {
+  "file": "agent/join-failure-notice.ts",
+  "line": "? `The Dojo (not you) posted this in the dashboard chat for ${asker}: \"${sent.text}\"`",
+  "reason": "a fact about where the Dojo's own message really landed (the asker used the dashboard), not a recipient instruction (C22)"
+ },
+ {
+  "file": "agent/tools/cat/media.ts",
+  "line": ": 'the person who asked (in the dashboard chat)';",
+  "reason": "names the asker's real channel in the notice that the engine sent nothing to them; the iMessage branch beside it names the number (C1)"
+ },
+ {
   "file": "agent/a2a-transport.ts",
   "line": "`Skip the iMessage only if you and ${ownerName} are actively going back and forth in dashboard chat about THIS specific deliverable right now (in which case dashboard is the natural place to surface it).]`;",
   "reason": "describes when the owner is already in the dashboard conversation about the deliverable (a presence fact, not a recipient)"
@@ -672,7 +687,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/definitions.ts",
-  "line": "description: 'Generate an image from a text description. The engine handles the ENTIRE delivery flow, DO NOT write any user-facing text around this tool. When you call it, the engine immediately posts a short acknowledgment (\"On it.\") to the chat. 10-60 s later when the image is ready, the engine posts the image directly with a short caption (\"Here you go.\"). You do NOT need a second turn. Just call this tool and end your turn, anything you write will duplicate what the engine already posted. Do NOT mention the image generation model or any internal system to the user.',",
+  "line": "description: 'Generate an image from a text description. The engine delivers the image itself: 10-60 s later it posts the image alone, with no caption, and you are told it was delivered. The engine writes no acknowledgement or caption for you: you may say ONE short line of your own before you end your turn (if a person is waiting and you say nothing, the engine asks you to). You do NOT need a second turn; do not describe the image or announce it a second time. Do NOT mention the image generation model or any internal system to the user.',",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {

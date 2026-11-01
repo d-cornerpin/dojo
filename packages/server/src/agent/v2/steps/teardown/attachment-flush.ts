@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { dojoVoice, tellAgentFilesPostedByDojo } from '../../../dojo-voice.js';
 import { turnParkedTheJob } from '../../engine-exit.js';
 import type { TeardownContext } from './index.js';
 
@@ -34,25 +35,21 @@ export async function flushStrandedAttachments(ctx: TeardownContext): Promise<vo
   // A drain marks the rows delivered (`delivered_at`): a clean turn's net has emptied the queue, so only
   // an error/abort path has content here. t159 G: a PARK is not the job's end either, so nothing is
   // drained then; the files stay queued and ride the reply of the turn that ends it.
-  // Degraded delivery: a thrown turn has no clean reply row to ride on and the
-  // channel router never ran, so we attach the files to a minimal assistant
-  // message in this turn's OWN conversation (conv_key = chosenConvKey) on the
-  // dashboard, using the model's show_to_user caption if it left one. We
-  // deliberately do NOT re-push to iMessage/voice from teardown: on a thrown
-  // turn the channel context may be half-resolved and a channel send is a
-  // non-idempotent side effect we won't risk here. The v2.9.20 requirement
-  // (queued files are never silently lost) is met via the dashboard surface
-  // plus a loud warning.
+  // Degraded delivery: a thrown turn has no clean reply row to ride on, so the files go on a minimal assistant
+  // message in this turn's OWN conversation on the dashboard, with the model's show_to_user caption if it left one
+  // (else a "Dojo:" line, and the agent is told). NO iMessage/voice re-push from teardown: the channel context may
+  // be half-resolved and a send is non-idempotent. The v2.9.20 requirement (files never silently lost) is met.
   if (turnParkedTheJob(agentId)) return;
   try {
     const { drainPendingAttachmentsWithCaptions } = await import('../../../pending-attachments.js');
     const leftover = drainPendingAttachmentsWithCaptions(agentId);
     if (leftover.attachments.length > 0 && counterparty.kind !== 'agent') {
-      const caption = leftover.captions.length > 0
-        ? leftover.captions.join('\n\n')
-        : 'Here are the files I prepared (the turn ended early).';
+      const engineCaption = leftover.captions.length === 0;   // OR-ENGINE-LABELLED: no caption from the agent = the Dojo speaks, labelled
+      const caption = engineCaption
+        ? dojoVoice('the agent prepared these files, but its turn ended early.')
+        : leftover.captions.join('\n\n');
       const leftoverId = uuidv4();
-      insertMessageIfAbsent({
+      const posted = insertMessageIfAbsent({
         id: leftoverId, agentId, role: 'assistant', content: caption,
         attachments: JSON.stringify(leftover.attachments), conversationId: chosenConversationId, turnNumber,
       });
@@ -67,6 +64,7 @@ export async function flushStrandedAttachments(ctx: TeardownContext): Promise<vo
           attachments: leftover.attachments,
         },
       });
+      if (posted && engineCaption) tellAgentFilesPostedByDojo(agentId, leftover.attachments, caption);   // told only once the row exists
       logger.warn('FA-TS4: flushed stranded show_to_user attachments in turn teardown', {
         agentId, fileCount: leftover.attachments.length, turnNumber,
       }, agentId);

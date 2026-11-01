@@ -43,8 +43,8 @@ describe('T82d: the declared-patience Heads-up lines are chat-visible but never 
   // the fixture that proves the second branch of that alternation, not just the first.
   it('CASE 3 (I2, didCompact=false): the "never got to trim" variant is ALSO platform noise', () => {
     const note = declaredPatienceHonestFailNote('can you pull together the Q3 board deck by tomorrow?', false);
-    expect(note).toContain("couldn't trim it down enough to try again");
-    expect(note).not.toContain('even after I trimmed it once and tried again');
+    expect(note).toContain("couldn't be trimmed down enough to try again");
+    expect(note).not.toContain('even after it was trimmed once and tried again');
     expect(isPlatformNoise(note)).toBe(true);
   });
 
@@ -63,9 +63,9 @@ describe('T82d: the declared-patience Heads-up lines are chat-visible but never 
     // transient status lines this task adds. Wording mirrors those writers' own templates
     // closely enough to prove the anchor does not accidentally widen to cover them too.
     expect(isPlatformNoise(
-      'Heads up: "Assistant" asked me to approve a sensitive action (delete the old backups), '
-      + 'but it went unanswered for over an hour, so I let the request expire. Nothing was '
-      + "changed or deleted. If you still want it done, just tell me and I'll approve it.",
+      'Dojo: "Assistant" asked for approval of a sensitive action (delete the old backups), '
+      + 'but no answer came within an hour, so the request expired. Nothing was '
+      + 'changed or deleted. To do it, ask the agent again.',
     )).toBe(false);
     expect(isPlatformNoise(
       'Heads up: a scheduled reminder, "Renew passport", failed on its final attempt and was '

@@ -292,7 +292,7 @@ describe('PRESERVED: the ladder still relays when the engine has said NOTHING', 
     // at the engine-relay rung rather than at the end of the ladder — and it carries T48's own
     // preface instead of the end-of-ladder wording. The subject of this clause is untouched:
     // the FIRST relay still always happens, and there is still exactly one of it.
-    expect(ownerFacing().some((m) => /results are in as delivered by the helpers/.test(m.content))).toBe(true);
+    expect(ownerFacing().some((m) => /results are in as the helpers delivered them/.test(m.content))).toBe(true);
     expect(workRow(askId).state).toBe('done');
   });
 

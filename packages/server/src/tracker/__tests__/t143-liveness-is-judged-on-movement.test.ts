@@ -493,13 +493,19 @@ describe('SPINNING: the PM tells the owner, in its own voice, what repeats — o
     expect(queueEffortReviewIfNeeded('task-circle')).toBe(true);
     await runEffortReview('task-circle');
     const reports = (): Array<{ content: string }> => db().prepare(
-      "SELECT content FROM messages WHERE agent_id = 'pm' AND role = 'assistant'",
+      "SELECT content FROM messages WHERE agent_id = 'pm' AND role = 'system'",
     ).all() as Array<{ content: string }>;
     expect(reports()).toHaveLength(1);
     expect(reports()[0].content).toContain('Helper');
     expect(reports()[0].content).toContain('the inbox sweep');
     expect(reports()[0].content).toContain('gmail_search');
     expect(reports()[0].content).toContain('nothing new lands');
+    // C8/P2 (OR-ENGINE-LABELLED): plainly the Dojo speaking, never the PM's first person; the PM is told the exact text.
+    expect(reports()[0].content).toMatch(/^Dojo: /);
+    expect(reports()[0].content).not.toMatch(/\bI\b|\bMy\b|\bI'm\b/);
+    const told = db().prepare("SELECT content FROM messages WHERE agent_id = 'pm' AND origin_intent = 'dojo_message_sent'").all() as Array<{ content: string }>;
+    expect(told).toHaveLength(1);
+    expect(told[0].content).toContain(reports()[0].content);
     // The PM keeps re-driving: the verdict is still pending delivery to the agent.
     expect(pendingCirclingVerdict('task-circle')).not.toBeNull();
     // SPINNING is the PM's voice, never a platform text.
@@ -515,7 +521,7 @@ describe('SPINNING: the PM tells the owner, in its own voice, what repeats — o
 
 describe('SPINNING (round 3, I4): the step named is one that REPEATS, not the busiest tool', () => {
   const reports = (): Array<{ content: string }> => db().prepare(
-    "SELECT content FROM messages WHERE agent_id = 'pm' AND role = 'assistant'",
+    "SELECT content FROM messages WHERE agent_id = 'pm' AND role = 'system'",
   ).all() as Array<{ content: string }>;
   const call = (atMs: number, tool: string, input: Record<string, unknown>): void => {
     db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)

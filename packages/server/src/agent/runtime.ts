@@ -776,7 +776,7 @@ class AgentRuntime {
         toastError = "This agent isn't pointed at a model right now. Open Settings → Agents and pick a model for it. (Sometimes a provider's API-key change can clear the link, re-selecting the model fixes it.)";
         toastCode = 'NO_MODEL';
       } else if (errCode === 'AGENT_NOT_FOUND') {
-        toastError = "I couldn't find that agent in the database. It may have been deleted. Refresh the page and check the Agents list.";
+        toastError = "That agent couldn't be found in the database. It may have been deleted. Refresh the page and check the Agents list.";
         toastCode = 'AGENT_NOT_FOUND';
       } else {
         toastError = 'Agent hit a problem the recovery system could not handle. Send a new message to retry, or check the Vitals page.';

@@ -21,7 +21,7 @@ import type { ModelCallParams } from '../../../model.js';
 
 /** The array the assembler hands over and the injections append to. */
 type ModelMessage = ModelCallParams['messages'][number];
-import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../../../model.js';
+import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR, STREAM_NO_FINISH_ERROR } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { abandonTurn, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
@@ -337,7 +337,7 @@ export async function callWithRetryAndFallback(
       // cloud behaviour is the untouched control.
       if (!isAutoRouted) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (attempt < maxAttempts - 1 && msg.includes(STREAM_IDLE_TIMEOUT_ERROR)) {
+        if (attempt < maxAttempts - 1 && (msg.includes(STREAM_IDLE_TIMEOUT_ERROR) || (msg.includes(STREAM_NO_FINISH_ERROR) && !turnCtx.phoneStreamFlushedAny))) {   // R7: a hung-up answer gets the same one retry, unless a caller already heard part of it (that audio cannot be recalled; a re-dial would say it twice)
           logger.warn('v2: model stream idle timeout; retrying the same model once on a fresh connection', {
             attempt, modelId,
           }, agentId);

@@ -197,6 +197,8 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     'pm_review', 'pm_rename', 'validation_check', 'engine_event_expired', 'agent_health',
     'block_validated', 'schedule_run_failed', 'schedule_run_failed_owner', 'learning_loop',
     'healer',
+    // A failure the agent must voice (image not generated, file not delivered): the agent is woken to tell the person.
+    'delivery_failure_owed',
     // SLOW-INFERENCE T79d: `tracker/pm-agent.ts`'s `runEffortReview` — a deliverable, not a
     // rider, for the same reason `pm_review` is one: it IS the reason for a turn (a dedicated
     // PM turn asking for a structured advancing/circling verdict), not content riding a turn

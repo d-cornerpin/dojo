@@ -162,13 +162,13 @@ export function formatErrorForHuman(kind: ErrorKind, ctx: ErrorContext = {}): st
         : `${agent} is stopped: its AI provider says the account is out of credit or quota. Add credit or switch providers in Settings.`;
 
     case 'no_models_available':
-      return `I couldn't find any working model for ${agent}'s task. Check provider status in Settings → Providers.`;
+      return `No working model was found for ${agent}'s task. Check provider status in Settings → Providers.`;
 
     case 'all_providers_down':
-      return `None of your AI providers are responding. Looks like an internet issue — I'll keep trying every 5 minutes.`;
+      return `None of your AI providers are responding. Looks like an internet issue — The Dojo will keep trying every 5 minutes.`;
 
     case 'dns_failure':
-      return `Can't reach the internet right now. I'll retry shortly.`;
+      return `Can't reach the internet right now. The Dojo will retry shortly.`;
 
     case 'db_write_fail':
       return `The platform's storage is having a problem. Open the dashboard for recovery options.`;

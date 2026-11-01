@@ -98,7 +98,7 @@ export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   // keep — only these two exact templates are transient status noise. A human typing a message
   // that happens to start "Heads up:" is likewise untouched by these two patterns (see the
   // control in `memory/__tests__/platform-noise.test.ts`).
-  /^Heads up: I hit my model's size limit — trimming my context and retrying now\.$/,
+  /^(?:Heads up: I hit my model's size limit — trimming my context|Dojo: the agent hit its model's size limit — trimming its context) and retrying now\.$/,
   // T82 FIX WAVE, I2 — `declaredPatienceHonestFailNote` now forks its trim clause on whether a
   // compaction genuinely completed for the doomed chain (see that function's own doc): the
   // ORIGINAL "even after I trimmed it once and tried again" wording when it did, and an honest
@@ -106,7 +106,7 @@ export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   // agent's model is the 'auto' sentinel, or `checkAndCompact` itself threw). Both are the SAME
   // transient status template and must both be noise — the alternation is the anchor, not a
   // widened match: the stable prefix/suffix either side of it is unchanged.
-  /^Heads up: I couldn't finish answering[\s\S]*my model couldn't process this much context in time, (?:even after I trimmed it once and tried again|and I couldn't trim it down enough to try again)\. The Healer is looking into it\.$/,
+  /^(?:Heads up: I couldn't finish answering[\s\S]*my model couldn't process this much context in time, (?:even after I trimmed it once and tried again|and I couldn't trim it down enough to try again)|Dojo: the agent couldn't finish answering[\s\S]*its model couldn't process this much context in time, (?:even after it was trimmed once and tried again|and it couldn't be trimmed down enough to try again))\. The Healer is looking into it\.$/,
 ];
 
 /** True if the content is platform/inter-agent plumbing (not conversation). */

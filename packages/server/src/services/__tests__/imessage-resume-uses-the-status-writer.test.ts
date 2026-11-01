@@ -50,6 +50,7 @@ vi.mock('../../config/platform.js', () => ({
 const agentStatusMovedMock = vi.hoisted(() => ({ agentStatusMoved: vi.fn() }));
 vi.mock('../../agent/agent-owner-cards.js', () => agentStatusMovedMock);
 
+vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
 vi.mock('../imessage-bridge.js', () => ({
   getSafeSenders: () => [{ address: '+15550001', name: 'Owner', is_primary: true, sharing_level: 'open_book' }],
   findSafeSenderByAddress: (records: Array<{ address: string }>, q: string) =>
@@ -92,32 +93,32 @@ afterEach(() => {
 describe('handleIMCommand("resume") routes through the one status writer', () => {
   it('resumes a paused agent: clears the park tag and closes the owner card', async () => {
     seedAgent('paused', '[budget_stop] over the line');
-    expect(await handleIMCommand('resume', OWNER)).toBe('Agent resumed.');
+    expect(await handleIMCommand('resume', OWNER)).toBe('Dojo: Agent resumed.');
     expect(row()).toEqual({ status: 'idle', last_error: null });
     expect(agentStatusMovedMock.agentStatusMoved).toHaveBeenCalledWith('p1', 'idle');
   });
 
   it('resumes an errored agent', async () => {
     seedAgent('error', 'provider 429');
-    expect(await handleIMCommand('resume', OWNER)).toBe('Agent resumed.');
+    expect(await handleIMCommand('resume', OWNER)).toBe('Dojo: Agent resumed.');
     expect(row().status).toBe('idle');
   });
 
   it('leaves a working agent alone: "resume" does not mark it idle mid-turn', async () => {
     seedAgent('working', null);
-    expect(await handleIMCommand('resume', OWNER)).toBe('Agent is not paused.');
+    expect(await handleIMCommand('resume', OWNER)).toBe('Dojo: Agent is not paused.');
     expect(row().status).toBe('working');
   });
 
   it('leaves an idle agent alone', async () => {
     seedAgent('idle', null);
-    expect(await handleIMCommand('resume', OWNER)).toBe('Agent is not paused.');
+    expect(await handleIMCommand('resume', OWNER)).toBe('Dojo: Agent is not paused.');
     expect(row().status).toBe('idle');
   });
 
   it('control: "pause" still pauses the primary agent', async () => {
     seedAgent('idle', null);
-    expect(await handleIMCommand('pause', OWNER)).toBe('Agent paused. Send "resume" to continue.');
+    expect(await handleIMCommand('pause', OWNER)).toBe('Dojo: Agent paused. Send "resume" to continue.');
     expect(row().status).toBe('paused');
   });
 });

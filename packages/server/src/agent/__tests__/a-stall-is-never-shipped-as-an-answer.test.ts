@@ -105,7 +105,7 @@ const REST = ', and the second half.';
 // `script` is consumed one entry per chat request, so a case can say "stall, then answer" —
 // which is what proves the retry grant actually reaches a second attempt. The last entry
 // repeats once the script runs out.
-type Behaviour = 'complete' | 'half-then-stall';
+type Behaviour = 'complete' | 'half-then-stall' | 'half-then-close';
 const script: { openai: Behaviour[]; anthropic: Behaviour[] } = { openai: [], anthropic: [] };
 const requests = { openai: 0, anthropic: 0 };
 /** Sockets deliberately left hanging; destroyed in afterAll so the server can close. */
@@ -164,6 +164,7 @@ const serveOpenAI = (res: http.ServerResponse, mode: Behaviour): void => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   res.write(oaChunk({ role: 'assistant', content: HALF }));
   if (mode === 'half-then-stall') { stalled.push(res); fireStall(); return; } // ...and then nothing, ever.
+  if (mode === 'half-then-close') { res.end(); return; } // R7: the server hangs up mid-answer: no finish_reason, no [DONE]
   res.write(oaChunk({ content: REST }));
   res.write(oaChunk({}, 'stop'));
   res.write(sse({
@@ -389,6 +390,27 @@ describe('T65b — the one-retry grant becomes reachable for a mid-stream stall'
     );
     expect(outcome.abandoned).toBeUndefined();
     expect(requests.openai).toBe(2); // the grant was spent — at HEAD there is only ever one request
+    expect(outcome.abandoned === undefined && outcome.result.content).toBe(HALF + REST);
+  });
+
+  // R7 (owner ruling): an answer that ends with no "finished" signal from the provider is not complete.
+  // It used to be returned as a normal end_turn (half an answer shipped). Now it is raised as a retryable
+  // cut, and the loop's single same-model retry gives the person the whole answer.
+  it('R7: a stream that ends with no finish_reason is RAISED, not returned as a finished answer', async () => {
+    script.openai = ['half-then-close'];
+    seedOpenAI(null, null);
+    await expect(call('m-local')).rejects.toThrow(/without a finish signal/);
+  });
+
+  it('R7: hang up mid-answer then answer: the retry runs and the whole answer arrives', async () => {
+    script.openai = ['half-then-close', 'complete'];
+    seedOpenAI(null, null);
+    const outcome = await callWithRetryAndFallback(
+      { modelId: 'm-local' } as unknown as AgentTurnState,
+      'm-local',
+      inputs(),
+    );
+    expect(requests.openai).toBe(2);
     expect(outcome.abandoned === undefined && outcome.result.content).toBe(HALF + REST);
   });
 

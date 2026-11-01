@@ -213,7 +213,7 @@ describe('T48: at redrive exhaustion with every piece back, the engine ships the
     // VERBATIM: the whole piece, not a 600-char summary of it, and the engine adds no words.
     expect(relayed!.content).toContain(PIECE_A);
     expect(relayed!.content).toContain(PIECE_B);
-    expect(relayed!.content.startsWith(engineRelayPreface(2))).toBe(true);
+    expect(relayed!.content.startsWith(`Dojo: ${engineRelayPreface(2)}`)).toBe(true);   // OR-ENGINE-LABELLED: the preface is the Dojo's
     // 0 prefix bytes on the owner-delivery lane.
     expect(relayed!.content.startsWith('[')).toBe(false);
     expect(relayed!.role).toBe('assistant');
@@ -349,6 +349,6 @@ describe('T48 CONTROL: the ONE-PIECE relay is byte-identical', () => {
 
     expect(auditEntries(askId), 'one piece is D13\'s relay, not this rung').not.toContain('join_engine_relay');
     expect(ownerFacing().some((m) => /All the delegated pieces are back/.test(m.content))).toBe(true);
-    expect(ownerFacing().some((m) => m.content.includes('results are in as delivered by the helpers'))).toBe(false);
+    expect(ownerFacing().some((m) => m.content.includes('results are in as the helpers delivered them'))).toBe(false);
   });
 });
