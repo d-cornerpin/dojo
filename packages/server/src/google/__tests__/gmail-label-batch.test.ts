@@ -43,7 +43,7 @@ describe('gmail_label message_ids — batchModify in chunks of 1,000', () => {
     expect(body(1)).toEqual({ ids: all.slice(1000), addLabelIds: ['X'], removeLabelIds: ['INBOX'] });
     expect(out).toMatch(/^Labels updated on 1250 messages/);
     for (const id of ['m1', 'm1000', 'm1250']) expect(out).toContain(id);
-    expect(googleRead).not.toHaveBeenCalled(); // no per-message thread lookup
+    expect(vi.mocked(googleRead).mock.calls.every((c) => String(c[0]).endsWith('/labels'))).toBe(true); // no per-message thread lookup; only the label list may be read
   });
 
   it('the singular message_id joins the list; a repeated id is sent once', async () => {

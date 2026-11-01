@@ -18,6 +18,7 @@ const ok = (data: unknown = {}) => ({ ok: true, data, error: undefined, apiEndpo
 const labels = { labels: [
   { id: 'INBOX', name: 'INBOX', type: 'system' },
   { id: 'Label_42', name: 'W4-all', type: 'user' },
+  { id: 'Label_9', name: 'URGENT', type: 'user' },
   { id: 'Label_7', name: 'Receipts/2026', type: 'user' },
 ] };
 const sentBody = (): Record<string, unknown> => vi.mocked(googleWrite).mock.calls[0]?.[2] as Record<string, unknown>;
@@ -27,6 +28,13 @@ beforeEach(() => {
   vi.mocked(googleRead).mockReset(); vi.mocked(googleWrite).mockReset();
   vi.mocked(googleWrite).mockResolvedValue(ok() as never);
   vi.mocked(googleRead).mockResolvedValue(ok(labels) as never);
+});
+
+describe('an all-capitals custom name is a name, not an id', () => {
+  it('URGENT resolves to its id; a real system label in the same call still passes through', async () => {
+    await run({ add_labels: ['URGENT', 'STARRED'], remove_labels: ['INBOX'] });
+    expect(sentBody()).toMatchObject({ addLabelIds: ['Label_9', 'STARRED'], removeLabelIds: ['INBOX'] });
+  });
 });
 
 describe('gmail_label resolves custom label names to ids', () => {
@@ -47,8 +55,8 @@ describe('gmail_label resolves custom label names to ids', () => {
     await run({ add_labels: ['W4-all'] });
     expect(sentBody()).toMatchObject({ addLabelIds: ['W4-all'] });
   });
-  it('no lookup is made when every label is already a system label or an id', async () => {
-    await run({ add_labels: ['Label_42', 'UNREAD'], remove_labels: ['INBOX'] });
+  it('no lookup is made when every label is a system label', async () => {
+    await run({ add_labels: ['STARRED', 'UNREAD'], remove_labels: ['INBOX'] });
     expect(googleRead).not.toHaveBeenCalled();
   });
 });

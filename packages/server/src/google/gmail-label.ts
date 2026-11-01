@@ -32,19 +32,21 @@ export function labelFailureText(error: string | undefined, _toolName: string): 
 }
 
 // Gmail's modify calls take label IDs only, but the tool tells the agent to pass a custom label's NAME.
-// A system label (INBOX, STARRED, CATEGORY_PROMOTIONS ...) and a custom id (Label_123) already are ids.
-const ALREADY_AN_ID = /^(?:[A-Z][A-Z_]*|Label_\d+)$/;
+// Gmail's system labels are a fixed set and are their own ids. Anything else (a custom id such as Label_123,
+// or a custom NAME, which may well be all capitals: "URGENT", "TODO") is looked up in the account's label list.
+const SYSTEM_LABELS = new Set([
+  'INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT', 'CHAT',
+  'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+]);
 
-/** Turn custom label names into this account's label ids. A name that matches nothing, or a label list that cannot be read, is left as given so Gmail's own refusal (and its remedy) still applies. */
+/** Turn custom label names into this account's label ids (an exact id first, then an exact name, then a name in any case). A label that matches nothing, or a label list that cannot be read, is left as given so Gmail's own refusal (and its remedy) still applies. */
 async function labelIdsFor(labels: string[], gmailBase: string, agentId: string, agentName: string, slot: string): Promise<string[]> {
-  if (labels.every((l) => ALREADY_AN_ID.test(l))) return labels;
+  if (labels.every((l) => SYSTEM_LABELS.has(l))) return labels;
   const listed = await googleRead(`${gmailBase}/labels`, agentId, agentName, 'gmail_label', {}, slot);
   const all = (listed?.ok ? (listed.data as { labels?: Array<{ id: string; name: string }> } | null)?.labels : undefined) ?? [];
   return labels.map((l) => {
-    if (ALREADY_AN_ID.test(l)) return l;
-    const byId = all.find((x) => x.id === l);
-    if (byId) return byId.id;
-    return all.find((x) => x.name === l)?.id ?? all.find((x) => x.name.toLowerCase() === l.toLowerCase())?.id ?? l;
+    if (SYSTEM_LABELS.has(l)) return l;
+    return all.find((x) => x.id === l)?.id ?? all.find((x) => x.name === l)?.id ?? all.find((x) => x.name.toLowerCase() === l.toLowerCase())?.id ?? l;
   });
 }
 
