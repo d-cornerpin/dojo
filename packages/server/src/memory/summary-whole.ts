@@ -19,7 +19,7 @@
 //     refused at once). Cut again, or no more room to give: NOT kept. The refusal is `tooBig`, so every
 //     caller splits the span (or offers it to a writer that holds it) and the rows stay whole.
 //   · TOO LONG (over the target's slack, or over the input): written once more FROM THE SOURCE, told how
-//     long it was. A summary longer than its input is never kept; a MERGE is kept only within its slack
+//     long it was. A MERGE still too long is `tooBig` (proof-fix G): the batch is halved and the refusal recorded. A summary longer than its input is never kept; a MERGE is kept only within its slack
 //     (`mergeTargetTokens`: strictly smaller than its children, so notes cannot grow level over level).
 //   · A MERGE THAT DROPPED FACTS IT HAD ROOM FOR (`carriedFacts`: newest first, within its ask): written
 //     once more, told which. The one with fewer dropped facts is kept.
@@ -107,10 +107,15 @@ export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
   const firstTokens = tok(first.text);
   const firstDropped = dropped(first.text);
   if (firstTokens <= allowed && firstDropped.length === 0) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };
+  // A MERGE that came out too long is `tooBig` like a cut one: its limit is 0.8 of ONE child, so a batch of n notes must
+  // shrink to 0.8/n of its input, and a smaller group asks less of the writer. Every caller then halves the batch and
+  // records the refusal (`unwritable-span.ts`), so a pass reclaims what a pair can give and the same group is not
+  // dialled again. A leaf's verdict (longer than its input) stays a plain refusal.
+  const tooLong = (): SummaryResult => ({ ok: false, reason: merge ? 'the summary came out longer than it may be kept' : 'the summary came out longer than its input', ...(merge ? { tooBig: true as const } : {}) });
   const keepFirst = (why: string): SummaryResult => {
     if (keepable(first.text)) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };
     a.warn('SUMMARY_REFUSED the summary came out longer than it may be kept, and no rewrite could be had; the span is left whole', { depth: a.depth, inputTokens, firstTokens, why });
-    return { ok: false, reason: 'the summary came out longer than it may be kept' };
+    return tooLong();
   };
 
   const note = rewriteNote(firstTokens, allowed, inputTokens, a.targetTokens, firstDropped);
@@ -128,7 +133,7 @@ export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
   const pick = secondText !== null && (firstText === null || dropped(secondText).length <= dropped(firstText).length) ? secondText : firstText;
   if (pick === null) {
     a.warn('SUMMARY_REFUSED the summary came out longer than it may be kept twice; the span is left whole', { depth: a.depth, inputTokens, firstTokens, allowed });
-    return 'refused' in second && !second.refused.ok && second.refused.tooBig ? second.refused : { ok: false, reason: merge ? 'the summary came out longer than it may be kept' : 'the summary came out longer than its input' };
+    return 'refused' in second && !second.refused.ok && second.refused.tooBig ? second.refused : tooLong();
   }
   const stillDropped = dropped(pick).length;
   if (stillDropped > 0) a.warn('Condensed summary kept with facts its notes record still left out', { depth: a.depth, stillDropped, firstDropped: firstDropped.length });
