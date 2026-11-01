@@ -196,3 +196,44 @@ describe('the hand-back facts, in the real model context', () => {
     }
   });
 });
+
+describe('the inherited-backlog notice (review R3-3): the list only on the turn it drives', () => {
+  /** An owner ask an older build stranded weeks ago (its turn closed by a boot long since). */
+  async function inheritedOwnerAsk(): Promise<void> {
+    const r = await submitUserMessage(AGENT, 'Can you find the warranty card for the dishwasher?');
+    expect(r.ok).toBe(true);
+    const id = (mockDb.current!.prepare("SELECT id FROM messages WHERE content LIKE '%warranty card%'").get() as { id: string }).id;
+    mockDb.current!.prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(Date.now() - 9 * 86_400_000, id);
+    claimAsk(askIdForMessage(id), AGENT);
+    stampClaimingTurn(askIdForMessage(id), 800);
+    mockDb.current!.prepare(
+      `INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, ended_at, exit_reason, answered)
+       VALUES (?, 800, 'user', 'ask', ?, datetime('now', '-9 days'), datetime('now', '-9 days'), 'terminated', 0)`,
+    ).run(AGENT, id);
+    reconcileOrphanedClaims({ inheritedBacklog: true });
+  }
+
+  it('the stored notice row carries no personal content', async () => {
+    await inheritedOwnerAsk();
+    const stored = (mockDb.current!.prepare("SELECT content FROM messages WHERE origin_intent = 'owed_messages_inherited'").get() as { content: string }).content;
+    expect(stored).not.toContain('warranty');
+    expect(stored).not.toContain('dishwasher');
+  });
+
+  it('the turn the notice drives is given the list whole; a later contact turn sees nothing of it', async () => {
+    await inheritedOwnerAsk();
+    const engine = await turnSees('I will look at these and decide.');
+    expect(engine, 'the driven turn must see the list').toContain('dishwasher');
+    expect(engine).toMatch(/from the owner/);
+    expect(engine).toMatch(/9 days ago/);
+    mockDb.current!.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-c2', ?, 'imessage', '+15550177')`).run(AGENT);
+    insertMessage({
+      id: 'm-c2', agentId: AGENT, role: 'user', content: 'Is the bake sale on Sunday?',
+      lane: 'owner', channel: 'imessage', senderId: '+15550177', authorized: true, conversationId: 'conv-c2',
+      inboundMeta: JSON.stringify({ channel: 'imessage', relation: 'known_contact', sender: '+15550177', authorized: true }),
+    } as never);
+    const wire = await turnSees('Yes, Sunday at ten.');
+    expect(wire, 'this turn must be the contact\'s').toContain('bake sale');
+    for (const f of ['dishwasher', 'warranty', 'from the owner']) expect(wire, `a contact's turn was shown: ${f}`).not.toContain(f);
+  });
+});

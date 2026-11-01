@@ -38,6 +38,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, abandonUnservableAsks } from '../store.js';
 import { reconcileOrphanedClaims } from '../orphaned-claims.js';
+import { inheritedOwedListFor } from '../inherited-backlog.js';
 import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
 import { insertMessage } from '../../memory/message-store.js';
@@ -123,7 +124,9 @@ describe('the first boot of this build', () => {
     boot(true);
     const n = owedNotices();
     expect(n).toHaveLength(1);
-    const text = n[0];
+    // The stored row names the asks by id only (review R3-3); the list is rendered for the turn it drives.
+    expect(n[0]).not.toContain('dishwasher');
+    const text = inheritedOwedListFor(n[0]) ?? '';
     expect(text).toContain('dishwasher');
     expect(text).toContain('garden party');
     expect(text).toContain('+15550100');
@@ -132,13 +135,13 @@ describe('the first boot of this build', () => {
     expect(text).toContain('20 days');
     expect(text).toContain('9 days');
     expect(text, 'the handed-back fresh ask is not on the list').not.toContain('roof quote');
-    expect(text, 'the engine texts nobody: the agent decides').toMatch(/decide/i);
+    expect(n[0], 'the engine texts nobody: the agent decides').toMatch(/decide/i);
   });
 
   it('the notice is a deliverable: it drives the agent\'s own turn, where it is shown whole', () => {
     boot(true);
     const pending = getPendingEngineEvent(AGENT);
-    expect(pending?.content ?? '').toContain('dishwasher');
+    expect(pending?.content ?? '').toContain(askIdForMessage('m-old-owner'));
   });
 
   it('is idempotent across repeated boots at the same boundary: no second notice, nothing moves', () => {

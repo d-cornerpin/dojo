@@ -77,23 +77,43 @@ export function parkInheritedBacklog(deadTurn: string, bootAt = PROCESS_STARTED_
   return lastPass;
 }
 
-/** ONE deliverable notice per agent, listing every owed message. Shown whole on the turn it drives. */
+/** ONE deliverable notice per agent. The STORED row carries ask ids and instructions only — no sender, no words
+ *  (review R3-3: a served engine row stays in the events lane of later turns, every conversation's). The list itself
+ *  is rendered live, whole, on the one turn this row drives (`inheritedOwedListFor`, delivered by the hand-back steer). */
 function tellAgentOwed(agentId: string, owed: Inherited[]): void {
-  const lines = owed.map((o, i) => {
-    const from = o.sender === 'owner' || o.counterparty === 'owner' ? 'the owner' : (o.counterparty ?? o.sender ?? 'an unrecorded sender');
-    const age = o.received_at != null ? `${ageInWords(Date.now() - o.received_at)} ago` : 'at an unrecorded time';
-    const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
-    return `(${i + 1}) [${o.id}] from ${from}, in the ${o.channel ?? 'unknown'} conversation, received ${age}: "${snippet}"`;
-  });
   insertEngineEventIfAbsent({
-    id: uuidv4(), agentId, sourceAgentId: null, originIntent: 'owed_messages_inherited', work: null,
+    id: uuidv4(), agentId, sourceAgentId: null, originIntent: 'owed_messages_inherited', work: null,   // = INHERITED_NOTICE_INTENT (the census reads literals)
     content: `[SOURCE: AGENT NOTICE from Dojo] After this update the Dojo found ${owed.length} message(s) an older version left `
-      + 'unanswered: the run serving each one stopped before it answered, and older builds never handed them back. '
-      + `They are held as owed and will NOT be answered automatically. ${lines.join('; ')}. `
+      + `unanswered, now held owed and NOT answered automatically: ${owed.map((o) => `[${o.id}]`).join(', ')}. `
+      + 'Who sent each and what it says is listed for you on this turn. '
       + 'Decide which still matter. To answer one, reply in its own conversation and say plainly the reply is late: it closes '
       + 'itself when your answer is delivered there. If one no longer needs an answer, call work_close_request with its id, '
       + 'disposition "dropped" and your reason as the note. The Dojo has sent nothing to anyone.',
   });
+}
+
+export const INHERITED_NOTICE_INTENT = 'owed_messages_inherited';
+
+/** The list for the turn a notice row drives: each ask it names that is still owed — who, conversation, age, words. */
+export function inheritedOwedListFor(noticeContent: string): string | null {
+  const ids = [...noticeContent.matchAll(/\[(ask:[^\]\s]+)\]/g)].map((m) => m[1]);
+  const lines: string[] = [];
+  for (const id of ids) {
+    const o = getDb().prepare(`
+      SELECT w.id AS id, w.agent_id AS agent_id, m.content AS content, m.created_at AS received_at,
+             COALESCE(c.channel, m.channel) AS channel, COALESCE(c.counterparty_name, c.counterparty_id) AS counterparty,
+             m.sender_id AS sender
+        FROM work w LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
+        LEFT JOIN conversations c ON c.id = w.conversation_id
+       WHERE w.id = ? AND w.state = 'blocked'`).get(id) as Inherited | undefined;
+    if (!o) continue;
+    const from = o.sender === 'owner' || o.counterparty === 'owner' ? 'the owner' : (o.counterparty ?? o.sender ?? 'an unrecorded sender');
+    const age = o.received_at != null ? `${ageInWords(Date.now() - o.received_at)} ago` : 'at an unrecorded time';
+    const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    lines.push(`(${lines.length + 1}) [${o.id}] from ${from}, in the ${o.channel ?? 'unknown'} conversation, received ${age}: "${snippet}"`);
+  }
+  return lines.length === 0 ? null
+    : `THE MESSAGES AN OLDER VERSION LEFT UNANSWERED, held owed for you to decide on:\n${lines.join('\n')}`;
 }
 
 /** Is `workId` an ask parked as inherited and still owed? */
