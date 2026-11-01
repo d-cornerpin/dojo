@@ -257,11 +257,8 @@ export function parseWorkingNote(content: string): WorkingNoteMatch | null {
 // Default chat hides generic system rows by design. This allowlist is the exception:
 // deliberate, plain-language heads-ups the engine posts into the primary chat FOR THE OWNER
 // (a scheduled item failed for good, an approval request expired, a project fell short).
-//
-// CONTRACT: each server write site prefixes its note with one of these exact strings, and
-// takes the string FROM HERE. Matching contract comments live at the write sites:
-// scheduler/runner.ts (failed-final-run + skipped-reminder) and agent/destructive-gate.ts
-// (approval expiry).
+// CONTRACT: each server write site prefixes its note with one of these exact strings, taken FROM HERE
+// (matching comments at scheduler/runner.ts and agent/destructive-gate.ts).
 //
 // PHASE-4 T6 (2026-08-02) — `OWNER_ALERT_PROJECT_ATTENTION_PREFIX` HAS NO WRITER ANY MORE,
 // AND IT STAYS. T4 removed the third site (`tracker/tools.ts`'s fallen-project note) under
@@ -284,9 +281,7 @@ export function parseWorkingNote(content: string): WorkingNoteMatch | null {
 // engine-owned pauses. It stays wordy-mode-only until that is fixed and the copy is split.
 export const OWNER_ALERT_HEADS_UP_PREFIX = 'Heads up:';
 export const OWNER_ALERT_PROJECT_ATTENTION_PREFIX = '[tracker:project_needs_attention]';
-/** OR-ENGINE-LABELLED (owner, 2026-10-31): an engine message that stays because the agent cannot act starts with this,
- *  so it is plainly the Dojo speaking and never the agent's voice. */
-export const OWNER_ALERT_DOJO_PREFIX = 'Dojo:';
+export const OWNER_ALERT_DOJO_PREFIX = 'Dojo:';   // an engine message that stays because the agent cannot act: plainly the Dojo, never the agent's voice
 export const OWNER_ALERT_SYSTEM_PREFIXES: readonly string[] = [
   OWNER_ALERT_HEADS_UP_PREFIX,
   OWNER_ALERT_DOJO_PREFIX,

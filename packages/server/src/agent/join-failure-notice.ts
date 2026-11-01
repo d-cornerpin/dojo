@@ -159,3 +159,27 @@ export function joinFailureNotice(p: NoticeInput): string {
 
   return lead + (p.questionSnippet ? ` (Your question was: "${p.questionSnippet}")` : '');
 }
+
+/** What a join relay actually did (C22), so the agent can be told the truth about it. */
+export interface JoinRelayOutcome {
+  /** The exact text sent, with its Dojo label. */
+  text: string;
+  /** Where it really landed: a routed channel, or `dashboard`. */
+  landedOn: string;
+  /** The channel the asker used, when the send there did not go. */
+  fellBackFrom: string | null;
+  /** Why that channel was not used, when known. */
+  why: string | null;
+}
+
+/** The sentence telling the agent what the Dojo really did. Never claims the asker was told when it only reached the dashboard. */
+export function relayOutcomeSentence(asker: string, sent: JoinRelayOutcome | null): string {
+  if (sent === null) return `The Dojo tried to tell ${asker}, but nothing is recorded as sent, so ${asker} may not know.`;
+  if (sent.fellBackFrom) {
+    return `The Dojo (not you) tried to tell ${asker} on ${sent.fellBackFrom}, but that did not go${sent.why ? ` (${sent.why})` : ''}; `
+      + `the text is in the dashboard chat only, so ${asker} may not have seen it. It read: "${sent.text}"`;
+  }
+  return sent.landedOn === 'dashboard'
+    ? `The Dojo (not you) posted this in the dashboard chat for ${asker}: "${sent.text}"`
+    : `The Dojo (not you) sent ${asker} this text on ${sent.landedOn}: "${sent.text}"`;
+}

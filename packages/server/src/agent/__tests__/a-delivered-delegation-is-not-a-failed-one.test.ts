@@ -206,6 +206,6 @@ describe('§3 the transport mints the honest version and nothing else', () => {
     // One derivation, two consumers: the row's reason and the agent's nudge read the same value,
     // so the audit trail and the agent can never be told different stories.
     expect(src).toContain('failJoinClosed(join.id, { reason: failReason');
-    expect(src).toContain("tellAgentTheJoinFailed(join, `${failReason}.`, sent)");
+    expect(src).toContain("tellAgentTheJoinFailed(join, `${failReason}.`, await relayJoinFailure(join,");
   });
 });

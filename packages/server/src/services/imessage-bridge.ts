@@ -531,7 +531,7 @@ let recentGuidsLoaded = false;
 // already running, the message is persisted + queued behind that turn (the
 // runtime serializes per agent), which used to mean pure silence for up to a
 // whole turn. Send ONE deterministic engine ack per sender per running turn
-// so the person knows they were heard. Engine send, never a model turn; it is labelled "Dojo:" and the agent is told.
+// so the person knows they were heard. Engine send, never a model turn.
 const BUSY_ACK_TURN_AGE_MS = 60_000;
 const BUSY_ACK_TEXT = 'Dojo: your message arrived, but the agent is in the middle of a longer task. It will get to your message when that turn ends.';
 // agentId -> the running turn (identified by its start timestamp) + senders acked for it
@@ -552,14 +552,11 @@ export function maybeSendBusyAck(agentId: string, sender: string): void {
   const key = canonicalContactAddress(sender);
   if (st.ackedSenders.has(key)) return; // at most once per sender per running turn
   st.ackedSenders.add(key);
-  // PHASE-2 T5: the busy-ack is an outbound to a real person and recorded nothing. It is
-  // the AGENT's lane (this agent is why the person is waiting), so it is attributed to the
-  // agent rather than to the platform.
+  // Attributed to the agent's lane (this agent is why the person is waiting); labelled Dojo, and the agent is told below.
   void withOutboundAsyncIfAbsent(
     { agentId, tool: 'busy-ack', channel: 'imessage', recipientId: sender },
     () => sendIMessage(sender, BUSY_ACK_TEXT),
   );
-  // OR-ENGINE-LABELLED: the agent is told exactly what the Dojo sent on its behalf.
   tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived' });
   // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying 'queued' — not an agent status, zero subscribers branch on it; Agents/Tracker wrote it into agent.status, blanking the working indicator mid-turn.
   // requirement preserved: the person is told by the busy-ack above, and the 30s status heartbeat re-asserts 'working' on the dashboard.

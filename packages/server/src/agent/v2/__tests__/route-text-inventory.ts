@@ -26,13 +26,13 @@ export const SWEEP: readonly SweepEntry[] = [
 
 export const ALLOW: readonly AllowEntry[] = [
  {
-  "file": "agent/a2a-transport.ts",
-  "line": "+ `the text is in the dashboard chat only, so ${askerWords} may not have seen it. It read: \"${sent.text}\"`",
+  "file": "agent/join-failure-notice.ts",
+  "line": "+ `the text is in the dashboard chat only, so ${asker} may not have seen it. It read: \"${sent.text}\"`;",
   "reason": "a fact about where the Dojo's own message really landed (the send to the asker's channel did not go), not a recipient instruction (C22)"
  },
  {
-  "file": "agent/a2a-transport.ts",
-  "line": "? `The Dojo (not you) posted this in the dashboard chat for ${askerWords}: \"${sent.text}\"`",
+  "file": "agent/join-failure-notice.ts",
+  "line": "? `The Dojo (not you) posted this in the dashboard chat for ${asker}: \"${sent.text}\"`",
   "reason": "a fact about where the Dojo's own message really landed (the asker used the dashboard), not a recipient instruction (C22)"
  },
  {
