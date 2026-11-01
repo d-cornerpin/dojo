@@ -146,7 +146,7 @@ describe('t196 (A1.1) - the relay row says it was sent', () => {
     await delegate();
     await helperReplies('COMPLETE');
     const rows = getRecentMessages(AGENT, 100);
-    const relay = rows.find((r) => r.role === 'assistant' && r.content.startsWith('Heard back from'))!;
+    const relay = rows.find((r) => r.role === 'assistant' && r.content.startsWith('Dojo: Heard back from'))!;
     expect(relay).toBeDefined();
     const label = labelRows(AGENT, rows).get(relay.id)!;
     expect(label).toMatch(/sent to TestUser on dashboard at [^;]+ by the engine as the result of the request of /);

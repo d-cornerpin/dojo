@@ -35,3 +35,19 @@ describe('tellAgentAndWake', () => {
     expect(ev!.content).toContain('the image could not be generated');
   });
 });
+
+import fs from 'node:fs';
+import path from 'node:path';
+describe('every engine-to-person join text is the Dojo speaking (item 4)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'a2a-transport.ts'), 'utf8');
+  it('the "could not assemble" line is not first person', () => {
+    expect(src).not.toContain('I could not assemble');
+    expect(src).toContain('no combined reply was put together in time');
+  });
+  it('no join relay bypasses the labelled voices: deliverJoinResultToOwner is called only with a voice or via relayAsDojo', () => {
+    const lines = src.split('\n');
+    const at = lines.map((l, i) => (l.includes('deliverJoinResultToOwner(') && !l.includes('async function') ? i : -1)).filter((i) => i >= 0);
+    expect(at.length).toBeGreaterThan(2);
+    for (const i of at) expect(lines.slice(i, i + 3).join(' '), lines[i]).toMatch(/voice/);
+  });
+});
