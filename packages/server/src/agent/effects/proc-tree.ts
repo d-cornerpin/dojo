@@ -10,7 +10,7 @@
 import { untilUserStop } from '../stop-waiters.js';
 import { dojoDir } from '../../home.js';
 import { recordToolboxGroups, type GroupEntry } from './toolbox-ledger.js';
-import { identityOfPid, membersOfGroup } from '../../process-identity.js';
+import { identityOfPid, membersOfGroupAsync } from '../../process-identity.js';
 
 // ════════════════════════════════════════
 // t203 (B6) — THE OWNER'S STOP REACHES EVERY PROCESS THE TOOLBOX STARTED.
@@ -137,10 +137,14 @@ function writeLedger(): void {
  */
 function noteSurvivors(pgid: number): void {
   if (!groupIdentity.has(pgid)) return;
-  const members = membersOfGroup(pgid);
-  if (members.length === 0) return;
-  groupMembers.set(pgid, members);
-  writeLedger();
+  // The usual command takes its whole group with it: nothing to list. A group that did outlive its
+  // leader is listed off the event loop, so a busy box never stalls the server on a command's exit.
+  try { process.kill(-pgid, 0); } catch { return; }
+  void membersOfGroupAsync(pgid).then((members) => {
+    if (members.length === 0 || !groupIdentity.has(pgid)) return;
+    groupMembers.set(pgid, members);
+    writeLedger();
+  });
 }
 
 function endToolboxGroups(): void {
