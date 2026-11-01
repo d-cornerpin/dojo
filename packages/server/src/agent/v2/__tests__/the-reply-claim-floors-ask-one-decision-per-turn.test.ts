@@ -12,6 +12,7 @@
 //            The ledger (receipt, work row, tool record) still makes the final call.
 // Every /v1/systemone call here is a scripted fetch: no real model is asked.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { __ownerDecisionForTests } from '../../decision-policy.js';
 import Database from 'better-sqlite3';
 import type { ToolCall } from '@dojo/shared';
 
@@ -158,6 +159,7 @@ async function observe(content: string, toolResults: Array<{ name: string; isErr
 const fired = (o: { fired: Array<{ floor: string }> }): string[] => o.fired.map((f) => f.floor);
 
 beforeEach(() => {
+  __ownerDecisionForTests(false);   // these suites test the shadow path itself; the owner's four have their own suite
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   calls.length = 0;

@@ -16,7 +16,8 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { ownerCardEnded, ownerCardFrame } from '../services/owner-card-frames.js';
-import { modeFor, modelProvenBetter } from './decision-policy.js';
+import { modeFor, modelProvenBetter, ownerDecidedQuestions, ownerOnTheModel } from './decision-policy.js';
+import { getDecisionProvider } from './decision-provider.js';
 import { onScoreChanged, scoreQuestion, type QuestionScore } from './decision-shadow.js';
 
 const logger = createLogger('decision-switch');
@@ -59,7 +60,9 @@ const words = (purpose: string, question: string, s: QuestionScore | null, to: S
 export function reviewSwitch(purpose: string, question: string): SwitchState | null {
   try {
     const s = scoreQuestion(purpose, question);
-    const now: SwitchState = modelProvenBetter(s) ? 'model' : 'shadow';
+    const decided = ownerOnTheModel(purpose, question);   // the owner's 3.5 decision: on the model while a model is here
+    if (decided && !getDecisionProvider()) return null;      // a box without the model keeps the rule: nothing switched, nothing told
+    const now: SwitchState = decided || modelProvenBetter(s) ? 'model' : 'shadow';
     const was: SwitchState = switchRecord(purpose, question)?.state ?? 'shadow';
     if (now === was) return null;
     const record: SwitchRecord = { state: now, at: Date.now(), n: s?.n ?? 0, ruleAcc: s?.ruleAcc ?? 0, modelAcc: s?.modelAcc ?? 0 };
@@ -79,6 +82,12 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
     logger.warn('could not review a decision switch', { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
+}
+
+/** Record and tell the owner's four decided judgments (once each; a box without the decision model records nothing, so
+ *  it is told when the model arrives). Called at boot and when the standard models are ready. Never throws. */
+export function announceDecidedSwitches(): void {
+  for (const q of ownerDecidedQuestions()) reviewSwitch(q.purpose, q.question);
 }
 
 onScoreChanged((qs) => { for (const q of qs) reviewSwitch(q.purpose, q.question); });
