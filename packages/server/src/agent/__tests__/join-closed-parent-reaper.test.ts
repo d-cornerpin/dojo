@@ -261,6 +261,14 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     expect(told[0].content).toMatch(/did not (go|reach)/i);
     expect(told[0].content).toMatch(/dashboard/);
     expect(told[0].content).toMatch(/imessage/i);
+    // The refusal row on the dashboard is the Dojo speaking (never "I"), and the agent is told its exact text.
+    const refusal = ownerFacing().find((m) => /could not send that answer back/i.test(m.content));
+    expect(refusal, 'a refusal row was written').toBeTruthy();
+    expect(refusal!.content).toMatch(/^Dojo: /);
+    expect(/\bI\b/.test(refusal!.content)).toBe(false);
+    expect(refusal!.role).toBe('system');
+    const dojoTold = mockDb.current!.prepare(`SELECT content FROM messages WHERE agent_id = ? AND origin_intent = 'dojo_message_sent'`).all(AGENT) as Array<{ content: string }>;
+    expect(dojoTold.some((r) => r.content.includes(refusal!.content))).toBe(true);
   });
 
   it('POSITIVE: the parent\'s delivered answer is not disturbed — no state move, no re-close', async () => {

@@ -20,7 +20,8 @@ import { liveAgentsNamed, liveAgentNamesNear } from './agent-name-lookup.js';
 import { activeRuns } from './shared-state.js';
 import { endedMidRun } from './ended-mid-run.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_HEADS_UP_PREFIX, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
+import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -1654,10 +1655,8 @@ async function deliverJoinResultToOwnerInner(
   //
   //   * the PLATFORM, at ERROR level, naming the agent, the channel and the door, so a
   //     wall/compose disagreement is greppable rather than inferable from a missing text;
-  //   * the OWNER, in words, through the ONE announce door — `role='system'` plus the shared
-  //     owner-alert prefix, written and put on the wire in the same breath, exactly as
-  //     `floor-ghost.ts` does it since SWEEP-A TB4. An alert nobody reads is a silenced alarm,
-  //     and `owner-alert-announce-census.test.ts` is what keeps this site honest.
+  //   * the OWNER, in words: `role='system'` plus the shared owner-alert prefix, written and put on the wire
+  //     in the same breath (`owner-alert-announce-census.test.ts` keeps this site honest).
   //
   // ⚠ CONDITIONAL ON A REFUSAL, never on the fallback. A dashboard-origin ask has no channel
   // meta at all and there is nothing to report; an alert on every ordinary relay would be the
@@ -1668,15 +1667,15 @@ async function deliverJoinResultToOwnerInner(
       tool: relayRefusal.tool, why: relayRefusal.why,
     });
     const noticeId = uuidv4();
-    const notice = `${OWNER_ALERT_HEADS_UP_PREFIX} I could not send that answer back on `
+    const notice = `${OWNER_ALERT_DOJO_PREFIX} could not send that answer back on `   // OR-ENGINE-LABELLED: the Dojo, never "I"
       + `${relayRefusal.channel}, so it is here on the dashboard instead. ${relayRefusal.why}.`;
     try {
       const persisted = insertMessageIfAbsent({
         id: noticeId, agentId: join.agentId, role: 'system', content: notice,
       });
-      // Announced only when a row was actually written: a frame with no row behind it is the
-      // other half of the same defect (live-only, gone on refresh).
+      // Announced only when a row was actually written (a frame with no row is live-only), and the agent is told the text.
       if (persisted) {
+        tellAgentWhatDojoSent({ agentId: join.agentId, recipient: 'the owner (dashboard chat)', text: notice, why: 'because the answer could not go back on their channel' });
         broadcast({
           type: 'chat:message', agentId: join.agentId,
           message: {
