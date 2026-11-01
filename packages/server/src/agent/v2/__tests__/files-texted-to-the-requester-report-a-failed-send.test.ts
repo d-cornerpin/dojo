@@ -6,7 +6,7 @@ vi.mock('../../../logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../../services/imessage-bridge.js', () => ({ sendIMessageWithAttachment: vi.fn() }));
-vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn() }));
+vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn(), requesterReachSentence: async (a: string) => `Your written reply on this turn does NOT reach them; call imessage_send with recipient="${a}".` }));
 
 import { textFilesToRequester } from '../steps/text-files-to-requester.js';
 import { sendIMessageWithAttachment } from '../../../services/imessage-bridge.js';

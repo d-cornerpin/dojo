@@ -20,7 +20,7 @@ vi.mock('../../pending-attachments.js', () => ({
   drainPendingAttachmentsWithCaptions: () => ({ attachments: [{ filename: 'report.pdf', path: '/tmp/fake/report.pdf' }], captions: [] }),
 }));
 vi.mock('../../../credentials/secret-fields.js', () => ({ redactHandedCredentials: (_a: string, t: string) => t }));
-vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: noticeMock }));
+vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: noticeMock, requesterReachSentence: async (a: string) => `Your written reply on this turn does NOT reach them; call imessage_send with recipient="${a}".` }));
 vi.mock('../../../services/imessage-bridge.js', () => ({
   sendIMessageWithAttachment: sendFileMock,
   sendAlert: sendAlertMock,
@@ -51,6 +51,8 @@ describe('a stranded file that does not reach iMessage', () => {
     expect(noticeMock).toHaveBeenCalledTimes(1);
     expect(noticeMock.mock.calls[0][0].agentId).toBe('agent-1');   // and the agent is WOKEN so it tells the person now
     expect(noticeMock.mock.calls[0][0].brief).toContain('report.pdf');
+    expect(noticeMock.mock.calls[0][0].brief).toContain('imessage_send');   // R4: names how to reach the requester
+    expect(noticeMock.mock.calls[0][0].brief).toContain('+15550100198');
   });
 
   it('is reported when the send throws', async () => {

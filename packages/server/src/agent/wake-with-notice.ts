@@ -10,12 +10,21 @@
 import { v4 as uuidv4 } from 'uuid';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
+import { getDb } from '../db/connection.js';
+import { turnContext } from './turn-context.js';
+import { postAgentNotice } from './agent-notice.js';
 
 const logger = createLogger('wake-with-notice');
 
 /** Persist the notice as a deliverable engine event for `agentId` and start (or queue) its turn. Never throws. */
-export async function tellAgentAndWake(opts: { agentId: string; from: string; brief: string }): Promise<void> {
+export async function tellAgentAndWake(opts: { agentId: string; from: string; brief: string; inFailureTurn?: boolean }): Promise<void> {
   try {
+    // NO WAKE LOOP (real signal, no counter or timer): a failure that happens inside a turn which a failure notice
+    // itself woke is told to the agent as a rider; it is already on this request and will see it.
+    if (opts.inFailureTurn ?? isFailureWokenTurn(opts.agentId)) {
+      postAgentNotice({ toAgentId: opts.agentId, fromName: opts.from, brief: opts.brief, selfIntro: false });
+      return;
+    }
     insertEngineEventIfAbsent({
       id: uuidv4(), agentId: opts.agentId,
       content: `[SOURCE: AGENT NOTICE from ${opts.from}] ${opts.brief.replace(/\s+/g, ' ').trim()}`,
@@ -28,4 +37,30 @@ export async function tellAgentAndWake(opts: { agentId: string; from: string; br
   } catch (err) {
     logger.warn('failure notice could not be posted', { error: err instanceof Error ? err.message : String(err) }, opts.agentId);
   }
+}
+
+/**
+ * R4: the woken turn is an ENGINE turn, so its written reply does not reach an iMessage requester. Name who to tell
+ * (name, relation, channel, address) and say plainly how to reach them. Never throws.
+ */
+export async function requesterReachSentence(address: string): Promise<string> {
+  let name = address; let relation = 'a contact';
+  try {
+    const { resolveRecipientDisplay } = await import('../contacts/resolve-recipient.js');
+    name = resolveRecipientDisplay('imessage', address) || address;
+    const { getSafeSenders, findSafeSenderByAddress } = await import('../services/imessage-bridge.js');
+    if (findSafeSenderByAddress(getSafeSenders(), address)?.is_primary) relation = 'the owner';
+  } catch { /* the address alone is still enough to act on */ }
+  return `The person is ${name} (${relation}, on iMessage, address ${address}). Your written reply on this turn does NOT reach them; ` +
+    `to tell them, call imessage_send with recipient="${address}".`;
+}
+
+/** Is the turn running for `agentId` right now the one a failure notice woke? Read off the row that woke it. */
+export function isFailureWokenTurn(agentId: string): boolean {
+  try {
+    const id = turnContext(agentId)?.triggerMessageId;
+    if (!id) return false;
+    const row = getDb().prepare('SELECT origin_intent FROM messages WHERE id = ?').get(id) as { origin_intent: string | null } | undefined;
+    return row?.origin_intent === 'delivery_failure_owed';
+  } catch { return false; }
 }

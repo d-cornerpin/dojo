@@ -96,7 +96,7 @@ import { getPresence } from '../../../services/presence.js';
 import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
-import { tellAgentAndWake } from '../../wake-with-notice.js';
+import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn } from '../../wake-with-notice.js';
 import { resolvePath } from '../../path-guards.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
@@ -194,6 +194,7 @@ const handlers = {
     // concurrency). This const is closed over by the IIFE and unaffected by the turn end.
     const requesterIMessage = getTurnScopedImRecipient(agentId);
     const triggeredByIMessage = requesterIMessage !== null;
+    const wokenByFailure = isFailureWokenTurn(agentId);   // captured at CALL time: a failure inside a failure-woken turn does not wake again
     const live = turnContext(agentId);  // t141: captured at CALL time — the result is labelled with the request
     const resultSubject = deliveredResult(live?.conversationId, live?.root?.kind === 'ask' ? live.root.id : null);
 
@@ -277,15 +278,14 @@ const handlers = {
           // C1/P1 (R1): the engine writes nothing to the person and nothing in the agent's voice. The
           // failure reaches the AGENT as a notice on its next turn, so it tells the person in its own
           // words, on the channel the request came from.
-          const askedBy = requesterIMessage
-            ? `the person who asked over iMessage (${requesterIMessage})`
-            : 'the person who asked (in the dashboard chat)';
+          const askedBy = requesterIMessage ? 'the person who asked' : 'the person who asked (in the dashboard)';
+          const reach = requesterIMessage ? await requesterReachSentence(requesterIMessage) : 'They asked in the dashboard: write it as your reply.';
           // The agent is handed the failure AND woken (agent/wake-with-notice.ts) so it tells the person now.
           void tellAgentAndWake({
-            agentId, from: 'Image generation',
+            agentId, from: 'Image generation', inFailureTurn: wokenByFailure,
             brief:
               `the image you asked for could not be generated. The provider said: ${result.error}. ` +
-              `Nothing was sent to ${askedBy}. Tell them in your own words that it failed and offer a next step; ` +
+              `Nothing was sent to ${askedBy}. ${reach} Tell them in your own words that it failed and offer a next step; ` +
               `do not call image_create again with the same description unless they ask.`,
           });
           settleAskOnJobEnded(agentId, imgJobId);   // t152: no bubble was posted; the request is re-asked now that the job ended

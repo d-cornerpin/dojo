@@ -36,13 +36,13 @@ export async function textFilesToRequester(
   }
   if (failed.length === 0) return true;
   try {
-    const { tellAgentAndWake } = await import('../../wake-with-notice.js');   // woken so it tells the person now
+    const { tellAgentAndWake, requesterReachSentence } = await import('../../wake-with-notice.js');   // woken so it tells the person now
     await tellAgentAndWake({
       agentId,
       from: 'File delivery',
       brief:
         `texting these file(s) to the requester over iMessage failed: ${failed.join(', ')}. They are in the dashboard only. ` +
-        `If you reply to the requester, say so; do not tell them the files were sent.`,
+        `Tell the requester so in your own words; do not tell them the files were sent. ${await requesterReachSentence(recipient)}`,
     });
   } catch (err) {
     logger.warn('file delivery notice could not be posted', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);

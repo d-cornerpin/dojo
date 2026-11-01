@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-const hoisted = vi.hoisted(() => ({ recipient: null as string | null, presence: 'present' }));
+const hoisted = vi.hoisted(() => ({ recipient: null as string | null, presence: 'present', woken: false }));
 
 vi.mock('../../../../db/connection.js', () => ({
   getDb: () => {
@@ -48,7 +48,11 @@ vi.mock('../../../../services/imessage-bridge.js', () => ({
 }));
 vi.mock('../../../access/read.js', () => ({ mayUseChannel: () => true }));
 vi.mock('../../../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
-vi.mock('../../../wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn(async () => undefined) }));
+vi.mock('../../../wake-with-notice.js', () => ({
+  tellAgentAndWake: vi.fn(async () => undefined),
+  isFailureWokenTurn: () => hoisted.woken,
+  requesterReachSentence: async (a: string) => `Your written reply on this turn does NOT reach them; to tell them, call imessage_send with recipient="${a}".`,
+}));
 vi.mock('../../../../home.js', async () => {
   const p = await import('node:path'); const o = await import('node:os');
   const dir = p.join(process.env.DOJO_TEST_HOME_ROOT || o.tmpdir(), 'dojo-image-no-caption');
@@ -76,6 +80,7 @@ beforeEach(() => {
   vi.mocked(insertMessageIfAbsent).mockClear();
   vi.mocked(generateImage).mockClear();
   hoisted.recipient = null;
+  hoisted.woken = false;
   hoisted.presence = 'present';
 });
 afterEach(() => {
@@ -98,6 +103,8 @@ describe('image_create failure', () => {
     expect(n.agentId).toBe('a1');   // the agent is woken so it tells the person now
     expect(n.brief).toContain('provider said no');
     expect(n.brief).toContain('+15550100');
+    expect(n.brief).toMatch(/does NOT reach them/);   // R4: the woken turn is told how to reach the requester
+    expect(n.brief).toContain('imessage_send');
     expect(sendSpy).not.toHaveBeenCalled();
     expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();   // no engine-written bubble in the agent's voice
   });
@@ -108,6 +115,15 @@ describe('image_create failure', () => {
     expect(vi.mocked(tellAgentAndWake).mock.calls[0][0].brief).toContain('provider said no');
     expect(sendSpy).not.toHaveBeenCalled();
     expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();
+  });
+});
+
+describe('image_create failure inside a failure-woken turn', () => {
+  it('is handed to the helper as an in-failure-turn call so it cannot wake the agent again', async () => {
+    hoisted.woken = true;
+    await call();
+    await vi.waitFor(() => expect(vi.mocked(tellAgentAndWake)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(tellAgentAndWake).mock.calls[0][0].inFailureTurn).toBe(true);
   });
 });
 
