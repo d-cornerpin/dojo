@@ -11,7 +11,7 @@
 //     `thread_ids` for that), so a mailbox count taken per message reaches zero.
 // ════════════════════════════════════════
 
-import { googleWrite } from './client.js';
+import { googleRead, googleWrite } from './client.js';
 import { resolveGmailLabelTarget } from './gmail-archive.js';
 import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 
@@ -31,6 +31,25 @@ export function labelFailureText(error: string | undefined, _toolName: string): 
   return `Error modifying labels: ${error}`;
 }
 
+// Gmail's modify calls take label IDs only, but the tool tells the agent to pass a custom label's NAME.
+// Gmail's system labels are a fixed set and are their own ids. Anything else (a custom id such as Label_123,
+// or a custom NAME, which may well be all capitals: "URGENT", "TODO") is looked up in the account's label list.
+const SYSTEM_LABELS = new Set([
+  'INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT', 'CHAT',
+  'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+]);
+
+/** Turn custom label names into this account's label ids (an exact id first, then an exact name, then a name in any case). A label that matches nothing, or a label list that cannot be read, is left as given so Gmail's own refusal (and its remedy) still applies. */
+async function labelIdsFor(labels: string[], gmailBase: string, agentId: string, agentName: string, slot: string): Promise<string[]> {
+  if (labels.every((l) => SYSTEM_LABELS.has(l))) return labels;
+  const listed = await googleRead(`${gmailBase}/labels`, agentId, agentName, 'gmail_label', {}, slot);
+  const all = (listed?.ok ? (listed.data as { labels?: Array<{ id: string; name: string }> } | null)?.labels : undefined) ?? [];
+  return labels.map((l) => {
+    if (SYSTEM_LABELS.has(l)) return l;
+    return all.find((x) => x.id === l)?.id ?? all.find((x) => x.name === l)?.id ?? all.find((x) => x.name.toLowerCase() === l.toLowerCase())?.id ?? l;
+  });
+}
+
 export async function executeGmailLabel(
   toolName: string,
   args: Record<string, unknown>,
@@ -39,9 +58,12 @@ export async function executeGmailLabel(
   agentName: string,
   slot: string,
 ): Promise<string> {
-  const addLabels = (args.add_labels as string[]) ?? [];
-  const removeLabels = (args.remove_labels as string[]) ?? [];
-  if (addLabels.length === 0 && removeLabels.length === 0) return NOTHING_TO_CHANGE;
+  const askedAdd = (args.add_labels as string[]) ?? [];
+  const askedRemove = (args.remove_labels as string[]) ?? [];
+  if (askedAdd.length === 0 && askedRemove.length === 0) return NOTHING_TO_CHANGE;
+  const resolved = await labelIdsFor([...askedAdd, ...askedRemove], gmailBase, agentId, agentName, slot);
+  const addLabels = resolved.slice(0, askedAdd.length);
+  const removeLabels = resolved.slice(askedAdd.length);
 
   const messageIds = idList(args.message_ids);
   const threadIds = idList(args.thread_ids);

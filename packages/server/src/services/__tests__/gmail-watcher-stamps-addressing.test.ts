@@ -260,4 +260,12 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
       to: [], cc: [], placement: 'neither', authenticationResults: [],
     });
   });
+
+  it('a new-mail preview shows the snippet decoded (Gmail sends it HTML-escaped)', async () => {
+    setMailbox('agent', 'agent@x.com');
+    await mailArrives([{ ...G1, id: 'g7', snippet: 'Don&#39;t forget Q&amp;A &mdash; caf&eacute;' }]);
+    const { content } = storedRow('g7');
+    expect(content).toContain('Don\'t forget Q&A \u2014 caf\u00e9');
+    expect(content).not.toContain('&#39;');
+  });
 });

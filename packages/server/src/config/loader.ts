@@ -180,9 +180,13 @@ export function getCredentialMasterKey(): Buffer {
   return Buffer.from(secrets.credential_master_key, 'hex');
 }
 
+// The ONE meaning of "no password": an absent, empty or blank hash is null. Every
+// reader (login, the first-run gate, /api/setup/*, import) tests this result, so an
+// installer that once wrote `dashboard_password_hash: ""` cannot make them disagree.
 export function getDashboardPasswordHash(): string | null {
   const secrets = loadSecrets();
-  return secrets.dashboard_password_hash ?? null;
+  const hash = secrets.dashboard_password_hash;
+  return typeof hash === 'string' && hash.trim() !== '' ? hash : null;
 }
 
 export function setDashboardPassword(hash: string): void {

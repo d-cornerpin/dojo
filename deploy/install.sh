@@ -240,7 +240,6 @@ if [[ ! -f "$SECRETS_FILE" ]] || ! grep -q "jwt_secret:" "$SECRETS_FILE" 2>/dev/
     cat > "$SECRETS_FILE" << EOF
 jwt_secret: ${JWT_SECRET}
 providers: {}
-dashboard_password_hash: ""
 EOF
     chmod 600 "$SECRETS_FILE"
 fi

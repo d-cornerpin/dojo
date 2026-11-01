@@ -1,4 +1,4 @@
-import { stripHtmlTags } from '../agent/html-text.js';
+import { stripHtmlTags, decodeHtmlEntities } from '../agent/html-text.js';
 
 export interface GmailBodyPart {
   mimeType?: string;
@@ -115,12 +115,8 @@ function splitAtQuote(html: string): HtmlSplit {
 }
 
 // The same text compared across the plain and html renderings: entities decoded, every whitespace run one space.
-const ENTITY = /&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos|nbsp));/gi;
-const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 function normalise(text: string): string {
-  return text
-    .replace(ENTITY, (_m, dec, hex, name) => (name ? NAMED[name.toLowerCase()] : String.fromCodePoint(dec ? Number(dec) : parseInt(hex, 16))))
-    .replace(/\s+/g, ' ').trim();
+  return decodeHtmlEntities(text).replace(/\s+/g, ' ').trim();
 }
 
 /** Plain text, bottom-posted: an optional single attribution line, a `>` quote block, then the owner's words. The text

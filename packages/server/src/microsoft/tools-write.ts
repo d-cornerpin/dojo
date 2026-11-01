@@ -1151,10 +1151,11 @@ export async function executeMicrosoftWriteTool(
       // richer `message` payload (with `comment` reduced to a no-op or
       // omitted). Note: when `message` is provided, the recipient also
       // gets the original message body Graph stitches in automatically.
+      // Graph refuses a createForward that names the recipients both in the
+      // action and inside `message`, so they go in the action only.
       const requestBody: Record<string, unknown> = { toRecipients };
       if (prepared.inline.length > 0) {
         requestBody.message = {
-          toRecipients,
           body: { contentType: 'Text', content: additionalText },
           attachments: prepared.inline,
         };
