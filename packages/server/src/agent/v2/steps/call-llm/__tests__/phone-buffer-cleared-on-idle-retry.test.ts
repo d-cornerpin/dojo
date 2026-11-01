@@ -80,7 +80,7 @@ const REST = ', and the second half.';
 // `script` is consumed one entry per chat request, so a case can say "stall, then answer" —
 // which is what proves the retry grant actually reaches a second attempt. The last entry
 // repeats once the script runs out.
-type Behaviour = 'complete' | 'half-then-stall';
+type Behaviour = 'complete' | 'half-then-stall' | 'half-then-close';
 const script: { openai: Behaviour[]; anthropic: Behaviour[] } = { openai: [], anthropic: [] };
 const requests = { openai: 0, anthropic: 0 };
 /** Sockets deliberately left hanging; destroyed in afterAll so the server can close. */
@@ -108,6 +108,7 @@ const serveOpenAI = (res: http.ServerResponse, mode: Behaviour): void => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   res.write(oaChunk({ role: 'assistant', content: HALF }));
   if (mode === 'half-then-stall') { stalled.push(res); return; } // ...and then nothing, ever.
+  if (mode === 'half-then-close') { res.end(); return; } // hang up mid-answer: no finish signal
   res.write(oaChunk({ content: REST }));
   res.write(oaChunk({}, 'stop'));
   res.write(sse({
@@ -258,5 +259,24 @@ describe('T65b — the phone buffer is cleared on the idle retry', () => {
     );
     expect(requests.openai).toBe(2);
     expect(currentTurnCtx!.phoneStreamBuffer).toBe('');
+  });
+
+  // R7 on a live call: the no-finish retry re-dials from the first word, so speech already handed to the call
+  // (it cannot be withdrawn) would be spoken a second time. When something was already spoken, do not retry.
+  it('R7: a hung-up answer is retried when nothing has been spoken yet', async () => {
+    script.openai = ['half-then-close', 'complete'];
+    seedOpenAI(null, null);
+    const outcome = await callWithRetryAndFallback({ modelId: 'm-local' } as unknown as AgentTurnState, 'm-local', inputs());
+    expect(requests.openai).toBe(2);
+    expect(outcome.abandoned === undefined && outcome.result.content).toBe(HALF + REST);
+  });
+
+  it('R7: a hung-up answer is NOT re-dialled from the first word when the caller has already heard part of it', async () => {
+    script.openai = ['half-then-close', 'complete'];
+    seedOpenAI(null, null);
+    const i = inputs();
+    (i.turnCtx as unknown as { phoneStreamFlushedAny: boolean }).phoneStreamFlushedAny = true;   // a sentence was already spoken
+    await expect(callWithRetryAndFallback({ modelId: 'm-local' } as unknown as AgentTurnState, 'm-local', i)).rejects.toThrow(/without a finish signal/);
+    expect(requests.openai, 'no second request: the spoken part cannot be recalled').toBe(1);
   });
 });

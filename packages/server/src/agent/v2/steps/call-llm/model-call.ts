@@ -337,7 +337,7 @@ export async function callWithRetryAndFallback(
       // cloud behaviour is the untouched control.
       if (!isAutoRouted) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (attempt < maxAttempts - 1 && (msg.includes(STREAM_IDLE_TIMEOUT_ERROR) || msg.includes(STREAM_NO_FINISH_ERROR))) {   // R7: a hung-up answer gets the same one retry
+        if (attempt < maxAttempts - 1 && (msg.includes(STREAM_IDLE_TIMEOUT_ERROR) || (msg.includes(STREAM_NO_FINISH_ERROR) && !turnCtx.phoneStreamFlushedAny))) {   // R7: a hung-up answer gets the same one retry, unless a caller already heard part of it (that audio cannot be recalled; a re-dial would say it twice)
           logger.warn('v2: model stream idle timeout; retrying the same model once on a fresh connection', {
             attempt, modelId,
           }, agentId);
