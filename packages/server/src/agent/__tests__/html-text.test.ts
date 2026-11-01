@@ -46,3 +46,23 @@ describe('stripHtmlTags — markup removal and paragraph breaks', () => {
     expect(stripHtmlTags('<p>a</p><p>b</p>')).toBe('a\n\nb');
   });
 });
+
+describe('decodeHtmlEntities — every numeric and the standard named entities, one pass', () => {
+  it('decimal and hex numeric references decode', async () => {
+    const { decodeHtmlEntities } = await import('../html-text.js');
+    expect(decodeHtmlEntities('&#39; &#x27; &#8217; &#x1F600;')).toBe("' ' ’ \u{1F600}");
+  });
+  it('named entities beyond the first six decode', async () => {
+    const { decodeHtmlEntities } = await import('../html-text.js');
+    expect(decodeHtmlEntities('caf&eacute; &mdash; &copy; 2026 &hellip; &euro;5 &rsquo;s &Omega;')).toBe('café — © 2026 … €5 ’s Ω');
+  });
+  it('is single-pass, leaves unknown or invalid references alone, and keeps nbsp a plain space', async () => {
+    const { decodeHtmlEntities } = await import('../html-text.js');
+    expect(decodeHtmlEntities('&amp;#39; &amp;eacute;')).toBe('&#39; &eacute;');
+    expect(decodeHtmlEntities('&bogus; &#xD800; &#99999999; AT&T')).toBe('&bogus; &#xD800; &#99999999; AT&T');
+    expect(decodeHtmlEntities('a&nbsp;b')).toBe('a b');
+  });
+  it('stripHtmlTags uses it', () => {
+    expect(stripHtmlTags('<p>caf&eacute; &#65;</p>')).toBe('café A');
+  });
+});

@@ -16,6 +16,7 @@ import { driveSearchQuery, withoutQuotedValues } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 import { toRfc3339WithOffset } from '../services/rfc3339-offset.js';
 import { executeGmailSearch, fmtEmailDate, GMAIL_BASE } from './gmail-search.js';
+import { decodeHtmlEntities } from '../agent/html-text.js';
 export { searchMailForAccount, type GoogleMailFetchItem } from './gmail-search.js';
 
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -505,7 +506,7 @@ export async function executeGoogleReadTool(
 
       // Headers are always included in full; pagination only affects the body.
       const pagedBody = applyTextPagination(
-        body || data?.snippet || '(empty body)',
+        body || decodeHtmlEntities(data?.snippet ?? '') || '(empty body)',
         'gmail_read',
         { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
         { message_id: messageId },
