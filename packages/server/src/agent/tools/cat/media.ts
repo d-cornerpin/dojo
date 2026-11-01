@@ -96,7 +96,7 @@ import { getPresence } from '../../../services/presence.js';
 import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
-import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn } from '../../wake-with-notice.js';
+import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobStartedIn } from '../../wake-with-notice.js';
 import { resolvePath } from '../../path-guards.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
@@ -718,7 +718,7 @@ const handlers = {
     } catch { /* best effort */ }
 
     try {
-      enqueueVideoJob(submit.jobId);
+      enqueueVideoJob(submit.jobId); noteJobStartedIn(agentId, submit.jobId);   // loop guard: see wake-with-notice.ts
     } catch (err) {
       logger.error('video_create: failed to enqueue poller (job will resume on next boot)', {
         jobId: submit.jobId, error: err instanceof Error ? err.message : String(err),

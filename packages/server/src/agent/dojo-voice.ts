@@ -33,3 +33,13 @@ export function tellAgentWhatDojoSent(opts: { agentId: string; recipient: string
     });
   } catch { /* awareness note is best-effort */ }
 }
+
+/** The Dojo posted `caption` with the agent's file(s) because the agent's turn ended early; tell the agent exactly that. */
+export function tellAgentFilesPostedByDojo(agentId: string, files: ReadonlyArray<{ filename?: string }>, caption: string): void {
+  try {
+    postAgentNotice({
+      toAgentId: agentId, fromName: 'Dojo message sent', selfIntro: false,
+      brief: `The Dojo itself (not you) posted this in the dashboard with your file(s) ${files.map((a) => a.filename ?? 'file').join(', ')}, because your turn ended early: "${caption}". Do not claim it as your own words; say anything more in your own words.`,
+    });
+  } catch { /* awareness note is best-effort */ }
+}

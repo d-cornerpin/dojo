@@ -26,7 +26,6 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { buildWireBody } from './generation-params.js';
 import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
-import { noteJobStartedIn } from '../agent/wake-with-notice.js';
 import { phasedTransferDeadline } from './transfer-deadline.js';
 import type { GenerationParamSpec } from '@dojo/shared';
 import { homeDir } from '../home.js';
@@ -239,7 +238,6 @@ async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Pr
       (id, agent_id, model_id, provider_id, provider_job_id, prompt, title, status, attempt_count)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0)
   `).run(jobId, req.agentId, model.id, provider.id, providerJobId, req.prompt, req.title ?? null);
-  noteJobStartedIn(req.agentId, jobId);
 
   logger.info('Video gen: job queued', { jobId, providerJobId, agentId: req.agentId });
   return { ok: true, jobId, providerJobId, status: 'queued' };
