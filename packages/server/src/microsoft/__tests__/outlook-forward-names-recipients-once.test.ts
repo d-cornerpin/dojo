@@ -49,7 +49,7 @@ describe('outlook_forward names the recipients in exactly one place', () => {
     const places = [b.toRecipients, b.message?.toRecipients].filter((r) => r !== undefined);
     expect(places, 'Graph refuses recipients in both the action and the message').toHaveLength(1);
     expect(places[0]).toHaveLength(1);
-    expect(b.message?.body?.content).toContain('see attached');
+    expect(b.comment).toContain('see attached');
     expect(b.message?.attachments).toHaveLength(1);
   });
 
@@ -59,5 +59,35 @@ describe('outlook_forward names the recipients in exactly one place', () => {
     expect(b.toRecipients).toHaveLength(1);
     expect(b.message?.toRecipients).toBeUndefined();
     expect(b.comment).toBe('fyi');
+  });
+});
+
+// B-3 (3.5 paid proof): a forward with an added attachment and a custom body lost the original quoted text because
+// the text went in `message.body`, which replaces Graph's body. Graph keeps the quote only with `comment`, and takes
+// `comment` OR `message.body`, never both.
+describe('outlook_forward keeps the original quoted message', () => {
+  const run = (args: Record<string, unknown>) => executeMicrosoftWriteTool('outlook_forward', { message_id: 'm1', to: 'x@y.test', ...args }, 'a1', 'A Worker');
+  it('body only: text is the comment, no message body', async () => {
+    await run({ body: 'note' });
+    const b = createBody();
+    expect(b.comment).toBe('note');
+    expect(b.message?.body).toBeUndefined();
+    expect(b.message?.attachments).toBeUndefined();
+  });
+  it('attachments only: no comment, no message body, attachments in message', async () => {
+    await run({ attachments: ['/x/a.txt'] });
+    const b = createBody();
+    expect(b.comment).toBeUndefined();
+    expect(b.message?.body).toBeUndefined();
+    expect(b.message?.attachments).toHaveLength(1);
+  });
+  it('body plus attachments: text is the comment, attachments in message, never message.body', async () => {
+    await run({ body: 'note', attachments: ['/x/a.txt'] });
+    const b = createBody();
+    expect(b.comment).toBe('note');
+    expect(b.message?.body, 'message.body would replace the quoted original').toBeUndefined();
+    expect(b.message?.attachments).toHaveLength(1);
+    expect(b.toRecipients).toHaveLength(1);
+    expect(b.message?.toRecipients).toBeUndefined();
   });
 });

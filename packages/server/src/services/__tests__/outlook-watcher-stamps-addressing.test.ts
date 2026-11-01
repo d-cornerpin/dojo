@@ -13,6 +13,7 @@ import Database from 'better-sqlite3';
 const mockDb = { current: null as Database.Database | null };
 const msGraphMock = vi.fn();
 const outlookViews = { current: [] as Array<Record<string, unknown>> };
+const otherGoogleViews = { current: [] as Array<Record<string, unknown>> };
 let pollEndpoints: string[] = [];
 
 vi.mock('../../db/connection.js', async () => {
@@ -30,6 +31,10 @@ vi.mock('../../microsoft/client.js', () => ({ msGraphRead: (...a: unknown[]) => 
 vi.mock('../../microsoft/auth.js', async () => {
   const actual = await vi.importActual<typeof import('../../microsoft/auth.js')>('../../microsoft/auth.js');
   return { ...actual, listMicrosoftAccountViews: () => outlookViews.current };
+});
+vi.mock('../../google/auth.js', async () => {
+  const actual = await vi.importActual<typeof import('../../google/auth.js')>('../../google/auth.js');
+  return { ...actual, listGoogleAccountViews: () => otherGoogleViews.current };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => undefined }) }));
@@ -124,6 +129,7 @@ beforeEach(() => {
               VALUES ('primary', 'Primary', 'm', 'idle', '{}', 'sensei')`).run();
   pollEndpoints = [];
   msGraphMock.mockReset();
+  otherGoogleViews.current = [];
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
@@ -196,5 +202,22 @@ describe('outlook watcher stamps email addressing', () => {
     expect(readStored('o6').meta.mailAddressing).toEqual({
       to: [], cc: [], placement: 'neither', authenticationResults: [],
     });
+  });
+
+  it('7. the agent\'s OTHER mailbox on To and this mailbox on Cc: placement is cc (the notice reads this field)', async () => {
+    setMailbox('agent', 'outlook-agent@x.com');
+    otherGoogleViews.current = [{ id: 'g', kind: 'agent', position: 1, email: 'gmail-agent@x.com', enabled: true, connected: true }];
+    await outlookPoll([msg('o7', {
+      toRecipients: [{ emailAddress: { address: 'gmail-agent@x.com' } }],
+      ccRecipients: [{ emailAddress: { address: 'outlook-agent@x.com' } }],
+    })]);
+    expect(readStored('o7').meta.mailAddressing).toMatchObject({ placement: 'cc' });
+  });
+
+  it('8. only the agent\'s OTHER mailbox is addressed: this copy reached it by blind copy, placement neither', async () => {
+    setMailbox('agent', 'outlook-agent@x.com');
+    otherGoogleViews.current = [{ id: 'g', kind: 'agent', position: 1, email: 'gmail-agent@x.com', enabled: true, connected: true }];
+    await outlookPoll([msg('o8', { toRecipients: [{ emailAddress: { address: 'gmail-agent@x.com' } }] })]);
+    expect(readStored('o8').meta.mailAddressing).toMatchObject({ placement: 'neither' });
   });
 });

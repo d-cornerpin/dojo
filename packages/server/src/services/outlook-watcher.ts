@@ -315,7 +315,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       const fromAddr = fromAddress.includes('@') ? fromAddress.toLowerCase() : '';
 
       // P44: the email's To/Cc facts (which list this mailbox sits on); the Graph poll carries no Authentication-Results, see below.
-      const mailAddressing = outlookAddressingFacts(msg, (kind === 'agent' ? [view.email, ...selfIdentities] : [view.email]).filter((a): a is string => !!a));
+      const mailAddressing = outlookAddressingFacts(msg, view.email ? [view.email] : []);   // only THIS mailbox's address: the agent's other mailboxes do not make this copy a To or Cc one
 
       // Requirement: the agent's own outbound must never wake it (cost plus reply-loop risk). Outlook polls the inbox, so
       // there is no SENT label: the SENDER address is the signal, matched against this account AND every other connected

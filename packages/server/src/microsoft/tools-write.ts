@@ -1045,18 +1045,10 @@ export async function executeMicrosoftWriteTool(
 
       const bodyText = (args.body as string) + prepared.bodySuffix;
 
-      // Graph's reply endpoint accepts either { comment } (plain quote) or
-      // { message: { ... }, comment } when you need to attach files / set
-      // body content explicitly. Use the richer form when attachments
-      // are present so the inline files come through.
-      const requestBody: Record<string, unknown> = prepared.inline.length > 0
-        ? {
-            message: {
-              body: { contentType: 'Text', content: bodyText },
-              attachments: prepared.inline,
-            },
-          }
-        : { comment: bodyText };
+      // The text is always `comment`: Graph keeps the quoted thread only then (`message.body` would REPLACE the body it
+      // builds, as with a forward). `message` carries only the attachments (and, in sendMarkedDraft, the marker headers).
+      const requestBody: Record<string, unknown> = { comment: bodyText };
+      if (prepared.inline.length > 0) requestBody.message = { attachments: prepared.inline };
 
       const result = await sendMarkedDraft(replyAll ? 'replyAll' : 'reply', messageId, requestBody, agentId, agentName, 'outlook_reply', {
         messageId: args.message_id, replyAll, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
@@ -1086,7 +1078,7 @@ export async function executeMicrosoftWriteTool(
     //
     // REPLY DRAFTS REUSE `outlook_reply`'S OWN REQUEST BODY, verbatim in shape: Graph's
     // `createReply` / `createReplyAll` take the same `{ comment }` or
-    // `{ message: { body, attachments } }` payload as `reply` / `replyAll` and differ only
+    // `{ comment, message: { attachments } }` payload as `reply` / `replyAll` and differ only
     // in returning the draft instead of queueing the send. That is the reuse — the
     // threading is Graph's, from the conversation the original message is on, so there is
     // no second threading rule here to drift from the first.
@@ -1104,7 +1096,7 @@ export async function executeMicrosoftWriteTool(
         const replyAll = args.reply_all === true;
         endpoint = `me/messages/${encodeURIComponent(replyToId)}/${replyAll ? 'createReplyAll' : 'createReply'}`;
         requestBody = prepared.inline.length > 0
-          ? { message: { body: { contentType: 'Text', content: bodyText }, attachments: prepared.inline } }
+          ? { comment: bodyText, message: { attachments: prepared.inline } }   // text as `comment` keeps the quoted thread; message.body would replace it
           : { comment: bodyText };
         describe = `a reply${replyAll ? ' to all' : ''} on the conversation of message ${replyToId}`;
       } else {
@@ -1146,21 +1138,13 @@ export async function executeMicrosoftWriteTool(
 
       const additionalText = ((args.body as string) ?? '') + prepared.bodySuffix;
 
-      // Graph's /forward preserves the original message's attachments server-
-      // side. To add NEW attachments OR custom body text we have to use the
-      // richer `message` payload (with `comment` reduced to a no-op or
-      // omitted). Note: when `message` is provided, the recipient also
-      // gets the original message body Graph stitches in automatically.
-      // createForward refuses recipients in both the action and `message`: action only.
+      // Graph's createForward keeps the original message (its quoted text and its attachments) only when the
+      // custom text rides as `comment`; `message.body` REPLACES the body Graph builds, and Graph takes `comment`
+      // OR `message.body`, never both. So the text is always `comment`, and `message` carries only the NEW
+      // attachments (the marker's headers join it in sendMarkedDraft). Recipients: the action's own, once.
       const requestBody: Record<string, unknown> = { toRecipients };
-      if (prepared.inline.length > 0) {
-        requestBody.message = {
-          body: { contentType: 'Text', content: additionalText },
-          attachments: prepared.inline,
-        };
-      } else if (additionalText.trim().length > 0) {
-        requestBody.comment = additionalText;
-      }
+      if (additionalText.trim().length > 0) requestBody.comment = additionalText;
+      if (prepared.inline.length > 0) requestBody.message = { attachments: prepared.inline };
 
       const result = await sendMarkedDraft('forward', messageId, requestBody, agentId, agentName, 'outlook_forward', {
         messageId: args.message_id, to: args.to, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,

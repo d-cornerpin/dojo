@@ -19,6 +19,7 @@ const mockDb = { current: null as Database.Database | null };
 // must be hoisted itself or the factory reads it while still in the temporal dead zone.
 const { broadcastSpy } = vi.hoisted(() => ({ broadcastSpy: vi.fn() }));
 const googleReadMock = vi.fn();
+const otherOutlookViews = { current: [] as Array<Record<string, unknown>> };
 const googleViews = { current: [] as Array<Record<string, unknown>> };
 
 vi.mock('../../db/connection.js', async () => {
@@ -59,6 +60,10 @@ vi.mock('../../google/client.js', () => ({ googleRead: (...a: unknown[]) => goog
 vi.mock('../../google/auth.js', async () => {
   const actual = await vi.importActual<typeof import('../../google/auth.js')>('../../google/auth.js');
   return { ...actual, listGoogleAccountViews: () => googleViews.current };
+});
+vi.mock('../../microsoft/auth.js', async () => {
+  const actual = await vi.importActual<typeof import('../../microsoft/auth.js')>('../../microsoft/auth.js');
+  return { ...actual, listMicrosoftAccountViews: () => otherOutlookViews.current };
 });
 // The safe-sender list is read for real (the watcher decides "direct to the agent" from it);
 // only the parse is restated, in the stored JSON shape the settings page writes. `addressesMatch`
@@ -267,5 +272,20 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
     const { content } = storedRow('g7');
     expect(content).toContain('Don\'t forget Q&A \u2014 caf\u00e9');
     expect(content).not.toContain('&#39;');
+  });
+
+  it('case 7: the agent\'s OTHER mailbox on To and this mailbox on Cc → cc; only the other one addressed → neither', async () => {
+    setMailbox('agent', 'gmail-agent@x.com');
+    otherOutlookViews.current = [{ id: 'o', kind: 'agent', position: 1, email: 'outlook-agent@x.com', enabled: true, connected: true }];
+    const base = [
+      { name: 'From', value: 'Bob <bob@y.test>' },
+      { name: 'Subject', value: 'Plan' },
+      { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' },
+    ];
+    await mailArrives([{ ...G1, id: 'g7a', headers: [...base, { name: 'To', value: 'outlook-agent@x.com' }, { name: 'Cc', value: 'gmail-agent@x.com' }] }]);
+    expect(storedRow('g7a').meta.mailAddressing).toMatchObject({ placement: 'cc' });
+    await mailArrives([{ ...G1, id: 'g7b', headers: [...base, { name: 'To', value: 'outlook-agent@x.com' }] }]);
+    expect(storedRow('g7b').meta.mailAddressing).toMatchObject({ placement: 'neither' });
+    otherOutlookViews.current = [];
   });
 });
