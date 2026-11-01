@@ -120,7 +120,7 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
   },
   {
     id: 'built-in-policy-tools',
-    // Below every 3.5.0 build: a box from 3.4.x or older owes it (their rows were written before these tools joined the lists, back to v1.0.0).
+    // Below every 3.5.0 build: a box from 3.4.x or older owes it (their rows were written before these tools joined the lists).
     sinceVersion: '3.5.0-0',
     pays:
       'the Dreamer and PM keep the tool list they last held (the per-boot rewrite was retired in 3.1.23), so an upgraded '

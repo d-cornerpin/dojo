@@ -13,7 +13,6 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { deliverPolicyTools, POLICY_DELIVERIES } from '../built-in-policy-delivery.js';
-import { HISTORIC_LISTS } from '../built-in-policy-history.js';
 import { RELEASE_STEPS } from '../release-steps.js';
 import { getAccessGrants } from '../../agent/access/read.js';
 import { canonicalizeToolsPolicy } from '../../agent/access/tools-policy.js';
@@ -121,30 +120,20 @@ describe('built-in agent tool delivery', () => {
     'work_close_request', 'work_note', 'work_schedule', 'work_update', 'work_validate'];
   const heldBy = (id: string) => new Set(canonicalizeToolsPolicy({ allow: JSON.parse(row(id).tools_policy!).allow, deny: [] }).allow);
 
-  it('an untouched historic Dreamer row (the 3.1.17 list) gets the full set', () => {
+  it('a 3.1.17-era Dreamer and PM row get only their newest tool', () => {
     addAgent('dreamer', JSON.stringify({ allow: DREAMER_3_1_17 }), JSON.stringify(grantsOf({ allow: DREAMER_3_1_17, deny: [] })));
+    addAgent('pm', JSON.stringify({ allow: PM_3_4_1.filter((t) => t !== 'tool_result_read') }), null);
     deliverPolicyTools(STEP);
-    expect([...heldBy('dreamer')].sort()).toEqual([...new Set(OLD_DREAMER.concat('lesson_record'))].sort());
-    expect(getAccessGrants('dreamer').tools.allow).toContain('lesson_record');
+    expect(JSON.parse(row('dreamer').tools_policy!).allow).toEqual([...DREAMER_3_1_17, 'lesson_record']);
+    expect(getAccessGrants('dreamer').tools.allow).toEqual([...DREAMER_3_1_17, 'lesson_record']);
+    expect(heldBy('pm').has('tool_result_read')).toBe(true);
   });
 
-  it('an untouched oldest row (alias names, any order) gets the full set without duplicating what its aliases cover', () => {
-    const old = ['tracker_update_status', 'vault_search', 'memory_search', 'complete_task', 'tracker_create_task', 'tracker_add_notes', 'load_tool_docs',
-      'memory_grep', 'vault_forget', 'file_read', 'tracker_create_project', 'file_write', 'memory_describe', 'get_current_time', 'send_to_agent',
-      'tracker_list_projects', 'list_agents', 'tracker_complete_step', 'vault_remember'];
+  it('an older row (alias names) is not topped up with older names, only the newest', () => {
+    const old = ['tracker_update_status', 'vault_search', 'memory_search', 'complete_task', 'vault_remember'];
     addAgent('dreamer', JSON.stringify({ allow: old }), null);
     deliverPolicyTools(STEP);
-    const got = JSON.parse(row('dreamer').tools_policy!).allow as string[];
-    expect(got.slice(0, old.length)).toEqual(old);
-    for (const t of ['history_search', 'history_get', 'work_note', 'work_open']) expect(got, t).not.toContain(t);
-    for (const t of ['vault_discard_archives', 'contact_remember', 'credential_add', 'lesson_record']) expect(got, t).toContain(t);
-  });
-
-  it('an untouched 3.1.17-era PM row gets what it lacked since, including the newest', () => {
-    const pm317 = PM_3_4_1.filter((t) => t !== 'tool_result_read');
-    addAgent('pm', JSON.stringify({ allow: pm317 }), null);
-    deliverPolicyTools(STEP);
-    expect(heldBy('pm').has('tool_result_read')).toBe(true);
+    expect(JSON.parse(row('dreamer').tools_policy!).allow).toEqual([...old, 'lesson_record']);
   });
 
   it('a 3.4-era Dreamer the owner trimmed does not get the removed name back, only the new one', () => {
@@ -155,11 +144,12 @@ describe('built-in agent tool delivery', () => {
     expect(getAccessGrants('dreamer').tools.allow).toEqual([...trimmed, 'lesson_record']);
   });
 
-  it('a trimmed PM keeps its trim (file_read stays out); nothing is added when it already holds the newest', () => {
-    const trimmed = PM_3_4_1.filter((t) => t !== 'file_read' && t !== 'file_list');
-    addAgent('pm', JSON.stringify({ allow: trimmed }), null);
-    expect(deliverPolicyTools(STEP).repaired).toBe(0);
-    expect(heldBy('pm').has('file_read')).toBe(false);
+  it('a trimmed PM (file_read, file_list, vault_get removed) gets nothing back but tool_result_read', () => {
+    const trimmed = PM_3_4_1.filter((t) => !['file_read', 'file_list', 'vault_get', 'tool_result_read'].includes(t));
+    addAgent('pm', JSON.stringify({ allow: trimmed }), JSON.stringify(grantsOf({ allow: trimmed, deny: [] })));
+    deliverPolicyTools(STEP);
+    expect(JSON.parse(row('pm').tools_policy!).allow).toEqual([...trimmed, 'tool_result_read']);
+    expect(getAccessGrants('pm').tools.allow).toEqual([...trimmed, 'tool_result_read']);
   });
 
   it('an owner who denied an old name on an untouched row keeps the denial', () => {
@@ -176,24 +166,23 @@ describe('built-in agent tool delivery', () => {
 });
 
 // ── THE GATE ──
-// Canonical names a row of the OLDEST persistent Dreamer (v1.15.18) and PM (v1.0.0) held; every other name in today's
-// lists must be delivered by a release step. Do not extend BASELINE to make this pass: add a POLICY_DELIVERIES entry
-// under a NEW step id (a step that has shipped never runs again on a box that has passed it).
+// The canonical names the code's own lists held when the per-boot rewrite was retired (v3.1.22/3.1.23). Names older than
+// that are out of scope for this step (see the module header); every name added since must be delivered by a release
+// step. Do not extend BASELINE to make this pass: add a POLICY_DELIVERIES entry under a NEW step id (a step that has
+// shipped never runs again on a box that has passed it).
 const BASELINE: Record<string, string[]> = {
-  dreamer: ['vault_remember', 'vault_search', 'vault_forget', 'history_search', 'history_get', 'file_read', 'file_write',
+  dreamer: ['vault_remember', 'vault_search', 'vault_forget', 'vault_discard_archives', 'history_search', 'history_get',
+    'contact_remember', 'contact_search', 'credential_add', 'credential_list', 'file_read', 'file_write',
     'work_open', 'work_update', 'work_note', 'get_current_time', 'load_tool_docs', 'complete_task'],
-  pm: ['work_update', 'work_note', 'work_schedule', 'send_to_agent', 'list_agents', 'list_groups', 'get_current_time'],
+  pm: ['work_update', 'work_note', 'work_schedule', 'work_validate', 'work_close_request',
+    'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'vault_search', 'vault_get', 'vault_remember',
+    'history_search', 'history_get', 'load_tool_docs', 'get_current_time', 'file_read', 'file_list'],
 };
 
 // The tools each step delivers, pinned. Once a release carrying a step is published its set is frozen: a tool added later
 // needs its own step id, or boxes already past the step never receive it.
 const PINNED_STEPS: Record<string, string[]> = {
-  'built-in-policy-tools': [
-    'dreamer:contact_remember', 'dreamer:contact_search', 'dreamer:credential_add', 'dreamer:credential_list',
-    'dreamer:lesson_record', 'dreamer:vault_discard_archives',
-    'pm:broadcast_to_group', 'pm:file_list', 'pm:file_read', 'pm:history_get', 'pm:history_search', 'pm:load_tool_docs',
-    'pm:tool_result_read', 'pm:vault_get', 'pm:vault_remember', 'pm:vault_search', 'pm:work_close_request', 'pm:work_validate',
-  ],
+  'built-in-policy-tools': ['dreamer:lesson_record', 'pm:tool_result_read'],
 };
 
 describe('a tool added to a built-in agent list is delivered to existing rows', () => {
@@ -212,13 +201,6 @@ describe('a tool added to a built-in agent list is delivered to existing rows', 
     for (const d of POLICY_DELIVERIES) {
       expect(RELEASE_STEPS.map((s) => s.id), `${d.tool}: no such step`).toContain(d.stepId);
       expect(lists[d.agent], `${d.tool} is no longer in the ${d.agent} list`).toContain(d.tool);
-    }
-  });
-  it('the latest historic list of each agent plus every delivery is the current list (no name falls between)', () => {
-    for (const agent of ['dreamer', 'pm'] as const) {
-      const latest = HISTORIC_LISTS.filter((h) => h.agent === agent).at(-1)!;
-      const have = new Set(canonicalizeToolsPolicy({ allow: [...latest.allow, ...POLICY_DELIVERIES.filter((d) => d.agent === agent).map((d) => d.tool)], deny: [] }).allow);
-      for (const t of lists[agent]) expect(have.has(t), `${agent}: ${t} is neither in the last historic list nor delivered`).toBe(true);
     }
   });
   it('each step delivers exactly its pinned set (a shipped step never gains a tool)', () => {
