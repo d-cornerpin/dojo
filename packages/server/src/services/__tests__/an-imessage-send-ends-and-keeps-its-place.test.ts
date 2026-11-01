@@ -15,7 +15,7 @@
 // the first check below re-asserts that before anything sends.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -46,7 +46,7 @@ beforeAll(() => {
   // The stand-in: `--help` is the health probe; a text containing "slow" takes half a second.
   fs.writeFileSync(path.join(bin, 'imsg'), '#!/bin/sh\n[ "$1" = "--help" ] && exit 0\n'
     + 'case "$*" in *slow*) sleep 0.5;; esac\necho "$5" >> "$E19B_LOG"\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(SCRATCH, 'deaf'), '#!/bin/sh\necho $$ >> "$E19B_PIDS"\ntrap "" TERM\nwhile :; do sleep 1; done\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(SCRATCH, 'deaf'), '#!/bin/sh\ntrap "" TERM\necho $$ >> "$E19B_PIDS"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
   process.env.E19B_LOG = LOG;
   process.env.E19B_PIDS = PIDS;
 });
@@ -61,6 +61,7 @@ afterAll(() => { fs.rmSync(SCRATCH, { recursive: true, force: true }); });
 const lastRow = (): { outcome: string; detail: string | null } | undefined => getDb().prepare(
   "SELECT outcome, detail FROM deliveries WHERE channel = 'imessage' ORDER BY rowid DESC LIMIT 1",
 ).get() as { outcome: string; detail: string | null } | undefined;
+const realSetTimeout = globalThis.setTimeout;   // captured before any test fakes timers
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 describe('E19b fix round 1 — an iMessage send ends, keeps its place, and says what happened', () => {
@@ -70,11 +71,24 @@ describe('E19b fix round 1 — an iMessage send ends, keeps its place, and says 
   });
 
   it('a send that ignores SIGTERM at its bound is killed, so it never stays pending', async () => {
-    const t0 = Date.now();
-    await expect(runMessagesProgram(path.join(SCRATCH, 'deaf'), [], { timeout: 200 })).rejects.toThrow(/timed out after 200 ms/);
-    expect(Date.now() - t0, 'ended by the kill after its grace, not left hanging').toBeLessThan(10_000);
-    const pid = Number(fs.readFileSync(PIDS, 'utf8').trim());
-    expect(alive(pid), 'the deaf program is gone').toBe(false);
+    // The bound runs from the spawn, so on a loaded box a real 200 ms can pass before the stand-in has
+    // installed its SIGTERM trap, and the SIGTERM then just kills it. The test advances the clock itself,
+    // and only once the program has announced (after its trap) that it is deaf.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const run = runMessagesProgram(path.join(SCRATCH, 'deaf'), [], { timeout: 200 });
+      const rejection = run.then(() => null, (e: unknown) => e);
+      for (let i = 0; i < 1_000 && !fs.existsSync(PIDS); i++) await new Promise<void>((r) => realSetTimeout(r, 10));
+      const pid = Number(fs.readFileSync(PIDS, 'utf8').trim());
+      await vi.advanceTimersByTimeAsync(200);                     // the bound fires: SIGTERM, ignored
+      expect(alive(pid), 'the deaf program outlives its SIGTERM').toBe(true);
+      await vi.advanceTimersByTimeAsync(3_000);                   // the grace passes: SIGKILL
+      expect(String(await rejection), 'ended by its bound, not left hanging').toMatch(/timed out after 200 ms/);
+      expect(alive(pid), 'the deaf program is gone').toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('when spawn itself throws, the Stop waiter it opened is released', async () => {
