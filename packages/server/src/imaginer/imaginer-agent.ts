@@ -52,7 +52,7 @@ const logger = createLogger('imaginer-agent');
 
 // ── Ensure Imaginer running ───────────────────────────────────────────
 
-export const IMAGINER_TOOLS_POLICY = JSON.stringify({
+const IMAGINER_TOOLS_POLICY = JSON.stringify({
   allow: [
     // Core always-on
     'load_tool_docs',

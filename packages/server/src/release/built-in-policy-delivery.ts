@@ -11,9 +11,22 @@
 // change nothing on a box whose grants are already stored, so both are updated.
 //
 // STRICTLY ADDITIVE. Only the tools named in `POLICY_DELIVERIES` are added; nothing is removed or reordered, every other
-// key survives, and a tool the owner has denied stays denied. An EMPTY or absent allow list means "unrestricted", so
-// adding one name would NARROW the agent: those are left alone. A policy that does not parse is left exactly as it is
-// and reported (updates never fail). Idempotent: a second pass finds every name present.
+// key survives, and a tool the owner has denied in EITHER place stays denied in both. Presence and denial are judged on
+// canonical names (the alias table the doors use), so a row holding an old name already holds its replacement. An EMPTY
+// or absent allow list means "unrestricted", so adding one name would NARROW the agent: those are left alone. A policy
+// that does not parse is left exactly as it is and logged (updates never fail; it is counted in `flagged` but nothing is
+// shown to the owner, since there is nothing for him to decide about a hand-broken row). Idempotent: a second pass finds
+// every name present.
+//
+// A per-row problem never throws. A database that cannot be read does throw, so the runner keeps the step owed.
+//
+// KNOWN EDGE: delivery is version-gated, so a rollback to 3.4.1 followed by a re-upgrade (or a sibling step failing and
+// holding the marker) runs the step again, and a delivered tool the owner had REMOVED from `allow` without denying it
+// comes back. Denying it is the durable way to say no.
+//
+// WHICH NAMES: the rows of a box that upgrades hold the list of the last version that rewrote them every boot (up to
+// v3.1.22; frozen since v3.1.23), and the matrix starts at v1.0.0. So every name added to a list after the OLDEST version
+// that wrote a persistent row of that agent is delivered, with the version it appeared in (git history of the constants).
 //
 // Adding a tool to a built-in agent's allow list means adding an entry here AND a `ReleaseStep` that calls
 // `deliverPolicyTools` with the entry's `stepId`; `built-in-policy-delivery.test.ts` fails otherwise.
@@ -23,6 +36,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getDreamerAgentId, getPMAgentId } from '../config/platform.js';
 import { forgetAccessGrants } from '../agent/access/read.js';
+import { canonicalizeToolsPolicy } from '../agent/access/tools-policy.js';
 import type { ReleaseStepOutcome } from './release-steps.js';
 
 const logger = createLogger('policy-delivery');
@@ -36,23 +50,46 @@ export interface PolicyDelivery {
   readonly stepId: string;
 }
 
+const S = 'built-in-policy-tools';
 export const POLICY_DELIVERIES: readonly PolicyDelivery[] = [
-  // Added 3.5: the Dreamer writes one lesson per rough task.
-  { agent: 'dreamer', tool: 'lesson_record', stepId: 'built-in-policy-tools' },
-  // Added 3.4.0: the reader of the agent's own long tool results. Every agent is also given it by the surface; this
-  // keeps the stored list equal to the code's.
-  { agent: 'pm', tool: 'tool_result_read', stepId: 'built-in-policy-tools' },
+  // Dreamer. Oldest persistent row: v1.15.18 (it held vault_remember/search/forget, history/work names under their old
+  // aliases, file_read/write, get_current_time, load_tool_docs, complete_task). Added since:
+  { agent: 'dreamer', tool: 'vault_discard_archives', stepId: S },   // v1.15.87
+  { agent: 'dreamer', tool: 'contact_remember', stepId: S },         // v2.11.4
+  { agent: 'dreamer', tool: 'contact_search', stepId: S },           // v2.11.4
+  { agent: 'dreamer', tool: 'credential_add', stepId: S },           // v2.11.5
+  { agent: 'dreamer', tool: 'credential_list', stepId: S },          // v2.11.5
+  { agent: 'dreamer', tool: 'lesson_record', stepId: S },            // 3.5: one lesson per rough task
+  // PM. Oldest row: v1.0.0 (tracker names that now alias work_update/work_note/work_schedule, send_to_agent, list_agents,
+  // list_groups, get_current_time). Added since:
+  { agent: 'pm', tool: 'broadcast_to_group', stepId: S },           // v1.0.1
+  { agent: 'pm', tool: 'vault_search', stepId: S },                 // v1.15.0
+  { agent: 'pm', tool: 'vault_remember', stepId: S },               // v1.15.0
+  { agent: 'pm', tool: 'load_tool_docs', stepId: S },               // v1.15.0
+  { agent: 'pm', tool: 'history_search', stepId: S },               // v3.1.10
+  { agent: 'pm', tool: 'history_get', stepId: S },                  // v3.1.10
+  { agent: 'pm', tool: 'file_read', stepId: S },                    // v3.1.10
+  { agent: 'pm', tool: 'file_list', stepId: S },                    // v3.1.10
+  { agent: 'pm', tool: 'vault_get', stepId: S },                    // v3.1.17
+  { agent: 'pm', tool: 'work_validate', stepId: S },                // v3.1.17
+  { agent: 'pm', tool: 'work_close_request', stepId: S },           // v3.1.17
+  { agent: 'pm', tool: 'tool_result_read', stepId: S },             // v3.4.0 (the surface also hands it to every agent)
 ];
 
-const agentId = (a: PolicyAgent): string => (a === 'dreamer' ? getDreamerAgentId() : getPMAgentId());
+// Exhaustive on purpose: widening `PolicyAgent` must fail to compile here rather than route to another agent's row.
+const AGENT_IDS: Record<PolicyAgent, () => string> = { dreamer: getDreamerAgentId, pm: getPMAgentId };
+
+const names = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+/** Canonical names of a `{allow,deny}` holder's list, so an old alias and its replacement are one name. */
+const canon = (v: unknown): ReadonlySet<string> => new Set(canonicalizeToolsPolicy({ allow: names(v), deny: [] }).allow);
 
 /** Add `tool` to `holder.allow` in place when that is safe. Returns whether it changed. */
-function addTo(holder: unknown, tool: string): boolean {
+function addTo(holder: unknown, tool: string, denied: ReadonlySet<string>): boolean {
   if (!holder || typeof holder !== 'object' || Array.isArray(holder)) return false;
-  const h = holder as { allow?: unknown; deny?: unknown };
+  const h = holder as { allow?: unknown };
   if (!Array.isArray(h.allow) || h.allow.length === 0) return false;      // unrestricted: adding would narrow it
-  if (Array.isArray(h.deny) && h.deny.includes(tool)) return false;       // an owner denial stays
-  if (h.allow.includes(tool)) return false;
+  if (denied.has(tool)) return false;                                     // an owner denial stands, in both places
+  if (canon(h.allow).has(tool)) return false;
   h.allow.push(tool);
   return true;
 }
@@ -65,34 +102,39 @@ function parseObject(text: string | null): Record<string, unknown> | null {
   } catch { return null; }
 }
 
-/** Deliver every entry of `stepId`. Never throws. */
+/** Deliver every entry of `stepId`. A per-row problem is caught and counted; an unreadable database throws. */
 export function deliverPolicyTools(stepId: string): ReleaseStepOutcome {
   const out: ReleaseStepOutcome = { examined: 0, flagged: 0, repaired: 0 };
   const db = getDb();
   for (const agent of [...new Set(POLICY_DELIVERIES.filter((d) => d.stepId === stepId).map((d) => d.agent))]) {
-    const id = agentId(agent);
+    const id = AGENT_IDS[agent]();
     const tools = POLICY_DELIVERIES.filter((d) => d.stepId === stepId && d.agent === agent).map((d) => d.tool);
     try {
       const row = db.prepare('SELECT tools_policy, permissions FROM agents WHERE id = ?').get(id) as
         { tools_policy: string | null; permissions: string | null } | undefined;
       if (!row) continue;
       out.examined++;
+      const policy = parseObject(row.tools_policy);
+      if (row.tools_policy && !policy) { out.flagged++; logger.warn('tools_policy does not parse; left as is', { agent: id }); }
+      const perm = parseObject(row.permissions);
+      if (row.permissions && row.permissions !== '{}' && !perm) { out.flagged++; logger.warn('permissions does not parse; left as is', { agent: id }); }
+      const grants = perm?.grants as { tools?: { deny?: unknown } } | undefined;
+      // A denial in either place is a denial for both: the panel writes only the grants, so the column can lag behind it.
+      const denied = new Set([
+        ...canonicalizeToolsPolicy({ allow: [], deny: names((policy as { deny?: unknown } | null)?.deny) }).deny,
+        ...canonicalizeToolsPolicy({ allow: [], deny: names(grants?.tools?.deny) }).deny,
+      ]);
       let policyText = row.tools_policy;
       let permText = row.permissions;
       let changed = false;
-      const policy = parseObject(row.tools_policy);
-      if (row.tools_policy && !policy) { out.flagged++; logger.warn('tools_policy does not parse; left as is', { agent: id }); }
-      if (policy && tools.map((t) => addTo(policy, t)).includes(true)) { policyText = JSON.stringify(policy); changed = true; }
-      const perm = parseObject(row.permissions);
-      if (row.permissions && row.permissions !== '{}' && !perm) { out.flagged++; logger.warn('permissions does not parse; left as is', { agent: id }); }
-      const grants = perm?.grants as { tools?: unknown } | undefined;
-      if (grants && tools.map((t) => addTo(grants.tools, t)).includes(true)) { permText = JSON.stringify(perm); changed = true; }
+      if (policy && tools.map((t) => addTo(policy, t, denied)).includes(true)) { policyText = JSON.stringify(policy); changed = true; }
+      if (grants && tools.map((t) => addTo(grants.tools, t, denied)).includes(true)) { permText = JSON.stringify(perm); changed = true; }
       if (!changed) continue;
       db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?")
         .run(policyText, permText, id);
       forgetAccessGrants(id);
       out.repaired++;
-      logger.info('built-in agent tool list extended', { agent: id, tools });
+      logger.info('built-in agent tool list extended', { agent: id });
     } catch (err) {
       out.flagged++;
       logger.warn('built-in agent tool delivery failed; left as is', { agent: id, error: err instanceof Error ? err.message : String(err) });
