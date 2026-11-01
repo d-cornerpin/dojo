@@ -37,6 +37,7 @@ vi.mock('../../../agent/runtime.js', () => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { healerRouter } from '../healer.js';
 import { vaultRouter } from '../vault.js';
+import { getDreamingConfig } from '../../../vault/maintenance.js';
 import * as coldImport1 from '../../../config/platform.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -122,7 +123,6 @@ describe('the dreamer mode door', () => {
   });
 
   it('reads a legacy stored off as full', async () => {
-    const { getDreamingConfig } = await import('../../../vault/maintenance.js');
     setConfig('dreaming_mode', 'off');
     expect(getDreamingConfig().dreamMode).toBe('full');
     setConfig('dreaming_mode', 'light');
