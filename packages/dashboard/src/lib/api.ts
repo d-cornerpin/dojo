@@ -922,10 +922,8 @@ export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>
 };
 
 export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
-  // The server returns 202 immediately and streams progress over the
-  // `voice:model_download` WS broadcast (whisper-large is ~1.5GB; holding the
-  // HTTP response open for ~2 minutes hits Cloudflare's free-tier 524 cap).
-  // We poll the models endpoint so `await installVoiceModel` resolves on disk.
+  // The server returns 202 at once and streams progress over the `voice:model_download` WS frame
+  // (a 1.5GB download held on one HTTP response hits Cloudflare's 524 cap); we poll until it is on disk.
   const kicked = await request<{ kind: string; id: string }>(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
   if (!kicked.ok) return kicked;
   clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing, a reported failure, or a restart
