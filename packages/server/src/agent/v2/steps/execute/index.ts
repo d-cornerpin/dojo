@@ -42,6 +42,7 @@ import { persistXmlFallbackCollapse } from './xml-fallback.js';
 import { admitBatchToRoom } from './batch-admission.js';
 import { countTrackerWorkThisIteration } from './tracker-counting.js';
 import { runTrackerFloors } from './tracker-floors.js';
+import { endAfterGenerator } from './media-words-step.js';
 import { runDelegationTurnEnd } from './delegation-exit.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 
@@ -275,10 +276,8 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     logger.info('v2: complete_task called, exiting loop', { agentId }, agentId);
     return requestExit(state, 'complete-task-called') as ExecuteOutcome;
   }
-  if (calledFireAndForgetGen) {
-    logger.info('v2: fire-and-forget generator called, exiting loop (async delivery)', { agentId }, agentId);
-    return requestExit(state, 'fire-and-forget-generator-called') as ExecuteOutcome;
-  }
+  const generatorExit = endAfterGenerator(state, ctx, calledFireAndForgetGen);
+  if (generatorExit) return generatorExit as ExecuteOutcome;
   // ── A2A turn: the send_to_agent IS the response, end the turn once it
   // fires. Without this, a weak model can loop calling send_to_agent on an
   // inter-agent turn; the thrash gate's "respond with TEXT" escape doesn't

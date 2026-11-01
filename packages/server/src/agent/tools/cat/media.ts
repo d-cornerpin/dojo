@@ -545,8 +545,8 @@ const handlers = {
     // outcome is threaded back separately (an awareness note on failure) so a
     // silent send failure can never read as success.
     const deliveryClause = triggeredByIMessage
-      ? `When the image is ready in 10-60 s, the engine will post it to the dashboard AND text it to the person who asked over iMessage, no second turn from you. Your own words are what they get with it, so write that line in this turn; do not tell them to "check the dashboard" (they are on iMessage and will receive the image itself), just say it is on the way.`
-      : `When the image is ready in 10-60 s, the engine will post it directly to the chat with no caption of its own, no second turn from you. Your own words are what they get with it, so write that line in this turn.`;
+      ? `When the image is ready in 10-60 s, the engine will post it to the dashboard AND text it to the person who asked over iMessage, no second turn from you. Your own words are what they get with it, so write that line in this turn, in your next reply (it is text only, no more tools run); do not tell them to "check the dashboard" (they are on iMessage and will receive the image itself), just say it is on the way.`
+      : `When the image is ready in 10-60 s, the engine will post it directly to the chat with no caption of its own, no second turn from you. Your own words are what they get with it, so write that line in this turn, in your next reply (it is text only, no more tools run).`;
     content =
       `Image generation kicked off (request_id: ${requestId}). ${deliveryClause} ` +
       `The engine adds no caption: the line you write in this turn is the only text that arrives with the image.` +
@@ -612,7 +612,7 @@ const handlers = {
     enqueueAudioOrMusicJob(jobId);
 
     content =
-      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now.`;
+      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now, in your next reply (it is text only, no more tools run).`;
     return { content, isError };
   },
 
@@ -726,7 +726,7 @@ const handlers = {
     }
 
     content =
-      `Video generation started (job_id: ${submit.jobId}). The engine is generating the video in the background (1 to 10 min). When it's ready the engine will post it directly to the chat, you do NOT get a second turn and must NOT call video_create again. The engine adds no caption: the words you write in this turn are the only text that arrives with the video, so write them now.`;
+      `Video generation started (job_id: ${submit.jobId}). The engine is generating the video in the background (1 to 10 min). When it's ready the engine will post it directly to the chat, you do NOT get a second turn and must NOT call video_create again. The engine adds no caption: the words you write in this turn are the only text that arrives with the video, so write them now, in your next reply (it is text only, no more tools run).`;
     return { content, isError };
   },
 
