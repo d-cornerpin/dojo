@@ -44,7 +44,7 @@ describe('installVoiceModel has no clock', () => {
     expect(await p).toEqual({ ok: false, error: 'disk full' });
   });
 
-  it('ends in plain words when the server went away and came back without the model', async () => {
+  it('ends in plain words when the server lost its connection and, once back, finds no model', async () => {
     vi.useFakeTimers();
     let up = true;
     vi.mocked(request).mockImplementation(async (_p: string, options?: RequestInit) => {
@@ -60,6 +60,7 @@ describe('installVoiceModel has no clock', () => {
     await vi.advanceTimersByTimeAsync(2000);   // back, no model: the download died with the restart
     const r = await p;
     expect(r.ok).toBe(false);
-    expect((r as { error: string }).error).toMatch(/restarted during the download/);
+    expect((r as { error: string }).error).toMatch(/connection to Dojo was lost.*not installed/);
+    expect((r as { error: string }).error).not.toMatch(/restart/i);  // a blip is not proof of a restart
   });
 });

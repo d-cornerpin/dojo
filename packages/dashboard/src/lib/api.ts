@@ -926,7 +926,7 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine'
   // (a 1.5GB download held on one HTTP response hits Cloudflare's 524 cap); we poll until it is on disk.
   const kicked = await request<{ kind: string; id: string }>(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
   if (!kicked.ok) return kicked;
-  clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing, a reported failure, or a restart
+  clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing, a reported failure, or a lost-then-back connection
   let sawDown = false;
   for (;;) {
     await new Promise(r => setTimeout(r, 1500));

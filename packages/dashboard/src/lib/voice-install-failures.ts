@@ -12,4 +12,4 @@ export const takeVoiceInstallFailure = (kind: string, modelId: string): string |
   return v;
 };
 export const clearVoiceInstallFailure = (kind: string, modelId: string): void => { failures.delete(`${kind}/${modelId}`); };
-export const VOICE_INSTALL_RESTARTED = 'Dojo restarted during the download, so it stopped. Start the download again.';
+export const VOICE_INSTALL_RESTARTED = 'The connection to Dojo was lost during the download, and when it came back the model was not installed. Start the download again.';
