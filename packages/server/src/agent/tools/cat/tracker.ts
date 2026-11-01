@@ -40,6 +40,7 @@ import { checkRequired, friendlyDbError, pauseActionMissing } from '../../tool-h
 import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
 import { moveAssignee } from '../../../work/row-authority.js';
+import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
@@ -679,13 +680,13 @@ const tableOfHandlers: ToolHandlerMap = {
     // existed; only the ask was fenced out of them. NO tool surface changes, so no prompt
     // prefix moves (cache tenet untouched).
     //
-    // It lands on `abandoned`, T18's user-choice terminal, NOT `done` and NOT `failed` — the
-    // board's own word for "someone chose to call it off, which is NOT a failure" — and the
-    // reason carries the model's note, which is where the user's words finally reach the ledger.
-    // The state machine already admits it: `open -> abandoned` and `claimed -> abandoned` are
-    // both declared transitions (`work/store.ts:97,99`).
+    // It lands on `abandoned`, T18's user-choice terminal, NOT `done` and NOT `failed` — the board's own word for
+    // "someone chose to call it off, which is NOT a failure" — and the reason carries the model's note (the user's words).
+    // The state machine already admits it: `open -> abandoned` and `claimed -> abandoned` are both declared transitions.
     const crNote = (args.note as string | undefined)?.trim() || null;
     if (crRow.kind === 'ask') {
+      const inherited = inheritedAskDoor(crRow.id, String(args.disposition), crNote, agentId);   // proof-fix-f R3-1(b)
+      if (inherited) return inherited;
       if (String(args.disposition) !== 'dropped') {
         content = `Not closed: "${crRow.title ?? crRow.id}" is something the owner asked YOU for, not a `
           + 'promise you made. It closes itself the moment an answer is delivered for it — the '
@@ -696,8 +697,7 @@ const tableOfHandlers: ToolHandlerMap = {
         return { content, isError };
       }
       if (!crNote) {
-        // The note is the whole point of the leg: a withdrawal whose reason is not the user's
-        // words is the engine guessing, which is what this task exists to stop.
+        // The note is the whole point of the leg: a withdrawal whose reason is not the user's words is the engine guessing, which is what this task exists to stop.
         content = `Not dropped: pass \`note\` with what the person you are talking to actually said when they called `
           + `"${crRow.title ?? crRow.id}" off. The reason goes on the record.`;
         isError = true;

@@ -192,7 +192,7 @@ export async function pushReplyToChannel(
     // produces an honest row instead of nothing at all.
     const delivered = await withOutboundAsync(
       {
-        agentId, tool: 'auto-route', channel: 'imessage',
+        agentId, tool: 'auto-route', channel: 'imessage', text: replyText,
         recipientId: imRecipient ?? null,
         conversationId: turnCtx.root?.conversationId ?? null,
       },
@@ -247,7 +247,7 @@ export async function pushReplyToChannel(
       };
       const result = await withOutboundAsync(
         {
-          agentId, tool: 'auto-route', channel: 'teams',
+          agentId, tool: 'auto-route', channel: 'teams', text: replyOut,
           recipientId: state.inboundContext.chatId, threadRoot: state.inboundContext.chatId,
           conversationId: turnCtx.root?.conversationId ?? null,
         },
@@ -291,7 +291,7 @@ export async function pushReplyToChannel(
       };
       const result = await withOutboundAsync(
         {
-          agentId, tool: 'auto-route', channel: 'email',
+          agentId, tool: 'auto-route', channel: 'email', text: replyOut,
           recipientId: state.inboundContext.recipientAddress ?? null,
           provider: state.inboundContext.emailService ?? null,
           conversationId: turnCtx.root?.conversationId ?? null,
@@ -357,7 +357,7 @@ export async function pushReplyToChannel(
           // in four sentences is one thing the caller heard.
           await withOutboundAsync(
             {
-              agentId, tool: 'auto-route', channel: 'phone',
+              agentId, tool: 'auto-route', channel: 'phone', text: tail,
               recipientId: state.inboundContext.phoneFromNumber ?? null,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
@@ -377,7 +377,7 @@ export async function pushReplyToChannel(
         const phoneText = replyOut;
         await withOutboundAsync(
           {
-            agentId, tool: 'auto-route', channel: 'phone',
+            agentId, tool: 'auto-route', channel: 'phone', text: phoneText,
             recipientId: state.inboundContext.phoneFromNumber ?? null,
             conversationId: turnCtx.root?.conversationId ?? null,
           },
@@ -413,7 +413,7 @@ export async function pushReplyToChannel(
         const smsText = replyOut;
         const r = await withOutboundAsync(
           {
-            agentId, tool: 'auto-route', channel: 'sms', recipientId: smsTo,
+            agentId, tool: 'auto-route', channel: 'sms', recipientId: smsTo, text: smsText,
             conversationId: turnCtx.root?.conversationId ?? null,
           },
           async () => {

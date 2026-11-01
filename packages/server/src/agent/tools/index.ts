@@ -65,8 +65,7 @@ import { createLogger } from '../../logger.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
 import { workOperation } from '../../tools/work-verbs.js';
 import {
-  withOutboundAsync, withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
-  currentOutboundDeliveryId,
+  withOutboundAsync, withOutboundAsyncIfAbsent, outboundIntentForTool, currentOutboundDeliveryId,
 } from '../v2/outbound.js';
 import { TOLD_ABOUT_TASK_ARG, agentMayNameTask } from './told-about-task.js';
 import { recordPersonTold } from '../../work/validation-drive.js';
@@ -203,13 +202,8 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
   // what actually happened, and `writeToolReceipt` links its receipt to that row from inside
   // the same scope. Nothing here decides an outcome, so a tool that refuses before reaching a
   // transport writes no row at all.
-  const sendChannel = outboundChannelForTool(resolved.name);
-  if (sendChannel !== null) {
-    const intent = {
-      agentId, tool: resolved.name, channel: sendChannel,
-      recipientId: outboundRecipientForTool(resolved.name, resolved.args as Record<string, unknown>),
-      conversationId: turnContext(agentId)?.root?.conversationId ?? null,
-    };
+  const intent = outboundIntentForTool(agentId, resolved.name, resolved.args as Record<string, unknown>, turnContext(agentId)?.root?.conversationId ?? null);
+  if (intent !== null) {
     // t146: a send whose ARGUMENTS name its task (`task_id`, ./told-about-task.ts) opens its OWN
     // scope, and the person is recorded as told about that task from the row THIS send wrote.
     // The record itself refuses anyone but the owner or the row's requester, and only a caller who

@@ -109,10 +109,14 @@ const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string
     // t152 adds the third: the async arm (`settleOnAsyncResult`), for a background job's result that
     // reaches the owner after the turn that started it. Same function, same predicate family, reached
     // only through `settleAsk`; the writer outside the authority is still zero.
-    done: 3, dynamic: 0, subjects: 'ask',
+    //
+    // proof-fix-f R3-1(a) adds the fourth: the inherited arm, for an ask parked owed on the version boundary that
+    // a later real answer in its own conversation closes. Same function, reached only through `settleAsk`.
+    done: 4, dynamic: 0, subjects: 'ask',
     owner: 'settleAsk — the ONE settlement authority for owner asks (SWEEP-A TB1), including '
       + 'its join arm (SWEEP-A TB2: children settled + the compiled delivery, `compile_resolved` written) '
-      + 'and its async arm (t152: the background work finished and its result reached the owner)',
+      + 'and its async arm (t152: the background work finished and its result reached the owner) '
+      + 'and its inherited arm (proof-fix-f: a late real answer in the conversation of an ask parked owed)',
   },
   'work/store.ts': {
     // TB2 TIGHTENING: 3 -> 2. `settleJoinDelivered` is GONE from this file; it took the last

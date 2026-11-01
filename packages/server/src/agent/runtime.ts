@@ -23,6 +23,7 @@ import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 // PHASE-6 T10 Step 1d: the storm law's own predicate, read from the spine.
 import { selfWakeStandDown } from '../work/work-reaper.js';
+import { handBackOrphansOf } from '../work/orphaned-claims.js';
 
 // One-shot dedup so the "model does not support tools" banner only fires once
 // per (agent, model) pair for the lifetime of the server process. Without
@@ -1572,16 +1573,13 @@ function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) =
 }
 
 // ── Stuck-Agent Recovery ──
-// If the runtime crashes mid-turn after setting status to 'working' but before
-// the finally block clears it, the agent stays stuck. This periodic check
-// resets agents that have been 'working' for too long (10+ minutes).
+// A run that set 'working' and never cleared it leaves the agent stuck; this periodic check
+// resets rows 'working' past STUCK_AGENT_THRESHOLD_MINUTES (`agent/stuck-thresholds.ts`, PHASE-6
+// T10: the table declares, the site decides). It returns the agents it reaped.
 const STUCK_AGENT_CHECK_MS = 5 * 60 * 1000; // Check every 5 minutes
-// PHASE-6 T10: the value and its D18 reasoning now live in `agent/stuck-thresholds.ts`
-// beside the other three stuck cliffs, so the four answers to "how long before this counts
-// as stuck" can be read together. The number is unchanged and this is still where it is
-// enforced — the table declares, the site decides.
 
-function recoverStuckAgents(): void {
+function recoverStuckAgents(): string[] {
+  const reaped: string[] = [];
   try {
     const db = getDb();
     const stuck = db.prepare(`
@@ -1605,17 +1603,11 @@ function recoverStuckAgents(): void {
       activeRuns.delete(agent.id);
       pendingWakeups.delete(agent.id); endJobCarry(agent.id); // a reaped run's job is dead (t143 r7)
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
-      // t93 — AND THE TURN THIS BLOCK'S VERDICT ABANDONED IS CLOSED, AS `terminated`. The
-      // `agents` row was repaired here from this reaper's first version; the `turns` row never
-      // was, so a run killed mid-turn kept `ended_at IS NULL` for ever.
-      // ⚠ NARROWER THAN THE FIRST CUT OF THIS COMMENT CLAIMED (review I-1, fix round 1): the
-      // >75-MINUTE-STALE CASE ONLY. The COMMON crash — killed mid-turn, restarted inside the
-      // hour — never reaches this query; `agent-status.ts`'s boot sweep covers that, and
-      // `markTurnsTerminated`'s docstring says why neither case covers the other.
-      //
-      // The verdict is THIS block's; the write is `turn-record.ts`'s, which keeps
-      // `UPDATE turns` in the one module that owns the table.
+      // t93 — AND THE TURN THIS BLOCK'S VERDICT ABANDONED IS CLOSED, AS `terminated` (the write
+      // is `turn-record.ts`'s, the one module that owns `turns`). The >75-MINUTE-STALE CASE ONLY:
+      // the common crash, restarted inside the hour, is `agent-status.ts`'s boot sweep's.
       const closedTurns = markTurnsTerminated(agent.id);
+      reaped.push(agent.id);
       logger.warn('Recovered stuck agent from permanent working state', {
         agentId: agent.id, agentName: agent.name, turnsClosedAsTerminated: closedTurns,
       });
@@ -1680,6 +1672,7 @@ function recoverStuckAgents(): void {
     .catch(err => {
       logger.warn('Dreamer health sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     });
+  return reaped;
 }
 
 // ── Orphaned model_id repair (v2.3.19) ──
@@ -1752,7 +1745,8 @@ function repairOrphanedModelPointers(): void {
 // full-suite run minted `[vitest-worker]: Timeout calling "onTaskUpdate"` — a worker→main RPC
 // unanswered inside vitest's 60 s birpc deadline. Pinned by
 // `__tests__/the-runtime-arms-no-refd-timer-at-import.test.ts`, which measures its own control.
-const stuckAgentSweep = setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
+// While the server stays up the reaped agents' orphaned asks go back to them at once (at boot index.ts 4b1 does it).
+const stuckAgentSweep = setInterval(() => handBackOrphansOf(recoverStuckAgents(), (id) => getAgentRuntime().handleMessage(id, '')), STUCK_AGENT_CHECK_MS);
 stuckAgentSweep.unref?.();
 const orphanedModelSweep = setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
 orphanedModelSweep.unref?.();

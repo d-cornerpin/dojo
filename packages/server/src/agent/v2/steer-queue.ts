@@ -42,8 +42,7 @@
 // requirement preserved: "the ~21 historically-dead steer behaviours turn on in groups
 // behind a flag, the OR8 targeted set between groups" (research 22, plan T3 Step 3) — the
 // staging RAN, group by group, and its evidence is the seven AS-BUILT rows under T3 Step 3.
-// The rollback the flag offered is `git revert`; what stays is the queue itself, whose
-// retention is now unconditional and structural rather than a runtime read of `process.env`.
+// The rollback the flag offered is `git revert`; what stays is the queue itself, whose retention is now unconditional and structural rather than a runtime read of `process.env`.
 //
 // The ONE behaviour that was never staged, and is unchanged: the per-floor one-shot LATCH
 // is always on. Twenty-four of the twenty-six floors already had one; without it the queue
@@ -57,7 +56,7 @@ import { withAuthorHead } from './steer-author-head.js';
 /** Every floor that may steer the model. One id per floor — never two floors sharing one. */
 export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
-  | 'false-delivery-claim'
+  | 'false-delivery-claim' | 'handed-back-ask'
   | 'ghosted-ask' | 'ghosted-ask-answer' | 'silent-closeout' | 'delegation-exit'
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
@@ -120,6 +119,7 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'a2a-handoff-floor',     priority: 29, why: 'user-facing turn ending silently after a handoff' },
   { id: 'a2a-missed-reply',      priority: 30, why: 'a peer asked and got prose instead of a reply' },
   { id: 'going-idle-in-progress', priority: 31, why: 'silent stop with in_progress work dangling' },
+  { id: 'handed-back-ask',       priority: 32, why: 'a person waits on a message a dead run handed back: what it already did and may have sent come before acting' },
 
   // SWEEP-A TB8 JOB 1. The 29th floor, and it ranks ABOVE `empty-response` deliberately:
   // both look like "the model said nothing", but one of them burned the model's ENTIRE

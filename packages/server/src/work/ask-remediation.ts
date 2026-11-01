@@ -37,7 +37,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { askAnswerEvidence, settleAsk, NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
+import { askAnswerEvidence, settleAsk, NON_ANSWERING_DISPLAY_KINDS, realAnswerInConversationSince } from './ask-settlement.js';
 import { appendWorkEvent, claimingTurnOf, clearJoinCompilePending, transition } from './store.js';
 
 const logger = createLogger('ask-remediation');
@@ -98,18 +98,8 @@ const claimingTurn = claimingTurnOf;
 function anyLaterRealDelivery(
   agentId: string, conversationId: string | null, notBefore: string,
 ): boolean {
-  if (conversationId == null) return false;
-  const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
-  const chips = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
-  const hit = getDb().prepare(
-    `SELECT 1 AS ok FROM deliveries d
-      WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
-        AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
-        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = d.message_id AND m.display_kind IN (${chips}))
-        AND d.created_at >= ?
-      LIMIT 1`,
-  ).get(agentId, conversationId, ...excluded, notBefore) as { ok: number } | undefined;
-  return hit !== undefined;
+  // The authority's own conversation-scoped read (shared with the inherited-ask close), never a private copy.
+  return realAnswerInConversationSince(agentId, conversationId, notBefore) !== null;
 }
 
 /**

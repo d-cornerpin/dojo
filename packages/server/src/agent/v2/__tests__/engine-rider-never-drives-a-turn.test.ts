@@ -199,6 +199,9 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     'healer',
     // A failure the agent must voice (image not generated, file not delivered): the agent is woken to tell the person.
     'delivery_failure_owed',
+    // proof-fix-f (review B2): messages an older version left unanswered, parked owed on the first boot of the build
+    // that hands orphans back. ONE per agent; it IS the reason for a turn — the agent decides which still matter.
+    'owed_messages_inherited',
     // SLOW-INFERENCE T79d: `tracker/pm-agent.ts`'s `runEffortReview` — a deliverable, not a
     // rider, for the same reason `pm_review` is one: it IS the reason for a turn (a dedicated
     // PM turn asking for a structured advancing/circling verdict), not content riding a turn

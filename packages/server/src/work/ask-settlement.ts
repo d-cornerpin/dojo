@@ -43,8 +43,8 @@
 //   (b) `settleAsksAtTurnFinalize` — the final adjudicator, over every ask the turn CLAIMED
 //       or that entered its ASSEMBLED CONTEXT. Structural invariant: no ask remains
 //       `claimed` by a finalized turn;
-//   (c) `reconcileOrphanedClaims` — boot, unchanged in trigger and window; only its
-//       answered arm's decision is now shared.
+//   (c) `reconcileOrphanedClaims` — `work/orphaned-claims.ts`: the boot and the stuck-run
+//       reaper, over asks whose serving turn died with its process.
 // The join arm (`settleJoinDelivered`) is the same rule invoked from the relay and is folded
 // in by SWEEP-A TB2, which also owns the join DRIVING, the escalation ladder and everything
 // `blocked` beyond the hold written here.
@@ -69,7 +69,7 @@ import { recordServingTurnByRowid } from '../memory/message-store.js';
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import {
   appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, claimingTurnOf, isTerminal,
-  revertAskClaimOnAbort, transition,
+  transition,
   type WorkState,
 } from './store.js';
 
@@ -144,11 +144,6 @@ export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn', 'working-note'] as cons
  */
 export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
 
-/** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
- *  reconciliation it replaced (`index.ts` 4b1): a claim stranded by a genuine crash is
- *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */
-export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
-
 /** Where in the lifecycle the question is being asked. It selects the TIE-BREAK when there
  *  is no evidence — never the evidence itself, which is identical at all three.
  *
@@ -184,6 +179,8 @@ export interface SettlementContext {
    *  closed" record can never disagree. `setAnswerMessageId` keys on exactly this column. */
   rowid?: number | null;
   actorId?: string | null;
+  /** The agent NAMED this inherited ask answered (`kept` through the tracker door); the engine checks the receipt. */
+  inheritedKept?: true;
   /** JOIN MOMENT ONLY: the delivery the relay just recorded, when the caller holds one. It is
    *  still CHECKED here (delivered, this agent, not a chip, postdating `join_complete`) — the
    *  caller narrows the scope, the authority decides. */
@@ -355,8 +352,8 @@ const NOT_A_TOOL_CHIP =
  *     `assistant`/`agent-text` row (28 of 28) but is written by the platform under a tool no
  *     model can call, out of the pieces the peers returned — TB13's correction, kept whole:
  *     25 of those 28 sit on turns that recorded no answer key and would have been refused;
- *   * a turn still running (`ended_at IS NULL`) — which is every delivery-moment close and
- *     the whole of the boot crash arm, so `reconcileOrphanedClaims` is untouched.
+ *   * a turn still running (`ended_at IS NULL`) or cut off by a dead process (`terminated`, never finalized, so
+ *     no answer key) — every delivery-moment close and the whole of the boot crash arm.
  */
 const NOT_A_SUPERSEDED_BUBBLE =
   `NOT EXISTS (
@@ -365,7 +362,7 @@ const NOT_A_SUPERSEDED_BUBBLE =
       WHERE mb.id = d.message_id
         AND mb.role = 'assistant' AND mb.display_kind = 'agent-text'
         AND d.tool NOT IN (${[...ENGINE_JOIN_RELAY_TOOLS].map((t) => `'${t}'`).join(', ')})
-        AND tb.ended_at IS NOT NULL
+        AND tb.ended_at IS NOT NULL AND tb.exit_reason IS NOT 'terminated'
         AND (tb.answer_message_id IS NULL OR tb.answer_message_id <> d.message_id))`;
 
 /**
@@ -407,6 +404,49 @@ const NOT_A_SUPERSEDED_BUBBLE =
 const NOT_A_START_ACK =
   `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
                  AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
+
+/**
+ * EVERY delivery tool the ENGINE writes rather than the agent (review R4-1), re-derived from the outbound tool names:
+ * the start-ack, the join relay and its failed/late notices, the Dojo alert, the owner card and the owner's own close,
+ * the first-run welcome, the healer's approval prompt and the busy auto-reply. An unscoped door crossing is written as
+ * `<channel>-door` and is excluded by pattern in the read. None of them is the agent answering a person.
+ */
+export const ENGINE_SENT_TOOLS: ReadonlySet<string> = new Set([
+  ...NON_ANSWERING_DELIVERY_TOOLS, ...ENGINE_JOIN_RELAY_TOOLS, 'a2a-join-failed', 'a2a-join-late',
+  'alert', 'owner-card', 'owner-close', 'oobe-welcome', 'healer-approval', 'busy-ack',
+]);
+
+/** The `audit` marker the inherited-backlog park writes (`work/inherited-backlog.ts`). Declared here: the authority reads it. */
+export const INHERITED_BACKLOG_MARKER = 'inherited_backlog';
+
+/**
+ * A REAL answer delivered in `conversationId` since `notBefore` (`deliveries.created_at` form), with NO turn match:
+ * the agent's own delivery, never an engine-sent row, a tool-call chip or a start-ack. ONE read, shared: the ledger
+ * remediation's triage asks it (`ask-remediation.ts anyLaterRealDelivery`) and so does the agent-named inherited close.
+ */
+export function realAnswerInConversationSince(
+  agentId: string, conversationId: string | null, notBefore: string,
+): { id: string; tool: string } | null {
+  if (conversationId == null) return null;
+  const excluded = [...ENGINE_SENT_TOOLS];
+  return (getDb().prepare(
+    `SELECT d.id AS id, d.tool AS tool FROM deliveries d
+      WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
+        AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+        AND d.tool NOT LIKE '%-door' AND ${NOT_A_TOOL_CHIP} AND ${NOT_A_START_ACK}
+        AND d.created_at >= ?
+      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
+  ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
+}
+
+/** When an ask was parked as inherited (the marker's instant, in `deliveries.created_at` form), or null. */
+function inheritedParkedAt(workId: string): string | null {
+  const r = getDb().prepare(
+    `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = 'audit'
+       AND json_extract(payload, '$.marker') = ? ORDER BY id DESC LIMIT 1`,
+  ).get(workId, INHERITED_BACKLOG_MARKER) as { at: number } | undefined;
+  return r ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
+}
 
 /**
  * ⚠ UX-REPAIR ROUND 6 T25 — THE EIGHTH NARROWING: A DELIVERY THE ENGINE ALREADY SAID DID NOT
@@ -645,6 +685,24 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   if (!ask) return out('unchanged', 'no such work row');
   if (ask.kind !== 'ask') return out('unchanged', `not an ask (kind=${ask.kind})`);
 
+  // ── proof-fix-f R3-1(a), R4-1: AN INHERITED ASK CLOSES ONLY WHEN THE AGENT NAMES IT. ──
+  // Parked `blocked` on the version boundary (owed, not auto-served), its claiming turn is dead, so the turn-bound
+  // evidence below can never match. A conversation-wide close let ANY later reply — the notice turn's own bubble,
+  // an answer to a newer question — mark it answered. So nothing closes it on its own: the agent says `kept`
+  // (`work/inherited-backlog.ts inheritedAskDoor`), and the engine closes it only on a real delivery it can point
+  // at, in that ask's conversation, since the park (G6: assert only what the record shows).
+  const parkedAt = ask.state === 'blocked' && ctx.inheritedKept === true ? inheritedParkedAt(workId) : null;
+  if (ctx.inheritedKept === true) {
+    if (parkedAt === null) return out('unchanged', 'not an inherited owed ask');
+    const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, parkedAt);
+    if (!late) return out('unchanged', 'inherited and owed: no real answer in its conversation since it was parked');
+    const r = transition(workId, {
+      to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked',
+      reason: `answered late via ${late.tool}, after it was inherited owed from an older version`,
+    });
+    return r.kind === 'applied' ? out('closed', `answered late via ${late.tool}`, late.id) : out('unchanged', `close refused: ${r.kind}`);
+  }
+
   // ── THE ORDERING ARM (SWEEP-A TB2). A turn that ANSWERED and then DELEGATED. ──
   //
   // The chip narrowing above kills the premature close whenever the model delegates before it
@@ -668,8 +726,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // ⚠ SWEEP-A TB3 — AND AT BOOT, FOR THE SAME SHAPE THE SAME TURN LEFT BEHIND. Finalize is
   // where this arm belongs, and a process killed between the delegation and the finalize
   // never reaches it: the row survives the crash `done` with its join unresolved, which is
-  // bug 2's own state with nobody left to correct it. The boot reconciler already exists for
-  // turns that died mid-lifecycle and already carries the bound — thirty minutes, dead turn —
+  // bug 2's own state with nobody left to correct it. The orphaned-claim reconcile already exists
+  // for turns that died mid-lifecycle and its signal is the dead turn (no window since proof-fix-f),
   // so the crash window is that arm's scope widened by one shape, never a second mechanism.
   if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot') && joinOutstanding(ask)) {
     // ⚠ SWEEP-A TB6 — AND IT DROPS THE RECEIPT IT IS UNDOING. `evidenceRef` names the
@@ -1426,100 +1484,4 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     }, p.agentId);
   }
   return result;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// INVOCATION (c) — BOOT RECONCILE OF CRASHED TURNS
-// ════════════════════════════════════════════════════════════════════════════════
-
-/**
- * Crash test B, the durable half: a process killed between the CLAIM and the EFFECT.
- *
- * The claim is in the database and the turn is not, so on restart the ask reads as being
- * served by a turn that will never finish. Three outcomes and no fourth:
- *   * the dead turn DELIVERED  -> the authority closes it against that delivery (the same
- *     evidence `settleAsksForDelivery` would have used had the process lived one more
- *     statement). Its decision is no longer this function's;
- *   * it recorded ZERO effectful calls -> hand the ask back, the person is served again;
- *   * it recorded some -> HOLD it, because the effect already happened and a second turn
- *     would repeat it (P6b, unchanged: the crash case is the one the counted input exists
- *     for, and the turn boundary — where the owner's 2026-08-05 ruling governs — never ran).
- *
- * Trigger and window are carried verbatim: boot only, ≤30 minutes, dead turns.
- * Relocated from `work/store.ts` with the decision it now shares.
- *
- * ── SWEEP-A TB3: THE CRASH WINDOW, THE FOURTH OUTCOME ──
- * A turn that CLOSED an ask and then DELEGATED under it is handed back at its own boundary
- * (TB2's ordering arm). A turn killed between those two moments never reaches its boundary,
- * so the row survives the crash `done` with an unresolved join — the exact state every safety
- * net downstream is blind to, and the state bug 2 was about. Same trigger, same window, same
- * dead-turn predicate; only the scope is one shape wider, and the row leaves `done` on the
- * first look so it can never be adjudicated twice.
- */
-export function reconcileOrphanedClaims():
-{ reArmed: number; held: number; closed: number; handedBack: number } {
-  const db = getDb();
-  const since = Date.now() - ORPHAN_CLAIM_WINDOW_MINUTES * 60 * 1000;
-  const answered = db.prepare(`
-    SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number
-      FROM work w
-      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND t.ended_at IS NULL
-     GROUP BY w.id
-  `).all(since) as Array<{ id: string; agent_id: string; turn_number: number }>;
-  let closed = 0;
-  for (const a of answered) {
-    const s = settleAsk(a.id, {
-      agentId: a.agent_id, turnNumber: a.turn_number,
-      at: 'boot', actorId: 'boot-reconciliation',
-    });
-    if (s.verdict === 'closed') closed++;
-  }
-
-  const rows = db.prepare(`
-    SELECT w.id AS id, COALESCE(t.effectful_calls, 0) AS effectful_calls
-      FROM work w
-      LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND (t.turn_number IS NULL OR t.ended_at IS NULL)
-  `).all(since) as Array<{ id: string; effectful_calls: number }>;
-  let reArmed = 0; let held = 0;
-  for (const r of rows) {
-    const res = revertAskClaimOnAbort(
-      r.id, r.effectful_calls,
-      'boot reconciliation: the claiming turn never finished (process killed between claim and effect)',
-    );
-    if (res === null) held++;
-    else if (res.kind === 'applied') reArmed++;
-  }
-  // ── THE CRASH WINDOW (SWEEP-A TB3) ──
-  // `claimed_by_turn` was NULLed by the close, so the serving turn is re-identified through
-  // the receipt the close points at — the same re-identification `settleAsksAtTurnFinalize`
-  // performs for the same shape, written the same way on purpose.
-  const crashed = db.prepare(`
-    SELECT w.id AS id, w.agent_id AS agent_id, d.turn_number AS turn_number
-      FROM work w
-      JOIN deliveries d ON d.id = w.result_delivery_id AND d.agent_id = w.agent_id
-                       AND d.outcome = 'delivered'
-      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = d.turn_number
-     WHERE w.kind = 'ask' AND w.state = 'done'
-       AND (w.remaining_children > 0 OR w.compile_pending = 1)
-       AND w.updated_at >= ?
-       AND t.ended_at IS NULL
-     GROUP BY w.id
-  `).all(since) as Array<{ id: string; agent_id: string; turn_number: number | null }>;
-  let handedBack = 0;
-  for (const c of crashed) {
-    const s = settleAsk(c.id, {
-      agentId: c.agent_id, turnNumber: c.turn_number,
-      at: 'boot', actorId: 'boot-reconciliation',
-    });
-    if (s.verdict === 'held' || s.verdict === 'reopened') handedBack++;
-  }
-
-  if (reArmed > 0 || held > 0 || closed > 0 || handedBack > 0) {
-    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held, closed, handedBack });
-  }
-  return { reArmed, held, closed, handedBack };
 }

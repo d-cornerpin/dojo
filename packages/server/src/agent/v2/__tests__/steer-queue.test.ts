@@ -127,7 +127,7 @@ describe('the declared precedence table', () => {
     }
   });
 
-  it('covers the whole re-derived steer surface: 26 staged + 1 converted + 1 new noun + 1 Arm C = 29 floors', () => {
+  it('covers the whole re-derived steer surface: 26 staged + 1 converted + 1 new noun + 1 Arm C + 1 hand-back = 30 floors', () => {
     // §T0-PINS F derived 26 setting sites at `1249866`, re-derived unchanged by T3.
     //
     // PHASE-4 T4 adds the 27th, and the number moved for a reason worth stating rather than
@@ -167,7 +167,11 @@ describe('the declared precedence table', () => {
     // the person's own receipt row (retired by t137) and `sys.compaction-continuity` (deleted
     // in v3.3.3 with its writer; the task list carries it). Priority 60 stays RETIRED and is never reused — see the tombstone in the
     // table itself.
-    expect(STEER_PRECEDENCE.length).toBe(29);
+    // proof-fix-f ADDS the 30th, NEW BEHAVIOUR (review B1/M1): `handed-back-ask` gives the turn that
+    // serves a message a dead run handed back what that run already did and may already have sent,
+    // whole and in that conversation only — it used to be a 400-char events-lane gist every turn saw.
+    expect(STEER_PRECEDENCE.length).toBe(30);
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'handed-back-ask').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'output-grind').length).toBe(1);
     // THE ARM C FLOOR (2026-09-26): an agent asserted "submitted!" in the same turn its report
     // tool returned `is_error` saying the report was cancelled. The truth band's four could not see

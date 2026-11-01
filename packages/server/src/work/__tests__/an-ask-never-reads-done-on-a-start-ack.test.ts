@@ -55,8 +55,9 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import {
-  settleAsk, settleAsksAtTurnFinalize, reconcileOrphanedClaims, askAnswerEvidence,
+  settleAsk, settleAsksAtTurnFinalize, askAnswerEvidence,
 } from '../ask-settlement.js';
+import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -225,15 +226,17 @@ describe('ARM 2 — a turn that acked and died hands the ask BACK OPEN', () => {
     expect(last.reason.length).toBeGreaterThan(40);      // a NAMED cause, not a shrug
   });
 
-  it('CONTROL (P6b preserved): a killed turn that DID effectful work is HELD, never re-fired', () => {
+  it('CONTROL: a killed turn that DID effectful work is still not closed on its ack — it is handed back', () => {
+    // Was "HELD, never re-fired" (P6b at boot). Coordinator ruling (proof-fix-f): the hold left
+    // the owner's message claimed for ever; it goes back with a notice naming what was done.
     claimedAsk('m-1', 4);
     liveTurn(4, 2);
     ackDelivery('d-ack', 'msg-ack', 'On it — sending those now.');
     settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' });
     const r = reconcileOrphanedClaims();
-    expect(r.reArmed).toBe(0);
-    expect(r.held).toBe(1);
-    expect(workFor('m-1').state).toBe('claimed');
+    expect(r.reArmed).toBe(1);
+    expect(receiptOf('m-1')).toBeNull();
+    expect(workFor('m-1').state).toBe('open');
   });
 });
 

@@ -13,6 +13,9 @@ vi.mock('../../db/connection.js', () => ({
 
 const reconcile = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../../tracker/version-gap-reconcile.js', () => ({ runVersionGapReconcile: reconcile.run }));
+// The orphaned-ask step only reports the boot's own pass (it throws when that pass did not complete — proof-fix-f
+// R3-2, covered in work/__tests__/inherited-orphans-are-owed-not-served.test.ts); here it is a completed pass.
+vi.mock('../../work/inherited-backlog.js', () => ({ completedInheritedBacklogPass: () => ({ at: 'boot', examined: 0, parked: 0, completed: true }) }));
 
 import { runReleaseSteps, RELEASE_STEPS, RELEASE_STEPS_VERSION_KEY, type ReleaseStep } from '../release-steps.js';
 
@@ -47,7 +50,9 @@ describe('a failed release step is retried', () => {
     try {
       reconcile.run.mockRejectedValue(new Error('boom'));
       const report = await runReleaseSteps({ currentVersion: '9.9.9' });
-      expect(report.ran.map((r) => r.id)).toEqual(['extra-ok']);
+      // Every declared step that did not fail ran (proof-fix-f added `orphaned-ask-backlog`); the failed one did not.
+      expect(report.ran.map((r) => r.id)).toContain('extra-ok');
+      expect(report.ran.map((r) => r.id)).not.toContain('version-gap-reconcile');
       expect(report.failed).toHaveLength(1);
       expect(marker(), 'the failed step would never be tried again').toBeUndefined();
     } finally {

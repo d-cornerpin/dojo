@@ -49,7 +49,7 @@ import { createLogger } from '../logger.js';
 // The tree's ONE version-ordering function, which already handles `X.Y.Z` and
 // `X.Y.Z-preflight.N`. A second comparator here would be a second answer to "which release is
 // newer", and this project has closed that class of duplication a dozen times.
-import { compareVersions, getCurrentVersion } from '../gateway/routes/update.js';
+import { compareVersions, getCurrentVersion, versionIsOrderable } from '../gateway/routes/update.js';
 
 const logger = createLogger('release-steps');
 
@@ -98,7 +98,36 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
       return { examined: r.projectsExamined + r.tasksExamined, flagged: r.findings.length, repaired: r.repaired };
     },
   },
+  {
+    id: 'orphaned-ask-backlog',
+    // Below EVERY 3.5.0 prerelease (`-0` is the lowest pre-release; `compareVersions` orders pre-releases by their
+    // trailing ordinal and below their stable): any box whose last-run version predates the first 3.5.0 build — a
+    // 3.4.x, or a 3.4.2 hotfix that never carried this — owes it; one that already ran a 3.5.0 build does not.
+    sinceVersion: '3.5.0-0',
+    pays:
+      'since t93 (v3.3.0) every restart mid-turn stranded an owner or contact message `claimed`, and no build handed '
+      + 'those back. The build that does would serve the whole backlog on its first boot. The PARKING happens in the '
+      + "boot reconcile (index.ts 4b1, before any turn can run), keyed on this step being owed; this entry is that pass's "
+      + 'marker and report, so it runs once per version boundary and a repeated boot finds nothing (proof-fix-f, review B2).',
+    run: async () => {
+      // REPORT ONLY, never a second park: by now the re-drain may have started turns, and a live turn's open row
+      // would read as dead. A pass this boot did not complete leaves the step owed (the throw keeps the marker).
+      const { completedInheritedBacklogPass } = await import('../work/inherited-backlog.js');
+      const r = completedInheritedBacklogPass();
+      if (r === null) throw new Error('the boot pass that parks inherited orphans did not complete on this boot; the step stays owed');
+      return { examined: r.examined, flagged: r.parked, repaired: 0 };
+    },
+  },
 ];
+
+/** Is this boot on the version boundary that owes step `id`? Read by the boot steps that must act before the pass.
+ *  A version this module cannot order (the unreadable sentinel, a corrupt marker) answers OWED: these steps exist to
+ *  hold back what an older build left, so not knowing must fail toward holding back, never toward serving. */
+export function releaseStepOwed(id: string, currentVersion: string = getCurrentVersion()): boolean {
+  const from = readLastVersion();
+  if (!versionIsOrderable(currentVersion) || (from !== null && !versionIsOrderable(from))) return true;
+  return stepsInGap(RELEASE_STEPS, { from, to: currentVersion }).some((s) => s.id === id);
+}
 
 /**
  * Which declared steps a box crossing `from` -> `to` owes.
