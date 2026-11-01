@@ -14,18 +14,23 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { identityOfPid } from '../../process-identity.js';
-import { homeDir } from '../../home.js';
+import { identityOfPid, membersOfGroup } from '../../process-identity.js';
+import { dojoDir } from '../../home.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('toolbox-ledger');
 
-const FILE = 'toolbox-groups.json';
+export const TOOLBOX_LEDGER_FILE = 'toolbox-groups.json';
+const FILE = TOOLBOX_LEDGER_FILE;
 /** Boot times read at two moments differ by clock rounding; a reboot differs by far more. */
 const BOOT_SLACK_MS = 5_000;
 
-/** A group's leader as it was when started: a reused id never matches both fields. */
-export interface GroupEntry { pgid: number; identity: string }
+/** A group's leader as it was when started (`ps` start time, then command): a reused id never matches both. */
+export interface GroupEntry {
+  pgid: number; identity: string;
+  /** Members ("pid lstart") seen in the group when its leader exited: how a leaderless group is recognised. */
+  members?: string[];
+}
 
 type Send = (pgid: number, signal: NodeJS.Signals | 0) => void;
 
@@ -43,28 +48,48 @@ export function recordToolboxGroups(dir: string, groups: GroupEntry[], bootMs: n
   } catch { /* the ledger is a safety net; losing it must not break a tool call */ }
 }
 
+/**
+ * The one test for "this group is provably one the toolbox started", used by the boot reap and by the
+ * graceful-exit hook. Leader alive: it must be the very process recorded (same start time AND command),
+ * else the id was reused. Leader gone: a one-shot script exits at once and leaves what it backgrounded
+ * running in the group, so the toolbox noted the members it saw (pid + start time) when the leader
+ * exited; the group is ours only while one of THOSE is still in it. A reused id never matches.
+ */
+export function groupIsOurs(
+  pgid: number, identity: string, noted: string[] | undefined,
+  identityOf: (pid: number) => string | null = identityOfPid,
+  membersOf: (pgid: number) => string[] = membersOfGroup,
+): boolean {
+  const now = identityOf(pgid);
+  if (now !== null) return now === identity;
+  if (!noted || noted.length === 0) return false;
+  const present = new Set(membersOf(pgid));
+  return noted.some((m) => present.has(m));
+}
+
 /** At boot: end every still-living group the ledger names, then clear it. */
 export function reapLeftoverToolboxGroups(
-  opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number; identityOf?: (pid: number) => string | null },
+  opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number; identityOf?: (pid: number) => string | null;
+    membersOf?: (pgid: number) => string[] },
 ): { ended: number[] } {
   const file = path.join(opts.dir, FILE);
   const send = opts.send ?? realSend;
   const ended: number[] = [];
   let groups: GroupEntry[] = [];
   const identityOf = opts.identityOf ?? identityOfPid;
+  const membersOf = opts.membersOf ?? membersOfGroup;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { boot?: unknown; groups?: unknown };
     const bootNow = opts.bootMs ?? machineBootMs();
     if (typeof raw.boot === 'number' && Math.abs(raw.boot - bootNow) <= BOOT_SLACK_MS && Array.isArray(raw.groups)) {
       groups = (raw.groups as Array<Partial<GroupEntry>>).filter((g): g is GroupEntry =>
-        !!g && Number.isInteger(g.pgid) && (g.pgid as number) > 1 && typeof g.identity === 'string' && g.identity !== '');
+        !!g && Number.isInteger(g.pgid) && (g.pgid as number) > 1 && typeof g.identity === 'string' && g.identity !== ''
+        && (g.members === undefined || (Array.isArray(g.members) && g.members.every((m) => typeof m === 'string'))));
     }
   } catch { /* no ledger, or an unreadable one: nothing to end */ }
   try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
-  for (const { pgid: g, identity } of groups) {
-    // Signal only the very process that was recorded: same start time AND command. A reused id, or a
-    // leader that has since exited, is dropped, never signalled.
-    if (identityOf(g) !== identity) continue;
+  for (const { pgid: g, identity, members } of groups) {
+    if (!groupIsOurs(g, identity, members, identityOf, membersOf)) continue;
     try { send(-g, 0); } catch { continue; }   // already gone
     try { send(-g, 'SIGTERM'); ended.push(g); } catch { continue; }
     setTimeout(() => { try { send(-g, 'SIGKILL'); } catch { /* gone */ } }, opts.graceMs ?? 3_000).unref();
@@ -75,7 +100,7 @@ export function reapLeftoverToolboxGroups(
 /** The boot call: the ledger lives under the data folder. Never throws. */
 export function reapToolboxGroupsAtBoot(): void {
   try {
-    const { ended } = reapLeftoverToolboxGroups({ dir: path.join(homeDir(), 'data') });
+    const { ended } = reapLeftoverToolboxGroups({ dir: dojoDir('data') });
     if (ended.length > 0) logger.warn(`Boot: ended ${ended.length} process group(s) the toolbox started before the last hard kill`);
   } catch { /* best effort */ }
 }

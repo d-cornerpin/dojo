@@ -69,4 +69,47 @@ describe('toolbox group ledger', () => {
     expect(() => reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same })).not.toThrow();
     expect(sent).toEqual([]);
   });
+  // D1 (item 350): a one-shot script backgrounds a job and exits, so the recorded leader is gone
+  // while its children live on in the group. The group is ours only if one of the members the
+  // toolbox saw there (pid + start time, noted when the leader exited) is still alive in it.
+  const M = '5151 Mon Oct 26 06:00:01 2026';
+  const E2 = { ...E, members: [M] };
+  const gone = (): string | null => null;
+  const reap = (extra: Partial<Parameters<typeof reapLeftoverToolboxGroups>[0]>) =>
+    reapLeftoverToolboxGroups({ bootMs: NOW_BOOT, send, graceMs: 0, ...extra, dir });
+  it('a group whose leader exited but whose noted child lives on is still ended', () => {
+    recordToolboxGroups(dir, [E2], NOW_BOOT);
+    alive.add(-4242);
+    const out = reap({ identityOf: gone, membersOf: () => [M] });
+    expect(out.ended).toEqual([4242]);
+    expect(sent).toContainEqual([-4242, 'SIGTERM']);
+  });
+  it('a leaderless group with no marker of ours is never signalled: members nobody noted', () => {
+    // The original group died and its id was reused by an unrelated daemon whose leader exited.
+    recordToolboxGroups(dir, [E2], NOW_BOOT);
+    alive.add(-4242);
+    const out = reap({ identityOf: gone, membersOf: () => ['9999 Tue Oct 27 09:00:00 2026', '5151 Tue Oct 27 09:00:00 2026'] });
+    expect(out.ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+  it('a group recorded with no noted members cannot be recognised once its leader is gone', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    alive.add(-4242);
+    const out = reap({ identityOf: gone, membersOf: () => [M] });
+    expect(out.ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+  it('a leaderless group with no living member is dropped', () => {
+    recordToolboxGroups(dir, [E2], NOW_BOOT);
+    alive.add(-4242);
+    expect(reap({ identityOf: gone, membersOf: () => [] }).ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+  it('a live process now holding the id with another identity is a reused id: dropped even if a noted member matches', () => {
+    recordToolboxGroups(dir, [E2], NOW_BOOT);
+    alive.add(-4242);
+    const out = reap({ identityOf: () => 'Tue Oct 27 09:00:00 2026 other', membersOf: () => [M] });
+    expect(out.ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
 });

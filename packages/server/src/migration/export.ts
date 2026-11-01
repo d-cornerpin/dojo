@@ -15,6 +15,7 @@ import { generateManifest, type ExportManifest } from './manifest.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { homeDir } from '../home.js';
+import { TOOLBOX_LEDGER_FILE } from '../agent/effects/toolbox-ledger.js';
 
 const logger = createLogger('migration-export');
 
@@ -51,8 +52,9 @@ const PLATFORM_BACKUP_PREFIX = 'platform.backup-';
 const VOICE_KEEP_SUBDIR = 'custom';
 // Files inside data/ we skip because the DB is snapshotted via the backup API
 // (a raw copy of an open WAL database would be inconsistent). dojo.sqlite is an
-// empty legacy artifact.
-const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite']);
+// empty legacy artifact. The toolbox ledger names process groups of this machine's current boot, so it
+// never travels (a restore on the same machine would swap the live ledger for an old one).
+const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE]);
 const JUNK = new Set(['.DS_Store']);
 
 export interface ExportProgress {
@@ -270,7 +272,7 @@ function copyToolsCustomFiles(src: string, dest: string): void {
   }
 }
 
-function copyDojoTree(srcRoot: string, destRoot: string): void {
+export function copyDojoTree(srcRoot: string, destRoot: string): void {
   for (const entry of fs.readdirSync(srcRoot, { withFileTypes: true })) {
     // tools/ is deny-listed (it's ~450 regeneratable .md tool docs), BUT a
     // technique may drop custom scripts loose at its root (e.g. validate_deck.sh,

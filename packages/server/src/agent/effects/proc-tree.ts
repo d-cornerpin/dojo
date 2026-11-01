@@ -8,10 +8,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { untilUserStop } from '../stop-waiters.js';
-import path from 'node:path';
-import { homeDir } from '../../home.js';
-import { recordToolboxGroups, type GroupEntry } from './toolbox-ledger.js';
-import { identityOfPid } from '../../process-identity.js';
+import { dojoDir } from '../../home.js';
+import { recordToolboxGroups, groupIsOurs, type GroupEntry } from './toolbox-ledger.js';
+import { identityOfPid, membersOfGroupAsync } from '../../process-identity.js';
 
 // ════════════════════════════════════════
 // t203 (B6) — THE OWNER'S STOP REACHES EVERY PROCESS THE TOOLBOX STARTED.
@@ -51,13 +50,15 @@ export const KILL_GRACE_MS = 3_000;
 const toolboxGroups = new Set<number>();
 /** Each recorded group's leader identity (start time + command), taken when it started. */
 const groupIdentity = new Map<number, string>();
+/** The members seen in a group when its leader exited: what proves a leaderless group is still ours. */
+const groupMembers = new Map<number, string[]>();
 let exitHooked = false;
 
 /** The members of a spawned child this module touches — structural, so it holds no `child_process`. */
 export interface ProcessTreeRoot {
   readonly pid?: number;
   kill(signal?: NodeJS.Signals): unknown;
-  once(ev: 'close' | 'error', cb: () => void): unknown;
+  once(ev: 'close' | 'error' | 'exit', cb: () => void): unknown;
 }
 
 /** Signal a child AND everything it started. Falls back to the child alone if it has no group. */
@@ -72,7 +73,11 @@ export function signalProcessTree(child: Pick<ProcessTreeRoot, 'pid' | 'kill'>, 
 const running = new Map<string, Set<() => void>>();
 
 export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): () => void {
-  if (child.pid !== undefined) rememberGroup(child.pid);
+  if (child.pid !== undefined) {
+    const pgid = child.pid;
+    rememberGroup(pgid);
+    child.once('exit', () => noteSurvivors(pgid));
+  }
   let over = false;
   let kill: ReturnType<typeof setTimeout> | null = null;
   const cut = (): void => {
@@ -110,22 +115,47 @@ export function endAgentCommands(agentId: string): number {
 
 function rememberGroup(pgid: number): void {
   for (const g of toolboxGroups) {
-    try { process.kill(-g, 0); } catch { toolboxGroups.delete(g); groupIdentity.delete(g); }
+    try { process.kill(-g, 0); } catch { toolboxGroups.delete(g); groupIdentity.delete(g); groupMembers.delete(g); }
   }
   if (!exitHooked) { exitHooked = true; process.once('exit', endToolboxGroups); }
   toolboxGroups.add(pgid);
   const identity = identityOfPid(pgid);
   if (identity !== null) groupIdentity.set(pgid, identity);
-  // v3.5 P6c: a hard kill runs no exit hook, so the next boot ends what this file still names.
-  const entries: GroupEntry[] = [...groupIdentity].map(([g, identity]) => ({ pgid: g, identity }));
-  recordToolboxGroups(path.join(homeDir(), 'data'), entries);
+  writeLedger();
 }
 
-function endToolboxGroups(): void {
+/** v3.5 P6c: a hard kill runs no exit hook, so the next boot ends what this file still names. */
+function writeLedger(): void {
+  const entries: GroupEntry[] = [...groupIdentity].map(([g, identity]) => ({ pgid: g, identity, members: groupMembers.get(g) }));
+  recordToolboxGroups(dojoDir('data'), entries);
+}
+
+/**
+ * The leader exited: whatever it backgrounded is still in the group, and the leader can no longer
+ * vouch for it. Note who is there now (pid + start time) so the next boot can tell this group from an
+ * unrelated one that later took the same id.
+ */
+function noteSurvivors(pgid: number): void {
+  if (!groupIdentity.has(pgid)) return;
+  // The usual command takes its whole group with it: nothing to list. A group that did outlive its
+  // leader is listed off the event loop, so a busy box never stalls the server on a command's exit.
+  try { process.kill(-pgid, 0); } catch { return; }
+  void membersOfGroupAsync(pgid).then((members) => {
+    if (members.length === 0 || !groupIdentity.has(pgid)) return;
+    groupMembers.set(pgid, members);
+    writeLedger();
+  });
+}
+
+export function endToolboxGroups(): void {
   for (const g of toolboxGroups) {
+    // A quiet stretch can outlast the id: signal only a group still provably the one this door started.
+    const identity = groupIdentity.get(g);
+    if (identity === undefined || !groupIsOurs(g, identity, groupMembers.get(g))) continue;
     try { process.kill(-g, 'SIGTERM'); } catch { /* already gone */ }
   }
   toolboxGroups.clear();
   groupIdentity.clear();
-  recordToolboxGroups(path.join(homeDir(), 'data'), []);
+  groupMembers.clear();
+  recordToolboxGroups(dojoDir('data'), []);
 }
