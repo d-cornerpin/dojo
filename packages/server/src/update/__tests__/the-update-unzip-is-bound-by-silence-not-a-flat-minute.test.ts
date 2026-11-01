@@ -1,23 +1,20 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE UNPACK RUNS `unzip` QUIET — ITS PER-FILE LINES CAN FILL THE OUTPUT BUFFER.
+// THE UNPACK IS BOUND BY SILENCE, NOT BY A FLAT MINUTE (R25, R27; C13 / P13).
 //
-// `downloadAndInstall` unpacks the release through the promisified `exec`, which keeps
-// everything the command prints in a buffer of about 1 MiB. `unzip -o` prints one line per
-// file, and a release is a whole platform tree: the installer test found a long install path
-// pushing that output past the buffer, and the update died with "stdout maxBuffer length
-// exceeded" while the unpack itself had gone fine. From a real home path the margin is about
-// 2x, and every release adds files. The fix is in HOW the command is invoked, not in how big
-// the buffer is: with `-q` unzip prints nothing per file.
+// `unzip` of a full release tree used to run under a flat 60 s total and `-q`, so a slow or busy
+// Mac that needed longer failed EVERY update attempt. It now runs through the one idle-bound
+// spawner the download and the install already use: `unzip -o` prints a line per file, each line
+// re-arms the bound, and output is STREAMED (never held in a 1 MiB buffer), so the overflow that
+// `-q` was added for cannot return. The native-module smoke check of the staged tree had the same
+// flat 60 s; it now has no flat total either.
 //
-// The clause drives the product's own door — the real `applyUpdate` — with no real command
-// running: `exec` records its command and reports success, `spawn` hands back a child that
-// already closed cleanly (so the real idle bound watches a finished process), and the release
-// listing is a stubbed fetch. What it pins is the argument list the unpack was attempted with:
-// `-q` (quiet, the fix) beside `-o` (overwrite, the behaviour that must survive).
+// The clause drives the real `applyUpdate` with no real command running and pins what the unpack
+// was attempted with: spawned (not buffered `execFile`), no `-q`, `-o` kept.
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { makeTree } from './t197-safe-install-fixtures.js';
 
@@ -26,7 +23,7 @@ const dojo = path.join(home, '.dojo');
 const platform = path.join(dojo, 'platform');
 
 /** Every `exec` command the code under test tried to run. */
-const { execCmds } = vi.hoisted(() => ({ execCmds: [] as string[][] }));
+const { execCmds, spawnCmds } = vi.hoisted(() => ({ execCmds: [] as string[][], spawnCmds: [] as string[][] }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>();
@@ -37,7 +34,8 @@ vi.mock('node:child_process', async (importOriginal) => {
     const cb = a[a.length - 1] as (err: null, ...out: string[]) => void;
     queueMicrotask(() => cb(null, '', ''));
   };
-  const spawn = () => {
+  const spawn = (file: string, argv: string[] = []) => {
+    spawnCmds.push([file, ...argv]);
     const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: () => true, pid: 4242 });
     process.nextTick(() => child.emit('close', 0, null));
     return child;
@@ -56,6 +54,7 @@ function cleanDojo(): void {
 beforeEach(() => {
   cleanDojo();
   execCmds.length = 0;
+  spawnCmds.length = 0;
   makeTree(platform, '3.3.3', { native: true });
   fs.mkdirSync(path.join(dojo, 'data'), { recursive: true }); // the volume the pre-flight measures
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
@@ -69,15 +68,24 @@ afterEach(() => {
   cleanDojo();
 });
 
-describe('the-update-unzip-prints-nothing', () => {
-  it('the release is unpacked with `unzip -q -o`: no per-file line to overflow the exec buffer', async () => {
+describe('the update unpack is bound by silence', () => {
+  it('unzip runs through the idle-bound spawner, loud (no -q), overwrite kept, never as a buffered execFile', async () => {
     const { applyUpdate } = await import('../../gateway/routes/update.js');
     await applyUpdate('stable');
-    const unpack = execCmds.find(c => c[0] === 'unzip');
-    expect(unpack, 'the update unpacks the release with `unzip` as a program and an argument array').toBeDefined();
-    expect(unpack!.slice(1)).toContain('-q');
+    const unpack = spawnCmds.find(c => c[0] === 'unzip');
+    expect(unpack, 'the update unpacks the release with `unzip` through the idle-bound spawner').toBeDefined();
+    expect(unpack!.slice(1)).not.toContain('-q');
     expect(unpack!.slice(1)).toContain('-o');
-    // No shell line: the program is a bare name and every path is its own element.
     expect(unpack!.every(a => !a.includes('"'))).toBe(true);
+    expect(execCmds.find(c => c[0] === 'unzip'), 'not the buffered, flat-timeout door').toBeUndefined();
   }, 60_000);
+
+  it('no flat 60-second give-up is left on the unpack or the native smoke check', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const route = strip(fs.readFileSync(path.join(here, '../../gateway/routes/update.ts'), 'utf8'));
+    const tree = strip(fs.readFileSync(path.join(here, '../install-tree.ts'), 'utf8'));
+    expect(route).not.toMatch(/unzip[^\n]*timeout:\s*60/);
+    expect(tree).not.toMatch(/timeout:\s*60[_0]/);
+  });
 });

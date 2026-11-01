@@ -4,6 +4,7 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
+import { noteVoiceInstallFailure } from '../../lib/voice-install-failures';
 import { useState, useEffect, useRef } from 'react';
 import * as api from '../../lib/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
@@ -319,6 +320,7 @@ export const VoiceTab = () => {
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
       const { kind, modelId, error: reason } = event.data;
+      noteVoiceInstallFailure(kind, modelId, reason);
       const key = `${kind}/${modelId}`;
       setInstallError(`${kind} download failed: ${reason}`);
       setInstalling((cur) => (cur === key ? null : cur));

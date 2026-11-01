@@ -801,10 +801,13 @@ async function downloadAndInstall(o: {
     const verdict = await verifyArtifactAgainstManifest(zipPath, await fetchArtifactManifest(o.manifestUrl));
     if (verdict.outcome === 'refused') return { ok: false, message: `REFUSED — ${verdict.reason}. ${kept}`, status: 502 };
 
-    // `-q`: `unzip -o` prints one line per file, and `execFileAsync` keeps everything a command
-    // prints in a buffer of about 1 MiB — a release tree long enough overflows it and fails an
-    // unpack that went fine. Quiet, there is nothing per file to hold.
-    await execFileAsync('unzip', ['-q', '-o', zipPath, '-d', work], { timeout: 60000 });
+    // No `-q` and NO flat total: `unzip -o` prints a line per file, and each line re-arms the idle
+    // bound, so a slow Mac that is still unpacking is never failed by a clock (R25/R27). The output
+    // is streamed through the bounded spawner, which never kills for size and holds it in a
+    // safe-length string, so the 1 MiB buffer overflow that `-q` once dodged cannot come back.
+    await spawnIdleBounded('unzip', ['-o', zipPath, '-d', work], {
+      idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
+    });
     // The zip is dojo-platform/{platform,scripts,...}; only platform/ is the installed tree.
     const staged = path.join(work, 'dojo-platform', 'platform');
     if (!fs.existsSync(path.join(staged, 'package.json'))) {

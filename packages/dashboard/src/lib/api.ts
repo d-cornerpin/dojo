@@ -48,6 +48,7 @@ import type {
 // re-exported from here, so every caller keeps importing from `lib/api` and
 // `vi.mock('../lib/api')` stays the one seam that mocks the network.
 import { setToken, request, requestRaw, requestForm } from './door';
+import { takeVoiceInstallFailure, clearVoiceInstallFailure, VOICE_INSTALL_RESTARTED } from './voice-install-failures';
 
 export { request, requestRaw, requestForm, fetchUrl, getToken, clearToken } from './door';
 export type { RawResult } from './door';
@@ -921,28 +922,26 @@ export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>
 };
 
 export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
-  // The server returns 202 immediately and streams progress over the
-  // `voice:model_download` WS broadcast (whisper-large is ~1.5GB; holding the
-  // HTTP response open for ~2 minutes hits Cloudflare's free-tier 524 cap).
-  // We poll the models endpoint here so the caller's `await installVoiceModel`
-  // still resolves when the file is actually on disk — matches the old UX
-  // without anyone having to refactor.
+  // The server returns 202 at once and streams progress over the `voice:model_download` WS frame
+  // (a 1.5GB download held on one HTTP response hits Cloudflare's 524 cap); we poll until it is on disk.
   const kicked = await request<{ kind: string; id: string }>(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
   if (!kicked.ok) return kicked;
-  const start = Date.now();
-  const TIMEOUT_MS = 15 * 60 * 1000;  // 15 min — generous for slow connections + whisper-large
-  while (Date.now() - start < TIMEOUT_MS) {
+  clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing, a reported failure, or a lost-then-back connection
+  let sawDown = false;
+  for (;;) {
     await new Promise(r => setTimeout(r, 1500));
+    const failed = takeVoiceInstallFailure(kind, id);
+    if (failed !== undefined) return { ok: false, error: failed };
     const models = await request<VoiceModelsResponse>('/voice/models');
-    if (!models.ok) continue;  // transient errors during polling are non-fatal
+    if (!models.ok) { sawDown = true; continue; }  // the server is away: keep waiting
     const installed = kind === 'whisper'
       ? models.data.whisper.find(m => m.id === id)?.installed === true
       : kind === 'moonshine'
         ? models.data.moonshine?.installed === true
         : models.data.kokoro?.installed === true;
     if (installed) return { ok: true, data: { kind, id } };
+    if (sawDown) return { ok: false, error: VOICE_INSTALL_RESTARTED };  // back up, no model: the download died with it
   }
-  return { ok: false, error: 'install timed out — check server logs' };
 };
 
 export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string; deleted: boolean }>> => {

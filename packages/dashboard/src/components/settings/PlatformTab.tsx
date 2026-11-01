@@ -408,12 +408,11 @@ const AGENT_LIMIT_KEYS = [
   { key: 'spawn_max_concurrent', label: 'Max Concurrent Agents', description: 'Maximum number of non-terminated agents running at the same time', default: 5, min: 1, max: 50 },
   { key: 'spawn_max_children', label: 'Max Children Per Agent', description: 'Maximum sub-agents a single parent can have active at once', default: 3, min: 1, max: 20 },
   { key: 'spawn_max_depth', label: 'Max Spawn Depth', description: 'How many levels deep agents can spawn sub-agents (primary agent = depth 0)', default: 2, min: 1, max: 10 },
-  { key: 'spawn_default_timeout', label: 'Default Timeout (seconds)', description: 'How long a temp agent runs before auto-terminating. 900 = 15 minutes.', default: 900, min: 60, max: 86400 },
 ];
 
 export const AgentLimitsSettings = () => {
-  // All four limits are read before any is shown: a limit that failed to read must not appear as its
-  // built-in default, because Save writes all four.
+  // All three limits are read before any is shown: a limit that failed to read must not appear as its
+  // built-in default, because Save writes all three.
   const load = useGuardedLoad<Record<string, string>>('agent-limits', async () => {
     const initial: Record<string, string> = {};
     for (const item of AGENT_LIMIT_KEYS) {

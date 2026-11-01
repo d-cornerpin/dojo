@@ -12,8 +12,8 @@ echo "🥋 Agent D.O.J.O. Uninstaller"
 echo ""
 echo "This will:"
 echo "  • Stop all DOJO services"
-echo "  • Back up your data (database, uploads, prompts, techniques, secrets) to ~/dojo-backup-{timestamp}"
-echo "  • Remove DOJO from your system"
+echo "  • Back up ALL your data (database, uploaded files, the whole data folder, imported voice files, prompts, techniques, secrets) to ~/dojo-backup-{timestamp}"
+echo "  • Remove only the DOJO app from your system; nothing is removed unless every copy succeeded"
 echo ""
 read -p "Are you sure? (y/N) " -n 1 -r
 echo
@@ -96,20 +96,16 @@ for entry in "$DOJO_DIR"/* "$DOJO_DIR"/.[!.]*; do
       mkdir -p "$BACKUP_DIR/data" || { copy_failed="$copy_failed data"; continue; }
       for f in "$entry"/* "$entry"/.[!.]*; do
         [ -e "$f" ] || continue
-        case "$(basename "$f")" in dojo.db|dojo.db-wal|dojo.db-shm|dojo.sqlite|.DS_Store) continue ;; esac
+        case "$(basename "$f")" in dojo.db|dojo.db-wal|dojo.db-shm|.DS_Store) continue ;; esac
         cp -R "$f" "$BACKUP_DIR/data/" 2>/dev/null || copy_failed="$copy_failed data/$(basename "$f")"
       done ;;
     voice)
-      # Only the person's own imports; the downloaded models come back on first use.
-      if [ -d "$entry/custom" ]; then
-        mkdir -p "$BACKUP_DIR/voice" && cp -R "$entry/custom" "$BACKUP_DIR/voice/" 2>/dev/null || copy_failed="$copy_failed voice/custom"
-      fi ;;
-    tools)
-      # Tool docs regenerate; scripts a technique left loose in tools/ do not.
-      for f in "$entry"/*; do
-        [ -f "$f" ] || continue
-        case "$f" in *.md) continue ;; esac
-        mkdir -p "$BACKUP_DIR/tools" && cp -R "$f" "$BACKUP_DIR/tools/" 2>/dev/null || copy_failed="$copy_failed tools/$(basename "$f")"
+      # Everything the person imported or made; only the downloaded models (they come back on first use) are left out.
+      mkdir -p "$BACKUP_DIR/voice" || { copy_failed="$copy_failed voice"; continue; }
+      for f in "$entry"/* "$entry"/.[!.]*; do
+        [ -e "$f" ] || continue
+        case "$(basename "$f")" in models|.DS_Store) continue ;; esac
+        cp -R "$f" "$BACKUP_DIR/voice/" 2>/dev/null || copy_failed="$copy_failed voice/$(basename "$f")"
       done ;;
     *)
       cp -R "$entry" "$BACKUP_DIR/" 2>/dev/null || copy_failed="$copy_failed $name" ;;
