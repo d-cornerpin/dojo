@@ -11,15 +11,15 @@ export function identityOfPid(pid: number): string | null {
   } catch { return null; }
 }
 
-/** Start times (`lstart`, e.g. "Mon Oct 26 06:00:00 2026") of every live process in a process group. */
-export function startTimesOfGroup(pgid: number): string[] {
+/** Each live member of a process group as "pid lstart" (e.g. "5151 Mon Oct 26 06:00:00 2026"). */
+export function membersOfGroup(pgid: number): string[] {
   try {
-    const out = execFileSync('/bin/ps', ['-A', '-o', 'pgid=,lstart='], { encoding: 'utf8', timeout: 5_000 });
-    const starts: string[] = [];
+    const out = execFileSync('/bin/ps', ['-A', '-o', 'pid=,pgid=,lstart='], { encoding: 'utf8', timeout: 5_000 });
+    const members: string[] = [];
     for (const line of out.split('\n')) {
-      const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
-      if (m && Number(m[1]) === pgid) starts.push(m[2]);
+      const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+      if (m && Number(m[2]) === pgid) members.push(`${m[1]} ${m[3]}`);
     }
-    return starts;
+    return members;
   } catch { return []; }
 }

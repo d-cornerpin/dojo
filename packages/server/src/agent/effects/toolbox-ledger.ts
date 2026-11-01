@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { identityOfPid, startTimesOfGroup } from '../../process-identity.js';
+import { identityOfPid, membersOfGroup } from '../../process-identity.js';
 import { dojoDir } from '../../home.js';
 import { createLogger } from '../../logger.js';
 
@@ -25,7 +25,11 @@ const FILE = 'toolbox-groups.json';
 const BOOT_SLACK_MS = 5_000;
 
 /** A group's leader as it was when started (`ps` start time, then command): a reused id never matches both. */
-export interface GroupEntry { pgid: number; identity: string }
+export interface GroupEntry {
+  pgid: number; identity: string;
+  /** Members ("pid lstart") seen in the group when its leader exited: how a leaderless group is recognised. */
+  members?: string[];
+}
 
 type Send = (pgid: number, signal: NodeJS.Signals | 0) => void;
 
@@ -43,41 +47,42 @@ export function recordToolboxGroups(dir: string, groups: GroupEntry[], bootMs: n
   } catch { /* the ledger is a safety net; losing it must not break a tool call */ }
 }
 
-/** True when the group has a live member that started at or after the recorded leader. */
-function survivorsOf(pgid: number, identity: string, startsOfGroup: (pgid: number) => string[]): boolean {
-  const leaderStart = Date.parse(identity.slice(0, 24));
-  if (!Number.isFinite(leaderStart)) return false;
-  return startsOfGroup(pgid).some((s) => Date.parse(s) >= leaderStart);
+/** True when a member the toolbox noted in this group is still alive in it. */
+function noteSurvives(pgid: number, noted: string[] | undefined, membersOf: (pgid: number) => string[]): boolean {
+  if (!noted || noted.length === 0) return false;
+  const now = new Set(membersOf(pgid));
+  return noted.some((m) => now.has(m));
 }
 
 /** At boot: end every still-living group the ledger names, then clear it. */
 export function reapLeftoverToolboxGroups(
   opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number; identityOf?: (pid: number) => string | null;
-    startsOfGroup?: (pgid: number) => string[] },
+    membersOf?: (pgid: number) => string[] },
 ): { ended: number[] } {
   const file = path.join(opts.dir, FILE);
   const send = opts.send ?? realSend;
   const ended: number[] = [];
   let groups: GroupEntry[] = [];
   const identityOf = opts.identityOf ?? identityOfPid;
-  const startsOfGroup = opts.startsOfGroup ?? startTimesOfGroup;
+  const membersOf = opts.membersOf ?? membersOfGroup;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { boot?: unknown; groups?: unknown };
     const bootNow = opts.bootMs ?? machineBootMs();
     if (typeof raw.boot === 'number' && Math.abs(raw.boot - bootNow) <= BOOT_SLACK_MS && Array.isArray(raw.groups)) {
       groups = (raw.groups as Array<Partial<GroupEntry>>).filter((g): g is GroupEntry =>
-        !!g && Number.isInteger(g.pgid) && (g.pgid as number) > 1 && typeof g.identity === 'string' && g.identity !== '');
+        !!g && Number.isInteger(g.pgid) && (g.pgid as number) > 1 && typeof g.identity === 'string' && g.identity !== ''
+        && (g.members === undefined || (Array.isArray(g.members) && g.members.every((m) => typeof m === 'string'))));
     }
   } catch { /* no ledger, or an unreadable one: nothing to end */ }
   try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
-  for (const { pgid: g, identity } of groups) {
+  for (const { pgid: g, identity, members } of groups) {
     // Signal only a group that is provably the recorded one. Leader alive: it must be the very process
     // recorded (same start time AND command), else the id was reused and is dropped. Leader gone: a
-    // one-shot script exits at once and leaves what it backgrounded running in the group, so the group is
-    // ours when a member is still alive that started no earlier than the recorded leader did (a group id
-    // is not handed to a new process while any member lives, so such a member descends from the leader).
+    // one-shot script exits at once and leaves what it backgrounded running in the group, so the toolbox
+    // noted the members it saw (pid + start time) when the leader exited; the group is ours only while
+    // one of THOSE is still in it. A reused id, even one whose own leader has since exited, never matches.
     const now = identityOf(g);
-    if (now !== null ? now !== identity : !survivorsOf(g, identity, startsOfGroup)) continue;
+    if (now !== null ? now !== identity : !noteSurvives(g, members, membersOf)) continue;
     try { send(-g, 0); } catch { continue; }   // already gone
     try { send(-g, 'SIGTERM'); ended.push(g); } catch { continue; }
     setTimeout(() => { try { send(-g, 'SIGKILL'); } catch { /* gone */ } }, opts.graceMs ?? 3_000).unref();
