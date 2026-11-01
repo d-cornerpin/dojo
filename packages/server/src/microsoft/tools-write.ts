@@ -1146,21 +1146,13 @@ export async function executeMicrosoftWriteTool(
 
       const additionalText = ((args.body as string) ?? '') + prepared.bodySuffix;
 
-      // Graph's /forward preserves the original message's attachments server-
-      // side. To add NEW attachments OR custom body text we have to use the
-      // richer `message` payload (with `comment` reduced to a no-op or
-      // omitted). Note: when `message` is provided, the recipient also
-      // gets the original message body Graph stitches in automatically.
-      // createForward refuses recipients in both the action and `message`: action only.
+      // Graph's createForward keeps the original message (its quoted text and its attachments) only when the
+      // custom text rides as `comment`; `message.body` REPLACES the body Graph builds, and Graph takes `comment`
+      // OR `message.body`, never both. So the text is always `comment`, and `message` carries only the NEW
+      // attachments (the marker's headers join it in sendMarkedDraft). Recipients: the action's own, once.
       const requestBody: Record<string, unknown> = { toRecipients };
-      if (prepared.inline.length > 0) {
-        requestBody.message = {
-          body: { contentType: 'Text', content: additionalText },
-          attachments: prepared.inline,
-        };
-      } else if (additionalText.trim().length > 0) {
-        requestBody.comment = additionalText;
-      }
+      if (additionalText.trim().length > 0) requestBody.comment = additionalText;
+      if (prepared.inline.length > 0) requestBody.message = { attachments: prepared.inline };
 
       const result = await sendMarkedDraft('forward', messageId, requestBody, agentId, agentName, 'outlook_forward', {
         messageId: args.message_id, to: args.to, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,

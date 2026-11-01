@@ -349,9 +349,9 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       };
 
       const headers = msgData?.payload?.headers ?? [];
-      // P44: who the mail went to, where this mailbox sits, and the provider's own Authentication-Results (an agent mailbox counts all
-      // the agent's own identities as "own"; a user mailbox only its own address).
-      const mailAddressing = gmailAddressingFacts(headers, (kind === 'agent' ? [accountEmail, ...selfIdentities] : [accountEmail]).filter((a): a is string => !!a));
+      // P44: who the mail went to, where THIS mailbox sits (only its own address: the agent's other mailboxes do not make this copy a
+      // To or Cc one, and the owner-mail "blind copy" check reads this), and the provider's own Authentication-Results.
+      const mailAddressing = gmailAddressingFacts(headers, accountEmail ? [accountEmail] : []);
       const from = headers.find(h => h.name === 'From')?.value ?? 'Unknown sender';
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
