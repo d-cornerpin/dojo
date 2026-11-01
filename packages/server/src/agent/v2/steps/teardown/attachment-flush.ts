@@ -13,6 +13,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { dojoVoice } from '../../../dojo-voice.js';
+import { postAgentNotice } from '../../../agent-notice.js';
 import { turnParkedTheJob } from '../../engine-exit.js';
 import type { TeardownContext } from './index.js';
 
@@ -48,11 +50,12 @@ export async function flushStrandedAttachments(ctx: TeardownContext): Promise<vo
     const { drainPendingAttachmentsWithCaptions } = await import('../../../pending-attachments.js');
     const leftover = drainPendingAttachmentsWithCaptions(agentId);
     if (leftover.attachments.length > 0 && counterparty.kind !== 'agent') {
-      const caption = leftover.captions.length > 0
-        ? leftover.captions.join('\n\n')
-        : 'Here are the files I prepared (the turn ended early).';
+      const engineCaption = leftover.captions.length === 0;   // OR-ENGINE-LABELLED: no caption from the agent = the Dojo speaks, labelled
+      const caption = engineCaption
+        ? dojoVoice('the agent prepared these files, but its turn ended early.')
+        : leftover.captions.join('\n\n');
       const leftoverId = uuidv4();
-      insertMessageIfAbsent({
+      const posted = insertMessageIfAbsent({
         id: leftoverId, agentId, role: 'assistant', content: caption,
         attachments: JSON.stringify(leftover.attachments), conversationId: chosenConversationId, turnNumber,
       });
@@ -67,6 +70,12 @@ export async function flushStrandedAttachments(ctx: TeardownContext): Promise<vo
           attachments: leftover.attachments,
         },
       });
+      if (posted && engineCaption) {   // told only once the row exists
+        postAgentNotice({
+          toAgentId: agentId, fromName: 'Dojo message sent', selfIntro: false,
+          brief: `The Dojo itself (not you) posted this in the dashboard with your file(s) ${leftover.attachments.map((a: { filename?: string }) => a.filename ?? 'file').join(', ')}, because your turn ended early: "${caption}". Do not claim it as your own words; say anything more in your own words.`,
+        });
+      }
       logger.warn('FA-TS4: flushed stranded show_to_user attachments in turn teardown', {
         agentId, fileCount: leftover.attachments.length, turnNumber,
       }, agentId);

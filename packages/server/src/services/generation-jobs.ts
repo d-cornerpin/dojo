@@ -36,6 +36,8 @@ import { broadcast } from '../gateway/ws.js';
 import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../work/ask-settlement.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { homeDir } from '../home.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
+import { tellAgentAndWake, noteJobStartedIn, takeJobStartedInFailureTurn } from '../agent/wake-with-notice.js';
 import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
 
 const logger = createLogger('generation-jobs');
@@ -115,6 +117,7 @@ export interface CreateGenerationJobParams {
 /** Insert a queued job row and broadcast the initial state. Returns the id. */
 export function createGenerationJob(params: CreateGenerationJobParams): string {
   const id = `gen_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
+  noteJobStartedIn(params.agentId, id);
   getDb().prepare(`
     INSERT INTO generation_jobs (id, kind, agent_id, model_id, provider_id, prompt, title, voice, status,
                                  source_message_id, turn_number, task_id, conversation_id, started_at, updated_at)
@@ -282,8 +285,8 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
     category: 'audio' as const,
   };
 
-  const DELIVERY_CAPTIONS = ['Here you go.', 'Here it is.', 'All done.', 'Done.', 'Got it for you.'];
-  const caption = DELIVERY_CAPTIONS[Math.floor(Math.random() * DELIVERY_CAPTIONS.length)];
+  // R1/P12: the engine writes NO caption in the agent's voice; the agent is told it was delivered and adds its own words.
+  const caption = '';
 
   const msgId = uuidv4();
   insertMessageIfAbsent({
@@ -301,25 +304,21 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
   settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
+  postAgentNotice({
+    toAgentId: row.agent_id, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
+    brief: `your ${row.kind === 'music' ? 'music' : 'audio'} was delivered in the dashboard with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.`,
+  });
 }
 
 function deliverError(row: GenerationJobRow, error: string): void {
-  const msgId = uuidv4();
-  const noun = row.kind === 'music' ? 'music' : 'audio';
-  const content =
-    `I wasn't able to finish that ${noun}:\n\n> ${error}\n\n` +
-    `You could try a simpler description.`;
-  insertMessageIfAbsent({ id: msgId, agentId: row.agent_id, role: 'assistant', content, ...deliveredResult(row.conversation_id, row.source_message_id) });
-  broadcast({
-    type: 'chat:message', agentId: row.agent_id,
-    message: {
-      id: msgId, agentId: row.agent_id, role: 'assistant' as const, content,
-      tokenCount: null, modelId: null, cost: null, latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
+  // R1/OWNER ANSWER 2: the engine writes no failure bubble in the agent's voice. The agent is handed the failure
+  // and WOKEN (agent/wake-with-notice.ts) so it tells the person now; the request is re-asked, not closed on a bubble.
+  void tellAgentAndWake({
+    agentId: row.agent_id, from: 'Media generation', inFailureTurn: takeJobStartedInFailureTurn(row.id),
+    brief: `the ${row.kind === 'music' ? 'music' : 'audio'} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
+      'Tell them in your own words that it failed and offer a next step; do not start the same one again unless they ask.',
   });
-  broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
-  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
+  settleAskOnJobEnded(row.agent_id, row.id);
 }
 
 // ── Audio / music run loop ──

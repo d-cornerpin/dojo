@@ -158,8 +158,7 @@ function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): v
     category: 'video' as const,
   };
 
-  const DELIVERY_CAPTIONS = ['Here you go.', 'Here it is.', 'All done.', 'Done.', 'Got it for you.'];
-  const caption = DELIVERY_CAPTIONS[Math.floor(Math.random() * DELIVERY_CAPTIONS.length)];
+  const caption = '';   // R1/P12: no engine-written caption in the agent's voice; the agent is told below
 
   const msgId = uuidv4();
   insertMessageIfAbsent({
@@ -177,24 +176,20 @@ function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): v
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
   settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
+  void import('../agent/agent-notice.js').then((n) => n.postAgentNotice({
+    toAgentId: row.agent_id, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
+    brief: 'your video was delivered in the dashboard with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.',
+  })).catch(() => undefined);
 }
 
 function deliverError(row: VideoJobRow, error: string): void {
-  const msgId = uuidv4();
-  const content =
-    `I wasn't able to finish that video:\n\n> ${error}\n\n` +
-    `You could try a shorter clip or a simpler description.`;
-  insertMessageIfAbsent({ id: msgId, agentId: row.agent_id, role: 'assistant', content, ...deliveredResult(row.conversation_id, row.source_message_id) });
-  broadcast({
-    type: 'chat:message', agentId: row.agent_id,
-    message: {
-      id: msgId, agentId: row.agent_id, role: 'assistant' as const, content,
-      tokenCount: null, modelId: null, cost: null, latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
-  });
-  broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
-  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
+  // R1/OWNER ANSWER 2: no engine failure bubble in the agent's voice; the agent is told and woken so it tells the person.
+  void import('../agent/wake-with-notice.js').then((w) => w.tellAgentAndWake({   // lazy: keeps the poller's import graph light
+    agentId: row.agent_id, from: 'Video generation', inFailureTurn: w.takeJobStartedInFailureTurn(row.id),
+    brief: `the video you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
+      'Tell them in your own words that it failed and offer a next step; do not start the same one again unless they ask.',
+  })).catch(() => undefined);
+  settleAskOnJobEnded(row.agent_id, row.id);
 }
 
 /**

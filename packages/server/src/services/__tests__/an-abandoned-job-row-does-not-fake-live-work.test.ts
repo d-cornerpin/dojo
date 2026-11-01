@@ -38,6 +38,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_TS = path.resolve(HERE, '../../index.ts');
 
 const mockDb: { current: Database.Database | null } = { current: null };
+vi.mock('../../agent/runtime.js', async (orig) => ({ ...(await orig<typeof import('../../agent/runtime.js')>()), getAgentRuntime: () => ({ handleMessage: vi.fn(async () => undefined) }) }));
 vi.mock('../../db/connection.js', async () => {
   const os = await import('node:os');
   const p = await import('node:path');
@@ -383,7 +384,7 @@ describe('§8 one undeliverable notice costs its own row and nothing else', () =
     expect(() => notifyAbandonedGenerationJobs(moved)).not.toThrow();
 
     const said = db().prepare(
-      `SELECT agent_id FROM messages WHERE role = 'assistant' AND content LIKE '%Interrupted by a server restart.%' ORDER BY agent_id`,
+      `SELECT agent_id FROM messages WHERE origin_intent = 'delivery_failure_owed' AND content LIKE '%Interrupted by a server restart.%' ORDER BY agent_id`,
     ).all() as Array<{ agent_id: string }>;
     expect(
       said.map((m) => m.agent_id),

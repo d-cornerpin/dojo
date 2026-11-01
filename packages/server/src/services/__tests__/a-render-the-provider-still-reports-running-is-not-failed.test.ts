@@ -66,6 +66,7 @@ vi.mock('../../agent/effects/fs.js', () => ({
   statSync: () => ({ size: 1024 }),
 }));
 
+vi.mock('../../agent/wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn(async () => undefined), takeJobStartedInFailureTurn: () => false, noteJobStartedIn: () => undefined }));   // the failure wake is not this file's subject
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 import { runMigrations } from '../../db/migrations.js';

@@ -79,6 +79,8 @@ vi.mock('../../agent/effects/fs.js', () => ({
 
 // The turn machinery is irrelevant to the stop door; mocked so importing `runtime.js` for the
 // one clause that drives the REAL button never pulls the model-call chain.
+const wakeSpy = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../agent/runtime.js', async (orig) => ({ ...(await orig<typeof import('../../agent/runtime.js')>()), getAgentRuntime: () => ({ handleMessage: wakeSpy }) }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -329,30 +331,26 @@ describe('§2 a stop cuts a TTS / music generation and the job lands in the stop
     expect(said.map((m) => m.content).join('\n')).not.toMatch(/wasn't able to finish/i);
   });
 
-  it('CONTROL: a genuine provider failure still fails the job, with its error and its bubble', async () => {
+  it('CONTROL: a genuine provider failure still fails the job, with its error; the AGENT is told and woken (the engine writes no bubble)', async () => {
     answerWith(() => new Response('upstream exploded', { status: 500 }));
     const jobs = await import('../generation-jobs.js');
     const jobId = jobs.createGenerationJob({
       kind: 'audio', agentId: AGENT, modelId: MODEL, providerId: PROVIDER,
       prompt: 'read this aloud', voice: 'alloy',
     });
+    wakeSpy.mockClear();
     jobs.enqueueAudioOrMusicJob(jobId);
-    for (let i = 0; i < 200; i += 1) {
-      const st = (mockDb.current!.prepare('SELECT status FROM generation_jobs WHERE id = ?')
-        .get(jobId) as { status: string }).status;
-      const bubble = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ?")
-        .all(AGENT) as Array<{ content: string }>;
-      if (st === 'failed' && bubble.some((m) => /wasn't able to finish/i.test(m.content))) break;
-      await tick(5);
-    }
+    for (let i = 0; i < 600 && wakeSpy.mock.calls.length === 0; i += 1) await tick(5);
 
     const row = mockDb.current!.prepare('SELECT status, error FROM generation_jobs WHERE id = ?')
       .get(jobId) as { status: string; error: string | null };
     expect(row.status, 'a real failure must still be a failure').toBe('failed');
     expect(row.error).toMatch(/HTTP 500/);
-    const said = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ?")
-      .all(AGENT) as Array<{ content: string }>;
-    expect(said.map((m) => m.content).join('\n')).toMatch(/wasn't able to finish/i);
+    expect(wakeSpy, 'the agent is woken to tell the person').toHaveBeenCalled();
+    const said = mockDb.current!.prepare("SELECT role, content, origin_intent FROM messages WHERE agent_id = ?")
+      .all(AGENT) as Array<{ role: string; content: string; origin_intent: string | null }>;
+    expect(said.filter((m) => m.role === 'assistant' && /wasn't able to finish/i.test(m.content)), 'no engine-written failure in the agent\'s voice').toEqual([]);
+    expect(said.some((m) => m.origin_intent === 'delivery_failure_owed' && /HTTP 500/.test(m.content))).toBe(true);
   });
 });
 

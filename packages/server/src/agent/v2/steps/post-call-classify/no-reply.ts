@@ -305,8 +305,8 @@ export async function runNoReply(
           // user WHAT opened); the "Open in canvas" chip rides on it.
           const canvasDoc = noReplyAttachments.find((a) => a.openInCanvas);
           const noReplyCaption = canvasDoc
-            ? `Opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
-            : 'Here you go.';
+            ? `Dojo: opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
+            : '';   // no engine words in the agent's voice (OR-ENGINE-LABELLED)
           insertMessageIfAbsent({
             id: messageId, agentId, role: 'assistant', content: noReplyCaption,
             attachments: JSON.stringify(noReplyAttachments), turnNumber,

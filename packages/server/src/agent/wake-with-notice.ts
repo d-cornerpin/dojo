@@ -64,3 +64,8 @@ export function isFailureWokenTurn(agentId: string): boolean {
     return row?.origin_intent === 'delivery_failure_owed';
   } catch { return false; }
 }
+
+/** Background jobs (audio, music, video) started inside a turn a failure notice itself woke: their failure is told as a rider, never a second wake. */
+const startedInFailureTurn = new Set<string>();
+export function noteJobStartedIn(agentId: string, jobId: string): void { if (isFailureWokenTurn(agentId)) startedInFailureTurn.add(jobId); }
+export function takeJobStartedInFailureTurn(jobId: string): boolean { return startedInFailureTurn.delete(jobId); }

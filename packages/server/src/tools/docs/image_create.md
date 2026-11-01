@@ -13,7 +13,7 @@ Generate an image from a text description. **The engine owns the whole delivery 
 
 Exactly one acknowledgement reaches the user per image, and it is not yours.
 
-1. **The waiting ack is the engine's.** When someone is waiting on the other end, the engine posts the short "On it." itself. You do not write it.
+1. **The waiting ack is yours, in your own words.** The engine writes no acknowledgement for you; if a person is waiting and you have said nothing, it asks you to say one.
 2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message — the image alone, with NO caption (the engine writes no words in your voice). You are told it was delivered, on your next turn; add your own words then if they help. No model turn is involved in the delivery.
 3. **You get no second turn.** This is a fire-and-forget generator: the engine ends your tool phase the moment you call it. There is no later round in which you could present the image, and you do not need one.
 
