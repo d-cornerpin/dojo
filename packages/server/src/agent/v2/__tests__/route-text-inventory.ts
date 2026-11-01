@@ -27,6 +27,21 @@ export const SWEEP: readonly SweepEntry[] = [
 export const ALLOW: readonly AllowEntry[] = [
  {
   "file": "agent/a2a-transport.ts",
+  "line": "+ `the text is in the dashboard chat only, so ${askerWords} may not have seen it. It read: \"${sent.text}\"`",
+  "reason": "a fact about where the Dojo's own message really landed (the send to the asker's channel did not go), not a recipient instruction (C22)"
+ },
+ {
+  "file": "agent/a2a-transport.ts",
+  "line": "? `The Dojo (not you) posted this in the dashboard chat for ${askerWords}: \"${sent.text}\"`",
+  "reason": "a fact about where the Dojo's own message really landed (the asker used the dashboard), not a recipient instruction (C22)"
+ },
+ {
+  "file": "agent/tools/cat/media.ts",
+  "line": ": 'the person who asked (in the dashboard chat)';",
+  "reason": "names the asker's real channel in the notice that the engine sent nothing to them; the iMessage branch beside it names the number (C1)"
+ },
+ {
+  "file": "agent/a2a-transport.ts",
   "line": "`Skip the iMessage only if you and ${ownerName} are actively going back and forth in dashboard chat about THIS specific deliverable right now (in which case dashboard is the natural place to surface it).]`;",
   "reason": "describes when the owner is already in the dashboard conversation about the deliverable (a presence fact, not a recipient)"
  },
