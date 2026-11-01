@@ -403,6 +403,38 @@ const NOT_A_START_ACK =
   `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
                  AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
 
+/** The `audit` marker the inherited-backlog park writes (`work/inherited-backlog.ts`). Declared here: the authority reads it. */
+export const INHERITED_BACKLOG_MARKER = 'inherited_backlog';
+
+/**
+ * A REAL answer delivered in `conversationId` since `notBefore` (`deliveries.created_at` form), with NO turn match:
+ * an answering tool, never an engine ack, a tool-call chip or a start-ack. ONE read, shared: the ledger remediation's
+ * triage asks it (`ask-remediation.ts anyLaterRealDelivery`) and so does the inherited-ask close below.
+ */
+export function realAnswerInConversationSince(
+  agentId: string, conversationId: string | null, notBefore: string,
+): { id: string; tool: string } | null {
+  if (conversationId == null) return null;
+  const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
+  return (getDb().prepare(
+    `SELECT d.id AS id, d.tool AS tool FROM deliveries d
+      WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
+        AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+        AND ${NOT_A_TOOL_CHIP} AND ${NOT_A_START_ACK}
+        AND d.created_at >= ?
+      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
+  ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
+}
+
+/** When an ask was parked as inherited (the marker's instant, in `deliveries.created_at` form), or null. */
+function inheritedParkedAt(workId: string): string | null {
+  const r = getDb().prepare(
+    `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = 'audit'
+       AND json_extract(payload, '$.marker') = ? ORDER BY id DESC LIMIT 1`,
+  ).get(workId, INHERITED_BACKLOG_MARKER) as { at: number } | undefined;
+  return r ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
+}
+
 /**
  * ⚠ UX-REPAIR ROUND 6 T25 — THE EIGHTH NARROWING: A DELIVERY THE ENGINE ALREADY SAID DID NOT
  * ANSWER THIS ASK.
@@ -639,6 +671,20 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   const ask = readAsk(workId);
   if (!ask) return out('unchanged', 'no such work row');
   if (ask.kind !== 'ask') return out('unchanged', `not an ask (kind=${ask.kind})`);
+
+  // ── proof-fix-f R3-1(a): AN INHERITED ASK CLOSES ON A LATE REAL ANSWER IN ITS OWN CONVERSATION. ──
+  // Parked `blocked` on the version boundary (owed, not auto-served), its claiming turn is dead, so the
+  // turn-bound evidence below can never match; a real answer delivered in its conversation after the park can.
+  const parkedAt = ask.state === 'blocked' && ctx.at === 'delivery' ? inheritedParkedAt(workId) : null;
+  if (parkedAt !== null) {
+    const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, parkedAt);
+    if (!late) return out('unchanged', 'inherited and owed: no real answer in its conversation since it was parked');
+    const r = transition(workId, {
+      to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked',
+      reason: `answered late via ${late.tool}, after it was inherited owed from an older version`,
+    });
+    return r.kind === 'applied' ? out('closed', `answered late via ${late.tool}`, late.id) : out('unchanged', `close refused: ${r.kind}`);
+  }
 
   // ── THE ORDERING ARM (SWEEP-A TB2). A turn that ANSWERED and then DELEGATED. ──
   //
@@ -1323,8 +1369,13 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
       WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed'
         AND claimed_by_turn = ? AND conversation_id = ?`,
   ).all(p.agentId, p.turnNumber, p.conversationId) as Array<{ id: string }>;
+  // proof-fix-f R3-1(a): and the inherited asks parked owed in this conversation (the arm in `settleAsk` decides).
+  const inherited = getDb().prepare(
+    `SELECT w.id FROM work w WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'blocked' AND w.conversation_id = ?
+        AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'audit' AND json_extract(e.payload, '$.marker') = ?)`,
+  ).all(p.agentId, p.conversationId, INHERITED_BACKLOG_MARKER) as Array<{ id: string }>;
   let closed = 0;
-  for (const r of rows) {
+  for (const r of [...rows, ...inherited]) {
     const s = settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'delivery' });
     if (s.verdict === 'closed') closed++;
   }

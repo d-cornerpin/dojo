@@ -19,9 +19,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { appendWorkEvent, transition } from './store.js';
+import { appendWorkEvent, dismissCommitment, transition } from './store.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { ageInWords } from './hand-back-facts.js';
+import { INHERITED_BACKLOG_MARKER } from './ask-settlement.js';
+export { INHERITED_BACKLOG_MARKER };
 
 const logger = createLogger('inherited-backlog');
 
@@ -29,7 +31,6 @@ const logger = createLogger('inherited-backlog');
  *  closed at or after it was closed by this process's own boot sweep or reaper: the process that just died. */
 export const PROCESS_STARTED_AT = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
-export const INHERITED_BACKLOG_MARKER = 'inherited_backlog';
 
 /** What the last pass did, for the release step's report (its denominator). */
 let lastPass = { examined: 0, parked: 0 };
@@ -82,14 +83,46 @@ function tellAgentOwed(agentId: string, owed: Inherited[]): void {
     const from = o.sender === 'owner' || o.counterparty === 'owner' ? 'the owner' : (o.counterparty ?? o.sender ?? 'an unrecorded sender');
     const age = o.received_at != null ? `${ageInWords(Date.now() - o.received_at)} ago` : 'at an unrecorded time';
     const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
-    return `(${i + 1}) from ${from}, in the ${o.channel ?? 'unknown'} conversation, received ${age}: "${snippet}"`;
+    return `(${i + 1}) [${o.id}] from ${from}, in the ${o.channel ?? 'unknown'} conversation, received ${age}: "${snippet}"`;
   });
   insertEngineEventIfAbsent({
     id: uuidv4(), agentId, sourceAgentId: null, originIntent: 'owed_messages_inherited', work: null,
     content: `[SOURCE: AGENT NOTICE from Dojo] After this update the Dojo found ${owed.length} message(s) an older version left `
       + 'unanswered: the run serving each one stopped before it answered, and older builds never handed them back. '
       + `They are held as owed and will NOT be answered automatically. ${lines.join('; ')}. `
-      + 'Decide which still matter: answer those yourself, in the right conversation, and say plainly that the reply is late; '
-      + 'leave the rest. The Dojo has sent nothing to anyone.',
+      + 'Decide which still matter. To answer one, reply in its own conversation and say plainly the reply is late: it closes '
+      + 'itself when your answer is delivered there. If one no longer needs an answer, call work_close_request with its id, '
+      + 'disposition "dropped" and your reason as the note. The Dojo has sent nothing to anyone.',
   });
+}
+
+/** Is `workId` an ask parked as inherited and still owed? */
+function isInheritedOwed(workId: string): boolean {
+  return getDb().prepare(
+    `SELECT 1 FROM work w WHERE w.id = ? AND w.kind = 'ask' AND w.state = 'blocked'
+        AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'audit' AND json_extract(e.payload, '$.marker') = ?)`,
+  ).get(workId, INHERITED_BACKLOG_MARKER) !== undefined;
+}
+
+/**
+ * The tracker door's answer for an INHERITED ask (review R3-1(b)), or null for any other row. Nobody called it off,
+ * so a stand-down is the AGENT'S judgement, recorded as that and landing on `abandoned` — never "cancelled by the
+ * user". `kept` is refused with the truth: answering it in its own conversation closes it.
+ */
+export function inheritedAskDoor(workId: string, disposition: string, note: string | null, agentId: string):
+{ content: string; isError: boolean } | null {
+  if (!isInheritedOwed(workId)) return null;
+  if (disposition !== 'dropped') {
+    return { isError: true, content: `Not closed: ${workId} is a message an older version left unanswered. It closes itself the moment you `
+      + 'deliver a real answer in its own conversation. If it no longer needs an answer, call work_close_request with '
+      + 'disposition "dropped" and your own reason as the note.' };
+  }
+  if (!note) {
+    return { isError: true, content: `Not dropped: pass \`note\` with your own reason why ${workId} no longer needs an answer. `
+      + 'It goes on the record as your judgement (nobody called it off).' };
+  }
+  const r = dismissCommitment(workId, { agentId, reason: `no longer needs an answer — the agent's judgement on an inherited message (nobody called it off): ${note}` });
+  return r.kind === 'applied'
+    ? { isError: false, content: `[OK] Stood down: ${workId} — recorded as your judgement that it no longer needs an answer, not as answered.` }
+    : { isError: true, content: `Error: could not stand down ${workId} (${r.kind}).` };
 }
