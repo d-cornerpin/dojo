@@ -2376,7 +2376,9 @@ export async function runPokeCheck(): Promise<void> {
   //   - status = 'on_deck'  (not in_progress / not yet handled)
   //   - no schedule (scheduled tasks legitimately wait on_deck)
   //   - the receiver has RECORDED a reply on this ticket's own thread
-  //     (a2a_replies: the delivery record; they answered, they just didn't
+  //     (a2a_replies, a FINAL intent only: ANSWER, COMPLETE, DELIVERABLE or FAIL, the
+  //     A2AIntent names in shared/src/a2a-protocol.ts; never STATUS/QUESTION/BLOCK,
+  //     which mean the work is still live (R11); they answered, they just didn't
   //     update the tracker). No clock: time alone never ends another agent's task
   //     (R11/R25), and activity elsewhere is a guess, not a record.
   //
@@ -2401,7 +2403,8 @@ export async function runPokeCheck(): Promise<void> {
         AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled')
         AND t.is_paused = 0
         AND EXISTS (SELECT 1 FROM a2a_replies r
-                    WHERE r.agent_id = t.agent_id AND r.thread_id = t.a2a_thread_id)
+                    WHERE r.agent_id = t.agent_id AND r.thread_id = t.a2a_thread_id
+                      AND r.reply_intent IN ('ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'))
       ORDER BY t.updated_at ASC
       LIMIT 50
     `).all() as Array<{ id: string; title: string; assigned_to: string; project_id: string | null }>;

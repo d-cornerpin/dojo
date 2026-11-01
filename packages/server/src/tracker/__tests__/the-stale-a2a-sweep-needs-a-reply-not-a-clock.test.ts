@@ -120,4 +120,21 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     await runPokeCheck();
     expect(stateOf('t-other')).toBe('on_deck');
   });
+
+  // R11: only a FINAL reply (A2AIntent ANSWER, COMPLETE, DELIVERABLE, FAIL; shared/src/a2a-protocol.ts) ends a ticket.
+  it.each(['STATUS', 'QUESTION', 'BLOCK', 'FYI'])('a %s-only reply does not end the ticket', async (intent) => {
+    seed('t-live', 'thread-ddd', 3 * 3600_000);
+    mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a9', ?, 'thread-ddd', ?)")
+      .run(RECEIVER, intent);
+    await runPokeCheck();
+    expect(stateOf('t-live')).toBe('on_deck');
+  });
+
+  it.each(['ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'])('a %s reply ends the ticket', async (intent) => {
+    seed('t-final', 'thread-eee', 60_000);
+    mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a8', ?, 'thread-eee', ?)")
+      .run(RECEIVER, intent);
+    await runPokeCheck();
+    expect(stateOf('t-final')).toBe('failed');
+  });
 });
