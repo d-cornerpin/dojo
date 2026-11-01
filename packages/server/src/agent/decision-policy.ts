@@ -48,7 +48,7 @@ export function modeFor(purpose: string, question: string): Mode {
 }
 
 /** The sentence the Healer report carries under the scores (the plan's words). */
-export const SWITCH_SENTENCE = "A question switches to the model when the model's range sits above the rule's, and back when it does not.";
+export const SWITCH_SENTENCE = "A question switches to the model when the model's range sits above the rule's, and back when it does not; the judgments you chose to put on the model stay there (the rule answers whenever the model is unavailable or answers badly).";
 
 const pct = (x: number): string => `${Math.round(x * 100)}`;
 

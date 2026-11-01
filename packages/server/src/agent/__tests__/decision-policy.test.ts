@@ -98,7 +98,7 @@ describe('the Healer report carries the score', () => {
     expect(detail).toContain('reply_claims / claims_saved: n=60, rule 50% [38–62], model 97% [89–99], mode model');
     expect(detail).toContain('reply_claims / claims_sent: n=10, rule 60% [31–83], model 80% [49–94], mode shadow');
     expect(detail).toContain(SWITCH_SENTENCE);
-    expect(SWITCH_SENTENCE).toBe("A question switches to the model when the model's range sits above the rule's, and back when it does not.");
+    expect(SWITCH_SENTENCE).toBe("A question switches to the model when the model's range sits above the rule's, and back when it does not; the judgments you chose to put on the model stay there (the rule answers whenever the model is unavailable or answers badly).");
     expect(compileDiagnosticReport().reportText).toContain('reply_claims / claims_saved: n=60');
   });
 
