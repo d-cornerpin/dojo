@@ -526,7 +526,7 @@ async function main(): Promise<void> {
   // whether a later assistant/tool row happened to carry the same conv_key string: a guess
   // about prose lineage that could not tell an answered turn from a turn that merely
   // narrated. It now reads the two facts that were recorded when they were known — did the
-  // claiming TURN finish (`turns.ended_at`), and did it already DO anything
+  // claiming TURN finish (`turns.ended_at`; 4b's `terminated` = died), did it already DO anything
   // (`turns.effectful_calls`) — and it is exactly the rule P6b states:
   //   * the turn never ended and did nothing -> hand the ask back (no orphan claims);
   //   * the turn never ended but already acted -> HOLD it (no duplicate effects).

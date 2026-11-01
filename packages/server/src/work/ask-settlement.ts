@@ -1445,8 +1445,8 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
  *     would repeat it (P6b, unchanged: the crash case is the one the counted input exists
  *     for, and the turn boundary — where the owner's 2026-08-05 ruling governs — never ran).
  *
- * Trigger and window are carried verbatim: boot only, ≤30 minutes, dead turns.
- * Relocated from `work/store.ts` with the decision it now shares.
+ * Trigger and window carried verbatim: boot only, ≤30 minutes, dead turns — a turn still open, or one the boot sweep
+ * already closed `terminated` (O2: 4b ends it first). Relocated from `work/store.ts` with the decision it now shares.
  *
  * ── SWEEP-A TB3: THE CRASH WINDOW, THE FOURTH OUTCOME ──
  * A turn that CLOSED an ask and then DELEGATED under it is handed back at its own boundary
@@ -1465,7 +1465,7 @@ export function reconcileOrphanedClaims():
       FROM work w
       JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
      WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND t.ended_at IS NULL
+       AND (t.ended_at IS NULL OR t.exit_reason = 'terminated')
      GROUP BY w.id
   `).all(since) as Array<{ id: string; agent_id: string; turn_number: number }>;
   let closed = 0;
@@ -1482,7 +1482,7 @@ export function reconcileOrphanedClaims():
       FROM work w
       LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
      WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND (t.turn_number IS NULL OR t.ended_at IS NULL)
+       AND (t.turn_number IS NULL OR t.ended_at IS NULL OR t.exit_reason = 'terminated')
   `).all(since) as Array<{ id: string; effectful_calls: number }>;
   let reArmed = 0; let held = 0;
   for (const r of rows) {
@@ -1506,7 +1506,7 @@ export function reconcileOrphanedClaims():
      WHERE w.kind = 'ask' AND w.state = 'done'
        AND (w.remaining_children > 0 OR w.compile_pending = 1)
        AND w.updated_at >= ?
-       AND t.ended_at IS NULL
+       AND (t.ended_at IS NULL OR t.exit_reason = 'terminated')
      GROUP BY w.id
   `).all(since) as Array<{ id: string; agent_id: string; turn_number: number | null }>;
   let handedBack = 0;
