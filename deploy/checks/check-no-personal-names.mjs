@@ -1321,7 +1321,9 @@ for (const f of live) {
   if (!byFile.has(f.rel)) byFile.set(f.rel, []);
   byFile.get(f.rel).push(f);
 }
-if (HASH_LIST_SOURCE === null) console.log('note: the real-name hash list was not loaded (no untracked .superpowers/known-real-name-hashes.json and no $DOJO_REAL_NAME_HASHES); every other rule ran.');
+console.log(HASH_LIST_SOURCE === null
+  ? 'note: the real-name hash list was not loaded (no untracked .superpowers/known-real-name-hashes.json and no $DOJO_REAL_NAME_HASHES); every other rule ran.'
+  : `real-name hash list: loaded ${REAL_NAME_HASHES.size} hash(es) from ${HASH_LIST_SOURCE}`);
 if (live.length === 0) {
   console.log(`✓ no personal or agent names in the shipped surfaces`
     + (ALLOWLIST.length ? ` (${ALLOWLIST.length} allowlisted above, each with its adjudication)` : ''));
