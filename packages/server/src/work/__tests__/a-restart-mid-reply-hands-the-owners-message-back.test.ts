@@ -40,7 +40,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
-import { reconcileOrphanedClaims } from '../orphaned-claims.js';
+import { reconcileOrphanedClaims, handBackFactsFor } from '../orphaned-claims.js';
 import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
 import { insertMessage, insertMessageIfAbsent } from '../../memory/message-store.js';
@@ -56,7 +56,9 @@ const askOf = (messageId: string): { state: string; result_delivery_id: string |
 const turnOf = (n: number): { ended_at: string | null; exit_reason: string | null } =>
   db().prepare('SELECT ended_at, exit_reason FROM turns WHERE agent_id = ? AND turn_number = ?')
     .get(AGENT, n) as { ended_at: string | null; exit_reason: string | null };
-/** What the Dojo told the agent: the awareness notices on its events lane. */
+/** The hand-back facts the turn serving m-1's ask is given (whole, as a steer on that turn only). */
+const facts = (): string | null => handBackFactsFor(askIdForMessage('m-1'));
+/** The awareness notices on the agent's events lane — every conversation's turns can see these. */
 const noticesToAgent = (): string[] =>
   (db().prepare("SELECT content FROM messages WHERE agent_id = ? AND lane = 'events' ORDER BY seq")
     .all(AGENT) as Array<{ content: string }>).map((r) => r.content);
@@ -166,7 +168,7 @@ describe('a restart in the middle of a reply', () => {
     restart();
     expect(askOf('m-1').state, 'never claimed for ever: the agent finishes the job').toBe('open');
     expect(getWaitingHumanConversations(AGENT).length).toBe(1);
-    const notice = noticesToAgent().find((c) => c.includes('handed back'))!;
+    const notice = facts()!;
     expect(notice).toContain('gmail_send');
     expect(notice).toContain('roofer@example.com');
     expect(notice).toMatch(/calendar_create.*may or may not have/);
@@ -192,8 +194,8 @@ describe('the hand-back carries the message\'s real age — no timer decides its
     ageEverything(3 * 24 * 60 * 60 * 1000);
     restart();
     expect(askOf('m-1').state, 'the owner is still owed an answer, however old').toBe('open');
-    const notice = noticesToAgent().find((c) => c.includes('handed back'));
-    expect(notice, 'the agent is told why it has this message again').toBeDefined();
+    const notice = facts();
+    expect(notice, 'the agent is told why it has this message again').not.toBeNull();
     expect(notice!).toContain('can you check the roof quote?');
     expect(notice!).toMatch(/received .*\(\d{4}-\d\d-\d\dT/);
     expect(notice!).toContain('3 days ago');
@@ -202,8 +204,9 @@ describe('the hand-back carries the message\'s real age — no timer decides its
   it('a fresh hand-back says it too, so the agent knows its last reply never landed', () => {
     ownerAskClaimedBy(7);
     restart();
-    const notice = noticesToAgent().find((c) => c.includes('handed back'));
-    expect(notice).toMatch(/turn 7 stopped before it answered/);
+    const notice = facts();
+    expect(notice).toMatch(/turn 7/);
+    expect(notice).toMatch(/stopped before (it )?answer/);
     expect(notice).toMatch(/minute|second/);
   });
 
@@ -214,7 +217,7 @@ describe('the hand-back carries the message\'s real age — no timer decides its
        VALUES ('d-answer', ?, 7, 'dashboard', 'dashboard', 'conv-1', 'delivered')`,
     ).run(AGENT);
     restart();
-    expect(noticesToAgent().some((c) => c.includes('handed back'))).toBe(false);
+    expect(facts()).toBeNull();
   });
 });
 
@@ -228,11 +231,60 @@ describe('a send the process died inside is "may have been delivered", never sil
     ).run(AGENT);
     restart();
     expect(askOf('m-1').state, 'not closed: nobody knows it arrived').toBe('open');
-    const notice = noticesToAgent().find((c) => c.includes('handed back'))!;
+    const notice = facts()!;
     expect(notice).toMatch(/may already have reached/);
     expect(notice).toContain('imessage');
     expect(notice).toContain('+15550000');
     expect(notice).toContain('The roof quote is fine.');
     expect(notice).toMatch(/check/i);
+  });
+});
+
+describe('the facts reach the model whole, ordered so what already happened comes first (review B1, M1, M2)', () => {
+  it('nothing is written to the agent\'s events lane: no other conversation\'s turn can see it', () => {
+    ownerAskClaimedBy(7);
+    restart();
+    expect(noticesToAgent().filter((c) => c.includes('roof quote'))).toEqual([]);
+    expect(facts()).toContain('roof quote');
+  });
+
+  it('what already happened and what may have been sent come first, then the message and its age, then the instruction', () => {
+    ownerAskClaimedBy(7, 1);
+    insertMessageIfAbsent({ id: 'u-c1', agentId: AGENT, role: 'assistant', turnNumber: 7,
+      content: JSON.stringify([{ type: 'tool_use', id: 'c1', name: 'gmail_send', input: { to: 'roofer@example.com' } }]) } as never);
+    insertMessageIfAbsent({ id: 'r-c1', agentId: AGENT, role: 'tool', turnNumber: 7,
+      content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'c1', content: 'ok', is_error: false }]) } as never);
+    db().prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, conversation_id, outcome, detail)
+       VALUES ('d-maybe', ?, 7, 'auto-route', 'imessage', '+15550000', 'conv-1', 'pending', 'The roof quote is fine.')`,
+    ).run(AGENT);
+    restart();
+    const f = facts()!;
+    const at = (needle: string): number => { const i = f.indexOf(needle); expect(i, needle).toBeGreaterThanOrEqual(0); return i; };
+    expect(at('gmail_send')).toBeLessThan(at('can you check the roof quote?'));
+    expect(at('may already have reached')).toBeLessThan(at('can you check the roof quote?'));
+    expect(at('can you check the roof quote?')).toBeLessThan(at('Answer it now'));
+  });
+
+  it('M2: a turn that acted with nothing nameable still says so, with the count', () => {
+    ownerAskClaimedBy(7, 2);          // two effectful calls counted, no tool rows to name them
+    restart();
+    expect(facts()).toMatch(/2 actions were taken that could not be identified, so check what was done before acting/);
+  });
+
+  it('a message whose run dies again after a hand-back says it was handed back before and the run stopped again', () => {
+    ownerAskClaimedBy(7);
+    restart();
+    expect(facts()).not.toMatch(/handed back before/);
+    // Served again by turn 8, which also dies.
+    claimAsk(askIdForMessage('m-1'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-1'), 8);
+    db().prepare(
+      `INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, answered) VALUES (?, 8, 'user', 'ask', 'm-1', datetime('now'), 0)`,
+    ).run(AGENT);
+    db().prepare("UPDATE agents SET status = 'working' WHERE id = ?").run(AGENT);
+    restart();
+    expect(askOf('m-1').state).toBe('open');
+    expect(facts()).toMatch(/handed back before.*(turn 7).*stopped again/s);
   });
 });

@@ -15,9 +15,9 @@
 //
 // Outcomes, and no fourth:
 //   * the dead turn DELIVERED -> the authority closes the ask against that delivery;
-//   * it did not answer -> the ask goes back to the agent, with a notice saying when it arrived
-//     and naming, from the ledger, every effect the dead turn had already made so the agent
-//     does not repeat it. P6b's boot HOLD is retired here: it left the message `claimed` for
+//   * it did not answer -> the ask goes back to the agent. What the dead turn left behind is
+//     recorded ON THE ASK (`work/hand-back-facts.ts`) and given whole to the one turn that serves
+//     it again: every effect it had already made, so the agent does not repeat it. P6b's boot HOLD is retired here: it left the message `claimed` for
 //     ever, and the agent can act (coordinator ruling on proof-fix-f, under OR-ENGINE-LABELLED).
 //     A send it had begun on an outside channel with no door verdict (a `pending` intent row)
 //     is named as "may already have reached the person", so the agent checks, never re-sends blind;
@@ -29,120 +29,26 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { settleAsk } from './ask-settlement.js';
 import { transition } from './store.js';
-import { postAgentNotice } from '../agent/agent-notice.js';
-import { formatTimeForAgent } from '../services/format-time.js';
-import { isEffectfulTool } from '../agent/v2/steps/execute/effectful-call.js';
-import { redactDeclaredSecretArgs } from '../credentials/secret-fields.js';
+import { recordHandBack } from './hand-back-facts.js';
+export { handBackFactsFor } from './hand-back-facts.js';
 
 const logger = createLogger('orphaned-claims');
 
 /** The claiming (or delivering) turn `t` died with its process. One definition, every arm. */
 const DEAD_TURN = `(t.ended_at IS NULL OR t.exit_reason = 'terminated')`;
 
-/** "3 days", "2 hours", "5 minutes", "40 seconds" — the age as a person would say it. */
-export function ageInWords(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  const [n, unit] = s >= 86_400 ? [Math.floor(s / 86_400), 'day'] : s >= 3_600 ? [Math.floor(s / 3_600), 'hour']
-    : s >= 60 ? [Math.floor(s / 60), 'minute'] : [s, 'second'];
-  return `${n} ${unit}${n === 1 ? '' : 's'}`;
-}
-
-interface Orphan {
-  id: string; agent_id: string; turn_number: number | null; effectful_calls: number;
-  received_at: number | null; content: string | null;
-}
-
-/** One effectful call the dead turn made, read back from its own stored tool rows. */
-interface DeadTurnEffect { name: string; input: unknown; finished: boolean }
-
-/**
- * What the dead turn already DID, from the ledger it wrote as it went: its `tool_use` rows and
- * their `tool_result` rows on `messages`. Counted by the same rule as `turns.effectful_calls`
- * (`isEffectfulTool`); a call whose result errored did nothing and is left out, and a call with
- * no result at all is the one the process died inside — it may or may not have happened.
- */
-function effectsOf(agentId: string, turnNumber: number | null): DeadTurnEffect[] {
-  if (turnNumber == null) return [];
-  const rows = getDb().prepare(
-    `SELECT role, content FROM messages
-      WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant', 'tool') AND content LIKE '[%'
-      ORDER BY seq`,
-  ).all(agentId, turnNumber) as Array<{ role: string; content: string }>;
-  const calls: Array<{ id: string; name: string; input: unknown }> = [];
-  const results = new Map<string, boolean>();          // tool_use_id -> is_error
-  for (const r of rows) {
-    let blocks: unknown;
-    try { blocks = JSON.parse(r.content); } catch { continue; }
-    if (!Array.isArray(blocks)) continue;
-    for (const b of blocks as Array<Record<string, unknown>>) {
-      if (b?.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
-        calls.push({ id: b.id, name: b.name, input: b.input });
-      } else if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
-        results.set(b.tool_use_id, b.is_error === true);
-      }
-    }
-  }
-  return calls
-    .filter((c) => isEffectfulTool(c.name) && results.get(c.id) !== true)
-    .map((c) => ({ name: c.name, input: c.input, finished: results.has(c.id) }));
-}
-
-/** A send the dead turn had begun on an outside channel and no door ever answered for: the intent row
- *  (`outcome='pending'`, `agent/v2/deliveries.ts`). It may have reached the person. */
-interface MaybeSent { channel: string; recipient: string | null; text: string | null }
-
-function maybeSentBy(agentId: string, turnNumber: number | null): MaybeSent[] {
-  if (turnNumber == null) return [];
-  return getDb().prepare(
-    `SELECT channel, COALESCE(recipient_display, recipient_id) AS recipient, detail AS text FROM deliveries
-      WHERE agent_id = ? AND turn_number = ? AND outcome IN ('pending') ORDER BY rowid`,
-  ).all(agentId, turnNumber) as MaybeSent[];
-}
-
-function describeEffect(e: DeadTurnEffect): string {
-  const args = e.input && typeof e.input === 'object'
-    ? redactDeclaredSecretArgs(e.name, e.input as Record<string, unknown>) : e.input;
-  const shown = JSON.stringify(args ?? {}).slice(0, 200);
-  return `${e.name} ${shown}${e.finished ? '' : ' (no result was recorded: the run stopped inside it, so it may or may not have happened — check)'}`;
-}
-
-/** The agent is told, on the turn that serves it again, why it has this message back, how old it is,
- *  and exactly what the dead turn had already done. */
-function tellAgentHandedBack(o: Orphan, effects: DeadTurnEffect[], maybe: MaybeSent[]): void {
-  const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
-  const when = o.received_at != null
-    ? `received ${formatTimeForAgent(o.received_at)} (${ageInWords(Date.now() - o.received_at)} ago)`
-    : 'received at a time that was not recorded';
-  const done = effects.length === 0 ? ''
-    : ` Before it stopped, that turn had already done this, and it is on the record: ${effects.map((e, i) => `(${i + 1}) ${describeEffect(e)}`).join('; ')}. `
-      + 'Do not repeat any of it: finish only what is left, and tell the person what was already done.';
-  const sent = maybe.length === 0 ? ''
-    : ` A reply may already have reached the person: the run stopped in the middle of sending ${maybe.map((m) =>
-      `by ${m.channel}${m.recipient ? ` to ${m.recipient}` : ''}${m.text ? `: "${m.text.slice(0, 300)}"` : ''}`).join('; and ')}. `
-      + 'Check whether it arrived before you answer again, and do not send the same thing twice.';
-  postAgentNotice({
-    toAgentId: o.agent_id, fromName: 'Dojo', selfIntro: false,
-    brief: `Your turn ${o.turn_number ?? '(unrecorded)'} stopped before it answered (the Dojo restarted or that run `
-      + `stopped responding), so the message it was answering is handed back to you: "${snippet}", ${when}. `
-      + 'Answer it now. If it is old, judge whether it still matters and say what has changed rather than acting on it blindly.'
-      + done + sent,
-  });
-}
+interface Orphan { id: string; agent_id: string; turn_number: number | null; effectful_calls: number }
 
 /** Hand one orphan back to its agent. Never held: an agent can act, so it finishes the job (no duplicate effects —
- *  the notice names them). Returns whether the row moved. */
+ *  the facts recorded on the ask name them, and the turn that serves it is given them whole). */
 function reArm(o: Orphan, by: string): boolean {
-  const effects = effectsOf(o.agent_id, o.turn_number);
-  const maybe = maybeSentBy(o.agent_id, o.turn_number);
-  const acted = effects.length > 0 || o.effectful_calls > 0;
   const res = transition(o.id, {
     to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed',
     reason: `${by}: the claiming turn died with its process before it answered`
-      + (acted ? ` (it had already made ${Math.max(effects.length, o.effectful_calls)} effectful call(s); the hand-back names them)` : '')
-      + (maybe.length > 0 ? ` (${maybe.length} outside send(s) may have been delivered; the hand-back says so)` : ''),
+      + (o.effectful_calls > 0 ? ` (it had already made ${o.effectful_calls} effectful call(s); the hand-back names what it can)` : ''),
   });
   if (res.kind !== 'applied') return false;
-  tellAgentHandedBack(o, effects, maybe);
+  recordHandBack(o, by);
   return true;
 }
 
@@ -170,10 +76,9 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
 
   const rows = db.prepare(`
     SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number,
-           COALESCE(t.effectful_calls, 0) AS effectful_calls, m.created_at AS received_at, m.content AS content
+           COALESCE(t.effectful_calls, 0) AS effectful_calls
       FROM work w
       LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-      LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
      WHERE w.kind = 'ask' AND w.state = 'claimed' AND (? IS NULL OR w.agent_id = ?)
        AND (t.turn_number IS NULL OR ${DEAD_TURN})
   `).all(agent, agent) as Orphan[];

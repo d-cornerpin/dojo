@@ -36,6 +36,7 @@ vi.mock('../v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../work/store.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { handBackFactsFor } from '../../work/orphaned-claims.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 import * as rt from '../runtime.js';
 
@@ -44,9 +45,7 @@ const db = (): Database.Database => mockDb.current!;
 
 const askState = (): string =>
   (db().prepare('SELECT state FROM work WHERE id = ?').get(askIdForMessage('m-1')) as { state: string }).state;
-const notices = (): string[] =>
-  (db().prepare("SELECT content FROM messages WHERE agent_id = ? AND lane = 'events'").all(AGENT) as Array<{ content: string }>)
-    .map((r) => r.content);
+const facts = (): string | null => handBackFactsFor(askIdForMessage('m-1'));
 
 /** A run that claimed the owner's message and then wedged: `working`, its row long stale, its turn open. */
 function wedgedRunHoldingTheOwnersMessage(): void {
@@ -82,7 +81,7 @@ describe('the stuck-run reaper, while the server stays up', () => {
     const wake = vi.spyOn(rt.getAgentRuntime(), 'handleMessage').mockResolvedValue(undefined as never);
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
     expect(askState(), 'not claimed until some later boot').toBe('open');
-    expect(notices().some((c) => c.includes('handed back') && c.includes('roof quote'))).toBe(true);
+    expect(facts()).toContain('roof quote');
     expect(wake).toHaveBeenCalledWith(AGENT, '');
     wake.mockRestore();
   });

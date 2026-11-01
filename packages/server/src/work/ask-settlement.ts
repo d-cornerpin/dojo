@@ -663,8 +663,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // ⚠ SWEEP-A TB3 — AND AT BOOT, FOR THE SAME SHAPE THE SAME TURN LEFT BEHIND. Finalize is
   // where this arm belongs, and a process killed between the delegation and the finalize
   // never reaches it: the row survives the crash `done` with its join unresolved, which is
-  // bug 2's own state with nobody left to correct it. The boot reconciler already exists for
-  // turns that died mid-lifecycle and already carries the bound — thirty minutes, dead turn —
+  // bug 2's own state with nobody left to correct it. The orphaned-claim reconcile already exists
+  // for turns that died mid-lifecycle and its signal is the dead turn (no window since proof-fix-f),
   // so the crash window is that arm's scope widened by one shape, never a second mechanism.
   if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot') && joinOutstanding(ask)) {
     // ⚠ SWEEP-A TB6 — AND IT DROPS THE RECEIPT IT IS UNDOING. `evidenceRef` names the

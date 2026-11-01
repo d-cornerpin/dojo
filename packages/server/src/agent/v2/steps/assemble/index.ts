@@ -55,6 +55,7 @@ import { techniqueRoomTokens } from '../../../../memory/technique-room.js';
 import { detectMultistepAndScaffold } from './multistep-detection.js';
 import { injectDelegationHintAndAttachments } from './delegation-and-attachments.js';
 import { runSteerCheckpoint } from './steer-checkpoint.js';
+import { withHandBackFacts } from './hand-back-steer.js';
 import { proceed, requestExit } from '../step-outcome.js';
 import { selectModel, type ModelSelection } from '../call-llm/model-selection.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
@@ -330,11 +331,10 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     }, agentId);
   }
 
-  // One message-injection context for this iteration's §3c entries
-  // (technique, context-gap, tracker-notif, nudge, tool-note, turn-context). The
-  // loop sets mutable fields (the drained steer, technique payload) at each site and
-  // calls injectRegistryMessage, so injection is registry-owned (R8). The
-  // registry is the only assembler path (R7), so this is always built.
+  // One message-injection context for this iteration's §3c entries (technique, context-gap,
+  // tracker-notif, nudge, tool-note, turn-context). The loop sets mutable fields (the drained steer,
+  // technique payload) at each site and calls injectRegistryMessage, so injection is registry-owned
+  // (R8). The registry is the only assembler path (R7), so this is always built.
   const mctx: AssemblyContext = buildAssemblyContext(
     agentId,
     modelId,
@@ -355,7 +355,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     turnCtx, agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages, roomTokens: ctx.allocation?.budgetTokens,
   });
 
-  const steer = runSteerCheckpoint(state, {
+  const steer = runSteerCheckpoint(withHandBackFacts(state, turnCtx, agentId, turnNumber), {
     agentId, turnCtx, turnNumber, engineStartAckDeliveredThisTurn, startAckRepliedNow, mctx, messages,
   });
   state = steer.state;
