@@ -86,6 +86,17 @@ describe('the stuck-run reaper, while the server stays up', () => {
     wake.mockRestore();
   });
 
+  it('checks servability through the same sweep first: an ask below the session boundary is abandoned, not handed back', async () => {
+    wedgedRunHoldingTheOwnersMessage();
+    db().prepare("UPDATE agents SET session_started_at = datetime('now', '+1 minute') WHERE id = ?").run(AGENT);
+    const wake = vi.spyOn(rt.getAgentRuntime(), 'handleMessage').mockResolvedValue(undefined as never);
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
+    expect(askState()).toBe('abandoned');
+    expect(facts()).toBeNull();
+    expect(wake).not.toHaveBeenCalled();
+    wake.mockRestore();
+  });
+
   it('at boot it only reaps: index.ts 4b1 hands the message back, after the staleness sweep', () => {
     wedgedRunHoldingTheOwnersMessage();
     rt.runStartupRecoverySweep();

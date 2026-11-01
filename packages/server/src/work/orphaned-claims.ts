@@ -28,7 +28,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { settleAsk } from './ask-settlement.js';
-import { transition } from './store.js';
+import { transition, abandonUnservableAsks } from './store.js';
 import { recordHandBack } from './hand-back-facts.js';
 export { handBackFactsFor } from './hand-back-facts.js';
 
@@ -119,6 +119,7 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
 export function handBackOrphansOf(agentIds: string[], wake: (agentId: string) => Promise<unknown>): void {
   for (const id of agentIds) {
     try {
+      abandonUnservableAsks(id);   // the boot's own servability sweep first (review M3), never a second rule
       if (reconcileOrphanedClaims({ agentId: id }).reArmed === 0) continue;
       wake(id).catch((err) => {
         logger.error('orphaned-claim wake failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);

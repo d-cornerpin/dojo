@@ -39,7 +39,9 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
+import { askIdForMessage, claimAsk, stampClaimingTurn, abandonUnservableAsks } from '../store.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { reconcileOrphanedClaims, handBackFactsFor } from '../orphaned-claims.js';
 import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
@@ -91,6 +93,7 @@ function ownerAskClaimedBy(turn: number, effectfulCalls = 0): void {
 function restart(): void {
   resetWorkingAgentsToIdleAtBoot();   // 4b
   sweepBootStaleness();               // 4b1
+  abandonUnservableAsks();            // 4b1 (C7) — BEFORE the hand-back (review M3)
   reconcileOrphanedClaims();          // 4b1 (D19)
 }
 
@@ -286,5 +289,24 @@ describe('the facts reach the model whole, ordered so what already happened come
     restart();
     expect(askOf('m-1').state).toBe('open');
     expect(facts()).toMatch(/handed back before.*(turn 7).*stopped again/s);
+  });
+});
+
+describe('an ask nobody can serve is settled before anything is handed back (review M3)', () => {
+  it('index.ts runs the unservable-ask sweep BEFORE the orphaned-claim hand-back', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'index.ts'), 'utf8');
+    const sweep = src.indexOf('abandonUnservableAsks()');
+    const handBack = src.indexOf('reconcileOrphanedClaims(');
+    expect(sweep).toBeGreaterThan(0);
+    expect(handBack).toBeGreaterThan(0);
+    expect(sweep, 'the agent must never be handed a message the sweep then abandons').toBeLessThan(handBack);
+  });
+
+  it('a claimed ask below its agent\'s session boundary is abandoned with its reason, and never handed back', () => {
+    ownerAskClaimedBy(7);
+    db().prepare("UPDATE agents SET session_started_at = datetime('now', '+1 minute') WHERE id = ?").run(AGENT);
+    restart();
+    expect(askOf('m-1').state).toBe('abandoned');
+    expect(facts(), 'no hand-back is recorded for a message the agent may not see').toBeNull();
   });
 });

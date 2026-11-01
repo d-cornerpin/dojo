@@ -538,18 +538,10 @@ async function main(): Promise<void> {
   // the delivery that answered it instead of being re-answered or stranded.
   {
     reapToolboxGroupsAtBoot();   // v3.5 P6c: a hard kill left no exit hook to end what agents backgrounded
-    try {
-      const { reArmed, closed } = reconcileOrphanedClaims();
-      if (reArmed > 0 || closed > 0) {
-        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the re-drain, each with a notice naming its age and any effects the dead turn already made (tracker untouched)`);
-      }
-    } catch (err) {
-      logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    }
-    // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed
-    // — no conversation identity, or a root message that no longer exists — get an honest
-    // terminal state instead of sitting `open` forever and telling every settled read that
-    // a person is waiting. Same once-guard as the other two causes: `transition()`'s CAS.
+    // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed — no conversation
+    // identity, or a root message that no longer exists — get an honest terminal state instead of sitting `open`
+    // forever and telling every settled read that a person is waiting. Same once-guard: `transition()`'s CAS.
+    // BEFORE the hand-back (proof-fix-f review M3): an agent is never handed a message it may not serve.
     try {
       const { abandoned } = abandonUnservableAsks();
       if (abandoned > 0) {
@@ -557,6 +549,14 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       logger.warn('Boot unservable-ask sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      const { reArmed, closed } = reconcileOrphanedClaims();
+      if (reArmed > 0 || closed > 0) {
+        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the re-drain, each carrying its age and any effects the dead turn already made for the turn that serves it (tracker untouched)`);
+      }
+    } catch (err) {
+      logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
     // 4b1c. SWEEP-A TB3 — THE ONE-SHOT ASK-LEDGER REMEDIATION (migration `158`,
     // `STABLE-BRIDGE.md` Entry 39). TB1 and TB2 stopped the ledger writing bad rows; this
