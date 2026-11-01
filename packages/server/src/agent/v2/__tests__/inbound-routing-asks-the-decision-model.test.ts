@@ -6,6 +6,7 @@
 // outside the question's weak band; inside it, today's behaviour. A15 wakes the primary: the strictest reading.
 // The decision model is never real: a provider row and a scripted fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { __ownerDecisionForTests } from '../../decision-policy.js';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +45,7 @@ const shadowRows = (): Array<{ question: string; rule_said: string; model_said: 
   db().prepare("SELECT question, rule_said, model_said FROM decision_shadow WHERE purpose = ? ORDER BY id").all(INBOUND_ROUTING_PURPOSE) as never;
 
 beforeEach(() => {
+  __ownerDecisionForTests(false);   // these suites test the shadow path itself; the owner's four have their own suite
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   chat.calls = 0;

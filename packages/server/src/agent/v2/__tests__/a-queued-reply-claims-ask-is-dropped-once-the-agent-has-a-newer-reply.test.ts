@@ -2,6 +2,7 @@
 // agent has produced a NEWER reply (a real signal, no timer), and it is NOT dropped when there is no newer reply.
 // Every /v1/systemone call is a scripted fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { __ownerDecisionForTests } from '../../decision-policy.js';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -33,6 +34,7 @@ let release: () => void;
 let held: Promise<void>;
 
 beforeEach(() => {
+  __ownerDecisionForTests(false);   // these suites test the shadow path itself; the owner's four have their own suite
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   sentReplies.length = 0; logs.length = 0;

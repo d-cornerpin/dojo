@@ -30,7 +30,7 @@
 import { isBareNoReplySentinel } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts, type FailureClass, type Question } from '../decide.js';
-import { modeFor, type Mode } from '../decision-policy.js';
+import { modeFor, ownerOnTheModel, type Mode } from '../decision-policy.js';
 import { inWeakestBand, recordShadow, scoreQuestion, verdictOf, type QuestionScore } from '../decision-shadow.js';
 import { isForwardPromiseReply, isStandingPromiseReply, isStandingStateClaimReply } from './ack-copy.js';
 import { detectDeliveryDenial, detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
@@ -195,7 +195,8 @@ export function replyClaim(at: ReplyAt, question: ReplyClaimQuestion, ruleSaid: 
     if (!entry || entry.key !== at.messageId || entry.modes[question] !== 'model') return ruleSaid;
     const a = entry.answers?.[question];
     const score = entry.scores[question];
-    if (!a || a.type !== 'noul' || !score) return ruleSaid;   // no answer: the outage is logged once, above
+    if (!a || a.type !== 'noul') return ruleSaid;   // no answer: the outage is logged once, above
+    if (!score) return ownerOnTheModel(PURPOSE, question) ? verdictOf(a).said === 'true' : ruleSaid;   // owner-decided: no production score to place a band by
     return inWeakestBand(score, a.noul) ? ruleSaid : verdictOf(a).said === 'true';
   } catch {
     return ruleSaid;

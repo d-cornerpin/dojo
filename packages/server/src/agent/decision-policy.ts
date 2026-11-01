@@ -25,16 +25,30 @@ function pinnedToRule(purpose: string, question: string): boolean {
   } catch { return false; }
 }
 
+/** OWNER DECISION (overhaul-plans/v35-reconciliation.md, OWNER ANSWERS item 11): in 3.5 exactly these four judgments are
+ *  answered by the decision model, on the offline scores that beat the rule (overhaul-plans/v35-decision-live-scores.md),
+ *  without waiting for a production score (none of them has a production truth source). Every other judgment stays on the
+ *  switch above. Keys are `purpose/question`. */
+const OWNER_ON_THE_MODEL: ReadonlySet<string> = new Set([
+  'inbound_routing/simple_chat', 'inbound_routing/deliverable', 'memory_shape/filler', 'reply_claims/claims_sent_to_third_party',
+]);
+let ownerDecisionApplies = true;
+/** Test-only: the shadow-mechanics suites run with the owner's four back in shadow, so they test the shadow path itself. */
+export function __ownerDecisionForTests(on: boolean): void { ownerDecisionApplies = on; }
+export const ownerOnTheModel = (purpose: string, question: string): boolean => ownerDecisionApplies && OWNER_ON_THE_MODEL.has(`${purpose}/${question}`);
+export const ownerDecidedQuestions = (): Array<{ purpose: string; question: string }> =>
+  [...OWNER_ON_THE_MODEL].map((k) => { const [purpose, question] = k.split('/'); return { purpose, question }; });
+
 export const modelProvenBetter = (s: QuestionScore | null): boolean =>
   !!s && s.modelAcc > s.ruleAcc && s.modelCI[0] > s.ruleCI[1];
 
 export function modeFor(purpose: string, question: string): Mode {
   if (!getDecisionProvider() || pinnedToRule(purpose, question)) return 'rule';
-  return modelProvenBetter(scoreQuestion(purpose, question)) ? 'model' : 'shadow';
+  return ownerOnTheModel(purpose, question) || modelProvenBetter(scoreQuestion(purpose, question)) ? 'model' : 'shadow';
 }
 
 /** The sentence the Healer report carries under the scores (the plan's words). */
-export const SWITCH_SENTENCE = "A question switches to the model when the model's range sits above the rule's, and back when it does not.";
+export const SWITCH_SENTENCE = "A question switches to the model when the model's range sits above the rule's, and back when it does not; the judgments you chose to put on the model stay there (the rule answers whenever the model is unavailable or answers badly).";
 
 const pct = (x: number): string => `${Math.round(x * 100)}`;
 

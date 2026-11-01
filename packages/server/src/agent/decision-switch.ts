@@ -16,7 +16,8 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { ownerCardEnded, ownerCardFrame } from '../services/owner-card-frames.js';
-import { modeFor, modelProvenBetter } from './decision-policy.js';
+import { modeFor, modelProvenBetter, ownerDecidedQuestions, ownerOnTheModel } from './decision-policy.js';
+import { getDecisionProvider } from './decision-provider.js';
 import { onScoreChanged, scoreQuestion, type QuestionScore } from './decision-shadow.js';
 
 const logger = createLogger('decision-switch');
@@ -51,7 +52,9 @@ export function switchedQuestions(): Array<{ purpose: string; question: string; 
   } catch { return []; }
 }
 
-const words = (purpose: string, question: string, s: QuestionScore | null, to: SwitchState): string => to === 'model'
+const words = (purpose: string, question: string, s: QuestionScore | null, to: SwitchState, decided = false): string => decided && to === 'model'
+  ? `You chose to have the local decision model make the judgment "${plain(question)}" (${plain(purpose)}). Whenever the model is unavailable or answers badly, the Dojo uses the old rule for that judgment.`
+  : to === 'model'
   ? `The decision model now answers the question "${plain(question)}" (${plain(purpose)}) itself. Over ${s?.n ?? 0} real cases it was right ${pct(s?.modelAcc ?? 0)} of the time against the old rule's ${pct(s?.ruleAcc ?? 0)}, and the gap was wide enough to be sure. If it gets worse, the Dojo goes back to the rule by itself.`
   : `The decision model no longer answers the question "${plain(question)}" (${plain(purpose)}): its recent results are no longer clearly better than the old rule's, so the Dojo went back to the rule. The model keeps being scored.`;
 
@@ -59,7 +62,9 @@ const words = (purpose: string, question: string, s: QuestionScore | null, to: S
 export function reviewSwitch(purpose: string, question: string): SwitchState | null {
   try {
     const s = scoreQuestion(purpose, question);
-    const now: SwitchState = modelProvenBetter(s) ? 'model' : 'shadow';
+    const decided = ownerOnTheModel(purpose, question);   // the owner's 3.5 decision: on the model while a model is here
+    if (decided && !getDecisionProvider()) return null;      // a box without the model keeps the rule: nothing switched, nothing told
+    const now: SwitchState = decided || modelProvenBetter(s) ? 'model' : 'shadow';
     const was: SwitchState = switchRecord(purpose, question)?.state ?? 'shadow';
     if (now === was) return null;
     const record: SwitchRecord = { state: now, at: Date.now(), n: s?.n ?? 0, ruleAcc: s?.ruleAcc ?? 0, modelAcc: s?.modelAcc ?? 0 };
@@ -71,7 +76,7 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
     }
     logger.info(`decision question ${now === 'model' ? 'switched to the model' : 'went back to shadow'}`, { purpose, question, n: record.n, ruleAcc: record.ruleAcc, modelAcc: record.modelAcc });
     if (modeFor(purpose, question) === (now === 'model' ? 'model' : 'shadow')) {   // pinned to the rule / no model: nothing changed for the owner
-      if (now === 'model') ownerCardFrame(words(purpose, question, s, now), 'warning', cardKeyOf(purpose, question));
+      if (now === 'model') ownerCardFrame(words(purpose, question, s, now, decided), 'warning', cardKeyOf(purpose, question));
       else { ownerCardEnded(words(purpose, question, s, 'shadow'), cardKeyOf(purpose, question)); }
     }
     return now;
@@ -79,6 +84,12 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
     logger.warn('could not review a decision switch', { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
+}
+
+/** Record and tell the owner's four decided judgments (once each; a box without the decision model records nothing, so
+ *  it is told when the model arrives). Called at boot and when the standard models are ready. Never throws. */
+export function announceDecidedSwitches(): void {
+  for (const q of ownerDecidedQuestions()) reviewSwitch(q.purpose, q.question);
 }
 
 onScoreChanged((qs) => { for (const q of qs) reviewSwitch(q.purpose, q.question); });

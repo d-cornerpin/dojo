@@ -8,6 +8,7 @@
 //  3. A filler pass resolves its mode once, not per message, and a continuation never re-dials texts already asked.
 // The decision model is never real: a provider row and a scripted fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { __ownerDecisionForTests } from '../decision-policy.js';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -36,6 +37,7 @@ const rows = (purpose: string): Array<{ question: string; turn_id: string }> =>
   db().prepare('SELECT question, turn_id FROM decision_shadow WHERE purpose = ? ORDER BY id').all(purpose) as never;
 
 beforeEach(() => {
+  __ownerDecisionForTests(false);   // these suites test the shadow path itself; the owner's four have their own suite
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   installDecisionModel(db());

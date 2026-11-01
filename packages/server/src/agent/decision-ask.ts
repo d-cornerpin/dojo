@@ -30,9 +30,9 @@
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts } from './decide.js';
-import { modeFor } from './decision-policy.js';
+import { modeFor, ownerOnTheModel } from './decision-policy.js';
 import { recordShadow, scoreQuestion } from './decision-shadow.js';
-import './decision-switch.js';   // installs the listener that records and tells a question's switch
+import { announceDecidedSwitches } from './decision-switch.js';   // installs the listener that records and tells a question's switch
 import { installDecisionHooks, type Judgment, type JudgmentSpec, type Mode, type Verdict } from './decision-hooks.js';
 
 export type { Judgment, JudgmentSpec, Verdict } from './decision-hooks.js';
@@ -52,7 +52,10 @@ function readAnswer(a: Answer): { said: Verdict; p: number } | null {
 export function decisiveVerdict(purpose: string, name: string, a: Answer, strict = false): Verdict | null {
   const score = scoreQuestion(purpose, name);
   const v = readAnswer(a);
-  if (!score || !v) return null;
+  if (!v) return null;
+  // An owner-decided judgment has no production score to place a weak band by; the model's answer stands (a failed or
+  // unparsable answer never got here: `decide()` returned null and the rule answers).
+  if (!score) return ownerOnTheModel(purpose, name) ? v.said : null;
   const [lo, hi] = score.band;
   if (decile(v.p) === Math.round(lo * 10)) return null;
   if (strict) {
@@ -158,3 +161,5 @@ installDecisionHooks({
   modeOf: (purpose, question) => { try { return modeFor(purpose, question); } catch { return 'rule'; } },
   judged: alreadyJudged,
 });
+
+try { announceDecidedSwitches(); } catch { /* the database is not up yet: boot announces again once the models are ready */ }
