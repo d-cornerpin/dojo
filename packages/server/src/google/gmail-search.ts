@@ -9,7 +9,7 @@
 
 import { googleRead } from './client.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
-import { decodeHtmlEntities } from '../agent/html-text.js';
+import { gmailSnippetText } from '../services/mail-inbound-facts.js';
 import { outsideSpan } from '../tools/external-content.js';
 
 export const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -73,7 +73,7 @@ export async function searchMailForAccount(
       const to = headers.find(h => h.name === 'To')?.value ?? '';
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
-      const snippet = decodeHtmlEntities(msgData?.snippet ?? '');   // Gmail HTML-escapes the snippet field
+      const snippet = gmailSnippetText(msgData?.snippet);
       const parsed = date ? parseFlexibleTime(date) : null;
       items.push({ id: msg.id, from, to, subject, dateDisplay: fmtEmailDate(date), dateSortMs: parsed ? parsed.getTime() : 0, snippet, read: undefined });
     } else {
