@@ -69,4 +69,42 @@ describe('toolbox group ledger', () => {
     expect(() => reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: same })).not.toThrow();
     expect(sent).toEqual([]);
   });
+  // D1 (item 350): a one-shot script backgrounds a job and exits, so the recorded leader is gone
+  // while its children live on in the group.
+  const START = 'Mon Oct 26 06:00:00 2026';
+  const gone = (): string | null => null;
+  it('a group whose leader exited but whose children live on is still ended', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    alive.add(-4242);
+    const out = reapLeftoverToolboxGroups({
+      dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: gone, startsOfGroup: () => ['Mon Oct 26 06:00:01 2026'],
+    });
+    expect(out.ended).toEqual([4242]);
+    expect(sent).toContainEqual([-4242, 'SIGTERM']);
+  });
+  it('a leader-less group with no living member is dropped, never signalled', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    alive.add(-4242);
+    const out = reapLeftoverToolboxGroups({ dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: gone, startsOfGroup: () => [] });
+    expect(out.ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+  it('members that started before the recorded leader are not ours', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    alive.add(-4242);
+    const out = reapLeftoverToolboxGroups({
+      dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: gone, startsOfGroup: () => ['Sun Oct 25 06:00:00 2026', 'not a date'],
+    });
+    expect(out.ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+  it('a live process now holding the id with another identity is a reused id: dropped even if it has members', () => {
+    recordToolboxGroups(dir, [E], NOW_BOOT);
+    alive.add(-4242);
+    const out = reapLeftoverToolboxGroups({
+      dir, bootMs: NOW_BOOT, send, graceMs: 0, identityOf: () => `${START} other`, startsOfGroup: () => ['Tue Oct 27 09:00:00 2026'],
+    });
+    expect(out.ended).toEqual([]);
+    expect(sent).toEqual([]);
+  });
 });

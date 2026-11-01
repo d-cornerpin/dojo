@@ -10,3 +10,16 @@ export function identityOfPid(pid: number): string | null {
     return out === '' ? null : out;
   } catch { return null; }
 }
+
+/** Start times (`lstart`, e.g. "Mon Oct 26 06:00:00 2026") of every live process in a process group. */
+export function startTimesOfGroup(pgid: number): string[] {
+  try {
+    const out = execFileSync('/bin/ps', ['-A', '-o', 'pgid=,lstart='], { encoding: 'utf8', timeout: 5_000 });
+    const starts: string[] = [];
+    for (const line of out.split('\n')) {
+      const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
+      if (m && Number(m[1]) === pgid) starts.push(m[2]);
+    }
+    return starts;
+  } catch { return []; }
+}

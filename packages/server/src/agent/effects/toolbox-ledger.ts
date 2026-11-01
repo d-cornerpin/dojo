@@ -14,8 +14,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { identityOfPid } from '../../process-identity.js';
-import { homeDir } from '../../home.js';
+import { identityOfPid, startTimesOfGroup } from '../../process-identity.js';
+import { dojoDir } from '../../home.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('toolbox-ledger');
@@ -24,7 +24,7 @@ const FILE = 'toolbox-groups.json';
 /** Boot times read at two moments differ by clock rounding; a reboot differs by far more. */
 const BOOT_SLACK_MS = 5_000;
 
-/** A group's leader as it was when started: a reused id never matches both fields. */
+/** A group's leader as it was when started (`ps` start time, then command): a reused id never matches both. */
 export interface GroupEntry { pgid: number; identity: string }
 
 type Send = (pgid: number, signal: NodeJS.Signals | 0) => void;
@@ -43,15 +43,24 @@ export function recordToolboxGroups(dir: string, groups: GroupEntry[], bootMs: n
   } catch { /* the ledger is a safety net; losing it must not break a tool call */ }
 }
 
+/** True when the group has a live member that started at or after the recorded leader. */
+function survivorsOf(pgid: number, identity: string, startsOfGroup: (pgid: number) => string[]): boolean {
+  const leaderStart = Date.parse(identity.slice(0, 24));
+  if (!Number.isFinite(leaderStart)) return false;
+  return startsOfGroup(pgid).some((s) => Date.parse(s) >= leaderStart);
+}
+
 /** At boot: end every still-living group the ledger names, then clear it. */
 export function reapLeftoverToolboxGroups(
-  opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number; identityOf?: (pid: number) => string | null },
+  opts: { dir: string; bootMs?: number; send?: Send; graceMs?: number; identityOf?: (pid: number) => string | null;
+    startsOfGroup?: (pgid: number) => string[] },
 ): { ended: number[] } {
   const file = path.join(opts.dir, FILE);
   const send = opts.send ?? realSend;
   const ended: number[] = [];
   let groups: GroupEntry[] = [];
   const identityOf = opts.identityOf ?? identityOfPid;
+  const startsOfGroup = opts.startsOfGroup ?? startTimesOfGroup;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { boot?: unknown; groups?: unknown };
     const bootNow = opts.bootMs ?? machineBootMs();
@@ -62,9 +71,13 @@ export function reapLeftoverToolboxGroups(
   } catch { /* no ledger, or an unreadable one: nothing to end */ }
   try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
   for (const { pgid: g, identity } of groups) {
-    // Signal only the very process that was recorded: same start time AND command. A reused id, or a
-    // leader that has since exited, is dropped, never signalled.
-    if (identityOf(g) !== identity) continue;
+    // Signal only a group that is provably the recorded one. Leader alive: it must be the very process
+    // recorded (same start time AND command), else the id was reused and is dropped. Leader gone: a
+    // one-shot script exits at once and leaves what it backgrounded running in the group, so the group is
+    // ours when a member is still alive that started no earlier than the recorded leader did (a group id
+    // is not handed to a new process while any member lives, so such a member descends from the leader).
+    const now = identityOf(g);
+    if (now !== null ? now !== identity : !survivorsOf(g, identity, startsOfGroup)) continue;
     try { send(-g, 0); } catch { continue; }   // already gone
     try { send(-g, 'SIGTERM'); ended.push(g); } catch { continue; }
     setTimeout(() => { try { send(-g, 'SIGKILL'); } catch { /* gone */ } }, opts.graceMs ?? 3_000).unref();
@@ -75,7 +88,7 @@ export function reapLeftoverToolboxGroups(
 /** The boot call: the ledger lives under the data folder. Never throws. */
 export function reapToolboxGroupsAtBoot(): void {
   try {
-    const { ended } = reapLeftoverToolboxGroups({ dir: path.join(homeDir(), 'data') });
+    const { ended } = reapLeftoverToolboxGroups({ dir: dojoDir('data') });
     if (ended.length > 0) logger.warn(`Boot: ended ${ended.length} process group(s) the toolbox started before the last hard kill`);
   } catch { /* best effort */ }
 }

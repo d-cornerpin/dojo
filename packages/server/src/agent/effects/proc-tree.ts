@@ -8,8 +8,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { untilUserStop } from '../stop-waiters.js';
-import path from 'node:path';
-import { homeDir } from '../../home.js';
+import { dojoDir } from '../../home.js';
 import { recordToolboxGroups, type GroupEntry } from './toolbox-ledger.js';
 import { identityOfPid } from '../../process-identity.js';
 
@@ -118,7 +117,7 @@ function rememberGroup(pgid: number): void {
   if (identity !== null) groupIdentity.set(pgid, identity);
   // v3.5 P6c: a hard kill runs no exit hook, so the next boot ends what this file still names.
   const entries: GroupEntry[] = [...groupIdentity].map(([g, identity]) => ({ pgid: g, identity }));
-  recordToolboxGroups(path.join(homeDir(), 'data'), entries);
+  recordToolboxGroups(dojoDir('data'), entries);
 }
 
 function endToolboxGroups(): void {
@@ -127,5 +126,5 @@ function endToolboxGroups(): void {
   }
   toolboxGroups.clear();
   groupIdentity.clear();
-  recordToolboxGroups(path.join(homeDir(), 'data'), []);
+  recordToolboxGroups(dojoDir('data'), []);
 }
