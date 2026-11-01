@@ -41,8 +41,13 @@ export function parseApproveDeny(trimmed: string): ApproveDenyCommand | null {
 }
 
 
+/** The first non-empty line, trimmed and lower-cased: a signature or sign-off below it must not hide the command. */
+export function firstLineOf(words: string): string {
+  return (words.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').trim().toLowerCase();
+}
+
 /** Are these words a command or an approval at all? */
 export function isOwnerCommandText(words: string): boolean {
-  const t = words.trim().toLowerCase();
+  const t = firstLineOf(words);
   return parseStrictCommand(t) !== null || parseApproveDeny(t) !== null;
 }

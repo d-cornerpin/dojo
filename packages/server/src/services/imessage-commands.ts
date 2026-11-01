@@ -11,7 +11,7 @@ import { getPrimaryAgentId, getPrimaryAgentName } from '../config/platform.js';
 
 const logger = createLogger('imessage-commands');
 
-import { parseStrictCommand, parseApproveDeny, type ApproveDenyCommand } from './owner-command-words.js';
+import { parseStrictCommand, parseApproveDeny, firstLineOf, type ApproveDenyCommand } from './owner-command-words.js';
 
 /**
  * Handle an inbound iMessage command from a bridged sender.
@@ -44,7 +44,7 @@ export async function handleIMCommand(text: string, senderAddress: string): Prom
  * approval handler a text reaches, run as the owner. Null when the words are not a command.
  */
 export async function handleConfirmedOwnerEmailWords(words: string): Promise<string | null> {
-  return runCommand(words.trim().toLowerCase(), true, undefined);
+  return runCommand(firstLineOf(words), true, undefined);
 }
 
 async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unknown): Promise<string | null> {

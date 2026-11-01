@@ -46,3 +46,19 @@ describe('C12 — both mail watchers use it', () => {
     }
   });
 });
+
+describe('C12 — only the first non-empty line is matched', () => {
+  it('"yes <id>" followed by a signature still approves', async () => {
+    const note = await ownerEmailCommandNote({ state: 'confirmed', words: '\n\nyes abc123\n\nSent from my iPhone' });
+    expect(resolveHealerProposal).toHaveBeenCalledWith({ id: 'abc12345-0000', action: 'approve', note: null });
+    expect(note).toMatch(/Approved/);
+  });
+  it('a first line that is not a command runs nothing, even if a later line is one', async () => {
+    expect(await ownerEmailCommandNote({ state: 'confirmed', words: 'Thanks for this\nyes abc123' })).toBe('');
+    expect(resolveHealerProposal).not.toHaveBeenCalled();
+  });
+  it('an unconfirmed email with the same words never runs', async () => {
+    expect(await ownerEmailCommandNote({ state: 'unconfirmed', reason: 'bcc' })).toBe('');
+    expect(resolveHealerProposal).not.toHaveBeenCalled();
+  });
+});
