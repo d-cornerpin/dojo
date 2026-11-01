@@ -96,6 +96,7 @@ import { getPresence } from '../../../services/presence.js';
 import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
+import { tellAgentAndWake } from '../../wake-with-notice.js';
 import { resolvePath } from '../../path-guards.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
@@ -279,18 +280,14 @@ const handlers = {
           const askedBy = requesterIMessage
             ? `the person who asked over iMessage (${requesterIMessage})`
             : 'the person who asked (in the dashboard chat)';
-          try {
-            postAgentNotice({
-              toAgentId: agentId,
-              fromName: 'Image generation',
-              brief:
-                `the image you asked for could not be generated. The provider said: ${result.error}. ` +
-                `Nothing was sent to ${askedBy}. Tell them in your own words that it failed and offer a next step; ` +
-                `do not call image_create again with the same description unless they ask.`,
-              intent: 'image_delivery_outcome',
-              selfIntro: false,
-            });
-          } catch { /* awareness note is best-effort */ }
+          // The agent is handed the failure AND woken (agent/wake-with-notice.ts) so it tells the person now.
+          void tellAgentAndWake({
+            agentId, from: 'Image generation',
+            brief:
+              `the image you asked for could not be generated. The provider said: ${result.error}. ` +
+              `Nothing was sent to ${askedBy}. Tell them in your own words that it failed and offer a next step; ` +
+              `do not call image_create again with the same description unless they ask.`,
+          });
           settleAskOnJobEnded(agentId, imgJobId);   // t152: no bubble was posted; the request is re-asked now that the job ended
           return;
         }

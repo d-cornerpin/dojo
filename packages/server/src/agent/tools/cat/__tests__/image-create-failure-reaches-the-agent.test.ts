@@ -47,12 +47,13 @@ vi.mock('../../../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => null,
 }));
 vi.mock('../../../access/read.js', () => ({ mayUseChannel: () => true }));
-vi.mock('../../../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
+vi.mock('../../../agent-notice.js', () => ({ tellAgentAndWake: vi.fn() }));
+vi.mock('../../../wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn(async () => undefined) }));
 vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 import { mediaHandlers } from '../media.js';
 import { sendResponseViaIMessage } from '../../../../services/imessage-bridge.js';
-import { postAgentNotice } from '../../../agent-notice.js';
+import { tellAgentAndWake } from '../../../wake-with-notice.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { generateImage } from '../../../../services/image-generation.js';
 
@@ -63,7 +64,7 @@ beforeEach(() => {
   mockDb.current.exec(`CREATE TABLE agents (id TEXT PRIMARY KEY, status TEXT, model_id TEXT);
     INSERT INTO agents VALUES ('a1', 'idle', NULL);`);
   sendSpy.mockClear();
-  vi.mocked(postAgentNotice).mockClear();
+  vi.mocked(tellAgentAndWake).mockClear();
   vi.mocked(insertMessageIfAbsent).mockClear();
   vi.mocked(generateImage).mockClear();
   hoisted.recipient = null;
@@ -84,20 +85,19 @@ describe('image_create failure', () => {
   it('tells the agent, naming the error and the iMessage requester, and texts nobody itself', async () => {
     hoisted.recipient = '+15550100';
     await call();
-    await vi.waitFor(() => expect(vi.mocked(postAgentNotice)).toHaveBeenCalledTimes(1));
-    const n = vi.mocked(postAgentNotice).mock.calls[0][0];
-    expect(n.toAgentId).toBe('a1');
+    await vi.waitFor(() => expect(vi.mocked(tellAgentAndWake)).toHaveBeenCalledTimes(1));
+    const n = vi.mocked(tellAgentAndWake).mock.calls[0][0];
+    expect(n.agentId).toBe('a1');   // the agent is woken so it tells the person now
     expect(n.brief).toContain('provider said no');
     expect(n.brief).toContain('+15550100');
-    expect(n.intent).toBe('image_delivery_outcome');
     expect(sendSpy).not.toHaveBeenCalled();
     expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();   // no engine-written bubble in the agent's voice
   });
 
   it('tells the agent on the dashboard too, with no text and no bubble', async () => {
     await call();
-    await vi.waitFor(() => expect(vi.mocked(postAgentNotice)).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(postAgentNotice).mock.calls[0][0].brief).toContain('provider said no');
+    await vi.waitFor(() => expect(vi.mocked(tellAgentAndWake)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(tellAgentAndWake).mock.calls[0][0].brief).toContain('provider said no');
     expect(sendSpy).not.toHaveBeenCalled();
     expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();
   });

@@ -17,7 +17,7 @@ vi.mock('../../pending-attachments.js', () => ({
   drainPendingAttachmentsWithCaptions: () => ({ attachments: [{ filename: 'report.pdf', path: '/tmp/fake/report.pdf' }], captions: [] }),
 }));
 vi.mock('../../../credentials/secret-fields.js', () => ({ redactHandedCredentials: (_a: string, t: string) => t }));
-vi.mock('../../agent-notice.js', () => ({ postAgentNotice: noticeMock }));
+vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: noticeMock }));
 vi.mock('../../../services/imessage-bridge.js', () => ({
   sendIMessageWithAttachment: sendFileMock,
   sendAlert: sendAlertMock,
@@ -46,7 +46,7 @@ describe('a stranded file that does not reach iMessage', () => {
     expect(sendAlertMock).not.toHaveBeenCalled();   // C2: the platform does not message the owner; the agent is told and tells the person
     // the agent is told too, naming the file, so its reply does not claim it arrived
     expect(noticeMock).toHaveBeenCalledTimes(1);
-    expect(noticeMock.mock.calls[0][0].toAgentId).toBe('agent-1');
+    expect(noticeMock.mock.calls[0][0].agentId).toBe('agent-1');   // and the agent is WOKEN so it tells the person now
     expect(noticeMock.mock.calls[0][0].brief).toContain('report.pdf');
   });
 

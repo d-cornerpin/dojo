@@ -6,14 +6,14 @@ vi.mock('../../../logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../../services/imessage-bridge.js', () => ({ sendIMessageWithAttachment: vi.fn() }));
-vi.mock('../../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
+vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: vi.fn() }));
 
 import { textFilesToRequester } from '../steps/text-files-to-requester.js';
 import { sendIMessageWithAttachment } from '../../../services/imessage-bridge.js';
-import { postAgentNotice } from '../../agent-notice.js';
+import { tellAgentAndWake } from '../../wake-with-notice.js';
 
 const sendSpy = vi.mocked(sendIMessageWithAttachment);
-const noticeSpy = vi.mocked(postAgentNotice);
+const noticeSpy = vi.mocked(tellAgentAndWake);
 
 beforeEach(() => {
   sendSpy.mockReset();

@@ -1675,7 +1675,7 @@ async function deliverJoinResultToOwnerInner(
       });
       // Announced only when a row was actually written (a frame with no row is live-only), and the agent is told the text.
       if (persisted) {
-        tellAgentWhatDojoSent({ agentId: join.agentId, recipient: 'the owner (dashboard chat)', text: notice, why: 'because the answer could not go back on their channel' });
+        tellAgentWhatDojoSent({ agentId: join.agentId, recipient: 'the owner (on the dashboard)', text: notice, why: 'because the answer could not go back on their channel' });
         broadcast({
           type: 'chat:message', agentId: join.agentId,
           message: {
