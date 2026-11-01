@@ -52,7 +52,9 @@ export function switchedQuestions(): Array<{ purpose: string; question: string; 
   } catch { return []; }
 }
 
-const words = (purpose: string, question: string, s: QuestionScore | null, to: SwitchState): string => to === 'model'
+const words = (purpose: string, question: string, s: QuestionScore | null, to: SwitchState, decided = false): string => decided && to === 'model'
+  ? `You chose to have the local decision model make the judgment "${plain(question)}" (${plain(purpose)}). Whenever the model is unavailable or answers badly, the Dojo uses the old rule for that judgment.`
+  : to === 'model'
   ? `The decision model now answers the question "${plain(question)}" (${plain(purpose)}) itself. Over ${s?.n ?? 0} real cases it was right ${pct(s?.modelAcc ?? 0)} of the time against the old rule's ${pct(s?.ruleAcc ?? 0)}, and the gap was wide enough to be sure. If it gets worse, the Dojo goes back to the rule by itself.`
   : `The decision model no longer answers the question "${plain(question)}" (${plain(purpose)}): its recent results are no longer clearly better than the old rule's, so the Dojo went back to the rule. The model keeps being scored.`;
 
@@ -74,7 +76,7 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
     }
     logger.info(`decision question ${now === 'model' ? 'switched to the model' : 'went back to shadow'}`, { purpose, question, n: record.n, ruleAcc: record.ruleAcc, modelAcc: record.modelAcc });
     if (modeFor(purpose, question) === (now === 'model' ? 'model' : 'shadow')) {   // pinned to the rule / no model: nothing changed for the owner
-      if (now === 'model') ownerCardFrame(words(purpose, question, s, now), 'warning', cardKeyOf(purpose, question));
+      if (now === 'model') ownerCardFrame(words(purpose, question, s, now, decided), 'warning', cardKeyOf(purpose, question));
       else { ownerCardEnded(words(purpose, question, s, 'shadow'), cardKeyOf(purpose, question)); }
     }
     return now;

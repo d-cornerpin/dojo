@@ -82,6 +82,7 @@ describe('the owner put exactly four judgments on the decision model', () => {
     announceDecidedSwitches();
     for (const [p, q] of ON_THE_MODEL) expect(switchRecord(p, q)?.state, `${p}/${q}`).toBe('model');
     const told = broadcast.mock.calls.map((c) => c[0] as { cardKey?: string; severity: string });
+    for (const c of told as Array<{ error: string }>) { expect(c.error).toMatch(/You chose/); expect(c.error).toMatch(/unavailable or answers badly/); expect(c.error).not.toMatch(/real cases|by itself|0%/); }
     expect(told.map((c) => c.cardKey).sort()).toEqual(ON_THE_MODEL.map(([p, q]) => `decision-switch:${p}:${q}`).sort());
   });
 });

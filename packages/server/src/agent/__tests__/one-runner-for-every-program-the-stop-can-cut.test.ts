@@ -40,7 +40,7 @@ const realSetTimeout = globalThis.setTimeout;   // captured before any test fake
 
 beforeAll(() => {
   fs.writeFileSync(path.join(BIN, 'cliclick'), '#!/bin/sh\necho $$ >> "$ONE_RUNNER_PIDS"\nexit 0\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(BIN, 'deaf'), '#!/bin/sh\necho $$ >> "$ONE_RUNNER_PIDS"\ntrap "" TERM\nwhile :; do sleep 1; done\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(BIN, 'deaf'), '#!/bin/sh\ntrap "" TERM\necho $$ >> "$ONE_RUNNER_PIDS"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
   fs.writeFileSync(path.join(BIN, 'deaf-ready'), '#!/bin/sh\ntrap "" TERM\necho $$ >> "$ONE_RUNNER_PIDS"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
   fs.writeFileSync(path.join(BIN, 'quits-on-term'), '#!/bin/sh\necho $$ >> "$ONE_RUNNER_PIDS"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
   process.env.PATH = `${BIN}:${ORIGINAL_PATH}`;

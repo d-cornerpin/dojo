@@ -6,6 +6,7 @@
 // weak band. The credential gate is a safety gate and never asks. The decision model is never real: a provider row
 // and a scripted fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { __ownerDecisionForTests } from '../../agent/decision-policy.js';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +37,7 @@ const FACT = 'Tunnel: Cloudflare named. Reason: self-hosted integration.';
 const PROSE = 'We looked at the options. Then we compared them for a while. In the end we picked the second one. It was cheaper and faster.';
 
 beforeEach(() => {
+  __ownerDecisionForTests(false);   // this suite tests the shadow path itself; the owner's four have their own suite
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   setFillerVerdicts(new Map());
