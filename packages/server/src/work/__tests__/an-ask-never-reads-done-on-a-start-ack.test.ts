@@ -55,8 +55,9 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import {
-  settleAsk, settleAsksAtTurnFinalize, reconcileOrphanedClaims, askAnswerEvidence,
+  settleAsk, settleAsksAtTurnFinalize, askAnswerEvidence,
 } from '../ask-settlement.js';
+import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 

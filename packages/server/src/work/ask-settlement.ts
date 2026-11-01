@@ -43,8 +43,8 @@
 //   (b) `settleAsksAtTurnFinalize` — the final adjudicator, over every ask the turn CLAIMED
 //       or that entered its ASSEMBLED CONTEXT. Structural invariant: no ask remains
 //       `claimed` by a finalized turn;
-//   (c) `reconcileOrphanedClaims` — boot, unchanged in trigger and window; only its
-//       answered arm's decision is now shared.
+//   (c) `reconcileOrphanedClaims` — `work/orphaned-claims.ts`: the boot and the stuck-run
+//       reaper, over asks whose serving turn died with its process.
 // The join arm (`settleJoinDelivered`) is the same rule invoked from the relay and is folded
 // in by SWEEP-A TB2, which also owns the join DRIVING, the escalation ladder and everything
 // `blocked` beyond the hold written here.
@@ -69,7 +69,7 @@ import { recordServingTurnByRowid } from '../memory/message-store.js';
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import {
   appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, claimingTurnOf, isTerminal,
-  revertAskClaimOnAbort, transition,
+  transition,
   type WorkState,
 } from './store.js';
 
@@ -143,11 +143,6 @@ export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn', 'working-note'] as cons
  * there is no answer, and the second has its own arm with its own boundary.
  */
 export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
-
-/** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
- *  reconciliation it replaced (`index.ts` 4b1): a claim stranded by a genuine crash is
- *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */
-export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
 
 /** Where in the lifecycle the question is being asked. It selects the TIE-BREAK when there
  *  is no evidence — never the evidence itself, which is identical at all three.
@@ -1426,100 +1421,4 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     }, p.agentId);
   }
   return result;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// INVOCATION (c) — BOOT RECONCILE OF CRASHED TURNS
-// ════════════════════════════════════════════════════════════════════════════════
-
-/**
- * Crash test B, the durable half: a process killed between the CLAIM and the EFFECT.
- *
- * The claim is in the database and the turn is not, so on restart the ask reads as being
- * served by a turn that will never finish. Three outcomes and no fourth:
- *   * the dead turn DELIVERED  -> the authority closes it against that delivery (the same
- *     evidence `settleAsksForDelivery` would have used had the process lived one more
- *     statement). Its decision is no longer this function's;
- *   * it recorded ZERO effectful calls -> hand the ask back, the person is served again;
- *   * it recorded some -> HOLD it, because the effect already happened and a second turn
- *     would repeat it (P6b, unchanged: the crash case is the one the counted input exists
- *     for, and the turn boundary — where the owner's 2026-08-05 ruling governs — never ran).
- *
- * Trigger and window carried verbatim: boot only, ≤30 minutes, dead turns — a turn still open, or one the boot sweep
- * already closed `terminated` (O2: 4b ends it first). Relocated from `work/store.ts` with the decision it now shares.
- *
- * ── SWEEP-A TB3: THE CRASH WINDOW, THE FOURTH OUTCOME ──
- * A turn that CLOSED an ask and then DELEGATED under it is handed back at its own boundary
- * (TB2's ordering arm). A turn killed between those two moments never reaches its boundary,
- * so the row survives the crash `done` with an unresolved join — the exact state every safety
- * net downstream is blind to, and the state bug 2 was about. Same trigger, same window, same
- * dead-turn predicate; only the scope is one shape wider, and the row leaves `done` on the
- * first look so it can never be adjudicated twice.
- */
-export function reconcileOrphanedClaims():
-{ reArmed: number; held: number; closed: number; handedBack: number } {
-  const db = getDb();
-  const since = Date.now() - ORPHAN_CLAIM_WINDOW_MINUTES * 60 * 1000;
-  const answered = db.prepare(`
-    SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number
-      FROM work w
-      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND (t.ended_at IS NULL OR t.exit_reason = 'terminated')
-     GROUP BY w.id
-  `).all(since) as Array<{ id: string; agent_id: string; turn_number: number }>;
-  let closed = 0;
-  for (const a of answered) {
-    const s = settleAsk(a.id, {
-      agentId: a.agent_id, turnNumber: a.turn_number,
-      at: 'boot', actorId: 'boot-reconciliation',
-    });
-    if (s.verdict === 'closed') closed++;
-  }
-
-  const rows = db.prepare(`
-    SELECT w.id AS id, COALESCE(t.effectful_calls, 0) AS effectful_calls
-      FROM work w
-      LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND (t.turn_number IS NULL OR t.ended_at IS NULL OR t.exit_reason = 'terminated')
-  `).all(since) as Array<{ id: string; effectful_calls: number }>;
-  let reArmed = 0; let held = 0;
-  for (const r of rows) {
-    const res = revertAskClaimOnAbort(
-      r.id, r.effectful_calls,
-      'boot reconciliation: the claiming turn never finished (process killed between claim and effect)',
-    );
-    if (res === null) held++;
-    else if (res.kind === 'applied') reArmed++;
-  }
-  // ── THE CRASH WINDOW (SWEEP-A TB3) ──
-  // `claimed_by_turn` was NULLed by the close, so the serving turn is re-identified through
-  // the receipt the close points at — the same re-identification `settleAsksAtTurnFinalize`
-  // performs for the same shape, written the same way on purpose.
-  const crashed = db.prepare(`
-    SELECT w.id AS id, w.agent_id AS agent_id, d.turn_number AS turn_number
-      FROM work w
-      JOIN deliveries d ON d.id = w.result_delivery_id AND d.agent_id = w.agent_id
-                       AND d.outcome = 'delivered'
-      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = d.turn_number
-     WHERE w.kind = 'ask' AND w.state = 'done'
-       AND (w.remaining_children > 0 OR w.compile_pending = 1)
-       AND w.updated_at >= ?
-       AND (t.ended_at IS NULL OR t.exit_reason = 'terminated')
-     GROUP BY w.id
-  `).all(since) as Array<{ id: string; agent_id: string; turn_number: number | null }>;
-  let handedBack = 0;
-  for (const c of crashed) {
-    const s = settleAsk(c.id, {
-      agentId: c.agent_id, turnNumber: c.turn_number,
-      at: 'boot', actorId: 'boot-reconciliation',
-    });
-    if (s.verdict === 'held' || s.verdict === 'reopened') handedBack++;
-  }
-
-  if (reArmed > 0 || held > 0 || closed > 0 || handedBack > 0) {
-    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held, closed, handedBack });
-  }
-  return { reArmed, held, closed, handedBack };
 }

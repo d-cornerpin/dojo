@@ -46,7 +46,8 @@ import {
 // settlement authority now (`work/ask-settlement.ts`). The requirements below are unchanged
 // and are asserted at their new address; the predicate's own arms live in
 // `ask-settlement.test.ts`.
-import { settleAsksForDelivery, reconcileOrphanedClaims } from '../ask-settlement.js';
+import { settleAsksForDelivery } from '../ask-settlement.js';
+import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { insertMessage, insertMessageIfAbsent } from '../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../../agent/v2/counterparty.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -428,15 +429,18 @@ describe('orphaned claims after a kill (crash test B)', () => {
     expect(workFor('m-1')!.state).toBe('claimed');
   });
 
-  it('an OLD orphan is left alone — a boot must never re-answer weeks of backlog', () => {
+  it('an OLD orphan is handed back too — its dead turn is the signal, its age is for the agent to judge', () => {
+    // This clause used to pin a 30-minute window: an orphan older than that stayed `claimed` for
+    // ever, which is a timer deciding an owner message's fate. The age now travels in the
+    // hand-back notice (`a-restart-mid-reply-hands-the-owners-message-back.test.ts`).
     insertMessage(ownerInbound({ id: 'm-1' }) as never);
     claimAsk(askIdForMessage('m-1'), AGENT);
     stampClaimingTurn(askIdForMessage('m-1'), 4);
     seedTurn(4);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?')
       .run(Date.now() - 3 * 60 * 60 * 1000, askIdForMessage('m-1'));
-    expect(reconcileOrphanedClaims().reArmed).toBe(0);
-    expect(workFor('m-1')!.state).toBe('claimed');
+    expect(reconcileOrphanedClaims().reArmed).toBe(1);
+    expect(workFor('m-1')!.state).toBe('open');
   });
 });
 

@@ -804,11 +804,11 @@ export function revertAskClaimOnAbort(
 //     through `settleAsksForDelivery`, called from the same statement inside `recordDelivery`.
 //     Its header's claimed-forever trade-off ("visible and inert") is REVERSED by the owner's
 //     2026-08-05 governing-priority ruling, which is recorded in the authority's own header.
-//   * `reconcileOrphanedClaims` (boot, ≤30 min, dead turns) — verdict KEEP, same trigger and
-//     the same window, moved to sit beside the decision it now shares.
-//     requirement preserved: identical trigger, identical window, three outcomes unchanged
-//     (closed-on-the-delivery / re-armed / P6b-held); only the answered arm's DECISION is now
-//     the authority's. `ORPHAN_CLAIM_WINDOW_MINUTES` moved with it, value untouched.
+//   * `reconcileOrphanedClaims` (dead turns) — verdict KEEP, moved beside the decision it
+//     shares and later into `work/orphaned-claims.ts`; its 30-minute window is gone (3.5 O2:
+//     a timer must not decide an owner message's fate — the dead turn is the signal).
+//     requirement preserved: closed-on-the-delivery / re-armed outcomes unchanged; only the
+//     answered arm's DECISION is the authority's.
 //
 // `NON_ANSWERING_DELIVERY_TOOLS` moved with the closer it belonged to and is unchanged; it is
 // still kept in step with `agent/v2/answered-edge.ts`'s `NON_ANSWERING_TOOLS`.

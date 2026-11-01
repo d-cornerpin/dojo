@@ -40,7 +40,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
-import { reconcileOrphanedClaims } from '../ask-settlement.js';
+import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
 import { insertMessage, insertMessageIfAbsent } from '../../memory/message-store.js';
@@ -56,6 +56,16 @@ const askOf = (messageId: string): { state: string; result_delivery_id: string |
 const turnOf = (n: number): { ended_at: string | null; exit_reason: string | null } =>
   db().prepare('SELECT ended_at, exit_reason FROM turns WHERE agent_id = ? AND turn_number = ?')
     .get(AGENT, n) as { ended_at: string | null; exit_reason: string | null };
+/** What the Dojo told the agent: the awareness notices on its events lane. */
+const noticesToAgent = (): string[] =>
+  (db().prepare("SELECT content FROM messages WHERE agent_id = ? AND lane = 'events' ORDER BY seq")
+    .all(AGENT) as Array<{ content: string }>).map((r) => r.content);
+/** Age the owner's message and its claim, as if the process died that long ago. */
+function ageEverything(ms: number): void {
+  const at = Date.now() - ms;
+  db().prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(at, 'm-1');
+  db().prepare('UPDATE work SET opened_at = ?, updated_at = ? WHERE id = ?').run(at, at, askIdForMessage('m-1'));
+}
 
 /** The owner writes from the dashboard; the turn that picks it up claims the ask. */
 function ownerAskClaimedBy(turn: number, effectfulCalls = 0): void {
@@ -152,5 +162,37 @@ describe('a restart in the middle of a reply', () => {
     db().prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(AGENT);
     restart();
     expect(askOf('m-1').state).toBe('claimed');
+  });
+});
+
+describe('the hand-back carries the message\'s real age — no timer decides its fate', () => {
+  it('a message received days before the restart is handed back, never dropped, with when it arrived', () => {
+    ownerAskClaimedBy(7);
+    ageEverything(3 * 24 * 60 * 60 * 1000);
+    restart();
+    expect(askOf('m-1').state, 'the owner is still owed an answer, however old').toBe('open');
+    const notice = noticesToAgent().find((c) => c.includes('handed back'));
+    expect(notice, 'the agent is told why it has this message again').toBeDefined();
+    expect(notice!).toContain('can you check the roof quote?');
+    expect(notice!).toMatch(/received .*\(\d{4}-\d\d-\d\dT/);
+    expect(notice!).toContain('3 days ago');
+  });
+
+  it('a fresh hand-back says it too, so the agent knows its last reply never landed', () => {
+    ownerAskClaimedBy(7);
+    restart();
+    const notice = noticesToAgent().find((c) => c.includes('handed back'));
+    expect(notice).toMatch(/turn 7 stopped before it answered/);
+    expect(notice).toMatch(/minute|second/);
+  });
+
+  it('an answered message gets no hand-back notice', () => {
+    ownerAskClaimedBy(7);
+    db().prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome)
+       VALUES ('d-answer', ?, 7, 'dashboard', 'dashboard', 'conv-1', 'delivered')`,
+    ).run(AGENT);
+    restart();
+    expect(noticesToAgent().some((c) => c.includes('handed back'))).toBe(false);
   });
 });

@@ -40,9 +40,10 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../store.js';
 import {
-  settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, reconcileOrphanedClaims,
+  settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize,
   MAX_ASK_RE_SERVES, RE_SERVE_MARKER,
 } from '../ask-settlement.js';
+import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { assembledContextAsks } from '../../agent/v2/counterparty.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -505,14 +506,16 @@ describe('the crash window: a `done` ask with an unresolved join whose turn neve
     expect(workFor('m-1').state).toBe('done');
   });
 
-  it('THE WINDOW BOUNDS IT — a row last touched over 30 minutes ago is history, not a crash', () => {
+  it('NO WINDOW — a row last touched hours ago with a dead delivering turn is still handed back', () => {
+    // This clause pinned a 30-minute window (`ORPHAN_CLAIM_WINDOW_MINUTES`), a timer deciding an
+    // owner message's fate. The dead turn is the signal; "adjudicated once" below is the bound.
     closedThenDelegated('m-1', 4);
     deadTurn(4);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?')
-      .run(Date.now() - 31 * 60 * 1000, askIdForMessage('m-1'));
+      .run(Date.now() - 3 * 60 * 60 * 1000, askIdForMessage('m-1'));
     const r = reconcileOrphanedClaims();
-    expect(r.handedBack).toBe(0);
-    expect(workFor('m-1').state).toBe('done');
+    expect(r.handedBack).toBe(1);
+    expect(workFor('m-1').state).toBe('blocked');
   });
 
   it('ADJUDICATED ONCE — a second boot over the same body moves nothing and writes nothing', () => {
