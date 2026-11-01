@@ -81,6 +81,11 @@ vi.mock('../../agent/effects/fs.js', () => ({
 // one clause that drives the REAL button never pulls the model-call chain.
 const wakeSpy = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../agent/runtime.js', async (orig) => ({ ...(await orig<typeof import('../../agent/runtime.js')>()), getAgentRuntime: () => ({ handleMessage: wakeSpy }) }));
+const woke = vi.hoisted(() => ({ ctx: undefined as unknown }));
+vi.mock('../../agent/turn-context.js', async (orig) => {
+  const m = await orig<typeof import('../../agent/turn-context.js')>();
+  return { ...m, turnContext: (id: string) => (woke.ctx !== undefined ? woke.ctx : m.turnContext(id)) };
+});
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -351,6 +356,53 @@ describe('§2 a stop cuts a TTS / music generation and the job lands in the stop
       .all(AGENT) as Array<{ role: string; content: string; origin_intent: string | null }>;
     expect(said.filter((m) => m.role === 'assistant' && /wasn't able to finish/i.test(m.content)), 'no engine-written failure in the agent\'s voice').toEqual([]);
     expect(said.some((m) => m.origin_intent === 'delivery_failure_owed' && /HTTP 500/.test(m.content))).toBe(true);
+  });
+});
+
+describe('WAKE LOOP IS CLOSED: a woken failure turn that fails again does not wake the agent again', () => {
+  it('first failure wakes the agent; the woken turn\'s own job fails too -> told as a rider, NO second wake, and the ask stays OWED (not falsely closed)', async () => {
+    const { openAsk, claimAsk } = await import('../../work/store.js');
+    const db = mockDb.current!;
+    db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('c1', ?, 'dashboard', 'owner')`).run(AGENT);
+    db.prepare(`INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at, seq)
+                VALUES ('m-ask', ?, 'user', 'make me a song', 'owner', 'dashboard', 'c1', ?, NULL)`).run(AGENT, Date.now() - 60_000);
+    const askId = openAsk({ agentId: AGENT, messageId: 'm-ask', conversationId: 'c1', requesterId: 'owner', openedAt: Date.now() - 60_000, title: 'song' });
+    claimAsk(askId, AGENT);
+    const state = (): string => (db.prepare('SELECT state FROM work WHERE id = ?').get(askId) as { state: string }).state;
+    const fail = async (): Promise<string> => {
+      answerWith(() => new Response('upstream exploded', { status: 500 }));
+      const jobs = await import('../generation-jobs.js');
+      const id = jobs.createGenerationJob({ kind: 'music', agentId: AGENT, modelId: MODEL, providerId: PROVIDER, prompt: 'a song' });
+      jobs.enqueueAudioOrMusicJob(id);
+      for (let i = 0; i < 600; i += 1) {
+        const st = (db.prepare('SELECT status FROM generation_jobs WHERE id = ?').get(id) as { status: string }).status;
+        if (st === 'failed') break;
+        await tick(5);
+      }
+      return id;
+    };
+    wakeSpy.mockClear();
+
+    // 1. a person-triggered turn starts a job; it fails -> the agent is woken exactly once.
+    woke.ctx = { root: { kind: 'ask', id: askId, sourceMessageId: 'm-ask', conversationId: 'c1' }, conversationId: 'c1', turnNumber: 1 };
+    await fail();
+    for (let i = 0; i < 600 && wakeSpy.mock.calls.length === 0; i += 1) await tick(5);
+    expect(wakeSpy).toHaveBeenCalledTimes(1);
+    const ev = db.prepare(`SELECT id FROM messages WHERE agent_id = ? AND origin_intent = 'delivery_failure_owed'`).get(AGENT) as { id: string };
+    expect(ev).toBeTruthy();
+    expect(state(), 'the person has not been told yet, so the ask is still owed').not.toBe('done');
+
+    // 2. the woken turn (triggered by that very notice) starts another job and it fails too.
+    woke.ctx = { root: { kind: 'ask', id: askId, sourceMessageId: 'm-ask', conversationId: 'c1' }, conversationId: 'c1', turnNumber: 2, triggerMessageId: ev.id };
+    await fail();
+    const notices = (): number => (db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND lane = 'events' AND content LIKE '%could not be finished%'`).get(AGENT) as { n: number }).n;
+    for (let i = 0; i < 600 && notices() < 2; i += 1) await tick(5);
+    expect(wakeSpy, 'no second wake: the agent is already on this').toHaveBeenCalledTimes(1);
+    const told = db.prepare(`SELECT origin_intent, content FROM messages WHERE agent_id = ? AND lane = 'events' ORDER BY rowid`).all(AGENT) as Array<{ origin_intent: string; content: string }>;
+    expect(told.filter((r) => r.origin_intent === 'delivery_failure_owed')).toHaveLength(1);
+    expect(told.filter((r) => /could not be finished/.test(r.content))).toHaveLength(2);   // both failures reached the agent
+    expect(state(), 'still owed after both failures: only the agent\'s own reply to the person closes it').not.toBe('done');
+    woke.ctx = undefined;
   });
 });
 
