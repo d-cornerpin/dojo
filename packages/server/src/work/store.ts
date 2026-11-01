@@ -872,7 +872,7 @@ export function revertAskClaimOnAbort(
 // that qualifies twice is reported once, under the first class that names it, so the
 // denominators sum to the population rather than double-counting it.
 const UNSERVABLE_OPEN_ASK_SELECT = `
-    SELECT w.id AS id, w.agent_id AS agent_id, w.state AS state,
+    SELECT w.id AS id, w.agent_id AS agent_id, w.state AS state, w.opened_at AS opened_at,
            CASE
              WHEN w.conversation_id IS NULL              THEN 'no-identity'
              WHEN m.id IS NULL                           THEN 'gone-root'
@@ -940,14 +940,14 @@ export function abandonUnservableAsks(agentId?: string): {
   abandoned: number; ids: string[]; byClass: Record<string, number>;
 } {
   const scoped = agentId != null;
-  const rows = getDb().prepare(
-    `${UNSERVABLE_OPEN_ASK_SELECT}${scoped ? ' AND w.agent_id = ?' : ''} ORDER BY w.opened_at ASC LIMIT 200`,
-  ).all(...(scoped ? [agentId] : [])) as Array<{
-    id: string; agent_id: string; state: WorkState; cls: string;
-  }>;
-  const ids: string[] = [];
-  const byClass: Record<string, number> = {};
-  for (const r of rows) {
+  // Paged (200, keyset on opened_at then id) until the WHOLE set is read: a page bounds a statement, never how many settle (R3-7).
+  const page = getDb().prepare(
+    `${UNSERVABLE_OPEN_ASK_SELECT}${scoped ? ' AND w.agent_id = ?' : ''} AND (w.opened_at, w.id) > (?, ?) ORDER BY w.opened_at ASC, w.id ASC LIMIT 200`,
+  );
+  const ids: string[] = []; const byClass: Record<string, number> = {};
+  type Row = { id: string; agent_id: string; state: WorkState; cls: string; opened_at: number };
+  for (let rows = page.all(...(scoped ? [agentId] : []), -1, '') as Row[]; rows.length > 0;
+    rows = page.all(...(scoped ? [agentId] : []), rows[rows.length - 1].opened_at, rows[rows.length - 1].id) as Row[]) for (const r of rows) {
     const why = UNSERVABLE_REASON[r.cls];
     if (why === undefined) continue;   // a class with no reason is not closed by silence
     const res = transition(r.id, {

@@ -310,3 +310,18 @@ describe('an ask nobody can serve is settled before anything is handed back (rev
     expect(facts(), 'no hand-back is recorded for a message the agent may not see').toBeNull();
   });
 });
+
+describe('the unservable sweep finishes the whole set (review R3-7)', () => {
+  it('more than one page of unservable asks are all settled in one call — no page size leaves the rest', () => {
+    for (let i = 0; i < 205; i++) {
+      insertMessage({
+        id: `m-u${i}`, agentId: AGENT, role: 'user', content: `old question ${i}`, lane: 'owner', channel: 'dashboard',
+        senderId: 'owner', authorized: true, conversationId: 'conv-1', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+      } as never);
+    }
+    db().prepare("UPDATE agents SET session_started_at = datetime('now', '+1 minute') WHERE id = ?").run(AGENT);
+    expect(abandonUnservableAsks().abandoned).toBe(205);
+    const left = db().prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'ask' AND state IN ('open','claimed')").get() as { n: number };
+    expect(left.n).toBe(0);
+  });
+});
