@@ -43,7 +43,8 @@ import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { getWaitingHumanConversations, getPendingEngineEvent } from '../../agent/v2/counterparty.js';
-import { RELEASE_STEPS, stepsInGap, runReleaseSteps, RELEASE_STEPS_VERSION_KEY } from '../../release/release-steps.js';
+import { RELEASE_STEPS, stepsInGap, runReleaseSteps, RELEASE_STEPS_VERSION_KEY, releaseStepOwed } from '../../release/release-steps.js';
+import { VERSION_UNREADABLE } from '../../gateway/routes/update.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -195,5 +196,25 @@ describe('the marker moves only when the boot pass completed (review R3-2)', () 
   it('run() never parks by itself: with no boot pass it throws and moves nothing', async () => {
     await expect(Promise.resolve().then(() => step.run())).rejects.toThrow(/did not complete/);
     expect(stateOf('m-old-owner')).toBe('claimed');
+  });
+});
+
+describe('owed by every install whose last-run version predates the first build carrying this code (review R3-4)', () => {
+  const setMarker = (v: string | null): void => {
+    db().prepare('DELETE FROM config WHERE key = ?').run(RELEASE_STEPS_VERSION_KEY);
+    if (v !== null) db().prepare("INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(RELEASE_STEPS_VERSION_KEY, v);
+  };
+  const owed = (from: string | null, to: string): boolean => { setMarker(from); return releaseStepOwed('orphaned-ask-backlog', to); };
+
+  it('3.4.1 -> 3.5.0-preflight.1 owes it (the first preflight carrying it)', () => expect(owed('3.4.1', '3.5.0-preflight.1')).toBe(true));
+  it('3.5.0-preflight.1 -> 3.5.0-preflight.2 does not (that box already ran it)', () => expect(owed('3.5.0-preflight.1', '3.5.0-preflight.2')).toBe(false));
+  it('3.5.0-preflight.2 -> 3.5.0 does not', () => expect(owed('3.5.0-preflight.2', '3.5.0')).toBe(false));
+  it('3.4.1 -> 3.5.0 owes it, and so would a 3.4.2 hotfix box (any last-run below every 3.5.0 prerelease)', () => {
+    expect(owed('3.4.1', '3.5.0')).toBe(true);
+    expect(owed('3.4.2', '3.5.0-preflight.1')).toBe(true);
+  });
+  it('an unreadable installed version fails toward PARKING, never toward serving', () => {
+    expect(owed('3.5.0', VERSION_UNREADABLE)).toBe(true);
+    expect(owed('not-a-version', '3.5.0')).toBe(true);
   });
 });
