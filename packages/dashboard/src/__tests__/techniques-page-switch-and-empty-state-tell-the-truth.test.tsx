@@ -66,14 +66,15 @@ describe('Techniques page tells the truth', () => {
     expect([...after.options].map((o) => o.value)).toContain('y');
   });
 
-  it('a search that matches nothing says so and Clear filters restores the list', async () => {
+  it('a search that matches nothing says so, with no extra button; clearing the search restores the list', async () => {
     serve();
     view();
     await screen.findAllByRole('button', { name: 'Enabled' });
     fireEvent.change(screen.getByLabelText('Search techniques'), { target: { value: 'nomatch' } });
     expect(await screen.findByText('No techniques match these filters.')).toBeTruthy();
     expect(screen.queryByText('No techniques yet')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Search techniques'), { target: { value: '' } });
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Enabled' })).toHaveLength(2));
   });
 

@@ -11,7 +11,6 @@ import { formatDate } from '../../lib/dates';
 import { HealerCard } from './CapabilityModelCards';
 import { isPickableAgentModel } from '../../lib/role-models';
 import { useGuardedLoad } from '../../lib/load-guard';
-import { LoadGate } from '../LoadGate';
 
 
 // ── Dreaming Tab ──
@@ -22,14 +21,23 @@ export const DreamingTab = () => {
   // The schedule is read before it is shown: a failed read must not appear as 03:00 / full, because Save
   // writes whatever is on screen over the real schedule.
   const load = useGuardedLoad<DreamingConfig>('dreaming', () => api.getDreamingConfig());
-  return <LoadGate load={load} what="the dreaming settings"><DreamingEditor initial={load.data!} /></LoadGate>;
+  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
+  if (load.status === 'failed') {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load the dreaming settings, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
+      </div>
+    );
+  }
+  return <DreamingEditor initial={load.data!} />;
 };
 
 const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
   const [models, setModels] = useState<Model[]>([]);
   const [dreamModelId, setDreamModelId] = useState(initial.modelId ?? '');
   const [dreamTime, setDreamTime] = useState(initial.dreamTime);
-  const [dreamMode, setDreamMode] = useState<'full' | 'light' | 'off'>(initial.dreamMode);
+  const [dreamMode, setDreamMode] = useState<'full' | 'light'>(initial.dreamMode === 'light' ? 'light' : 'full');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
@@ -125,7 +133,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
             {([
               { value: 'full', label: 'Full Dream', desc: 'Extract memories + identify technique candidates + vault maintenance' },
               { value: 'light', label: 'Light Dream', desc: 'Extract memories + vault maintenance only, no technique identification' },
-              { value: 'off', label: 'Off', desc: 'Do not run the nightly dream' },
             ] as const).map((option) => (
               <label key={option.value} className="flex items-start gap-2 cursor-pointer">
                 <input
@@ -144,10 +151,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
             ))}
           </div>
         </div>
-
-        {dreamMode === 'off' && (
-          <p className="text-[10px] text-ui/25">Dreaming is off; these apply when you turn it back on.</p>
-        )}
 
         <div className="srow pt-2 flex-wrap">
           <button

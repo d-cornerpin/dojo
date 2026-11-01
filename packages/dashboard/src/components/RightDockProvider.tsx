@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getCanvas, setCanvasStatus } from '../lib/api';
-import { persistedToDockSpec, loadFailedDock } from './right-dock-canvas';
+import { persistedToDockSpec } from './right-dock-canvas';
 import { useActiveAgent } from './ActiveAgentProvider';
 import { useToast } from '../hooks/useToast';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 // Which docks collapse-to-handle + persist (the canvas surface). Transient docks
 // (live screen-share, ad-hoc panels) just close.
@@ -97,6 +98,8 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
   // without one (a bare test mount) rather than throw.
   let toastError: ((m: string) => void) | null = null;
   try { toastError = useToast().error; } catch { /* no ToastProvider above */ }
+  let reconnectCount = 0;
+  try { reconnectCount = useWebSocket().reconnectCount; } catch { /* no socket above (a bare mount) */ }
   const toastErrorRef = useRef(toastError);
   toastErrorRef.current = toastError;
   const agentIdRef = useRef(activeAgent.agentId);
@@ -166,38 +169,46 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
   // we never leave the previous agent's canvas on screen. A transient dock (live
   // screen-share / arbitrary panel) is left alone: it isn't part of the per-agent
   // canvas model, so an agent switch must not stomp it.
-  // The "could not load" panel is a transient dock of ours: a later load (retry, agent switch) may replace it.
-  const loadErrorDockRef = useRef<DockSpec | null>(null);
+  // A failed read says nothing about THIS agent's canvas, and what is on screen belongs to the agent
+  // before: clear it, tell the owner through the toast, and open nothing by itself. A reconnect (the shared
+  // "server is back" signal) asks again.
   const loadRef = useRef<(agentId: string, isCancelled: () => boolean) => void>(() => {});
+  const failedLoadFor = useRef<string | null>(null);
   loadRef.current = (agentId, isCancelled) => {
+    const failed = () => {
+      if (isCancelled()) return;
+      failedLoadFor.current = agentId;
+      if (dockRef.current && !isCollapsibleDock(dockRef.current)) return;
+      setDock(null);
+      setCollapsed(null);
+      toastErrorRef.current?.("Could not load this agent's canvas.");
+    };
     getCanvas(agentId)
       .then((res) => {
         if (isCancelled()) return;
-        const failedPanel = loadErrorDockRef.current;
-        if (dockRef.current && dockRef.current !== failedPanel && !isCollapsibleDock(dockRef.current)) return;
-        loadErrorDockRef.current = null;
-        // A failed read says nothing about THIS agent's canvas, and what is on screen belongs to
-        // the agent before: never leave it there. Say plainly that the load failed, with a retry.
-        if (!res.ok) { showLoadFailed(agentId); return; }
+        if (dockRef.current && !isCollapsibleDock(dockRef.current)) return;
+        if (!res.ok) { failed(); return; }
+        failedLoadFor.current = null;
         const data = res.data;
         if (!data) { setDock(null); setCollapsed(null); return; }
         const spec = persistedToDockSpec(data.state);
         if (data.status === 'open') { setDock(spec); setCollapsed(null); }
         else { setCollapsed(spec); setDock(null); }
       })
-      .catch(() => { if (!isCancelled()) showLoadFailed(agentId); });
-  };
-  const showLoadFailed = (agentId: string) => {
-    const panel = loadFailedDock(() => { loadRef.current(agentId, () => agentIdRef.current !== agentId); });
-    loadErrorDockRef.current = panel;
-    setDock(panel);
-    setCollapsed(null);
+      .catch(failed);
   };
   useEffect(() => {
     let cancelled = false;
     loadRef.current(activeAgent.agentId, () => cancelled);
     return () => { cancelled = true; };
   }, [activeAgent.agentId]);
+  useEffect(() => {
+    const id = failedLoadFor.current;
+    if (!id || id !== agentIdRef.current) return;
+    loadRef.current(id, () => agentIdRef.current !== id);
+    // Only a reconnect re-asks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reconnectCount]);
 
   const setWidth = useCallback((w: number) => {
     const max = Math.max(MIN_WIDTH, window.innerWidth * 0.72);

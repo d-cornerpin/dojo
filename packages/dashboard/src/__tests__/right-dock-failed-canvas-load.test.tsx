@@ -1,9 +1,11 @@
 // The side canvas must not vanish because a status read failed, and a failed close/re-open post
 // must not leave the screen saying something the server does not.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, act, waitFor, screen, fireEvent } from '@testing-library/react';
+import { render, act, waitFor } from '@testing-library/react';
 
 let currentAgent = 'a-1';
+let reconnectCount = 0;
+vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ reconnectCount }) }));
 vi.mock('../components/ActiveAgentProvider', () => ({
   useActiveAgent: () => ({ agentId: currentAgent }),
 }));
@@ -23,13 +25,14 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 20)
 
 beforeEach(() => {
   currentAgent = 'a-1';
+  reconnectCount = 0;
   vi.mocked(api.getCanvas).mockReset();
   vi.mocked(api.setCanvasStatus).mockReset();
   toastError.mockReset();
 });
 
 describe('right dock and failed canvas calls', () => {
-  it('(a) after an agent switch a failed canvas load never keeps the previous canvas: a plain retry state, and Retry loads it', async () => {
+  it('(a) after an agent switch a failed canvas load clears the previous canvas, tells the owner by toast, opens no panel, and a reconnect loads it', async () => {
     vi.mocked(api.getCanvas).mockResolvedValue(persisted('open'));
     const view = render(tree());
     await waitFor(() => expect(dockApi.dock?.kind).toBe('canvas'));
@@ -37,13 +40,21 @@ describe('right dock and failed canvas calls', () => {
     currentAgent = 'a-2';
     view.rerender(tree());
     await flush();
-    expect(dockApi.dock?.kind, 'the previous agent canvas is still on screen').toBe('panel');
-    const dock = dockApi.dock as Extract<NonNullable<RightDockApi['dock']>, { kind: 'panel' }>;
-    render(<div>{dock.content}</div>);
-    expect(screen.getByText(/Could not load this canvas/)).not.toBeNull();
+    expect(dockApi.dock, 'the previous agent canvas, or a panel of ours, is on screen').toBeNull();
+    expect(dockApi.collapsed).toBeNull();
+    expect(toastError).toHaveBeenCalledTimes(1);
     vi.mocked(api.getCanvas).mockResolvedValue(persisted('open'));
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    reconnectCount = 1;
+    view.rerender(tree());
     await waitFor(() => expect(dockApi.dock?.kind).toBe('canvas'));
+  });
+
+  it('(a1) a failed load for an agent with no canvas leaves the dock shut', async () => {
+    vi.mocked(api.getCanvas).mockResolvedValue({ ok: false, error: 'blip' } as never);
+    render(tree());
+    await flush();
+    expect(dockApi.dock).toBeNull();
+    expect(toastError).toHaveBeenCalledTimes(1);
   });
 
   it('(a2) a successful empty answer still clears the dock', async () => {

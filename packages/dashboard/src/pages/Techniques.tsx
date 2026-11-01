@@ -265,14 +265,7 @@ export const Techniques = () => {
         </div>
       ) : techniques.length === 0 && !loadError && filtersActive ? (
         <div className="stub">
-          <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)', marginBottom: 8 }}>No techniques match these filters.</p>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => { setSearch(''); setStateFilter('All'); setTagFilter(''); }}
-          >
-            Clear filters
-          </button>
+          <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)' }}>No techniques match these filters.</p>
         </div>
       ) : techniques.length === 0 && !loadError ? (
         // ⚠ `&& !loadError` IS THE REST OF THE FIX, and my own new clause caught

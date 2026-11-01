@@ -534,15 +534,6 @@ function getDreamHealth(): DiagnosticItem[] {
   const poison = getPoisonedArchiveStats();
   if (backlog === 0 && poison.count === 0) return items; // nothing unfiled or parked, nothing to report
 
-  // Same 'dreaming_mode' config key getDreamingConfig() reads: default
-  // 'full', only 'off' disables dreaming. When dreaming is deliberately
-  // off, a backlog is expected, so the warning lanes stay silent (the
-  // info lane is preserved exactly, see below).
-  const dreamModeRow = db
-    .prepare("SELECT value FROM config WHERE key = 'dreaming_mode'")
-    .get() as { value: string } | undefined;
-  const dreamingEnabled = (dreamModeRow?.value ?? 'full') !== 'off';
-
   // Age of the OLDEST still-unprocessed archive, in hours. julianday keeps
   // both sides in UTC, so no Z-suffix parsing is needed.
   // FA-V4: exclude poisoned archives from the age signal. A parked (poisoned)
@@ -563,7 +554,7 @@ function getDreamHealth(): DiagnosticItem[] {
     : 'never (no completed cycle on record for this box)';
 
   // ── DREAM_STALE (age signal), only when dreaming is enabled ──
-  if (dreamingEnabled && oldestHours >= DREAM_STALE_HOURS) {
+  if (oldestHours >= DREAM_STALE_HOURS) {
     const days = Math.floor(oldestHours / 24);
     const ageStr = days >= 1 ? `${days} day${days > 1 ? 's' : ''}` : `${Math.round(oldestHours)} hours`;
     items.push({
@@ -588,7 +579,7 @@ function getDreamHealth(): DiagnosticItem[] {
   // Preserve the exact prior behaviour: info at >= 25 so a fresh box's
   // day-one backlog stays quiet. Additive warning tier at >= 200, only
   // when dreaming is enabled (a deliberately-off Dreamer shouldn't nag).
-  if (dreamingEnabled && backlog >= DREAM_BACKLOG_WARN_THRESHOLD) {
+  if (backlog >= DREAM_BACKLOG_WARN_THRESHOLD) {
     items.push({
       severity: 'warning',
       code: 'DREAM_BACKLOG',

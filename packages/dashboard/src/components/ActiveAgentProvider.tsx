@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import * as api from '../lib/api';
+import { useWebSocket } from '../hooks/useWebSocket';
 import { resolveAgentHue } from '../lib/agent-hue';
 import {
   agentParamOf,
@@ -38,8 +39,6 @@ import {
  * CHECKED against the server before it is trusted (deleted / ended / archived →
  * back to the primary, silently).
  */
-const RETRY_MS = 3000;
-
 interface SelectedAgent { id: string; name: string; hue?: number }
 
 export interface ActiveAgentApi {
@@ -88,9 +87,12 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
   );
   /** The id currently being checked, so a re-render cannot fire a second fetch. */
   const verifying = useRef<string | null>(null);
-  /** One-shot retry timers (verify, primary read); cleared on unmount. */
-  const retryTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
-  useEffect(() => () => { retryTimers.current.forEach(clearTimeout); }, []);
+  /* A read that failed is asked again on the real signal: the socket coming back (the shared "server is
+   * back" signal). No clock and no count: it keeps asking on each reconnect until it gets an answer. */
+  const { reconnectCount } = useWebSocket();
+  /** The selected id whose check failed and still has to be asked again. */
+  const failedVerify = useRef<string | null>(null);
+  const primaryKnownRef = useRef(false);
   /** The last agent id THIS provider put in the URL. It is what tells an outside
    *  change (deep link, back button) apart from our own echo. */
   const lastWrittenParam = useRef<string | null>(agentParamOf(window.location.search));
@@ -100,18 +102,19 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
    * word: an empty chat that can never answer is worse than the default one.
    * Every write is guarded on the id still being the selected one, so a verify
    * in flight can never clobber a pick the user made while it was running. */
-  const verify = useCallback((id: string, retried = false) => {
+  const verify = useCallback((id: string) => {
     if (verifying.current === id) return;
     verifying.current = id;
     void api.getAgent(id).then((result) => {
       if (verifying.current === id) verifying.current = null;
       /* A request that FAILED (network, server restarting) says nothing about the agent: keep the
-       * selection and the device's memory, and ask once more shortly. Only a definite "not found"
+       * selection and the device's memory, and ask again when the socket reconnects. Only a definite "not found"
        * (HTTP 404) or a good answer saying the agent is gone drops it. */
       if (!result.ok && result.status !== 404) {
-        if (!retried) retryTimers.current.push(setTimeout(() => verify(id, true), RETRY_MS));
+        failedVerify.current = id;
         return;
       }
+      if (failedVerify.current === id) failedVerify.current = null;
       const agent = result.ok ? result.data : null;
       if (!isRestorable(agent) || !agent) {
         setSelected((cur) => (cur && cur.id === id ? null : cur));
@@ -126,24 +129,30 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (primaryKnownRef.current) return;
     let cancelled = false;
-    const load = (retried: boolean) => void Promise.all([
+    void Promise.all([
       api.getSetting('primary_agent_id'),
       api.getSetting('primary_agent_name'),
     ]).then(([idResult, nameResult]) => {
       if (cancelled) return;
       if (nameResult.ok && nameResult.data.value) setPrimaryName(nameResult.data.value);
-      /* A failed read is not "there is no primary": stay unknown (nothing is written) and ask once more. */
-      if (!idResult.ok) {
-        if (!retried) retryTimers.current.push(setTimeout(() => load(true), RETRY_MS));
-        return;
-      }
+      /* A failed read is not "there is no primary": stay unknown (nothing is written) until a reconnect. */
+      if (!idResult.ok) return;
       if (idResult.data.value) setPrimaryId(idResult.data.value);
+      primaryKnownRef.current = true;
       setPrimaryKnown(true);
     });
-    load(false);
     return () => { cancelled = true; };
-  }, []);
+  }, [reconnectCount]);
+
+  /* A check of the remembered agent that failed is repeated on a reconnect, if that agent is still selected. */
+  useEffect(() => {
+    const id = failedVerify.current;
+    if (id && selected && selected.id === id) verify(id);
+    // Only a reconnect re-asks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reconnectCount]);
 
   /* The restored claim, checked once the app is up. */
   useEffect(() => {

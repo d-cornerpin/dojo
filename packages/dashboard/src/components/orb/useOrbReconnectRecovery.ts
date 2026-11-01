@@ -1,5 +1,6 @@
 import { useEffect, useRef, type MutableRefObject } from 'react';
 import { getAgents } from '../../lib/api';
+import { engineRoleOf, loadEngineRoleIds } from '../../lib/engine-role-ids';
 
 export interface EngineItem { id: string; kind: 'compaction' | 'dreamer' | 'healer'; }
 
@@ -21,11 +22,13 @@ export function useOrbReconnectRecovery(
     sync();
     void refetch();
     void (async () => {
+      await loadEngineRoleIds();
       const r = await getAgents();
       if (mine !== latestEngineRead.current || !r.ok) return;
       const working: EngineItem[] = [];
       for (const a of r.data) {
-        if ((a.id === 'dreamer' || a.id === 'healer') && a.status === 'working') working.push({ id: a.id, kind: a.id });
+        const kind = engineRoleOf(a.id);
+        if (kind && a.status === 'working') working.push({ id: a.id, kind });
       }
       engineRef.current = [...working, ...engineRef.current.filter((it) => !working.some((w) => w.id === it.id))];
       sync();

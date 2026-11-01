@@ -24,20 +24,11 @@ beforeEach(() => {
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('saving the dreaming settings', () => {
-  it('shows an off dreamer as Off', async () => {
+  it('offers no Off option, and a stored legacy off reads as Full', async () => {
     render(<DreamingTab />);
-    const off = await screen.findByRole('radio', { name: /Off/ });
-    expect((off as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole('radio', { name: /Full Dream/ }) as HTMLInputElement).checked).toBe(false);
-  });
-
-  it('keeps it off when only the time is changed', async () => {
-    render(<DreamingTab />);
-    await screen.findByRole('radio', { name: /Off/ });
-    fireEvent.change(document.querySelector('input[type="time"]')!, { target: { value: '04:30' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked().updateDreamingConfig).toHaveBeenCalled());
-    expect(mocked().updateDreamingConfig).toHaveBeenCalledWith(expect.objectContaining({ dreamTime: '04:30', dreamMode: 'off' }));
+    const full = await screen.findByRole('radio', { name: /Full Dream/ });
+    expect((full as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole('radio', { name: /Off/ })).toBeNull();
   });
 
   it('saves Full when the owner picks it', async () => {

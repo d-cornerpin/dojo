@@ -26,6 +26,11 @@ vi.mock('../hooks/useToast', async () => {
   return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
 });
 
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket, WebSocketProvider: ({ children }: { children: unknown }) => children };
+});
+
 import * as api from '../lib/api';
 import { AgentConfigPanel } from '../pages/AgentConfigPanel';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';

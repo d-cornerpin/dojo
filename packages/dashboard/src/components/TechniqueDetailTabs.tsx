@@ -25,13 +25,6 @@ async function api(path: string, options?: RequestInit): Promise<any> {
   return request(`/techniques${path}`, options);
 }
 
-const LoadFailed = ({ what, error, onRetry }: { what: string; error: string; onRetry: () => void }) => (
-  <div className="tile">
-    <p className="text-cp-coral text-sm">Could not load {what}: {error}</p>
-    <button type="button" className="btn btn--sm" onClick={onRetry}>Retry</button>
-  </div>
-);
-
 // ── Files Tab (read-only) ──
 
 export const FilesTab = ({ technique }: { technique: { id: string; files: Array<{ path: string; size: number; isDirectory: boolean }> } }) => {
@@ -123,7 +116,14 @@ export const UsageTab = ({ techniqueId }: { techniqueId: string }) => {
   }, [techniqueId, attempt]);
 
   if (loading) return <p className="text-ui/40">Loading usage...</p>;
-  if (error) return <LoadFailed what="usage" error={error} onRetry={() => setAttempt(n => n + 1)} />;
+  if (error) {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
+        Could not load usage: {error}{' '}
+        <button type="button" className="btn btn--ghost" onClick={() => setAttempt(n => n + 1)}>Retry</button>
+      </div>
+    );
+  }
   if (usage.length === 0) {
     return <div className="tile"><div className="scard__desc" style={{ marginBottom: 0 }}>No usage recorded yet.</div></div>;
   }
@@ -176,7 +176,14 @@ export const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
   }, [techniqueId, attempt]);
 
   if (loading) return <p className="text-ui/40">Loading versions...</p>;
-  if (error) return <LoadFailed what="versions" error={error} onRetry={() => setAttempt(n => n + 1)} />;
+  if (error) {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
+        Could not load versions: {error}{' '}
+        <button type="button" className="btn btn--ghost" onClick={() => setAttempt(n => n + 1)}>Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-4 min-h-[400px]">

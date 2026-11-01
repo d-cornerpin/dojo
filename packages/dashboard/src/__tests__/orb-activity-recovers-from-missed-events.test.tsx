@@ -13,14 +13,17 @@ vi.mock('../hooks/useWebSocket', async () => {
 vi.mock('../lib/api', () => ({
   listActiveGenerationJobs: vi.fn(),
   getAgents: vi.fn(),
+  getSetting: vi.fn(),
 }));
 
 import * as api from '../lib/api';
 import { useOrbActivity } from '../components/orb/useOrbActivity';
+import { resetEngineRoleIds } from '../lib/engine-role-ids';
 import { emitFrame, resetFrames, setReconnectCount } from './helpers/frames';
 
 const jobs = api.listActiveGenerationJobs as unknown as ReturnType<typeof vi.fn>;
 const agents = api.getAgents as unknown as ReturnType<typeof vi.fn>;
+const getSetting = api.getSetting as unknown as ReturnType<typeof vi.fn>;
 const Probe = () => { useOrbActivity(); return null; };
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
@@ -30,6 +33,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   jobs.mockResolvedValue({ ok: true, data: [] });
   agents.mockResolvedValue({ ok: true, data: [] });
+  resetEngineRoleIds();
+  getSetting.mockImplementation(async (key: string) => ({ ok: true, data: { key, value: key === 'dreamer_agent_id' ? 'dz-1' : key === 'healer_agent_id' ? 'hl-1' : null } }));
 });
 
 describe('the orb activity hook', () => {
@@ -67,5 +72,28 @@ describe('the orb activity hook', () => {
     rerender(<Probe />);
     await settle();
     expect(fresh.startTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('follows the Dreamer and Healer ids from settings, not fixed names', async () => {
+    render(<Probe />);
+    await settle();
+    act(() => emitFrame('agent:status', { agentId: 'dreamer', status: 'working' }));
+    expect(state.orb.startTask).not.toHaveBeenCalled();   // a literal name that is not the role id means nothing
+    act(() => emitFrame('agent:status', { agentId: 'dz-1', status: 'working' }));
+    expect(state.orb.startTask).toHaveBeenCalledWith('dreamer', expect.anything());
+    act(() => emitFrame('agent:status', { agentId: 'dz-1', status: 'idle' }));
+    act(() => emitFrame('agent:status', { agentId: 'hl-1', status: 'working' }));
+    expect(state.orb.startTask).toHaveBeenLastCalledWith('healer', expect.anything());
+  });
+
+  it('after a reconnect, rebuilds a working Healer from the settings id', async () => {
+    agents.mockResolvedValue({ ok: true, data: [{ id: 'hl-1', status: 'working' }, { id: 'healer', status: 'working' }] });
+    const { rerender } = render(<Probe />);
+    await settle();
+    setReconnectCount(1);
+    rerender(<Probe />);
+    await settle();
+    expect(state.orb.startTask).toHaveBeenCalledTimes(1);
+    expect(state.orb.startTask).toHaveBeenCalledWith('healer', expect.anything());
   });
 });

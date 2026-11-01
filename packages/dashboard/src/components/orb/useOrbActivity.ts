@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { listActiveGenerationJobs, type GenJobDto } from '../../lib/api';
+import { engineRoleOf, loadEngineRoleIds } from '../../lib/engine-role-ids';
 import { useOrbReconnectRecovery } from './useOrbReconnectRecovery';
 import { useDojoOrb } from './OrbProvider';
 import type { OrbTaskName } from './dojoOrbEngine';
@@ -64,6 +65,9 @@ export function useOrbActivity(): void {
 
   useOrbReconnectRecovery(reconnectCount, engineRef, sync, refetch);
 
+  // Which agents are the Dreamer and the Healer is a setting; a failed read is asked again on a reconnect.
+  useEffect(() => { void loadEngineRoleIds(); }, [reconnectCount]);
+
   useEffect(() => {
     void refetch();
 
@@ -85,9 +89,9 @@ export function useOrbActivity(): void {
 
     const unsubStatus = subscribe('agent:status', (event) => {
       if (event.type !== 'agent:status') return;
-      if (event.agentId !== 'dreamer' && event.agentId !== 'healer') return;
+      const kind: EngineKind | null = engineRoleOf(event.agentId);
+      if (!kind) return;
       const id = event.agentId;
-      const kind: EngineKind = id === 'dreamer' ? 'dreamer' : 'healer';
       if (event.status === 'working') {
         if (!engineRef.current.some((it) => it.id === id)) {
           engineRef.current = [...engineRef.current, { id, kind }];
