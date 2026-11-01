@@ -527,11 +527,11 @@ async function main(): Promise<void> {
   // about prose lineage that could not tell an answered turn from a turn that merely
   // narrated. It now reads the two facts that were recorded when they were known — did the
   // claiming TURN finish (`turns.ended_at`; 4b's `terminated` = died), did it already DO anything
-  // (`turns.effectful_calls`) — and it is exactly the rule P6b states:
-  //   * the turn never ended and did nothing -> hand the ask back (no orphan claims);
-  //   * the turn never ended but already acted -> HOLD it (no duplicate effects).
-  // Still scoped to a recent window (a fresh crash, never weeks of backlog) and still
-  // biased to re-serve over drop wherever nothing happened.
+  // (`turns.effectful_calls`, and the effects named from its own tool rows):
+  //   * the turn died and did nothing -> hand the ask back (no orphan claims);
+  //   * the turn died but already acted -> hand it back NAMING those effects (no duplicates).
+  // No window (3.5 O2 rulings): the dead turn is the signal, and the hand-back carries the
+  // message's real age so the agent judges it. Never held for ever, never dropped.
   // PHASE-2 T5 CLOSED THE REMAINING HALF. Deliveries are universal now, so "answered" is a
   // recorded edge rather than an inference, and it is a THIRD outcome: a kill between the send
   // and the close leaves an ask that WAS answered at `claimed`, and it is closed pointing at
@@ -539,9 +539,9 @@ async function main(): Promise<void> {
   {
     reapToolboxGroupsAtBoot();   // v3.5 P6c: a hard kill left no exit hook to end what agents backgrounded
     try {
-      const { reArmed, held, closed } = reconcileOrphanedClaims();
-      if (reArmed > 0 || held > 0 || closed > 0) {
-        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); re-armed ${reArmed} orphaned ask claim(s) for the re-drain; HELD ${held} whose turn had already performed effectful calls (P6b: a duplicate send is worse than a stranded ask; tracker untouched)`);
+      const { reArmed, closed } = reconcileOrphanedClaims();
+      if (reArmed > 0 || closed > 0) {
+        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the re-drain, each with a notice naming its age and any effects the dead turn already made (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });

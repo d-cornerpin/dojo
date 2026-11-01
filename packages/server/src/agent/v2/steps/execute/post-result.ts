@@ -13,7 +13,7 @@
 // ════════════════════════════════════════
 
 import path from 'node:path';
-import { classifyTool, parseTechniqueFreshRead } from '@dojo/shared';
+import { parseTechniqueFreshRead } from '@dojo/shared';
 import type { ToolCall } from '@dojo/shared';
 import { isTrainerAgent } from '../../../../config/platform.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
@@ -28,7 +28,7 @@ import { permissionAlternativeFinder } from '../../classifiers/permission.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { bumpEffectfulCalls } from '../../turn-record.js';
 import { createLogger } from '../../../../logger.js';
-import { FIRE_AND_FORGET_GEN_TOOLS, SEND_TO_PEOPLE_SET } from './tool-sets.js';
+import { isEffectfulTool } from './effectful-call.js';
 import type { ExecuteContext, PendingToolResult } from './index.js';
 import { homeDir } from '../../../../home.js';
 
@@ -95,10 +95,7 @@ export async function recordToolResultEffects(
 
   // Success-only, same discipline as the once-guard: a failed call performed no
   // side effect and must not block the abort re-arm.
-  const wasEffectful = toolResult.isError !== true &&
-    (classifyTool(tc.name) === 'effectful-action' ||
-     FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) ||
-     SEND_TO_PEOPLE_SET.has(tc.name));
+  const wasEffectful = toolResult.isError !== true && isEffectfulTool(tc.name);
   state = advance(state, {
     toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1,
     nonIdempotentCallsThisTurn: state.nonIdempotentCallsThisTurn + (wasEffectful ? 1 : 0),

@@ -13,10 +13,12 @@
 // gone; the message's real age travels in the hand-back instead, and the agent judges whether
 // it still matters (3.5 proof run O2 and its follow-up rulings).
 //
-// Outcomes, and no fifth:
+// Outcomes, and no fourth:
 //   * the dead turn DELIVERED -> the authority closes the ask against that delivery;
-//   * it did nothing -> the ask goes back to the agent, with a notice saying when it arrived;
-//   * it had already acted -> P6b's hold, for now (see `reArm` below);
+//   * it did not answer -> the ask goes back to the agent, with a notice saying when it arrived
+//     and naming, from the ledger, every effect the dead turn had already made so the agent
+//     does not repeat it. P6b's boot HOLD is retired here: it left the message `claimed` for
+//     ever, and the agent can act (coordinator ruling on proof-fix-f, under OR-ENGINE-LABELLED);
 //   * it closed the ask and then DELEGATED under it (SWEEP-A TB3's crash window) -> handed back
 //     through the authority so the join's nets have something to catch.
 // Each row is adjudicated once: the first look moves it out of the state the queries select.
@@ -24,9 +26,11 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { settleAsk } from './ask-settlement.js';
-import { revertAskClaimOnAbort } from './store.js';
+import { transition } from './store.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { formatTimeForAgent } from '../services/format-time.js';
+import { isEffectfulTool } from '../agent/v2/steps/execute/effectful-call.js';
+import { redactDeclaredSecretArgs } from '../credentials/secret-fields.js';
 
 const logger = createLogger('orphaned-claims');
 
@@ -46,27 +50,79 @@ interface Orphan {
   received_at: number | null; content: string | null;
 }
 
-/** The agent is told, on the turn that serves it again, why it has this message back and how old it is. */
-function tellAgentHandedBack(o: Orphan): void {
+/** One effectful call the dead turn made, read back from its own stored tool rows. */
+interface DeadTurnEffect { name: string; input: unknown; finished: boolean }
+
+/**
+ * What the dead turn already DID, from the ledger it wrote as it went: its `tool_use` rows and
+ * their `tool_result` rows on `messages`. Counted by the same rule as `turns.effectful_calls`
+ * (`isEffectfulTool`); a call whose result errored did nothing and is left out, and a call with
+ * no result at all is the one the process died inside — it may or may not have happened.
+ */
+function effectsOf(agentId: string, turnNumber: number | null): DeadTurnEffect[] {
+  if (turnNumber == null) return [];
+  const rows = getDb().prepare(
+    `SELECT role, content FROM messages
+      WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant', 'tool') AND content LIKE '[%'
+      ORDER BY seq`,
+  ).all(agentId, turnNumber) as Array<{ role: string; content: string }>;
+  const calls: Array<{ id: string; name: string; input: unknown }> = [];
+  const results = new Map<string, boolean>();          // tool_use_id -> is_error
+  for (const r of rows) {
+    let blocks: unknown;
+    try { blocks = JSON.parse(r.content); } catch { continue; }
+    if (!Array.isArray(blocks)) continue;
+    for (const b of blocks as Array<Record<string, unknown>>) {
+      if (b?.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
+        calls.push({ id: b.id, name: b.name, input: b.input });
+      } else if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+        results.set(b.tool_use_id, b.is_error === true);
+      }
+    }
+  }
+  return calls
+    .filter((c) => isEffectfulTool(c.name) && results.get(c.id) !== true)
+    .map((c) => ({ name: c.name, input: c.input, finished: results.has(c.id) }));
+}
+
+function describeEffect(e: DeadTurnEffect): string {
+  const args = e.input && typeof e.input === 'object'
+    ? redactDeclaredSecretArgs(e.name, e.input as Record<string, unknown>) : e.input;
+  const shown = JSON.stringify(args ?? {}).slice(0, 200);
+  return `${e.name} ${shown}${e.finished ? '' : ' (no result was recorded: the run stopped inside it, so it may or may not have happened — check)'}`;
+}
+
+/** The agent is told, on the turn that serves it again, why it has this message back, how old it is,
+ *  and exactly what the dead turn had already done. */
+function tellAgentHandedBack(o: Orphan, effects: DeadTurnEffect[]): void {
   const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
   const when = o.received_at != null
     ? `received ${formatTimeForAgent(o.received_at)} (${ageInWords(Date.now() - o.received_at)} ago)`
     : 'received at a time that was not recorded';
+  const done = effects.length === 0 ? ''
+    : ` Before it stopped, that turn had already done this, and it is on the record: ${effects.map((e, i) => `(${i + 1}) ${describeEffect(e)}`).join('; ')}. `
+      + 'Do not repeat any of it: finish only what is left, and tell the person what was already done.';
   postAgentNotice({
     toAgentId: o.agent_id, fromName: 'Dojo', selfIntro: false,
     brief: `Your turn ${o.turn_number ?? '(unrecorded)'} stopped before it answered (the Dojo restarted or that run `
       + `stopped responding), so the message it was answering is handed back to you: "${snippet}", ${when}. `
-      + 'Answer it now. If it is old, judge whether it still matters and say what has changed rather than acting on it blindly.',
+      + 'Answer it now. If it is old, judge whether it still matters and say what has changed rather than acting on it blindly.'
+      + done,
   });
 }
 
-/** Hand one orphan back to its agent. `null` = held (P6b), otherwise whether it moved. */
-function reArm(o: Orphan, by: string): boolean | null {
-  const res = revertAskClaimOnAbort(o.id, o.effectful_calls,
-    `${by}: the claiming turn died with its process before it answered`);
-  if (res === null) return null;
+/** Hand one orphan back to its agent. Never held: an agent can act, so it finishes the job (no duplicate effects —
+ *  the notice names them). Returns whether the row moved. */
+function reArm(o: Orphan, by: string): boolean {
+  const effects = effectsOf(o.agent_id, o.turn_number);
+  const acted = effects.length > 0 || o.effectful_calls > 0;
+  const res = transition(o.id, {
+    to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed',
+    reason: `${by}: the claiming turn died with its process before it answered`
+      + (acted ? ` (it had already made ${Math.max(effects.length, o.effectful_calls)} effectful call(s); the hand-back names them)` : ''),
+  });
   if (res.kind !== 'applied') return false;
-  tellAgentHandedBack(o);
+  tellAgentHandedBack(o, effects);
   return true;
 }
 
@@ -76,7 +132,7 @@ function reArm(o: Orphan, by: string): boolean | null {
  * nothing, because at boot every turn of the previous process is dead.
  */
 export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
-{ reArmed: number; held: number; closed: number; handedBack: number } {
+{ reArmed: number; closed: number; handedBack: number } {
   const db = getDb();
   const agent = scope.agentId ?? null;
   const answered = db.prepare(`
@@ -101,12 +157,8 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
      WHERE w.kind = 'ask' AND w.state = 'claimed' AND (? IS NULL OR w.agent_id = ?)
        AND (t.turn_number IS NULL OR ${DEAD_TURN})
   `).all(agent, agent) as Orphan[];
-  let reArmed = 0; let held = 0;
-  for (const r of rows) {
-    const moved = reArm(r, agent === null ? 'boot reconciliation' : 'stuck-run reconciliation');
-    if (moved === null) held++;
-    else if (moved) reArmed++;
-  }
+  let reArmed = 0;
+  for (const r of rows) if (reArm(r, agent === null ? 'boot reconciliation' : 'stuck-run reconciliation')) reArmed++;
   // ── THE CRASH WINDOW (SWEEP-A TB3) ──
   // `claimed_by_turn` was NULLed by the close, so the serving turn is re-identified through
   // the receipt the close points at — the same re-identification `settleAsksAtTurnFinalize`
@@ -128,8 +180,8 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
     if (s.verdict === 'held' || s.verdict === 'reopened') handedBack++;
   }
 
-  if (reArmed > 0 || held > 0 || closed > 0 || handedBack > 0) {
-    logger.warn('reconciliation of orphaned ask claims', { agentId: agent, reArmed, held, closed, handedBack });
+  if (reArmed > 0 || closed > 0 || handedBack > 0) {
+    logger.warn('reconciliation of orphaned ask claims', { agentId: agent, reArmed, closed, handedBack });
   }
-  return { reArmed, held, closed, handedBack };
+  return { reArmed, closed, handedBack };
 }

@@ -367,15 +367,18 @@ describe('orphaned claims after a kill (crash test B)', () => {
     expect(workFor('m-1')!.state).toBe('open');
   });
 
-  it('a claim whose turn ALREADY DID SOMETHING is held — no duplicate effects', () => {
+  it('a claim whose turn ALREADY DID SOMETHING is handed back with what it did — never held for ever', () => {
+    // Coordinator ruling (proof-fix-f, 2026-11-01): P6b's boot HOLD left the owner's message
+    // `claimed` for ever. The agent can act, so it does: the ask goes back with a notice naming
+    // the dead turn's effects from the ledger, so they are not repeated
+    // (`a-restart-mid-reply-hands-the-owners-message-back.test.ts`).
     insertMessage(ownerInbound({ id: 'm-1' }) as never);
     claimAsk(askIdForMessage('m-1'), AGENT);
     stampClaimingTurn(askIdForMessage('m-1'), 4);
     seedTurn(4, { effectful_calls: 1 });           // died AFTER a real side effect
     const r = reconcileOrphanedClaims();
-    expect(r.reArmed).toBe(0);
-    expect(r.held).toBe(1);
-    expect(workFor('m-1')!.state).toBe('claimed');
+    expect(r.reArmed).toBe(1);
+    expect(workFor('m-1')!.state).toBe('open');
   });
 
   it('PHASE-2 T5: a claim whose turn DELIVERED and was then killed is CLOSED, not re-served', () => {
@@ -417,7 +420,7 @@ describe('orphaned claims after a kill (crash test B)', () => {
       ).run(c.id, AGENT, c.turn, c.tool, c.conv, c.outcome);
     }
     expect(reconcileOrphanedClaims().closed).toBe(0);
-    for (const c of cases) expect(workFor(c.msg)!.state, `${c.id} must not close the ask`).toBe('claimed');
+    for (const c of cases) expect(workFor(c.msg)!.state, `${c.id} must not close the ask`).toBe('open');
   });
 
   it('a claim whose turn ENDED normally is left alone (it was answered, not orphaned)', () => {

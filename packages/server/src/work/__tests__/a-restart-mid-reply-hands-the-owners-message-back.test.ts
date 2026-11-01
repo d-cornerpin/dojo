@@ -147,11 +147,32 @@ describe('a restart in the middle of a reply', () => {
     expect(getWaitingHumanConversations(AGENT).length, 'nothing is re-served').toBe(0);
   });
 
-  it('holds, and does not repeat, a turn that had already acted without answering (P6b)', () => {
+  it('hands back a turn that had already acted, naming each effect from the ledger so it is not repeated', () => {
     ownerAskClaimedBy(7, 1);
+    // The dead turn's own record: one email that went out, one lookup, one send that errored,
+    // and one call the process died inside (no result row at all).
+    const call = (id: string, name: string, input: Record<string, unknown>): void => {
+      insertMessageIfAbsent({ id: `u-${id}`, agentId: AGENT, role: 'assistant', turnNumber: 7,
+        content: JSON.stringify([{ type: 'tool_use', id, name, input }]) } as never);
+    };
+    const result = (id: string, isError: boolean): void => {
+      insertMessageIfAbsent({ id: `r-${id}`, agentId: AGENT, role: 'tool', turnNumber: 7,
+        content: JSON.stringify([{ type: 'tool_result', tool_use_id: id, content: isError ? 'failed' : 'ok', is_error: isError }]) } as never);
+    };
+    call('c1', 'gmail_send', { to: 'roofer@example.com', subject: 'Quote question' }); result('c1', false);
+    call('c2', 'gmail_search', { query: 'roof' }); result('c2', false);
+    call('c3', 'outlook_send', { to: 'other@example.com', subject: 'Second try' }); result('c3', true);
+    call('c4', 'calendar_create', { title: 'Roofer visit' });
     restart();
-    expect(askOf('m-1').state).toBe('claimed');
-    expect(getWaitingHumanConversations(AGENT).length).toBe(0);
+    expect(askOf('m-1').state, 'never claimed for ever: the agent finishes the job').toBe('open');
+    expect(getWaitingHumanConversations(AGENT).length).toBe(1);
+    const notice = noticesToAgent().find((c) => c.includes('handed back'))!;
+    expect(notice).toContain('gmail_send');
+    expect(notice).toContain('roofer@example.com');
+    expect(notice).toMatch(/calendar_create.*may or may not have/);
+    expect(notice, 'a lookup is not an effect').not.toContain('gmail_search');
+    expect(notice, 'a send that errored did nothing').not.toContain('outlook_send');
+    expect(notice).toMatch(/do not repeat/i);
   });
 
   it('leaves alone a claim whose turn ended on its own (the turn finalize owns that one)', () => {
