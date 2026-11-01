@@ -57,8 +57,9 @@ function resolve(db: Database.Database, a: TimelineArgs, names: Map<string, stri
     const unrecorded = found.filter((f) => !f.recorded && f.w.kind === 'task');
     const ids = unrecorded.map((f) => short(f.w.id)).join(', ');
     const one = unrecorded.length === 1;
-    const note = unrecorded.length === 0 ? undefined
-      : `Note: ${ids} ${one ? 'has' : 'have'} no per-turn record (${one ? 'it was' : 'they were'} not worked yet, or worked before turns were recorded against tasks), so the assignee's other calls in the turns that worked ${one ? 'it are' : 'them are'} not shown; only records that name ${one ? 'it' : 'them'}, and turns its continue/stall records name, are.`;
+    const gap = ' A turn that worked a task only through exec, files or mail, without serving it or touching it in the tracker, is not recorded against it.';
+    const note = unrecorded.length === 0 ? gap.trim()
+      : `Note: ${ids} ${one ? 'has' : 'have'} no per-turn record (${one ? 'it was' : 'they were'} not worked yet, or worked before turns were recorded against tasks), so the assignee's other calls in the turns that worked ${one ? 'it are' : 'them are'} not shown; only records that name ${one ? 'it' : 'them'}, and turns its continue/stall records name, are.${gap}`;
     const kind = a.project_id ? 'project' : 'task';
     const owners = [...new Set(tree.map((w) => w.owner))];
     return { scope: { ids: tree.map((w) => w.id), named: root, turnsOf }, title: `${kind} ${short(root)} (${owners.map((o) => agentLabel(names, o)).join(', ')})`, agents: owners, narrow: true, note };

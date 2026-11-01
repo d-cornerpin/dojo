@@ -21,9 +21,8 @@
 // set, else `agent_id` (`COALESCE`, as the timeline and the friction census join), so after a hand-off
 // the turn numbers are the new assignee's own.
 //
-// A third writer is the effort-charge site (`agent/v2/steps/execute/tracker-counting.ts`): the task a turn's
-// calls are charged to is a task that turn worked, whatever tools it used (an owner chat turn saying "keep
-// going", working the task through exec or files, neither serves it nor touches it in the tracker).
+// KNOWN GAP, stated in the timeline's note: a turn that works the task only through exec, files or
+// mail, while neither serving it nor touching it in the tracker, is not recorded.
 //
 // Nothing here touches the task's last-moved time: the event is not movement (`taskMovedAtSql`).
 // ════════════════════════════════════════

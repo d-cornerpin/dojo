@@ -60,7 +60,7 @@ describe('an assignee works a task across two turns', () => {
     expect(out).toContain('tool gmail_label');
     expect(out).not.toContain('something else entirely');
     expect(out).not.toMatch(/no per-turn record/);
-    expect(out).not.toMatch(/only through exec/);
+    expect(out).toMatch(/only through exec, files or mail/);   // the standing gap is always stated
     const claims = db.prepare("SELECT json_extract(payload, '$.turn_number') AS t FROM work_events WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id").all(TASK);
     expect(claims).toEqual([{ t: 7 }, { t: 8 }]);
   });
