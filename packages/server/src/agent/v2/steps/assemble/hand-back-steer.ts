@@ -25,7 +25,7 @@ export function withHandBackFacts(state: AgentTurnState, turnCtx: TurnContext, a
 
 /** Review R3-3: the inherited-backlog notice's list, only on the engine turn that notice row drives (its stored row holds ids only). */
 function inheritedListDrivingThisTurn(turnCtx: TurnContext): string | null {
-  const id = turnCtx.triggerMessageId;
+  const { triggerMessageId: id } = turnCtx;   // the claim sites own the WRITE of this field (preflight/turn-classification.ts)
   if (!id) return null;
   const row = getDb().prepare('SELECT origin_intent AS intent, content FROM messages WHERE id = ?').get(id) as { intent: string | null; content: string } | undefined;
   return row?.intent === INHERITED_NOTICE_INTENT ? inheritedOwedListFor(row.content) : null;
