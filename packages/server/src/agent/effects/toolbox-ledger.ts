@@ -48,11 +48,23 @@ export function recordToolboxGroups(dir: string, groups: GroupEntry[], bootMs: n
   } catch { /* the ledger is a safety net; losing it must not break a tool call */ }
 }
 
-/** True when a member the toolbox noted in this group is still alive in it. */
-function noteSurvives(pgid: number, noted: string[] | undefined, membersOf: (pgid: number) => string[]): boolean {
+/**
+ * The one test for "this group is provably one the toolbox started", used by the boot reap and by the
+ * graceful-exit hook. Leader alive: it must be the very process recorded (same start time AND command),
+ * else the id was reused. Leader gone: a one-shot script exits at once and leaves what it backgrounded
+ * running in the group, so the toolbox noted the members it saw (pid + start time) when the leader
+ * exited; the group is ours only while one of THOSE is still in it. A reused id never matches.
+ */
+export function groupIsOurs(
+  pgid: number, identity: string, noted: string[] | undefined,
+  identityOf: (pid: number) => string | null = identityOfPid,
+  membersOf: (pgid: number) => string[] = membersOfGroup,
+): boolean {
+  const now = identityOf(pgid);
+  if (now !== null) return now === identity;
   if (!noted || noted.length === 0) return false;
-  const now = new Set(membersOf(pgid));
-  return noted.some((m) => now.has(m));
+  const present = new Set(membersOf(pgid));
+  return noted.some((m) => present.has(m));
 }
 
 /** At boot: end every still-living group the ledger names, then clear it. */
@@ -77,13 +89,7 @@ export function reapLeftoverToolboxGroups(
   } catch { /* no ledger, or an unreadable one: nothing to end */ }
   try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
   for (const { pgid: g, identity, members } of groups) {
-    // Signal only a group that is provably the recorded one. Leader alive: it must be the very process
-    // recorded (same start time AND command), else the id was reused and is dropped. Leader gone: a
-    // one-shot script exits at once and leaves what it backgrounded running in the group, so the toolbox
-    // noted the members it saw (pid + start time) when the leader exited; the group is ours only while
-    // one of THOSE is still in it. A reused id, even one whose own leader has since exited, never matches.
-    const now = identityOf(g);
-    if (now !== null ? now !== identity : !noteSurvives(g, members, membersOf)) continue;
+    if (!groupIsOurs(g, identity, members, identityOf, membersOf)) continue;
     try { send(-g, 0); } catch { continue; }   // already gone
     try { send(-g, 'SIGTERM'); ended.push(g); } catch { continue; }
     setTimeout(() => { try { send(-g, 'SIGKILL'); } catch { /* gone */ } }, opts.graceMs ?? 3_000).unref();

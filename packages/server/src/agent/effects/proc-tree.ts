@@ -9,7 +9,7 @@
 
 import { untilUserStop } from '../stop-waiters.js';
 import { dojoDir } from '../../home.js';
-import { recordToolboxGroups, type GroupEntry } from './toolbox-ledger.js';
+import { recordToolboxGroups, groupIsOurs, type GroupEntry } from './toolbox-ledger.js';
 import { identityOfPid, membersOfGroupAsync } from '../../process-identity.js';
 
 // ════════════════════════════════════════
@@ -147,8 +147,11 @@ function noteSurvivors(pgid: number): void {
   });
 }
 
-function endToolboxGroups(): void {
+export function endToolboxGroups(): void {
   for (const g of toolboxGroups) {
+    // A quiet stretch can outlast the id: signal only a group still provably the one this door started.
+    const identity = groupIdentity.get(g);
+    if (identity === undefined || !groupIsOurs(g, identity, groupMembers.get(g))) continue;
     try { process.kill(-g, 'SIGTERM'); } catch { /* already gone */ }
   }
   toolboxGroups.clear();
