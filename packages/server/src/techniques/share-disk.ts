@@ -154,8 +154,19 @@ export function extractPackageEntries(zip: AdmZip, dirPath: string, journal: Ext
     if (!entryPath || entryPath === 'manifest.json') continue;
     const dest = path.resolve(dirPath, entryPath);   // the Mac belongs to the agent: extract where the package says
     fs.mkdirSync(path.dirname(dest), { recursive: true });
+    // "Already existed" is decided by lstat: a link (even a broken one), a folder or an unreadable file EXISTED,
+    // so it is never treated as new and never deleted. Only a missing path or a readable plain file is written.
     let prior: Buffer | null = null;
-    try { prior = fs.readFileSync(dest); } catch { /* not there yet */ }
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(dest); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Cannot check "${dest}" before writing it; nothing was imported.`);
+    }
+    if (st !== null) {
+      if (!st.isFile()) throw new Error(`"${dest}" already exists and is not a plain file; nothing was imported.`);
+      try { prior = fs.readFileSync(dest); } catch {
+        throw new Error(`"${dest}" already exists and cannot be read, so it cannot be safely replaced; nothing was imported.`);
+      }
+    }
     journal.push({ dest, prior });   // recorded before the write, so a failure mid-write is covered too
     fs.writeFileSync(dest, entry.getData());
     extractedCount++;

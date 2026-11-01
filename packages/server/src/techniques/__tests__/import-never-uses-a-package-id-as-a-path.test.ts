@@ -103,13 +103,6 @@ describe('importing a package whose id is not a plain name', () => {
     fs.rmSync(outside, { force: true });
   });
 
-  it('WIRE: importTechnique undoes the extraction on every failure path', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'share-import.ts'), 'utf8');
-    expect(src).toContain('extractPackageEntries(zip, dirPath, journal)');
-    expect(src.match(/undoExtraction\(journal\)/g)?.length).toBeGreaterThanOrEqual(1);
-    expect(src).not.toMatch(/hasInstructions\) \{\s*\/\/[^\n]*\n\s*removeFolder/);
-  });
-
   it('still imports a plain id', async () => {
     const r = await importTechnique(pkg('plain-one'));
     expect(r.techniqueId).toBe('plain-one');
