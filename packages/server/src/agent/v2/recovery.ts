@@ -262,11 +262,11 @@ export async function recoverFromError(
       // T82d (R3) CASE 1 — the FIRST live patience death on a turn a human is actually
       // waiting on. The compact-and-retry above just engaged (this is exactly the branch
       // T82b's own spent/adjacency marker gates to ONCE per doomed-request chain, so this
-      // status line is deduped for free — no new state, no new marker). Exactly one short,
-      // plain-voice line; the ANSWER is still the next thing the person sees once the
-      // retried (smaller) dial completes (case 2 — nothing else posts here on success).
+      // status line is deduped for free). One short "Dojo:" line, and the agent is told it was
+      // posted; the ANSWER is still the next thing the person sees once the retried dial completes.
       if (turnFacing.isUserFacingTurn) {
         persistAndBroadcastSystemNote(agentId, declaredPatienceStatusLine());
+        tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: declaredPatienceStatusLine(), why: 'because your model hit its size limit' });
       }
       return;
     }

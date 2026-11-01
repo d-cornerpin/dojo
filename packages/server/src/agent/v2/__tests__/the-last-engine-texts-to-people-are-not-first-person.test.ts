@@ -43,5 +43,6 @@ describe('engine texts to people carry no first person', () => {
     const src = fs.readFileSync(path.join(SRC, 'agent/v2/recovery.ts'), 'utf8');
     expect(src).toMatch(/persistAndBroadcastSystemNote\(agentId, honestFail\);\s*\n\s*tellAgentWhatDojoSent\(/);
     expect(src).not.toContain("I hit my model's size limit");
+    expect(src).toMatch(/persistAndBroadcastSystemNote\(agentId, declaredPatienceStatusLine\(\)\);\s*\n\s*tellAgentWhatDojoSent\(/);
   });
 });
