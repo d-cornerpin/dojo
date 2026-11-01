@@ -93,7 +93,7 @@ const logger = createLogger('tracker-tools');
 // Re-exported from the shared helpers so the trackerCreateTask /
 // trackerUpdateStatus call sites keep working with their existing usage.
 // The canonical implementation lives in agent/tool-helpers.ts.
-import { resolveAgentRef as resolveAgentName } from '../agent/tool-helpers.js';
+import { resolveAgentRef as resolveAgentName, compactCountNote } from '../agent/tool-helpers.js';
 
 // ── Notify primary agent of task/project completion ──
 
@@ -3174,7 +3174,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       if (verbose) {
         parts.push('Tip: work_update(action="get", id="<task_id>") for notes, depends_on, schedule, and full description.');
       } else {
-        parts.push(`${totalShown} task/project row${totalShown === 1 ? '' : 's'} shown (compact). For full detail on one: work_update(action="get", id=<task_or_project_id>). For descriptions on every result: re-call work_update(action="list") with verbose=true.`);
+        parts.push(`${compactCountNote(totalShown, 'task/project row')}. For full detail on one: work_update(action="get", id=<task_or_project_id>). For descriptions on every result: re-call work_update(action="list") with verbose=true.`);
       }
     }
 
@@ -3423,7 +3423,7 @@ export function trackerActivity(
 
     if (rows.length > 0) {
       parts.push('');
-      parts.push(`Rows that moved (${rows.length} of ${touched} shown, most recent movement first):`);
+      parts.push(`Rows that moved (${rows.length} of ${touched} listed, most recent movement first):`);
       for (const r of rows) {
         const title = r.title && r.title.trim() ? r.title.trim() : '(no title)';
         const opened = r.opened_at >= since ? 'opened' : 'opened before this window';

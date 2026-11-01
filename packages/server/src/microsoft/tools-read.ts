@@ -548,6 +548,7 @@ for (const baseDef of microsoftReadBaseTools) {
 // statically, so registration happens at app startup.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
 import { outsideSpan } from '../tools/external-content.js';
+import { compactCountNote } from '../agent/tool-helpers.js';
 for (const def of microsoftReadToolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
@@ -773,7 +774,7 @@ export async function executeMicrosoftReadTool(
 
       const header = `Found ${fetched.items.length} email(s)${inAcct}:\n\n${emails.map((item) => outsideSpan(item)).join(verbose ? '\n\n---\n\n' : '\n')}`;
       if (verbose) return header + others;
-      return `${header}\n\n${emails.length} compact result${emails.length === 1 ? '' : 's'} shown. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.${others}`;
+      return `${header}\n\n${compactCountNote(emails.length)}. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.${others}`;
     }
 
     case 'outlook_read': {
@@ -992,7 +993,7 @@ export async function executeMicrosoftReadTool(
 
       const header = `Found ${data.value.length} item(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${files.map((item) => outsideSpan(item)).join(verbose ? '\n\n' : '\n')}`;
       if (verbose) return header;
-      return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: onedrive_read(file_id=<id>). For full mime types + URLs on every result: re-call onedrive_list with verbose=true.`;
+      return `${header}\n\n${compactCountNote(files.length)}. For file content: onedrive_read(file_id=<id>). For full mime types + URLs on every result: re-call onedrive_list with verbose=true.`;
     }
 
     case 'onedrive_read': {

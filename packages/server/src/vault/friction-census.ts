@@ -9,6 +9,7 @@
 //   poke_escalated          the poke ladder reached rung 3 (escalate to the main agent) or beyond
 //   identical_call_refused  a turn that claimed it ended on the identical-call brake
 //   destructive_hold        a turn that claimed it had a destructive call held for approval
+//   task_failed             the task itself ended failed (its helper errored out, or the reaper gave up on it)
 // The last two are tied to the task by the `claim_turn` event that recorded which turn took it.
 //
 // OWED, with the measured-work lane that records them (they do not exist on this base): a
@@ -44,6 +45,12 @@ const SOURCES: ReadonlyArray<{ kind: string; sql: string }> = [
     sql: `SELECT e.work_id AS work_id, e.id AS event_id FROM work_events e
            WHERE e.kind = 'poke' AND e.created_at >= @since
              AND CAST(json_extract(e.payload, '$.rung') AS INTEGER) >= ${POKE_ESCALATED_FROM_RUNG}`,
+  },
+  {
+    kind: 'task_failed',
+    sql: `SELECT e.work_id AS work_id, e.id AS event_id FROM work_events e
+           WHERE e.kind = 'transition' AND e.created_at >= @since
+             AND json_extract(e.payload, '$.to') = 'failed'`,
   },
   {
     kind: 'identical_call_refused',
