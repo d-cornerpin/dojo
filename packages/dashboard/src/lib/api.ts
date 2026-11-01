@@ -48,7 +48,7 @@ import type {
 // re-exported from here, so every caller keeps importing from `lib/api` and
 // `vi.mock('../lib/api')` stays the one seam that mocks the network.
 import { setToken, request, requestRaw, requestForm } from './door';
-import { takeVoiceInstallFailure, clearVoiceInstallFailure } from './voice-install-failures';
+import { takeVoiceInstallFailure, clearVoiceInstallFailure, VOICE_INSTALL_RESTARTED } from './voice-install-failures';
 
 export { request, requestRaw, requestForm, fetchUrl, getToken, clearToken } from './door';
 export type { RawResult } from './door';
@@ -925,23 +925,24 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine'
   // The server returns 202 immediately and streams progress over the
   // `voice:model_download` WS broadcast (whisper-large is ~1.5GB; holding the
   // HTTP response open for ~2 minutes hits Cloudflare's free-tier 524 cap).
-  // We poll the models endpoint here so the caller's `await installVoiceModel`
-  // still resolves when the file is actually on disk.
+  // We poll the models endpoint so `await installVoiceModel` resolves on disk.
   const kicked = await request<{ kind: string; id: string }>(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
   if (!kicked.ok) return kicked;
-  clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing or a reported failure
+  clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing, a reported failure, or a restart
+  let sawDown = false;
   for (;;) {
     await new Promise(r => setTimeout(r, 1500));
     const failed = takeVoiceInstallFailure(kind, id);
     if (failed !== undefined) return { ok: false, error: failed };
     const models = await request<VoiceModelsResponse>('/voice/models');
-    if (!models.ok) continue;  // transient errors during polling are non-fatal
+    if (!models.ok) { sawDown = true; continue; }  // the server is away: keep waiting
     const installed = kind === 'whisper'
       ? models.data.whisper.find(m => m.id === id)?.installed === true
       : kind === 'moonshine'
         ? models.data.moonshine?.installed === true
         : models.data.kokoro?.installed === true;
     if (installed) return { ok: true, data: { kind, id } };
+    if (sawDown) return { ok: false, error: VOICE_INSTALL_RESTARTED };  // back up, no model: the download died with it
   }
 };
 

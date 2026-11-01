@@ -43,4 +43,23 @@ describe('installVoiceModel has no clock', () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(await p).toEqual({ ok: false, error: 'disk full' });
   });
+
+  it('ends in plain words when the server went away and came back without the model', async () => {
+    vi.useFakeTimers();
+    let up = true;
+    vi.mocked(request).mockImplementation(async (_p: string, options?: RequestInit) => {
+      if (options?.method === 'POST') return { ok: true, data: { kind: 'kokoro', id: 'k' } };
+      if (!up) return { ok: false, error: 'down' };
+      return { ok: true, data: { whisper: [], kokoro: { installed: false }, moonshine: { installed: false } } };
+    });
+    const p = api.installVoiceModel('kokoro', 'k');
+    await vi.advanceTimersByTimeAsync(3000);   // up, still downloading: keeps waiting
+    up = false;
+    await vi.advanceTimersByTimeAsync(3000);   // down: keeps waiting
+    up = true;
+    await vi.advanceTimersByTimeAsync(2000);   // back, no model: the download died with the restart
+    const r = await p;
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toMatch(/restarted during the download/);
+  });
 });
