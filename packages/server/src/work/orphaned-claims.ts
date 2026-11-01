@@ -185,3 +185,21 @@ export function reconcileOrphanedClaims(scope: { agentId?: string } = {}):
   }
   return { reArmed, closed, handedBack };
 }
+
+/**
+ * The stuck-run reaper's call (`agent/runtime.ts`), WHILE THE SERVER STAYS UP: each agent it just
+ * judged dead gets its orphaned asks back through the same reconcile the boot runs, and is woken
+ * to serve them. At boot the reaper leaves this to index.ts step 4b1, after the staleness sweep.
+ */
+export function handBackOrphansOf(agentIds: string[], wake: (agentId: string) => Promise<unknown>): void {
+  for (const id of agentIds) {
+    try {
+      if (reconcileOrphanedClaims({ agentId: id }).reArmed === 0) continue;
+      wake(id).catch((err) => {
+        logger.error('orphaned-claim wake failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);
+      });
+    } catch (err) {
+      logger.warn('orphaned-claim hand-back failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);
+    }
+  }
+}
