@@ -19,10 +19,10 @@ export const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 export const A2A_SEND_CAP_PER_RECIPIENT = 5;
 // Fire-and-forget media generators. Each posts a "started" ack and delivers
 // the finished asset later as a synthetic message (from a background worker
-// or poller), so the agent must NOT get a second turn, the loop exits
-// immediately after one of these is called. This is the engine-enforced
-// version of the tool result's "end your turn now" instruction, so a
-// disobedient model can't retry-storm.
+// or poller), so the agent must NOT get a second turn: the loop ends right
+// after one of these is called, except for the ONE text-only words step that
+// `media-words-step.ts` grants when no words rode beside the call. A
+// disobedient model can't retry-storm: a second generator is refused.
 //
 // HAND-PICKED, NOT DERIVABLE: this is the CLOSED set of async media-capability
 // generators wired to the background-delivery pipeline (image/tts/music/video).

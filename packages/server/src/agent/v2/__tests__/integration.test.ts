@@ -760,6 +760,36 @@ describe('runV2Turn integration', () => {
     expect(callModelSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('a generator called with no words beside it gets ONE more model step, and the words land (proof-fix K)', async () => {
+    const imageCall: ToolCall = { id: 'tc1', name: 'image_create', arguments: { prompt: 'a kayak' } };
+    callModelSpy
+      .mockResolvedValueOnce({ content: '', toolCalls: [imageCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
+      .mockResolvedValueOnce({ content: "Here's the kayak picture you asked for, it is on the way now.", toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'image_create', content: 'image queued', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+    const rows = mockDb.current!.prepare("SELECT content FROM messages WHERE role = 'assistant'").all() as Array<{ content: string }>;
+    expect(rows.some((r) => r.content.includes("Here's the kayak picture you asked for, it is on the way now."))).toBe(true);
+  });
+
+  it('the extra step cannot start a second generator and the turn ends after it (proof-fix K)', async () => {
+    const imageCall: ToolCall = { id: 'tc1', name: 'image_create', arguments: { prompt: 'a kayak' } };
+    const again: ToolCall = { id: 'tc2', name: 'image_create', arguments: { prompt: 'a kayak, again' } };
+    callModelSpy
+      .mockResolvedValueOnce({ content: '', toolCalls: [imageCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
+      .mockResolvedValueOnce({ content: 'On its way.', toolCalls: [again], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
+      .mockResolvedValue({ content: 'should never be asked for', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'image_create', content: 'image queued', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('PRESERVATION #11 cont: stop signal mid-loop exits cleanly', async () => {
     let callCount = 0;
     callModelSpy.mockImplementation(async () => {

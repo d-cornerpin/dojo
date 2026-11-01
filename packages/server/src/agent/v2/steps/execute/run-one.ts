@@ -34,6 +34,7 @@ import { checkIdenticalCallRefusal, identicalCallSignature, isSignatureTerminal,
 import { bumpLoopSignature, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
 import { FIRE_AND_FORGET_GEN_TOOLS, SEND_TO_PEOPLE_SET } from './tool-sets.js';
+import { wordsStepRefusal } from './media-words-step.js';
 import { appendBookkeepingNudgeIfRelevant, appendVisibilityHintIfRelevant, userRequestedCloseWantsReply } from './result-notes.js';
 import { runRefusalGates } from './refusal-gates.js';
 import { recordDispatchAndHold } from './dispatch-bookkeeping.js';
@@ -163,7 +164,7 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   const brakeSig = identicalCallSignature(tc.name, tc.arguments);
   const refusal = turnCtx.toolPhaseEndedBySpinBrake
     ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
-    : checkIdenticalCallRefusal(identicalCallState, brakeSig);
+    : wordsStepRefusal(turnCtx, tc.name) ?? checkIdenticalCallRefusal(identicalCallState, brakeSig);
   try {
     if (refusal) {
       // PHASE-4 T3: `cancelled` gets its producer on the TERMINAL arm only (the
@@ -278,10 +279,9 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   // on the guidance (report the block / use work_update(action="status")) rather
   // than end the turn silently. Mirrors the fire-and-forget check below.
   if (tc.name === 'complete_task' && !toolResult.isError) sc.calledCompleteTask = true;
-  // Only a SUCCESSFUL generator call is terminal (the job started and
-  // the asset arrives later via async delivery). An error result, 
-  // e.g. the param validator kicking the call back for a missing or
-  // out-of-range value, must NOT exit the loop, or the agent never
+  // Only a SUCCESSFUL generator call ends the turn (after the one words step it may
+  // grant; `media-words-step.ts`). An error result, e.g. the param validator kicking
+  // the call back for a missing or out-of-range value, must NOT, or the agent never
   // gets the turn it needs to re-call with corrected values.
   if (FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) && !toolResult.isError) sc.calledFireAndForgetGen = true;
   return done(toolResult);

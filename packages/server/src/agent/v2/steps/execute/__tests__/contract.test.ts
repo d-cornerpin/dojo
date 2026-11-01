@@ -241,10 +241,37 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
     if (completeTask.directive !== 'exit') throw new Error('unreachable');
     expect(completeTask.reason).toMatch(/complete/);
 
-    const generator = await runExecute(freshState(), ctxFor({ result: modelResult([call('image_create', { prompt: 'a cat' })]) }));
+    // Words beside the call already count: no extra step is asked for.
+    const generator = await runExecute(freshState(), ctxFor({
+      result: { ...modelResult([call('image_create', { prompt: 'a cat' })]), content: 'Here it comes.' } as ExecuteContext['result'],
+    }));
     expect(generator.directive).toBe('exit');
     if (generator.directive !== 'exit') throw new Error('unreachable');
     expect(generator.reason).toMatch(/generator|fire-and-forget/);
+  });
+
+  it('A GENERATOR WITH NO WORDS BESIDE IT GRANTS ONE MORE MODEL STEP, and that step ends the turn whatever it does', async () => {
+    const turnCtx = turnCtxFor();
+    const first = await runExecute(freshState(), ctxFor({ turnCtx, result: modelResult([call('image_create', { prompt: 'a cat' })]) }));
+    expect(first.directive).toBe('proceed');
+    expect((turnCtx as unknown as { mediaWordsStepOwed: boolean }).mediaWordsStepOwed).toBe(true);
+
+    // The granted step: a second generator is refused (never executed) and the turn ends.
+    executeToolSpy.mockClear();
+    const second = await runExecute(freshState(), ctxFor({ turnCtx, result: modelResult([call('image_create', { prompt: 'again' }, 'tc-2')]) }));
+    expect(executeToolSpy).not.toHaveBeenCalled();
+    expect(second.directive).toBe('exit');
+  });
+
+  it('NO EXTRA STEP where the words would go nowhere: an agent counterparty ends as before', async () => {
+    const turnCtx = turnCtxFor();
+    const out = await runExecute(freshState(), ctxFor({
+      turnCtx,
+      counterparty: { kind: 'agent', name: FX.n4 } as unknown as ExecuteContext['counterparty'],
+      result: modelResult([call('image_create', { prompt: 'a cat' })]),
+    }));
+    expect(out.directive).toBe('exit');
+    expect((turnCtx as unknown as { mediaWordsStepOwed?: boolean }).mediaWordsStepOwed).toBeFalsy();
   });
 
   it('A STEP THAT ASKS TO EXIT STOPS — the floors after the exit never run', async () => {

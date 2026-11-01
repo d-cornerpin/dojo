@@ -15,7 +15,7 @@ The engine writes no words in your voice: no acknowledgement and no caption.
 
 1. **The words are yours, and they are what the person gets with the image.** Say ONE short line of your own in this turn ("making that now", or what you made it for). The engine adds nothing, so if you say nothing the person gets a bare picture.
 2. **The delivery is the engine's.** When the image is ready the engine posts it directly into the chat as its own message: the image alone, with NO caption. You are told it was delivered, on your next turn; add your own words then only if they help. No model turn is involved in the delivery.
-3. **You get no second turn.** This is a fire-and-forget generator: the engine ends your tool phase the moment you call it. There is no later round in which you could present the image, and you do not need one.
+3. **You get one more step, text only.** This is a fire-and-forget generator: after you call it, no more tools run (a second generator is refused). If you wrote nothing beside the call, your next reply is your chance to say your line; if you already did, the turn simply ends. There is no later round in which you could present the image, and you do not need one.
 
 So: **one short line of your own in this turn.** Do not describe the image (you cannot see it), and do not announce it a second time ("here's your image") once it is delivered: that reads as the Dojo repeating itself.
 

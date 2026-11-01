@@ -252,6 +252,10 @@ export interface TurnContext {
   toolPhaseEndedBySpinBrake: boolean;
   spinBrakeGraceCalls: number;
   toolLoopCapReached: boolean;
+  /** A generator (picture, voice, music, video) started this turn with no words beside the call, so the turn is
+   *  owed ONE more model step to write them (`v2/steps/execute/media-words-step.ts`). `execute` sets it, `execute` and
+   *  its tool door read it on the next iteration — two spans, one mechanism, like the spin-brake latch above. */
+  mediaWordsStepOwed: boolean;
   jobParked: boolean;   // t159 G2: `parkJob`, the one door every park goes through, queued this turn's continuation (`turnParkedTheJob`)
 
 
@@ -520,6 +524,7 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
     toolLoopCapReached: false,
+    mediaWordsStepOwed: false,
     jobParked: false,
     spinBrakeGraceCalls: 2,
     ownerAffinityConversationId: null,
