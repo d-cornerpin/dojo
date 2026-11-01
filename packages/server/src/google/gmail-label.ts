@@ -11,7 +11,7 @@
 //     `thread_ids` for that), so a mailbox count taken per message reaches zero.
 // ════════════════════════════════════════
 
-import { googleWrite } from './client.js';
+import { googleRead, googleWrite } from './client.js';
 import { resolveGmailLabelTarget } from './gmail-archive.js';
 import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 
@@ -31,6 +31,23 @@ export function labelFailureText(error: string | undefined, _toolName: string): 
   return `Error modifying labels: ${error}`;
 }
 
+// Gmail's modify calls take label IDs only, but the tool tells the agent to pass a custom label's NAME.
+// A system label (INBOX, STARRED, CATEGORY_PROMOTIONS ...) and a custom id (Label_123) already are ids.
+const ALREADY_AN_ID = /^(?:[A-Z][A-Z_]*|Label_\d+)$/;
+
+/** Turn custom label names into this account's label ids. A name that matches nothing, or a label list that cannot be read, is left as given so Gmail's own refusal (and its remedy) still applies. */
+async function labelIdsFor(labels: string[], gmailBase: string, agentId: string, agentName: string, slot: string): Promise<string[]> {
+  if (labels.every((l) => ALREADY_AN_ID.test(l))) return labels;
+  const listed = await googleRead(`${gmailBase}/labels`, agentId, agentName, 'gmail_label', {}, slot);
+  const all = (listed?.ok ? (listed.data as { labels?: Array<{ id: string; name: string }> } | null)?.labels : undefined) ?? [];
+  return labels.map((l) => {
+    if (ALREADY_AN_ID.test(l)) return l;
+    const byId = all.find((x) => x.id === l);
+    if (byId) return byId.id;
+    return all.find((x) => x.name === l)?.id ?? all.find((x) => x.name.toLowerCase() === l.toLowerCase())?.id ?? l;
+  });
+}
+
 export async function executeGmailLabel(
   toolName: string,
   args: Record<string, unknown>,
@@ -39,9 +56,12 @@ export async function executeGmailLabel(
   agentName: string,
   slot: string,
 ): Promise<string> {
-  const addLabels = (args.add_labels as string[]) ?? [];
-  const removeLabels = (args.remove_labels as string[]) ?? [];
-  if (addLabels.length === 0 && removeLabels.length === 0) return NOTHING_TO_CHANGE;
+  const askedAdd = (args.add_labels as string[]) ?? [];
+  const askedRemove = (args.remove_labels as string[]) ?? [];
+  if (askedAdd.length === 0 && askedRemove.length === 0) return NOTHING_TO_CHANGE;
+  const resolved = await labelIdsFor([...askedAdd, ...askedRemove], gmailBase, agentId, agentName, slot);
+  const addLabels = resolved.slice(0, askedAdd.length);
+  const removeLabels = resolved.slice(askedAdd.length);
 
   const messageIds = idList(args.message_ids);
   const threadIds = idList(args.thread_ids);
