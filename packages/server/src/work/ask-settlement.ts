@@ -355,8 +355,8 @@ const NOT_A_TOOL_CHIP =
  *     `assistant`/`agent-text` row (28 of 28) but is written by the platform under a tool no
  *     model can call, out of the pieces the peers returned — TB13's correction, kept whole:
  *     25 of those 28 sit on turns that recorded no answer key and would have been refused;
- *   * a turn still running (`ended_at IS NULL`) — which is every delivery-moment close and
- *     the whole of the boot crash arm, so `reconcileOrphanedClaims` is untouched.
+ *   * a turn still running (`ended_at IS NULL`) or cut off by a dead process (`terminated`, never finalized, so
+ *     no answer key) — every delivery-moment close and the whole of the boot crash arm.
  */
 const NOT_A_SUPERSEDED_BUBBLE =
   `NOT EXISTS (
@@ -365,7 +365,7 @@ const NOT_A_SUPERSEDED_BUBBLE =
       WHERE mb.id = d.message_id
         AND mb.role = 'assistant' AND mb.display_kind = 'agent-text'
         AND d.tool NOT IN (${[...ENGINE_JOIN_RELAY_TOOLS].map((t) => `'${t}'`).join(', ')})
-        AND tb.ended_at IS NOT NULL
+        AND tb.ended_at IS NOT NULL AND tb.exit_reason IS NOT 'terminated'
         AND (tb.answer_message_id IS NULL OR tb.answer_message_id <> d.message_id))`;
 
 /**

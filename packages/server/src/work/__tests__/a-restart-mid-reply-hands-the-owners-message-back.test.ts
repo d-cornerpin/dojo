@@ -43,7 +43,7 @@ import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import { reconcileOrphanedClaims } from '../ask-settlement.js';
 import { sweepBootStaleness } from '../work-reaper.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../../agent/agent-status.js';
-import { insertMessage } from '../../memory/message-store.js';
+import { insertMessage, insertMessageIfAbsent } from '../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../../agent/v2/counterparty.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -120,6 +120,20 @@ describe('a restart in the middle of a reply', () => {
     ).run(AGENT);
     restart();
     expect(askOf('m-1')).toEqual({ state: 'done', result_delivery_id: 'd-answer' });
+    expect(getWaitingHumanConversations(AGENT).length, 'nothing is re-served').toBe(0);
+  });
+
+  it('closes on the dashboard bubble the dead turn stored: a cut-off turn names no answer key, like a live one', () => {
+    ownerAskClaimedBy(7);
+    // The real dashboard shape: the reply is a stored agent-text row, and its delivery points
+    // at it. The turn died before it could record which bubble was its answer.
+    insertMessageIfAbsent({ id: 'a-1', agentId: AGENT, role: 'assistant', content: 'The roof quote is fine.', turnNumber: 7 } as never);
+    db().prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
+       VALUES ('d-bubble', ?, 7, 'dashboard', 'dashboard', 'conv-1', 'a-1', 'delivered', datetime('now', '+1 second'))`,
+    ).run(AGENT);
+    restart();
+    expect(askOf('m-1')).toEqual({ state: 'done', result_delivery_id: 'd-bubble' });
     expect(getWaitingHumanConversations(AGENT).length, 'nothing is re-served').toBe(0);
   });
 
