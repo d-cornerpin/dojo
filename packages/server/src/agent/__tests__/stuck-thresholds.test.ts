@@ -137,7 +137,8 @@ describe('T10 Step 1c — the two numbers that are NOT thresholds, and stay out'
     expect(STUCK_THRESHOLD_IDS.map((id) => STUCK_THRESHOLDS[id].ms)).not.toContain(5 * 60_000);
     // …and it is still where it belongs, unchanged, next to the timer it drives.
     expect(read('agent/runtime.ts')).toMatch(/const STUCK_AGENT_CHECK_MS = 5 \* 60 \* 1000;/);
-    expect(read('agent/runtime.ts')).toMatch(/setInterval\(recoverStuckAgents, STUCK_AGENT_CHECK_MS\)/);
+    // proof-fix-f: the interval now passes the reaped agents on to the orphaned-claim hand-back.
+    expect(read('agent/runtime.ts')).toMatch(/setInterval\(\(\) => handBackOrphansOf\(recoverStuckAgents\(\),[^\n]*, STUCK_AGENT_CHECK_MS\)/);
   });
 
   it('MAX_DRAIN_STUCK is a COUNT and is not in the table', () => {
