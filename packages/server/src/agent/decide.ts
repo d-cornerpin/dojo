@@ -52,7 +52,7 @@ export type DecideOpts = WaitedAsk | BackgroundAsk;
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
 const MAX_QUESTIONS_PER_REQUEST = 64;
-/** MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): any body over 64 KiB is
+/** MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): a request over 64 KiB is
  *  refused with HTTP 413 "text and schema must not exceed 64 KiB". A request over it is not dialled. */
 export const MAX_DECISION_BODY_BYTES = 64 * 1024;
 /**
@@ -103,9 +103,14 @@ export function fencedState(v: unknown, key = 'state'): unknown {
   return v;
 }
 
-/** The request body exactly as `decide()` sends it (a caller sizing parts measures its bytes with this). */
+/** The request body exactly as `decide()` sends it. */
 export const decideRequestBody = (model: string, state: unknown, questions: Record<string, Question>): string =>
   JSON.stringify({ model, state: fencedState(state), questions, keep_alive: -1 });
+/** MEASURED (proof-fix P, `overhaul-plans/proof-fix-p-REPORT.md`): what Ollama counts against `MAX_DECISION_BODY_BYTES` is the
+ *  JSON of `state` plus the JSON of `questions` plus 93 bytes of its own, not the body (the model name and `keep_alive`
+ *  are not counted; a part filled to a 64 KiB BODY was refused). A caller sizing parts counts with this. */
+export const decideCountedBytes = (state: unknown, questions: Record<string, Question>): number =>
+  Buffer.byteLength(JSON.stringify(fencedState(state))) + Buffer.byteLength(JSON.stringify(questions)) + 93;
 
 /** The measured time `decide()` would give this call if it were sent now — the patience a caller states when it will
  *  wait no longer than the call itself is allowed (t274 fix round 1). 0 with no decision model: nothing is dialled. */
@@ -143,7 +148,8 @@ export async function decide(
 
   const request = decideRequestBody(provider.model, state, questions);
   const stateChars = JSON.stringify(fencedState(state)).length;
-  if (Buffer.byteLength(request) > MAX_DECISION_BODY_BYTES) return fail('too_large', opts, `${Buffer.byteLength(request)} bytes`);
+  const counted = decideCountedBytes(state, questions);
+  if (counted > MAX_DECISION_BODY_BYTES) return fail('too_large', opts, `${counted} bytes as Ollama counts them`);
   // N-A (fix round 4): a background call waits for the agents to go idle BEFORE it joins the queue, so a call
   // somebody waits on is never held behind a check that is itself waiting.
   if (opts.background) await whenAgentWorkEnds(provider.providerId);
