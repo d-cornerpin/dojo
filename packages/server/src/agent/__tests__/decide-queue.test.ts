@@ -10,7 +10,7 @@
 // waiting without running its work and without blocking the callers behind it.
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import { inTurn } from '../decide-queue.js';
+import { aheadOfAWaiterMs, inTurn } from '../decide-queue.js';
 
 /** Let the queue's pending microtasks run. */
 const tick = () => new Promise<void>((r) => setImmediate(r));
@@ -106,5 +106,19 @@ describe('inTurn — the one decide() queue', () => {
       ctl.abort();
       return 'finished';
     })).resolves.toEqual({ left: false, value: 'finished' });
+  });
+
+  it('proof-fix N: an allowance that throws counts as 0 — the queue never wedges and the next ask is served', async () => {
+    const boom = (): number => { throw new Error('allowance failed'); };
+    const g = gate();
+    const first = inTurn(null, async () => { await g.promise; return 'first'; }, { allowedMs: boom });
+    await tick();
+    const second = inTurn(null, async () => 'second', { allowedMs: boom });
+    await tick();
+    expect(aheadOfAWaiterMs()).toBe(0);   // neither the call in flight's nor the queued waiter's allowance throws out
+    g.open();
+    await expect(first).resolves.toEqual({ left: false, value: 'first' });
+    await expect(second).resolves.toEqual({ left: false, value: 'second' });
+    await expect(inTurn(null, async () => 'third')).resolves.toEqual({ left: false, value: 'third' });
   });
 });

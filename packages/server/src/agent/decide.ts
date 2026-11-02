@@ -19,7 +19,7 @@ import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins, whenAgentWorkEnds } from '../services/ollama-quiet.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { decisionCharsPerToken, recordDensitySample, tokensAt } from '../services/token-density.js';
-import { inTurn } from './decide-queue.js';
+import { aheadOfAWaiterMs, inTurn } from './decide-queue.js';
 
 const logger = createLogger('decide');
 
@@ -31,9 +31,11 @@ export type Answer =
   | { type: 'noul'; noul: number }
   | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
   | { type: 'score'; score: number; probabilities: Record<string, number>; confidence: number };
-/** `patienceMs` (t274 fix round 1) is REQUIRED of every caller: how long it will wait, counted from when it asks —
- *  queued time included; the decision's own timeout still counts from send. Out of patience while queued, the call
- *  leaves the queue unsent; in flight, it is cut; either way the caller's rule answers. `onFailure`: why a call gave
+/** `patienceMs` (t274 fix round 1) is REQUIRED of every caller: how long it gives its OWN call. A waited caller's
+ *  patience counts from when it asks, and (proof-fix N) decide() adds what it must wait behind — the measured
+ *  allowance left to the call in flight and of the waited callers ahead (`aheadOfAWaiterMs`) — so it is still bounded
+ *  but no longer spent behind a long check; the decision's own timeout still counts from send. Out of patience while
+ *  queued, the call leaves the queue unsent; in flight, it is cut; either way the caller's rule answers. `onFailure`: why a call gave
  *  no answer, told to the caller each time (the log line below is once per class per minute). */
 interface DecideCommon { purpose: string; timeoutMs?: number; turnId?: string; patienceMs: number; onFailure?: (failure: FailureClass) => void }
 /** Someone waits on the answer: it holds that agent's stop slot from the moment it queues (a Stop cuts it). */
@@ -147,8 +149,12 @@ export async function decide(
   // N-A (fix round 4): a background call waits for the agents to go idle BEFORE it joins the queue, so a call
   // somebody waits on is never held behind a check that is itself waiting.
   if (opts.background) await whenAgentWorkEnds(provider.providerId);
-  // Patience counts from when a waited caller ASKS; a background ask's from when its turn comes (see `BackgroundAsk`).
-  const patience = opts.background ? null : AbortSignal.timeout(opts.patienceMs);
+  // The time this call is allowed once sent: its caller's own, or the measured formula for its size (residency read at send).
+  const clockMs = (): number => opts.timeoutMs
+    ?? decideTimeoutMs(tokensAt(stateChars, decisionCharsPerToken()), names.length, resident.has(provider.model));
+  // Patience counts from when a waited caller ASKS, plus what it must wait behind; a background ask's from when its turn
+  // comes (see `BackgroundAsk`).
+  const patience = opts.background ? null : AbortSignal.timeout(opts.patienceMs + aheadOfAWaiterMs());
   // t274 fix round 1: the agent's stop slot opens when the call JOINS the queue, so a Stop cuts it queued or in flight.
   // A background ask never opens one, whatever it was handed at run time.
   const slot = opts.background || opts.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn');
@@ -159,8 +165,8 @@ export async function decide(
     // has fired is dropped when its turn comes (`decide-queue.ts`).
     const turn = await inTurn(leave.length === 0 ? null : AbortSignal.any(leave), () => {
       cuts.patience ??= AbortSignal.timeout(opts.patienceMs);
-      return sent(provider, request, stateChars, names, questions, opts, cuts);
-    }, { background: opts.background === true, stale: opts.background ? opts.staleWhen : undefined });
+      return sent(provider, request, stateChars, names, questions, opts, cuts, clockMs);
+    }, { background: opts.background === true, stale: opts.background ? opts.staleWhen : undefined, allowedMs: clockMs });
     if (turn.left) return fail(cutBy(null, cuts) ?? (opts.background && staleNow(opts.staleWhen) ? 'superseded' : 'patience'), opts, 'left the queue unsent');
     return turn.value;
   } finally {
@@ -173,17 +179,14 @@ function staleNow(f?: () => boolean): boolean { try { return f?.() === true; } c
 
 async function sent(
   provider: NonNullable<ReturnType<typeof getDecisionProvider>>, request: string, stateChars: number, names: string[],
-  questions: Record<string, Question>, opts: DecideOpts, cuts: Cuts,
+  questions: Record<string, Question>, opts: DecideOpts, cuts: Cuts, clockMs: () => number,
 ): Promise<Record<string, Answer> | null> {
   // NB-1: while the Ollama app restarts to apply the model limit, the rule answers (no wait on a restart);
   // otherwise this call is in-flight work the restart waits for.
   if (localHeld()) return null;
   const endLocalWork = await localWorkBegins();
   try {
-    let timeoutMs = opts.timeoutMs;
-    if (timeoutMs === undefined) {
-      timeoutMs = decideTimeoutMs(tokensAt(stateChars, decisionCharsPerToken()), names.length, resident.has(provider.model));
-    }
+    const timeoutMs = clockMs();
     resident.delete(provider.model);   // until this call is answered
     const clock = AbortSignal.timeout(timeoutMs);
     const started = Date.now();

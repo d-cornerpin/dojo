@@ -14,12 +14,17 @@
  * running is never pre-empted or cancelled. STALE DROP: a queued background ask whose `stale()` is true at the
  * moment its turn comes is dropped without running (`{ left: true }`); an entry whose `leave` aborts (or arrived
  * aborted) is likewise dropped at once and never delays the entries behind it.
+ *
+ * WHAT IS AHEAD (proof-fix N): each entry states the time its call is allowed (`allowedMs`, decide()'s measured
+ * clock for its size), so a waited caller can be told how long it must wait behind the call in flight and the waited
+ * callers ahead of it (`aheadOfAWaiterMs`) — the H8 run lost nearly every waited reply ask queued behind a 30 s check.
  */
 type Entry<T> = {
   leave: AbortSignal | null;
   work: () => Promise<T>;
   background: boolean;
   stale?: () => boolean;
+  allowedMs: () => number;
   resolve: (r: { left: true } | { left: false; value: T }) => void;
   reject: (e: unknown) => void;
   queued: boolean;
@@ -28,10 +33,20 @@ type Entry<T> = {
 
 const queue: Entry<any>[] = [];
 let running = false;
+/** When the call in flight runs out of its own allowed time (its clock cuts it then). */
+let runningUntil = 0;
+
+/** The most a waited caller joining NOW can spend queued: what the call in flight may still take, plus the allowed
+ *  time of every waited caller ahead of it (background asks queue behind it, and a new waiter behind it). */
+export function aheadOfAWaiterMs(): number {
+  let ms = running ? Math.max(0, runningUntil - Date.now()) : 0;
+  for (const e of queue) if (!e.background) ms += allowedOf(e);
+  return ms;
+}
 
 export async function inTurn<T>(
   leave: AbortSignal | null, work: () => Promise<T>,
-  opts?: { background?: boolean; stale?: () => boolean },
+  opts?: { background?: boolean; stale?: () => boolean; allowedMs?: () => number },
 ): Promise<{ left: true } | { left: false; value: T }> {
   const background = opts?.background ?? false;
   const stale = background ? opts?.stale : undefined;
@@ -42,7 +57,7 @@ export async function inTurn<T>(
     resolve({ left: true });  // arrived aborted: never runs, never delays the queue
     return promise;
   }
-  const entry: Entry<T> = { leave, work, background, stale, resolve, reject, queued: true, onAbort: null };
+  const entry: Entry<T> = { leave, work, background, stale, allowedMs: opts?.allowedMs ?? (() => 0), resolve, reject, queued: true, onAbort: null };
   if (leave) {
     entry.onAbort = (): void => {
       if (entry.queued) {
@@ -77,6 +92,11 @@ function next(): Entry<any> | undefined {
   return undefined;
 }
 
+/** An entry's stated allowance; one that throws (or is not a number) counts as 0, never wedging the queue. */
+function allowedOf(entry: Entry<any>): number {
+  try { const ms = entry.allowedMs(); return Number.isFinite(ms) && ms > 0 ? ms : 0; } catch { return 0; }
+}
+
 /** `stale` is only consulted at turn time; a throw counts as not stale. */
 function staleTrue(stale: () => boolean): boolean {
   try { return stale(); } catch { return false; }
@@ -92,6 +112,7 @@ function remove(entry: Entry<any>): void {
 function start(entry: Entry<any>): void {
   remove(entry);  // no longer queued: it is the running turn
   running = true;
+  runningUntil = Date.now() + allowedOf(entry);
   void (async () => {
     try {
       entry.resolve({ left: false, value: await entry.work() });

@@ -114,7 +114,7 @@ export function judgment(spec: JudgmentSpec, key?: object): Judgment {
     // Nobody waits on a shadow answer: it waits behind the agents' own turns, and `decide()` forbids it to name an agent
     // (it must not make one look live). A `model` ask is waited on: it holds the caller's stop slot from the moment it
     // queues. Either way its PATIENCE is the call's own measured timeout (`measuredDecideTimeoutMs`): no longer than the
-    // call itself is allowed, counted from the ask (a waited one) or from its queue turn (a background one).
+    // call itself is allowed, counted from its queue turn (a background one) or from the ask (a waited one, plus what it waits behind).
     const asking = Object.fromEntries(names.map((n) => [n, spec.questions[n]]));
     const background = !names.some((n) => modeOf(n) === 'model');
     const common = { purpose: spec.purpose, turnId: turnIdFor(spec.purpose, subjectOf(names[0])), patienceMs: measuredDecideTimeoutMs(spec.state, names.length) };
