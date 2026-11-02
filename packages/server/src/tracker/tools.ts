@@ -61,6 +61,7 @@ import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureRe
 import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
+import { closeFiledRefusal } from './close-filed-guard.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
@@ -3744,19 +3745,10 @@ export async function trackerValidatePause(
     return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "paused". Nothing to validate.`;
   }
 
+  // T21 — DEFENCE IN DEPTH (bless and reject alike, see close-filed-guard.ts).
+  const closeFiled = closeFiledRefusal(task, taskId, 'pause');
+  if (closeFiled) return closeFiled;
   if (args.valid) {
-    // T21 — DEFENCE IN DEPTH. The pause lens no longer SELECTS a row whose close is filed,
-    // but a model holding a stale issue id can still call this verb on one, and blessing the
-    // pause is what ate S5's close: it answers a question the row has moved past, against a
-    // wait note that stopped being true when the work finished. The verdict is refused with
-    // the door that IS open, so the PM's next call is the right one.
-    if (task.close_request_filed === 1) {
-      return (
-        `Error: task "${task.title}" (${taskId.slice(0, 8)}) has filed a CLOSE REQUEST — its worker says the wait is over and the work is done. ` +
-        `Blessing the pause would answer a question this row has moved past. ` +
-        `Judge the close instead: work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true|false, reject_reason="..." if false).`
-      );
-    }
     upholdClaim(taskId, 'paused', 'pm', pmAgentId, 'PM confirmed the pause is a real wait condition');
     writeTaskLog({
       taskId,
@@ -4620,7 +4612,12 @@ export async function trackerValidateComplete(
       // (complete_validated=1). Require a REAL advance: onTaskRunComplete must
       // have actually closed a run (advanced===true). If it did not, leave the
       // schedule fully intact and report the no-op honestly.
-      if (!advanced) {
+      // A close filed on a recurring row with NO run in flight can only be the stop-the-schedule
+      // request (`complete_all_runs`; a per-run complete with no open run files nothing and is
+      // refused up front), and Key 2 has just moved the row to done: the schedule must stop with it.
+      const stopped = !advanced && keyOneOnly;
+      if (stopped) noteUnsettled(patchWork(taskId, { schedule_status: 'completed', is_paused: 1 }), 'trackerValidateComplete: the blessed stop ended the schedule', { taskId });
+      if (!advanced && !stopped) {
         logger.info('Recurring validate found no open run to advance (no-op); schedule left intact', { taskId, pmAgentId }, pmAgentId);
         return (
           `[NO-OP] No open run to validate on "${task.title}" (${taskId.slice(0, 8)}). ` +
@@ -4630,7 +4627,7 @@ export async function trackerValidateComplete(
       }
       // A genuine terminal close is signalled by schedule_status='completed'
       // (no further runs). A per-run advance leaves schedule_status='waiting'.
-      const wasTerminal = after.scheduleStatus === 'completed';
+      const wasTerminal = stopped || after.scheduleStatus === 'completed';
       if (wasTerminal) {
         // Terminal close: flip complete_validated=1, run dep cascade.
         // PHASE-2 T8T: skipped when Key 2 was the MOVE — `transition()` already filed that
@@ -4765,11 +4762,12 @@ export async function trackerValidateBlocked(
   const task = db.prepare(`
     SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
            w.agent_id AS assigned_to, w.priority AS priority,
-           ${validatedExpr('w', 'blocked')} AS blocked_validated, w.goal AS goal
+           ${validatedExpr('w', 'blocked')} AS blocked_validated, w.goal AS goal,
+           ${closeRequestFiledExpr('w')} AS close_request_filed
     FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
-    priority: string; blocked_validated: number; goal: string | null;
+    priority: string; blocked_validated: number; goal: string | null; close_request_filed: number;
   } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
@@ -4779,6 +4777,8 @@ export async function trackerValidateBlocked(
   if (task.blocked_validated === 1) {
     return `Error: task "${task.title}" (${taskId}) is already blocked_validated=1. No-op.`;
   }
+  const closeFiledBlock = closeFiledRefusal(task, taskId, 'block');
+  if (closeFiledBlock) return closeFiledBlock;
 
   if (args.valid) {
     upholdClaim(taskId, 'blocked', 'pm', pmAgentId, 'PM confirmed the block is real');

@@ -1363,8 +1363,9 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // for the SCHEDULE to stop; sending the row to `on_deck` while that request is outstanding
   // hands the row back to the cadence while its stop awaits a verdict. (The request itself stays
   // visible from any non-terminal state, `closeRequestFiledExpr`.) It stays `claimed`, in front
-  // of the validator, until Key 2 rules; if the close is REFUSED the request is answered, the hold in `dueScope` lifts, and
-  // the next tick resumes the cadence with the refusal on the row's own ledger.
+  // of the validator, until Key 2 rules; if the close is REFUSED the request is answered, the
+  // hold in `dueScope` lifts, and the next tick resumes the cadence with the refusal on the
+  // row's own ledger.
   const stopPending = (getDb().prepare(
     `SELECT ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`,
   ).get(taskId) as { pending: number } | undefined)?.pending === 1;

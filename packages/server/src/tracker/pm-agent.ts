@@ -1891,8 +1891,8 @@ async function runPMReview(): Promise<void> {
   //     trigger's key, never the PM's, so the row lands here exactly as it always did.
   //   * a pending close request — the worker said it was finished and RULING 1 says that is
   //     Key 1. The row does not move until this rung blesses it, so it is still sitting in
-  //     whichever state it was worked from: `claimed`, or `paused` when the job was waiting
-  //     on the owner and then finished (round-5 S5, event 22401). Which states those are is
+  //     whichever non-terminal state it was worked from (`claimed`, `paused` after an owner wait
+  //     — round-5 S5, event 22401 — or `on_deck` after a rejected pause). Which states those are is
   //     `closeRequestFiledExpr`'s to say, not this query's — the paused one was missing here
   //     for exactly as long as this query answered it itself.
   // Reading only the first shape is how the queue would go quiet while work waited in it.

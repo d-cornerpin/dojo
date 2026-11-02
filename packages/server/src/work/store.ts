@@ -47,6 +47,7 @@ import { ringValidationDoorbell } from './validation-drive.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
 import { notifyTaskEnded } from './task-ended.js';
+import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
@@ -65,7 +66,6 @@ export type Actor = 'owner' | 'pm' | 'agent' | 'engine' | 'scheduler' | 'healer'
  *  is answered by the compiler rather than by a conformance suite reading source. */
 export type Claim = 'requests-validation' | 'authoritative';
 
-import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 export { TERMINAL_STATES, isTerminal };
 
 /** The legal-transition table. A move that is not listed is refused by gate `illegal-transition`,
