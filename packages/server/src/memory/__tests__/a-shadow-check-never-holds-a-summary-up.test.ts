@@ -33,7 +33,7 @@ import { summaryCheckId, summaryCheckIdOfRow, recordSummaryTruth } from '../summ
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { sourceParts } from '../summary-check-parts.js';
-import { decideCountedBytes } from '../../agent/decide.js';
+import { decideCountedBytes } from '../../agent/decide-sizing.js';
 import { getOllamaLock } from '../../services/ollama-lock.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { proveSummaryCheck } from './summary-check-proven.js';

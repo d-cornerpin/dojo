@@ -14,7 +14,8 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { decide, decideTimeoutMs, fencedState, __forgetResidencyForTests, type Question } from '../decide.js';
+import { decide, __forgetResidencyForTests, type Question } from '../decide.js';
+import { decideTimeoutMs, fencedState } from '../decide-sizing.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { B5_MEASURED_CHARS_PER_TOKEN, recordDensitySample } from '../../services/token-density.js';
 import { writeThenCheck, summaryChecksSettled } from '../../memory/summary-check.js';

@@ -153,7 +153,7 @@ describe('K33 — the decision model', () => {
     expect(callers).toEqual(['agent/decide.ts']);
     // t268 (edited): the body is built once by `decideRequestBody` (the summary check sizes its parts by the same bytes).
     const decideSrc = code(path.join(SRC, 'agent/decide.ts'));
-    expect(decideSrc).toMatch(/JSON\.stringify\(\{ model, state: fencedState\(state\), questions/);
+    expect(code(path.join(SRC, 'agent/decide-sizing.ts'))).toMatch(/JSON\.stringify\(\{ model, state: fencedState\(state\), questions/);
     expect(decideSrc).toMatch(/const request = decideRequestBody\(provider\.model, state, questions\)/);
     expect(decideSrc).toMatch(/body: request,/);
   });

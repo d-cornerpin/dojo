@@ -3,7 +3,8 @@
 // (split from `summary-check.ts`): its parts, and the parts' verdicts as one.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { decideCountedBytes, fencedState, MAX_DECISION_BODY_BYTES, type Answer, type Question } from '../agent/decide.js';
+import { MAX_DECISION_BODY_BYTES, type Answer, type Question } from '../agent/decide.js';
+import { decideCountedBytes, fencedState } from '../agent/decide-sizing.js';
 import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
 // ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──

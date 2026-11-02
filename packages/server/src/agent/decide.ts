@@ -17,9 +17,9 @@ import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins, whenAgentWorkEnds } from '../services/ollama-quiet.js';
-import { fenceExternal } from '../tools/external-content.js';
 import { decisionCharsPerToken, recordDensitySample, tokensAt } from '../services/token-density.js';
 import { aheadOfAWaiterMs, inTurn } from './decide-queue.js';
+import { decideCountedBytes, decideRequestBody, decideTimeoutMs, fencedState } from './decide-sizing.js';
 
 const logger = createLogger('decide');
 
@@ -57,16 +57,6 @@ const MAX_QUESTIONS_PER_REQUEST = 64;
 /** MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): a request over 64 KiB is
  *  refused with HTTP 413 "text and schema must not exceed 64 KiB". A request over it is not dialled. */
 export const MAX_DECISION_BODY_BYTES = 64 * 1024;
-/**
- * THE TIMEOUT, MEASURED (t268 ruling 4; B5, `overhaul-plans/v35-writer-measure.md` → "decide() latency"): on a
- * box whose GPU the writer shares, a warm call took 62 + 1.33·T + 94·(Q − 1) ms (T = the state's tokens, Q =
- * the questions: reading the state is most of it, each extra question ~94 ms), observed ÷ fitted was 2.05 at
- * p99, and loading a model that is not resident added about 1.3 s. So a call is given that long for its own
- * size — never one fixed figure (the provisional 1,500 ms cut 22 of 24 cold calls). A caller may pass its own.
- */
-export function decideTimeoutMs(stateTokens: number, questions: number, resident: boolean): number {
-  return Math.ceil((62 + 1.33 * stateTokens + 94 * (questions - 1)) * 2.05) + (resident ? 0 : 1_300);
-}
 
 /**
  * Is the decision model loaded? Fix round 1: no `/api/ps` round trip per call — what this process already knows:
@@ -91,28 +81,6 @@ function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
   try { opts.onFailure?.(cls); } catch { /* a caller's note never breaks the seam */ }
   return null;
 }
-
-/**
- * v3.5 K33: the state is the MATERIAL the questions are about — a reply, a summary, a job's source rows
- * with a contact's message or a page in them — never instructions. So every text in it goes to the model
- * inside its own fence (the one fence, `fenceExternal`; a forged end in it is defanged), named by its key.
- * Numbers, flags and the shape pass as they are. Exported so a caller sizing a request can count the fences.
- */
-export function fencedState(v: unknown, key = 'state'): unknown {
-  if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v);
-  if (Array.isArray(v)) return v.map((x) => fencedState(x, key));
-  if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fencedState(x, k)]));
-  return v;
-}
-
-/** The request body exactly as `decide()` sends it. */
-export const decideRequestBody = (model: string, state: unknown, questions: Record<string, Question>): string =>
-  JSON.stringify({ model, state: fencedState(state), questions, keep_alive: -1 });
-/** MEASURED (proof-fix P, `overhaul-plans/proof-fix-p-REPORT.md`): what Ollama counts against `MAX_DECISION_BODY_BYTES` is the
- *  JSON of `state` plus the JSON of `questions` plus 93 bytes of its own, not the body (the model name and `keep_alive`
- *  are not counted; a part filled to a 64 KiB BODY was refused). A caller sizing parts counts with this. */
-export const decideCountedBytes = (state: unknown, questions: Record<string, Question>): number =>
-  Buffer.byteLength(JSON.stringify(fencedState(state))) + Buffer.byteLength(JSON.stringify(questions)) + 93;
 
 /** The measured time `decide()` would give this call if it were sent now — the patience a caller states when it will
  *  wait no longer than the call itself is allowed (t274 fix round 1). 0 with no decision model: nothing is dialled. */
