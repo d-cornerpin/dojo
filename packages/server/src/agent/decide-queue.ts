@@ -40,7 +40,7 @@ let runningUntil = 0;
  *  time of every waited caller ahead of it (background asks queue behind it, and a new waiter behind it). */
 export function aheadOfAWaiterMs(): number {
   let ms = running ? Math.max(0, runningUntil - Date.now()) : 0;
-  for (const e of queue) if (!e.background) ms += e.allowedMs();
+  for (const e of queue) if (!e.background) ms += allowedOf(e);
   return ms;
 }
 
@@ -92,6 +92,11 @@ function next(): Entry<any> | undefined {
   return undefined;
 }
 
+/** An entry's stated allowance; one that throws (or is not a number) counts as 0, never wedging the queue. */
+function allowedOf(entry: Entry<any>): number {
+  try { const ms = entry.allowedMs(); return Number.isFinite(ms) && ms > 0 ? ms : 0; } catch { return 0; }
+}
+
 /** `stale` is only consulted at turn time; a throw counts as not stale. */
 function staleTrue(stale: () => boolean): boolean {
   try { return stale(); } catch { return false; }
@@ -107,7 +112,7 @@ function remove(entry: Entry<any>): void {
 function start(entry: Entry<any>): void {
   remove(entry);  // no longer queued: it is the running turn
   running = true;
-  runningUntil = Date.now() + entry.allowedMs();
+  runningUntil = Date.now() + allowedOf(entry);
   void (async () => {
     try {
       entry.resolve({ left: false, value: await entry.work() });
