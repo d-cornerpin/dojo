@@ -19,9 +19,10 @@ import { canonicalizeToolsPolicy, parseToolsPolicyText } from '../agent/access/t
 import { getPrimaryAgentId } from '../config/platform.js';
 import { RESULT_READ_TOOL } from '../memory/tool-result-view.js';
 import { dojoVoice } from '../agent/dojo-voice.js';
+import { ownerCardEnded } from './owner-card-frames.js';
 
 export const GAP_KEY = 'built_in_tools_gap';
-export type GapEntry = { names: string[]; told?: boolean; dismissed?: boolean };
+export type GapEntry = { names: string[]; told?: boolean; dismissed?: boolean; cleared?: boolean };
 type GapRecord = Record<string, GapEntry>;
 
 const nameOf = (id: string): string =>
@@ -30,12 +31,12 @@ const nameOf = (id: string): string =>
 /**
  * Which of `usual` this agent does not hold: not in what it is allowed (stored grants, else the column), not denied in
  * either place. An unrestricted agent (empty allow) holds everything; a row that does not parse cannot be judged.
- * A missing row answers none; an unreadable database throws.
+ * A missing or terminated row answers none; an unreadable database throws.
  */
 export function missingTools(agentId: string, usual: readonly string[]): string[] {
-  const row = getDb().prepare('SELECT tools_policy, permissions FROM agents WHERE id = ?').get(agentId) as
-    { tools_policy: string | null; permissions: string | null } | undefined;
-  if (!row) return [];
+  const row = getDb().prepare('SELECT tools_policy, permissions, status FROM agents WHERE id = ?').get(agentId) as
+    { tools_policy: string | null; permissions: string | null; status: string | null } | undefined;
+  if (!row || row.status === 'terminated') return [];   // a terminated agent is rewritten in full if it is ever reactivated
   for (const text of [row.tools_policy, row.permissions]) {
     if (!text || text === '{}') continue;
     try { JSON.parse(text); } catch { return []; }
@@ -61,10 +62,10 @@ export function writeGap(record: GapRecord): void {
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(GAP_KEY, JSON.stringify(record));
 }
 
-/** The card's words. Plain, the Dojo speaking, and exact about what the owner can do. */
+/** The card's words. Plain, the Dojo speaking, and exact: nothing was changed, and who can add them. */
 export function gapWords(agentName: string, mainName: string, names: readonly string[]): string {
-  return dojoVoice(`${agentName} is missing built-in tools it normally has (${names.join(', ')}). If you took them away on purpose, dismiss this card. `
-    + `If not, ask ${mainName} to add them back, or add them in ${agentName}'s Access settings.`);
+  return dojoVoice(`${agentName} doesn't have some tools a new ${agentName} gets: ${names.join(', ')}. Nothing was changed. `
+    + `If you removed them on purpose, close this card. If not, ask ${mainName} to add them.`);
 }
 
 /** The cards a dashboard shows on load: recorded, not dismissed, and something recorded is still missing. */
@@ -72,10 +73,15 @@ export function builtInToolsOwnerCards(): Array<{ words: string; severity: 'noti
   const record = readGap();
   const out: Array<{ words: string; severity: 'notice'; cardKey: string; dismiss: () => void }> = [];
   for (const [id, entry] of Object.entries(record)) {
-    if (entry?.dismissed || !Array.isArray(entry?.names)) continue;
+    if (entry?.dismissed || entry?.cleared || !Array.isArray(entry?.names)) continue;
     let names: string[];
     try { names = missingTools(id, entry.names); } catch { continue; }
-    if (names.length === 0) continue;
+    if (names.length === 0) {
+      // Nothing is missing any more (the owner added them, or the agent is gone): the incident is over for good, so a
+      // later removal of his own raises nothing, and the card leaves every open dashboard now.
+      try { if (!(readGap()[id]?.cleared)) { writeGap({ ...readGap(), [id]: { ...entry, cleared: true } }); ownerCardEnded('closed', `built-in-tools:${id}`); } } catch { /* shown again at worst */ }
+      continue;
+    }
     out.push({
       words: gapWords(nameOf(id), nameOf(getPrimaryAgentId()), names), severity: 'notice', cardKey: `built-in-tools:${id}`,
       dismiss: () => { const now = readGap(); if (now[id]) writeGap({ ...now, [id]: { ...now[id], dismissed: true } }); },

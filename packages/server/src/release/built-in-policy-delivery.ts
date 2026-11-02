@@ -26,7 +26,7 @@
 //
 // WHICH NAMES: only tools added to a list AFTER the per-boot rewrite was retired (v3.1.23), because those can never have
 // reached a frozen row and no owner can have removed them. Boxes last rewritten before 3.1.22 may lack some OLDER names
-// (e.g. a PM from before 3.1.17 lacks work_validate); that gap predates 3.5 and is tracked separately, not delivered here:
+// (e.g. a PM from before 3.1.17 lacks vault_get); that gap predates 3.5 and is tracked separately, not delivered here:
 // the step cannot tell an owner's trim from a name that never arrived.
 //
 // Adding a tool to a built-in agent's allow list means adding an entry here AND a `ReleaseStep` that calls

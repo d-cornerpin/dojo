@@ -48,3 +48,11 @@ function canonical(name: string): string {
   const r = resolveToolAlias(name, {});
   return r.tombstone ? name : r.name;
 }
+
+/** `allow` with `add` appended: every held name stays, in order; a name held under an old alias is not added again. An empty
+ *  `allow` is unrestricted, so adding to it would narrow it: it is returned unchanged. */
+export function appendTools(allow: readonly string[], add: readonly string[]): string[] {
+  if (allow.length === 0) return [];
+  const held = new Set(allow.map(canonical));
+  return [...allow, ...add.map(canonical).filter((t) => !held.has(t) && held.add(t))];
+}

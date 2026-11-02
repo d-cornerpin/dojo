@@ -12,6 +12,7 @@ vi.mock('../../db/connection.js', () => ({
     return mockDb.current;
   },
 }));
+vi.mock('../../services/owner-card-frames.js', () => ({ ownerCardEnded: () => undefined }));
 const notices: Array<{ toAgentId: string; brief: string }> = [];
 vi.mock('../../agent/agent-notice.js', () => ({
   postAgentNotice: (o: { toAgentId: string; brief: string }) => { notices.push(o); return 'id'; },
@@ -39,7 +40,7 @@ beforeEach(() => {
   notices.length = 0;
   mockDb.current = new Database(':memory:');
   mockDb.current.exec('CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)');
-  mockDb.current.exec('CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, classification TEXT, tools_policy TEXT, permissions TEXT, updated_at TEXT)');
+  mockDb.current.exec('CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, status TEXT DEFAULT \'idle\', classification TEXT, tools_policy TEXT, permissions TEXT, updated_at TEXT)');
   addAgent('primary', 'Main', null, null);
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
@@ -54,7 +55,9 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     const [card] = cards();
     expect(card.words.startsWith('Dojo:')).toBe(true);
     expect(card.words).toContain('work_validate');
-    expect(card.words).toContain('Boss');
+    expect(card.words).toContain("Boss doesn't have some tools a new Boss gets");
+    expect(card.words).toContain('Nothing was changed');
+    expect(card.words).not.toMatch(/Access settings|add them back/);   // the panel is locked for built-ins; "back" assumes a removal
     expect(card.words).not.toContain('tracker_get');                  // held (as its replacement), so not offered
     expect(card.words).not.toContain('send_to_agent');
   });
@@ -66,6 +69,8 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0].toAgentId).toBe('primary');
     expect(notices[0].brief).toContain(cards()[0].words);
+    expect(notices[0].brief).toContain('update_agent with agent_id "pm" and grants {"tools":{"add":[');
+    expect(notices[0].brief).toContain('"work_validate"');
   });
 
   it('an owner-trimmed row is never given a name back; the card only offers, and dismissing ends it for good', () => {
@@ -130,8 +135,17 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify(grantsOf({ allow: PM, deny: [] })), 'pm');
     expect(cards()).toEqual([]);
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify(grantsOf({ allow: PM_OLD, deny: [] })), 'pm');
-    raiseBuiltInToolsGap();                                           // the owner's own trim after the fact: the record stands, not re-raised
+    raiseBuiltInToolsGap();                                           // the owner's own trim after the fact: not re-raised
     expect(notices).toHaveLength(1);
+    expect(cards()).toEqual([]);                                      // and the card does not come back
+  });
+
+  it('a terminated agent raises no card, in the step or on a later load', () => {
+    addAgent('pm', 'Boss', JSON.stringify({ allow: PM_OLD }), null);
+    mockDb.current!.prepare("UPDATE agents SET status = 'terminated' WHERE id = 'pm'").run();
+    expect(raiseBuiltInToolsGap()).toMatchObject({ examined: 0, flagged: 0 });
+    expect(cards()).toEqual([]);
+    expect(notices).toEqual([]);
   });
 
   it('an unreadable database throws so the runner keeps the step owed; it never edits an agent', () => {

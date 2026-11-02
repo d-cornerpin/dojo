@@ -2,7 +2,7 @@
 // TELLING THE OWNER WHAT A BUILT-IN AGENT LACKS (proof-fix-u), instead of guessing.
 //
 // `built-in-policy-delivery.ts` delivers the two names that joined the lists after the per-boot rewrite was retired,
-// because no owner can have removed those. Older names (a PM from before 3.1.17 lacks `work_validate`) are a different
+// because no owner can have removed those. Older names (a PM from before 3.1.17 lacks `vault_get`) are a different
 // question: an old list and an owner's trim of a newer list can be the same list, and the product records no edit that
 // tells them apart (see `services/built-in-tools-card.ts`). An owner's removal must never be undone, so this pass edits
 // NOTHING. For the Dreamer and the PM it finds what the current lists name that the row does not hold, records it once,
@@ -30,7 +30,7 @@ export function raiseBuiltInToolsGap(): ReleaseStepOutcome {
   ];
   const nameOf = (id: string): string => (db.prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string | null } | undefined)?.name || id;
   for (const [id, list] of usual) {
-    if (!db.prepare('SELECT 1 FROM agents WHERE id = ?').get(id)) continue;
+    if (!db.prepare('SELECT 1 FROM agents WHERE id = ? AND status <> \'terminated\'').get(id)) continue;
     out.examined++;
     const record = readGap();
     if (record[id]) continue;                                       // already told (or dismissed): never again
@@ -42,8 +42,8 @@ export function raiseBuiltInToolsGap(): ReleaseStepOutcome {
     out.flagged++;
     postAgentNotice({
       toAgentId: main, fromName: 'Dojo message sent', intent: 'dojo_message_sent', selfIntro: false,
-      brief: `The Dojo itself (not you) showed the owner this card on his dashboard because ${nameOf(id)} (agent id ${id}) lacks tools its build lists: "${words}" `
-        + `If he asks you to add them, read its current allow list with update_agent and send it back with these names added (grants.tools.allow). `
+      brief: `The Dojo itself (not you) showed the owner this card on the owner's dashboard because ${nameOf(id)} (agent id ${id}) lacks tools its build lists: "${words}" `
+        + `If he asks you to add them, call update_agent with agent_id "${id}" and grants {"tools":{"add":[${names.map((n) => `"${n}"`).join(',')}]}}: it only appends; names the agent already holds are left alone. `
         + `Do not repeat the card or claim it as your own words.`,
     });
   }

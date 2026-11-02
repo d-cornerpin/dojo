@@ -130,7 +130,7 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
   {
     id: 'built-in-tools-gap',
     sinceVersion: '3.5.0-0',
-    pays: 'a Dreamer or PM row last written before 3.1.22 can lack older listed tools (an old PM lacks work_validate); an owner trim looks the same, so this edits nothing and tells him once, on a card.',
+    pays: 'a Dreamer or PM row last written before 3.1.22 can lack older listed tools (an old PM lacks vault_get); an owner trim looks the same, so this edits nothing and tells him once, on a card.',
     run: async () => (await import('./built-in-tools-gap.js')).raiseBuiltInToolsGap(),
   },
 ];

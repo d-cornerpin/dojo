@@ -46,6 +46,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { z } from 'zod';
+import { appendTools } from './tools-policy.js';
 import type { AccessGrants, ChannelTier, IntegrationLevel, ProviderGrants } from '@dojo/shared';
 import {
   ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, channelTierOf, cloneGrants,
@@ -83,6 +84,7 @@ export const grantsPatchSchema = z.object({
   tools: z.object({
     categories: nameList.optional(),
     allow: z.array(z.string()).optional(),
+    add: z.array(z.string()).optional(),   // appends to allow (appendTools)
     deny: z.array(z.string()).optional(),
   }).strict().optional(),
   integrations: z.object({
@@ -103,9 +105,8 @@ export const grantsPatchSchema = z.object({
     email: tierSchema.optional(),
     teams: tierSchema.optional(),
   }).strict().optional(),
-  // UX-ACCESS A4 — the fourth section. Same `nameList` shape as `categories`
-  // and `credentials`, so `nameSubset` already answers the no-escalation
-  // question for it and there is one subset rule in this file, not three.
+  // UX-ACCESS A4 — the fourth section. Same `nameList` shape as `categories` and `credentials`, so `nameSubset`
+  // already answers the no-escalation question for it: one subset rule in this file, not three.
   techniques: nameList.optional(),
 }).strict();
 
@@ -201,14 +202,12 @@ export function grantExcesses(
         : `tools.categories: cannot grant ${extra.map((c) => `"${c}"`).join(', ')} — you do not hold ${extra.length > 1 ? 'them' : 'it'}`);
     }
   }
-  if (patch.tools?.allow !== undefined && holder.tools.allow.length > 0) {
-    const wanted = patch.tools.allow;
-    const { ok, extra } = nameSubset(wanted, holder.tools.allow);
-    if (wanted.length === 0) {
-      out.push('tools.allow: cannot grant an unrestricted tool list — your own surface is restricted to a named set');
-    } else if (!ok) {
-      out.push(`tools.allow: cannot grant ${extra.map((t) => `"${t}"`).join(', ')} — ${extra.length > 1 ? 'they are' : 'it is'} outside your own tool list`);
-    }
+  for (const f of ['allow', 'add'] as const) {   // `add` is judged exactly as `allow` is
+    const wanted = patch.tools?.[f];
+    if (wanted === undefined || holder.tools.allow.length === 0) continue;
+    const { extra } = nameSubset(wanted, holder.tools.allow);
+    if (f === 'allow' && wanted.length === 0) out.push('tools.allow: cannot grant an unrestricted tool list — your own surface is restricted to a named set');
+    else if (extra.length > 0) out.push(`tools.${f}: cannot grant ${extra.map((t) => `"${t}"`).join(', ')} — ${extra.length > 1 ? 'they are' : 'it is'} outside your own tool list`);
   }
 
   if (patch.integrations?.plaud === true && !holder.integrations.plaud) {
@@ -258,6 +257,7 @@ export function mergeGrants(base: AccessGrants, patch: GrantsPatch): AccessGrant
   if (patch.tools) {
     if (patch.tools.categories !== undefined) g.tools.categories = patch.tools.categories;
     if (patch.tools.allow !== undefined) g.tools.allow = [...patch.tools.allow];
+    if (patch.tools.add !== undefined) g.tools.allow = appendTools(g.tools.allow, patch.tools.add);
     if (patch.tools.deny !== undefined) g.tools.deny = [...patch.tools.deny];
   }
   if (patch.integrations) {

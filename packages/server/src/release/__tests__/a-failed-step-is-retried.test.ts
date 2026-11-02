@@ -26,7 +26,7 @@ const goodResult = { projectsExamined: 1, tasksExamined: 1, findings: [], repair
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   mockDb.current.exec('CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)');
-  mockDb.current.exec('CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, tools_policy TEXT, permissions TEXT, updated_at TEXT)');
+  mockDb.current.exec('CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, status TEXT DEFAULT \'idle\', tools_policy TEXT, permissions TEXT, updated_at TEXT)');
   reconcile.run.mockReset();
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });

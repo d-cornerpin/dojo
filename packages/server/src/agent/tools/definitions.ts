@@ -1507,9 +1507,9 @@ export const toolDefinitions: ToolDefinition[] = [
         tools: { type: 'object', description: 'Tool-access policy to MERGE: { allow?: string[], deny?: string[] } of tool names. Requires can_assign_permissions.' },
         grants: {
           type: 'object',
-          description: 'Access to MERGE, same shape as spawn_agent\'s grants. Only the sections you name change; everything else the agent holds is left alone. Call get_agent_profile first to see what it has now. YOU CAN ONLY GRANT WHAT YOU HOLD — anything beyond your own access is refused, named, and audited.',
+          description: 'Access to MERGE, same shape as spawn_agent\'s grants. Only the sections you name change; everything else the agent holds is left alone, EXCEPT that tools.allow, if you send it, REPLACES the whole list. To give an agent more named tools without touching what it has, send tools.add (a list of names): it appends and never drops one. Call get_agent_profile first to see what it has now. YOU CAN ONLY GRANT WHAT YOU HOLD — anything beyond your own access is refused, named, and audited.',
           properties: {
-            tools: { type: 'object', description: 'Tool access by category: {"categories": ["Web", ...]} or {"categories": "*"}.' },
+            tools: { type: 'object', description: 'Tool access by category: {"categories": ["Web", ...]} or {"categories": "*"}. {"add": ["tool_name", ...]} appends named tools to its allow list (nothing dropped); {"allow": [...]} replaces that list.' },
             integrations: { type: 'object', description: 'Connected services: {"plaud": bool, "credentials": [...] or "*", "google"/"microsoft": {"agent": "none"|"read"|"full", "user": same}}.' },
             channels: { type: 'object', description: 'Reaching humans: {"master": bool, "imessage"/"sms"/"voice"/"email"/"teams": "none"|"owner"|"all"}. Only the primary agent may set master.' },
             techniques: { type: 'array', items: { type: 'string' }, description: 'Technique IDs this agent may run, or "*" for all published ones.' },
