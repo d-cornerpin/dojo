@@ -25,7 +25,6 @@ import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { sourceParts, combineParts } from './summary-check-parts.js';
 import { decisionCharsPerToken } from '../services/token-density.js';
-import { getDecisionProvider } from '../agent/decision-provider.js';
 import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, mintSummaryCheckId, noteSummaryKept, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
 import { createHash } from 'node:crypto';
 export { refuseFallbackOverFreeMemory } from './writer-fallback-room.js';   // summarize.ts's one door asks it
@@ -68,7 +67,7 @@ export async function checkSummary(
     const patienceMs = measuredDecideTimeoutMs(s, Object.keys(questions).length);
     return background ? { purpose: PURPOSE, background: true, patienceMs } : { purpose: PURPOSE, agentId, patienceMs };
   };
-  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken(), getDecisionProvider()?.model ?? '');
+  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken());
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);

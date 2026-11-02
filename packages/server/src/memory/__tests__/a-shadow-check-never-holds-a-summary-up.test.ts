@@ -33,7 +33,7 @@ import { summaryCheckId, summaryCheckIdOfRow, recordSummaryTruth } from '../summ
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { sourceParts } from '../summary-check-parts.js';
-import { decideRequestBody } from '../../agent/decide.js';
+import { decideCountedBytes } from '../../agent/decide.js';
 import { getOllamaLock } from '../../services/ollama-lock.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { proveSummaryCheck } from './summary-check-proven.js';
@@ -175,9 +175,9 @@ describe('M-1: the part splitter always ends', () => {
   it('less than one character of byte room: no parts (the check is recorded unavailable), never a spin', async () => {
     const Q = { invented: { type: 'noul' as const, instructions: 'x' } };
     const source = '€'.repeat(40);   // 3 bytes each
-    const base = Buffer.byteLength(decideRequestBody(STANDARD_DECISION_MODEL.tag, { source_rows: '', summary: '', source_part: `${source.length} of ${source.length}` }, Q));
+    const base = decideCountedBytes({ source_rows: '', summary: '', source_part: `${source.length} of ${source.length}` }, Q);
     const summary = 's'.repeat(64 * 1024 - base - 2);   // 2 bytes of room: less than one '€'
-    expect(sourceParts(source, summary, 1_000_000, Q, 2.48, STANDARD_DECISION_MODEL.tag)).toBeNull();
+    expect(sourceParts(source, summary, 1_000_000, Q, 2.48)).toBeNull();
     const c = await checkSummary(source, summary, AGENT);
     expect(c.answers).toBeNull();
   });

@@ -3,14 +3,14 @@
 // (split from `summary-check.ts`): its parts, and the parts' verdicts as one.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { decideRequestBody, MAX_DECISION_BODY_BYTES, type Answer, type Question } from '../agent/decide.js';
+import { decideCountedBytes, fencedState, MAX_DECISION_BODY_BYTES, type Answer, type Question } from '../agent/decide.js';
 import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
 // ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──
 // The window is `decisionWindowTokens()` — the derived tag's real window, the number the memory fit sets aside.
 // t268 ruling 2: a part fits that window counted at this box's density (`charsPerToken`, B5 measured ~2.5, not
 // 4) less the template slack every window carries (`NUM_CTX_MARGIN_TOKENS`), AND Ollama's 64 KiB body limit
-// (measured: HTTP 413), counted in the bytes `decide()` really sends. A part is as many whole rows (the `---`
+// (measured: HTTP 413), counted as Ollama counts them (`decideCountedBytes`; proof-fix P). A part is as many whole rows (the `---`
 // lines the callers join rows with) as fit beside the summary and the questions; a single row larger than that
 // is split by characters. Joined back with the same separator, the parts are exactly the source.
 const ROW_SEPARATOR = '\n---\n';
@@ -18,12 +18,13 @@ const ROW_SEPARATOR = '\n---\n';
 const bodyBytes = (t: string): number => Buffer.byteLength(JSON.stringify(t)) - 2;
 /** The source's parts, or null when the summary alone leaves no room. */
 export function sourceParts(
-  source: string, summary: string, windowTokens: number, questions: Record<string, Question>, charsPerToken: number, model: string,
+  source: string, summary: string, windowTokens: number, questions: Record<string, Question>, charsPerToken: number,
 ): string[] | null {
-  // Every byte of the request but the part, with `source_part` at its widest (no more parts than characters).
-  const frame = decideRequestBody(model, { source_rows: '', summary, source_part: `${source.length} of ${source.length}` }, questions);
-  const charRoom = Math.floor((windowTokens - NUM_CTX_MARGIN_TOKENS) * charsPerToken) - frame.length;
-  const byteRoom = MAX_DECISION_BODY_BYTES - Buffer.byteLength(frame);
+  // Everything the request carries but the part, with `source_part` at its widest (no more parts than characters).
+  const frame = { source_rows: '', summary, source_part: `${source.length} of ${source.length}` };
+  const charRoom = Math.floor((windowTokens - NUM_CTX_MARGIN_TOKENS) * charsPerToken)
+    - JSON.stringify(fencedState(frame)).length - JSON.stringify(questions).length;
+  const byteRoom = MAX_DECISION_BODY_BYTES - decideCountedBytes(frame, questions);
   if (charRoom <= 0 || byteRoom <= 0) return null;
   const fits = (chars: number, bytes: number): boolean => chars <= charRoom && bytes <= byteRoom;
   if (fits(source.length, bodyBytes(source))) return [source];
