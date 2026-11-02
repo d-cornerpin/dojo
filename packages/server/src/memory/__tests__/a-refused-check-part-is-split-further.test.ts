@@ -15,6 +15,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (
 
 import { runMigrations } from '../../db/migrations.js';
 import { checkSummary } from '../summary-check.js';
+import { checkPart, halvePart } from '../summary-check-parts.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-split-refused';
@@ -70,6 +71,7 @@ describe('a part the model refuses as too large is split and its pieces are chec
     const c = await checkSummary(notes(2, 3_000), 'A short summary.', AGENT, { background: true });
     expect(c.answers).toBeNull();
     expect(refused.length).toBeGreaterThan(0);
+    expect(refused.length).toBeGreaterThan(3);   // it split down (today: one call per part, then unavailable)
     expect(refused.length).toBeLessThan(40);
   });
 });
@@ -79,5 +81,32 @@ describe('splitting a refused part by characters', () => {
     const c = await checkSummary('\u{1F600}'.repeat(14_000), 'A short summary.', AGENT, { background: true });
     expect(refused.length).toBeGreaterThan(0);
     expect(c.answers).not.toBeNull();
+  });
+});
+
+describe('the split stops where the source is not what is too large', () => {
+  it('a summary that alone is over 64 KiB: one ask, no splitting (checkSummary never gets here: sourceParts finds no room)', async () => {
+    const Q = { yes: { type: 'noul', instructions: 'Is it so?' } } as const;
+    let asks = 0;
+    const got = await checkPart('line one\n---\nline two', null, 'x'.repeat(70_000), Q, (_s, onFailure) => {
+      asks++;
+      return { purpose: 'sized_test', background: true, patienceMs: 5_000, onFailure };
+    });
+    expect(got).toEqual([null]);
+    expect(asks).toBe(1);
+  });
+});
+
+describe('halvePart', () => {
+  it('never makes an empty half, never cuts a character in two, and ends at one character', () => {
+    expect(halvePart('aaaa\n---\nbbbbbbbbbbbbbb\n---\ncc')).toEqual(['aaaa\n---\nbbbbbbbbbbbbbb', 'cc']);
+    for (const t of ['\n---\nabcdef', 'abcdef\n---\n', '\n---\n', 'ab\n---\n']) {
+      const h = halvePart(t);
+      if (h) { expect(h[0]).not.toBe(''); expect(h[1]).not.toBe(''); expect(h[0].length + h[1].length).toBeLessThanOrEqual(t.length); }
+    }
+    const [a, b] = halvePart('x\u{1F600}\u{1F600}y')!;
+    expect(a + b).toBe('x\u{1F600}\u{1F600}y');
+    expect(/[\uD800-\uDBFF]$/.test(a)).toBe(false);
+    expect(halvePart('a')).toBeNull();
   });
 });

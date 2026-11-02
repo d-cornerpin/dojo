@@ -76,7 +76,7 @@ function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
   const now = Date.now();
   if (now - (lastLogged.get(cls) ?? 0) >= LOG_EVERY_MS) {
     lastLogged.set(cls, now);
-    logger.warn('decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail });
+    logger.warn(cls === 'too_large' ? 'decide() refused a request as too large; the caller splits it if it can, else the rule decides' : 'decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail });
   }
   try { opts.onFailure?.(cls); } catch { /* a caller's note never breaks the seam */ }
   return null;

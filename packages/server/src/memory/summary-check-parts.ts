@@ -82,12 +82,12 @@ export function combineParts(answers: Array<Record<string, Answer> | null>): Rec
  * characters (never between the two halves of one character). Joined back with the divider the halves are exactly the
  * part. Null when it is a single character: nothing smaller exists, so the splitting ends there.
  */
-function halvePart(part: string): [string, string] | null {
+export function halvePart(part: string): [string, string] | null {
   if (part.length < 2) return null;
   const mid = part.length >> 1;
   const before = part.lastIndexOf(ROW_SEPARATOR, mid);
   const after = part.indexOf(ROW_SEPARATOR, mid);
-  const at = [before, after].filter((i) => i > 0).sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid))[0];
+  const at = [before, after].filter((i) => i > 0 && i + ROW_SEPARATOR.length < part.length).sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid))[0];
   if (at !== undefined) return [part.slice(0, at), part.slice(at + ROW_SEPARATOR.length)];
   const cut = /[\uD800-\uDBFF]/.test(part[mid - 1]) ? mid + 1 : mid;
   return cut >= part.length ? null : [part.slice(0, cut), part.slice(cut)];
@@ -106,7 +106,9 @@ export async function checkPart(
   const s = label === null ? { source_rows: part, summary } : { source_rows: part, summary, source_part: label };
   let tooLarge = false;
   const got = await decide(s, questions, opts(s, (f) => { tooLarge = f === 'too_large'; }));
-  const halves = got === null && tooLarge ? halvePart(part) : null;
+  // Measured stop: when the request is too large even with NO source in it, the source is not what is too big.
+  const emptied = { ...s, source_rows: '' };
+  const halves = got === null && tooLarge && decideCountedBytes(emptied, questions) <= MAX_DECISION_BODY_BYTES ? halvePart(part) : null;
   if (!halves) return [got];
   const base = label ?? '1 of 1';
   const first = await checkPart(halves[0], `${base}, first half`, summary, questions, opts);
