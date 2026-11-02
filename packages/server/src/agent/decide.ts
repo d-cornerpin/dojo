@@ -189,7 +189,7 @@ async function sent(
       const why = cutBy(clock, cuts);
       // Cut by its OWN formula clock while the runner was working on it: no latency, but the true one is at least this
       // long (a censored sample). A cut with no sign of life is only a failed call, as before.
-      if (why === 'timeout' && await watch?.working()) recordDecidePace(provider.modelId, timeoutMs - loadMs, fitMs, true);
+      if (why === 'timeout' && watch?.working()) recordDecidePace(provider.modelId, timeoutMs - loadMs, fitMs, true);
       return fail(why ?? 'transport', opts, err instanceof Error ? err.message : String(err));
     }
     // 413: the model's own refusal of the size. Whatever Ollama's version counts, that is the signal a caller can act on.

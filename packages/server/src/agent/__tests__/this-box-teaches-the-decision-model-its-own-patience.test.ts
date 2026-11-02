@@ -19,7 +19,7 @@ vi.mock('../../costs/tracker.js', () => ({ recordCost: () => undefined, getDaily
 const runner = { busy: true, looks: 0 };
 vi.mock('../../services/ollama-runner-progress.js', async (orig) => ({
   ...(await orig<typeof import('../../services/ollama-runner-progress.js')>()),
-  watchRunner: () => ({ working: async () => { runner.looks++; return runner.busy; }, stop: () => undefined }),
+  watchRunner: () => ({ working: () => { runner.looks++; return runner.busy; }, stop: () => undefined }),
 }));
 
 import { runMigrations } from '../../db/migrations.js';

@@ -40,7 +40,8 @@ function samplesOf(modelId: string): Sample[] {
 }
 
 /** What each sample says the box needs, as a ratio: a call that answered, its ratio; a call that was cut, one step past
- *  the ratio it was given — unless a call that answered since proved a ratio at least that long (then it was just slow). */
+ *  the ratio it was given — unless some call that answered in the window proved a ratio at least that long (then it was just
+ *  slow; the order is not looked at: a cut's ratio is the pace that already included any earlier answer). */
 function needs(samples: Sample[]): number[] {
   const longestAnswer = Math.max(0, ...samples.filter((s) => s[2] === 0).map((s) => s[1]));
   return samples.flatMap((s) => (s[2] === 0 ? [s[1]] : s[1] <= longestAnswer ? [] : [s[1] * CUT_GROWTH]));
