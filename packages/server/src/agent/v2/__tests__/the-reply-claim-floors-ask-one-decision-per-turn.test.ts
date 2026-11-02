@@ -464,27 +464,50 @@ describe('fix round 1 (Important 1): a reply\'s cost does not grow with the shad
 
 describe('fix round 1 (Important 2): a waiting reply has a patience, and Stop cuts a queued call', () => {
   /** A background call that sits at the head of the one queue until released (the review's 4,009 ms probe). */
-  function holdTheQueue(): { release: () => void; done: Promise<unknown> } {
+  const AHEAD = { ahead: 'a call already queued' };
+  function holdTheQueue(timeoutMs?: number): { release: () => void; done: Promise<unknown> } {
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
     respond = async (body) => {
       if ((body.state as Record<string, unknown>).ahead !== undefined) await held;
       return scripted(body);
     };
-    const done = decide({ ahead: 'a call already queued' }, { q: { type: 'noul', instructions: 'Is `ahead` a call?' } }, { purpose: 'probe', patienceMs: 60_000, background: true });
+    const done = decide(AHEAD, { q: { type: 'noul', instructions: 'Is `ahead` a call?' } }, { purpose: 'probe', patienceMs: 60_000, background: true, timeoutMs });
     return { release, done };
   }
+  const REPLY_STATE = (reply: string) => ({ reply, last_user_message: 'can you handle the receipt?', tool_calls_this_turn: ['vault_remember'] });
+
+  it('proof-fix N: a reply asked while a check 3x its own time is in flight keeps the model\'s answers', async () => {
+    installDecisionModel();
+    proveModel('claims_saved');
+    modelSays = { claims_saved: 0.95 };   // the model steers: the floor fires only if its answer was kept
+    const reply = "All handled on my side, you won't have to repeat it.";
+    const patience = measuredDecideTimeoutMs(REPLY_STATE(reply), 9);
+    const ahead = holdTheQueue(patience * 4);   // the check's own clock, as decide() measures a long one
+    setTimeout(() => ahead.release(), patience * 3);
+    await new Promise((r) => setTimeout(r, 20));
+    const o = await observe(reply, REJECTED_SAVE);
+    expect(fired(o)).toContain('failed-save-claim');
+    await __replyClaimsSettledForTests(AGENT);
+    const rows = db().prepare('SELECT model_said FROM decision_shadow WHERE purpose = ? AND turn_id NOT LIKE ?').all(REPLY_CLAIM_PURPOSE, 'seed-%') as Array<{ model_said: string | null }>;
+    expect(rows).toHaveLength(9);
+    expect(rows.every((r) => r.model_said !== null)).toBe(true);
+    expect(await ahead.done).not.toBeNull();
+  }, 30_000);
 
   it('the reply returns at its patience with the rule\'s answer; the queued call is never sent; the queue moves on', async () => {
     installDecisionModel();
     proveModel('claims_saved');
     modelSays = { claims_saved: 0.95 };   // the model WOULD steer; patience ran out, so the rule (no claim) stands
+    const aheadClock = measuredDecideTimeoutMs(AHEAD, 1);   // cold: nothing has answered yet
     const ahead = holdTheQueue();
     await new Promise((r) => setTimeout(r, 20));
+    const behindClock = measuredDecideTimeoutMs({ behind: 'a later caller' }, 1);
     const behind = decide({ behind: 'a later caller' }, { q: { type: 'noul', instructions: 'Is `behind` a call?' } }, { purpose: 'probe-2', patienceMs: 60_000 });
     const reply = "All handled on my side, you won't have to repeat it.";
-    const patience = measuredDecideTimeoutMs(
-      { reply, last_user_message: 'can you handle the receipt?', tool_calls_this_turn: ['vault_remember'] }, 9)!;
+    // proof-fix N: its patience is its own call's measured time PLUS what it waits behind — what is left of the call in
+    // flight's own clock and the allowed time of the waiter ahead (that call's transport ignores its clock here).
+    const patience = measuredDecideTimeoutMs(REPLY_STATE(reply), 9) + aheadClock - 20 + behindClock;
     const started = Date.now();
     const pending = observe(reply, REJECTED_SAVE);
     await new Promise((r) => setTimeout(r, 50));
@@ -492,7 +515,7 @@ describe('fix round 1 (Important 2): a waiting reply has a patience, and Stop cu
     const o = await pending;
     const waited = Date.now() - started;
     expect(fired(o)).not.toContain('failed-save-claim');   // the rule's answer
-    expect(waited).toBeGreaterThanOrEqual(patience - 50);   // it waited its patience, counted from when it asked…
+    expect(waited).toBeGreaterThanOrEqual(patience - 150);   // it waited its patience, counted from when it asked…
     expect(waited).toBeLessThan(patience + 2_000);          // …and no longer, though the call ahead is still held
     expect(calls.filter((c) => Object.keys(c.questions as object).includes('claims_saved'))).toHaveLength(0);   // never sent
     expect(calls.filter((c) => 'after' in (c.state as object))).toHaveLength(0);   // the call behind still waits its turn

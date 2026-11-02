@@ -161,7 +161,7 @@ function ask(state: AgentTurnState, ctx: PostCallClassifyContext, reply: string,
   // Nobody waits on a shadow call, so it waits for the agents' own local work and holds no slot of this
   // agent's turn (a background ask cannot name an agent: a call that outlives its turn is not that turn's work).
   // A call the turn waits on holds the agent's stop slot from the moment it queues. Either way its PATIENCE is the
-  // call's own measured timeout (`measuredDecideTimeoutMs`): no longer than the call itself is allowed.
+  // call's own measured timeout (`measuredDecideTimeoutMs`); a waited one is also given what it waits behind (`decide()`).
   const asking = Object.fromEntries(questions.map((q) => [q, REPLY_CLAIM_QUESTIONS[q]]));
   let failure: FailureClass | 'threw' | null = null;
   const onFailure = (f: FailureClass): void => { failure = f; };
