@@ -7,17 +7,23 @@
 
 import { fenceExternal } from '../tools/external-content.js';
 import type { Question } from './decide.js';
+import { PRIOR_PACE } from './decide-pace.js';
 
 /**
  * THE TIMEOUT, MEASURED (t268 ruling 4; B5, `overhaul-plans/v35-writer-measure.md` → "decide() latency"): on a
  * box whose GPU the writer shares, a warm call took 62 + 1.33·T + 94·(Q − 1) ms (T = the state's tokens, Q =
  * the questions: reading the state is most of it, each extra question ~94 ms), observed ÷ fitted was 2.05 at
  * p99, and loading a model that is not resident added about 1.3 s. So a call is given that long for its own
- * size — never one fixed figure (the provisional 1,500 ms cut 22 of 24 cold calls). A caller may pass its own.
+ * size — never one fixed figure (the provisional 1,500 ms cut 22 of 24 cold calls). A caller may pass its own. The 2.05 is
+ * the PRIOR of this box's learned pace (`decide-pace.ts`, proof-fix T): `pace` is what that module gives this box.
  */
-export function decideTimeoutMs(stateTokens: number, questions: number, resident: boolean): number {
-  return Math.ceil((62 + 1.33 * stateTokens + 94 * (questions - 1)) * 2.05) + (resident ? 0 : 1_300);
+export function decideTimeoutMs(stateTokens: number, questions: number, resident: boolean, pace = PRIOR_PACE): number {
+  return Math.ceil(decideFitMs(stateTokens, questions) * pace) + (resident ? 0 : MODEL_LOAD_MS);
 }
+/** B5's fitted warm time of a call of this size (the 2.05 margin and the load time are not in it). */
+export const decideFitMs = (stateTokens: number, questions: number): number => 62 + 1.33 * stateTokens + 94 * (questions - 1);
+/** B5: loading a model that is not resident added about 1.3 s. */
+export const MODEL_LOAD_MS = 1_300;
 
 /**
  * v3.5 K33: the state is the MATERIAL the questions are about — a reply, a summary, a job's source rows

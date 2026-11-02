@@ -19,7 +19,8 @@ import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins, whenAgentWorkEnds } from '../services/ollama-quiet.js';
 import { decisionCharsPerToken, recordDensitySample, tokensAt } from '../services/token-density.js';
 import { aheadOfAWaiterMs, inTurn } from './decide-queue.js';
-import { decideCountedBytes, decideRequestBody, decideTimeoutMs, fencedState } from './decide-sizing.js';
+import { decideCountedBytes, decideFitMs, decideRequestBody, decideTimeoutMs, fencedState, MODEL_LOAD_MS } from './decide-sizing.js';
+import { decidePace, recordDecidePace } from './decide-pace.js';
 
 const logger = createLogger('decide');
 
@@ -88,7 +89,13 @@ export function measuredDecideTimeoutMs(state: unknown, questionCount: number): 
   const provider = getDecisionProvider();
   if (!provider) return 0;
   const stateChars = JSON.stringify(fencedState(state)).length;
-  return decideTimeoutMs(tokensAt(stateChars, decisionCharsPerToken()), questionCount, resident.has(provider.model));
+  return formulaMs(provider, stateChars, questionCount);
+}
+
+/** The formula's time for a call of this size on THIS box: B5's fit at the pace this box's own calls have shown
+ *  (`decide-pace.ts`; B5's 2.05 until it has any), plus the load time when the model is not resident. */
+function formulaMs(provider: NonNullable<ReturnType<typeof getDecisionProvider>>, stateChars: number, questionCount: number): number {
+  return decideTimeoutMs(tokensAt(stateChars, decisionCharsPerToken()), questionCount, resident.has(provider.model), decidePace(provider.modelId));
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -124,8 +131,7 @@ export async function decide(
   // somebody waits on is never held behind a check that is itself waiting.
   if (opts.background) await whenAgentWorkEnds(provider.providerId);
   // The time this call is allowed once sent: its caller's own, or the measured formula for its size (residency read at send).
-  const clockMs = (): number => opts.timeoutMs
-    ?? decideTimeoutMs(tokensAt(stateChars, decisionCharsPerToken()), names.length, resident.has(provider.model));
+  const clockMs = (): number => opts.timeoutMs ?? formulaMs(provider, stateChars, names.length);
   // Patience counts from when a waited caller ASKS, plus what it must wait behind; a background ask's from when its turn
   // comes (see `BackgroundAsk`).
   const patience = opts.background ? null : AbortSignal.timeout(opts.patienceMs + aheadOfAWaiterMs());
@@ -161,6 +167,9 @@ async function sent(
   const endLocalWork = await localWorkBegins();
   try {
     const timeoutMs = clockMs();
+    // What this call teaches the pace: its time against B5's fit for its size (the load time is not part of the fit).
+    const fitMs = decideFitMs(tokensAt(stateChars, decisionCharsPerToken()), names.length);
+    const loadMs = resident.has(provider.model) ? 0 : MODEL_LOAD_MS;
     resident.delete(provider.model);   // until this call is answered
     const clock = AbortSignal.timeout(timeoutMs);
     const started = Date.now();
@@ -173,7 +182,10 @@ async function sent(
         signal: AbortSignal.any([clock, ...[cuts.stop, cuts.patience].filter((x): x is AbortSignal => x !== null)]),
       });
     } catch (err) {
-      return fail(cutBy(clock, cuts) ?? 'transport', opts, err instanceof Error ? err.message : String(err));
+      const why = cutBy(clock, cuts);
+      // Cut by its OWN formula clock: no latency, but the true one is at least this long (a censored sample).
+      if (why === 'timeout' && opts.timeoutMs === undefined) recordDecidePace(provider.modelId, timeoutMs - loadMs, fitMs, true);
+      return fail(why ?? 'transport', opts, err instanceof Error ? err.message : String(err));
     }
     // 413: the model's own refusal of the size. Whatever Ollama's version counts, that is the signal a caller can act on.
     if (!resp.ok) return resp.status === 413 ? fail('too_large', opts, 'refused by the model, HTTP 413') : fail('http', opts, `${resp.status}`);
@@ -194,6 +206,7 @@ async function sent(
       requestType: 'decision', callPurpose: opts.purpose,
     });
     resident.add(provider.model);
+    recordDecidePace(provider.modelId, Math.max(1, Date.now() - started - loadMs), fitMs, false);
     // I-3: usage is summed over the questions (B5), so one question's count against the state teaches the decision model its density.
     if (isNum(inputTokens)) recordDensitySample(provider.modelId, stateChars, inputTokens / names.length);
     return answers;
