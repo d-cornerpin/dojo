@@ -50,3 +50,12 @@ export async function runnerIsWorking(baseUrl: string, model: string, withinMs: 
     return port !== null && slotsShowWork(await ollamaJson<unknown>(`http://127.0.0.1:${port}`, '/slots', signal));
   } catch { return false; }
 }
+
+export interface RunnerWatch { working: () => Promise<boolean>; stop: () => void }
+/** Looks at the runner shortly before a call's clock (`timeoutMs`) runs out; the cut is not delayed (the look has its own
+ *  bound `budgetMs`: four reads of a call with no state at this box's pace). `working()` is what it saw; no look made is no sign. */
+export function watchRunner(baseUrl: string, model: string, timeoutMs: number, budgetMs: number): RunnerWatch {
+  let seen: Promise<boolean> | null = null;
+  const timer = setTimeout(() => { seen = runnerIsWorking(baseUrl, model, budgetMs); }, Math.max(timeoutMs - budgetMs, timeoutMs / 2));
+  return { working: async () => (seen ? await seen : false), stop: () => clearTimeout(timer) };
+}

@@ -21,7 +21,7 @@ import { decisionCharsPerToken, recordDensitySample, tokensAt } from '../service
 import { aheadOfAWaiterMs, inTurn } from './decide-queue.js';
 import { decideCountedBytes, decideFitMs, decideRequestBody, decideTimeoutMs, fencedState, MODEL_LOAD_MS } from './decide-sizing.js';
 import { decidePace, recordDecidePace } from './decide-pace.js';
-import { runnerIsWorking } from '../services/ollama-runner-progress.js';
+import { watchRunner, type RunnerWatch } from '../services/ollama-runner-progress.js';
 
 const logger = createLogger('decide');
 
@@ -174,7 +174,7 @@ async function sent(
     const loadMs = resident.has(provider.model) ? 0 : MODEL_LOAD_MS;
     resident.delete(provider.model);   // until this call is answered
     // A cut teaches slowness only if the runner was WORKING on the call near its end (`watchRunner`); a hung one teaches nothing.
-    watch = opts.timeoutMs === undefined ? watchRunner(provider, timeoutMs) : null;
+    watch = opts.timeoutMs === undefined ? watchRunner(provider.baseUrl, provider.model, timeoutMs, 4 * decideTimeoutMs(0, 1, true, decidePace(provider.modelId))) : null;
     const clock = AbortSignal.timeout(timeoutMs);
     const started = Date.now();
     let resp: Response;
@@ -219,16 +219,6 @@ async function sent(
     watch?.stop();
     endLocalWork();
   }
-}
-
-interface RunnerWatch { working: () => Promise<boolean>; stop: () => void }
-/** Looks at the runner shortly before the call's clock runs out (it does not delay the cut: the look has its own bound,
- *  four reads of a call with no state at this box's pace). `working()` is what it saw; no look made is no sign of life. */
-function watchRunner(provider: NonNullable<ReturnType<typeof getDecisionProvider>>, timeoutMs: number): RunnerWatch {
-  const budgetMs = 4 * decideTimeoutMs(0, 1, true, decidePace(provider.modelId));
-  let seen: Promise<boolean> | null = null;
-  const timer = setTimeout(() => { seen = runnerIsWorking(provider.baseUrl, provider.model, budgetMs); }, Math.max(timeoutMs - budgetMs, timeoutMs / 2));
-  return { working: async () => (seen ? await seen : false), stop: () => clearTimeout(timer) };
 }
 
 /** What may cut a call besides its own clock: the agent's Stop (its slot) and the caller's patience. */
