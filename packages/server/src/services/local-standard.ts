@@ -107,9 +107,9 @@ export function isStandardModelRow(modelId: string | null | undefined): boolean 
   return !!modelId && (modelId === standardModelRowId('writer') || modelId === standardModelRowId('decision'));
 }
 
-async function ollamaJson<T>(baseUrl: string, path: string): Promise<T | null> {
+export async function ollamaJson<T>(baseUrl: string, path: string, signal: AbortSignal = AbortSignal.timeout(5000)): Promise<T | null> {
   try {
-    const resp = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(5000) });
+    const resp = await fetch(`${baseUrl}${path}`, { signal });
     return resp.ok ? (await resp.json()) as T : null;
   } catch {
     return null;

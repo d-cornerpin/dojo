@@ -37,3 +37,12 @@ export function membersOfGroupAsync(pgid: number): Promise<string[]> {
     } catch { resolve([]); }
   });
 }
+
+/** Every live process's command line, one per line (the same fixed `ps`, no agent input); '' when it cannot be read or `signal` aborts. */
+export function processCommandsAsync(signal: AbortSignal): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      execFile('/bin/ps', ['-ax', '-o', 'command='], { encoding: 'utf8', signal, maxBuffer: 8 * 1024 * 1024 }, (err, out) => resolve(err ? '' : out));
+    } catch { resolve(''); }
+  });
+}

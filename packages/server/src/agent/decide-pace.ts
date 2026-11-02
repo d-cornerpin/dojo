@@ -6,7 +6,8 @@
 // short and calls that would have answered are cut. So the 2.05 is the PRIOR of a per-box PACE: each call that
 // answers teaches the pace the ratio latency ÷ F, and a call cut by its OWN clock teaches that the true ratio is
 // AT LEAST the one it was given (a censored sample — it records no latency, which is why a naive learner never
-// lengthens a slow box's patience). The pace is never below the prior, so a fast box keeps today's behaviour exactly.
+// lengthens a slow box's patience) — but ONLY when the runner was seen working on it (`services/ollama-runner-progress.ts`,
+// asked by decide.ts): a hung model teaches nothing, so repeated hangs never lengthen the wait. The pace is never below the prior, so a fast box keeps today's behaviour exactly.
 //
 // Samples are the last few calls' [at, ratio, cut] in the `config` table (key `decide_pace.<model>`), the same place
 // and the same best-effort handling as `services/token-density.ts`: a missing, corrupt or unreadable store is the

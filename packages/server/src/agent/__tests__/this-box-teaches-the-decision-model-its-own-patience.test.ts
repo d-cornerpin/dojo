@@ -15,10 +15,18 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../costs/tracker.js', () => ({ recordCost: () => undefined, getDailySpend: () => 0 }));
 
+/** What the box's runner shows when the probe looks: true = busy taking in the prompt. The probe itself is tested on its own below. */
+const runner = { busy: true, looks: 0 };
+vi.mock('../../services/ollama-runner-progress.js', async (orig) => ({
+  ...(await orig<typeof import('../../services/ollama-runner-progress.js')>()),
+  runnerIsWorking: async () => { runner.looks++; return runner.busy; },
+}));
+
 import { runMigrations } from '../../db/migrations.js';
 import { decide, measuredDecideTimeoutMs, __forgetResidencyForTests, type Question, type FailureClass } from '../decide.js';
 import { decideFitMs, decideTimeoutMs, fencedState, MODEL_LOAD_MS } from '../decide-sizing.js';
 import { PRIOR_PACE, decidePace } from '../decide-pace.js';
+import { runnerPortOf, slotsShowWork } from '../../services/ollama-runner-progress.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { B5_MEASURED_CHARS_PER_TOKEN } from '../../services/token-density.js';
 
@@ -39,6 +47,7 @@ beforeEach(() => {
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://127.0.0.1:47143', 'none', 1)").run();
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('m-decision', 'ollama-local', ?, ?, '["decision"]', 1)`).run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
   loaded = false;
+  runner.busy = true; runner.looks = 0;
   vi.stubGlobal('fetch', vi.fn((_url: string, init?: { signal?: AbortSignal }) => new Promise<Response>((resolve, reject) => {
     const t = setTimeout(() => { loaded = true; resolve(Response.json({ answers: { yes: { noul: 0.9 } }, usage: { input_tokens: 40 } })); }, boxRatio * FIT + (loaded ? 0 : MODEL_LOAD_MS));
     init?.signal?.addEventListener('abort', () => { clearTimeout(t); loaded = false; reject(new Error('aborted')); }, { once: true });
@@ -75,6 +84,57 @@ describe('a slow box: calls take 2x the formula\'s own time', () => {
     await call();   // cut: the model is unloaded again, so the formula's own figure is the cold one
     expect(measuredDecideTimeoutMs(STATE, 1)).toBeGreaterThan(decideTimeoutMs(tokens, 1, false));
   }, 30_000);
+});
+
+describe('a hung model teaches nothing (no sign of life)', () => {
+  it('calls that never answer and show no work are cut every time at exactly the formula\'s patience', async () => {
+    await warm();
+    runner.busy = false;
+    boxRatio = 1_000;   // never answers within the test
+    const formula = decideTimeoutMs(tokens, 1, true);
+    for (let i = 0; i < 4; i++) {
+      const r = await call();
+      expect(r.failures).toEqual(['timeout']);   // recorded as a failed call, as today
+    }
+    expect(runner.looks).toBeGreaterThan(0);     // it did look, and saw nothing
+    expect(decidePace('m-decision')).toBe(PRIOR_PACE);
+    expect(measuredDecideTimeoutMs(STATE, 1)).toBe(decideTimeoutMs(tokens, 1, false));   // cold after a failure, but no slower than the formula
+    expect(formula).toBe(decideTimeoutMs(tokens, 1, true));
+  }, 60_000);
+
+  it('the same slow call, once the runner shows it is working, does teach: the proof is the sign of life, not the cut', async () => {
+    await warm();
+    runner.busy = false;
+    boxRatio = 2 * PRIOR_PACE;
+    await call(); await call();
+    expect(decidePace('m-decision')).toBe(PRIOR_PACE);
+    runner.busy = true;
+    await call();
+    expect(decidePace('m-decision')).toBeGreaterThan(PRIOR_PACE);
+  }, 60_000);
+});
+
+describe('reading the runner (what the product can observe on the box\'s own Ollama)', () => {
+  const PS = [
+    '/Applications/Ollama.app/Contents/Resources/llama-server --model /m/a --port 49575 --host 127.0.0.1 --no-webui -c 2048 -np 1',
+    '/Applications/Ollama.app/Contents/Resources/llama-server --model /m/b --port 57590 --host 127.0.0.1 --no-webui --offline -c 28672 -np 16',
+    '/usr/bin/other --port 1111 -c 28672',
+  ].join('\n');
+  it('finds the one runner started with the model\'s context length', () => {
+    expect(runnerPortOf(PS, 28672)).toBe(57590);
+    expect(runnerPortOf(PS, 2048)).toBe(49575);
+  });
+  it('two runners with the same context, or none, are not told apart: no port', () => {
+    expect(runnerPortOf(`${PS}\n${PS.split('\n')[1].replace('57590', '57591')}`, 28672)).toBeNull();
+    expect(runnerPortOf(PS, 4096)).toBeNull();
+    expect(runnerPortOf('', 28672)).toBeNull();
+  });
+  it('only a slot that is processing a prompt and has taken in tokens is a sign of life', () => {
+    expect(slotsShowWork([{ is_processing: false, n_prompt_tokens_processed: 0 }, { is_processing: true, n_prompt_tokens_processed: 512 }])).toBe(true);
+    expect(slotsShowWork([{ is_processing: true, n_prompt_tokens_processed: 0 }])).toBe(false);
+    expect(slotsShowWork([{ is_processing: false, n_prompt_tokens_processed: 900 }])).toBe(false);
+    for (const junk of [null, 'x', {}, [null], [{ is_processing: 'true' }]]) expect(slotsShowWork(junk)).toBe(false);
+  });
 });
 
 describe('a fast box keeps at least today\'s behaviour', () => {

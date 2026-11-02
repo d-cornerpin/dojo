@@ -187,6 +187,7 @@ describe('fix round 2 (3): shadow checks wait their turn, one at a time, each wi
   it('10 summaries in one fold on a slow Ollama that answers one request at a time: 10 verdicts recorded', async () => {
     let busyUntil = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string; signal?: AbortSignal }) => {
+      if (!_url.endsWith('/v1/systemone')) return new Response('', { status: 404 });   // its other routes (the runner look, proof-fix T) are not decision calls
       const { questions } = JSON.parse(init?.body ?? '{}') as { questions: Record<string, unknown> };
       // Ollama serves one request at a time: this one starts when the one before it is done, and takes 700 ms.
       const start = Math.max(Date.now(), busyUntil);
