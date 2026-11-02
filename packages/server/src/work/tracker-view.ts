@@ -31,6 +31,7 @@
 
 import type { WorkEventKind } from './event-kinds.js';
 import type { WorkState } from './store.js';
+import { TERMINAL_STATE_NAMES } from './terminal-states.js';
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 1 — VOCABULARY
@@ -407,23 +408,17 @@ export const pendingCloseRequestExpr = (a: string): string =>
   + ` THEN 1 ELSE 0 END)`;
 
 /**
- * WHICH ROWS HAVE A CLOSE FILED ON THEM — the subject, written ONCE (UX-REPAIR round 5 T21).
+ * WHICH ROWS HAVE A CLOSE FILED ON THEM — the subject, written ONCE (round-5 T21, proof-fix V).
  *
- * `pendingCloseRequestExpr` above answers "is a close request outstanding". It does NOT say
- * which STATES a close can be filed from, and every reader answered that for itself, in the
- * same hand-rolled pair: `state = 'claimed' AND pendingCloseRequestExpr(...) = 1`. Ten sites,
- * four authors, one omission — `paused`. A row paused awaiting the owner's approval, then
- * finished and delivered, files exactly this request `from:'paused'` (round-5 S5, event
- * 22401) and reached NO queue: the completion lens could not see it, and the pause lens
- * picked it up and asked the PM the wrong question against the stale wait note.
- *
- * So the subject is one expression. `claimed` and `paused` are the two states a worker can
- * file a close FROM — they are the two non-terminal states a claimed job can be sitting in
- * when its work finishes — and a reader that wants one of them without the other is asking a
- * different question and must say so in its own words.
+ * Ten sites once hand-listed `claimed` (round-5 S5 found `paused` missing); the pair was itself
+ * a second copy of a rule the filing path lacks: `transition()`'s G9 files a worker's close from
+ * EVERY non-terminal state, so a step paused, rejected back to `on_deck`, finished and filed was
+ * told "[FILED] … do NOT retry" and reached no queue. The subject is "not terminal", DERIVED
+ * from `terminal-states.ts`: what the filing path accepts is by construction what the validator
+ * sees. A reader wanting one state (the pause and block lenses below) must say so itself.
  */
 export const closeRequestFiledExpr = (a: string): string =>
-  `(CASE WHEN ${a}.state IN ('claimed', 'paused') AND ${pendingCloseRequestExpr(a)} = 1 THEN 1 ELSE 0 END)`;
+  `(CASE WHEN ${a}.state NOT IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')}) AND ${pendingCloseRequestExpr(a)} = 1 THEN 1 ELSE 0 END)`;
 
 /** "Somebody says this is finished and no authority has agreed" — the completion queue's
  *  whole subject, in its two shapes: the engine's own receipt close (`done`, unblessed) and
@@ -436,6 +431,10 @@ export const unvalidatedCloseExpr = (a: string): string =>
  *  pause note is how S5's close was eaten. */
 export const unvalidatedPauseExpr = (a: string): string =>
   `(${a}.state = 'paused' AND ${validatedExpr(a, 'paused')} = 0 AND ${closeRequestFiledExpr(a)} = 0)`;
+
+/** The block lens's subject, MINUS rows that have since filed a close (a completion question). */
+export const unvalidatedBlockExpr = (a: string): string =>
+  `(${a}.state = 'blocked' AND ${validatedExpr(a, 'blocked')} = 0 AND ${closeRequestFiledExpr(a)} = 0)`;
 
 /** The delivery the Key-1 request pointed at, so the validator closes against the receipt the
  *  worker actually had rather than resolving a fresh one. */

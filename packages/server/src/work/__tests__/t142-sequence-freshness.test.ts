@@ -264,10 +264,9 @@ beforeAll(() => {
 
 /** The `<state>_validated` readers at the t142 head, by file. Every one calls the builder. */
 const VALIDATED_READERS: Record<string, number> = {
-  'tracker/pm-agent.ts': 4,
   'tracker/tools.ts': 7,
   'work/tracker-store.ts': 1,
-  'work/tracker-view.ts': 5,
+  'work/tracker-view.ts': 6,   // proof-fix V: pm-agent's four hand-written blocked clauses became unvalidatedBlockExpr
   'work/validation-drive.ts': 2,
 };
 

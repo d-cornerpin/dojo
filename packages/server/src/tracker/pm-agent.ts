@@ -13,8 +13,8 @@ import { clearReReviewBound, reReviewHeldBack } from './pm-rereview-bound.js';
 // SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
 import { writeAgentStatus } from '../agent/agent-status.js';
 import {
-  taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, revertCountExpr,
-  awaitingUserVerdictExpr, unvalidatedCloseExpr, unvalidatedPauseExpr,
+  taskScope, msToText, STATE_TO_STATUS_SQL, revertCountExpr,
+  awaitingUserVerdictExpr, unvalidatedCloseExpr, unvalidatedPauseExpr, unvalidatedBlockExpr,
   stampColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
@@ -1518,7 +1518,7 @@ async function runPMReview(): Promise<void> {
           -- second shape's STATE SET the one thing it is, so this count and the queue it
           -- wakes cannot disagree about what is waiting.
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
           ${PENDING_OVERRIDE_COUNT_SQL}
         AS c
@@ -1623,7 +1623,7 @@ async function runPMReview(): Promise<void> {
     const pendingCount = db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
+        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
         ${PENDING_OVERRIDE_COUNT_SQL}
       AS c
@@ -2074,8 +2074,7 @@ async function runPMReview(): Promise<void> {
            w.priority AS priority, ${msToText('w.updated_at')} AS updated_at,
            ${revertCountExpr('w')} AS revert_count
     FROM work w
-    WHERE ${taskScope('w')} AND w.state = 'blocked'
-      AND ${validatedExpr('w', 'blocked')} = 0
+    WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')}
       AND ${awaitingUserVerdictExpr('w')} = 0
       AND w.updated_at < ?
     ORDER BY w.updated_at ASC
@@ -2474,7 +2473,7 @@ export async function runPokeCheck(): Promise<void> {
           -- second shape's STATE SET the one thing it is, so this count and the queue it
           -- wakes cannot disagree about what is waiting.
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
           ${PENDING_OVERRIDE_COUNT_SQL}
         AS c

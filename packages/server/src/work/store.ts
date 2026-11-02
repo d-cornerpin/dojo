@@ -65,8 +65,8 @@ export type Actor = 'owner' | 'pm' | 'agent' | 'engine' | 'scheduler' | 'healer'
  *  is answered by the compiler rather than by a conformance suite reading source. */
 export type Claim = 'requests-validation' | 'authoritative';
 
-export const TERMINAL_STATES: readonly WorkState[] = ['done', 'failed', 'abandoned'];
-export const isTerminal = (s: WorkState): boolean => TERMINAL_STATES.includes(s);
+import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
+export { TERMINAL_STATES, isTerminal };
 
 /** The legal-transition table. A move that is not listed is refused by gate `illegal-transition`,
  *  which is why every row here had to be written down rather than left to the caller's judgement.

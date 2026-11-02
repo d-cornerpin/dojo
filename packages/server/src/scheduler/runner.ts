@@ -1361,10 +1361,9 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // Same rule as `forceResetStuckRecurringTask`'s guard, at the OTHER site that moves a
   // running recurring row back to `on_deck`. A worker that filed `complete_all_runs` is asking
   // for the SCHEDULE to stop; sending the row to `on_deck` while that request is outstanding
-  // takes it out of the close-request subject (`closeRequestFiledExpr`: `claimed`/`paused`,
-  // T21's argued pair) and leaves it held out of firing with no path to a verdict — a row
-  // frozen between two mechanisms. It stays `claimed`, in front of the validator, until Key 2
-  // rules; if the close is REFUSED the request is answered, the hold in `dueScope` lifts, and
+  // hands the row back to the cadence while its stop awaits a verdict. (The request itself stays
+  // visible from any non-terminal state, `closeRequestFiledExpr`.) It stays `claimed`, in front
+  // of the validator, until Key 2 rules; if the close is REFUSED the request is answered, the hold in `dueScope` lifts, and
   // the next tick resumes the cadence with the refusal on the row's own ledger.
   const stopPending = (getDb().prepare(
     `SELECT ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`,
