@@ -1353,6 +1353,19 @@ async function assembleMessageContext(
     throw err;
   }
 
+  // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes
+  // (B7 — the seven appends plus the loop's own tail-append). Before this they were spent
+  // after `usedTokens` stopped being consulted (research 06's write-only finding).
+  //
+  // t109 D: THE LADDER IS NO LONGER FLAT. The bare sum (11,145) took more than a small window
+  // had left after its system prompt, so the content budget clamped to ZERO and the array
+  // collapsed to `lane.empty-context-fallback` every turn. The bound, its derivation, the floor
+  // and the G2 argument are all at `reserveLadderFor`.
+  // tracker #24: reserved for the block as it will be LAID OUT, in its share of the room.
+  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
+  const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
+  const offTheTop = ladder.offTheTop;
+  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's tail is fitted to this too: the loop's appends need room (paid run H9)
   // PM agent gets a lightweight context: system prompt + its live conversation only.
   // No briefing, no vault, no summaries. The tracker is its memory.
   if (isPMAgent(agentId)) {
@@ -1373,9 +1386,9 @@ async function assembleMessageContext(
     const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
     const freshTail = chargeTurnAttachments(agentId, modelId, horizon.keepFromSeq > 0   // D18b r1: its attachments in the fit
       ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
-      : freshTailRows, maxTokens - systemTokens);
+      : freshTailRows, contentBudget);
     const budgeted = budgetFreshTail(
-      freshTail, maxTokens - systemTokens, tailTrimBlockGroups(policy.freshTailCount),
+      freshTail, contentBudget, tailTrimBlockGroups(policy.freshTailCount),
     );
     const trimmed = freshTail.length - budgeted.length;
     const outOfViewThroughSeq = Math.max(
@@ -1395,7 +1408,7 @@ async function assembleMessageContext(
     // beside it. Requirement C9's "no PM bypass" is now true of the assembler as well as
     // of the validator.
     if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
-      view: viewOf({ budget: maxTokens - systemTokens, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq }, policy, systemTokens) };
+      view: viewOf({ budget: contentBudget, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq }, policy, systemTokens) };
     const messages = applyIntegrityPass([...pm.messages], agentId);
     // FA-M1: live-view loss, as the main path counts it — the trim's drop plus the ceiling's skip.
     const freshTailDropped = trimmed + horizon.unreadRows;
@@ -1403,10 +1416,10 @@ async function assembleMessageContext(
     // a receipt that simply lacked the PM's assembly could not tell "the PM has no lanes"
     // from "nobody wrote this down" (research 06 §8's own complaint about this return).
     const report: AllocationReport = {
-      budgetTokens: Math.max(0, maxTokens - systemTokens),
+      budgetTokens: contentBudget,
       reservedTokens: 0,
       spentTokens: renderTokens(messages),
-      offTheTopTokens: 0,
+      offTheTopTokens: offTheTop,
       grants: [{
         id: 'lane.pm-tail',
         slot: MessageSlot.FreshTail,
@@ -1597,19 +1610,6 @@ async function assembleMessageContext(
     },
   };
 
-  // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes
-  // (B7 — the seven appends plus the loop's own tail-append). Before this they were spent
-  // after `usedTokens` stopped being consulted (research 06's write-only finding).
-  //
-  // t109 D: THE LADDER IS NO LONGER FLAT. The bare sum (11,145) took more than a small window
-  // had left after its system prompt, so the content budget clamped to ZERO and the array
-  // collapsed to `lane.empty-context-fallback` every turn. The bound, its derivation, the floor
-  // and the G2 argument are all at `reserveLadderFor`.
-  // tracker #24: reserved for the block as it will be LAID OUT, in its share of the room.
-  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
-  const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
-  const offTheTop = ladder.offTheTop;
-  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
   // The line's "told plainly" half needs nothing here: `assertSystemPromptFits` above already
   // refuses that state by name. This reports the SQUEEZE, which nothing else could see.
   if (ladder.scaled) {
