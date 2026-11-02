@@ -3,7 +3,7 @@
 // (split from `summary-check.ts`): its parts, and the parts' verdicts as one.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { MAX_DECISION_BODY_BYTES, type Answer, type Question } from '../agent/decide.js';
+import { MAX_DECISION_BODY_BYTES, decide, type Answer, type DecideOpts, type FailureClass, type Question } from '../agent/decide.js';
 import { decideCountedBytes, fencedState } from '../agent/decide-sizing.js';
 import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
@@ -75,4 +75,41 @@ export function combineParts(answers: Array<Record<string, Answer> | null>): Rec
   const asked = Object.keys(answers[0]!);
   const noul = (q: string): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));
   return Object.fromEntries(asked.map((q) => [q, { type: 'noul', noul: q === 'invented' ? Math.min(...noul(q)) : Math.max(...noul(q)) } as Answer]));
+}
+
+/**
+ * A part the decision model refused as too large, in two (proof-fix S): at the row divider nearest its middle, else by
+ * characters (never between the two halves of one character). Joined back with the divider the halves are exactly the
+ * part. Null when it is a single character: nothing smaller exists, so the splitting ends there.
+ */
+function halvePart(part: string): [string, string] | null {
+  if (part.length < 2) return null;
+  const mid = part.length >> 1;
+  const before = part.lastIndexOf(ROW_SEPARATOR, mid);
+  const after = part.indexOf(ROW_SEPARATOR, mid);
+  const at = [before, after].filter((i) => i > 0).sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid))[0];
+  if (at !== undefined) return [part.slice(0, at), part.slice(at + ROW_SEPARATOR.length)];
+  const cut = /[\uD800-\uDBFF]/.test(part[mid - 1]) ? mid + 1 : mid;
+  return cut >= part.length ? null : [part.slice(0, cut), part.slice(cut)];
+}
+
+/**
+ * One part through decide(), and (proof-fix S) a part the model refuses as too large (its HTTP 413, or the pre-send
+ * count) is split in two and the pieces are checked, each through decide() as any part is. A piece nothing smaller
+ * exists for is unanswered, as ever. The splitting ends by itself: every piece is shorter than the part it came from,
+ * and one unanswered piece makes the part unanswered, so the other is not asked.
+ */
+export async function checkPart(
+  part: string, label: string | null, summary: string, questions: Record<string, Question>,
+  opts: (state: unknown, onFailure: (f: FailureClass) => void) => DecideOpts,
+): Promise<Array<Record<string, Answer> | null>> {
+  const s = label === null ? { source_rows: part, summary } : { source_rows: part, summary, source_part: label };
+  let tooLarge = false;
+  const got = await decide(s, questions, opts(s, (f) => { tooLarge = f === 'too_large'; }));
+  const halves = got === null && tooLarge ? halvePart(part) : null;
+  if (!halves) return [got];
+  const base = label ?? '1 of 1';
+  const first = await checkPart(halves[0], `${base}, first half`, summary, questions, opts);
+  if (first.includes(null)) return first;
+  return [...first, ...await checkPart(halves[1], `${base}, second half`, summary, questions, opts)];
 }

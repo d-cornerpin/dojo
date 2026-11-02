@@ -175,7 +175,8 @@ async function sent(
     } catch (err) {
       return fail(cutBy(clock, cuts) ?? 'transport', opts, err instanceof Error ? err.message : String(err));
     }
-    if (!resp.ok) return fail('http', opts, `${resp.status}`);
+    // 413: the model's own refusal of the size. Whatever Ollama's version counts, that is the signal a caller can act on.
+    if (!resp.ok) return resp.status === 413 ? fail('too_large', opts, 'refused by the model, HTTP 413') : fail('http', opts, `${resp.status}`);
     let body: { answers?: Record<string, unknown>; usage?: { input_tokens?: number; prompt_tokens?: number } };
     try { body = await resp.json() as typeof body; } catch (err) {
       return fail(cutBy(clock, cuts) ?? 'parse', opts, err instanceof Error ? err.message : String(err));

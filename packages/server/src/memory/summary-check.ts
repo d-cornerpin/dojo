@@ -19,11 +19,11 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts, type Question } from '../agent/decide.js';
+import { measuredDecideTimeoutMs, type Answer, type DecideOpts, type FailureClass, type Question } from '../agent/decide.js';
 import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
-import { sourceParts, combineParts } from './summary-check-parts.js';
+import { sourceParts, combineParts, checkPart } from './summary-check-parts.js';
 import { decisionCharsPerToken } from '../services/token-density.js';
 import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, mintSummaryCheckId, noteSummaryKept, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
 import { createHash } from 'node:crypto';
@@ -63,9 +63,9 @@ export async function checkSummary(
   const questions = Object.fromEntries(asked.map((q) => [q, QUESTIONS[q]]));
   // t274 fix round 1: every ask states its patience — the call's own measured timeout, so nobody waits longer than
   // the call is allowed — and a background ask names no agent (it holds no turn's stop slot).
-  const opts = (s: unknown): DecideOpts => {
+  const opts = (s: unknown, onFailure: (f: FailureClass) => void): DecideOpts => {
     const patienceMs = measuredDecideTimeoutMs(s, Object.keys(questions).length);
-    return background ? { purpose: PURPOSE, background: true, patienceMs } : { purpose: PURPOSE, agentId, patienceMs };
+    return background ? { purpose: PURPOSE, background: true, patienceMs, onFailure } : { purpose: PURPOSE, agentId, patienceMs, onFailure };
   };
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken());
   let answers: Record<string, Answer> | null;
@@ -73,16 +73,12 @@ export async function checkSummary(
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
     answers = null;
   } else if (parts.length === 1) {
-    const s = { source_rows: sourceRows, summary };
-    answers = await decide(s, questions, opts(s));
+    answers = combineParts(await checkPart(sourceRows, null, summary, questions, opts));
   } else {
     // One part after another through decide()'s normal path, each with its own clock (fix round 5, NB4-6): the
     // local Ollama answers one request at a time, so parts dialled together would spend their clocks queued.
     const each: Array<Record<string, Answer> | null> = [];
-    for (const [i, part] of parts.entries()) {
-      const s = { source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` };
-      each.push(await decide(s, questions, opts(s)));
-    }
+    for (const [i, part] of parts.entries()) each.push(...await checkPart(part, `${i + 1} of ${parts.length}`, summary, questions, opts));
     answers = combineParts(each);
   }
   const p = (q: keyof typeof QUESTIONS): number => (answers?.[q]?.type === 'noul' ? (answers[q] as { noul: number }).noul : 0);
