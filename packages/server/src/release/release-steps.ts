@@ -127,6 +127,12 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
       + "box's Dreamer was refused lesson_record and wrote no lessons. Adds only the missing names; owner edits and denials stand.",
     run: async () => (await import('./built-in-policy-delivery.js')).deliverPolicyTools('built-in-policy-tools'),
   },
+  {
+    id: 'built-in-tools-gap',
+    sinceVersion: '3.5.0-0',
+    pays: 'a Dreamer or PM row last written before 3.1.22 can lack older listed tools (an old PM lacks work_validate); an owner trim looks the same, so this edits nothing and tells him once, on a card.',
+    run: async () => (await import('./built-in-tools-gap.js')).raiseBuiltInToolsGap(),
+  },
 ];
 
 /** Is this boot on the version boundary that owes step `id`? Read by the boot steps that must act before the pass.
