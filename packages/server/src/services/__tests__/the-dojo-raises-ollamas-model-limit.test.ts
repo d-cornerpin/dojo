@@ -66,10 +66,11 @@ function fakeDeps(env: Record<string, string>, o: {
     sleep: async () => { /* the tick, instant in a test */ },
     brewServicePid: async () => (o.brewService && living.has(502) ? 502 : null),
     hasBrew: async () => true,
-    brewOwnsApp: async () => true,
+    brewCaskToken: async () => 'ollama-app',
+    cliRuns: async () => true,
     brew: async () => undefined,
     restartBrewService: async () => { d.serviceRestarts++; living.add(502); },
-    startServe: (e) => { d.serves.push(e); d.log.push('serve'); living.add(502); },
+    startServe: (e) => { d.serves.push(e); d.log.push('serve'); living.add(502); return 502; },
   };
   return d;
 }
@@ -272,7 +273,7 @@ describe('NB-2: act only where it is true', () => {
   });
 
   it('a serve the Dojo started (through the app\'s own link, or Homebrew\'s binary) is restarted with the variable in its OWN environment', async () => {
-    mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve_exe', ?)").run(BREW_SERVER);
+    mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve', ?)").run(JSON.stringify({ pid: 502, exe: BREW_SERVER, limit: '3' }));
     const deps = fakeDeps({}, { server: BREW_SERVER, installed: false });
     expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
     await ollamaRestartSettled();

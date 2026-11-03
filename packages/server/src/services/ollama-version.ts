@@ -14,13 +14,18 @@ export function parseOllamaVersion(v: string | null | undefined): number[] | nul
   return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null;
 }
 
+/** `0.36.0-rc2`: a pre-release ranks BELOW the release it leads up to. */
+const isPrerelease = (v: string | null): boolean => /^v?\d+\.\d+(?:\.\d+)?-/.test((v ?? '').trim());
+/** A source build reports 0.0.0: its version says nothing, so it is neither old nor new. */
+export const isUnknownBuild = (v: string | null): boolean => (parseOllamaVersion(v) ?? [1]).every((n) => n === 0);
+
 /** Is `have` at least `need`? An unreadable version is not "at least" anything. */
 export function ollamaAtLeast(have: string | null, need: string): boolean {
   const h = parseOllamaVersion(have);
   const n = parseOllamaVersion(need);
   if (!h || !n) return false;
   for (let i = 0; i < 3; i++) if (h[i] !== n[i]) return h[i] > n[i];
-  return true;
+  return !isPrerelease(have) || isPrerelease(need);
 }
 
 /** The highest minimum among `models` that declare one, or null when none does. */

@@ -32,8 +32,8 @@ import { ownerCardFrame } from './owner-card-frames.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { type OllamaHost, getOllamaHost, makeRealDeps } from './ollama-host.js';
 import {
-  LIMIT_VAR, OWN_SERVE_LIMIT_KEY, classifyOllama, desiredLoaded, limitFor, portOf, raisedLoadedLimit, readConfig, restartApp,
-  restartBrewService, restartOwnServe, setConfig, setLaunchdLimit,
+  LIMIT_VAR, classifyOllama, desiredLoaded, inUpkeep, limitFor, ownServeHasLimit, portOf, raisedLoadedLimit, readConfig, readOwnServe,
+  restartApp, restartBrewService, restartOwnServe, setConfig, setLaunchdLimit, startOwnServeOrTell,
 } from './ollama-restart.js';
 import { childFailureText } from '../update/child-failure.js';
 import {
@@ -73,13 +73,18 @@ export async function ensureOllamaModelLimit(
   const want = desiredOllamaMaxLoaded();
   try {
     const found = await classifyOllama(host, portOf(local.baseUrl));
-    if (found?.kind === 'other') {
+    if (found?.kind === 'other' || found?.kind === 'formula') {
       logger.info('The local Ollama is not one the Dojo restarts; its loaded-model limit is left as it is', { program: found.path });
       return 'unmanaged';
     }
     if (found?.kind === 'own-serve') {
-      if (readConfig(OWN_SERVE_LIMIT_KEY) === `${found.pid}:${limitFor(want)}`) { ownerConditionCleared('ollama-limit-failed'); return 'already'; }
-      restarting ??= restartWhenQuiet(host, local).finally(() => { restarting = null; });
+      if (ownServeHasLimit(found.pid, limitFor(want))) { ownerConditionCleared('ollama-limit-failed'); return 'already'; }
+      restarting ??= inUpkeep(() => restartWhenQuiet(host, local)).finally(() => { restarting = null; });
+      return 'set';
+    }
+    if (!found && readOwnServe() && (await host.appPids()).length === 0) {
+      // The server the Dojo started died with the Dojo (a child of it), and nothing else serves: updates never leave Ollama down.
+      restarting ??= inUpkeep(async () => { await startOwnServeOrTell(host, local.baseUrl, STANDARD_TAGS.length); }).finally(() => { restarting = null; });
       return 'set';
     }
     const appRunning = !!found || (await host.appPids()).length > 0;
@@ -97,7 +102,7 @@ export async function ensureOllamaModelLimit(
     }
     if (appRunning) {
       setConfig('ollama_limit_restart_owed', '1');   // owed until the restart has really happened (NB-5)
-      restarting ??= restartWhenQuiet(host, local).finally(() => { restarting = null; });
+      restarting ??= inUpkeep(() => restartWhenQuiet(host, local)).finally(() => { restarting = null; });
     } else {
       ownerConditionCleared('ollama-limit-failed');
     }
@@ -118,6 +123,8 @@ async function restartWhenQuiet(host: OllamaHost, local: { id: string; baseUrl: 
   const endHold = await holdWhenQuiet(local.id);
   try {
     const found = await classifyOllama(host, portOf(local.baseUrl));
+    // Queued behind an upgrade? Its restart carried the limit already: nothing is owed any more.
+    if (found?.kind === 'own-serve' ? ownServeHasLimit(found.pid, limitFor(desiredOllamaMaxLoaded())) : !restartOwed()) return;
     if (found?.kind === 'own-serve') {
       await restartOwnServe(host, local.baseUrl, found.pid, STANDARD_TAGS.length);
     } else if (found?.kind === 'brew-service') {

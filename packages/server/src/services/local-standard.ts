@@ -65,6 +65,8 @@ type Which = 'decision' | 'writer';
 const TAG: Record<Which, string> = { decision: STANDARD_DECISION_MODEL.tag, writer: STANDARD_WRITER_MODEL.tag };
 const LABEL: Record<Which, string> = { decision: 'the decision model', writer: 'the writer' };
 /** The decision model is not a chat model: its capability keeps it out of the summary writers. */
+/** Each model's declared minimum Ollama (the declaration is on the model, above). */
+const MIN: Record<Which, string | null> = { decision: STANDARD_DECISION_MODEL.minOllama, writer: STANDARD_WRITER_MODEL.minOllama };
 const CAPABILITIES: Record<Which, string[]> = { decision: ['decision'], writer: ['chat'] };
 
 const pulling = new Set<Which>();
@@ -176,7 +178,7 @@ export function standardProgressLines(): readonly string[] {
   return progressLines;
 }
 
-async function install(onProgress: ((line: string) => void) | undefined, ollamaReady: boolean): Promise<StandardState> {
+async function install(onProgress: ((line: string) => void) | undefined, ollamaReady: boolean, onRefused: (error: string) => void): Promise<StandardState> {
   const lines: Partial<Record<Which, string>> = {};
   progressLines = pairOllamaLines();
   const say = (which: Which, line: string): void => {
@@ -194,10 +196,12 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
   if (!provider) return standardState();
   const installed = installedTagsOf(tags);
   const ids: Record<Which, string | null> = { decision: null, writer: null };
+  let refusedBy: string | null = null;
+  const onRefusedHere = (error: string): void => { refusedBy = error; onRefused(error); };
 
   for (const which of ['decision', 'writer'] as const) {
     const tag = TAG[which];
-    if (!installed.has(tag) && !(which === 'decision' && !ollamaReady)) {
+    if (!installed.has(tag) && !(!ollamaReady && MIN[which])) {   // a model that needs the newer Ollama waits for it
       pulling.add(which);
       try {
         const outcome = await pullOllamaModel(tag, {
@@ -207,7 +211,7 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
         if (!outcome.ok) {
           say(which, `Downloading ${LABEL[which]} (${tag}): failed. The log has the details.`);   // the registry's own words go to the log only
           logger.warn('Standard model pull failed', { tag, error: outcome.error });
-          if (isVersionRefusal(outcome.error)) await pullRefusedForVersion(provider.baseUrl, outcome.error);
+          if (isVersionRefusal(outcome.error)) onRefusedHere(outcome.error);   // handled after this install's work has ended (its upgrade restarts Ollama)
           continue;
         }
       } catch (err) {
@@ -226,7 +230,7 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
   if (ids.decision) await (await import('./decision-window.js')).ensureDecisionWindowTag(provider.baseUrl);   // t268: its real window (dynamic: the import graph's order)
   // Fix round 1 (I-2): an attempt that left a model missing is told once (the owner-card system); it ends when both are in.
   if (ids.writer && ids.decision) ownerConditionCleared(MISSING_CONDITION);
-  else if (!pairHeld() && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
+  else if (!pairHeld() && !refusedBy && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
   return standardState();
 }
 
@@ -243,12 +247,25 @@ export function retryStandardModelsIfMissing(installedNames: readonly string[], 
   if (retryMayStart(provider.baseUrl, startStandardInstall)) startStandardInstall();   // a refusal for Ollama's version waits for a newer Ollama
 }
 
+const PAIR = [STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL] as const;
+/** The install as in-flight work; a registry refusal for Ollama's version ends it, runs the same upgrade (outside the work, which
+ *  its restart waits to be quiet of), and installs again when that updated Ollama. */
+async function installAfterUpgrades(onProgress: ((line: string) => void) | undefined, ready: boolean): Promise<StandardState> {
+  for (;;) {
+    let refused: string | null = null;
+    const end = await localWorkBegins();
+    const state = await install(onProgress, ready, (e) => { refused = e; }).finally(end);
+    const provider = localOllamaProvider();
+    if (!refused || !provider || !await pullRefusedForVersion(provider, PAIR, refused)) return state;
+  }
+}
+
 /** Pull what is missing (the bounded pull of t114), register both on the local Ollama provider row, assign the
  *  writer to the `system` tier, set `decision_model_id`, make the window tag. Idempotent; callers share one run. */
 export function ensureStandardModels(onProgress?: (line: string) => void): Promise<StandardState> {
   // Fix round 4: the whole install is in-flight work on the local Ollama: the model-limit restart never lands inside it.
   // Fix W: Ollama is made new enough BEFORE the install counts as in-flight work (its restart waits for nothing to be in flight).
-  if (!inFlight) inFlight = ollamaReadyForPair(localOllamaProvider(), [STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL]).then(async (ready) => { const end = await localWorkBegins(); try { return await install(onProgress, ready); } finally { end(); } }).finally(() => { inFlight = null; });
+  if (!inFlight) inFlight = ollamaReadyForPair(localOllamaProvider(), PAIR).then((ready) => installAfterUpgrades(onProgress, ready)).finally(() => { inFlight = null; });
   return inFlight;
 }
 

@@ -24,8 +24,8 @@ const fakeHost = (): OllamaHost => ({
   getenv: async () => null, setenv: async () => undefined, appPids: async () => [], appInstalled: async () => false,
   terminate: () => undefined, alive: () => false, launchApp: async () => undefined, answers: async () => true, sleep: async () => undefined,
   listener: async () => (started.envs.length > 0 ? { pid: 900, path: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama' } : null),
-  brewServicePid: async () => null, hasBrew: async () => true, brewOwnsApp: async () => true, brew: async () => undefined, restartBrewService: async () => undefined,
-  startServe: (env) => { started.envs.push(env); },
+  brewServicePid: async () => null, hasBrew: async () => true, brewCaskToken: async () => 'ollama-app', cliRuns: async () => true, brew: async () => undefined, restartBrewService: async () => undefined,
+  startServe: (env) => { started.envs.push(env); return 900; },
 });
 
 beforeEach(() => {
@@ -50,8 +50,8 @@ describe('setup starts Ollama with room for the Dojo\'s models', () => {
     await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
     expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '4' }]);
     // …and the Dojo remembers which program it started, and that the limit is in place on this very server
-    const rows = Object.fromEntries((mockDb.current!.prepare("SELECT key, value FROM config WHERE key LIKE 'ollama_own_serve%'").all() as Array<{ key: string; value: string }>).map((r) => [r.key, r.value]));
-    expect(rows).toEqual({ ollama_own_serve_exe: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama', ollama_own_serve_limit: '900:4' });
+    const rows = Object.fromEntries((mockDb.current!.prepare("SELECT key, value FROM config WHERE key = 'ollama_own_serve'").all() as Array<{ key: string; value: string }>).map((r) => [r.key, r.value]));
+    expect(JSON.parse(rows.ollama_own_serve)).toEqual({ pid: 900, exe: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama', limit: '4' });
   }, 10_000);
 
   it('fix round 4 (NB-3): an owner\'s own higher value is never lowered', async () => {

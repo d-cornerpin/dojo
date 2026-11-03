@@ -39,14 +39,18 @@ export interface OllamaHost {
   /** The pid of Homebrew's launchd job for Ollama when it is loaded and running, else null. */
   brewServicePid(): Promise<number | null>;
   hasBrew(): Promise<boolean>;
-  /** Does Homebrew own the Ollama app (`brew list --cask ollama`)? An app installed any other way is not Homebrew's to replace. */
-  brewOwnsApp(): Promise<boolean>;
+  /** The cask token Homebrew installed the Ollama app under on this box (`ollama-app`, or `ollama` before the rename), read from
+   *  Homebrew's local list (`brew list --cask`, no network); null when Homebrew does not own the app — an app installed any other way
+   *  is not Homebrew's to replace. */
+  brewCaskToken(): Promise<string | null>;
+  /** Does the `ollama` program on the Dojo's PATH run (`ollama --version`)? A serve is never stopped before this says yes. */
+  cliRuns(): Promise<boolean>;
   /** `brew <args>`, under the installer idle bound; rejects when brew fails. */
   brew(args: string[]): Promise<void>;
   /** `brew services restart ollama`: launchd starts the job again, with launchd's environment. */
   restartBrewService(): Promise<void>;
-  /** `ollama serve` as a child of the Dojo, with `env` added to the Dojo's own. */
-  startServe(env: Record<string, string>): void;
+  /** `ollama serve` as a child of the Dojo, with `env` added to the Dojo's own. Returns the child's pid, or null when it did not start. */
+  startServe(env: Record<string, string>): number | null;
 }
 
 type Run = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
@@ -58,7 +62,7 @@ const EXTENDED_PATH = `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/
 
 /** The real commands, built over `run`/`kill`/`spawnChild`/`serve` so a test can read their argv without running any. */
 export function makeRealDeps(
-  run: Run, kill: Kill, spawnChild: (cmd: string, args: string[]) => WatchableChild, serve: (env: Record<string, string>) => void = () => undefined,
+  run: Run, kill: Kill, spawnChild: (cmd: string, args: string[]) => WatchableChild, serve: (env: Record<string, string>) => number | null = () => null,
 ): OllamaHost {
   const pids = (out: string): number[] => out.split('\n').map((l) => parseInt(l, 10)).filter((n) => Number.isInteger(n) && n > 0);
   const brewPath = async (): Promise<string | null> => {
@@ -102,7 +106,15 @@ export function makeRealDeps(
       } catch { return null; }
     },
     hasBrew: async () => (await brewPath()) !== null,
-    brewOwnsApp: async () => { const brew = await brewPath(); if (!brew) return false; try { await run(brew, ['list', '--cask', 'ollama']); return true; } catch { return false; } },
+    brewCaskToken: async () => {
+      const brew = await brewPath();
+      if (!brew) return null;
+      try {
+        const casks = (await run(brew, ['list', '--cask'])).stdout.split(/\s+/);
+        return ['ollama-app', 'ollama'].find((t) => casks.includes(t)) ?? null;
+      } catch { return null; }
+    },
+    cliRuns: async () => { try { await run('ollama', ['--version']); return true; } catch { return false; } },
     brew: async (args) => {
       const brew = await brewPath();
       if (!brew) throw new Error('Homebrew is not installed');
@@ -113,7 +125,7 @@ export function makeRealDeps(
       if (!brew) throw new Error('Homebrew is not installed');
       await run(brew, ['services', 'restart', 'ollama']);
     },
-    startServe: (env) => { serve(env); },
+    startServe: (env) => serve(env),
   };
 }
 
@@ -121,7 +133,7 @@ const execRun = promisify(execFile);
 const REAL = makeRealDeps(
   (cmd, args) => execRun(cmd, args, { env: { ...process.env, PATH: EXTENDED_PATH } }), (pid, sig) => process.kill(pid, sig),
   (cmd, args) => spawn(cmd, args, { env: { ...process.env, PATH: EXTENDED_PATH } }),
-  (env) => { spawn('ollama', ['serve'], { env: { ...process.env, PATH: EXTENDED_PATH, ...env }, stdio: 'ignore' }).on('error', () => undefined); },
+  (env) => { const child = spawn('ollama', ['serve'], { env: { ...process.env, PATH: EXTENDED_PATH, ...env }, stdio: 'ignore' }); child.on('error', () => undefined); return child.pid ?? null; },
 );
 
 let override: OllamaHost | null = null;

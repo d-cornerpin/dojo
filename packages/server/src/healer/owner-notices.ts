@@ -28,8 +28,8 @@
 import { getDb } from '../db/connection.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
 import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
-import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS } from './local-model-notice-words.js';
-export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS };
+import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_RESTART_NEEDED_WORDS, OLLAMA_DOWN_WORDS } from './local-model-notice-words.js';
+export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_RESTART_NEEDED_WORDS, OLLAMA_DOWN_WORDS };
 
 const TOLD = 'owner_told';
 const DISMISSED = 'owner_dismissed';
@@ -148,7 +148,7 @@ export function wordsOf(key: string): string {
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
     : kind === 'embedding-switch' ? embeddingSwitchWords(countMemoriesOnOtherModels())
-    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : kind === 'ollama-too-old' ? OLLAMA_TOO_OLD_WORDS
+    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : kind === 'ollama-too-old' ? OLLAMA_TOO_OLD_WORDS : kind === 'ollama-restart-needed' ? OLLAMA_RESTART_NEEDED_WORDS : kind === 'ollama-down' ? OLLAMA_DOWN_WORDS
     : kind === 'ollama-limit-set' ? OLLAMA_LIMIT_SET_WORDS : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
     : HEALER_BROKEN_WORDS;
@@ -227,7 +227,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key === 'ollama-too-old' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key === 'ollama-too-old' || key === 'ollama-restart-needed' || key === 'ollama-down' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

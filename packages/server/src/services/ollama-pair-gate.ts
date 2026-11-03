@@ -13,13 +13,13 @@
 
 import { createLogger } from '../logger.js';
 import { type OllamaHost, getOllamaHost } from './ollama-host.js';
-import { upgradeOllama } from './ollama-upgrade.js';
-import { ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
-import { OLLAMA_TOO_OLD_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
+import { upgradeOllama, type UpgradeResult } from './ollama-upgrade.js';
+import { inUpkeep } from './ollama-restart.js';
+import { isUnknownBuild, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
+import { OLLAMA_TOO_OLD_WORDS, OLLAMA_RESTART_NEEDED_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 
 const logger = createLogger('ollama-pair-gate');
-const CONDITION = 'ollama-too-old';
 
 /** The Ollama version the Dojo could not improve, while it still runs; null when nothing is held. */
 let heldAt: string | null = null;
@@ -31,7 +31,7 @@ export const pairOllamaLines = (): string[] => (line ? [line] : []);
 export const pairHeldNote = (): string | null => (heldAt === null ? null : `${line ?? ''} Download the latest from ollama.com, then press Repair.`.trim());
 export const pairHeld = (): boolean => heldAt !== null;
 /** Both models are in: nothing is held and the card (if it stands) ends. */
-export function pairModelsAllIn(): void { heldAt = null; line = null; ownerConditionCleared(CONDITION); }
+export function pairModelsAllIn(): void { heldAt = null; line = null; cardsEnd(); }
 /** The owner pressed Repair: the version refusal is looked at again. */
 export function releasePairHold(): void { heldAt = null; }
 
@@ -49,35 +49,58 @@ async function installedNames(baseUrl: string): Promise<string[] | null> {
   } catch { return null; }
 }
 
-/**
- * Is the local Ollama new enough for the models of `models` that are not installed yet? True also when it does not
- * answer (the install reports that itself) or does not say its version (the pull goes ahead; a refusal is held below).
- * False: too old and the Dojo could not fix it — the card is told, the models that need the newer Ollama are not pulled.
- */
-export async function ollamaReadyForPair(
-  provider: { id: string; baseUrl: string } | null, models: ReadonlyArray<{ tag: string; minOllama: string | null }>,
-  host: OllamaHost | null = getOllamaHost(),
-): Promise<boolean> {
-  if (!provider) return true;
-  const installed = await installedNames(provider.baseUrl);
-  if (!installed) return true;
-  const need = requiredOllamaVersion(models.filter((m) => !installed.includes(m.tag)));
-  const have = need ? await readOllamaVersion(provider.baseUrl) : null;
-  if (!need || have === null || ollamaAtLeast(have, need)) { heldAt = null; line = null; ownerConditionCleared(CONDITION); return true; }
-  const done = host ? await upgradeOllama(host, provider, need, models.length) : { ok: false, line: `Ollama ${have} is older than the Dojo's models need (${need}).` };
+type Models = ReadonlyArray<{ tag: string; minOllama: string | null }>;
+const TOLD = { update: ['ollama-too-old', OLLAMA_TOO_OLD_WORDS], restart: ['ollama-restart-needed', OLLAMA_RESTART_NEEDED_WORDS] } as const;
+const cardsEnd = (): void => { for (const [key] of Object.values(TOLD)) ownerConditionCleared(key); };
+
+/** The upgrade ran: fixed (nothing is held), judged for nothing (no listener now: nothing is held or told), or failed (held, ONE card). */
+async function afterUpgrade(done: UpgradeResult, baseUrl: string, have: string | null): Promise<boolean> {
   line = done.line;
-  if (done.ok) { heldAt = null; ownerConditionCleared(CONDITION); return true; }
-  heldAt = (await readOllamaVersion(provider.baseUrl)) ?? have;
-  logger.warn('Ollama is too old for the Dojo\'s models and was not updated', { have, need });
-  if (tellOwnerOnce(CONDITION)) ownerCardFrame(OLLAMA_TOO_OLD_WORDS, 'warning');
+  if (done.ok) { heldAt = null; cardsEnd(); return true; }
+  if (done.transient) { logger.info('Ollama was not answering when the upgrade looked; nothing is held', { line: done.line }); return false; }
+  heldAt = (await readOllamaVersion(baseUrl)) ?? have ?? 'unknown';
+  const [key, words] = TOLD[done.card ?? 'update'];
+  for (const [other] of Object.values(TOLD)) if (other !== key) ownerConditionCleared(other);
+  logger.warn('Ollama is too old for the Dojo\'s models and was not updated', { have, line: done.line });
+  if (tellOwnerOnce(key)) ownerCardFrame(words, 'warning');
   return false;
 }
 
-/** A pull was refused by the registry as "needs a newer Ollama" though the version check let it through (the version
- *  was unreadable, or a minimum is not declared): held like a failed upgrade, so it is not pulled again at every health check. */
-export async function pullRefusedForVersion(baseUrl: string, error: string): Promise<void> {
+/**
+ * Is the local Ollama new enough for the models of `models` that are not installed yet? True also when it does not
+ * answer (the install reports that itself), does not say its version, or is a source build (0.0.0: its number says nothing)
+ * — the pull goes ahead and the registry's own refusal is handled by `pullRefusedForVersion`. False: too old and the
+ * Dojo could not fix it — the card is told, the models that need the newer Ollama are not pulled. Runs in the Ollama
+ * upkeep queue (`inUpkeep`), after any restart already under way.
+ */
+export function ollamaReadyForPair(
+  provider: { id: string; baseUrl: string } | null, models: Models, host: OllamaHost | null = getOllamaHost(),
+): Promise<boolean> {
+  if (!provider) return Promise.resolve(true);
+  return inUpkeep(async () => {
+    const installed = await installedNames(provider.baseUrl);
+    if (!installed) return true;
+    const need = requiredOllamaVersion(models.filter((m) => !installed.includes(m.tag)));
+    const have = need ? await readOllamaVersion(provider.baseUrl) : null;
+    if (need && isUnknownBuild(have)) logger.info('Ollama reports a development build version; the pull decides', { have });
+    if (!need || have === null || isUnknownBuild(have) || ollamaAtLeast(have, need)) { heldAt = null; line = null; cardsEnd(); return true; }
+    const done = host ? await upgradeOllama(host, provider, need, models.length) : { ok: false, card: 'update' as const, line: `Ollama ${have} is older than the Dojo's models need (${need}).` };
+    return (await afterUpgrade(done, provider.baseUrl, have)) || !!done.transient;
+  });
+}
+
+/** The registry refused a pull as "needs a newer Ollama": the authoritative signal, whatever the version check said (it was
+ *  unreadable, or a minimum is not declared or was too low). The same upgrade runs; true = Ollama was updated, pull again.
+ *  Only a failed upgrade holds the pull and tells the card. */
+export function pullRefusedForVersion(
+  provider: { id: string; baseUrl: string }, models: Models, error: string, host: OllamaHost | null = getOllamaHost(),
+): Promise<boolean> {
   logger.warn('The registry refused a model: Ollama is too old', { error });
-  heldAt = (await readOllamaVersion(baseUrl)) ?? 'unknown';
-  line = 'The Dojo could not download this model because this Ollama is too old for it.';
-  if (tellOwnerOnce(CONDITION)) ownerCardFrame(OLLAMA_TOO_OLD_WORDS, 'warning');
+  return inUpkeep(async () => {
+    const have = await readOllamaVersion(provider.baseUrl);
+    const declared = requiredOllamaVersion(models);
+    const need = declared && !ollamaAtLeast(have, declared) ? declared : null;   // declared and not met, else "newer than now"
+    const done = host ? await upgradeOllama(host, provider, need, models.length) : { ok: false, card: 'update' as const, line: 'Ollama is too old for this model.' };
+    return afterUpgrade(done, provider.baseUrl, have);
+  });
 }

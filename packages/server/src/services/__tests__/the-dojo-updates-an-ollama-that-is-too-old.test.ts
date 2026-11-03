@@ -21,10 +21,13 @@ import {
   ensureStandardModels, retryStandardModelsIfMissing, standardState, standardProgressLines, startStandardInstall, standardInstallSettled,
   STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, ensureStandardModelsOncePerVersion,
 } from '../local-standard.js';
+import { localHeld } from '../ollama-quiet.js';
 import { releasePairHold } from '../ollama-pair-gate.js';
 import { overrideOllamaHost, type OllamaHost } from '../ollama-host.js';
 import { parseOllamaVersion, ollamaAtLeast, requiredOllamaVersion, isVersionRefusal } from '../ollama-version.js';
-import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS } from '../../healer/owner-notices.js';
+import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS, OLLAMA_RESTART_NEEDED_WORDS, OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords } from '../../healer/owner-notices.js';
+import { ensureOllamaModelLimit, ollamaRestartSettled } from '../ollama-model-limit.js';
+import { restartOwnServe, readOwnServe } from '../ollama-restart.js';
 
 const REFUSAL = '{"error":"pull model manifest: 412: The model you are attempting to pull requires a newer version of Ollama. Please download the latest version at https://ollama.com/download"}';
 const APP_PROGRAM = '/Applications/Ollama.app/Contents/Resources/ollama';
@@ -50,7 +53,7 @@ function startServer(): Promise<void> {
       req.on('end', () => {
         const model = (JSON.parse(body) as { model: string }).model;
         ollama.pulls.push(model);
-        const tooOld = model === STANDARD_DECISION_MODEL.tag && !ollamaAtLeast(ollama.version, '0.35');
+        const tooOld = model === STANDARD_DECISION_MODEL.tag && !ollamaAtLeast(ollama.version, '0.35') && ollama.version !== '0.0.0';
         if (tooOld) { res.writeHead(412, { 'content-type': 'application/json' }).end(REFUSAL); return; }
         ollama.installed.add(model);
         res.writeHead(200).end(`${JSON.stringify({ status: 'pulling', digest: 'sha256:a', total: 100, completed: 50 })}\n${JSON.stringify({ status: 'success' })}\n`);
@@ -61,22 +64,27 @@ function startServer(): Promise<void> {
 }
 
 /** The Mac's commands, faked. `kind` says what runs the Ollama: the app, Homebrew's service, a Dojo serve, or something else. */
-type Mac = OllamaHost & { brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number; serves: Array<Record<string, string>>; failBrew?: boolean; hasBrewInstalled: boolean; brewApp: boolean };
-function fakeMac(kind: 'app' | 'brew-service' | 'own-serve' | 'plain'): Mac {
-  const program = kind === 'app' ? APP_PROGRAM : FORMULA;
+type Mac = OllamaHost & {
+  brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number; serves: Array<Record<string, string>>;
+  failBrew?: boolean; hasBrewInstalled: boolean; brewApp: string | null; down: boolean; relaunchGate: Promise<void>; heldDuringBrew: boolean[];
+  cliOk: boolean; listenPid: number; serveWorks: boolean; serveAnswers: boolean;
+};
+function fakeMac(kind: 'app' | 'brew-service' | 'own-serve' | 'formula' | 'plain'): Mac {
+  const program = kind === 'app' ? APP_PROGRAM : kind === 'plain' ? '/opt/custom/bin/ollama' : FORMULA;
   const m: Mac = {
-    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, serves: [], hasBrewInstalled: true, brewApp: true,
+    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, serves: [], hasBrewInstalled: true, brewApp: 'ollama-app', down: false, relaunchGate: Promise.resolve(), heldDuringBrew: [], cliOk: true, listenPid: 500, serveWorks: true, serveAnswers: true,
     getenv: async () => null, setenv: async (k, v) => { m.setenvs.push(`${k}=${v}`); },
-    listener: async () => ({ pid: 500, path: program }),
+    listener: async () => (m.down ? null : { pid: m.listenPid, path: program }),
     appPids: async () => (kind === 'app' ? [499] : []), appInstalled: async () => kind === 'app',
-    terminate: (pid) => { m.terms.push(pid); }, alive: () => false,
-    launchApp: async () => { m.launches++; }, answers: async () => true, sleep: async () => undefined,
+    terminate: (pid) => { m.terms.push(pid); if (kind === 'app' || kind === 'own-serve') m.down = true; }, alive: () => false,
+    launchApp: async () => { await m.relaunchGate; m.launches++; m.down = false; }, answers: async () => !m.down && m.serveAnswers, sleep: async () => undefined,
     brewServicePid: async () => (kind === 'brew-service' ? 500 : null),
     hasBrew: async () => m.hasBrewInstalled,
-    brewOwnsApp: async () => m.brewApp,
-    brew: async (args) => { m.brews.push(args); if (m.failBrew) throw new Error('Error: brew exploded (raw)'); ollama.version = '0.41.0'; },
+    brewCaskToken: async () => m.brewApp,
+    cliRuns: async () => m.cliOk,
+    brew: async (args) => { m.brews.push(args); m.heldDuringBrew.push(localHeld()); if (m.failBrew) throw new Error('Error: brew exploded (raw)'); ollama.version = '0.41.0'; },
     restartBrewService: async () => { m.serviceRestarts++; },
-    startServe: (env) => { m.serves.push(env); },
+    startServe: (env) => { m.serves.push(env); if (m.serveWorks) { m.down = false; m.listenPid = 777; } return m.serveWorks ? 777 : null; },
   };
   return m;
 }
@@ -119,7 +127,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
   it('the Ollama app: the current app is installed, the app is restarted with the limit in launchd, and then the pull works', async () => {
     const mac = fakeMac('app'); overrideOllamaHost(mac);
     const state = await ensureStandardModels();
-    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama']]);
+    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
     expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(mac.terms).toContain(499); expect(mac.launches).toBe(1);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);   // pulled ONCE, after the upgrade: never refused
@@ -132,7 +140,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
     const mac = fakeMac('app'); mac.listener = async () => ({ pid: 500, path: APP_PROGRAM });
     overrideOllamaHost(mac);
     await ensureStandardModels();
-    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama']]);
+    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
     expect(frames.list).toEqual([]);
   });
 
@@ -148,7 +156,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
   });
 
   it('a serve the Dojo started: upgraded the way setup installed it (the formula) and started again with the limit in its own environment', async () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve_exe', ?)").run(FORMULA);
+    db().prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve', ?)").run(JSON.stringify({ pid: 500, exe: FORMULA, limit: '3' }));
     const mac = fakeMac('own-serve'); overrideOllamaHost(mac);
     await ensureStandardModels();
     expect(mac.brews).toEqual([['upgrade', 'ollama']]);
@@ -176,14 +184,14 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
     ollama.version = '0.30.1'; ollama.installed = new Set(['nomic-embed-text:latest']); ollama.pulls = [];
     const repair = fakeMac('app'); overrideOllamaHost(repair);
     startStandardInstall(); await standardInstallSettled();
-    expect(repair.brews).toEqual([['reinstall', '--cask', 'ollama']]);
+    expect(repair.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
   });
 });
 
 describe('an app Homebrew did not install is never replaced', () => {
   it('the app was downloaded from ollama.com: nothing is run over it, one plain card, no --force anywhere', async () => {
-    const mac = fakeMac('app'); mac.brewApp = false; overrideOllamaHost(mac);
+    const mac = fakeMac('app'); mac.brewApp = null; overrideOllamaHost(mac);
     await ensureStandardModels();
     expect(mac.brews).toEqual([]); expect(mac.launches).toBe(0); expect(mac.terms).toEqual([]);
     expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_TOO_OLD_WORDS]);
@@ -270,5 +278,110 @@ describe('an Ollama the Dojo cannot upgrade: one plain card, and no endless pull
     expect(ollama.pulls.length).toBe(pullsAfterInstall);   // not pulled again at every health check
     expect([...standardProgressLines(), state.note].join('\n')).not.toMatch(/412|manifest/);
     expect(frames.list.filter((f) => f.error === OLLAMA_TOO_OLD_WORDS).length).toBe(1);
+  });
+});
+
+describe('round 3: one sequenced Ollama upkeep, and no wrong advice', () => {
+  it('H1: the update boot — the limit restart has the app down while the version gate looks, and the upgrade STILL happens', async () => {
+    const mac = fakeMac('app'); overrideOllamaHost(mac);
+    let open!: () => void;
+    mac.relaunchGate = new Promise<void>((r) => { open = r; });   // the app takes a long time to come back
+    expect(await ensureOllamaModelLimit(mac, 'darwin')).toBe('set');   // launchd had no limit: the app is quit, a relaunch is owed
+    const boot = ensureStandardModelsOncePerVersion('3.5.1');           // the same boot goes on to the decision model
+    await settle(); await settle();
+    expect(mac.down).toBe(true);
+    expect(mac.brews).toEqual([]);   // not yet: it waits for the restart under way, it does not judge a listener that is down
+    open();
+    await boot; await ollamaRestartSettled();
+    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
+    expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
+    expect((await standardState()).decision).toBe('installed');
+    expect(frames.list.map((f) => f.error)).not.toContain(OLLAMA_TOO_OLD_WORDS);
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(OLLAMA_TOO_OLD_WORDS);
+  });
+
+  it('H1: no listener at this moment is never "can\'t update": nothing is held, nothing is told', async () => {
+    const mac = fakeMac('app'); mac.down = true; overrideOllamaHost(mac);
+    await ensureStandardModels();
+    expect(frames.list).toEqual([]);
+    expect(mac.brews).toEqual([]);
+    expect(healerOwnerCards()).toEqual([]);
+  });
+
+  it('M1: the registry refuses though the version looked fine — a Homebrew service is UPGRADED (not told to download the app)', async () => {
+    ollama.version = null;                      // /api/version does not say
+    const mac = fakeMac('brew-service'); overrideOllamaHost(mac);
+    const state = await ensureStandardModels();
+    expect(mac.brews).toEqual([['upgrade', 'ollama']]);
+    expect(mac.serviceRestarts).toBe(1);
+    expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag]);   // refused once, then pulled after the upgrade
+    expect(state.decision).toBe('installed');
+    expect(frames.list).toEqual([]);
+  });
+
+  it('M2: the cask reinstall runs INSIDE the quiet hold (its uninstall quits the app), under the token Homebrew holds', async () => {
+    const mac = fakeMac('app'); mac.brewApp = 'ollama'; overrideOllamaHost(mac);   // before the cask was renamed
+    await ensureStandardModels();
+    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama']]);
+    expect(mac.heldDuringBrew).toEqual([true]);
+  });
+
+  it('M3: the new program is not known to run — the Dojo\'s serve is NOT stopped', async () => {
+    const mac = fakeMac('own-serve'); mac.cliOk = false;
+    await expect(restartOwnServe(mac, baseUrl, 500, 2)).rejects.toThrow(/left as it is/);
+    expect(mac.terms).toEqual([]);
+  });
+
+  it('M3: the new serve does not start — the owner gets ONE "Dojo:" card; it starts but is slow — it is recorded by its pid anyway', async () => {
+    const dead = fakeMac('own-serve'); dead.serveWorks = false;
+    await expect(restartOwnServe(dead, baseUrl, 500, 2)).rejects.toThrow();
+    expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_DOWN_WORDS]);
+    expect(OLLAMA_DOWN_WORDS).toMatch(/^Dojo: /);
+    const slow = fakeMac('own-serve'); slow.serveAnswers = false;
+    await expect(restartOwnServe(slow, baseUrl, 500, 2)).rejects.toThrow();
+    expect(readOwnServe()?.pid).toBe(777);   // recorded at spawn, not by one look at the 5 s mark
+    expect(frames.list.length).toBe(1);        // the card is told once
+  });
+
+  it('M4: a serve the owner started himself (not the pid the Dojo spawned) is never stopped or restarted', async () => {
+    db().prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve', ?)").run(JSON.stringify({ pid: 321, exe: FORMULA, limit: '3' }));   // the Dojo\'s own died; this is another
+    const mac = fakeMac('own-serve'); overrideOllamaHost(mac);
+    expect(await ensureOllamaModelLimit(mac, 'darwin')).toBe('unmanaged');
+    await ollamaRestartSettled();
+    expect(mac.terms).toEqual([]); expect(mac.serves).toEqual([]);
+  });
+
+  it('M5: a Homebrew formula the Dojo did not start is upgraded with brew, NOT restarted, and the owner is told to restart it (never to download the app)', async () => {
+    const mac = fakeMac('formula'); overrideOllamaHost(mac);
+    await ensureStandardModels();
+    expect(mac.brews).toEqual([['upgrade', 'ollama']]);
+    expect(mac.terms).toEqual([]); expect(mac.serves).toEqual([]); expect(mac.serviceRestarts).toBe(0);
+    expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_RESTART_NEEDED_WORDS]);
+    expect(OLLAMA_RESTART_NEEDED_WORDS).not.toMatch(/ollama\.com|[Dd]ownload/);
+  });
+
+  it('L1: a source build (0.0.0) is unknown — the pull decides, nothing is blocked; a pre-release ranks below its release', async () => {
+    ollama.version = '0.0.0';
+    const mac = fakeMac('app'); overrideOllamaHost(mac);
+    await ensureStandardModels();
+    expect(mac.brews).toEqual([]);
+    expect(ollamaAtLeast('0.35.0-rc1', '0.35')).toBe(false);
+    expect(ollamaAtLeast('0.35.1-rc1', '0.35')).toBe(true);
+    expect(ollamaAtLeast('0.35.0', '0.35.0-rc1')).toBe(true);
+  });
+
+  it('L5: every Ollama card starts "Dojo:" and names the real Settings path', () => {
+    for (const w of [STANDARD_MODELS_MISSING_WORDS, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_RESTART_NEEDED_WORDS, OLLAMA_DOWN_WORDS, uncheckedFitWords('A model')]) expect(w).toMatch(/^Dojo: /);
+    expect(STANDARD_MODELS_MISSING_WORDS).toContain('Settings → Dojo → Ollama');
+    expect(STANDARD_MODELS_MISSING_WORDS).not.toContain('Platform');
+  });
+
+  it('L7: the Dojo\'s serve died with a Dojo restart and nothing serves — it is started again at boot', async () => {
+    db().prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve', ?)").run(JSON.stringify({ pid: 321, exe: FORMULA, limit: '4' }));
+    const mac = fakeMac('own-serve'); mac.down = true; mac.appInstalled = async () => false; overrideOllamaHost(mac);
+    expect(await ensureOllamaModelLimit(mac, 'darwin')).toBe('set');
+    await ollamaRestartSettled();
+    expect(mac.serves).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '4' }]);
+    expect(readOwnServe()?.pid).toBe(777);
   });
 });
