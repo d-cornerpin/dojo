@@ -17,3 +17,13 @@ export function closeFiledRefusal(
     `Judge the close instead: work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true|false, reject_reason="..." if false).`
   );
 }
+
+/**
+ * ONE test for "this task is a live recurring schedule" — the filer (`work_update` status and
+ * complete_step) and the validator (`work_validate` complete) used to each spell their own
+ * (`schedule_status !== 'unscheduled' && repeat_interval` vs `repeat_interval !== null`), so a
+ * row one called recurring the other treated as a one-shot, or the reverse.
+ */
+export const isScheduledRecurring = (
+  scheduleStatus: string | null | undefined, repeatInterval: number | null | undefined,
+): boolean => scheduleStatus !== 'unscheduled' && !!repeatInterval;

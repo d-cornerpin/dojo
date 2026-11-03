@@ -61,7 +61,7 @@ import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureRe
 import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
-import { closeFiledRefusal } from './close-filed-guard.js';
+import { closeFiledRefusal, isScheduledRecurring as isScheduledRecurringRow } from './close-filed-guard.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
@@ -1756,7 +1756,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // already moved by then).
     const db = getDb();
     const taskRow = db.prepare(`SELECT title, schedule_status, repeat_interval, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; schedule_status: string; repeat_interval: number | null; prior_status: string } | undefined;
-    const isScheduledRecurring = taskRow && taskRow.schedule_status !== 'unscheduled' && taskRow.repeat_interval;
+    const isScheduledRecurring = !!taskRow && isScheduledRecurringRow(taskRow.schedule_status, taskRow.repeat_interval);
     const priorStatus = taskRow?.prior_status ?? null;
 
     // v2.10.1, idempotency check. When the agent calls
@@ -3496,7 +3496,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     // open, orphaning the run and skipping the per-run advance / PM validation.
     // Refuse and route the agent to the recurring-aware path instead of silently
     // corrupting the schedule state.
-    const isScheduledRecurring = task.scheduleStatus !== 'unscheduled' && !!task.repeatInterval;
+    const isScheduledRecurring = isScheduledRecurringRow(task.scheduleStatus, task.repeatInterval);
     if (isScheduledRecurring) {
       return (
         `Error: "${task.title}" (${taskId.slice(0, 8)}) is a scheduled recurring task, so it is not a project step to sequence. ` +
@@ -4478,7 +4478,7 @@ export async function trackerValidateComplete(
   const task = db.prepare(`
     SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
            w.agent_id AS assigned_to, w.priority AS priority, w.parent_id AS project_id,
-           w.repeat_interval AS repeat_interval, ${msToText('w.next_run_at')} AS next_run_at,
+           w.repeat_interval AS repeat_interval, w.schedule_status AS schedule_status, ${msToText('w.next_run_at')} AS next_run_at,
            ${validatedExpr('w', 'done')} AS complete_validated,
            ${closeRequestFiledExpr('w')} AS close_request_filed,
            ${closeRequestDeliveryExpr('w')} AS close_request_delivery,
@@ -4486,7 +4486,7 @@ export async function trackerValidateComplete(
     FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
-    priority: string; project_id: string | null; repeat_interval: number | null;
+    priority: string; project_id: string | null; repeat_interval: number | null; schedule_status: string;
     next_run_at: string | null; complete_validated: number;
     close_request_filed: number; close_request_delivery: string | null;
     result: string | null; evidence_json: string | null; goal: string | null;
@@ -4548,7 +4548,7 @@ export async function trackerValidateComplete(
       // about a SCHEDULE, and it is preserved verbatim — a recurring row is skipped here. A
       // one-shot task has no schedule for the flag to mean anything about, so leaving it set
       // is just a finished row still rendering as paused.
-      if (task.status === 'paused' && task.repeat_interval === null) {
+      if (task.status === 'paused' && !isScheduledRecurringRow(task.schedule_status, task.repeat_interval)) {
         noteUnsettled(patchWork(taskId, { is_paused: 0 }, { touch: false }),
           'trackerValidateComplete: the work pause ended with the close it was blocking', { taskId });
       }
@@ -4568,7 +4568,7 @@ export async function trackerValidateComplete(
     // detection misfired and the PM mis-routed terminal closes through
     // the per-run reset, leaving inconsistent state. Now we just run
     // the same advance the scheduler would and observe the outcome.
-    const isRecurring = task.repeat_interval !== null;
+    const isRecurring = isScheduledRecurringRow(task.schedule_status, task.repeat_interval);
 
     if (isRecurring) {
       // Archive this run's result/evidence to task_log BEFORE clearing
