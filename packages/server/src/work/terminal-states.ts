@@ -9,3 +9,5 @@ import type { WorkState } from './store.js';
 export const TERMINAL_STATE_NAMES = ['done', 'failed', 'abandoned'] as const;
 export const TERMINAL_STATES: readonly WorkState[] = TERMINAL_STATE_NAMES;
 export const isTerminal = (s: WorkState): boolean => TERMINAL_STATES.includes(s);
+/** The row-level test on a raw state string (SQL rows, request bodies): true for done/failed/abandoned. */
+export const isTerminalName = (s: string | null | undefined): boolean => !!s && (TERMINAL_STATE_NAMES as readonly string[]).includes(s);

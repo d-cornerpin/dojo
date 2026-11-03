@@ -1,4 +1,3 @@
-import { reopenFinishedForNewSchedule } from '../../tracker/close-filed-guard.js';
 import { Hono } from 'hono';
 import {
   createProject,
@@ -25,6 +24,7 @@ import {
 } from '../../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../../work/next-run.js';
+import { armScheduleOnOwnerSave } from '../../tracker/finished-task-schedule.js';
 import { VERSION_GAP_REPORT_KEY } from '../../tracker/version-gap-reconcile.js';
 import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
 import {
@@ -852,8 +852,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
           },
         }), 'dashboard: schedule cleared on task edit', { taskId: id });
       } else {
-        const reopenErr = reopenFinishedForNewSchedule(id);   // a schedule on a finished task = run it again
-        if (reopenErr) return c.json({ ok: false, error: reopenErr, data: { taskId: id } }, 409);
         const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
         const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
@@ -887,7 +885,8 @@ trackerRouter.put('/tasks/:id', async (c) => {
         };
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-        noteUnsettled(setNextRun(id, {
+        // a schedule on a FINISHED task = run it again: reopen + arm land in one unit (or nothing does)
+        const armErr = armScheduleOnOwnerSave(id, () => setNextRun(id, {
           at: tsToMs(nextRun),
           reason: 'the owner edited the schedule on the dashboard; the fire time was recomputed',
           alongside: {
@@ -901,7 +900,8 @@ trackerRouter.put('/tasks/:id', async (c) => {
             schedule_status: 'waiting',
             is_paused: 0,
           },
-        }), 'dashboard: schedule set on task edit', { taskId: id });
+        }));
+        if (armErr) return c.json({ ok: false, error: armErr, data: { taskId: id } }, 409);
       }
     }
 

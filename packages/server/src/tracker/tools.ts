@@ -61,7 +61,8 @@ import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureRe
 import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
-import { closeFiledRefusal, finishedScheduleRefusal, isScheduledRecurring as isScheduledRecurringRow } from './close-filed-guard.js';
+import { closeFiledRefusal } from './close-filed-guard.js';
+import { finishedScheduleRefusal, isScheduledRecurring as isScheduledRecurringRow, setsASchedule } from './finished-task-schedule.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
@@ -2456,7 +2457,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       return `Error: at least one editable field must be provided. Editable: ${WORK_EDITABLE_TASK_FIELDS.join(', ')}. (For status changes use work_update(action="status"); for assignee changes use work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)`;
     }
 
-    if ([scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue, repeatDaysOfWeek, anchorTime].some((v) => v !== undefined)) { const no = finishedScheduleRefusal(taskId, getTask(taskId)?.title ?? 'this task', 'changed'); if (no) return no; }
+    if (setsASchedule([scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue, repeatDaysOfWeek, anchorTime])) { const no = finishedScheduleRefusal(taskId, getTask(taskId)?.title ?? 'this task', 'changed'); if (no) return no; }
     // The repeat number must be able to step the calendar (same refusal as
     // the two work_open doors) — but only when one is being SET: `null` is
     // the supported way to clear a repeat, and stays allowed through here.
@@ -4094,7 +4095,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} no longer exists.`;
   const title = (task.title as string) ?? '(untitled)';
-  if (action !== 'pause') { const no = finishedScheduleRefusal(taskId, title, action === 'skip' ? 'skipped ahead' : 'run now'); if (no) return no; }
+  if (action !== 'pause') { const no = finishedScheduleRefusal(taskId, title, action === 'skip' ? 'skipped ahead' : 'started now'); if (no) return no; }
   if (action === 'pause') {
     // Already paused by the alert handler; confirm and exit. D12: clear
     // missed_runs_paused_at so the engine's auto-skip fallback stands down.

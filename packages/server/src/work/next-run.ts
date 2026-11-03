@@ -60,7 +60,7 @@ import type Database from 'better-sqlite3';
 import { getDb } from '../db/connection.js';
 import { patchAssignments } from '../db/patch.js';
 import { createLogger } from '../logger.js';
-import { TERMINAL_STATE_NAMES } from './terminal-states.js';
+import { isTerminalName } from './terminal-states.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
 import type { WorkPatch } from './tracker-store.js';
 
@@ -109,7 +109,7 @@ export function setNextRun(workId: string, w: NextRunWrite): WorkPatchOutcome {
   // A settled row never keeps a live schedule: arming one (e.g. a run's settle after the row was
   // closed under it, where the on_deck write was refused as a reopen) records it as ended instead.
   const state = (getDb().prepare('SELECT state FROM work WHERE id = ?').get(workId) as { state: string } | undefined)?.state;
-  const settledRow = w.alongside?.schedule_status === 'waiting' && (TERMINAL_STATE_NAMES as readonly string[]).includes(state ?? '');
+  const settledRow = w.alongside?.schedule_status === 'waiting' && isTerminalName(state);
   const write: NextRunWrite = settledRow ? { ...w, at: null, alongside: { ...w.alongside, schedule_status: 'completed', is_paused: 1 } } : w;
   const { sets, values } = patchAssignments({ ...(write.alongside ?? {}), next_run_at: write.at });
   if (write.touch !== false) {

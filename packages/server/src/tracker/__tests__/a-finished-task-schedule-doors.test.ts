@@ -25,6 +25,14 @@ vi.mock('../../agent/access/read.js', async (orig) => ({
   ...(await orig<typeof import('../../agent/access/read.js')>()),
   toolCategoryGranted: () => true,
 }));
+const { engine } = vi.hoisted(() => ({ engine: { throws: false } }));
+vi.mock('../../scheduler/engine.js', async (orig) => {
+  const real = await orig<typeof import('../../scheduler/engine.js')>();
+  return { ...real, calculateNextRun: (t: Parameters<typeof real.calculateNextRun>[0]) => {
+    if (engine.throws) throw new Error('the walk blew up');
+    return real.calculateNextRun(t);
+  } };
+});
 vi.mock('../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../config/platform.js')>()),
   getPrimaryAgentId: () => 'primary',
@@ -33,6 +41,7 @@ vi.mock('../../config/platform.js', async (orig) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
+import { listTaskLog } from '../task-log.js';
 import { trackerRouter } from '../../gateway/routes/tracker.js';
 
 const AGENT = 'agent-finished';
@@ -60,6 +69,7 @@ async function finishedRecurring(): Promise<string> {
 }
 
 beforeEach(() => {
+  engine.throws = false;
   mockDb.current = new Database(':memory:');
   runMigrations();
   db().prepare(`INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
@@ -116,5 +126,56 @@ describe('a schedule set on a finished recurring task', () => {
       expect(out.content).toMatch(/nothing was changed/i);
     }
     expect(row(id)).toEqual(before);
+  });
+
+  const put = (id: string, body: unknown) => trackerRouter.request(`/tasks/${id}`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const SCHED = () => ({ scheduled_start: new Date(Date.now() + 2 * 3_600_000).toISOString(), repeat_interval: 1, repeat_unit: 'days' });
+  const snapshot = (id: string) => ({
+    row: db().prepare('SELECT * FROM work WHERE id = ?').get(id),
+    events: (db().prepare('SELECT COUNT(*) AS n FROM work_events WHERE work_id = ?').get(id) as { n: number }).n,
+  });
+
+  it('R4-1 OWNER door is atomic: a hop that fails leaves the row exactly as it was (still finished, schedule unchanged)', async () => {
+    const id = await finishedRecurring();
+    // The second hop (open -> on_deck) cannot land.
+    db().exec(`CREATE TRIGGER no_on_deck BEFORE UPDATE ON work WHEN NEW.id = '${id}' AND NEW.state = 'on_deck' BEGIN SELECT RAISE(ABORT, 'no on_deck'); END`);
+    const before = snapshot(id);
+    const res = await put(id, SCHED());
+    expect(res.status).not.toBe(200);
+    expect(snapshot(id)).toEqual(before);
+    expect(row(id).state).toBe('done');
+  });
+
+  it('R4-1 OWNER door is atomic: a throw while computing the next run changes nothing', async () => {
+    const id = await finishedRecurring();
+    const before = snapshot(id);
+    engine.throws = true;
+    const res = await put(id, SCHED());
+    expect(res.status).not.toBe(200);
+    expect(snapshot(id)).toEqual(before);
+  });
+
+  it('R4-2 OWNER door: the run history says why the finished task came back', async () => {
+    const id = await finishedRecurring();
+    expect((await put(id, SCHED())).status).toBe(200);
+    expect(JSON.stringify(listTaskLog(id, { limit: 50 }))).toMatch(/new schedule on a finished task/);
+  });
+
+  it('R4-3 AGENT edit: clearing a finished task\'s schedule arms nothing, so it is let through', async () => {
+    const id = await finishedRecurring();
+    const out = await call('work_update:edit', { task_id: id, scheduled_start: null, repeat_interval: null, repeat_unit: null });
+    expect(out.content, out.content).not.toMatch(/is finished/);
+    expect(row(id).state).toBe('done');
+  });
+
+  it('R4-4 AGENT refusal: owner-facing words, and a plain verb phrase', async () => {
+    const id = await finishedRecurring();
+    const edit = await call('work_update:edit', { task_id: id, repeat_interval: 2, repeat_unit: 'days' });
+    expect(edit.content).toMatch(/\(complete\)/);
+    expect(edit.content).not.toMatch(/\(done\)/);
+    const run = await call('work_schedule:resolve_missed', { task_id: id, resolution: 'run_now' });
+    expect(run.content).toMatch(/cannot be started now/);
   });
 });
