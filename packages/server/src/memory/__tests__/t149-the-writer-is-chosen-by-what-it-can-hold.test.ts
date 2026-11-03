@@ -91,6 +91,10 @@ function appendTurn(rowRepeat = 1): void {
 }
 /** A conversation whose older half is far larger than a 16K writer can hold in one call. */
 function seedALongCut(): void { for (let t = 1; t <= 24; t++) appendTurn(); }
+/** Field fix Y: the same, kept under one summary's worth (~29K tokens in all), so the turn's own door still folds
+ *  it inline. A larger cut is a catch-up the background folder takes (`catch-up-state.ts`); these clauses are about
+ *  which writer a turn's fold may dial. */
+function seedACutTheTurnFolds(): void { for (let t = 1; t <= 12; t++) appendTurn(); }
 
 function seed(): void {
   const prov = db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES (?, ?, 'openai-compatible', 'api_key', ?)");
@@ -137,7 +141,7 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
   it('the Settings writer has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
     db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(DEAD, SMALL);   // the writers are TINY (the pick) and ROOMY
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(TINY);
-    seedALongCut();
+    seedACutTheTurnFolds();
     await door(32_000);
     expect(writers.calls.map((c) => c.modelId), 'the writer that can hold nothing was never asked').not.toContain(TINY);
     expect(realSummaries(), 'the rows leaving view were summarised').toBeGreaterThan(0);
@@ -146,7 +150,7 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
 
   it('a 16K Settings writer is handed only what it can hold: every dial fits its own budget, and every row is still summarised', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(SMALL);
-    seedALongCut();
+    seedACutTheTurnFolds();
     await door(16_000);
     expect(writers.calls.length).toBeGreaterThan(0);
     for (const c of writers.calls) {

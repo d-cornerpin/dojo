@@ -22,8 +22,10 @@
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
-import { getMessagesOutsideFreshTail } from './store.js';
-import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
+import { endCatchUpIfDone, hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';
+export { hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';   // their readers' old address
+import { agentBusy } from './rebuild-signals.js';
+import { createLeafSummary, deleteSummary, getSummarySourceMessages, updateSummaryContent } from './dag.js';
 import { UNCONDENSED_KIND, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems,
@@ -44,13 +46,6 @@ import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-uncondensed-placeholder');
-
-/** Unsummarised rows of this session at or below `throughSeq` (the fold's own reader). */
-export function owedThrough(agentId: string, throughSeq: number): Message[] {
-  const compacted = getCompactedMessageIds(agentId);
-  return getMessagesOutsideFreshTail(agentId, 1)
-    .filter((m) => !compacted.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= throughSeq);
-}
 
 /** Cover every still-unsummarised row at or below `throughSeq` with placeholders, one per leaf
  *  chunk. The CALLER HOLDS the per-agent compaction lock. Synchronous and model-free; re-reads what
@@ -105,10 +100,6 @@ function releaseChangedKeptRows(agentId: string): number {
   return released;
 }
 
-export function hasUncondensedPlaceholders(agentId: string): boolean {
-  return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND kind = ? LIMIT 1').get(agentId, UNCONDENSED_KIND);
-}
-
 function configuredModel(agentId: string): string | undefined {
   return (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
 }
@@ -131,12 +122,12 @@ function coveredElsewhere(messageId: string, placeholderId: string): boolean {
  * incident is over. Returns how many were replaced (or dropped because a real fold covered them).
  */
 export async function replaceUncondensedPlaceholders(
-  agentId: string, opts: { abortSignal?: AbortSignal } = {},
+  agentId: string, opts: { abortSignal?: AbortSignal; yieldTo?: () => boolean } = {},
 ): Promise<number> {
   return (await withLock(`compact:${agentId}`, () => replaceUnderLock(agentId, opts), { ifBusy: 'wait' })) ?? 0;
 }
 
-async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal }): Promise<number> {
+async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal; yieldTo?: () => boolean }): Promise<number> {
   const queue = (getDb().prepare(
     'SELECT id FROM summaries WHERE agent_id = ? AND kind = ? ORDER BY earliest_at ASC, id ASC',
   ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>).map((r) => r.id);
@@ -147,7 +138,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   let checkFailed = false;
   while (queue.length > 0) {
     const id = queue.shift()!;
-    if (opts.abortSignal?.aborted) break;
+    if (opts.abortSignal?.aborted || opts.yieldTo?.()) break;   // field fix Y: a live turn goes first; the note waits
     const all = getSummarySourceMessages(id);
     const source = all.filter((m) => !coveredElsewhere(m.id, id));
     if (source.length === 0) {
@@ -216,21 +207,28 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
 // setting a background job aside only threw its working summary away and labelled anyway. A running
 // background summary is left alone; its real summaries land and take their rows out of any note.
 
-/** THE GATE'S LAUNCHER: one background replacement per agent (sharing the routine condense's
- *  one-in-flight slot), only when a placeholder exists and some writer is answering. */
+/** THE BACKGROUND FOLDER'S LAUNCHER (the gate's, and the end of each turn's, `agent/runtime.ts`): one replacement per
+ *  agent (sharing the routine condense's one-in-flight slot), only when a placeholder exists and some writer is
+ *  answering. Field fix Y (`catch-up-state.ts`): it YIELDS to the agent's live turn — it does not start mid-turn and
+ *  stops before its next note when one begins — and a pass that landed notes starts the next at once. */
 export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
     releaseChangedKeptRows(agentId);   // t269 fix round 1: a kept-whole row that changed is a placeholder again
-    if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId)) return false;
+    endCatchUpIfDone(agentId);
+    if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId) || agentBusy(agentId)) return false;
     if (eligibleSummaryWriters(configuredModel(agentId), agentId).length === 0) return false;   // none answering: no dial
   } catch {
     return false;   // a read that failed starts nothing; the gate never fails a turn over this
   }
   backgroundDrains.add(agentId);
   // Round 5: no clock of its own — a writer slower than the turn's patience finishes here. Round 7:
-  // no turn sets it aside either (a turn that will not wait labels beside it instead).
-  replaceUncondensedPlaceholders(agentId)
-    .catch((err) => logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId))
-    .finally(() => { backgroundDrains.delete(agentId); });
+  // no turn cuts it either (a turn labels beside it); field fix Y: a turn beginning stops it BETWEEN notes.
+  replaceUncondensedPlaceholders(agentId, { yieldTo: () => agentBusy(agentId) })
+    .catch((err) => { logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId); return 0; })
+    .then((replaced) => {
+      backgroundDrains.delete(agentId);
+      endCatchUpIfDone(agentId);
+      if (replaced > 0) replacePlaceholdersInBackground(agentId);   // the next when this one landed; none left, or mid-turn: no-op
+    });
   return true;
 }

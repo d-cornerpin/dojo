@@ -31,6 +31,11 @@
 //     once per incident (`compaction-defect.ts`'s per-outage note). A capped backlog or a Stop is
 //     not a failure and cards nothing.
 //   · The 15-minute low-yield brake neither blocks this fold nor is armed by it (`leavingViewPass`).
+//
+// Field fix Y (owner ruling 2026-11-03, "gradually, in the background"): this door folds a turn's OWN
+// overflow. A BACKLOG — more out of view than one summary covers, as when the window shrank — is never
+// folded here: its rows get their placeholders at once and the background folder replaces them, a
+// span at a time, outside the conversation (`catch-up-state.ts`). The turn dials no summary for it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -42,6 +47,7 @@ import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summ
 import { turnPatienceMs } from './turn-patience.js';
 import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
+import { beginCatchUp, catchUpOwns } from './catch-up-state.js';
 import { registerAbortable, releaseAbortable } from '../agent/shared-state.js';
 
 const logger = createLogger('memory-out-of-view-fold');
@@ -117,9 +123,10 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
   let failedWriter: string | null = null;
   let noWriter = false;
   let covered = 0;
+  const backlog = catchUpOwns(agentId, throughSeq);   // the background folder's: no writer is dialled for it in a turn
   try {
     const ran = await withLock(`compact:${agentId}`, async () => {
-      while (!bound.signal.aborted) {
+      while (!backlog && !bound.signal.aborted) {
         const owed = owedThrough(agentId, throughSeq).length;
         if (owed === 0) break;
         const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
@@ -160,6 +167,7 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
   } finally {
     bound.done();
   }
+  if (backlog && covered > 0) beginCatchUp(agentId, covered);
 
   const stopped = budget.stop?.aborted === true;
   if (covered > 0 && !stopped && (failedWriter !== null || noWriter)) {

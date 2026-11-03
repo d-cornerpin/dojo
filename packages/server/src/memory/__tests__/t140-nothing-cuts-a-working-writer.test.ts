@@ -226,12 +226,17 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     expect(failingCards()).toBe(0);
   });
 
-  it('a cut of many leaf chunks is folded in full inside the turn — as much as is leaving, not two chunks', async () => {
+  // Field fix Y (owner ruling 2026-11-03, "gradually, in the background") re-aimed this clause: a cut of many leaf
+  // chunks is a catch-up. The turn dials no summary for it; the background folder folds all of it, with no cap.
+  it('a cut of many leaf chunks is not folded inside the turn; the background folder then folds all of it', async () => {
     writers.windowNow = 200_000;
     for (let t = 1; t <= 300; t++) appendTurn(false, 60);   // ~600 rows, many leaf chunks
     writers.windowNow = 32_000;
     const ctx = await door();
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(writers.calls, 'the turn dials no summary for a backlog').toEqual([]);
+    expect(placeholders(), 'the backlog waits as notes').toBeGreaterThan(2);
+    await replaceUncondensedPlaceholders(AGENT);   // the background folder's pass
     expect(writers.calls.length, 'more than the old two summariser calls').toBeGreaterThan(2);
     expect(placeholders(), 'every leaving row has a real summary').toBe(0);
   });

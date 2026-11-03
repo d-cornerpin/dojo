@@ -416,6 +416,7 @@ import { a2aRetryBudgetFor } from './a2a-patience.js';
 import { turnContext } from './turn-context.js';
 import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
 import { contextOverflowSince } from '../memory/compaction.js';
+import { replacePlaceholdersInBackground } from '../memory/uncondensed-placeholder.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
@@ -802,6 +803,7 @@ class AgentRuntime {
       // used to answer it with "nothing is happening". The stamp is what makes the tail
       // visible to that door; `isRunUnwinding` in `shared-state.ts` carries the argument.
       lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId, pendingWakeups.has(agentId)); // t143 r7: the carrying run ends; a wake of its own queued becomes the job's continuation
+      replacePlaceholdersInBackground(agentId);   // field fix Y: the background folder yielded to this turn; it resumes now
       // Safety net for any path that broke out of runAgentLoop without
       // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
       // Idempotent, no-op if the heartbeat was already stopped.
