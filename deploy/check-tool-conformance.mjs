@@ -21,7 +21,7 @@
 //   - @dojo/shared visibility.js  (self-contained, type-only deps) — the
 //     canonical classifyTool + channelOfSendTool,
 //   - server dist tools/categories.js (plain data) — the tool registry,
-//   - the leaf/type-only hand-list modules (loop/hoarding/concurrency/ack
+//   - the leaf/type-only hand-list modules (loop/hoarding/concurrency
 //     classifiers, receipts/store, sensei-policy).
 // None of those has a VALUE @dojo/shared import, so they all load cleanly under
 // plain node. release.sh runs `npm run build:package` before the gates, so the
@@ -68,7 +68,6 @@ const cats = await imp('server/dist/tools/categories.js');
 const loop = await imp('server/dist/agent/v2/classifiers/loop.js');
 const hoarding = await imp('server/dist/agent/v2/classifiers/hoarding.js');
 const concurrency = await imp('server/dist/agent/v2/classifiers/concurrency.js');
-const ack = await imp('server/dist/agent/v2/classifiers/ack.js');
 const receipts = await imp('server/dist/receipts/store.js');
 const sensei = await imp('server/dist/agent/sensei-policy.js');
 
@@ -127,7 +126,6 @@ const HAND_LISTS = [
   // the entry rather than the mechanism: there is no name-set left to police. Verified by
   // command against the built module, not from the comment.
   ['concurrency.TOOL_CATEGORY', keys(concurrency, 'concurrency', 'TOOL_CATEGORY')],
-  ['ack.SELF_ACKNOWLEDGING_TOOLS', iter(ack, 'ack', 'SELF_ACKNOWLEDGING_TOOLS')],
   ['receipts.RECEIPT_TOOLS', keys(receipts, 'receipts', 'RECEIPT_TOOLS')],
   ['sensei.SEND_TO_PEOPLE', iter(sensei, 'sensei', 'SEND_TO_PEOPLE')],
 ];
