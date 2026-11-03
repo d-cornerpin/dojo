@@ -205,7 +205,7 @@ describe('what is never refused', () => {
 });
 
 describe('RULING: what Ollama cannot size now is allowed, told, and judged at its first load', () => {
-  const WORDS = (name: string): string => `${name} was selected, but its memory fit could not be checked then (Ollama was not answering, or the model was not downloaded yet). `
+  const WORDS = (name: string): string => `Dojo: ${name} was selected, but its memory fit could not be checked then (Ollama was not answering, or the model was not downloaded yet). `
     + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
   const inUse = (modelId: string): void => { db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_model', ?)").run(modelId); };
 

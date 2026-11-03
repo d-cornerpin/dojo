@@ -50,8 +50,9 @@ async function installedNames(baseUrl: string): Promise<string[] | null> {
 }
 
 type Models = ReadonlyArray<{ tag: string; minOllama: string | null }>;
-const TOLD = { update: ['ollama-too-old', OLLAMA_TOO_OLD_WORDS], restart: ['ollama-restart-needed', OLLAMA_RESTART_NEEDED_WORDS] } as const;
-const cardsEnd = (): void => { for (const [key] of Object.values(TOLD)) ownerConditionCleared(key); };
+/** Read when used, never at load: this module sits in an import cycle with the owner-notices words (a module-scope read was a dead zone). */
+const TOLD = (): { [k in 'update' | 'restart']: readonly [string, string] } => ({ update: ['ollama-too-old', OLLAMA_TOO_OLD_WORDS], restart: ['ollama-restart-needed', OLLAMA_RESTART_NEEDED_WORDS] });
+const cardsEnd = (): void => { for (const [key] of Object.values(TOLD())) ownerConditionCleared(key); };
 
 /** The upgrade ran: fixed (nothing is held), judged for nothing (no listener now: nothing is held or told), or failed (held, ONE card). */
 async function afterUpgrade(done: UpgradeResult, baseUrl: string, have: string | null): Promise<boolean> {
@@ -59,8 +60,8 @@ async function afterUpgrade(done: UpgradeResult, baseUrl: string, have: string |
   if (done.ok) { heldAt = null; cardsEnd(); return true; }
   if (done.transient) { logger.info('Ollama was not answering when the upgrade looked; nothing is held', { line: done.line }); return false; }
   heldAt = (await readOllamaVersion(baseUrl)) ?? have ?? 'unknown';
-  const [key, words] = TOLD[done.card ?? 'update'];
-  for (const [other] of Object.values(TOLD)) if (other !== key) ownerConditionCleared(other);
+  const [key, words] = TOLD()[done.card ?? 'update'];
+  for (const [other] of Object.values(TOLD())) if (other !== key) ownerConditionCleared(other);
   logger.warn('Ollama is too old for the Dojo\'s models and was not updated', { have, line: done.line });
   if (tellOwnerOnce(key)) ownerCardFrame(words, 'warning');
   return false;
