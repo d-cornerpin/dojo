@@ -12,20 +12,26 @@ vi.mock('../../../db/connection.js', () => ({
   getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
   getDbPath: () => ':memory:',
 }));
-const spawned = vi.hoisted(() => ({ calls: [] as Array<{ cmd: string; env?: Record<string, string | undefined> }> }));
-vi.mock('node:child_process', async (orig) => ({
-  ...(await orig<typeof import('node:child_process')>()),
-  exec: (cmd: string, opts: { env?: Record<string, string | undefined> }) => { spawned.calls.push({ cmd, env: opts?.env }); return { unref: () => {} }; },
-}));
-
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
 import { getOllamaLock } from '../../../services/ollama-lock.js';
+import { overrideOllamaHost, type OllamaHost } from '../../../services/ollama-host.js';
+
+// Fix W: setup's "start" goes through the host seam (a fake here: no real `ollama serve` is ever started), so the
+// Dojo also REMEMBERS the server it started and can restart it with a newer Ollama later.
+const started = { envs: [] as Array<Record<string, string>> };
+const fakeHost = (): OllamaHost => ({
+  getenv: async () => null, setenv: async () => undefined, appPids: async () => [], appInstalled: async () => false,
+  terminate: () => undefined, alive: () => false, launchApp: async () => undefined, answers: async () => true, sleep: async () => undefined,
+  listener: async () => (started.envs.length > 0 ? { pid: 900, path: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama' } : null),
+  brewServicePid: async () => null, hasBrew: async () => true, brew: async () => undefined, restartBrewService: async () => undefined,
+  startServe: (env) => { started.envs.push(env); },
+});
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
-  spawned.calls.length = 0;
+  started.envs.length = 0; overrideOllamaHost(fakeHost());
   vi.stubGlobal('fetch', vi.fn(async () => new Response('Ollama is running', { status: 200 })));
 });
 afterEach(() => {
@@ -36,27 +42,29 @@ afterEach(() => {
       ON CONFLICT(key) DO UPDATE SET value = '1'`).run();
     getOllamaLock().reloadConfig();
   }
-  vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null;
+  overrideOllamaHost(null); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null;
 });
 
 describe('setup starts Ollama with room for the Dojo\'s models', () => {
   it('OLLAMA_MAX_LOADED_MODELS = the embedder + the pair + the lock\'s agent slots (default 1 → 4)', async () => {
     await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
-    const serve = spawned.calls.find((c) => c.cmd === 'ollama serve');
-    expect(serve?.env?.OLLAMA_MAX_LOADED_MODELS).toBe('4');
+    expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '4' }]);
+    // …and the Dojo remembers which program it started, and that the limit is in place on this very server
+    const rows = Object.fromEntries((mockDb.current!.prepare("SELECT key, value FROM config WHERE key LIKE 'ollama_own_serve%'").all() as Array<{ key: string; value: string }>).map((r) => [r.key, r.value]));
+    expect(rows).toEqual({ ollama_own_serve_exe: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama', ollama_own_serve_limit: '900:4' });
   }, 10_000);
 
   it('fix round 4 (NB-3): an owner\'s own higher value is never lowered', async () => {
     process.env.OLLAMA_MAX_LOADED_MODELS = '8';
     try {
       await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
-      expect(spawned.calls.find((c) => c.cmd === 'ollama serve')?.env?.OLLAMA_MAX_LOADED_MODELS).toBe('8');
+      expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '8' }]);
     } finally { delete process.env.OLLAMA_MAX_LOADED_MODELS; }
   }, 10_000);
 
   it('follows the owner\'s Max Concurrent Models setting', async () => {
     mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '2')").run();
     await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
-    expect(spawned.calls.find((c) => c.cmd === 'ollama serve')?.env?.OLLAMA_MAX_LOADED_MODELS).toBe('5');
+    expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '5' }]);
   }, 10_000);
 });

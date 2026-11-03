@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { execSync, exec, spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
@@ -17,9 +17,13 @@ import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
 import {
   ensureLocalOllamaProvider, startStandardInstall, standardState, standardProgressLines,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
+  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS,
 } from '../../services/local-standard.js';
-import { ensureOllamaModelLimit, desiredOllamaMaxLoaded, raisedLoadedLimit } from '../../services/ollama-model-limit.js';
+import { ensureOllamaModelLimit } from '../../services/ollama-model-limit.js';
+import { getOllamaHost } from '../../services/ollama-host.js';
+import { startOwnServe } from '../../services/ollama-restart.js';
+import { releasePairHold } from '../../services/ollama-pair-gate.js';
+import { plainPullError } from '../../services/ollama-version.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -138,13 +142,11 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'ollama-start': {
-        // Start ollama serve in background. v3.5: with room for the embedder, the Dojo's resident pair and
-        // the lock's agent slots — Ollama's default of 3 runners would make an agent's model and one of
-        // those three evict each other turn after turn (its scheduler unloads an idle runner at the limit).
-        // services/ollama-model-limit.ts states the arithmetic; an owner's own higher value is never lowered (NB-3).
-        const own = process.env.OLLAMA_MAX_LOADED_MODELS;
-        const maxLoaded = raisedLoadedLimit(own, desiredOllamaMaxLoaded()) ?? (own as string).trim();
-        exec('ollama serve', { timeout: 0, env: { ...execEnv, OLLAMA_MAX_LOADED_MODELS: maxLoaded } }); // fire and forget
+        // Start ollama serve in background, as a child the Dojo remembers it started (so it can upgrade and restart it), with
+        // room in its environment for the embedder, the Dojo's resident pair and the lock's agent slots (Ollama's default of 3
+        // runners would have an agent's model and one of those evict each other). `ollama-restart.ts` states the arithmetic.
+        const host = getOllamaHost();
+        if (host) void startOwnServe(host, 'http://localhost:11434', STANDARD_TAGS.length).catch((err) => logger.warn('Starting Ollama failed', { error: String(err) })); // fire and forget
         // Wait a moment for it to start
         await new Promise(r => setTimeout(r, 3000));
         try {
@@ -275,7 +277,8 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
       return c.json({ ok: true, data: { model, pulled: true, status: outcome.status } });
     }
     if (outcome.stalled) return routeFailure(c, logger, new Error(outcome.error), { status: 500 });
-    return c.json({ ok: false, error: outcome.error }, 500);
+    logger.warn('Manual model pull failed', { model, error: outcome.error });
+    return c.json({ ok: false, error: plainPullError(outcome.error) }, 500);
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }
@@ -305,6 +308,7 @@ setupDepsRouter.get('/ollama/standard', async (c) => {
 
 // POST /ollama/standard — install or repair them (the Ollama tile's Repair button), in the background
 setupDepsRouter.post('/ollama/standard', (c) => {
+  releasePairHold();   // Repair looks at Ollama's version afresh: it upgrades it when it can, else says so once
   startStandardInstall();
   return c.json({ ok: true, data: { started: true } });
 });

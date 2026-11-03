@@ -28,8 +28,8 @@
 import { getDb } from '../db/connection.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
 import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
-import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords } from './local-model-notice-words.js';
-export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords };
+import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS } from './local-model-notice-words.js';
+export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS };
 
 const TOLD = 'owner_told';
 const DISMISSED = 'owner_dismissed';
@@ -148,11 +148,16 @@ export function wordsOf(key: string): string {
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
     : kind === 'embedding-switch' ? embeddingSwitchWords(countMemoriesOnOtherModels())
-    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS
+    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : kind === 'ollama-too-old' ? OLLAMA_TOO_OLD_WORDS
     : kind === 'ollama-limit-set' ? OLLAMA_LIMIT_SET_WORDS : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
-    : kind === 'ollama-limit-manual' ? ollamaLimitManualWords(Number(agentId))
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
     : HEALER_BROKEN_WORDS;
+}
+
+/** 3.5.0-preflight.1 told the owner a manual card (`ollama-limit-manual:<n>`, "start Ollama with a variable"). It is
+ *  retired for good: any told or dismissed record of it left on a box is removed at the start. */
+export function retireOllamaLimitManualCards(): void {
+  try { getDb().prepare("DELETE FROM healer_state WHERE scope IN (?, ?) AND key LIKE 'ollama-limit-manual:%'").run(TOLD, DISMISSED); } catch { /* best-effort */ }
 }
 
 /** The condition cleared (its `key`, or every key under `family`): forget he was told and
@@ -217,13 +222,12 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     && !!db.prepare('SELECT 1 FROM agents WHERE model_id = ? UNION SELECT 1 FROM router_tier_models WHERE model_id = ? UNION SELECT 1 FROM config WHERE value = ?').get(modelId, modelId, modelId);
   return rows.filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
     : key.startsWith('fitunchecked:') ? fitStillOwed(key.slice('fitunchecked:'.length))
-    : key.startsWith('ollama-limit-manual:') ? true
     : key === 'embedding-switch' ? countMemoriesOnOtherModels() > 0   // stands until no memory is left on the old model
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key === 'ollama-too-old' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

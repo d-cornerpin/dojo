@@ -5,8 +5,9 @@
 //   NB-1 the Ollama app is restarted only when no local Ollama call and no pull is in flight; calls that
 //        arrive during the restart wait for it; a running turn or a download is never cut.
 //   NB-2 it acts only where it is true: the Ollama app serving the local Ollama → set + restart + card;
-//        another `ollama serve` (Homebrew) → nothing changed, the card names the one setting to add;
-//        no local Ollama → nothing at all.
+//        Fix W: Homebrew's service → set + the service restarted; a `serve` the Dojo started → restarted with the
+//        variable in its own environment; any other server → nothing changed and NO card (the owner is never asked
+//        to set a variable); no local Ollama → nothing at all.
 //   NB-3 an owner's value is never lowered.
 //   NB-5 no AppleScript (a TERM to the app's processes, then `open`); a failed restart is retried at the next
 //        start; an unset `launchctl getenv` reads as unset.
@@ -32,7 +33,7 @@ vi.mock('node:child_process', async (orig) => {
 import { runMigrations } from '../../db/migrations.js';
 import {
   ensureOllamaModelLimit, ollamaRestartSettled, desiredOllamaMaxLoaded, makeRealDeps, raisedLoadedLimit,
-  OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords, type OllamaLimitDeps,
+  OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, type OllamaLimitDeps,
 } from '../ollama-model-limit.js';
 import { getOllamaLock } from '../ollama-lock.js';
 import { localWorkBegins } from '../ollama-quiet.js';
@@ -45,14 +46,14 @@ const LOCAL = 'ollama-local';
 const APP_SERVER = '/Applications/Ollama.app/Contents/Resources/ollama';
 const BREW_SERVER = '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama';
 
-type Fake = OllamaLimitDeps & { sets: string[]; terms: number[]; launches: number; log: string[] };
+type Fake = OllamaLimitDeps & { sets: string[]; terms: number[]; launches: number; log: string[]; serves: Array<Record<string, string>>; serviceRestarts: number };
 function fakeDeps(env: Record<string, string>, o: {
-  server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>; neverAnswers?: boolean; failLaunch?: unknown;
+  server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>; neverAnswers?: boolean; failLaunch?: unknown; brewService?: boolean;
 } = {}): Fake {
   const server = o.server === undefined ? APP_SERVER : o.server;
   const living = new Set<number>([...(o.appPids ?? (server === APP_SERVER ? [501] : [])), ...(server ? [502] : [])]);
   const d: Fake = {
-    sets: [], terms: [], launches: 0, log: [],
+    sets: [], terms: [], launches: 0, log: [], serves: [], serviceRestarts: 0,
     getenv: async (k) => env[k] ?? null,
     setenv: async (k, v) => { if (o.failSet) throw new Error('launchctl: permission denied'); env[k] = v; d.sets.push(`${k}=${v}`); },
     listener: async () => (server && living.has(502) ? { pid: 502, path: server } : null),
@@ -63,6 +64,11 @@ function fakeDeps(env: Record<string, string>, o: {
     launchApp: async () => { d.log.push('launch'); if (o.failLaunch !== undefined) throw o.failLaunch; await o.launchGate; d.launches++; living.add(501); living.add(502); },
     answers: async () => !o.neverAnswers && living.has(502),
     sleep: async () => { /* the tick, instant in a test */ },
+    brewServicePid: async () => (o.brewService && living.has(502) ? 502 : null),
+    hasBrew: async () => true,
+    brew: async () => undefined,
+    restartBrewService: async () => { d.serviceRestarts++; living.add(502); },
+    startServe: (e) => { d.serves.push(e); d.log.push('serve'); living.add(502); },
   };
   return d;
 }
@@ -232,23 +238,70 @@ describe('NB-1: the restart never cuts a running call or a download', () => {
 });
 
 describe('NB-2: act only where it is true', () => {
-  it('Homebrew\'s `ollama serve` serves it: nothing set, nothing restarted, and the card names the one setting to add', async () => {
+  it('a server the Dojo cannot restart (a plain binary): nothing set, nothing restarted, and NO card at all', async () => {
     const deps = fakeDeps({}, { server: BREW_SERVER, installed: false });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('manual');
+    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('unmanaged');
     await ollamaRestartSettled();
     expect(deps.sets).toEqual([]);
     expect(deps.terms).toEqual([]);
     expect(deps.launches).toBe(0);
-    expect(frames.list.map((f) => f.error)).toEqual([ollamaLimitManualWords(4)]);
-    expect(ollamaLimitManualWords(4)).toContain('OLLAMA_MAX_LOADED_MODELS=4');
-    expect(ollamaLimitManualWords(4)).not.toMatch(/restarted|raised/);
-    expect(healerOwnerCards().map((c) => c.words)).toContain(ollamaLimitManualWords(4));
+    expect(deps.serves).toEqual([]);
+    expect(frames.list).toEqual([]);
+    expect(healerOwnerCards()).toEqual([]);
   });
 
-  it('the Ollama app is installed but Homebrew\'s server is the one answering: still no restart', async () => {
+  it('the Ollama app is installed but another server is the one answering: still no restart and no card', async () => {
     const deps = fakeDeps({}, { server: BREW_SERVER, installed: true, appPids: [] });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('manual');
+    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('unmanaged');
     expect(deps.terms).toEqual([]);
+    expect(frames.list).toEqual([]);
+  });
+
+  it('Homebrew\'s service serves it: the variable goes into launchd, the service is restarted once, and the owner is asked for nothing', async () => {
+    const deps = fakeDeps({}, { server: BREW_SERVER, installed: false, brewService: true });
+    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
+    await ollamaRestartSettled();
+    expect(deps.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
+    expect(deps.serviceRestarts).toBe(1);
+    expect(deps.terms).toEqual([]);
+    expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_LIMIT_SET_WORDS]);
+    const again = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }, { server: BREW_SERVER, installed: false, brewService: true });
+    expect(await ensureOllamaModelLimit(again, 'darwin')).toBe('already');   // done: the next start restarts nothing
+    expect(again.serviceRestarts).toBe(0);
+  });
+
+  it('a serve the Dojo started (through the app\'s own link, or Homebrew\'s binary) is restarted with the variable in its OWN environment', async () => {
+    mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_own_serve_exe', ?)").run(BREW_SERVER);
+    const deps = fakeDeps({}, { server: BREW_SERVER, installed: false });
+    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
+    await ollamaRestartSettled();
+    expect(deps.terms).toEqual([502]);
+    expect(deps.serves).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '4' }]);
+    expect(deps.sets).toEqual([]);   // launchd is not involved
+    expect(frames.list).toEqual([]);
+    expect(healerOwnerCards()).toEqual([]);
+    // Started with the limit: a later Dojo start leaves it alone.
+    const next = fakeDeps({}, { server: BREW_SERVER, installed: false });
+    expect(await ensureOllamaModelLimit(next, 'darwin')).toBe('already');
+    expect(next.terms).toEqual([]);
+  });
+
+  it('the real program decides, not the path it was started by: a serve started through the CLI link into the app is the app', async () => {
+    const argv: string[][] = [];
+    const run = async (cmd: string, args: string[]): Promise<{ stdout: string }> => {
+      argv.push([cmd, ...args]);
+      if (cmd === 'lsof' && args.includes('-t')) return { stdout: '777\n' };
+      if (cmd === 'lsof') return { stdout: 'p777\nfcwd\nn/\nftxt\nn/Applications/Ollama.app/Contents/Resources/ollama\n' };   // what the process really runs
+      if (cmd === 'ps') return { stdout: '/usr/local/bin/ollama\n' };   // what it was started by: the link
+      return { stdout: '' };
+    };
+    const real = makeRealDeps(run, () => true, () => quickChild());
+    expect(await real.listener(11434)).toEqual({ pid: 777, path: '/Applications/Ollama.app/Contents/Resources/ollama' });
+    expect(argv.some(([c]) => c === 'ps')).toBe(false);
+    // …and the Dojo treats that listener as the app: the variable is already in place, so nothing is asked or restarted
+    const deps = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }, { server: '/Applications/Ollama.app/Contents/Resources/ollama' });
+    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('already');
+    expect(frames.list).toEqual([]);
   });
 
   it('no local Ollama at all: nothing, and no card', async () => {
@@ -379,13 +432,11 @@ describe('fix round 5', () => {
     release();
   });
 
-  it('NB4-5: the Homebrew card is cleared once the Ollama app serves this box (even with the value already in place)', async () => {
-    const env: Record<string, string> = {};
-    expect(await ensureOllamaModelLimit(fakeDeps(env, { server: BREW_SERVER, installed: false }), 'darwin')).toBe('manual');
-    expect(healerOwnerCards().map((c) => c.words)).toContain(ollamaLimitManualWords(4));
-    env.OLLAMA_MAX_LOADED_MODELS = '8';
-    expect(await ensureOllamaModelLimit(fakeDeps(env), 'darwin')).toBe('already');
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(ollamaLimitManualWords(4));
+  it('the manual card of 3.5.0-preflight.1 is retired: its record on an upgraded box is removed at the start, and nothing names the variable to the owner', async () => {
+    mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-manual:4', 1)").run();
+    expect(await ensureOllamaModelLimit(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '8' }), 'darwin')).toBe('already');
+    expect(mockDb.current!.prepare("SELECT 1 FROM healer_state WHERE key LIKE 'ollama-limit-manual:%'").get()).toBeUndefined();
+    for (const w of [OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS]) expect(w).not.toMatch(/OLLAMA_|environment variable/);
   });
 });
 
