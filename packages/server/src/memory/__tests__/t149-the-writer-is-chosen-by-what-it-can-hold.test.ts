@@ -59,6 +59,7 @@ vi.mock('../../agent/model.js', () => ({
 }));
 
 import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
+import { replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
 import { checkAndCompact } from '../compaction.js';
 import { compactionIsBraked, __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
@@ -159,6 +160,26 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
         .toBeLessThanOrEqual(budgetFor(c.modelId, c.systemPrompt));
     }
     expect(placeholders(), 'the writer took all of it in pieces it can hold').toBe(0);
+  });
+});
+
+// Field fix Y round 3 (review F6): the large cut a 16K Settings writer must split is a catch-up now, so the
+// background folder must keep the same promise — every dial fits its own budget, and every row is summarised.
+describe('field fix Y — the background folder is held to the same writer capacity on a large cut', () => {
+  it('the 24-turn cut at 16K: the turn dials nothing; the folder\'s every dial fits its writer\'s budget, and no note is left', async () => {
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(SMALL);
+    seedALongCut();
+    await door(16_000);
+    expect(writers.calls, 'a catch-up: the turn dials no writer').toEqual([]);
+    expect(placeholders(), 'precondition: the backlog waits as notes').toBeGreaterThan(0);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(writers.calls.length).toBeGreaterThan(0);
+    expect(writers.calls.map((c) => c.modelId), 'the writer that can hold nothing is never asked').not.toContain(TINY);
+    for (const c of writers.calls) {
+      expect(estimateTokens(c.content), `a dial of ${estimateTokens(c.content)} tokens against a budget of ${budgetFor(c.modelId, c.systemPrompt)}`)
+        .toBeLessThanOrEqual(budgetFor(c.modelId, c.systemPrompt));
+    }
+    expect(placeholders(), 'every row summarised, in pieces its writers can hold').toBe(0);
   });
 });
 

@@ -15,7 +15,7 @@ import { createLogger } from '../logger.js';
 import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
 import { rebuildGuard } from './rebuild-signals.js';
 import { openCatchUps } from './catch-up-state.js';
-import { replacePlaceholdersInBackground } from './uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground } from './catch-up-folder.js';
 
 const logger = createLogger('legacy-rebuild-boot');
 

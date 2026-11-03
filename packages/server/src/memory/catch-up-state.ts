@@ -25,7 +25,10 @@
 // (`replacePlaceholdersInBackground`): one note at a time, the next when the one before lands, in the
 // writer order the owner ruled (`summary-writer-health.ts`), yielding to the agent's live turn.
 //
-// THE CARD. One plain card per agent while its catch-up stands, through the existing owner-card frames
+// THE CARD (round 3) is raised by a real signal: a person's turn starting while the agent still runs on notes
+// (a backlog that folds before the next turn never shows one). While the compaction-failure notice speaks for
+// the agent (no writer can replace notes), this card is withdrawn: one honest card at a time.
+// One plain card per agent while its catch-up stands, through the existing owner-card frames
 // (keyed, so it is one card per agent) and the owner-notices list (so it lasts across a reload). It
 // leaves when the last note is replaced. No name is written here: the card reads the agent's own.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -53,7 +56,9 @@ export function hasUncondensedPlaceholders(agentId: string): boolean {
   return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND kind = ? LIMIT 1').get(agentId, UNCONDENSED_KIND);
 }
 
-interface CatchUp { at: number; dismissedAt?: number }
+/** `askedThrough`: the newest person's message when it began; `carded`: its card is up; `failing`: the
+ *  compaction-failure notice speaks for this agent instead (round 3, one honest card at a time). */
+interface CatchUp { at: number; dismissedAt?: number; askedThrough?: number; carded?: boolean; failing?: boolean }
 const keyOf = (agentId: string): string => `memory_catch_up.${agentId}`;
 const cardKeyOf = (agentId: string): string => `memory-catch-up:${agentId}`;
 
@@ -100,13 +105,16 @@ export function catchUpOwns(agentId: string, throughSeq: number): boolean {
   }
 }
 
-/** A turn handed its backlog to the background folder: record it and tell the owner, once per catch-up. */
+const newestAsk = (agentId: string): number =>
+  (getDb().prepare("SELECT MAX(seq) AS r FROM messages WHERE agent_id = ? AND role = 'user'").get(agentId) as { r: number | null }).r ?? 0;
+
+/** A turn handed its backlog to the background folder: record it. No card yet (round 3, F3): a backlog that folds
+ *  before the next turn never touches the owner; the card is raised by `cardCatchUpAtTurnStart`. */
 export function beginCatchUp(agentId: string, rowsLabelled: number): void {
   try {
     if (readCatchUp(agentId) !== null) return;
-    writeCatchUp(agentId, { at: Date.now() });
+    writeCatchUp(agentId, { at: Date.now(), askedThrough: newestAsk(agentId) });
     logger.info('Catch-up: older history no longer fits this agent\'s window; it is folded in the background, a span at a time', { rowsLabelled }, agentId);
-    ownerCardFrame(catchUpWords(agentId), 'warning', cardKeyOf(agentId));
   } catch (err) {
     logger.warn('Catch-up could not be recorded; the notes stand and the folder still replaces them', { error: err instanceof Error ? err.message : String(err) }, agentId);
   }
@@ -116,10 +124,42 @@ export function beginCatchUp(agentId: string, rowsLabelled: number): void {
 export function endCatchUpIfDone(agentId: string): void {
   try {
     if (readCatchUp(agentId) === null || hasUncondensedPlaceholders(agentId)) return;
+    const was = readCatchUp(agentId);
     writeCatchUp(agentId, null);
     logger.info('Catch-up finished: every older span has its summary', {}, agentId);
-    ownerCardEnded(catchUpWords(agentId), cardKeyOf(agentId));
+    if (was?.carded) ownerCardEnded(catchUpWords(agentId), cardKeyOf(agentId));
   } catch { /* the record stays; the next landing note ends it */ }
+}
+
+/** THE CARD'S SIGNAL (round 3, F3): a person's turn starts while this agent still runs on notes. Called by the
+ *  engine's assembly door; once per catch-up, and never while the failure notice speaks (F2). Never throws. */
+export function cardCatchUpAtTurnStart(agentId: string): void {
+  try {
+    const rec = readCatchUp(agentId);
+    if (rec === null || rec.carded || rec.failing || rec.dismissedAt !== undefined || !hasUncondensedPlaceholders(agentId)) return;
+    if (newestAsk(agentId) <= (rec.askedThrough ?? 0)) return;   // the turn that began it: not yet a turn on notes
+    writeCatchUp(agentId, { ...rec, carded: true });
+    ownerCardFrame(catchUpWords(agentId), 'warning', cardKeyOf(agentId));
+  } catch { /* the card is the courtesy; the folder works regardless */ }
+}
+
+/** Round 3 (F2): the compaction-failure notice was raised for this agent (`compaction-defect.ts`). The card that
+ *  promises "this finishes on its own" leaves; it may return at a later turn once the failure is over. */
+export function withdrawCatchUpCard(agentId: string): void {
+  try {
+    const rec = readCatchUp(agentId);
+    if (rec === null) return;
+    writeCatchUp(agentId, { ...rec, failing: true, carded: false });
+    if (rec.carded) ownerCardEnded(catchUpWords(agentId), cardKeyOf(agentId));
+  } catch { /* best effort */ }
+}
+
+/** The failure is over: the catch-up card may be raised again at the next turn on notes. */
+export function catchUpFailureOver(agentId: string): void {
+  try {
+    const rec = readCatchUp(agentId);
+    if (rec?.failing) writeCatchUp(agentId, { ...rec, failing: false });
+  } catch { /* best effort */ }
 }
 
 /** The agents whose catch-up record is open (the boot resumes each: `legacy-rebuild-boot.ts`). */
@@ -128,11 +168,11 @@ export function openCatchUps(): string[] {
   return rows.map(({ key }) => key.slice('memory_catch_up.'.length));
 }
 
-/** The catch-up cards a dashboard shows on load: started, still running, not dismissed. */
+/** The catch-up cards a dashboard shows on load: raised, still running, not withdrawn or dismissed. */
 export function catchUpOwnerCards(): Array<{ words: string; severity: 'notice'; cardKey: string; dismiss: () => void }> {
   return openCatchUps().flatMap((agentId) => {
     const told = readCatchUp(agentId);
-    if (told === null || told.dismissedAt !== undefined || !hasUncondensedPlaceholders(agentId)) return [];
+    if (told === null || !told.carded || told.failing || told.dismissedAt !== undefined || !hasUncondensedPlaceholders(agentId)) return [];
     return [{ words: catchUpWords(agentId), severity: 'notice' as const, cardKey: cardKeyOf(agentId), dismiss: () => writeCatchUp(agentId, { ...told, dismissedAt: Date.now() }) }];
   });
 }

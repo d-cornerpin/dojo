@@ -50,7 +50,8 @@ const writer = vi.hoisted(() => ({
 vi.mock('../summarize.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../summarize.js')>()), generateSummary: writer.write }));
 
 // Imported FIRST: a module first loaded while the summariser's mock factory runs binds the unmocked writer.
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, replacePlaceholdersInBackground } from '../uncondensed-placeholder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
 import { runMigrations } from '../../db/migrations.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { condenseUntilFits } from '../condense-until-fits.js';

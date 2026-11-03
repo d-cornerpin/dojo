@@ -47,7 +47,7 @@ import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summ
 import { turnPatienceMs } from './turn-patience.js';
 import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
-import { beginCatchUp, catchUpOwns } from './catch-up-state.js';
+import { beginCatchUp, cardCatchUpAtTurnStart, catchUpOwns } from './catch-up-state.js';
 import { registerAbortable, releaseAbortable } from '../agent/shared-state.js';
 
 const logger = createLogger('memory-out-of-view-fold');
@@ -82,6 +82,7 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
   // stop cuts this controller with the calls it covers. A caller's own signal is folded in.
   const stop = new AbortController();
   registerAbortable(agentId, stop, 'turn');
+  cardCatchUpAtTurnStart(agentId);   // field fix Y r3 (F3): a turn on notes is the card's real signal
   const onCaller = (): void => stop.abort();
   if (opts.abortSignal?.aborted) onCaller(); else opts.abortSignal?.addEventListener('abort', onCaller, { once: true });
   const budget: TurnBudget = { deadline: Date.now() + turnPatienceMs(agentId, opts.dialedModelId), stop: stop.signal, tried: new Set() };
@@ -126,6 +127,8 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
   const backlog = catchUpOwns(agentId, throughSeq);   // the background folder's: no writer is dialled for it in a turn
   try {
     const ran = await withLock(`compact:${agentId}`, async () => {
+      // r3 (F2): no writer at all is still told by the failure notice, not by a promise the folder cannot keep.
+      if (backlog) noWriter = eligibleSummaryWriters(((getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id) ?? undefined, agentId).length === 0;
       while (!backlog && !bound.signal.aborted) {
         const owed = owedThrough(agentId, throughSeq).length;
         if (owed === 0) break;

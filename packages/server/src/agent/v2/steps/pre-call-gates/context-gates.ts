@@ -34,7 +34,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext } from './index.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import { replacePlaceholdersInBackground } from '../../../../memory/uncondensed-placeholder.js';
+import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../../memory/catch-up-folder.js';
 import { noteAPersonSpoke } from '../../../../memory/summary-writer-health.js';
 
 const logger = createLogger('v2-loop');
@@ -133,7 +133,7 @@ function condenseLeavingInBackground(args: {
       }, agentId);
     })
     .finally(() => {
-      backgroundDrains.delete(agentId);
+      releaseBackgroundSlot(agentId);   // field fix Y r3: the slot is handed on to an open catch-up
     });
   return true;
 }

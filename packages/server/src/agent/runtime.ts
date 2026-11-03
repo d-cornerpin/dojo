@@ -416,7 +416,7 @@ import { a2aRetryBudgetFor } from './a2a-patience.js';
 import { turnContext } from './turn-context.js';
 import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
 import { contextOverflowSince } from '../memory/compaction.js';
-import { replacePlaceholdersInBackground } from '../memory/uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground } from '../memory/catch-up-folder.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';

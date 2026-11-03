@@ -115,7 +115,7 @@ import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
-import { replacePlaceholdersInBackground } from '../uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { estimateTokens } from '../budget.js';
 

@@ -101,7 +101,8 @@ import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, replacePlaceholdersInBackground } from '../uncondensed-placeholder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { runMigrations } from '../../db/migrations.js';
 

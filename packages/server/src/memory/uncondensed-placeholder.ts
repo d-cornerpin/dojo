@@ -22,9 +22,8 @@
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
-import { endCatchUpIfDone, hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';
+import { hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';
 export { hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';   // their readers' old address
-import { agentBusy } from './rebuild-signals.js';
 import { createLeafSummary, deleteSummary, getSummarySourceMessages, updateSummaryContent } from './dag.js';
 import { UNCONDENSED_KIND, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
@@ -42,7 +41,6 @@ import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { abortBlamesWriter, eligibleSummaryWriters } from './summary-writer-health.js';
 import { noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
-import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-uncondensed-placeholder');
@@ -86,7 +84,7 @@ function keepRowWhole(agentId: string, noteId: string, row: Message): void {
 
 /** A kept-whole row that is no longer refused by every candidate writer (its content changed, the owner's
  *  writer setting changed, or a new writer can be asked) becomes a placeholder again, so it is tried again. */
-function releaseChangedKeptRows(agentId: string): number {
+export function releaseChangedKeptRows(agentId: string): number {
   const notes = getDb().prepare('SELECT id FROM summaries WHERE agent_id = ? AND kind = ?').all(agentId, KEPT_WHOLE_KIND) as Array<{ id: string }>;
   let released = 0;
   for (const { id } of notes) {
@@ -207,28 +205,4 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
 // setting a background job aside only threw its working summary away and labelled anyway. A running
 // background summary is left alone; its real summaries land and take their rows out of any note.
 
-/** THE BACKGROUND FOLDER'S LAUNCHER (the gate's, and the end of each turn's, `agent/runtime.ts`): one replacement per
- *  agent (sharing the routine condense's one-in-flight slot), only when a placeholder exists and some writer is
- *  answering. Field fix Y (`catch-up-state.ts`): it YIELDS to the agent's live turn — it does not start mid-turn and
- *  stops before its next note when one begins — and a pass that landed notes starts the next at once. */
-export function replacePlaceholdersInBackground(agentId: string): boolean {
-  try {
-    releaseChangedKeptRows(agentId);   // t269 fix round 1: a kept-whole row that changed is a placeholder again
-    endCatchUpIfDone(agentId);
-    if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId) || agentBusy(agentId)) return false;
-    if (eligibleSummaryWriters(configuredModel(agentId), agentId).length === 0) return false;   // none answering: no dial
-  } catch {
-    return false;   // a read that failed starts nothing; the gate never fails a turn over this
-  }
-  backgroundDrains.add(agentId);
-  // Round 5: no clock of its own — a writer slower than the turn's patience finishes here. Round 7:
-  // no turn cuts it either (a turn labels beside it); field fix Y: a turn beginning stops it BETWEEN notes.
-  replaceUncondensedPlaceholders(agentId, { yieldTo: () => agentBusy(agentId) })
-    .catch((err) => { logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId); return 0; })
-    .then((replaced) => {
-      backgroundDrains.delete(agentId);
-      endCatchUpIfDone(agentId);
-      if (replaced > 0) replacePlaceholdersInBackground(agentId);   // the next when this one landed; none left, or mid-turn: no-op
-    });
-  return true;
-}
+// Field fix Y round 3: the background folder's launcher and the shared slot's release moved to `catch-up-folder.ts`.
