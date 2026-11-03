@@ -30,6 +30,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
 import { providerBreaker, type OpenBreaker } from '../providers/billing-breaker.js';
+import { catchUpFailureOver, withdrawCatchUpCard } from './catch-up-state.js';
 
 const logger = createLogger('compaction-defect');
 
@@ -147,6 +148,7 @@ export function reportCompactionDefect(
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
+  withdrawCatchUpCard(agentId);   // field fix Y r3 (F2): one honest card at a time; this notice speaks now
   if (breaker) {
     logger.info('Compaction failure card suppressed: the provider breaker already told the owner', {
       stage, providerId: breaker.providerId, reason: breaker.reason,
@@ -181,6 +183,7 @@ export function noteCompactionRecovered(agentId: string, tokensReclaimed: number
   const was = failures.get(agentId);
   if (!was) return;
   failures.delete(agentId);
+  catchUpFailureOver(agentId);
   logger.info('Compaction is working again — this pass reclaimed memory, and nothing had to be clicked', {
     wasFailingAt: was.stage, failingSince: was.since, tokensReclaimed,
   }, agentId);
@@ -189,6 +192,7 @@ export function noteCompactionRecovered(agentId: string, tokensReclaimed: number
 /** Drop the note without a recovery claim — a reset gave the agent a fresh start. */
 export function clearCompactionFailure(agentId: string): boolean {
   lastCardAt.delete(agentId);   // a reset is a fresh start for the card too
+  catchUpFailureOver(agentId);
   return failures.delete(agentId);
 }
 

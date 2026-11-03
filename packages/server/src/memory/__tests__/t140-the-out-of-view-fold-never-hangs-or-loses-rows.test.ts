@@ -322,16 +322,20 @@ describe('t140 round 3 — Stop during the fold', () => {
   }, 5_000);
 });
 
-describe('t140 round 3 (re-aimed round 5) — a backlog is folded as far as the turn\'s patience goes', () => {
-  it('300 unsummarised turns, then the window drops to 32K: with writers answering, every leaving chunk is summarised in the turn, nothing lost', async () => {
+// Field fix Y (owner ruling 2026-11-03, "gradually, in the background") re-aimed this clause again: a backlog is
+// never folded inside the owner's turn. Its rows are represented by notes at once; the background folds them all.
+describe('t140 round 3 (re-aimed field fix Y) — a backlog is folded in the background, not in the turn', () => {
+  it('300 unsummarised turns, then the window drops to 32K: the turn dials no summary and loses nothing; the background then summarises every chunk', async () => {
     writers.windowNow = 200_000;
     for (let t = 1; t <= 300; t++) appendTurn(false, 60);   // ~600 rows, many leaf chunks
     writers.windowNow = 32_000;
     const ctx = await door();
+    expect(writers.calls, 'the turn dials no summary for a backlog').toEqual([]);
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(failingCards(), 'a catch-up is not a failure').toBe(0);
+    await replaceUncondensedPlaceholders(AGENT);
     expect(writers.calls.length, 'as much as is leaving — round 3 capped this at two').toBeGreaterThan(2);
     expect(placeholders(), 'nothing left to a note while the writer answers').toEqual([]);
-    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(failingCards()).toBe(0);
   }, 20_000);
 });
 

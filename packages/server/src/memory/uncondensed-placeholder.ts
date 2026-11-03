@@ -22,8 +22,9 @@
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
-import { getMessagesOutsideFreshTail } from './store.js';
-import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
+import { hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';
+export { hasUncondensedPlaceholders, owedThrough } from './catch-up-state.js';   // their readers' old address
+import { createLeafSummary, deleteSummary, getSummarySourceMessages, updateSummaryContent } from './dag.js';
 import { UNCONDENSED_KIND, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems,
@@ -40,17 +41,9 @@ import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { abortBlamesWriter, eligibleSummaryWriters } from './summary-writer-health.js';
 import { noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
-import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-uncondensed-placeholder');
-
-/** Unsummarised rows of this session at or below `throughSeq` (the fold's own reader). */
-export function owedThrough(agentId: string, throughSeq: number): Message[] {
-  const compacted = getCompactedMessageIds(agentId);
-  return getMessagesOutsideFreshTail(agentId, 1)
-    .filter((m) => !compacted.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= throughSeq);
-}
 
 /** Cover every still-unsummarised row at or below `throughSeq` with placeholders, one per leaf
  *  chunk. The CALLER HOLDS the per-agent compaction lock. Synchronous and model-free; re-reads what
@@ -91,7 +84,7 @@ function keepRowWhole(agentId: string, noteId: string, row: Message): void {
 
 /** A kept-whole row that is no longer refused by every candidate writer (its content changed, the owner's
  *  writer setting changed, or a new writer can be asked) becomes a placeholder again, so it is tried again. */
-function releaseChangedKeptRows(agentId: string): number {
+export function releaseChangedKeptRows(agentId: string): number {
   const notes = getDb().prepare('SELECT id FROM summaries WHERE agent_id = ? AND kind = ?').all(agentId, KEPT_WHOLE_KIND) as Array<{ id: string }>;
   let released = 0;
   for (const { id } of notes) {
@@ -103,10 +96,6 @@ function releaseChangedKeptRows(agentId: string): number {
     released++;
   }
   return released;
-}
-
-export function hasUncondensedPlaceholders(agentId: string): boolean {
-  return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND kind = ? LIMIT 1').get(agentId, UNCONDENSED_KIND);
 }
 
 function configuredModel(agentId: string): string | undefined {
@@ -131,12 +120,12 @@ function coveredElsewhere(messageId: string, placeholderId: string): boolean {
  * incident is over. Returns how many were replaced (or dropped because a real fold covered them).
  */
 export async function replaceUncondensedPlaceholders(
-  agentId: string, opts: { abortSignal?: AbortSignal } = {},
+  agentId: string, opts: { abortSignal?: AbortSignal; yieldTo?: () => boolean } = {},
 ): Promise<number> {
   return (await withLock(`compact:${agentId}`, () => replaceUnderLock(agentId, opts), { ifBusy: 'wait' })) ?? 0;
 }
 
-async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal }): Promise<number> {
+async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal; yieldTo?: () => boolean }): Promise<number> {
   const queue = (getDb().prepare(
     'SELECT id FROM summaries WHERE agent_id = ? AND kind = ? ORDER BY earliest_at ASC, id ASC',
   ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>).map((r) => r.id);
@@ -147,7 +136,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   let checkFailed = false;
   while (queue.length > 0) {
     const id = queue.shift()!;
-    if (opts.abortSignal?.aborted) break;
+    if (opts.abortSignal?.aborted || opts.yieldTo?.()) break;   // field fix Y: a live turn goes first; the note waits
     const all = getSummarySourceMessages(id);
     const source = all.filter((m) => !coveredElsewhere(m.id, id));
     if (source.length === 0) {
@@ -216,21 +205,4 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
 // setting a background job aside only threw its working summary away and labelled anyway. A running
 // background summary is left alone; its real summaries land and take their rows out of any note.
 
-/** THE GATE'S LAUNCHER: one background replacement per agent (sharing the routine condense's
- *  one-in-flight slot), only when a placeholder exists and some writer is answering. */
-export function replacePlaceholdersInBackground(agentId: string): boolean {
-  try {
-    releaseChangedKeptRows(agentId);   // t269 fix round 1: a kept-whole row that changed is a placeholder again
-    if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId)) return false;
-    if (eligibleSummaryWriters(configuredModel(agentId), agentId).length === 0) return false;   // none answering: no dial
-  } catch {
-    return false;   // a read that failed starts nothing; the gate never fails a turn over this
-  }
-  backgroundDrains.add(agentId);
-  // Round 5: no clock of its own — a writer slower than the turn's patience finishes here. Round 7:
-  // no turn sets it aside either (a turn that will not wait labels beside it instead).
-  replaceUncondensedPlaceholders(agentId)
-    .catch((err) => logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId))
-    .finally(() => { backgroundDrains.delete(agentId); });
-  return true;
-}
+// Field fix Y round 3: the background folder's launcher and the shared slot's release moved to `catch-up-folder.ts`.

@@ -139,6 +139,8 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
 //                           where a note has no children and is SKIPPED, never written — and a
 //                           note's fixed text is never flagged in the first place (witnessed above).
 //   uncondensed-head.ts / uncondensed-placeholder.ts   the identity itself.
+//   catch-up-state.ts       field fix Y: does a note still wait? (`hasUncondensedPlaceholders`, moved here from
+//                           uncondensed-placeholder.ts) — a catch-up stands, and its card shows, while one does.
 // t269 fix round 1 — the fourth value, 'kept_whole' (one row no writer could summarise, kept whole behind
 // its pointer), reviewed against every reader above: the lane labels it; backfill and embedding treat it as
 // a leaf (its text is the row as summary input shows it, scrubbed); the condenser never merges it; dag.ts
@@ -160,7 +162,7 @@ describe('t140 — census: every reader of summaries.kind has been reviewed for 
     const readers = files.filter((rel) => fs.readFileSync(path.join(SRC, rel), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1').split('\n').some((l) => RE.test(l)));
     expect(readers.sort()).toEqual([
-      'memory/backfill.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
+      'memory/backfill.ts', 'memory/catch-up-state.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
       'memory/embedding-sources.ts', 'memory/kept-row-view.ts', 'memory/retrieval.ts', 'memory/summaries-lane.ts', 'memory/summary-rebuild.ts',
       'memory/uncondensed-head.ts', 'memory/uncondensed-placeholder.ts',
     ]);
