@@ -1,3 +1,4 @@
+import { reopenFinishedForNewSchedule } from '../../tracker/close-filed-guard.js';
 import { Hono } from 'hono';
 import {
   createProject,
@@ -774,12 +775,9 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // task with no resolvable delivery -> HTTP 200, `work.state` still 'claimed', and a
         // `to_status='complete'` audit row. A false receipt in the history the owner reads
         // is worse than the refusal it hid.
-        // PHASE-2 T8c2 item 5 — THE OWNER'S OWN CLOSE REACHES `done`.
-        // A real delivery is preferred and looked for first; only when none can be resolved
-        // does his own act become the receipt. The whole argument, the enumeration of every
-        // `deliveries` reader, and why this is the owner's exemption and not the PM's, are
-        // in `agent/v2/deliveries.ts:recordOwnerCloseReceipt`. It is NOT a fake delivery:
-        // `channel='none'`, `outcome='owner_closed'`, no message, no conversation, no root.
+        // PHASE-2 T8c2 item 5 — THE OWNER'S OWN CLOSE REACHES `done`: a real delivery is looked
+        // for first, else his own act becomes the receipt (not a fake delivery: channel='none',
+        // outcome='owner_closed'). The argument is in `agent/v2/deliveries.ts:recordOwnerCloseReceipt`.
         const { result } = setTaskStatusResult(id, statusUpdate as TrackerStatus, {
           by: 'owner', actorId: 'user', claim: 'authoritative',
           reason: 'dashboard PUT /tracker/tasks/:id',
@@ -854,6 +852,8 @@ trackerRouter.put('/tasks/:id', async (c) => {
           },
         }), 'dashboard: schedule cleared on task edit', { taskId: id });
       } else {
+        const reopenErr = reopenFinishedForNewSchedule(id);   // a schedule on a finished task = run it again
+        if (reopenErr) return c.json({ ok: false, error: reopenErr, data: { taskId: id } }, 409);
         const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
         const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;

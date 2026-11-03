@@ -138,6 +138,7 @@ describe('a recurring task keeps its schedule through a run the PM blesses', () 
     setNextRun(id, { at: Date.now() + 3_600_000, alongside: { schedule_status: 'waiting' }, reason: 'test' });
     expect(row(id).schedule_status).toBe('completed');
     expect(row(id).next_run_at).toBeNull();
+    expect((db().prepare('SELECT is_paused AS p FROM work WHERE id = ?').get(id) as { p: number }).p, 'an ended schedule has one shape').toBe(1);
   });
 
   it('N1: a row with a repeat interval but no live schedule is a one-shot to the filer AND the validator', async () => {

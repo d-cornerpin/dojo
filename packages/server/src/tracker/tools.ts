@@ -61,7 +61,7 @@ import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureRe
 import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
-import { closeFiledRefusal, isScheduledRecurring as isScheduledRecurringRow } from './close-filed-guard.js';
+import { closeFiledRefusal, finishedScheduleRefusal, isScheduledRecurring as isScheduledRecurringRow } from './close-filed-guard.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
@@ -2456,6 +2456,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       return `Error: at least one editable field must be provided. Editable: ${WORK_EDITABLE_TASK_FIELDS.join(', ')}. (For status changes use work_update(action="status"); for assignee changes use work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)`;
     }
 
+    if ([scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue, repeatDaysOfWeek, anchorTime].some((v) => v !== undefined)) { const no = finishedScheduleRefusal(taskId, getTask(taskId)?.title ?? 'this task', 'changed'); if (no) return no; }
     // The repeat number must be able to step the calendar (same refusal as
     // the two work_open doors) — but only when one is being SET: `null` is
     // the supported way to clear a repeat, and stays allowed through here.
@@ -2464,12 +2465,9 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       if (repeatNumErr) return repeatNumErr;
     }
 
-    // Recurring-schedule integrity gate. Same shape as the gate in
-    // work_open(kind="task")'s dispatch, the edit path is the OTHER way to
-    // produce a partial schedule (e.g. add repeat_interval to a row that
-    // had no repeat_unit, or strip repeat_unit while leaving
-    // repeat_interval set). Compute the EFFECTIVE post-edit values and
-    // reject before applying the update so the agent gets clear feedback.
+    // Recurring-schedule integrity gate (same shape as work_open(kind="task")'s): the edit path is
+    // the OTHER way to produce a partial schedule (add repeat_interval with no repeat_unit, or
+    // strip the unit). Compute the EFFECTIVE post-edit values and reject before applying.
     const isScheduleEdit =
       scheduledStart !== undefined ||
       repeatInterval !== undefined ||
@@ -4038,6 +4036,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const db = getDb();
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} was deleted before resume could be applied.`;
+  { const no = finishedScheduleRefusal(taskId, String(task.title ?? 'this task'), 'resumed'); if (no) return no; }
 
   
   const scheduledTask = {
@@ -4095,7 +4094,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} no longer exists.`;
   const title = (task.title as string) ?? '(untitled)';
-
+  if (action !== 'pause') { const no = finishedScheduleRefusal(taskId, title, action === 'skip' ? 'skipped ahead' : 'run now'); if (no) return no; }
   if (action === 'pause') {
     // Already paused by the alert handler; confirm and exit. D12: clear
     // missed_runs_paused_at so the engine's auto-skip fallback stands down.

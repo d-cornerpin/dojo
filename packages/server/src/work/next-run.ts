@@ -110,7 +110,7 @@ export function setNextRun(workId: string, w: NextRunWrite): WorkPatchOutcome {
   // closed under it, where the on_deck write was refused as a reopen) records it as ended instead.
   const state = (getDb().prepare('SELECT state FROM work WHERE id = ?').get(workId) as { state: string } | undefined)?.state;
   const settledRow = w.alongside?.schedule_status === 'waiting' && (TERMINAL_STATE_NAMES as readonly string[]).includes(state ?? '');
-  const write: NextRunWrite = settledRow ? { ...w, at: null, alongside: { ...w.alongside, schedule_status: 'completed' } } : w;
+  const write: NextRunWrite = settledRow ? { ...w, at: null, alongside: { ...w.alongside, schedule_status: 'completed', is_paused: 1 } } : w;
   const { sets, values } = patchAssignments({ ...(write.alongside ?? {}), next_run_at: write.at });
   if (write.touch !== false) {
     sets.push('updated_at = ?');
