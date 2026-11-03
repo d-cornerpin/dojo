@@ -149,7 +149,7 @@ export async function keyboardType(
 // findVisionModel() that lived here did its own auto-pick of the
 // "cheapest vision-ish enabled model" when the calling agent couldn't
 // see, that decision is now an explicit, user-controlled config
-// (Settings → Dojo → Fallback vision model).
+// (Settings → Dojo → Fallback Vision Model).
 
 export async function screenRead(
   agentId: string,
@@ -173,7 +173,7 @@ export async function screenRead(
     await run('screencapture', screencaptureArgv(screenshotPath, region ?? null), { agentId, timeout: 10000 });
 
     if (!fs.existsSync(screenshotPath)) {
-      return 'Error: Screenshot capture failed, file was not created. Ensure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording.';
+      return 'Error: Screenshot capture failed, file was not created. Ensure screen recording permission is granted in System Settings → Privacy & Security → Screen Recording.';
     }
 
     // Read image as base64
@@ -184,12 +184,12 @@ export async function screenRead(
     //   1. Use the calling agent's own model if it has vision (one
     //      round trip, no extra hop).
     //   2. Otherwise route through whichever model the user has set as
-    //      the platform's fallback vision model (Settings → Dojo).
+    //      the platform's fallback vision model (Settings → Models → Fallback Vision Model).
     //   3. If neither path is available, return a degraded text result
     //      pointing the user at the right Settings control.
     const visionModel = getEffectiveVisionModel(agentId);
     if (!visionModel) {
-      return `Screenshot saved to: ${screenshotPath}\nNo vision-capable model is configured. Either set a fallback vision model in Settings → Dojo → Fallback vision model, or switch the calling agent to a vision-capable model in Settings → Models.`;
+      return `Screenshot saved to: ${screenshotPath}\nNo vision-capable model is configured. Either set a fallback vision model in Settings → Models → Fallback Vision Model, or switch the calling agent to a vision-capable model in Settings → Models.`;
     }
     logger.info('screen_screenshot: model selected', {
       modelId: visionModel.modelId,
@@ -260,7 +260,7 @@ export async function screenRead(
     } catch (callErr) {
       const cut = slot.cutBy();
       if (cut && !slot.cutByStop()) {
-        throw new Error(`screen_screenshot timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings > Models.`);
+        throw new Error(`screen_screenshot timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings → Models.`);
       }
       throw callErr;
     } finally {

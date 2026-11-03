@@ -50,7 +50,7 @@ function getWebhookBase(): { ok: true; base: string } | { ok: false; reason: str
   if (tunnel.status === 'active' && tunnel.url) {
     return { ok: true, base: tunnel.url.replace(/\/+$/, '') };
   }
-  return { ok: false, reason: 'No active Cloudflare tunnel. Start the tunnel in Settings → Dojo → Tunnel before configuring Twilio webhooks.' };
+  return { ok: false, reason: 'No active Cloudflare tunnel. Start the tunnel in Settings → Dojo → Remote Access before configuring Twilio webhooks.' };
 }
 
 // ── Signature verification middleware for webhook subroutes ─────────

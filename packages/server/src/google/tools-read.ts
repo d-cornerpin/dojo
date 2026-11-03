@@ -306,7 +306,7 @@ for (const baseDef of googleReadBaseTools) {
   googleReadToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nThis variant reads from the user's connected Google account (configured in Settings → Google as the User slot). The agent's own account is read by the unprefixed \`${canonical}\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nThis variant reads from the user's connected Google account (configured in Settings → Channels → User's Google Accounts). The agent's own account is read by the unprefixed \`${canonical}\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,
   });
 }
 

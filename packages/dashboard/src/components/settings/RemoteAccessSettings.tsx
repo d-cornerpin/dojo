@@ -1,4 +1,4 @@
-// ── Settings → Platform → the Remote Access card (Cloudflare Tunnel).
+// ── Settings → Dojo → the Remote Access card (Cloudflare Tunnel).
 
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { useTunnel } from './useTunnel';

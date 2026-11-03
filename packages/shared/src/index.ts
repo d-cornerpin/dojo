@@ -10,3 +10,4 @@ export * from './access.js';
 export * from './tool-docs-health.js';
 export * from './full-disk-access.js';
 export * from './external-content.js';
+export * from './settings-map.js';

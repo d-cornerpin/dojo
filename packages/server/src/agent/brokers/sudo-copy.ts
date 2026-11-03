@@ -107,7 +107,7 @@ export function sudoOwnerCardCopy(command: string): {
       'Your main agent is asking to run something as administrator (sudo) on this Mac. Nothing has '
       + 'run yet, and nothing will unless you approve it. Declining changes nothing at all. Approve it '
       + 'only if you recognise this as something you asked for — and if you would rather not be asked '
-      + 'each time, Settings → Security → sudo policy has a setting for that in both directions.',
+      + 'each time, Settings → Security → Administrator privileges has a setting for that in both directions.',
     proposedFix: `Run this as administrator: ${command}`,
     evidence: [
       'Administrator commands can change or remove anything on this Mac, so the agent pauses first.',
@@ -163,6 +163,6 @@ export function sudoPasswordPromptMessage(username: string, policy: SudoPolicy):
     + 'work, a HUMAN runs this ONCE, by hand, in a terminal on this Mac:\n\n'
     + `    echo '${sudoersDropInLine(username)}' | sudo tee /etc/sudoers.d/dojo && sudo chmod 0440 /etc/sudoers.d/dojo\n\n`
     + 'That grants passwordless sudo to this user account. Nothing in the platform writes that file '
-    + 'for you, on purpose. If you would rather not grant it, set Settings → Security → sudo policy '
+    + 'for you, on purpose. If you would rather not grant it, set Settings → Security → Administrator privileges '
     + 'to `blocked` and the agent will stop asking.';
 }

@@ -2287,7 +2287,7 @@ configRouter.post('/models/enable', async (c) => {
   // If the platform now has exactly one enabled vision-capable model
   // and no fallback is configured yet, opportunistically set it. Keeps
   // the "I just enabled my first vision model" path from leaving the
-  // Settings → Dojo warning hanging around until the user notices.
+  // Settings → Models warning hanging around until the user notices.
   try {
     const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
     autoConfigureFallbackVisionModelIfObvious();

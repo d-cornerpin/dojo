@@ -4,7 +4,7 @@
 /** v3.5: the Dojo's own two local models could not be installed (condition `standard-models`; it ends
  *  when both are in). Platform trouble, so a dashboard card; the install is retried by itself. */
 export const STANDARD_MODELS_MISSING_WORDS = "The Dojo's own two local models could not be installed yet. The Dojo keeps trying "
-  + 'whenever Ollama is running; Settings → Platform → Ollama shows what is missing and why.';
+  + 'whenever Ollama is running; Settings → Dojo → Ollama (Local Models) shows what is missing and why.';
 /** v3.5: a local model picked while Ollama could not size it (condition `fitunchecked:<model id>`; it ends
  *  when the fit is checked at the model's first load, `agent/local-model-fit.ts`). */
 export const uncheckedFitWords = (name: string): string =>

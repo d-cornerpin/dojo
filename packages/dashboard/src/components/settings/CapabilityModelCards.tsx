@@ -459,7 +459,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
     if (result.ok) {
       toast.success('Healer report sent and archived');
     } else if (result.error === 'NO_EMAIL_CONFIGURED') {
-      toast.error('You need to connect a Google or Microsoft email account in Integrations before you can send Healer Reports.');
+      toast.error('You need to connect a Google or Microsoft email account in Settings → Channels before you can send Healer Reports.');
     } else if (result.error === 'NO_REPORT_RECIPIENT') {
       toast.error('No Healer Report recipient is configured. Set healer_report_recipient in the config table before sending.');
     } else {

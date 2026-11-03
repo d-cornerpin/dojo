@@ -408,7 +408,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
             <p className="text-ui/70 text-xs">
               This export uses a <strong>named Cloudflare tunnel</strong>. A named tunnel can only run on one
               machine at a time — if the old dojo keeps tunneling with the same name and key, neither dojo will
-              connect. On the old machine, go to <strong>Settings → Remote Access</strong> and turn the tunnel
+              connect. On the old machine, go to <strong>Settings → Dojo → Remote Access</strong> and turn the tunnel
               off before continuing here.
             </p>
             <label className="flex items-start gap-2 text-xs text-ui/80 cursor-pointer">

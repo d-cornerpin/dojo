@@ -333,7 +333,7 @@ export const commsHandlers: ToolHandlerMap = {
         // The agent never creates or changes the owner. With no owner in the list the human set,
         // refuse: the entry would sit alone and the owner rights must come only from Settings.
         if (!iMessageListHasHumanOwner()) {
-          content = 'I cannot add this person yet: no owner is set for iMessage. Ask the owner to set their own number in Settings, Channels first, then I can add others.';
+          content = 'I cannot add this person yet: no owner is set for iMessage. Ask the owner to set their own number in Settings → Channels → iMessage Bridge first, then I can add others.';
           isError = true;
           auditLog(agentId, 'add_safe_sender', `imessage:${address}`, 'denied', `no owner set; quote: "${auditQuote}"`);
           return { content, isError };
@@ -448,7 +448,7 @@ export const commsHandlers: ToolHandlerMap = {
     let isError = false;
     const all = getSafeSenders();
     if (all.length === 0) {
-      content = `No iMessage safe senders are configured on this server. Tell ${userWords(currentAddress(agentId))} that the owner can add contacts in Settings → Channels (iMessage card) if they want you to text someone.`;
+      content = `No iMessage safe senders are configured on this server. Tell ${userWords(currentAddress(agentId))} that the owner can add contacts in Settings → Channels → iMessage Bridge if they want you to text someone.`;
       isError = false;
       return { content, isError };
     }
@@ -485,7 +485,7 @@ export const commsHandlers: ToolHandlerMap = {
     // copied from a different conversation context.
     const safeRecords = getSafeSenders();
     if (safeRecords.length === 0) {
-      content = 'iMessage was NOT sent - no safe senders are configured on this server. Add one in Settings → Channels (iMessage card), then try again.';
+      content = 'iMessage was NOT sent - no safe senders are configured on this server. Add one in Settings → Channels → iMessage Bridge, then try again.';
       isError = true;
       auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'error', 'no safe senders');
       return { content, isError };
@@ -510,7 +510,7 @@ export const commsHandlers: ToolHandlerMap = {
           `iMessage NOT sent - recipient "${recipient}" is not on the safe-sender allowlist. ` +
           `Valid recipients on this server: ${valid}. ` +
           `If you meant to reply to the person who just messaged you, just write your reply: the engine delivers it. To text someone, name them in recipient. ` +
-          `If you need to text someone new, the owner has to add them in Settings → Channels (iMessage card) first.`;
+          `If you need to text someone new, the owner has to add them in Settings → Channels → iMessage Bridge first.`;
         isError = true;
         auditLog(agentId, 'imessage_send', recipient, 'denied', 'recipient not in allowlist');
         return { content, isError };
@@ -598,8 +598,8 @@ export const commsHandlers: ToolHandlerMap = {
             + 'the dashboard chat. ')
           : (route ? `${route.down} ` : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ')) +
         (bridgeStatus.enabled
-          ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
-          : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');
+          ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels → iMessage Bridge.'
+          : 'The user can enable iMessage by adding an approved sender in Settings → Channels → iMessage Bridge.');
       isError = true;
       auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'denied', 'bridge disabled');
       return { content, isError };

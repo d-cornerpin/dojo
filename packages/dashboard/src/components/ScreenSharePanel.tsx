@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api';
 
-// Settings > Dojo > Screen Sharing. Disabled by default. Enable detects whether
+// Settings → Integrations → Screen Sharing. Disabled by default. Enable detects whether
 // macOS Screen Sharing is already on (and never clobbers it), or runs the dojo-
 // managed setup, which prompts for an admin password ON THE MAC. The dojo stores
 // no password — when connecting, the user enters their Mac login as a second

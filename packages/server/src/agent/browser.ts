@@ -160,12 +160,12 @@ export class BrowserSession {
     // resolution helper: agent's own model if vision-capable, otherwise
     // the configured fallback vision model. If neither is available we
     // return a degraded text response with a clear pointer at the
-    // Settings → Dojo control so the user can fix it.
+    // Settings → Models control so the user can fix it.
     const visionModel = getEffectiveVisionModel(agentId);
     if (!visionModel) {
       const currentUrl = this.page.url();
       const title = await this.page.title();
-      return `Screenshot captured of ${outsideSpan(`"${title}"`)} (${currentUrl}). No vision-capable model is configured to describe the page. Pick a fallback vision model in Settings → Dojo → Fallback vision model, or switch the calling agent to a vision-capable model in Settings → Models.`;
+      return `Screenshot captured of ${outsideSpan(`"${title}"`)} (${currentUrl}). No vision-capable model is configured to describe the page. Pick a fallback vision model in Settings → Models → Fallback Vision Model, or switch the calling agent to a vision-capable model in Settings → Models.`;
     }
 
     try {

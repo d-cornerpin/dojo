@@ -1490,7 +1490,7 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
         ? `- When an image arrives in your context, the engine routes it through the fallback vision model and substitutes a marked text description: \`[Image content (described by fallback vision model "..."): <description>]\`. That description is your authoritative account of the image; do not speculate beyond it.\n` +
           `- To see something on demand: \`screen_screenshot\` (host display) and \`web_browse\` with action="screenshot" (web page) return descriptions via the same fallback. For deep multi-image analysis, delegate to a vision-capable peer via \`send_to_agent\`.\n`
         : `- No fallback vision model is configured either. When an image arrives, the engine substitutes a text marker; the pixels never reach you. \`screen_screenshot\` and \`web_browse\` screenshots will error until a fallback is set.\n` +
-          `- For tasks that need vision, tell the person you are talking to that the owner can set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\n`;
+          `- For tasks that need vision, tell the person you are talking to that the owner can set a fallback vision model (Settings → Models → Fallback Vision Model) or switch you to a vision-capable model (Settings → Models). Do not pretend to see anything in the meantime.\n`;
       return (
         `**Your current model does NOT support image input${fallbackUsable ? '; the platform has a fallback vision model configured' : ', and NO fallback vision model is configured'}.**\n\n` +
         `What this means for you:\n` +

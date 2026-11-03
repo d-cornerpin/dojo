@@ -1,4 +1,4 @@
-// ── Settings → The Platform tab and the eight cards it stacks: server control, feng shui, orb quality,
+// ── Settings → The Dojo tab and the eight cards it stacks: server control, feng shui, orb quality,
 // migration, remote access, Ollama, agent limits, search and the Agent SDK setup.
 //
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new

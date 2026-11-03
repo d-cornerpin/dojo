@@ -99,7 +99,7 @@ async function graphFetch(
   if (!token) {
     const acc = getMicrosoftAccount(accountId);
     const label = acc?.email ? acc.email : (acc?.kind === 'user' ? "user's account" : "agent's account");
-    return { ok: false, data: null, error: `Not authenticated with Microsoft (${label}). Connect in Settings > Microsoft.`, apiEndpoint: url };
+    return { ok: false, data: null, error: `Not authenticated with Microsoft (${label}). Connect in Settings → Channels (the Microsoft cards).`, apiEndpoint: url };
   }
 
   const headers: Record<string, string> = {

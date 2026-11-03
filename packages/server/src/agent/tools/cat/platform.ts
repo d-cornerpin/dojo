@@ -51,6 +51,7 @@ import { getCostSummary, getDailySpend } from '../../../costs/tracker.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { coerceNumberArg } from '../pagination.js';
 import type { ToolHandlerMap } from '../handler.js';
+import { SETTINGS_TAB_LIST, settingsPath, type SettingsTabKey } from '@dojo/shared';
 
 export const platformHandlers: ToolHandlerMap = {
   async dreamer_run_now() {
@@ -88,14 +89,14 @@ export const platformHandlers: ToolHandlerMap = {
 
   async open_settings({ args }) {
     const tab = typeof args.tab === 'string' ? args.tab : '';
-    const validTabs = ['platform', 'providers', 'models', 'router', 'profile', 'security', 'sensei', 'channels', 'integrations', 'voice', 'update'];
+    const validTabs: string[] = SETTINGS_TAB_LIST.map((t) => t.key);
     if (!validTabs.includes(tab)) {
       return { content: `Unknown settings tab "${tab}". Valid tabs: ${validTabs.join(', ')}.`, isError: true };
     }
     const section = typeof args.section === 'string' && args.section.trim() ? args.section.trim() : undefined;
     broadcast({ type: 'ui:navigate', data: { path: '/settings', tab, section } });
     return {
-      content: `Opened Settings → ${tab}${section ? ` (scrolling to "${section}")` : ''} on the dashboard. (It only shows if the user is looking at the dashboard; if they're on iMessage/voice, it'll be there next time they open it.)`,
+      content: `Opened ${settingsPath(tab as SettingsTabKey)}${section ? ` (scrolling to "${section}")` : ''} on the dashboard. (It only shows if the user is looking at the dashboard; if they're on iMessage/voice, it'll be there next time they open it.)`,
       isError: false,
     };
   },
