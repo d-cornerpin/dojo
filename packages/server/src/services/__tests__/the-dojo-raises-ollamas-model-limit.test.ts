@@ -66,6 +66,7 @@ function fakeDeps(env: Record<string, string>, o: {
     sleep: async () => { /* the tick, instant in a test */ },
     brewServicePid: async () => (o.brewService && living.has(502) ? 502 : null),
     hasBrew: async () => true,
+    brewOwnsApp: async () => true,
     brew: async () => undefined,
     restartBrewService: async () => { d.serviceRestarts++; living.add(502); },
     startServe: (e) => { d.serves.push(e); d.log.push('serve'); living.add(502); },

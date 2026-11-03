@@ -4,7 +4,8 @@
 // The Dojo's own models declare the Ollama they need (`ollama-version.ts`, `local-standard.ts`). When the running
 // Ollama is older, this installs the current one the way the Dojo installed it at setup (`brew install --cask
 // ollama`, else the formula `brew install ollama`) and starts it again:
-//   · app           `brew install --cask --force ollama` replaces the bundle; the app is quit and opened again;
+//   · app           only when Homebrew owns it (`brew list --cask ollama`): `brew reinstall --cask ollama` fetches the
+//                   current app; the app is quit and opened again. An app installed any other way is the plain card;
 //   · brew-service `brew upgrade ollama`; `brew services restart ollama`;
 //   · own-serve     `brew upgrade ollama` (only when its program is a Homebrew formula's); the Dojo's `serve` is
 //                   stopped and started again from the new program;
@@ -43,9 +44,11 @@ export async function upgradeOllama(
     return cannot("It was installed in a way the Dojo can't update.");
   }
   if (!await host.hasBrew()) return cannot('The Dojo needs Homebrew to update it, and Homebrew is not installed.');
+  // An app Homebrew did not install (downloaded from ollama.com) is never replaced by the cask: no force over it.
+  if (found.kind === 'app' && !await host.brewOwnsApp()) return cannot("It was installed in a way the Dojo can't update.");
   let did: string;
   try {
-    if (found.kind === 'app') await host.brew(['install', '--cask', '--force', 'ollama']);
+    if (found.kind === 'app') await host.brew(['reinstall', '--cask', 'ollama']);
     else await host.brew(['upgrade', 'ollama']);
     // The restart is the one step that interrupts local calls: it waits until none is in flight, then holds new ones.
     const endHold = await holdWhenQuiet(local.id);

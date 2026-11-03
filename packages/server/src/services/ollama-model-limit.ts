@@ -45,8 +45,7 @@ export type OllamaLimitDeps = OllamaHost;
 const logger = createLogger('ollama-model-limit');
 
 const toldValue = (): string | null => readConfig('ollama_limit_told');
-const restartOwed = (): boolean => readConfig(RESTART_OWED) !== null;
-const RESTART_OWED = 'ollama_limit_restart_owed';
+const restartOwed = (): boolean => readConfig('ollama_limit_restart_owed') !== null;
 
 /** The limit the Dojo needs: the embedder + the pair + the lock's agent slots (see the header). */
 export const desiredOllamaMaxLoaded = (): number => desiredLoaded(STANDARD_TAGS.length);
@@ -87,7 +86,7 @@ export async function ensureOllamaModelLimit(
     if (!appRunning && !(await host.appInstalled())) return 'skipped';   // nothing serves and no app: tried again next start
     const raised = raisedLoadedLimit(await host.getenv(LIMIT_VAR), want);
     if (raised === null && !(appRunning && restartOwed())) {
-      if (!appRunning) setConfig(RESTART_OWED, null);   // a stopped app reads the value when it starts
+      if (!appRunning) setConfig('ollama_limit_restart_owed', null);   // a stopped app reads the value when it starts
       ownerConditionCleared('ollama-limit-failed');
       return 'already';
     }
@@ -97,7 +96,7 @@ export async function ensureOllamaModelLimit(
       logger.info('Raised Ollama\'s loaded-model limit', { value: raised });
     }
     if (appRunning) {
-      setConfig(RESTART_OWED, '1');   // owed until the restart has really happened (NB-5)
+      setConfig('ollama_limit_restart_owed', '1');   // owed until the restart has really happened (NB-5)
       restarting ??= restartWhenQuiet(host, local).finally(() => { restarting = null; });
     } else {
       ownerConditionCleared('ollama-limit-failed');
@@ -127,7 +126,7 @@ async function restartWhenQuiet(host: OllamaHost, local: { id: string; baseUrl: 
     } else {
       await restartApp(host, local.baseUrl, found?.kind === 'app' ? found.pid : undefined);
     }
-    setConfig(RESTART_OWED, null);
+    setConfig('ollama_limit_restart_owed', null);
     ownerConditionCleared('ollama-limit-failed');
     logger.info('Restarted the local Ollama to apply its loaded-model limit', { kind: found?.kind ?? 'app' });
   } catch (err) {

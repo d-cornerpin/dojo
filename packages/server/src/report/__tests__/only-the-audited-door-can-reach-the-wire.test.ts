@@ -267,6 +267,9 @@ const EGRESS_IN_CLOSURE: readonly string[] = [
   'services/litellm-pricing-sync.ts',   // fetch(
   'services/num-ctx-calculator.ts',     // fetch(
   'services/ollama.ts',                 // fetch(
+  'services/ollama-version.ts',         // fetch( — Fix W: one GET of the local Ollama's /api/version (a version number back, nothing sent); reached
+                                        // through services/local-standard.ts, the same edge as ollama-pull.ts.
+  'services/ollama-pair-gate.ts',       // fetch( — Fix W: one GET of the local Ollama's /api/tags in the standard-models install gate; same edge.
   'services/ollama-pull.ts',            // fetch( — v3.5 MOVED the setup pull here from setup-deps (listed above); one POST to
                                         // the local Ollama's /api/pull carrying only a model name.
   'services/local-standard.ts',         // fetch( — v3.5, reached through router/selector.ts: GETs of the local Ollama's

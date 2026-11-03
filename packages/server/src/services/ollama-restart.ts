@@ -97,7 +97,7 @@ export async function startOwnServe(host: OllamaHost, baseUrl: string, residentC
   host.startServe({ [LIMIT_VAR]: limit });
   const answered = await waitUntil(host, () => host.answers(baseUrl));
   const pid = await rememberOwnServe(host, baseUrl, before?.pid);
-  if (pid !== null) setConfig(OWN_SERVE_LIMIT_KEY, `${pid}:${limit}`);   // this server has the limit: a Dojo start does not restart it for it
+  if (pid !== null) setConfig('ollama_own_serve_limit', `${pid}:${limit}`);   // this server has the limit: a Dojo start does not restart it for it
   return answered;
 }
 
@@ -105,7 +105,7 @@ export async function startOwnServe(host: OllamaHost, baseUrl: string, residentC
 export async function rememberOwnServe(host: OllamaHost, baseUrl: string, olderPid?: number): Promise<number | null> {
   const l = await host.listener(portOf(baseUrl));
   if (!l || l.pid === olderPid || APP_PATH.test(l.path) || (await host.brewServicePid()) === l.pid) return null;
-  setConfig(OWN_SERVE_KEY, l.path);
+  setConfig('ollama_own_serve_exe', l.path);
   return l.pid;
 }
 
@@ -113,7 +113,7 @@ export async function rememberOwnServe(host: OllamaHost, baseUrl: string, olderP
 export async function restartOwnServe(host: OllamaHost, baseUrl: string, pid: number, residentCount: number): Promise<void> {
   host.terminate(pid);
   if (!await waitUntil(host, () => !host.alive(pid))) throw new Error('the Ollama server the Dojo started did not stop');
-  setConfig(OWN_SERVE_KEY, null);   // the program it will run is read again once it listens
+  setConfig('ollama_own_serve_exe', null);   // the program it will run is read again once it listens
   if (!await startOwnServe(host, baseUrl, residentCount)) throw new Error('the Ollama server did not answer after its restart');
 }
 

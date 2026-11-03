@@ -39,6 +39,8 @@ export interface OllamaHost {
   /** The pid of Homebrew's launchd job for Ollama when it is loaded and running, else null. */
   brewServicePid(): Promise<number | null>;
   hasBrew(): Promise<boolean>;
+  /** Does Homebrew own the Ollama app (`brew list --cask ollama`)? An app installed any other way is not Homebrew's to replace. */
+  brewOwnsApp(): Promise<boolean>;
   /** `brew <args>`, under the installer idle bound; rejects when brew fails. */
   brew(args: string[]): Promise<void>;
   /** `brew services restart ollama`: launchd starts the job again, with launchd's environment. */
@@ -100,6 +102,7 @@ export function makeRealDeps(
       } catch { return null; }
     },
     hasBrew: async () => (await brewPath()) !== null,
+    brewOwnsApp: async () => { const brew = await brewPath(); if (!brew) return false; try { await run(brew, ['list', '--cask', 'ollama']); return true; } catch { return false; } },
     brew: async (args) => {
       const brew = await brewPath();
       if (!brew) throw new Error('Homebrew is not installed');

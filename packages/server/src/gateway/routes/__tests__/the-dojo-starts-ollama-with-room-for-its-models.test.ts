@@ -24,7 +24,7 @@ const fakeHost = (): OllamaHost => ({
   getenv: async () => null, setenv: async () => undefined, appPids: async () => [], appInstalled: async () => false,
   terminate: () => undefined, alive: () => false, launchApp: async () => undefined, answers: async () => true, sleep: async () => undefined,
   listener: async () => (started.envs.length > 0 ? { pid: 900, path: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama' } : null),
-  brewServicePid: async () => null, hasBrew: async () => true, brew: async () => undefined, restartBrewService: async () => undefined,
+  brewServicePid: async () => null, hasBrew: async () => true, brewOwnsApp: async () => true, brew: async () => undefined, restartBrewService: async () => undefined,
   startServe: (env) => { started.envs.push(env); },
 });
 

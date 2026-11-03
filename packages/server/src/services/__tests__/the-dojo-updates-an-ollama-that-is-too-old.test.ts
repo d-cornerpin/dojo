@@ -61,11 +61,11 @@ function startServer(): Promise<void> {
 }
 
 /** The Mac's commands, faked. `kind` says what runs the Ollama: the app, Homebrew's service, a Dojo serve, or something else. */
-type Mac = OllamaHost & { brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number; serves: Array<Record<string, string>>; failBrew?: boolean; hasBrewInstalled: boolean };
+type Mac = OllamaHost & { brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number; serves: Array<Record<string, string>>; failBrew?: boolean; hasBrewInstalled: boolean; brewApp: boolean };
 function fakeMac(kind: 'app' | 'brew-service' | 'own-serve' | 'plain'): Mac {
   const program = kind === 'app' ? APP_PROGRAM : FORMULA;
   const m: Mac = {
-    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, serves: [], hasBrewInstalled: true,
+    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, serves: [], hasBrewInstalled: true, brewApp: true,
     getenv: async () => null, setenv: async (k, v) => { m.setenvs.push(`${k}=${v}`); },
     listener: async () => ({ pid: 500, path: program }),
     appPids: async () => (kind === 'app' ? [499] : []), appInstalled: async () => kind === 'app',
@@ -73,6 +73,7 @@ function fakeMac(kind: 'app' | 'brew-service' | 'own-serve' | 'plain'): Mac {
     launchApp: async () => { m.launches++; }, answers: async () => true, sleep: async () => undefined,
     brewServicePid: async () => (kind === 'brew-service' ? 500 : null),
     hasBrew: async () => m.hasBrewInstalled,
+    brewOwnsApp: async () => m.brewApp,
     brew: async (args) => { m.brews.push(args); if (m.failBrew) throw new Error('Error: brew exploded (raw)'); ollama.version = '0.41.0'; },
     restartBrewService: async () => { m.serviceRestarts++; },
     startServe: (env) => { m.serves.push(env); },
@@ -118,7 +119,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
   it('the Ollama app: the current app is installed, the app is restarted with the limit in launchd, and then the pull works', async () => {
     const mac = fakeMac('app'); overrideOllamaHost(mac);
     const state = await ensureStandardModels();
-    expect(mac.brews).toEqual([['install', '--cask', '--force', 'ollama']]);
+    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama']]);
     expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(mac.terms).toContain(499); expect(mac.launches).toBe(1);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);   // pulled ONCE, after the upgrade: never refused
@@ -131,7 +132,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
     const mac = fakeMac('app'); mac.listener = async () => ({ pid: 500, path: APP_PROGRAM });
     overrideOllamaHost(mac);
     await ensureStandardModels();
-    expect(mac.brews).toEqual([['install', '--cask', '--force', 'ollama']]);
+    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama']]);
     expect(frames.list).toEqual([]);
   });
 
@@ -175,8 +176,18 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
     ollama.version = '0.30.1'; ollama.installed = new Set(['nomic-embed-text:latest']); ollama.pulls = [];
     const repair = fakeMac('app'); overrideOllamaHost(repair);
     startStandardInstall(); await standardInstallSettled();
-    expect(repair.brews).toEqual([['install', '--cask', '--force', 'ollama']]);
+    expect(repair.brews).toEqual([['reinstall', '--cask', 'ollama']]);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
+  });
+});
+
+describe('an app Homebrew did not install is never replaced', () => {
+  it('the app was downloaded from ollama.com: nothing is run over it, one plain card, no --force anywhere', async () => {
+    const mac = fakeMac('app'); mac.brewApp = false; overrideOllamaHost(mac);
+    await ensureStandardModels();
+    expect(mac.brews).toEqual([]); expect(mac.launches).toBe(0); expect(mac.terms).toEqual([]);
+    expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_TOO_OLD_WORDS]);
+    expect(SLASH_PULLS()).toEqual([]);
   });
 });
 
