@@ -250,13 +250,15 @@ export function retryStandardModelsIfMissing(installedNames: readonly string[], 
 const PAIR = [STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL] as const;
 /** The install as in-flight work; a registry refusal for Ollama's version ends it, runs the same upgrade (outside the work, which
  *  its restart waits to be quiet of), and installs again when that updated Ollama. */
-async function installAfterUpgrades(onProgress: ((line: string) => void) | undefined, ready: boolean): Promise<StandardState> {
+async function installAfterUpgrades(onProgress: ((line: string) => void) | undefined, readyAtFirst: boolean): Promise<StandardState> {
+  let ready = readyAtFirst;
   for (;;) {
     let refused: string | null = null;
     const end = await localWorkBegins();
     const state = await install(onProgress, ready, (e) => { refused = e; }).finally(end);
     const provider = localOllamaProvider();
     if (!refused || !provider || !await pullRefusedForVersion(provider, PAIR, refused)) return state;
+    ready = true;   // Ollama was just updated: the next pass installs every model, not only those the first check let through
   }
 }
 

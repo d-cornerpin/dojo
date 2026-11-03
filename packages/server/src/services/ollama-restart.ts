@@ -85,6 +85,19 @@ export async function restartApp(host: OllamaHost, baseUrl: string, serverPid?: 
   if (!answered) throw new Error('the Ollama app did not answer after its relaunch');
 }
 
+/** Quit the Ollama app (and the server it runs) with a TERM and confirm it is gone; throws when it is not. */
+export async function stopApp(host: OllamaHost, serverPid?: number): Promise<void> {
+  const pids = [...new Set([...await host.appPids(), ...(serverPid ? [serverPid] : [])])];
+  for (const pid of pids) host.terminate(pid);
+  if (!await waitUntil(host, () => pids.every((pid) => !host.alive(pid)))) throw new Error('the Ollama app did not quit');
+}
+
+/** Open the Ollama app and wait for Ollama to ANSWER; throws when it does not. */
+export async function startApp(host: OllamaHost, baseUrl: string): Promise<void> {
+  await host.launchApp();
+  if (!await waitUntil(host, () => host.answers(baseUrl))) throw new Error('the Ollama app did not answer after its relaunch');
+}
+
 /** Homebrew's job: `brew services restart ollama` (launchd's environment, set by the caller, is inherited). */
 export async function restartBrewService(host: OllamaHost, baseUrl: string): Promise<void> {
   await host.restartBrewService();

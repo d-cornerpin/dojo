@@ -66,13 +66,13 @@ function startServer(): Promise<void> {
 /** The Mac's commands, faked. `kind` says what runs the Ollama: the app, Homebrew's service, a Dojo serve, or something else. */
 type Mac = OllamaHost & {
   brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number; serves: Array<Record<string, string>>;
-  failBrew?: boolean; hasBrewInstalled: boolean; brewApp: string | null; down: boolean; relaunchGate: Promise<void>; heldDuringBrew: boolean[];
+  failBrew?: boolean; hasBrewInstalled: boolean; brewApp: string | null; down: boolean; relaunchGate: Promise<void>; heldDuringBrew: boolean[]; downAtBrew: boolean[]; noNewer: boolean; failBrewOnce: boolean;
   cliOk: boolean; listenPid: number; serveWorks: boolean; serveAnswers: boolean;
 };
 function fakeMac(kind: 'app' | 'brew-service' | 'own-serve' | 'formula' | 'plain'): Mac {
   const program = kind === 'app' ? APP_PROGRAM : kind === 'plain' ? '/opt/custom/bin/ollama' : FORMULA;
   const m: Mac = {
-    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, serves: [], hasBrewInstalled: true, brewApp: 'ollama-app', down: false, relaunchGate: Promise.resolve(), heldDuringBrew: [], cliOk: true, listenPid: 500, serveWorks: true, serveAnswers: true,
+    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, serves: [], hasBrewInstalled: true, brewApp: 'ollama-app', down: false, relaunchGate: Promise.resolve(), heldDuringBrew: [], downAtBrew: [], noNewer: false, failBrewOnce: false, cliOk: true, listenPid: 500, serveWorks: true, serveAnswers: true,
     getenv: async () => null, setenv: async (k, v) => { m.setenvs.push(`${k}=${v}`); },
     listener: async () => (m.down ? null : { pid: m.listenPid, path: program }),
     appPids: async () => (kind === 'app' ? [499] : []), appInstalled: async () => kind === 'app',
@@ -82,7 +82,7 @@ function fakeMac(kind: 'app' | 'brew-service' | 'own-serve' | 'formula' | 'plain
     hasBrew: async () => m.hasBrewInstalled,
     brewCaskToken: async () => m.brewApp,
     cliRuns: async () => m.cliOk,
-    brew: async (args) => { m.brews.push(args); m.heldDuringBrew.push(localHeld()); if (m.failBrew) throw new Error('Error: brew exploded (raw)'); ollama.version = '0.41.0'; },
+    brew: async (args) => { m.brews.push(args); m.heldDuringBrew.push(localHeld()); m.downAtBrew.push(m.down); if (m.failBrewOnce) { m.failBrewOnce = false; throw new Error('brew hiccup (raw)'); } if (m.failBrew) throw new Error('Error: brew exploded (raw)'); if (!m.noNewer) ollama.version = '0.41.0'; },
     restartBrewService: async () => { m.serviceRestarts++; },
     startServe: (env) => { m.serves.push(env); if (m.serveWorks) { m.down = false; m.listenPid = 777; } return m.serveWorks ? 777 : null; },
   };
@@ -127,7 +127,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
   it('the Ollama app: the current app is installed, the app is restarted with the limit in launchd, and then the pull works', async () => {
     const mac = fakeMac('app'); overrideOllamaHost(mac);
     const state = await ensureStandardModels();
-    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
+    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
     expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(mac.terms).toContain(499); expect(mac.launches).toBe(1);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);   // pulled ONCE, after the upgrade: never refused
@@ -140,7 +140,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
     const mac = fakeMac('app'); mac.listener = async () => ({ pid: 500, path: APP_PROGRAM });
     overrideOllamaHost(mac);
     await ensureStandardModels();
-    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
+    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
     expect(frames.list).toEqual([]);
   });
 
@@ -184,7 +184,7 @@ describe('an Ollama that is too old is upgraded BEFORE the pull, by how it is in
     ollama.version = '0.30.1'; ollama.installed = new Set(['nomic-embed-text:latest']); ollama.pulls = [];
     const repair = fakeMac('app'); overrideOllamaHost(repair);
     startStandardInstall(); await standardInstallSettled();
-    expect(repair.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
+    expect(repair.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
   });
 });
@@ -293,7 +293,7 @@ describe('round 3: one sequenced Ollama upkeep, and no wrong advice', () => {
     expect(mac.brews).toEqual([]);   // not yet: it waits for the restart under way, it does not judge a listener that is down
     open();
     await boot; await ollamaRestartSettled();
-    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama-app']]);
+    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
     expect((await standardState()).decision).toBe('installed');
     expect(frames.list.map((f) => f.error)).not.toContain(OLLAMA_TOO_OLD_WORDS);
@@ -322,8 +322,44 @@ describe('round 3: one sequenced Ollama upkeep, and no wrong advice', () => {
   it('M2: the cask reinstall runs INSIDE the quiet hold (its uninstall quits the app), under the token Homebrew holds', async () => {
     const mac = fakeMac('app'); mac.brewApp = 'ollama'; overrideOllamaHost(mac);   // before the cask was renamed
     await ensureStandardModels();
-    expect(mac.brews).toEqual([['reinstall', '--cask', 'ollama']]);
+    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama']]);
     expect(mac.heldDuringBrew).toEqual([true]);
+    expect(mac.downAtBrew).toEqual([true]);   // the Dojo quit the app BEFORE brew ran (a cask uninstall would quit it with AppleScript)
+    expect(mac.brews.flat()).not.toContain('reinstall');
+  });
+
+  it('N1: brew says "already up to date" (exit 0, version unchanged) — no false "updated", the card tells the truth, the app is open again', async () => {
+    const mac = fakeMac('app'); mac.noNewer = true; overrideOllamaHost(mac);
+    await ensureStandardModels();
+    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
+    expect(mac.launches).toBe(1);
+    expect(standardProgressLines().join(' ')).toContain('Homebrew has no newer Ollama to install.');
+    expect(standardProgressLines().join(' ')).not.toMatch(/Updated/);
+    expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_TOO_OLD_WORDS]);
+    expect(SLASH_PULLS()).toEqual([]);
+  });
+
+  it('N3: a refusal-driven upgrade that works installs the decision model in the SAME pass (the first check had said not ready)', async () => {
+    // the registry refuses BOTH models of the old Ollama; the gate\'s own upgrade hiccups once
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      const p = new URL(req.url ?? '/', 'http://x').pathname;
+      if (p === '/api/version') res.writeHead(200).end(JSON.stringify({ version: ollama.version }));
+      else if (p === '/api/tags') res.writeHead(200).end(JSON.stringify({ models: [...ollama.installed].map((name) => ({ name })) }));
+      else if (p === '/api/pull') {
+        let b = ''; req.on('data', (c) => { b += c; });
+        req.on('end', () => {
+          const model = (JSON.parse(b) as { model: string }).model; ollama.pulls.push(model);
+          if (model === STANDARD_WRITER_MODEL.tag && !ollamaAtLeast(ollama.version, '0.35')) { res.writeHead(412).end(REFUSAL); return; }
+          ollama.installed.add(model); res.writeHead(200).end('{"status":"success"}\n');
+        });
+      } else res.writeHead(404).end('no');
+    });
+    const mac = fakeMac('brew-service'); mac.failBrewOnce = true; overrideOllamaHost(mac);
+    const state = await ensureStandardModels();
+    expect(mac.brews).toEqual([['upgrade', 'ollama'], ['upgrade', 'ollama']]);
+    expect(state.decision).toBe('installed'); expect(state.writer).toBe('installed');
+    expect(frames.list.map((f) => f.error)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
   });
 
   it('M3: the new program is not known to run — the Dojo\'s serve is NOT stopped', async () => {

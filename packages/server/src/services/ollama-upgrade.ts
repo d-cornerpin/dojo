@@ -4,9 +4,9 @@
 // The Dojo's own models declare the Ollama they need (`ollama-version.ts`, `local-standard.ts`). When the running
 // Ollama is older, this installs the current one the way the Dojo installed it at setup (Homebrew) and starts it again:
 //   · app           only when Homebrew owns it (`brew list --cask`, under whichever token it holds: `ollama-app`, or `ollama`
-//                   before the rename): `brew reinstall --cask <token>` fetches the current app. The cask's uninstall step
-//                   QUITS the app, so the whole reinstall runs inside the quiet hold, then the app is opened again. An app
-//                   installed any other way is never replaced: the plain card;
+//                   before the rename): inside the quiet hold the Dojo quits the app (its own TERM), `brew upgrade --cask <token>`
+//                   fetches the current app (never `reinstall`), and the app is opened again. An app installed any other way
+//                   is never replaced: the plain card;
 //   · brew-service  `brew upgrade ollama`; `brew services restart ollama`;
 //   · own-serve     `brew upgrade ollama`; the Dojo's `serve` is stopped and started again from the new program;
 //   · formula       a Homebrew program the Dojo did not start: `brew upgrade ollama` is safe, the restart is not the Dojo's to do,
@@ -23,7 +23,7 @@ import { type OllamaHost } from './ollama-host.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { ollamaAtLeast, readOllamaVersion } from './ollama-version.js';
 import {
-  BREW_FORMULA_PATH, classifyOllama, portOf, restartApp, restartBrewService, restartOwnServe, setConfig, setLaunchdLimit,
+  BREW_FORMULA_PATH, classifyOllama, portOf, restartBrewService, restartOwnServe, setConfig, setLaunchdLimit, startApp, stopApp,
 } from './ollama-restart.js';
 
 const logger = createLogger('ollama-upgrade');
@@ -60,12 +60,15 @@ export async function upgradeOllama(
   let did: string;
   try {
     if (found.kind === 'app') {
-      // The cask's uninstall quits the app: nothing may be in flight, and new calls wait, from before brew touches it.
+      // Nothing may be in flight, and new calls wait, while the app is down. The Dojo quits the app itself (its own TERM path, no
+      // AppleScript: a cask's uninstall quits with osascript, which raises the macOS Automation prompt), and only then runs
+      // `brew upgrade --cask <token>` — never `reinstall`: upgrade carries the old app's Gatekeeper approval over, and naming the
+      // cask makes it greedy, so a cask that updates itself (`auto_updates`) is not skipped. Then the app is opened again.
       const endHold = await holdWhenQuiet(local.id);
       try {
-        await host.brew(['reinstall', '--cask', token as string]);
-        await setLaunchdLimit(host, residentCount);
-        await restartApp(host, local.baseUrl, found.pid);
+        await stopApp(host, found.pid);
+        try { await host.brew(['upgrade', '--cask', token as string]); await setLaunchdLimit(host, residentCount); }
+        finally { await startApp(host, local.baseUrl); }   // the app is opened again whether brew worked or not
       } finally { endHold(); }
       setConfig('ollama_limit_restart_owed', null);   // the restart carried the limit
       did = 'the Ollama app';
@@ -88,7 +91,7 @@ export async function upgradeOllama(
   const after = await readOllamaVersion(local.baseUrl);
   if (need ? !ollamaAtLeast(after, need) : after === null || after === before) {
     logger.warn('Ollama is still too old after the upgrade', { before, after, need, kind: found.kind });
-    return cannot(`The Dojo updated it but it is still on ${after ?? 'an unknown version'}.`);
+    return cannot(after === before ? 'Homebrew has no newer Ollama to install.' : `The Dojo updated it but it is still on ${after ?? 'an unknown version'}.`);
   }
   return { ok: true, line: `Updated ${did} from ${before ?? 'an older version'} to ${after} and restarted it.` };
 }
