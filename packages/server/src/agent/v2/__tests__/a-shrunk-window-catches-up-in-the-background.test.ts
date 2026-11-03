@@ -97,6 +97,7 @@ import { getContextWindow } from '../../model.js';
 import { activeRuns, backgroundDrains } from '../../shared-state.js';
 import { replacePlaceholdersInBackground } from '../../../memory/uncondensed-placeholder.js';
 import { catchUpOwnerCards } from '../../../memory/catch-up-state.js';
+import { scheduleLegacyRebuildAtBoot, BOOT_SETTLE_MS } from '../../../memory/legacy-rebuild-boot.js';
 import { __resetSummaryWriterHealthForTests } from '../../../memory/summary-writer-health.js';
 import * as coldImport1 from '../../../router/rate-limits.js';
 
@@ -266,6 +267,28 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(calls.log.filter((c) => c === 'summary').length, 'successive steps, one per span').toBeGreaterThanOrEqual(owed);
     expect(calls.maxInFlight, 'never two spans at once').toBe(1);
     expect(cardFrames('info'), 'the card leaves when the backlog is empty').toHaveLength(1);
+    expect(catchUpOwnerCards()).toEqual([]);
+  });
+
+  it('round 2: a catch-up open at a restart resumes at boot with no turn — the backlog folds and the card clears', async () => {
+    seed('auto');
+    await oneTurn('auto');
+    const owed = placeholders();
+    expect(owed, 'precondition: the backlog waits as notes').toBeGreaterThan(1);
+    expect(catchUpOwnerCards().map((c) => c.cardKey), 'precondition: its record is open').toEqual([CARD_KEY]);
+    // The restart: every in-memory fact is gone; only the database (the notes and the record) remains. No turn follows.
+    backgroundDrains.clear(); activeRuns.clear(); __resetSummaryWriterHealthForTests();
+    calls.log.length = 0;
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      scheduleLegacyRebuildAtBoot();   // the boot's own memory start (index.ts)
+      vi.advanceTimersByTime(BOOT_SETTLE_MS);
+    } finally { vi.useRealTimers(); }
+    await folderDone();
+    expect(calls.log, 'no turn ran; only the folder dialled').not.toContain('reply');
+    expect(calls.log.filter((c) => c === 'summary').length).toBeGreaterThanOrEqual(owed);
+    expect(placeholders(), 'the backlog folded on its own').toBe(0);
+    expect(cardFrames('info'), 'the card cleared').toHaveLength(1);
     expect(catchUpOwnerCards()).toEqual([]);
   });
 

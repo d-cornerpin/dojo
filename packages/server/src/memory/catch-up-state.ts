@@ -122,10 +122,15 @@ export function endCatchUpIfDone(agentId: string): void {
   } catch { /* the record stays; the next landing note ends it */ }
 }
 
+/** The agents whose catch-up record is open (the boot resumes each: `legacy-rebuild-boot.ts`). */
+export function openCatchUps(): string[] {
+  const rows = getDb().prepare("SELECT key FROM config WHERE key LIKE 'memory_catch_up.%'").all() as Array<{ key: string }>;
+  return rows.map(({ key }) => key.slice('memory_catch_up.'.length));
+}
+
 /** The catch-up cards a dashboard shows on load: started, still running, not dismissed. */
 export function catchUpOwnerCards(): Array<{ words: string; severity: 'notice'; cardKey: string; dismiss: () => void }> {
-  const rows = getDb().prepare("SELECT key FROM config WHERE key LIKE 'memory_catch_up.%'").all() as Array<{ key: string }>;
-  return rows.map(({ key }) => key.slice('memory_catch_up.'.length)).flatMap((agentId) => {
+  return openCatchUps().flatMap((agentId) => {
     const told = readCatchUp(agentId);
     if (told === null || told.dismissedAt !== undefined || !hasUncondensedPlaceholders(agentId)) return [];
     return [{ words: catchUpWords(agentId), severity: 'notice' as const, cardKey: cardKeyOf(agentId), dismiss: () => writeCatchUp(agentId, { ...told, dismissedAt: Date.now() }) }];
