@@ -9,5 +9,5 @@ lines above are placeholders, not facts, and you must not invent or assume any o
 
 Learn who they are from what they actually say and do, and when something here genuinely matters
 for the work in front of you, ask them plainly. Once they tell you, record it with
-`vault_remember` and edit this file (Settings, or `~/.dojo/prompts/USER.md`) so it stops being
+`vault_remember` and edit this file (Settings → Profile, or `~/.dojo/prompts/USER.md`) so it stops being
 empty.

@@ -92,12 +92,12 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/cat/comms.ts",
-  "line": "? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'",
+  "line": "? 'To re-enable iMessage delivery, the user can start it from Settings → Channels → iMessage Bridge.'",
   "reason": "the owner is the actor here (settings the owner changes) or the text describes a tool argument, not who is being replied to"
  },
  {
   "file": "agent/tools/cat/comms.ts",
-  "line": ": 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');",
+  "line": ": 'The user can enable iMessage by adding an approved sender in Settings → Channels → iMessage Bridge.');",
   "reason": "the OWNER is the actor (Settings the owner changes) or a tool argument is being described; not the addressee of the reply"
  },
  {
@@ -477,7 +477,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/definitions.ts",
-  "line": "\"Show the user THIS Mac's screen, live, in their right-dock canvas. Use this whenever the user wants to SEE your screen or control this Mac, phrasings like \\\"show me your screen\\\", \\\"let me see your screen\\\", \\\"share your screen\\\", \\\"can I see what you're doing\\\", \\\"open your screen so I can click something\\\".\\n\\nUse it proactively whenever you need a HUMAN to do something on THIS Mac that you can't do yourself: approve a macOS permission/confirmation dialog, hit OK on a prompt, or complete a sign-in / re-authenticate an account (e.g. a Google or Microsoft re-auth, which opens a login window in the browser on this Mac). The flow is: kick off the action that needs them (so the dialog or sign-in window appears on this Mac), then open the screen with this tool so they can take control and finish it. Judge local vs remote first: if the user is sitting AT this Mac, just ask them to do it on their screen directly, no need to share. If they're remote (over the tunnel) and can't reach the Mac, that's exactly when to open the screen. (One caveat to relay if it comes up: a few highly-secured macOS dialogs, like granting Accessibility/Screen Recording permissions, may refuse remote clicks and need someone physically at the Mac.)\\n\\nIt opens view-only. The user clicks \\\"Take control\\\" at the top of the canvas to use the mouse and keyboard, and enters the screen-sharing (VNC) password to connect, that's their second factor, on top of being logged in.\\n\\nThis only works if the user has turned the feature on in Settings > Integrations > Screen Sharing (it's disabled by default; one-time setup needs approval on the Mac). If it's off, calling this returns step-by-step setup instructions, relay them and offer to walk the user through enabling it. So if the user asks how to set up screen sharing, or you think it would help, just call this tool: when it's off you'll get the exact steps to guide them. Takes no required arguments.\",",
+  "line": "\"Show the user THIS Mac's screen, live, in their right-dock canvas. Use this whenever the user wants to SEE your screen or control this Mac, phrasings like \\\"show me your screen\\\", \\\"let me see your screen\\\", \\\"share your screen\\\", \\\"can I see what you're doing\\\", \\\"open your screen so I can click something\\\".\\n\\nUse it proactively whenever you need a HUMAN to do something on THIS Mac that you can't do yourself: approve a macOS permission/confirmation dialog, hit OK on a prompt, or complete a sign-in / re-authenticate an account (e.g. a Google or Microsoft re-auth, which opens a login window in the browser on this Mac). The flow is: kick off the action that needs them (so the dialog or sign-in window appears on this Mac), then open the screen with this tool so they can take control and finish it. Judge local vs remote first: if the user is sitting AT this Mac, just ask them to do it on their screen directly, no need to share. If they're remote (over the tunnel) and can't reach the Mac, that's exactly when to open the screen. (One caveat to relay if it comes up: a few highly-secured macOS dialogs, like granting Accessibility/Screen Recording permissions, may refuse remote clicks and need someone physically at the Mac.)\\n\\nIt opens view-only. The user clicks \\\"Take control\\\" at the top of the canvas to use the mouse and keyboard, and enters the screen-sharing (VNC) password to connect, that's their second factor, on top of being logged in.\\n\\nThis only works if the user has turned the feature on in Settings → Integrations → Screen Sharing (it's disabled by default; one-time setup needs approval on the Mac). If it's off, calling this returns step-by-step setup instructions, relay them and offer to walk the user through enabling it. So if the user asks how to set up screen sharing, or you think it would help, just call this tool: when it's off you'll get the exact steps to guide them. Takes no required arguments.\",",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -657,7 +657,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/definitions.ts",
-  "line": "description: 'REQUIRED for gmail/outlook: which mailbox slot\\'s safe-sender list to add to. `agent` = the agent\\'s own account (the bot\\'s mailbox). `user` = the user\\'s personal account. The slot must have \"Allow sending email\" enabled in Settings → that integration card, or this call is refused. Ignored for imessage and teams.',",
+  "line": "description: 'REQUIRED for gmail/outlook: which mailbox slot\\'s safe-sender list to add to. `agent` = the agent\\'s own account (the bot\\'s mailbox). `user` = the user\\'s personal account. The slot must have \"Allow sending email\" enabled in Settings → Channels (the card for that account), or this call is refused. Ignored for imessage and teams.',",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -682,7 +682,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/definitions.ts",
-  "line": "description: 'Place a phone call via Twilio. The agent (you) holds the call: the caller speaks, Twilio streams audio to the dojo, your STT transcribes, you generate a reply, your TTS speaks back over the same call. **Use sparingly**, voice calls are real-time, costly, and demand immediate attention. Prefer SMS or iMessage unless the user asked for a phone call or the situation needs it (urgent, complex back-and-forth, hands-free).\\n\\nThe recipient MUST be on the Twilio Voice safe-caller allowlist; sending to an unknown number is refused. Personal Twilio accounts only, no robocalls, no campaign sends. The active Cloudflare tunnel must be running so Twilio can connect the audio back to the dojo.\\n\\n**HOW THE CALL OPENS, IMPORTANT.** When you place an outbound call, the called party answers and speaks FIRST (usually \"Hello?\"). That is normal human phone etiquette. You wait, hear their hello, and THEN identify yourself and state your purpose on the very next turn (the dojo will give you a turn the moment they speak). **Do NOT pass `opening_message`** in the standard case, it gets spoken the instant the call connects, before they say anything, which makes you sound like a robocall. Leaving silence on the line until they say \"Hello?\" is the right move. Real people do this on every outbound call.\\n\\nThe `opening_message` arg is reserved for unusual cases where you really do need audio queued up at connect time, for example, when you know the recipient has asked you to leave a voicemail directly, or when answering machine detection has already resolved to \"voicemail\" and you are dropping a pre-composed message. In normal person-to-person calling, leave it blank.\\n\\n`purpose` is a short string describing why you are calling (e.g. \"scheduling the Tuesday demo\", \"following up on the buyer meeting\"). It is shown to you in the system prompt on each turn of the call so you can stay on track, and it shapes your opening self-ID once the callee says hello. Provide it for any outbound call with a specific reason.\\n\\nMax call duration is capped (Settings → Integrations → Twilio → Voice). Calls exceeding the cap are hung up automatically.',",
+  "line": "description: 'Place a phone call via Twilio. The agent (you) holds the call: the caller speaks, Twilio streams audio to the dojo, your STT transcribes, you generate a reply, your TTS speaks back over the same call. **Use sparingly**, voice calls are real-time, costly, and demand immediate attention. Prefer SMS or iMessage unless the user asked for a phone call or the situation needs it (urgent, complex back-and-forth, hands-free).\\n\\nThe recipient MUST be on the Twilio Voice safe-caller allowlist; sending to an unknown number is refused. Personal Twilio accounts only, no robocalls, no campaign sends. The active Cloudflare tunnel must be running so Twilio can connect the audio back to the dojo.\\n\\n**HOW THE CALL OPENS, IMPORTANT.** When you place an outbound call, the called party answers and speaks FIRST (usually \"Hello?\"). That is normal human phone etiquette. You wait, hear their hello, and THEN identify yourself and state your purpose on the very next turn (the dojo will give you a turn the moment they speak). **Do NOT pass `opening_message`** in the standard case, it gets spoken the instant the call connects, before they say anything, which makes you sound like a robocall. Leaving silence on the line until they say \"Hello?\" is the right move. Real people do this on every outbound call.\\n\\nThe `opening_message` arg is reserved for unusual cases where you really do need audio queued up at connect time, for example, when you know the recipient has asked you to leave a voicemail directly, or when answering machine detection has already resolved to \"voicemail\" and you are dropping a pre-composed message. In normal person-to-person calling, leave it blank.\\n\\n`purpose` is a short string describing why you are calling (e.g. \"scheduling the Tuesday demo\", \"following up on the buyer meeting\"). It is shown to you in the system prompt on each turn of the call so you can stay on track, and it shapes your opening self-ID once the callee says hello. Provide it for any outbound call with a specific reason.\\n\\nMax call duration is capped (Settings → Channels → Twilio). Calls exceeding the cap are hung up automatically.',",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -842,7 +842,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/definitions.ts",
-  "line": "description: 'Open the dashboard Settings panel to a specific tab (and optionally scroll to a section) on the user\\'s screen. Use when the user asks where a setting lives or asks you to take them to it (\"where do I change my voice?\", \"open my channel settings\", \"take me to where I add a provider\"). This only moves the UI for a user who has the dashboard open; it changes no settings on its own. Pick the tab that holds what they asked about: platform (Dojo capacity, Ollama, system model, remote access, web search, migration, restart), providers (LLM provider API keys), models (enable models, pricing, and the image/video/TTS/music/vision/transcription model pickers), router (model routing + test), profile (your name, about-you), security (dashboard password), sensei (dreamer + healer schedules), channels (iMessage, Twilio/SMS, Google + Microsoft accounts), integrations (Plaud), voice (TTS/STT voice, speed, wake word), update (version + software update). Optionally pass `section` as the heading of the specific card to scroll to (e.g. \"Hands-free wake word\", \"Playback speed\", \"Twilio\", \"Remote Access\"), it best-effort matches a section title within the tab. To actually CHANGE a capability model yourself, prefer set_capability_model; use this when the user wants to see/change it themselves.',",
+  "line": "description: 'Open the dashboard Settings panel to a specific tab (and optionally scroll to a section) on the user\\'s screen. Use when the user asks where a setting lives or asks you to take them to it (\"where do I change my voice?\", \"open my channel settings\", \"take me to where I add a provider\"). This only moves the UI for a user who has the dashboard open; it changes no settings on its own. Pick the tab that holds what they asked about: platform (shown as the Dojo tab: capacity, Ollama, system model, remote access, web search, migration, restart), providers (LLM provider API keys), models (enable models, pricing, and the image/video/TTS/music/vision/transcription model pickers), router (model routing + test), profile (your name, about-you), security (dashboard password), sensei (dreamer + healer schedules), channels (iMessage, Twilio/SMS, Google + Microsoft accounts), integrations (Plaud), voice (TTS/STT voice, speed, wake word), update (version + software update). Optionally pass `section` as the heading of the specific card to scroll to (e.g. \"Hands-free wake word\", \"Playback speed\", \"Twilio\", \"Remote Access\"), it best-effort matches a section title within the tab. To actually CHANGE a capability model yourself, prefer set_capability_model; use this when the user wants to see/change it themselves.',",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -967,7 +967,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/cat/platform.ts",
-  "line": "content: `Opened Settings → ${tab}${section ? ` (scrolling to \"${section}\")` : ''} on the dashboard. (It only shows if the user is looking at the dashboard; if they're on iMessage/voice, it'll be there next time they open it.)`,",
+  "line": "content: `Opened ${settingsPath(tab as SettingsTabKey)}${section ? ` (scrolling to \"${section}\")` : ''} on the dashboard. (It only shows if the user is looking at the dashboard; if they're on iMessage/voice, it'll be there next time they open it.)`,",
   "reason": "describes what the owner's dashboard shows (canvas dock, settings panel, vitals panel); the dashboard is the owner's screen, not a reply route"
  },
  {
@@ -1132,7 +1132,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "google/tools-read.ts",
-  "line": "description: `[USER'S Google account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nThis variant reads from the user's connected Google account (configured in Settings → Google as the User slot). The agent's own account is read by the unprefixed \\`${canonical}\\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,",
+  "line": "description: `[USER'S Google account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nThis variant reads from the user's connected Google account (configured in Settings → Channels → User's Google Accounts). The agent's own account is read by the unprefixed \\`${canonical}\\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -1162,12 +1162,12 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "google/tools-write.ts",
-  "line": "description: `[USER'S Google account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nSends from the user's connected Google account (Settings → Google → User slot). Disabled by default, the user must turn on \"Allow sending email\" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,",
+  "line": "description: `[USER'S Google account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nSends from the user's connected Google account (Settings → Channels → User's Google Accounts). Disabled by default, the user must turn on \"Allow sending email\" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
   "file": "google/tools-write.ts",
-  "line": "description: `[USER'S Google account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nActs on the user's connected Google account (Settings → Google → User slot), gated by that slot's service toggle. The agent's own account is the unprefixed \\`${canonical}\\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,",
+  "line": "description: `[USER'S Google account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nActs on the user's connected Google account (Settings → Channels → User's Google Accounts), gated by that slot's service toggle. The agent's own account is the unprefixed \\`${canonical}\\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -1332,7 +1332,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "microsoft/tools-read.ts",
-  "line": "description: `[USER'S Microsoft account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nThis variant reads from the user's connected Microsoft account (configured in Settings → Microsoft as the User slot). The agent's own account is read by the unprefixed \\`${canonical}\\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,",
+  "line": "description: `[USER'S Microsoft account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nThis variant reads from the user's connected Microsoft account (configured in Settings → Channels → User's Microsoft Accounts). The agent's own account is read by the unprefixed \\`${canonical}\\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -1362,12 +1362,12 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "microsoft/tools-write.ts",
-  "line": "description: `[USER'S Microsoft account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nSends from the user's connected Microsoft account (Settings → Microsoft → User slot). Disabled by default, the user must turn on \"Allow sending email\" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,",
+  "line": "description: `[USER'S Microsoft account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nSends from the user's connected Microsoft account (Settings → Channels → User's Microsoft Accounts). Disabled by default, the user must turn on \"Allow sending email\" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
   "file": "microsoft/tools-write.ts",
-  "line": "description: `[USER'S Microsoft account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nActs on the user's connected Microsoft account (Settings → Microsoft → User slot), gated by that slot's service toggle. The agent's own account is the unprefixed \\`${canonical}\\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,",
+  "line": "description: `[USER'S Microsoft account variant of \\`${canonical}\\`] ${baseDef.description}\\n\\nActs on the user's connected Microsoft account (Settings → Channels → User's Microsoft Accounts), gated by that slot's service toggle. The agent's own account is the unprefixed \\`${canonical}\\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {

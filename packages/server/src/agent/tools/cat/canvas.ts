@@ -98,8 +98,8 @@ export const canvasHandlers: ToolHandlerMap = {
     const isError = false;
     if (!isScreenShareEnabled()) {
       content = "Screen sharing is OFF (it's disabled by default). It's a one-time setup done on this Mac. Offer to walk the user through it, then tell them these steps:\n\n" +
-        "1. Open Settings > Integrations > Screen Sharing and click Enable. A macOS admin-password prompt will appear ON THIS MAC, approve it. (macOS may also ask to approve Screen Sharing in System Settings > Privacy & Security; approve that too.)\n" +
-        "2. Set a screen-sharing password they'll remember: open System Settings > General > Sharing, click the (i) next to Screen Sharing > Computer Settings, check \"VNC viewers may control screen with password\", and set a password.\n" +
+        "1. Open Settings → Integrations → Screen Sharing and click Enable. A macOS admin-password prompt will appear ON THIS MAC, approve it. (macOS may also ask to approve Screen Sharing in System Settings → Privacy & Security; approve that too.)\n" +
+        "2. Set a screen-sharing password they'll remember: open System Settings → General → Sharing, click the (i) next to Screen Sharing → Computer Settings, check \"VNC viewers may control screen with password\", and set a password.\n" +
         "3. That's it. When you open the screen for them, they'll type that password to connect, and click \"Take control\" to use the mouse and keyboard.\n\n" +
         "Note: this one-time setup has to be done while at this Mac (the prompts appear on it). If they can see the screen later but can't control it, have them make sure macOS \"Remote Management\" is turned off (it can limit connections to view-only) and just \"Screen Sharing\" is on. Once they've enabled it, call screen_broadcast again.";
       return { content, isError };

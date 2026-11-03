@@ -60,7 +60,7 @@ export async function enforceModelCapabilities(
   // If the assembled messages contain image blocks and the model has no
   // vision capability, two paths are possible:
   //   (a) If the platform has a fallback vision model configured
-  //       (Settings → Dojo), route each image through the fallback for a
+  //       (Settings → Models → Fallback Vision Model), route each image through the fallback for a
   //       text description and inline that description in place of the
   //       image. The agent gets to respond intelligently to what the
   //       user actually sent.
@@ -314,7 +314,7 @@ export async function enforceModelCapabilities(
             `The image${imagesStripped === 1 ? '' : 's'} ${imagesStripped === 1 ? 'was' : 'were'} dropped, you literally cannot see ${imagesStripped === 1 ? 'it' : 'them'}. ` +
             (fallbackUsable
               ? `The platform's fallback vision model is configured but every caption attempt failed (network or provider error). `
-              : `The platform also has no fallback vision model configured, once one is set in Settings → Dojo, future uploads will be auto-captioned for you. `) +
+              : `The platform also has no fallback vision model configured, once one is set in Settings → Models → Fallback Vision Model, future uploads will be auto-captioned for you. `) +
             `Reply briefly telling ${userWords(currentAddress(agentId))} you couldn't read the image${imagesStripped === 1 ? '' : 's'} this turn. ` +
             `Do NOT try to describe the image. Do NOT continue any prior topic, respond ONLY about the image${imagesStripped === 1 ? '' : 's'} they just sent.]`
           );
@@ -330,8 +330,8 @@ export async function enforceModelCapabilities(
 
       if (imagesStripped > 0) {
         const userMsg = fallbackUsable
-          ? `Couldn't describe ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} via the fallback vision model, check Settings → Dojo and the model's provider status.`
-          : `This model can't see images. ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} skipped, pick a fallback vision model in Settings → Dojo or switch this agent to a vision-capable model in Settings → Models.`;
+          ? `Couldn't describe ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} via the fallback vision model, check Settings → Models → Fallback Vision Model and the model's provider status.`
+          : `This model can't see images. ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} skipped, pick a fallback vision model in Settings → Models → Fallback Vision Model or switch this agent to a vision-capable model in Settings → Models.`;
         logger.warn('Vision gate: stripped images from turn', {
           modelId, imagesStripped, imagesCaptioned, fallbackUsable,
         }, agentId);
@@ -774,7 +774,7 @@ class AgentRuntime {
       let toastError: string;
       let toastCode: 'NO_MODEL' | 'AGENT_NOT_FOUND' | 'MODEL_FAILED';
       if (errCode === 'NO_MODEL' || /no model configured/i.test(errMsg)) {
-        toastError = "This agent isn't pointed at a model right now. Open Settings → Agents and pick a model for it. (Sometimes a provider's API-key change can clear the link, re-selecting the model fixes it.)";
+        toastError = "This agent isn't pointed at a model right now. Open the Agents page, choose this agent and pick a model for it. (Sometimes a provider's API-key change can clear the link, re-selecting the model fixes it.)";
         toastCode = 'NO_MODEL';
       } else if (errCode === 'AGENT_NOT_FOUND') {
         toastError = "That agent couldn't be found in the database. It may have been deleted. Refresh the page and check the Agents list.";

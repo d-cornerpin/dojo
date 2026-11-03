@@ -138,7 +138,7 @@ servicesRouter.post('/imessage/test', async (c) => {
   // to, and the send goes to the record's own address, not the free-typed text.
   const approved = findSafeSenderByAddress(getSafeSenders(), body.recipient.trim());
   if (!approved) {
-    return c.json({ ok: false, error: `"${body.recipient.trim()}" is not on your approved iMessage list. Add it in Settings → Channels (iMessage card) first.` }, 400);
+    return c.json({ ok: false, error: `"${body.recipient.trim()}" is not on your approved iMessage list. Add it in Settings → Channels → iMessage Bridge first.` }, 400);
   }
 
   try {

@@ -45,7 +45,7 @@
 
 /** The Privacy pane the user has to reach, spelled the way macOS spells it. */
 export const AUTOMATION_PANE =
-  'System Settings > Privacy & Security > Automation';
+  'System Settings → Privacy & Security → Automation';
 
 /**
  * THE APPLICATION BEING DRIVEN — and therefore the checkbox that has to be ticked. An

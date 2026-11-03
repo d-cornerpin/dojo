@@ -73,7 +73,7 @@ async function describeImage(
   const visionModel = getEffectiveVisionModel(agentId);
   if (!visionModel) {
     return 'A snapshot of the canvas was captured, but no vision-capable model is configured to read it. ' +
-      'Pick a fallback vision model in Settings -> Dojo -> Fallback vision model, or switch this agent to a vision-capable model in Settings -> Models.';
+      'Pick a fallback vision model in Settings → Models → Fallback Vision Model, or switch this agent to a vision-capable model in Settings → Models.';
   }
   const accuracy =
     ' Report only what is actually rendered. If an image is missing, broken, or shows a' +

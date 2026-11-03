@@ -49,7 +49,7 @@ export interface VoiceCallResult {
 
 export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCallResult> {
   if (!isVoiceEnabled()) {
-    return { ok: false, message: 'Voice NOT placed - Twilio Voice is not enabled. The owner needs to configure and enable Twilio in Settings → Integrations.' };
+    return { ok: false, message: 'Voice NOT placed - Twilio Voice is not enabled. The owner needs to configure and enable Twilio in Settings → Channels → Twilio.' };
   }
   let to = (input.to ?? '').trim();
   if (!to) return { ok: false, message: 'Voice NOT placed - to (recipient number) is required.' };
@@ -72,7 +72,7 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
 
   const tunnel = getTunnelStatus();
   if (tunnel.status !== 'active' || !tunnel.url) {
-    return { ok: false, message: 'Voice NOT placed - the Cloudflare tunnel is not active. Voice calls require a public webhook URL for Twilio to hand the call to the dojo. Start the tunnel in Settings → Dojo first.' };
+    return { ok: false, message: 'Voice NOT placed - the Cloudflare tunnel is not active. Voice calls require a public webhook URL for Twilio to hand the call to the dojo. Start the tunnel in Settings → Dojo → Remote Access first.' };
   }
   const base = tunnel.url.replace(/\/+$/, '');
   const voiceWebhook = `${base}/api/twilio/webhook/voice`;
@@ -81,7 +81,7 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
   const explicitFrom = (input.from ?? '').trim();
   const from = explicitFrom || getDefaultFromNumber();
   if (!from) {
-    return { ok: false, message: 'Voice NOT placed - no Twilio number configured. The owner needs to add a number in Settings → Integrations → Twilio.' };
+    return { ok: false, message: 'Voice NOT placed - no Twilio number configured. The owner needs to add a number in Settings → Channels → Twilio.' };
   }
   const ownership = getNumber(from);
   if (!ownership) {

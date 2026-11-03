@@ -285,7 +285,7 @@ export function recordCost(params: RecordCostParams): void {
     const paidProvider = pricing.providerType !== 'ollama' && pricing.providerType !== 'local';
     if (pricing.priceUnknown && paidProvider && !warnedUnknownPriceModels.has(modelId)) {
       warnedUnknownPriceModels.add(modelId);
-      logger.warn('Recorded cost for a paid-provider model with an unknown (NULL) price; the missing rate billed as $0 (set a rate in Settings > Models)', {
+      logger.warn('Recorded cost for a paid-provider model with an unknown (NULL) price; the missing rate billed as $0 (set a rate in Settings → Models)', {
         agentId,
         modelId,
         providerId,

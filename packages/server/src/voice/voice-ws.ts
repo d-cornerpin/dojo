@@ -2130,7 +2130,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     // active description for this turn. When it doesn't, leave the
     // baseline (set on the HumeStreamSession constructor from
     // voice.cloud_voice_description) in place, that's the user's
-    // Settings → Voice → Cloud → Baseline delivery field, which is the
+    // Settings → Voice → Baseline delivery field, which is the
     // intended fallback for cue-less replies. If they leave the field
     // blank, that's a deliberate choice and we don't substitute one.
     // Same bracket-buffer fix as the local engine: hold back any text

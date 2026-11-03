@@ -215,7 +215,7 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
     return {
       ok: false,
       error: `Model ${row.api_model_id} does not have image_generation capability. ` +
-             `Pick a different model in Settings → Dojo → Imaginer, or refresh capabilities on this row.`,
+             `Pick a different model in Settings → Models → Image Generation Model, or refresh capabilities on this row.`,
       code: 'CAPABILITY_MISSING',
     };
   }

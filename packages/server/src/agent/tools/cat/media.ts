@@ -138,7 +138,7 @@ const handlers = {
     if (!modelChoice) {
       content =
         `No image-generation model is configured. ` +
-        `Go to Settings → Dojo → Image Generation Model and pick an image-capable model (e.g. Gemini 2.5 Flash Image on OpenRouter). ` +
+        `Go to Settings → Models → Image Generation Model and pick an image-capable model (e.g. Gemini 2.5 Flash Image on OpenRouter). ` +
         `Tell ${userWords(currentAddress(agentId))} image generation is unavailable until this is configured, do not retry.`;
       isError = true;
       return { content, isError };
@@ -576,7 +576,7 @@ const handlers = {
     if (!modelChoice) {
       content = isMusic
         ? `No music-generation model is configured. Go to Settings → Models → Music Generation Model and pick a music-capable model (e.g. Google Lyria). Tell ${userWords(currentAddress(agentId))} music generation is unavailable until this is configured, do not retry.`
-        : `No audio-generation model is configured. Go to Settings → Models → Audio Generation Model and pick an audio-capable model. Tell ${userWords(currentAddress(agentId))} audio generation is unavailable until this is configured, do not retry.`;
+        : `No audio-generation model is configured. Go to Settings → Models → Text-to-Speech (TTS) Model and pick an audio-capable model. Tell ${userWords(currentAddress(agentId))} audio generation is unavailable until this is configured, do not retry.`;
       isError = true;
       return { content, isError };
     }

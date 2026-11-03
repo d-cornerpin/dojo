@@ -160,7 +160,7 @@ export function resolveGoogleAccountForTool(
     const pointer = siblingConnected
       ? ` Your ${sibling} Google account IS connected — the ${sibling === 'user' ? '`user_` tool variants read' : 'unprefixed tools read'} that one.`
       : '';
-    return { error: `No ${kind} Google account is connected. Connect one in Settings → Google.${pointer}` };
+    return { error: `No ${kind} Google account is connected. Connect one in Settings → Channels (${kind === 'user' ? "User's" : "Agent's"} Google Accounts card).${pointer}` };
   }
   const emails = connected.map(a => a.email ?? a.id).join(', ');
   if (email) {

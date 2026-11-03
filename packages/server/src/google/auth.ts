@@ -411,7 +411,7 @@ function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void 
   try { void sendAlert(noteGoogleSignInExpired(accountId, expiredWords(acc)), 'critical'); } catch { /* alert best effort */ }
 }
 
-const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings > Google.`; // the owner's card carries these words (t138 r3-4)
+const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Google cards).`; // the owner's card carries these words (t138 r3-4)
 
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getGoogleAccount(accountId);

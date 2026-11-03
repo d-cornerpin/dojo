@@ -38,7 +38,7 @@ const LEAD = 'This agent\'s turn was not run';
 const CAUSE: Record<RoutedSkip, string> = {
   budget: 'today\'s spending limit is reached, and every model still within it is too small for this agent\'s instructions and tools. It runs again when the limit resets, or after you raise it in Settings',
   rate_limit: 'the models big enough for this agent are rate-limited by their provider right now. Send the message again in a few minutes',
-  provider_down: 'the provider of the models big enough for this agent is not answering (check it in Settings, under Providers)',
+  provider_down: 'the provider of the models big enough for this agent is not answering (check it in Settings → Providers)',
   excluded: 'the models big enough for this agent failed earlier in this turn. Send the message again in a few minutes',
   capability: 'the only models big enough for this agent cannot use tools',
 };

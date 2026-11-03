@@ -168,7 +168,7 @@ async function pollForNewMessages(): Promise<void> {
 
   const services = getEnabledMsServices();
   if (!services.teams) {
-    recordPollSkip('Teams service disabled in Settings → Microsoft');
+    recordPollSkip('Teams service disabled in Settings → Channels (the Microsoft cards)');
     return;
   }
 

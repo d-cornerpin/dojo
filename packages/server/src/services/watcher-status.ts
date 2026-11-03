@@ -11,6 +11,7 @@
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from './imessage-bridge.js';
 import { recordFailureTold, clearFailure, watcherFailingOnRecord, watchedForMail } from './watcher-owner-cards.js';
+import { settingsPath } from '@dojo/shared';
 export { watcherFailingOnRecord, watchedForMail };
 
 export interface RecentNotification {
@@ -99,9 +100,8 @@ export function maybeAlertOnFailure(params: {
 
   const label = watcherLabel(params.name);
   const elapsedMin = Math.round(elapsedMs / 60000);
-  const settingsPage = params.name === 'gmail' ? 'Google' : 'Microsoft';
   const itemType = params.name === 'teams' ? 'messages' : 'emails';
-  const message = `${label} has been failing for ${elapsedMin} minute${elapsedMin === 1 ? '' : 's'}. New ${itemType} aren't reaching your agents. Open Settings → ${settingsPage} to reconnect.`;
+  const message = `${label} has been failing for ${elapsedMin} minute${elapsedMin === 1 ? '' : 's'}. New ${itemType} aren't reaching your agents. Open ${settingsPath('channels')} to reconnect.`;
   try {
     broadcast({
       type: 'chat:error',

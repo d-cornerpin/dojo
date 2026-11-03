@@ -540,7 +540,7 @@ for (const baseDef of microsoftReadBaseTools) {
   microsoftReadToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nThis variant reads from the user's connected Microsoft account (configured in Settings → Microsoft as the User slot). The agent's own account is read by the unprefixed \`${canonical}\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nThis variant reads from the user's connected Microsoft account (configured in Settings → Channels → User's Microsoft Accounts). The agent's own account is read by the unprefixed \`${canonical}\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,
   });
 }
 

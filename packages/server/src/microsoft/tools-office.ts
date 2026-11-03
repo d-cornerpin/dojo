@@ -1353,7 +1353,7 @@ async function saveOfficeBuffer(
   return (
     `${kindLabel} created locally at ${outPath} (${buffer.length} bytes). ` +
     shareLine + ' ' +
-    `Microsoft is not connected, so this was saved to disk instead of OneDrive — the file_id-driven slide edit tools are NOT available for it. To edit presentations in place, connect Microsoft in Settings → Integrations; otherwise recreate the file with your changes.`
+    `Microsoft is not connected, so this was saved to disk instead of OneDrive — the file_id-driven slide edit tools are NOT available for it. To edit presentations in place, connect Microsoft in Settings → Channels; otherwise recreate the file with your changes.`
   );
 }
 

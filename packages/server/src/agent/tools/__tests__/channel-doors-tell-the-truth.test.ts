@@ -174,7 +174,7 @@ describe('the imessage-disabled door', () => {
     expect(out.content).toBe(
       'iMessage bridge is currently disabled, so this message was NOT sent. '
       + 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. '
-      + 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).');
+      + 'To re-enable iMessage delivery, the user can start it from Settings → Channels → iMessage Bridge.');
   });
 
   it('CONTROL — the door still REFUSES; naming an alternative is not sending one', async () => {

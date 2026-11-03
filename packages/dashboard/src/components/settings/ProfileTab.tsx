@@ -103,7 +103,7 @@ export const ProfileTab = () => {
         <div className="scard__title">Your Mailboxes</div>
         <div className="scard__desc">
           Filled in automatically from the Google and Microsoft accounts you connect as your own
-          (Settings, Google and Microsoft). Disconnect an account there to remove it here.
+          (Settings → Channels, Google and Microsoft cards). Disconnect an account there to remove it here.
         </div>
         {loadingProfile ? (
           <div className="h-10 glass-nested rounded-xl animate-pulse" />

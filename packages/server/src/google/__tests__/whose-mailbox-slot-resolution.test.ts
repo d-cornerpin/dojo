@@ -106,7 +106,7 @@ describe('an empty slot refuses, and the refusal points at the slot that is conn
     const out = resolveGoogleAccountForTool('agent');
     expect('error' in out).toBe(true);
     if (!('error' in out)) throw new Error('unreachable');
-    expect(out.error).toBe('No agent Google account is connected. Connect one in Settings → Google.');
+    expect(out.error).toBe('No agent Google account is connected. Connect one in Settings → Channels (Agent\'s Google Accounts card).');
   });
 });
 

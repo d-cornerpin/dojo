@@ -1,7 +1,7 @@
 // ── The Dojo's two standard local models (v3.5): their state, read from the server ──
 //
 // Shown on the setup screen (progress while they install themselves; no choice) and in the Ollama
-// tile under Settings → Platform (with a Repair button). The tags are the server's: the dashboard
+// tile under Settings → Dojo (with a Repair button). The tags are the server's: the dashboard
 // names neither model itself (`services/local-standard.ts` is the only place they are written).
 
 import { useState, useEffect, useCallback } from 'react';

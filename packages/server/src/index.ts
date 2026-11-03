@@ -732,7 +732,7 @@ async function main(): Promise<void> {
   }
 
   // v2.10.3, Imaginer agent retired. Image generation is now a
-  // platform-config model picker (Settings → Dojo → Image Generation
+  // platform-config model picker (Settings → Models → Image Generation
   // Model) and the `image_create` tool calls that model directly.
   // Migration 059 terminates the legacy Imaginer agent row. This
   // step intentionally left empty for the gap.
@@ -982,7 +982,7 @@ async function main(): Promise<void> {
         // Once the backfill finishes, a previously-unprobed model might
         // now be known to be vision-capable. Re-run the obvious-fallback
         // helper so the platform fallback gets set without the user
-        // having to visit Settings → Dojo manually. The earlier startup
+        // having to visit Settings → Models manually. The earlier startup
         // call (below, before the healer scheduler) handles the case
         // where caps were already populated; this handles the
         // background-probe-completed case.
@@ -1220,7 +1220,7 @@ async function main(): Promise<void> {
   // silently set that single model as the fallback. Preserves working
   // setups for users upgrading from the era when each tool auto-picked
   // its own vision model. Multi-vision-model installs leave the config
-  // unset so the Settings → Dojo UI can prompt for an explicit choice.
+  // unset so the Settings → Models UI can prompt for an explicit choice.
   try {
     const { autoConfigureFallbackVisionModelIfObvious } = await import('./services/vision-model.js');
     autoConfigureFallbackVisionModelIfObvious();

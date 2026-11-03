@@ -1118,7 +1118,7 @@ export const agentsHandlers: ToolHandlerMap = {
           }
         }
         if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
-        if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; return { content, isError }; }
+        if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings → Models first.`; isError = true; return { content, isError }; }
         resolvedModel = model;
         const refused = await refuseUnfitLocalModel(model.id, target.model_id, 'agent', () => refuseSmallMainModel(model.id, target.model_id));
         if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
@@ -1176,7 +1176,7 @@ export const agentsHandlers: ToolHandlerMap = {
       // Identity (name / system_prompt): forbidden on the primary agent.
       if (newName !== undefined || newPrompt !== undefined) {
         if (isPrimaryAgent(target.id)) {
-          content = 'Error: cannot edit the primary agent via this tool. Edit its SOUL.md in Settings > Soul instead.';
+          content = 'Error: cannot edit the primary agent via this tool. Edit its SOUL.md on the Agents page (System Prompt) instead.';
           isError = true;
           return { content, isError };
         }

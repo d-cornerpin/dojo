@@ -55,7 +55,7 @@ async function googleFetch(
   if (!token) {
     const acc = getGoogleAccount(accountId);
     const label = acc?.email ? acc.email : (acc?.kind === 'user' ? "user's account" : "agent's account");
-    return { ok: false, data: null, error: `Not authenticated with Google (${label}). Connect in Settings > Google.`, apiEndpoint: url };
+    return { ok: false, data: null, error: `Not authenticated with Google (${label}). Connect in Settings → Channels (the Google cards).`, apiEndpoint: url };
   }
 
   const headers: Record<string, string> = {

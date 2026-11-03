@@ -77,7 +77,7 @@ export async function webSearch(
   const apiKey = getSearchApiKey();
 
   if (!apiKey) {
-    return 'Web search not configured. Add a Brave Search API key in Settings > Platform.';
+    return 'Web search not configured. Add a Brave Search API key in Settings → Dojo → Web Search Provider.';
   }
 
   // Permission check

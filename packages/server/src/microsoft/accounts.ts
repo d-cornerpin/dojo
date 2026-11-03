@@ -144,7 +144,7 @@ export function resolveMicrosoftAccountForTool(
     const pointer = siblingConnected
       ? ` Your ${sibling} Microsoft account IS connected — the ${sibling === 'user' ? '`user_` tool variants read' : 'unprefixed tools read'} that one.`
       : '';
-    return { error: `No ${kind} Microsoft account is connected. Connect one in Settings → Microsoft.${pointer}` };
+    return { error: `No ${kind} Microsoft account is connected. Connect one in Settings → Channels (${kind === 'user' ? "User's" : "Agent's"} Microsoft Accounts card).${pointer}` };
   }
   const emails = connected.map(a => a.email ?? a.id).join(', ');
   if (email) {

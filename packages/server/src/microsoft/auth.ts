@@ -307,7 +307,7 @@ function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string):
   try { void sendAlert(noteMicrosoftSignInExpired(accountId, expiredWords(acc)), 'critical'); } catch { /* alert best effort */ }
 }
 
-const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings > Microsoft.`; // the owner's card carries these words (t138 r3-4)
+const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Microsoft cards).`; // the owner's card carries these words (t138 r3-4)
 
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getMicrosoftAccount(accountId);

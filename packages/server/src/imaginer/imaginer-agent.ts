@@ -19,7 +19,7 @@
 // value and calls the image generation service. This separation means
 // Imaginer's chat-level reasoning can use any capable text model, while
 // the actual image-producing model is picked from the image_generation
-// capability list in Settings → Dojo → Imaginer.
+// capability list in Settings → Models → Image Generation Model.
 
 import { primaryReady } from '../agent/primary-ready.js';
 import { getDb } from '../db/connection.js';

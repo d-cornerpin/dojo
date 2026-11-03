@@ -541,7 +541,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   googleWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Google → User slot). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Channels → User's Google Accounts). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
   });
 }
 
@@ -565,7 +565,7 @@ for (const baseDef of googleWriteBaseTools) {
   googleWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nActs on the user's connected Google account (Settings → Google → User slot), gated by that slot's service toggle. The agent's own account is the unprefixed \`${canonical}\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nActs on the user's connected Google account (Settings → Channels → User's Google Accounts), gated by that slot's service toggle. The agent's own account is the unprefixed \`${canonical}\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,
   });
 }
 
@@ -1184,7 +1184,7 @@ export async function executeGoogleWriteTool(
   if (canonicalName === 'gmail_send' || canonicalName === 'gmail_reply' || canonicalName === 'gmail_forward') {
     if (!resolved.account.sendEmail) {
       const who = resolved.account.email ?? (kind === 'user' ? "the user's Google account" : "the agent's Google account");
-      return `Error: sending email from ${who} is disabled. Open Settings → Google and turn on "Allow sending email" for that account, then try again.`;
+      return `Error: sending email from ${who} is disabled. Open Settings → Channels (the Google cards) and turn on "Allow sending email" for that account, then try again.`;
     }
   }
 

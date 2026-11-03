@@ -208,7 +208,7 @@ function recognizeKnownTunnelFailure(tail: string): string | null {
   // status text directly instead. Cloudflare's account-less tunnel pool
   // throttles aggressively when restarted frequently or shared from one IP.
   if (/429\s*Too\s*Many\s*Requests/i.test(tail)) {
-    return 'Quick tunnel rate-limited (429 Too Many Requests). Cloudflare throttles account-less trycloudflare.com tunnels when restarted often. Wait a few minutes and try again, or set up a named tunnel in Settings → Remote Access for a permanent URL.';
+    return 'Quick tunnel rate-limited (429 Too Many Requests). Cloudflare throttles account-less trycloudflare.com tunnels when restarted often. Wait a few minutes and try again, or set up a named tunnel in Settings → Dojo → Remote Access for a permanent URL.';
   }
   // Generic 1015 (Cloudflare global rate limit). The trycloudflare challenge
   // page carries "error code: 1015" in its HTML body, so this catches the
@@ -220,7 +220,7 @@ function recognizeKnownTunnelFailure(tail: string): string | null {
   // usually catches this first, but the binary can disappear mid-session
   // if Homebrew removes it).
   if (/cloudflared.*not found|command not found/i.test(tail)) {
-    return 'cloudflared binary is missing. Install it from Settings → Remote Access (Install cloudflared button) and try again.';
+    return 'cloudflared binary is missing. Install it from Settings → Dojo → Remote Access (Install cloudflared button) and try again.';
   }
   // Connector failed to register — usually auth/cert problem on a named
   // tunnel. Quick tunnels never hit this path.

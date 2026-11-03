@@ -657,7 +657,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   microsoftWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Microsoft → User slot). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Channels → User's Microsoft Accounts). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
   });
 }
 
@@ -677,7 +677,7 @@ for (const baseDef of microsoftWriteBaseTools) {
   microsoftWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nActs on the user's connected Microsoft account (Settings → Microsoft → User slot), gated by that slot's service toggle. The agent's own account is the unprefixed \`${canonical}\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nActs on the user's connected Microsoft account (Settings → Channels → User's Microsoft Accounts), gated by that slot's service toggle. The agent's own account is the unprefixed \`${canonical}\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,
   });
 }
 
@@ -983,7 +983,7 @@ export async function executeMicrosoftWriteTool(
   if (canonicalName === 'outlook_send' || canonicalName === 'outlook_reply' || canonicalName === 'outlook_forward') {
     if (!resolved.account.sendEmail) {
       const who = resolved.account.email ?? (kind === 'user' ? "the user's Microsoft account" : "the agent's Microsoft account");
-      return `Error: sending email from ${who} is disabled. Open Settings → Microsoft and turn on "Allow sending email" for that account, then try again.`;
+      return `Error: sending email from ${who} is disabled. Open Settings → Channels (the Microsoft cards) and turn on "Allow sending email" for that account, then try again.`;
     }
   }
 
