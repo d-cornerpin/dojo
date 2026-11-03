@@ -9,9 +9,12 @@ import { withUnit, afterCommit } from '../db/unit.js';
 import { broadcast } from '../gateway/ws.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { setTrackerStatus, resetRevertCount } from '../work/tracker-store.js';
-import { workSettled, isStateConflict, noteUnsettled, type WorkOutcome, type WorkPatchOutcome } from '../work/store.js';
+import { workSettled, isStateConflict, type WorkOutcome, type WorkPatchOutcome } from '../work/store.js';
 import { awaitingUserVerdictExpr, stateToStatus } from '../work/tracker-view.js';
 import { getTask } from './schema.js';
+import { createLogger } from '../logger.js';
+
+const logger = createLogger('finished-task-schedule');
 
 /**
  * ONE test for "this task is a live recurring schedule" — the filer (`work_update` status and
@@ -57,27 +60,31 @@ const refusedWhy = (o: WorkOutcome | WorkPatchOutcome): string =>
  * Returns null, or the plain-words refusal (the unit has rolled back).
  */
 export function armScheduleOnOwnerSave(taskId: string, arm: () => WorkPatchOutcome): string | null {
-  if (!finishedStateOf(taskId)) { noteUnsettled(arm(), 'dashboard: schedule set on task edit', { taskId }); return null; }
+  const finished = finishedStateOf(taskId);
+  const unsettled = (o: WorkPatchOutcome): boolean => o.kind !== 'applied' && o.kind !== 'no_change';
   try {
     withUnit(() => {
-      for (const to of ['active', 'on_deck'] as const) {
-        const hop = setTrackerStatus(taskId, to, {
-          by: 'owner', actorId: 'user', claim: 'authoritative',
-          reason: 'the owner set a new schedule on a finished task (dashboard PUT /tracker/tasks/:id)',
-        });
-        if (!workSettled(hop)) throw new ReopenRefused(refusedWhy(hop));
+      if (finished) {
+        for (const to of ['active', 'on_deck'] as const) {
+          const hop = setTrackerStatus(taskId, to, {
+            by: 'owner', actorId: 'user', claim: 'authoritative',
+            reason: 'the owner set a new schedule on a finished task (dashboard PUT /tracker/tasks/:id)',
+          });
+          if (!workSettled(hop)) throw new ReopenRefused(refusedWhy(hop));
+        }
+        // Same as the status branch of this PUT: a person moving a task resets its revert count
+        // unless it is awaiting his verdict. Inside the unit, so a landed reopen never answers 500.
+        const awaiting = getDb().prepare(`SELECT ${awaitingUserVerdictExpr('w')} AS a FROM work w WHERE w.id = ?`).get(taskId) as { a: number } | undefined;
+        if (awaiting?.a !== 1) resetRevertCount(taskId, 'user', 'dashboard transition');
       }
       const armed = arm();
-      if (armed.kind !== 'applied' && armed.kind !== 'no_change') throw new ReopenRefused(refusedWhy(armed));
-      afterCommit(() => { const t = getTask(taskId); if (t) broadcast({ type: 'tracker:task_updated', data: t }); });
+      if (unsettled(armed)) throw new ReopenRefused(refusedWhy(armed));
+      if (finished) afterCommit(() => { const t = getTask(taskId); if (t) broadcast({ type: 'tracker:task_updated', data: t }); });
     });
   } catch (err) {
-    if (err instanceof ReopenRefused) return `the task is finished and could not be reopened to take the new schedule — ${err.message}`;
-    throw err;
+    if (err instanceof ReopenRefused) return finished ? `the task is finished and could not be reopened to take the new schedule — ${err.message}` : `the schedule could not be saved — ${err.message}`;
+    logger.error('owner schedule save failed and was rolled back', { taskId, error: err instanceof Error ? err.message : String(err) });
+    throw new Error('the new schedule could not be saved, and nothing was changed.');
   }
-  // Same as the status branch of this PUT: a person moving a task resets its revert count unless
-  // it is awaiting his verdict. The reason on the reopen transition is the owner's trail.
-  const awaiting = getDb().prepare(`SELECT ${awaitingUserVerdictExpr('w')} AS a FROM work w WHERE w.id = ?`).get(taskId) as { a: number } | undefined;
-  if (awaiting?.a !== 1) resetRevertCount(taskId, 'user', 'dashboard transition');
   return null;
 }

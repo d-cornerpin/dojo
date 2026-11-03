@@ -42,6 +42,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
 import { listTaskLog } from '../task-log.js';
+import { armScheduleOnOwnerSave } from '../finished-task-schedule.js';
 import { trackerRouter } from '../../gateway/routes/tracker.js';
 
 const AGENT = 'agent-finished';
@@ -177,5 +178,32 @@ describe('a schedule set on a finished recurring task', () => {
     expect(edit.content).not.toMatch(/\(done\)/);
     const run = await call('work_schedule:resolve_missed', { task_id: id, resolution: 'run_now' });
     expect(run.content).toMatch(/cannot be started now/);
+  });
+
+  it('R5-1 OWNER door: a failed save answers a plain sentence (no raw database text), 500, nothing changed', async () => {
+    const id = await finishedRecurring();
+    db().exec(`CREATE TRIGGER no_on_deck2 BEFORE UPDATE ON work WHEN NEW.id = '${id}' AND NEW.state = 'on_deck' BEGIN SELECT RAISE(ABORT, 'secret raw sqlite text'); END`);
+    const res = await put(id, SCHED());
+    const body = await res.json() as { ok: boolean; error: string };
+    expect(res.status).toBe(500);
+    expect(body.error).toMatch(/nothing was changed/i);
+    expect(body.error).not.toMatch(/secret raw sqlite text|SQLITE/i);
+  });
+
+  it('R5-3 OWNER door: the revert-count reset is inside the unit, so a reopen that lands never answers 500', async () => {
+    const id = await finishedRecurring();
+    db().exec(`CREATE TRIGGER no_reset BEFORE INSERT ON work_events WHEN NEW.work_id = '${id}' AND NEW.kind = 'revert_reset' BEGIN SELECT RAISE(ABORT, 'no reset'); END`);
+    const before = snapshot(id);
+    const res = await put(id, SCHED());
+    // Either the whole save lands (200 and reopened) or none of it does (not 200 and unchanged).
+    if (res.status === 200) expect(row(id).state).not.toBe('done');
+    else expect(snapshot(id)).toEqual(before);
+  });
+
+  it('R5-2 OWNER door: a refused arm on a LIVE row answers an honest error, never 200', async () => {
+    const out = await call('work_open:task', { title: 'Live one', goal: 'g', allow_duplicate: true });
+    const id = /task_id=([0-9a-f-]{36})/.exec(out.content)![1];
+    const err = armScheduleOnOwnerSave(id, () => ({ kind: 'refused', workId: id, reason: 'no-such-work', detail: 'gone' }));
+    expect(err).toMatch(/could not be saved/);
   });
 });
