@@ -96,10 +96,7 @@ describe('TB8 JOB 2 — a review that returns without a verdict is a RECORDED mi
     expect(out.reReview).toBe(false);
   });
 
-  it('a review that never reached the model at all is a miss on EVERY row it held', () => {
-    // The busy path: `runtime.handleMessage` returns without running a turn when the PM
-    // is already mid-run (`agent/runtime.ts:532`). It does not throw, so the existing
-    // catch-block hash reset never fires and the dedup swallowed the whole set.
+  it('a turn that RAN and ruled on nothing is a miss on EVERY row it held', () => {
     const out = validationCoverageAfterReview({
       asked: [
         { id: 'task-a', awaitingSinceMs: NOW - 30_000 },
@@ -107,9 +104,30 @@ describe('TB8 JOB 2 — a review that returns without a verdict is a RECORDED mi
       ],
       stillAwaiting: new Set(['task-a', 'task-b']),
       nowMs: NOW,
+      turn: 'ran',
     });
     expect(out.missed.map((m) => m.id).sort()).toEqual(['task-a', 'task-b']);
     expect(out.reReview).toBe(true);
+    expect(out.carryForward).toEqual([]);
+  });
+
+  it('v3.5 field fix 3 (#4): a review QUEUED behind a run in flight missed nothing; its waiting rows ride the doorbell', () => {
+    // This clause used to read the busy path (`handleMessage` returning at once because the PM was
+    // mid-run) as a miss on every row. No turn had happened, so the record it wrote ("the review ran
+    // and returned no verdict") was false, and on the owner's box the real verdict landed on the
+    // queued turn about 45s later. The busy return is now told apart, and the rows wait for it.
+    const out = validationCoverageAfterReview({
+      asked: [
+        { id: 'task-a', awaitingSinceMs: NOW - 30_000 },
+        { id: 'task-b', awaitingSinceMs: NOW - 30_000 },
+      ],
+      stillAwaiting: new Set(['task-a']),
+      nowMs: NOW,
+      turn: 'queued',
+    });
+    expect(out.missed).toEqual([]);
+    expect(out.reReview).toBe(false);
+    expect(out.carryForward).toEqual(['task-a']);
   });
 
   it('THE ORDERING LAW: a row past the owner-escalation bound is flagged, loudly', () => {

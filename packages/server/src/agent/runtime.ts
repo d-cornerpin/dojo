@@ -707,14 +707,19 @@ function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
   return true;
 }
 
+/** What `handleMessage` did with the call: ran a turn now, queued a wakeup behind the run already in
+ *  flight, or ran nothing (a terminated agent). A caller that judges the turn's outcome (the PM review's
+ *  coverage check) must know which, because a queued call returns before any turn has happened. */
+export type RunOutcome = 'ran' | 'queued' | 'not-run';
+
 class AgentRuntime {
-  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<void> {   // t143 r6: opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
+  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<RunOutcome> {   // t143 r6: opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
     // C20: never run a terminated agent (defense-in-depth for every entry path: the boot re-drain /
     // an A2A kick could otherwise run a dead agent and emit a zombie reply). Mirrors the wakeup path below.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
       logger.info('Skipping run, agent is terminated', { agentId }, agentId);
-      return;
+      return 'not-run';
     }
     if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // t148: a message to a parked agent is answered on arrival
     // If agent is already running, queue a wakeup so we re-run after current loop finishes.
@@ -729,7 +734,7 @@ class AgentRuntime {
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
-      return;
+      return 'queued';
     }
 
     activeRuns.add(agentId);
@@ -1192,6 +1197,7 @@ class AgentRuntime {
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
     }
+    return 'ran';
   }
 
 

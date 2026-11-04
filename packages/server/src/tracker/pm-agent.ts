@@ -39,7 +39,7 @@ import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation, pokesSentThisCycle } from '../work/poke-ladder.js';
 import { holdLadder, resumeLadder, heldMsSince } from '../work/ladder-clock.js';
 import { patienceFloorFor, flooredThresholds, type PokeThresholds } from './assignee-patience.js';
-import { getAgentRuntime } from '../agent/runtime.js';
+import { getAgentRuntime, type RunOutcome } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
 import {
   deleteAgentDebrisBefore,
@@ -845,6 +845,9 @@ export interface ValidationCoverageInput {
   /** Read back AFTER the review turn: the ids that still await Key 2. */
   readonly stillAwaiting: ReadonlySet<string>;
   readonly nowMs: number;
+  /** What `handleMessage` did with the report (v3.5 field fix 3, #4). Only a turn that RAN can have
+   *  missed a row; a queued one has not happened yet. Omitted = 'ran' (the pure callers). */
+  readonly turn?: RunOutcome;
 }
 
 export interface ValidationCoverage {
@@ -854,6 +857,9 @@ export interface ValidationCoverage {
   readonly anyPastOwnerBound: boolean;
   /** Ask again on the next tick — the dedup must not swallow an unruled row. */
   readonly reReview: boolean;
+  /** Rows to put back on the doorbell: the review's turn was queued behind a run in flight, so the
+   *  next review (after that queued turn) carries them and judges coverage against a turn that ran. */
+  readonly carryForward: ReadonlyArray<string>;
 }
 
 /**
@@ -891,6 +897,11 @@ function idsStillAwaitingKeyTwo(ids: readonly string[]): Set<string> {
 }
 
 export function validationCoverageAfterReview(input: ValidationCoverageInput): ValidationCoverage {
+  if ((input.turn ?? 'ran') !== 'ran') {
+    // No turn ran with this report, so nothing was missed. The rows still waiting ride the doorbell.
+    const carryForward = input.asked.filter((row) => input.stillAwaiting.has(row.id)).map((row) => row.id);
+    return { missed: [], anyPastOwnerBound: false, reReview: false, carryForward };
+  }
   const missed = input.asked
     .filter((row) => input.stillAwaiting.has(row.id))
     .map((row) => {
@@ -901,6 +912,7 @@ export function validationCoverageAfterReview(input: ValidationCoverageInput): V
     missed,
     anyPastOwnerBound: missed.some((m) => m.pastOwnerBound),
     reReview: missed.length > 0,
+    carryForward: [],
   };
 }
 
@@ -2270,7 +2282,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
   const runtime = getAgentRuntime();
   try {
-    await runtime.handleMessage(pmId, situationReport);
+    const turn = await runtime.handleMessage(pmId, situationReport);
 
     // ── SWEEP-A TB8 JOB 2: DID THE VALIDATOR ACTUALLY RULE? ──────────────────────────────
     // The turn is back. Read the SAME rows again: anything this review handed the
@@ -2289,8 +2301,12 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     if (askedForKeyTwo.length > 0) {
       const stillAwaiting = idsStillAwaitingKeyTwo(askedForKeyTwo.map((r) => r.id));
       const coverage = validationCoverageAfterReview({
-        asked: askedForKeyTwo, stillAwaiting, nowMs: Date.now(),
+        asked: askedForKeyTwo, stillAwaiting, nowMs: Date.now(), turn,
       });
+      // v3.5 field fix 3 (#4): a queued turn has not happened, so it missed nothing. Its rows ride
+      // the doorbell into the next review, whose coverage check judges a turn that really ran.
+      for (const id of coverage.carryForward) doorbellRows.add(id);
+      if (coverage.carryForward.length > 0) logger.info('PM review queued behind a run in flight; its rows stay on the doorbell', { turn, carried: coverage.carryForward.length });
       if (coverage.missed.length > 0) {
         // LOUD, at the production log level, with the denominator and the ordering fact.
         const line = 'PM validation review returned WITHOUT a verdict on rows it was handed';
