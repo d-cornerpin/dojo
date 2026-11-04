@@ -48,11 +48,16 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ }, stampPersistedRow: (e: unknown) => e }));
 
 // What the PM's runtime answers: 'queued' = it was mid-run and only queued a wakeup.
-const { pm } = vi.hoisted(() => ({ pm: { outcome: 'ran' as string, calls: 0, to: [] as string[] } }));
+const { pm } = vi.hoisted(() => ({ pm: {
+  outcome: 'ran' as string, calls: 0, to: [] as string[],
+  // The queued wakeup turn: `whenQueuedRunEnds` answers when the test ends it.
+  queuedEnd: null as null | ((o: string) => void), waits: 0,
+} }));
 vi.mock('../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({
     notifyPrimaryOfInjury: vi.fn(async () => undefined),
     handleMessage: vi.fn(async (agentId: string) => { pm.to.push(agentId); if (agentId === 'pm') pm.calls += 1; return pm.outcome; }),
+    whenQueuedRunEnds: vi.fn(() => { pm.waits += 1; return new Promise<string>((resolve) => { pm.queuedEnd = resolve; }); }),
     getAgentUptime: () => 0,
   }),
   stopAgent: vi.fn(),
@@ -84,6 +89,8 @@ beforeEach(() => {
   pm.outcome = 'ran';
   pm.calls = 0;
   pm.to = [];
+  pm.queuedEnd = null;
+  pm.waits = 0;
   d.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('prov-a', 'Cloud Provider', 'openai-compatible', 'api_key')`).run();
   d.prepare(`INSERT INTO models (id, provider_id, name, api_model_id) VALUES ('m-a', 'prov-a', 'Model A', 'model-a')`).run();
   d.prepare(`INSERT INTO agents (id, name, status, model_id, classification) VALUES
@@ -113,36 +120,94 @@ const misses = (taskId: string): number => (db().prepare(
      AND json_extract(payload, '$.action_taken') = ?`,
 ).get(taskId, VALIDATION_ATTEMPT_MISS) as { n: number }).n;
 
+/** One poke tick. The review it fires is fire-and-forget, so wait for it to finish its work: reach the
+ *  PM's door (and, when queued, start waiting for the queued turn), or settle without asking. */
 const sweepAt = async (at: number): Promise<void> => {
   vi.setSystemTime(at);
+  const calls = pm.calls;
   await runPokeCheck();
+  for (let i = 0; i < 500 && pm.calls === calls; i += 1) await new Promise((r) => setTimeout(r, 10));
   await new Promise((r) => setTimeout(r, 30));
 };
 
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 30));
+const missReasons = (taskId: string): string[] => (db().prepare(
+  `SELECT json_extract(payload, '$.reason') AS r FROM work_events WHERE work_id = ? AND kind = 'audit'
+     AND json_extract(payload, '$.action_taken') = ?`,
+).all(taskId, VALIDATION_ATTEMPT_MISS) as Array<{ r: string }>).map((x) => x.r);
+
+describe('review M5: a queued review is judged when its queued turn actually runs', () => {
+  it('queued: no miss while the PM is busy; the queued turn ends with no verdict, so THAT turn is the miss', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    filedClose('task-m5', now - 2 * MIN);
+    pm.outcome = 'queued';
+    await sweepAt(now);
+    expect(pm.waits).toBe(1);
+    expect(misses('task-m5')).toBe(0);
+    pm.queuedEnd!('ran');              // the queued wakeup turn ran and ruled on nothing
+    await settle();
+    expect(misses('task-m5')).toBe(1);
+  });
+
+  it('queued: the queued turn ruled, so there is no miss', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    filedClose('task-m5v', now - 2 * MIN);
+    pm.outcome = 'queued';
+    await sweepAt(now);
+    db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES ('d-m5', 'helper', NULL, 'dashboard', 'dashboard', 'delivered', datetime('now'))`).run();
+    expect(transition('task-m5v', { to: 'done', by: 'pm', actorId: 'pm', claim: 'authoritative', reason: 'upheld', resultDeliveryId: 'd-m5' }).kind).toBe('applied');
+    pm.queuedEnd!('ran');
+    await settle();
+    expect(misses('task-m5v')).toBe(0);
+  });
+
+  it('a PM that stays busy past the owner bound still reaches the owner escalation: the miss says so', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    filedClose('task-m5b', now - 9 * MIN);   // filed long before: past the 5-minute owner bound
+    pm.outcome = 'queued';
+    await sweepAt(now);
+    pm.queuedEnd!('ran');
+    await settle();
+    expect(missReasons('task-m5b').join('\n')).toMatch(/PAST the 5-minute owner-escalation bound/);
+  });
+
+  it('a queued turn that never ran (the PM was terminated): no miss, the rows stay on the doorbell for the next review', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    filedClose('task-m5n', now - 2 * MIN);
+    pm.outcome = 'queued';
+    await sweepAt(now);
+    pm.queuedEnd!('not-run');
+    await settle();
+    expect(misses('task-m5n')).toBe(0);
+    expect(drainValidationDoorbell()).toContain('task-m5n');
+  });
+});
+
 describe('#4: a validation review records a miss only when the PM turn actually ran', () => {
-  it('RED on the old code: the PM was mid-run (handleMessage queued), so NO miss is recorded and the row stays on the doorbell', async () => {
+  it('the PM was mid-run (handleMessage queued): NO miss is recorded while the queued turn has not run', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-q', now - 5 * MIN);
     pm.outcome = 'queued';
     await sweepAt(now);
     expect(pm.calls).toBe(1);   // the review did reach the PM's door
-    expect(misses('task-q')).toBe(0);
-    // The asked row is still on the doorbell, for the review after the PM's queued turn.
-    expect(drainValidationDoorbell()).toContain('task-q');
+    expect(misses('task-q')).toBe(0);   // and records nothing while the queued turn has not run
   });
 
-  it('after the queued turn: the next review carries the row, and a turn that RAN without a verdict is a real miss', async () => {
+  it('after the queued turn: a turn that RAN without a verdict is a real miss, recorded once', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-r', now - 5 * MIN);
     pm.outcome = 'queued';
     await sweepAt(now);
     expect(misses('task-r')).toBe(0);
-    pm.outcome = 'ran';
-    await sweepAt(now + MIN);
-    expect(pm.calls).toBe(2);
-    expect(misses('task-r')).toBe(1);
+    pm.queuedEnd!('ran');
+    await settle();
+    expect(misses('task-r')).toBe(1);   // judged once, on the turn that ran
   });
 
   it('CONTROL: a review whose turn ran and ruled on nothing is still a miss on the first review', async () => {
@@ -165,6 +230,8 @@ describe('#4: a validation review records a miss only when the PM turn actually 
     db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES ('d-v', 'helper', NULL, 'dashboard', 'dashboard', 'delivered', datetime('now'))`).run();
     const kept = transition('task-v', { to: 'done', by: 'pm', actorId: 'pm', claim: 'authoritative', reason: 'upheld', resultDeliveryId: 'd-v' });
     expect(kept.kind).toBe('applied');
+    pm.queuedEnd!('ran');
+    await settle();
     pm.outcome = 'ran';
     const before = pm.calls;
     await sweepAt(now + MIN);

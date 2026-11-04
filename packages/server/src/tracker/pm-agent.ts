@@ -2297,7 +2297,11 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
   const runtime = getAgentRuntime();
   try {
-    const turn = await runtime.handleMessage(pmId, situationReport);
+    const asked = await runtime.handleMessage(pmId, situationReport);
+    // Review M5: a review queued behind a run in flight is judged on the queued turn that reads its
+    // report, when that turn has actually run. A PM busy turn after turn therefore still accrues a real
+    // miss per unruled turn, measured from the row's own wait, and still reaches the owner escalation.
+    const turn: RunOutcome = asked === 'queued' ? ((await runtime.whenQueuedRunEnds?.(pmId)) ?? 'not-run') : asked;
 
     // ── SWEEP-A TB8 JOB 2: DID THE VALIDATOR ACTUALLY RULE? ──────────────────────────────
     // The turn is back. Read the SAME rows again: anything this review handed the
@@ -2318,8 +2322,8 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
       const coverage = validationCoverageAfterReview({
         asked: askedForKeyTwo, stillAwaiting, nowMs: Date.now(), turn,
       });
-      // v3.5 field fix 3 (#4): a queued turn has not happened, so it missed nothing. Its rows ride
-      // the doorbell into the next review, whose coverage check judges a turn that really ran.
+      // v3.5 field fix 3 (#4): a turn that never ran (terminated before the queued turn) missed nothing.
+      // Its rows ride the doorbell into the next review, whose coverage check judges a turn that ran.
       for (const id of coverage.carryForward) doorbellRows.add(id);
       if (coverage.carryForward.length > 0) logger.info('PM review queued behind a run in flight; its rows stay on the doorbell', { turn, carried: coverage.carryForward.length });
       if (coverage.missed.length > 0) {

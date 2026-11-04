@@ -712,13 +712,30 @@ function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
  *  coverage check) must know which, because a queued call returns before any turn has happened. */
 export type RunOutcome = 'ran' | 'queued' | 'not-run';
 
+/** Callers waiting for the turn their queued call will be served by (review M5): resolved at the end of
+ *  the next run that STARTS after they asked, never the run already in flight; 'not-run' if the agent is
+ *  found terminated first. */
+const queuedRunWaiters = new Map<string, Array<(o: RunOutcome) => void>>();
+
 class AgentRuntime {
+  /** After `handleMessage` answered 'queued': resolves when the queued turn has run (its outcome), so a
+   *  caller that judges that turn (the PM review's coverage check) judges a turn that happened. */
+  whenQueuedRunEnds(agentId: string): Promise<RunOutcome> {
+    return new Promise<RunOutcome>((resolve) => {
+      const list = queuedRunWaiters.get(agentId) ?? [];
+      list.push(resolve);
+      queuedRunWaiters.set(agentId, list);
+    });
+  }
+
   async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<RunOutcome> {   // t143 r6: opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
     // C20: never run a terminated agent (defense-in-depth for every entry path: the boot re-drain /
     // an A2A kick could otherwise run a dead agent and emit a zombie reply). Mirrors the wakeup path below.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
       logger.info('Skipping run, agent is terminated', { agentId }, agentId);
+      for (const w of queuedRunWaiters.get(agentId) ?? []) w('not-run');
+      queuedRunWaiters.delete(agentId);
       return 'not-run';
     }
     if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // t148: a message to a parked agent is answered on arrival
@@ -738,6 +755,9 @@ class AgentRuntime {
     }
 
     activeRuns.add(agentId);
+    // Review M5: the callers that queued behind an earlier run are served by THIS one.
+    const servedWaiters = queuedRunWaiters.get(agentId) ?? [];
+    queuedRunWaiters.delete(agentId);
     agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
     if (opts?.drained && !opts.job) beginContinuationRun(agentId, () => getWaitingHumanConversations(agentId).slice(0, 1).map((w) => w.oldest.id));   // t158 E
 
@@ -1197,6 +1217,7 @@ class AgentRuntime {
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
     }
+    for (const w of servedWaiters) w('ran');
     return 'ran';
   }
 
