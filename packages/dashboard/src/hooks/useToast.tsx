@@ -48,6 +48,11 @@ export interface ActionToastOptions {
   level?: ToastLevel;
   /** Called when the person presses the card's X (an owner card tells the server, t138 r3). */
   onDismiss?: () => void;
+  /** v3.5 field fix 3 (#9): does the person have to do something? Default true: the card is sticky and holds the
+   *  orb's red alert until it is acted on. False (an informational owner card): it leaves by itself on its level's
+   *  timer and never reddens the orb ("It shouldn't be a persistent notification if it doesn't require the
+   *  intervention of the user. It also shouldn't be red."). */
+  needsAction?: boolean;
 }
 
 /** Who speaks an owner card's frame: the server's `PLATFORM_SENDER`, the platform, not an agent. */
@@ -123,27 +128,35 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
   // or removed by key. Deduped on dedupeKey so a re-emit for the same proposal
   // refreshes content in place instead of stacking a duplicate, keeping the
   // same id + slot so the orb doesn't re-startle and the card doesn't jump.
+  // v3.5 field fix 3 (#9): only a card that needs the person is sticky and red. One that does not
+  // (`needsAction: false`) is keyed the same way but leaves on its level's timer, like any toast.
   const addActionToast = useCallback((opts: ActionToastOptions) => {
+    const needsAction = opts.needsAction ?? true;
+    const level = opts.level ?? ('warning' as ToastLevel);
+    const fresh = ++toastIdCounter;
     setToasts(prev => {
       const fields = {
         message: opts.message,
-        level: opts.level ?? ('warning' as ToastLevel),
+        level,
         title: opts.title,
         actions: opts.actions,
-        sticky: true,
-        alertOrb: true,
+        sticky: needsAction,
+        alertOrb: needsAction,
         dedupeKey: opts.dedupeKey,
         onDismiss: opts.onDismiss,
       };
       const idx = prev.findIndex(t => t.dedupeKey === opts.dedupeKey);
       if (idx >= 0) {
         const next = [...prev];
-        next[idx] = { ...next[idx], ...fields };
+        // A card that leaves by itself takes the fresh id, so the timer below runs from this showing.
+        next[idx] = { ...next[idx], ...fields, ...(needsAction ? {} : { id: fresh }) };
         return next;
       }
-      return [...prev, { id: ++toastIdCounter, timestamp: Date.now(), ...fields }];
+      return [...prev, { id: fresh, timestamp: Date.now(), ...fields }];
     });
-  }, []);
+    const dismissMs = needsAction ? null : AUTO_DISMISS_MS[level];
+    if (dismissMs !== null) setTimeout(() => removeToast(fresh), dismissMs);
+  }, [removeToast]);
 
   const addToast = useCallback((message: string, level: ToastLevel) => {
     const id = ++toastIdCounter;

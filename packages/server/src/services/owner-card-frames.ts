@@ -10,6 +10,16 @@
 //     card leaves every open dashboard when its condition ends, not only on the next load.
 // The dashboard (`GlobalAlerts`) shows the first and removes on the second; on load it asks
 // `GET /api/config/owner-notices`, which re-derives the cards still standing.
+//
+// v3.5 field fix 3 (#9, owner ruling OR-FIELD3 (c): "It shouldn't be a persistent notification if it doesn't
+// require the intervention of the user. It also shouldn't be red."): EVERY CARD DECLARES ITS CLASS.
+//   - `action`: the owner must do something. Today's sticky card, holding the orb's red alert until its X.
+//   - `informational`: worth knowing, nothing to do. A plain toast that leaves by itself, never red, never
+//     re-derived on a reload (the owner-notices list carries action cards only).
+//   - `progress`: background work that finishes on its own. No card at all: the orb's existing task glyph,
+//     through the `engine:activity` frames compaction already sends (`ownerProgressFrame`), ended when the
+//     work ends. Scoped to the agent doing it (the orb shows the viewed agent's).
+// The census (`t138-every-owner-notice-has-a-class.test.ts`) names every caller's class.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { broadcast } from '../gateway/ws.js';
@@ -20,15 +30,35 @@ import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
  *  t138 round-2 suite (`PLATFORM_SENDER` is 'platform') and read by the dashboard. */
 const PLATFORM_SENDER = 'platform';
 
-export function ownerCardFrame(words: string, severity: 'error' | 'warning' | 'info', cardKey?: string): void {
+/** What a card asks of the owner (header). `progress` is not a card: `ownerProgressFrame`. */
+export type OwnerCardClass = 'action' | 'informational';
+
+function send(words: string, severity: 'error' | 'warning' | 'info', cardKey: string | undefined, cardClass?: OwnerCardClass): void {
   try {
-    broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubTechnicalDetail(words), severity, retryable: false, ...(cardKey ? { cardKey } : {}) });
+    broadcast({
+      type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubTechnicalDetail(words), severity, retryable: false,
+      ...(cardKey ? { cardKey } : {}), ...(cardClass ? { cardClass } : {}),
+    });
   } catch { /* a card is best-effort; the text and the state are what matter */ }
+}
+
+/** A card, in its declared class: `action` (sticky, red) or `informational` (a toast that leaves by itself). */
+export function ownerCardFrame(words: string, severity: 'error' | 'warning', cardKey: string | undefined, cardClass: OwnerCardClass): void {
+  send(words, severity, cardKey, cardClass);
 }
 
 /** A condition ended: its card leaves every open dashboard (by `cardKey` when the card carries one). */
 export function ownerCardEnded(words: string, cardKey?: string): void {
-  ownerCardFrame(words, 'info', cardKey);
+  send(words, 'info', cardKey);
+}
+
+/** PROGRESS (header): background work the owner need not act on, shown as the orb's task glyph for the agent
+ *  doing it. `start` again while it runs is harmless (the dashboard keys it by `progressKey`); `end` when the
+ *  work ends. `label` is the line the active-work list shows. */
+export function ownerProgressFrame(phase: 'start' | 'end', progressKey: string, agentId: string, label: string): void {
+  try {
+    broadcast({ type: 'engine:activity', data: { id: progressKey, kind: 'compaction', agentId, label, startedAt: new Date().toISOString(), phase } });
+  } catch { /* the glyph is the courtesy; the work runs regardless */ }
 }
 
 // ── LASTING CARDS (t146 round 3) ──

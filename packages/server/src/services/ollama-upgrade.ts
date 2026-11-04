@@ -55,7 +55,7 @@ export interface UpgradeResult {
 }
 
 /** The one card for an Ollama too old that the Dojo could not update (read when used: the words sit in an import cycle). */
-export function tellOllamaTooOld(): void { if (tellOwnerOnce('ollama-too-old')) ownerCardFrame(OLLAMA_TOO_OLD_WORDS, 'warning'); }
+export function tellOllamaTooOld(): void { if (tellOwnerOnce('ollama-too-old')) ownerCardFrame(OLLAMA_TOO_OLD_WORDS, 'warning', undefined, 'action'); }   // one of the cases the Dojo cannot fix itself
 
 /** Nothing listens: start what is installed, as a kind that lasts (a plain binary on the PATH as the detached serve). */
 async function startInstalled(host: OllamaHost, baseUrl: string, residentCount: number): Promise<Start> {
@@ -96,7 +96,7 @@ async function endStuckStart(host: OllamaHost, baseUrl: string, residentCount: n
   const started: Start = formula ? await startLasting(host, baseUrl, residentCount, was === 'app') : 'dead';
   if (started === 'starting') setConfig(STARTING, await startingNow(host));
   if (started !== 'dead') return null;
-  if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning');
+  if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning', undefined, 'action');
   return 'dead';
 }
 
@@ -155,7 +155,7 @@ export async function ensureOllamaCurrent(
     else return cannot(WHY[step]);
   }
   if (started === 'dead') {   // it was stopped and nothing on disk would run: the one card that it is down
-    if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning');
+    if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning', undefined, 'action');
     return { ok: false, line: `${tooOld}Ollama stopped while the Dojo was updating it and has not come back yet.` };
   }
   if (started === 'starting') { setConfig(STARTING, await startingNow(host)); return { ok: false, transient: true, starting: true, line: 'Ollama is starting again after the update.' }; }

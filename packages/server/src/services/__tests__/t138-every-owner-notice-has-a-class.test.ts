@@ -273,3 +273,100 @@ describe('the alert latches have ONE writer each', () => {
     expect(migrationsTouching(/alert_(50|75|90)_sent/)).toEqual(['004_phase4.sql', '190_owner_notice_latches.sql']);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// v3.5 field fix 3 (#9): THE OWNER-CARD DOOR'S CENSUS: every card declares what it asks of the owner.
+//
+// Owner ruling OR-FIELD3 (c): "It shouldn't be a persistent notification if it doesn't require the intervention of
+// the user. It also shouldn't be red." So the door (`services/owner-card-frames.ts`) takes a declared class:
+//   - action: he must do something (a sticky card, the orb's red alert, re-derived on every load);
+//   - informational: worth knowing, nothing to do (a toast that leaves by itself, never red, never re-derived);
+//   - progress: background work that ends on its own (no card: the orb's task glyph, `ownerProgressFrame`).
+// A new caller fails here until it is classified; a caller that changes class fails too. The reason is the record.
+// ════════════════════════════════════════════════════════════════════════════════════════
+type CardClass = 'action' | 'informational' | 'progress';
+interface CardSite { cls: CardClass; what: string; why: string }
+const CARD_CLASSES: readonly CardClass[] = ['action', 'informational', 'progress'];
+
+/** Every `ownerCardFrame(` and `ownerProgressFrame('start'` call, in source order within its file. */
+const CARD_CENSUS: Record<string, CardSite[]> = {
+  'agent/decision-switch.ts': [
+    { cls: 'informational', what: 'the decision model now answers a question itself', why: 'nothing to do: if it gets worse the Dojo goes back to the rule by itself' },
+  ],
+  'agent/local-model-fit.ts': [
+    { cls: 'informational', what: "a local model's memory fit could not be checked when it was picked", why: 'nothing to do: it is checked at the first load and refused then if it does not fit' },
+  ],
+  'memory/catch-up-state.ts': [
+    { cls: 'progress', what: 'the agent is summarising its older memory in the background (shown at a turn on notes)', why: 'finishes on its own; replies are not held up' },
+  ],
+  'memory/embedding-switch.ts': [
+    { cls: 'action', what: 'the memory search model became a paid one; older memories are unsearchable until re-processed', why: 'only he can re-process them (switch to a local model, or spend): the Dojo will not spend his money unasked' },
+  ],
+  'migration/import-recovery.ts': [
+    { cls: 'action', what: 'an import failed and stopped what it stopped', why: 'he restarts the Dojo from the menu bar' },
+  ],
+  'services/imessage-bridge.ts': [
+    { cls: 'action', what: 'every critical or notice text the platform sends him (the sendAlert census above)', why: 'by ruling, the phone door carries true blockers only' },
+  ],
+  'services/local-standard.ts': [
+    { cls: 'informational', what: "the Dojo's own two local models could not be installed yet (at boot)", why: 'nothing to do: the Dojo keeps trying whenever Ollama runs (OR-UPKEEP-AUTOMATIC)' },
+    { cls: 'informational', what: "the Dojo's own two local models could not be installed yet (after an install pass)", why: 'the same condition, the same answer' },
+  ],
+  'services/ollama-model-limit.ts': [
+    { cls: 'informational', what: "the Dojo could not raise Ollama's loaded-model limit", why: 'nothing to do: everything keeps working and the Dojo tries again at its next start' },
+  ],
+  'services/ollama-upgrade.ts': [
+    { cls: 'action', what: 'a local model needs a newer Ollama and the Dojo could not update it by itself', why: 'one of the few cases the Dojo cannot fix (another user\'s or the system\'s Ollama, no Homebrew): OR-UPKEEP-AUTOMATIC\'s ONE plain card' },
+    { cls: 'action', what: 'Ollama stopped during its update and has not come back', why: 'the local models are down until the next start; his Repair press is the one way back sooner' },
+    { cls: 'action', what: 'the same condition, from the restart path', why: 'the same answer' },
+  ],
+  'vault/lessons-announce.ts': [
+    { cls: 'informational', what: "a count of yesterday's lessons, in the Dreamer's report", why: 'a report to read, nothing to do' },
+  ],
+};
+
+function findCardCalls(): Record<string, CardClass[]> {
+  const out: Record<string, CardClass[]> = {};
+  for (const abs of sourceFiles()) {
+    const rel = path.relative(SRC, abs).split(path.sep).join('/');
+    if (rel === 'services/owner-card-frames.ts') continue;   // the door itself
+    const code = stripComments(fs.readFileSync(abs, 'utf8'));
+    const re = /\b(ownerCardFrame|ownerProgressFrame)\s*\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code)) !== null) {
+      const open = m.index + m[0].length - 1;
+      const text = code.slice(open, closeOf(code, open));
+      if (m[1] === 'ownerProgressFrame' && !/^\(\s*'start'/.test(text)) continue;   // its end, like `ownerCardEnded`
+      const cls: CardClass | '<not a literal>' = m[1] === 'ownerProgressFrame' ? 'progress'
+        : (/,\s*'(action|informational)'\s*\)$/.exec(text)?.[1] as CardClass | undefined) ?? '<not a literal>';
+      (out[rel] ??= []).push(cls as CardClass);
+    }
+  }
+  return out;
+}
+
+describe('the owner-card door census (field fix 3 #9)', () => {
+  const actual = findCardCalls();
+
+  it('every caller declares its class, in order, and every declared caller exists', () => {
+    const declared: Record<string, CardClass[]> = {};
+    for (const [rel, sites] of Object.entries(CARD_CENSUS)) declared[rel] = sites.map((s) => s.cls);
+    expect(actual, 'a new or changed owner-card caller: classify it in CARD_CENSUS (action | informational | progress)').toEqual(declared);
+  });
+
+  it('only the three classes exist, and every entry says why', () => {
+    for (const sites of Object.values(CARD_CENSUS)) {
+      for (const s of sites) { expect(CARD_CLASSES).toContain(s.cls); expect(s.why.length).toBeGreaterThan(0); }
+    }
+  });
+
+  it('a card that needs no action is never re-derived on a reload: the healer list skips the informational conditions', () => {
+    const notices = fs.readFileSync(path.join(SRC, 'healer/owner-notices.ts'), 'utf8');
+    for (const key of ["'standard-models'", "'ollama-limit-failed'", "'fitunchecked:'"]) {
+      expect(/export function isInformationalCondition[\s\S]*?\n}/.exec(notices)?.[0], `${key} is informational`).toContain(key);
+    }
+    expect(notices).toMatch(/!isInformationalCondition\(key\)/);
+    const config = stripComments(fs.readFileSync(path.join(SRC, 'gateway/routes/config.ts'), 'utf8'));
+    expect(config, 'the catch-up is progress, not a lasting card').not.toMatch(/catchUpOwnerCards/);
+  });
+});

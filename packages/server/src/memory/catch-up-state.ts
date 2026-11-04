@@ -25,12 +25,14 @@
 // (`replacePlaceholdersInBackground`): one note at a time, the next when the one before lands, in the
 // writer order the owner ruled (`summary-writer-health.ts`), yielding to the agent's live turn.
 //
-// THE CARD (round 3) is raised by a real signal: a person's turn starting while the agent still runs on notes
-// (a backlog that folds before the next turn never shows one). While the compaction-failure notice speaks for
-// the agent (no writer can replace notes), this card is withdrawn: one honest card at a time.
-// One plain card per agent while its catch-up stands, through the existing owner-card frames
-// (keyed, so it is one card per agent) and the owner-notices list (so it lasts across a reload). It
-// leaves when the last note is replaced. No name is written here: the card reads the agent's own.
+// THE PROGRESS GLYPH (round 3's card, v3.5 field fix 3 #9) is raised by a real signal: a person's turn starting while
+// the agent still runs on notes (a backlog that folds before the next turn never shows one). Owner ruling OR-FIELD3 (c):
+// "It shouldn't be a persistent notification if it doesn't require the intervention of the user. It also shouldn't
+// be red." So it is no card: it is the orb's task glyph for this agent (`ownerProgressFrame`, the `engine:activity`
+// frames compaction already sends), shown again at each person's turn while it stands (a dashboard opened since, or
+// one that reconnected and dropped its engine items, picks it up there) and ended when the last note is replaced.
+// While the compaction-failure notice speaks for the agent (no writer can replace notes), it is withdrawn: the
+// glyph says the work is moving, and it is not.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -40,7 +42,7 @@ import { getCompactedMessageIds } from './dag.js';
 import { UNCONDENSED_KIND } from './uncondensed-head.js';
 import { LEAF_CHUNK_TOKENS } from './summary-target.js';
 import { estimateTokens } from './budget.js';
-import { ownerCardEnded, ownerCardFrame } from '../services/owner-card-frames.js';
+import { ownerProgressFrame } from '../services/owner-card-frames.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-catch-up');
@@ -56,11 +58,15 @@ export function hasUncondensedPlaceholders(agentId: string): boolean {
   return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND kind = ? LIMIT 1').get(agentId, UNCONDENSED_KIND);
 }
 
-/** `askedThrough`: the newest person's message when it began; `carded`: its card is up; `failing`: the
- *  compaction-failure notice speaks for this agent instead (round 3, one honest card at a time). */
-interface CatchUp { at: number; dismissedAt?: number; askedThrough?: number; carded?: boolean; failing?: boolean }
+/** `askedThrough`: the newest person's message when it began; `carded`: its progress is shown (the name is the stored
+ *  field's, kept so a record written by preflight.3 reads right); `failing`: the compaction-failure notice speaks for
+ *  this agent instead (round 3). */
+interface CatchUp { at: number; askedThrough?: number; carded?: boolean; failing?: boolean }
 const keyOf = (agentId: string): string => `memory_catch_up.${agentId}`;
-const cardKeyOf = (agentId: string): string => `memory-catch-up:${agentId}`;
+const progressKeyOf = (agentId: string): string => `memory-catch-up:${agentId}`;
+/** The line the active-work list shows beside the glyph: what is measured (older history being summarised), never
+ *  an assumed cause. */
+const PROGRESS_LABEL = 'Summarising older memory';
 
 function readCatchUp(agentId: string): CatchUp | null {
   const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(keyOf(agentId)) as { value: string } | undefined;
@@ -71,15 +77,6 @@ function writeCatchUp(agentId: string, value: CatchUp | null): void {
   if (value === null) getDb().prepare('DELETE FROM config WHERE key = ?').run(keyOf(agentId));
   else getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
                         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(keyOf(agentId), JSON.stringify(value));
-}
-
-/** The card, in the owner's words, naming the agent by its own name and the size it is fitting. */
-function catchUpWords(agentId: string): string {
-  // Automatic model choice read as `router/router-window.ts`'s `isAutoRouted` reads it; that module is not imported
-  // here because it loads the model module, and this one is loaded by the summary writer's own callers.
-  const row = getDb().prepare("SELECT name, model_id IN ('auto', '__auto__') AS auto FROM agents WHERE id = ?").get(agentId) as { name?: string; auto?: number } | undefined;
-  const size = row?.auto === 1 ? 'the Router\'s memory size' : 'its model\'s memory size';
-  return `Dojo: ${row?.name ?? 'An agent'} is tidying its older memory to fit ${size}. Replies are not held up; this finishes on its own.`;
 }
 
 /** Does a catch-up stand for this agent: started, and a note still waiting for its summary? */
@@ -108,8 +105,8 @@ export function catchUpOwns(agentId: string, throughSeq: number): boolean {
 const newestAsk = (agentId: string): number =>
   (getDb().prepare("SELECT MAX(seq) AS r FROM messages WHERE agent_id = ? AND role = 'user'").get(agentId) as { r: number | null }).r ?? 0;
 
-/** A turn handed its backlog to the background folder: record it. No card yet (round 3, F3): a backlog that folds
- *  before the next turn never touches the owner; the card is raised by `cardCatchUpAtTurnStart`. */
+/** A turn handed its backlog to the background folder: record it. Nothing shown yet (round 3, F3): a backlog that
+ *  folds before the next turn never touches the owner; the glyph is raised by `showCatchUpAtTurnStart`. */
 export function beginCatchUp(agentId: string, rowsLabelled: number): void {
   try {
     if (readCatchUp(agentId) !== null) return;
@@ -120,41 +117,42 @@ export function beginCatchUp(agentId: string, rowsLabelled: number): void {
   }
 }
 
-/** The folder landed its last note: the catch-up is over, and its card leaves every open dashboard. */
+/** The folder landed its last note: the catch-up is over, and its glyph leaves every open dashboard. */
 export function endCatchUpIfDone(agentId: string): void {
   try {
     if (readCatchUp(agentId) === null || hasUncondensedPlaceholders(agentId)) return;
     const was = readCatchUp(agentId);
     writeCatchUp(agentId, null);
     logger.info('Catch-up finished: every older span has its summary', {}, agentId);
-    if (was?.carded) ownerCardEnded(catchUpWords(agentId), cardKeyOf(agentId));
+    if (was?.carded) ownerProgressFrame('end', progressKeyOf(agentId), agentId, PROGRESS_LABEL);
   } catch { /* the record stays; the next landing note ends it */ }
 }
 
-/** THE CARD'S SIGNAL (round 3, F3): a person's turn starts while this agent still runs on notes. Called by the
- *  engine's assembly door; once per catch-up, and never while the failure notice speaks (F2). Never throws. */
-export function cardCatchUpAtTurnStart(agentId: string): void {
+/** THE GLYPH'S SIGNAL (round 3, F3): a person's turn starts while this agent still runs on notes. Called by the
+ *  engine's assembly door; shown again at each such turn while it stands, never while the failure notice speaks
+ *  (F2). Never throws. */
+export function showCatchUpAtTurnStart(agentId: string): void {
   try {
     const rec = readCatchUp(agentId);
-    if (rec === null || rec.carded || rec.failing || rec.dismissedAt !== undefined || !hasUncondensedPlaceholders(agentId)) return;
+    if (rec === null || rec.failing || !hasUncondensedPlaceholders(agentId)) return;
     if (newestAsk(agentId) <= (rec.askedThrough ?? 0)) return;   // the turn that began it: not yet a turn on notes
-    writeCatchUp(agentId, { ...rec, carded: true });
-    ownerCardFrame(catchUpWords(agentId), 'warning', cardKeyOf(agentId));
-  } catch { /* the card is the courtesy; the folder works regardless */ }
+    if (!rec.carded) writeCatchUp(agentId, { ...rec, carded: true });
+    ownerProgressFrame('start', progressKeyOf(agentId), agentId, PROGRESS_LABEL);
+  } catch { /* the glyph is the courtesy; the folder works regardless */ }
 }
 
-/** Round 3 (F2): the compaction-failure notice was raised for this agent (`compaction-defect.ts`). The card that
- *  promises "this finishes on its own" leaves; it may return at a later turn once the failure is over. */
-export function withdrawCatchUpCard(agentId: string): void {
+/** Round 3 (F2): the compaction-failure notice was raised for this agent (`compaction-defect.ts`). The glyph that says
+ *  the work is moving leaves; it may return at a later turn once the failure is over. */
+export function withdrawCatchUpProgress(agentId: string): void {
   try {
     const rec = readCatchUp(agentId);
     if (rec === null) return;
     writeCatchUp(agentId, { ...rec, failing: true, carded: false });
-    if (rec.carded) ownerCardEnded(catchUpWords(agentId), cardKeyOf(agentId));
+    if (rec.carded) ownerProgressFrame('end', progressKeyOf(agentId), agentId, PROGRESS_LABEL);
   } catch { /* best effort */ }
 }
 
-/** The failure is over: the catch-up card may be raised again at the next turn on notes. */
+/** The failure is over: the catch-up glyph may be shown again at the next turn on notes. */
 export function catchUpFailureOver(agentId: string): void {
   try {
     const rec = readCatchUp(agentId);
@@ -166,13 +164,4 @@ export function catchUpFailureOver(agentId: string): void {
 export function openCatchUps(): string[] {
   const rows = getDb().prepare("SELECT key FROM config WHERE key LIKE 'memory_catch_up.%'").all() as Array<{ key: string }>;
   return rows.map(({ key }) => key.slice('memory_catch_up.'.length));
-}
-
-/** The catch-up cards a dashboard shows on load: raised, still running, not withdrawn or dismissed. */
-export function catchUpOwnerCards(): Array<{ words: string; severity: 'notice'; cardKey: string; dismiss: () => void }> {
-  return openCatchUps().flatMap((agentId) => {
-    const told = readCatchUp(agentId);
-    if (told === null || !told.carded || told.failing || told.dismissedAt !== undefined || !hasUncondensedPlaceholders(agentId)) return [];
-    return [{ words: catchUpWords(agentId), severity: 'notice' as const, cardKey: cardKeyOf(agentId), dismiss: () => writeCatchUp(agentId, { ...told, dismissedAt: Date.now() }) }];
-  });
 }

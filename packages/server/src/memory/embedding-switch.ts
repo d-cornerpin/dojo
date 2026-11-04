@@ -76,5 +76,5 @@ export async function handleEmbeddingModelSwitch(previousKey: string): Promise<v
     return;
   }
   // Paid: nothing is spent. A lasting card, told once per switch.
-  if (tellOwnerOnce(EMBEDDING_SWITCH_KEY)) ownerCardFrame(wordsOf(EMBEDDING_SWITCH_KEY), 'warning', cardKeyOf(EMBEDDING_SWITCH_KEY));
+  if (tellOwnerOnce(EMBEDDING_SWITCH_KEY)) ownerCardFrame(wordsOf(EMBEDDING_SWITCH_KEY), 'warning', cardKeyOf(EMBEDDING_SWITCH_KEY), 'action');   // only his say re-processes them
 }

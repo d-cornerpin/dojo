@@ -2117,7 +2117,7 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
     // A status line and an all-clear raise none BY DESIGN (R-V333-13); the record below says which.
     const card = opts.clears !== undefined || opts.card === false ? 'none_by_design' : 'raised';
     if (opts.clears !== undefined) ownerCardEnded(opts.clears);
-    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning', opts.cardKey);
+    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning', opts.cardKey, 'action');   // by ruling, true blockers only
 
     const recipient = getDefaultSender();
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a

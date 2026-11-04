@@ -30,7 +30,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
 import { providerBreaker, type OpenBreaker } from '../providers/billing-breaker.js';
-import { catchUpFailureOver, withdrawCatchUpCard } from './catch-up-state.js';
+import { catchUpFailureOver, withdrawCatchUpProgress } from './catch-up-state.js';
 
 const logger = createLogger('compaction-defect');
 
@@ -148,7 +148,7 @@ export function reportCompactionDefect(
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
-  withdrawCatchUpCard(agentId);   // field fix Y r3 (F2): one honest card at a time; this notice speaks now
+  withdrawCatchUpProgress(agentId);   // field fix Y r3 (F2): this notice speaks now; the work is not moving
   if (breaker) {
     logger.info('Compaction failure card suppressed: the provider breaker already told the owner', {
       stage, providerId: breaker.providerId, reason: breaker.reason,

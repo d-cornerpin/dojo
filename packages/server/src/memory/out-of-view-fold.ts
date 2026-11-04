@@ -47,7 +47,7 @@ import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summ
 import { turnPatienceMs } from './turn-patience.js';
 import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
-import { beginCatchUp, cardCatchUpAtTurnStart, catchUpOwns } from './catch-up-state.js';
+import { beginCatchUp, showCatchUpAtTurnStart, catchUpOwns } from './catch-up-state.js';
 import { registerAbortable, releaseAbortable } from '../agent/shared-state.js';
 
 const logger = createLogger('memory-out-of-view-fold');
@@ -82,7 +82,7 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
   // stop cuts this controller with the calls it covers. A caller's own signal is folded in.
   const stop = new AbortController();
   registerAbortable(agentId, stop, 'turn');
-  cardCatchUpAtTurnStart(agentId);   // field fix Y r3 (F3): a turn on notes is the card's real signal
+  showCatchUpAtTurnStart(agentId);   // field fix Y r3 (F3): a turn on notes is the glyph's real signal
   const onCaller = (): void => stop.abort();
   if (opts.abortSignal?.aborted) onCaller(); else opts.abortSignal?.addEventListener('abort', onCaller, { once: true });
   const budget: TurnBudget = { deadline: Date.now() + turnPatienceMs(agentId, opts.dialedModelId), stop: stop.signal, tried: new Set() };

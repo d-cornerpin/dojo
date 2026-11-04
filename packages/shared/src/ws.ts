@@ -377,6 +377,10 @@ export interface ChatErrorEvent {
   /** v3.5 N42 r2: an owner card whose words can change while it stands (the no-fit card names the router's
    *  smallest model) is matched by its condition key, so its end frame finds it whatever the words became. */
   cardKey?: string;
+  /** v3.5 field fix 3 (#9): an owner card's class. `action` (absent means action, as every card before it): the
+   *  owner must do something, a sticky card holding the orb's red alert. `informational`: a plain toast that
+   *  leaves by itself, never red. Background progress is no card at all (`engine:activity`). */
+  cardClass?: 'action' | 'informational';
 }
 
 export interface LogEntryEvent {

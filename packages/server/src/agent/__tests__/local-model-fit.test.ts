@@ -23,7 +23,7 @@ vi.mock('../../db/connection.js', () => ({
   },
   getDbPath: () => ':memory:',
 }));
-const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; error?: string; severity?: string }> }));
+const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; error?: string; severity?: string; cardClass?: string }> }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { type?: string }) => { frames.list.push(f); }, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -209,19 +209,23 @@ describe('RULING: what Ollama cannot size now is allowed, told, and judged at it
     + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
   const inUse = (modelId: string): void => { db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_model', ?)").run(modelId); };
 
-  it('Ollama down: allowed, and the owner is told once on the persistent owner card', async () => {
+  // v3.5 field fix 3 (#9, OR-FIELD3 (c)): the fit is checked at the first load by itself, so the owner is told once on an
+  // INFORMATIONAL card (a toast that leaves by itself, never red), and a reload does not re-derive it (it was N2's lasting card).
+  it('Ollama down: allowed, and the owner is told once on an informational card', async () => {
     ollama.up = false;
     expect(await refuseUnfitLocalModel('m-9b')).toBeNull();
     expect(await refuseUnfitLocalModel('m-9b')).toBeNull();
     expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('qwen3.5:9b')]);
+    expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
     inUse('m-9b');
-    expect(healerOwnerCards().map((c) => c.words)).toContain(WORDS('qwen3.5:9b'));   // N2: survives a reload
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
   });
 
   it('not downloaded yet: allowed the same way', async () => {
     expect(await refuseUnfitLocalModel('m-unlisted')).toBeNull();
     inUse('m-unlisted');
-    expect(healerOwnerCards().map((c) => c.words)).toContain(WORDS('not-pulled:3b'));
+    expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('not-pulled:3b')]);
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('not-pulled:3b'));
   });
 
   it('N7: a pick the door then refuses (the 32K floor) is neither marked nor told', async () => {
