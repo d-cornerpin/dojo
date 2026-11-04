@@ -147,8 +147,10 @@ export function reportCompactionDefect(
   if (failures.has(agentId)) return null;   // one note, one card, per outage
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
+  // field fix Y r3 (F2); field fix 3 review L2: the work is not moving, whatever the stage, so the catch-up glyph ends
+  // (it comes back at a turn on notes once the failure is over, `catchUpFailureOver`).
+  withdrawCatchUpProgress(agentId);
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
-  withdrawCatchUpProgress(agentId);   // field fix Y r3 (F2): this notice speaks now; the work is not moving
   if (breaker) {
     logger.info('Compaction failure card suppressed: the provider breaker already told the owner', {
       stage, providerId: breaker.providerId, reason: breaker.reason,
