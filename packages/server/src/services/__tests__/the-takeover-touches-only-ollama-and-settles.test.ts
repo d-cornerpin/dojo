@@ -24,7 +24,8 @@ import { ensureStandardModels, retryStandardModelsIfMissing, standardInstallSett
 import { releasePairHold } from '../ollama-pair-gate.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { ensureOllamaModelLimit, ollamaRestartSettled } from '../ollama-model-limit.js';
-import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS, HEALER_BROKEN_WORDS } from '../../healer/owner-notices.js';
+import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, HEALER_BROKEN_WORDS } from '../../healer/owner-notices.js';
+import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, dockerServe, LATEST, type Mac } from './fake-mac.js';
 
@@ -160,6 +161,42 @@ describe('M1 / M2 / M3: the download, a slow start, and the cask\'s limits', () 
       const code = fs.readFileSync(f, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');   // code, not the comments that name the rule
       expect(code, f).not.toMatch(/--zap|'uninstall'|"uninstall"|xattr|com\.apple\.quarantine|--no-quarantine|\/\.ollama\b|'\.ollama'/);
     }
+  });
+});
+
+describe('re-review LOW-1 / LOW-3: no contending supervisor, and no start that stays "starting" for ever', () => {
+  it('LOW-1: Homebrew\'s job is unloaded before the fallback serve starts, so it never crash-loops against it for the port', async () => {
+    const mac = use(fakeMac({ running: formulaServe('0.30.1'), formula: '0.30.1' })); mac.serviceWorks = false;
+    expect((await ensureStandardModels()).decision).toBe('installed');
+    expect(mac.log.indexOf('service-stop')).toBeGreaterThan(-1);
+    expect(mac.log.indexOf('service-stop')).toBeLessThan(mac.log.indexOf('serve'));
+    expect(mac.serviceLoaded).toBe(false);
+    expect(mac.running?.by).toBe('unsupervised');
+  });
+
+  it('LOW-3: an upgraded app alive behind a prompt nobody sees is "starting" once; the next look (Repair) ends it and the formula\'s service takes over', async () => {
+    const mac = use(fakeMac({ running: appServe('0.30.1'), app: '0.30.1' })); mac.appStartMs = Infinity;
+    await ensureStandardModels();
+    expect(cards()).toEqual([]);
+    const settingsSay = async (): Promise<string> => (await setupDepsRouter.request('/ollama/standard').then((r) => r.json()) as { data: { lines: string[]; note: string } }).data.lines.join(' ');
+    expect(await settingsSay()).toMatch(/starting/);
+    mac.wait(60_000);   // still not answering, however long
+    releasePairHold();   // what Repair does
+    expect((await ensureStandardModels()).decision).toBe('installed');
+    expect(mac.running?.by).toBe('brew-service');
+    expect(mac.brews).toContainEqual(['install', 'ollama']);
+    expect(await settingsSay()).not.toMatch(/starting/);
+    expect(cards()).toEqual([]);
+  });
+
+  it('LOW-3: a plain binary\'s serve that never answers: the next look ends it, and with nothing else to start, the ONE "down" card; never "starting" again', async () => {
+    const mac = use(fakeMac({ running: null })); mac.cli = { path: '/usr/local/bin/ollama', version: LATEST }; mac.startMs = Infinity; mac.hasBrewInstalled = false;
+    await ensureStandardModels();
+    expect(cards()).toEqual([]);
+    releasePairHold();
+    await ensureStandardModels();
+    expect(cards()).toEqual([OLLAMA_DOWN_WORDS]);
+    expect(db().prepare("SELECT 1 FROM config WHERE key = 'ollama_start_pending'").get()).toBeUndefined();
   });
 });
 

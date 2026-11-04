@@ -79,7 +79,11 @@ export function ollamaReadyForPair(
   if (!provider) return Promise.resolve(true);
   return inUpkeep(async () => {
     let installed = await installedNames(provider.baseUrl);
-    if (!installed && host) { await ensureOllamaCurrent(host, provider, null, models.length); installed = await installedNames(provider.baseUrl); }
+    if (!installed && host) {
+      const first = await ensureOllamaCurrent(host, provider, null, models.length);
+      installed = await installedNames(provider.baseUrl);
+      if (!installed && first.starting) { await afterUpgrade(first, provider.baseUrl, null); return true; }   // held while it starts: no card
+    }
     if (!installed) return true;
     const need = requiredOllamaVersion(models.filter((m) => !installed.includes(m.tag)));
     const have = need ? await readOllamaVersion(provider.baseUrl) : null;

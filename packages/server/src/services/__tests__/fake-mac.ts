@@ -92,6 +92,8 @@ export type Mac = OllamaHost & {
   /** How long a serve takes to answer once started (ms of the Dojo's own polling); the app's own may differ. */
   startMs: number; appStartMs: number;
   macos: number | null;
+  /** Homebrew's job is loaded in launchd (it crash-loops while another serve holds the port, growing its log). */
+  serviceLoaded: boolean;
   /** The env of each detached `ollama serve` the Dojo started; the order of `setenv`, `term`, `serve`, `service`, `launch` calls. */
   serves: Array<Record<string, string>>; log: string[];
   now: number;
@@ -124,7 +126,7 @@ export function fakeMac(o: { running?: Serve | null; formula?: string | null; ap
     latest: LATEST, env: {},
     brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, heldDuringBrew: [], downAtBrew: [], serves: [], log: [],
     hasBrewInstalled: true, failBrew: false, failBrewOnce: false, cliOk: true, serviceWorks: true, serveWorks: true, failCask: false, relaunchGate: Promise.resolve(), respawn: null,
-    cli: null, startMs: 0, appStartMs: 0, macos: 15, now: 0,
+    cli: null, startMs: 0, appStartMs: 0, macos: 15, now: 0, serviceLoaded: false,
     wait: (ms) => tick(ms),
     getenv: async (k) => m.env[k] ?? null,
     setenv: async (k, v) => { m.env[k] = v; m.setenvs.push(`${k}=${v}`); m.log.push('setenv'); },
@@ -163,10 +165,12 @@ export function fakeMac(o: { running?: Serve | null; formula?: string | null; ap
       m.serviceRestarts++; m.log.push('service');
       if (!m.disk.formula) throw new Error('Error: No available formula with the name "ollama" (raw)');
       if (serve?.by === 'brew-service') m.running = null;
+      m.serviceLoaded = true;   // launchd loads the job even when `restart` then reports a failure
       if (!m.serviceWorks) throw new Error('Bootstrap failed: 5: Input/output error (raw)');
       if (serve) return;   // another serve holds the port: launchd's job cannot listen
       startServeAt({ pid: nextPid++, path: cellar(m.disk.formula), version: m.disk.formula, by: 'brew-service' }, m.startMs);
     },
+    stopBrewService: async () => { m.log.push('service-stop'); m.serviceLoaded = false; if (serve?.by === 'brew-service') m.running = null; },
     startServe: (env) => {
       m.serves.push(env); m.log.push('serve');
       const program = m.disk.formula ? { path: cellar(m.disk.formula), version: m.disk.formula } : m.cli ?? (m.disk.app ? { path: APP_PROGRAM, version: m.disk.app } : null);

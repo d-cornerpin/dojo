@@ -49,6 +49,8 @@ export interface OllamaHost {
   brew(args: string[]): Promise<void>;
   /** `brew services restart ollama`: launchd starts the job again (or for the first time), with launchd's environment. */
   restartBrewService(): Promise<void>;
+  /** `brew services stop ollama`: Homebrew's job is unloaded, so it never contends with another serve for the port. */
+  stopBrewService(): Promise<void>;
   /** Is Homebrew's `ollama` formula installed (`brew list --formula --versions ollama`, local, no network)? */
   brewFormulaInstalled(): Promise<boolean>;
   /** The macOS major version (`sw_vers -productVersion`), or null when unreadable. The Ollama app's cask needs 14 (Sonoma). */
@@ -129,6 +131,11 @@ export function makeRealDeps(
       const brew = await brewPath();
       if (!brew) throw new Error('Homebrew is not installed');
       await run(brew, ['services', 'restart', 'ollama']);
+    },
+    stopBrewService: async () => {
+      const brew = await brewPath();
+      if (!brew) throw new Error('Homebrew is not installed');
+      await run(brew, ['services', 'stop', 'ollama']);
     },
     brewFormulaInstalled: async () => {
       const brew = await brewPath();

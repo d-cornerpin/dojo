@@ -118,9 +118,10 @@ export async function restartBrewService(host: OllamaHost, baseUrl: string): Pro
  *  fallback serve below) is SETTLED for that listener, so no start and no health retry stops it again for the same situation. */
 const SETTLED = 'ollama_takeover_settled';
 export const settleTakeover = (l: { pid: number; path: string }): void => setConfig(SETTLED, JSON.stringify({ pid: l.pid, path: l.path }));
-export function takeoverSettled(l: { pid: number; path: string }): boolean {
-  try { const v = JSON.parse(readConfig(SETTLED) ?? 'null') as { pid: number; path: string } | null; return !!v && v.pid === l.pid && v.path === l.path; } catch { return false; }
+export function settledListener(): { pid: number; path: string } | null {
+  try { return JSON.parse(readConfig(SETTLED) ?? 'null') as { pid: number; path: string } | null; } catch { return null; }
 }
+export function takeoverSettled(l: { pid: number; path: string }): boolean { const v = settledListener(); return !!v && v.pid === l.pid && v.path === l.path; }
 
 /** Review H2: Homebrew's service, or, when it cannot start (a stale plist's "Bootstrap failed", no formula), the program on disk
  *  run as a detached `ollama serve` with the limit in its own environment, recorded as settled. Ollama is never left down while
@@ -129,6 +130,9 @@ export async function startLasting(host: OllamaHost, baseUrl: string, residentCo
   if (viaService) {
     const service = await restartBrewService(host, baseUrl).catch((): Start => 'dead');
     if (service !== 'dead') return service;
+    // Re-review LOW-1: unload Homebrew's job first, so a job launchd did load (though `restart` failed) never crash-loops
+    // against the serve below for the port, growing its log.
+    await host.stopBrewService().catch(() => undefined);
   }
   if (!await host.cliRuns()) return 'dead';
   const launchd = await host.getenv(LIMIT_VAR);

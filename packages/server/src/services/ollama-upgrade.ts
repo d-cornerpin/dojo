@@ -30,7 +30,8 @@ import { type OllamaHost } from './ollama-host.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { isUnknownBuild, ollamaAtLeast, readOllamaVersion } from './ollama-version.js';
 import {
-  classifyOllama, portOf, setConfig, setLaunchdLimit, settleTakeover, startApp, startLasting, stopApp, stopServe, takeoverSettled, type Start,
+  classifyOllama, portOf, readConfig, setConfig, setLaunchdLimit, settleTakeover, settledListener, startApp, startLasting, stopApp, stopServe, takeoverSettled,
+  type Start,
 } from './ollama-restart.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 import { OLLAMA_DOWN_WORDS, OLLAMA_TOO_OLD_WORDS, ownerConditionCleared, tellOwnerOnce } from '../healer/owner-notices.js';
@@ -73,6 +74,32 @@ async function startInstalled(host: OllamaHost, baseUrl: string, residentCount: 
   }
 }
 
+/** Re-review LOW-3: a start an upkeep left "starting" (alive, not answering yet) is judged at the NEXT upkeep (a start, a health
+ *  retry, Repair). Still not answering then, it never will (an app behind a prompt nobody sees, a hung serve): it is ended and
+ *  Ollama started another way (the formula and Homebrew's service, then the detached serve), or, with nothing left, it is down. */
+const STARTING = 'ollama_start_pending';
+async function startingNow(host: OllamaHost): Promise<'app' | 'service' | 'serve'> {
+  return (await host.appPids()).length > 0 ? 'app' : (await host.brewServicePid()) !== null ? 'service' : 'serve';
+}
+/** Resolves 'dead' when it ended a stuck start and nothing else would run (this pass then starts nothing again), else null. */
+async function endStuckStart(host: OllamaHost, baseUrl: string, residentCount: number): Promise<'dead' | null> {
+  const was = readConfig(STARTING);
+  if (!was) return null;
+  setConfig(STARTING, null);
+  if (await host.answers(baseUrl)) return null;
+  logger.warn('A start the Dojo made is still not answering at the next look; it is ended and Ollama is started another way', { was });
+  if (was === 'app') await stopApp(host).catch(() => undefined);
+  else if (was === 'service') await host.stopBrewService().catch(() => undefined);
+  else { const l = settledListener(); if (l) host.terminate(l.pid); }
+  const formula = was !== 'serve' && await host.hasBrew()
+    && (await host.brewFormulaInstalled() || await host.brew(['install', 'ollama']).then(() => true, () => false));
+  const started: Start = formula ? await startLasting(host, baseUrl, residentCount, was === 'app') : 'dead';
+  if (started === 'starting') setConfig(STARTING, await startingNow(host));
+  if (started !== 'dead') return null;
+  if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning');
+  return 'dead';
+}
+
 type Step = 'install' | 'stop' | 'again' | 'start';
 /** A step failed: which one says the plain reason. */
 class StepFailed extends Error { constructor(readonly step: Step, cause: unknown) { super(childFailureText(cause)); } }
@@ -89,17 +116,21 @@ export async function ensureOllamaCurrent(
   host: OllamaHost, local: { id: string; baseUrl: string }, need: Need, residentCount: number,
 ): Promise<UpgradeResult> {
   const port = portOf(local.baseUrl);
+  if (await endStuckStart(host, local.baseUrl, residentCount) === 'dead') {
+    return { ok: false, line: 'Ollama was started but never answered, and nothing else on this Mac can run it now. The Dojo tries again at its next start.' };
+  }
   let found = await classifyOllama(host, port);
   if (!found) {
     const started = await startInstalled(host, local.baseUrl, residentCount);
     if (started === 'answering') found = await classifyOllama(host, port);
+    if (started === 'starting') setConfig(STARTING, await startingNow(host));
     if (!found) return started === 'starting' ? { ok: false, transient: true, starting: true, line: 'Ollama is starting.' } : { ok: false, transient: true, line: 'Ollama is not running, and the Dojo could not start it at that moment.' };
   }
   const here = found;
   const before = await readOllamaVersion(local.baseUrl);
   const meets = (v: string | null): boolean => (need === 'newer' ? v !== null && v !== before : need === null || v === null || isUnknownBuild(v) || ollamaAtLeast(v, need));
   const stale = need === 'newer' || !meets(before);
-  const ok = (line?: string): UpgradeResult => { ownerConditionCleared('ollama-too-old'); ownerConditionCleared('ollama-down'); return { ok: true, line }; };
+  const ok = (line?: string): UpgradeResult => { setConfig(STARTING, null); ownerConditionCleared('ollama-too-old'); ownerConditionCleared('ollama-down'); return { ok: true, line }; };
   const tooOld = !stale ? '' : need === 'newer' ? `Ollama ${before ?? '(unknown version)'} is older than the model needs. `
     : `Ollama ${before ?? '(unknown version)'} is older than the Dojo's models need (${need}). `;
   const cannot = (why: string): UpgradeResult => {
@@ -127,7 +158,7 @@ export async function ensureOllamaCurrent(
     if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning');
     return { ok: false, line: `${tooOld}Ollama stopped while the Dojo was updating it and has not come back yet.` };
   }
-  if (started === 'starting') return { ok: false, transient: true, starting: true, line: 'Ollama is starting again after the update.' };
+  if (started === 'starting') { setConfig(STARTING, await startingNow(host)); return { ok: false, transient: true, starting: true, line: 'Ollama is starting again after the update.' }; }
   const after = await readOllamaVersion(local.baseUrl);
   if (!meets(after)) return cannot(after === before ? 'Homebrew has no newer Ollama to install.' : `it is still on ${after ?? 'an unknown version'}.`);
   const now = await classifyOllama(host, port);
