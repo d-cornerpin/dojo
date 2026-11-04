@@ -243,5 +243,42 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     expect(liveCards().length).toBe(told);   // no new card
     expect(await standingCards()).toEqual([]);   // and the missing-models card ended
   });
+
+  // Round 6 (re-review 2 LOW-D). These names state the dependency migration 209's decision lines rely on: its "not registered
+  // until Ollama lists it" is healed ONLY because the reconcile runs on every health answer and at boot. Keep it there.
+  it('(d) migration 209 healed with no dashboard: Ollama down at the boot\'s first look, then up as the start hook\'s own start comes up: the queued boot ask registers it', async () => {
+    v35Box(true);
+    mac = fakeMac({ running: null, app: LATEST }); overrideOllamaHost(mac);
+    mac.relaunchGate = new Promise<void>((r) => setTimeout(r, 50));   // the app the start hook opens takes real time to come up
+    db().exec(MIGRATION_209());
+    await updateFirstBoot();   // no dashboard: nothing else ever asks Ollama
+    expect(decisionRow()?.is_enabled).toBe(1);
+    expect(decisionId()).toBe(DECISION_ROW);
+    expect(liveCards()).toEqual([]);
+  });
+
+  it('(e) Ollama comes up long after the boot, still no dashboard: the next judgment asks once, and its answer registers the model', async () => {
+    v35Box(true);
+    mac = fakeMac({ running: null }); overrideOllamaHost(mac);   // nothing to start at boot
+    db().exec(MIGRATION_209());
+    await updateFirstBoot();
+    expect(getDecisionProvider()).toBeNull();
+    mac.running = appServe(LATEST);   // the owner opened Ollama himself, hours later
+    expect(getDecisionProvider()).toBeNull();   // this judgment keeps its rule, and asks
+    for (let i = 0; i < 50 && decisionRow()?.is_enabled !== 1; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(decisionRow()?.is_enabled).toBe(1);
+    expect(getDecisionProvider()).not.toBeNull();
+  });
+
+  it('(f) no storm while Ollama stays down: twenty judgments in a row ask it once', async () => {
+    v35Box(true);
+    mac = fakeMac({ running: null }); overrideOllamaHost(mac);
+    db().exec(MIGRATION_209());
+    await updateFirstBoot();
+    const before = ollama.requests;
+    for (let i = 0; i < 20; i++) getDecisionProvider();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(ollama.requests - before).toBe(1);
+  });
 });
 

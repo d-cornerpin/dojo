@@ -15,7 +15,8 @@
 import { createLogger } from '../logger.js';
 import { type OllamaHost, getOllamaHost } from './ollama-host.js';
 import { ensureOllamaCurrent, tellOllamaTooOld, type UpgradeResult } from './ollama-upgrade.js';
-import { inUpkeep } from './ollama-restart.js';
+import { inUpkeep, waitUntil } from './ollama-restart.js';
+import { checkOllamaHealth } from './ollama.js';
 import { isUnknownBuild, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
 import { ownerConditionCleared, ownerToldOf } from '../healer/owner-notices.js';
 
@@ -35,6 +36,20 @@ export const pairHeld = (): boolean => heldAt !== null || ownerToldOf('ollama-to
 export function pairModelsAllIn(): void { heldAt = null; line = null; cardsEnd(); }
 /** The owner pressed Repair: the version refusal is looked at again. */
 export function releasePairHold(): void { heldAt = null; }
+
+/**
+ * Round 6 (re-review 2 LOW-D): the pair's rows follow what Ollama lists (`standard-model-rows.ts reconcileStandardRows`, run by
+ * every health answer), and nothing in the background asks Ollama. So this asks it, in the upkeep queue: after any restart the
+ * start hook queued, and, at boot (`untilStarted`), at the upkeep's own poll while a start it made comes up (`waitUntil`, Ollama's
+ * CLI patience). Later, a judgment that finds no decision model asks once more (`agent/decision-provider.ts`). No timer: each
+ * ask is one request, single-flight, made only by a boot or by a judgment asked while the model is not registered.
+ */
+let asking: Promise<boolean> | null = null;
+export function reconcileWhenOllamaAnswers(baseUrl: string, untilStarted: boolean, host: OllamaHost | null = getOllamaHost()): Promise<boolean> {
+  asking ??= inUpkeep(async () => (await checkOllamaHealth(baseUrl)) || (untilStarted && !!host && await waitUntil(host, () => checkOllamaHealth(baseUrl))))
+    .finally(() => { asking = null; });
+  return asking;
+}
 
 /** A health check found a model missing: may the install start? While held, only a changed Ollama version lets it. */
 export function retryMayStart(baseUrl: string, start: () => void): boolean {

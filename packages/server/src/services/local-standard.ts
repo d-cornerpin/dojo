@@ -21,11 +21,11 @@ import { createLogger } from '../logger.js';
 import { isLocalOllamaBaseUrl, computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { pullOllamaModel, type PullOutcome } from './ollama-pull.js';
 import { localWorkBegins } from './ollama-quiet.js';
-import { checkOllamaHealth, getOllamaModelInfo } from './ollama.js';
+import { getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 import { registerStandardRow, assignStandard, unregisterStandardRow, reconcileStandardRows } from './standard-model-rows.js';
-import { ollamaReadyForPair, pairHeld, pairHeldNote, pairModelsAllIn, pairOllamaLines, retryMayStart, pullRefusedForVersion } from './ollama-pair-gate.js';
+import { ollamaReadyForPair, reconcileWhenOllamaAnswers, pairHeld, pairHeldNote, pairModelsAllIn, pairOllamaLines, retryMayStart, pullRefusedForVersion } from './ollama-pair-gate.js';
 import { isVersionRefusal } from './ollama-version.js';
 
 export { STANDARD_MODELS_MISSING_WORDS };
@@ -305,7 +305,7 @@ export async function ensureStandardModelsOncePerVersion(version: string): Promi
 export async function ensureStandardModelsAtBoot(): Promise<void> {
   await (await import('./ollama-model-limit.js')).ensureOllamaModelLimit();   // every start: launchctl's variable dies with a reboot
   const local = localOllamaProvider();
-  if (local) await checkOllamaHealth(local.baseUrl);   // round 5: Ollama answering at boot reconciles the pair's rows with what it lists
+  if (local) await reconcileWhenOllamaAnswers(local.baseUrl, true);   // rounds 5-6: its answer reconciles the rows, queued after the start hook
   try {
     const { getCurrentVersion } = await import('../gateway/routes/update.js');
     await ensureStandardModelsOncePerVersion(getCurrentVersion());

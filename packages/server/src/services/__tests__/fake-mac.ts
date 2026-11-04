@@ -32,6 +32,8 @@ export const ollama = {
   serving: null as { version: string } | null,
   /** Does what serves answer yet (a serve still starting refuses the connection)? Set by the fake Mac. */
   answering: (): boolean => true,
+  /** Every request that reached the port, answered or refused (how often the Dojo asked). */
+  requests: 0,
   /** Every pull fails (no network to the registry): a model that stays missing. */
   failPulls: false,
   /** Versions whose `/api/version` says nothing (a very old Ollama). */
@@ -45,6 +47,7 @@ export const ollama = {
 let server: http.Server | null = null;
 export async function startFakeOllama(): Promise<string> {
   server = http.createServer((req, res) => {
+    ollama.requests++;
     const serving = ollama.serving;
     if (!serving || !ollama.answering()) { req.socket.destroy(); return; }   // nothing listens (yet): the connection is refused
     const url = new URL(req.url ?? '/', 'http://x');
