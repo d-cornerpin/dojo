@@ -1,14 +1,20 @@
-// v3.5 field fix 3, ranked fix #1 (G7 close floor) and #2 (the refusal states facts).
+// v3.5 field fix 3, ranked fix #1 (G7 close floor) and #2 (the refusal states facts), as
+// corrected by the review round (H1, H2, M2).
 //
 // THE FIELD SHAPE (diagnosis Problem 3): turn 6559 did a four-step project and answered the owner
-// on the dashboard. The ask closed on delivery b2b026a7 and the engine stamped all four steps
-// "answered". The primary then tried to close steps 2-4 in LATER turns (A2A turns from the PM),
-// and `deliveryForTaskClose` only looked at deliveries made in the CURRENT turn, so every close
-// was refused with "needs a delivery to point at", and the agent was coached to send the result
-// again. The engine held the receipt the whole time.
+// on the dashboard; the ask closed on that answer. The primary then tried to close steps 2-4 in
+// LATER turns (A2A turns from the PM), and every close was refused "needs a delivery" and the
+// agent was coached to send the result again. The engine held the receipt the whole time.
 //
-// The T11 ack exclusion still holds: an ask that only got an acknowledgement has no
-// `result_delivery_id`, so an earlier-turn ack is never a close receipt.
+// THE REVIEW'S CORRECTION (H1): an ask also settles on a model-written final "On it, I've opened
+// the steps" line, so "the ask's receipt" alone is not "the task's answer". Owner law: an ack
+// never closes a task; the start ack AND the completion are both required. The one definition
+// (`resolveTaskAnswerPointer`) takes the first line that reached the asking thread after the
+// task opened as the start ack, and only a later line as the completion. The negative control
+// below settles the ask on an ack line through the REAL settlement authority.
+//
+// H2: only the worker's own close doors fall back to the answer; `deliveryForTaskClose`, shared
+// by the scheduler's closes and the PM's strike-2, is exactly as on base.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -30,11 +36,11 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import {
-  deliveryForTaskClose, openTrackerProject, openTrackerTask, stampTicket,
-} from '../../work/tracker-store.js';
+import { deliveryForTaskClose, openTrackerProject, openTrackerTask, stampTicket } from '../../work/tracker-store.js';
 import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../work/store.js';
-import { trackerCompleteStep } from '../tools.js';
+import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
+import { resolveTaskAnswerPointer, taskWorkOnRecord } from '../delivery-evidence.js';
+import { trackerCompleteStep, trackerGetStatus, trackerUpdateStatus } from '../tools.js';
 
 const AGENT = 'agent-primary';
 const CONV = 'conv-owner';
@@ -42,64 +48,70 @@ const ASK_TURN = 6559;
 const CLOSE = { result: 'made the folder and the file', evidence: [{ kind: 'claim', claim: 'mkdir and echo ran, ls shows the file' }] };
 
 const db = (): Database.Database => mockDb.current!;
+let clock = 0;
 
-function seedTurn(n: number, kind = 'user'): void {
-  db().prepare(
-    `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, started_at, ended_at, exit_reason, answered)
-     VALUES (?, ?, ?, 'conv', datetime('now'), datetime('now'), 'answered', 1)`,
-  ).run(AGENT, n, kind);
-}
-
-function seedOwnerMessage(id: string): void {
+function seedOwnerAsk(messageId: string): string {
   db().prepare(
     `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at)
      VALUES (?, ?, 'user', 'make a folder, a file, list it and tell me', 'owner', ?, ?)`,
-  ).run(id, AGENT, CONV, Date.now() - 60_000);
-}
-
-function seedReply(id: string, content: string, turn: number): void {
-  db().prepare(
-    `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, turn_number, created_at)
-     VALUES (?, ?, 'assistant', ?, 'owner', ?, ?, ?)`,
-  ).run(id, AGENT, content, CONV, turn, Date.now());
-}
-
-function seedDelivery(id: string, turn: number, messageId: string): void {
-  db().prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-     VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now', '+5 seconds'))`,
-  ).run(id, AGENT, turn, CONV, messageId);
-}
-
-/** The owner's ask, claimed on turn 6559. */
-function seedAsk(messageId: string): string {
-  seedOwnerMessage(messageId);
+  ).run(messageId, AGENT, CONV, Date.now() - 60_000);
   openAsk({
     agentId: AGENT, messageId, conversationId: CONV, requesterId: 'owner',
     openedAt: Date.now() - 60_000, title: 'make a folder and a file',
   });
   const askId = askIdForMessage(messageId);
   claimAsk(askId, AGENT);
-  stampClaimingTurn(askId, ASK_TURN);
   return askId;
 }
 
-/** The ask settles on the answer, the way `compile_resolved` records it. */
-function settleAsk(askId: string, messageId: string, deliveryId: string, turn: number): void {
-  db().prepare(`UPDATE work SET state = 'done', closed_at = ?, result_delivery_id = ? WHERE id = ?`)
-    .run(Date.now(), deliveryId, askId);
-  db().prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?').run(turn, messageId);
+/** A model line delivered on the dashboard in `turn`, `clock` seconds after now. */
+function line(id: string, content: string, turn: number): string {
+  clock += 2;
+  db().prepare(
+    `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, turn_number, display_kind, created_at)
+     VALUES (?, ?, 'assistant', ?, 'owner', ?, ?, 'agent-text', ?)`,
+  ).run(`m-${id}`, AGENT, content, CONV, turn, Date.now() + clock * 1000);
+  db().prepare(
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
+     VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now', ?))`,
+  ).run(id, AGENT, turn, CONV, `m-${id}`, `+${clock} seconds`);
+  return `m-${id}`;
 }
 
-function seedSteps(sourceMessageId: string | null): string[] {
+/** Turn N ends with `answerMessageId` as its answer key, and the REAL settlement runs. */
+function endTurnAndSettle(askId: string, sourceMessageId: string, answerMessageId: string): void {
+  db().prepare(
+    `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, started_at, ended_at, exit_reason, answered, answer_message_id, source_message_id)
+     VALUES (?, ?, 'user', 'conv', datetime('now', '-30 seconds'), datetime('now', '+60 seconds'), 'answered', 1, ?, ?)`,
+  ).run(AGENT, ASK_TURN, answerMessageId, sourceMessageId);
+  settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: ASK_TURN });
+}
+
+function laterA2ATurn(): void {
+  db().prepare(
+    `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, started_at, ended_at, exit_reason, answered)
+     VALUES (?, ?, 'a2a', 'conv', datetime('now', '+90 seconds'), NULL, NULL, 0)`,
+  ).run(AGENT, ASK_TURN + 1);
+}
+
+function seedSteps(sourceMessageId: string): string[] {
   const origin = { kind: 'agent' as const, sourceMessageId, turn: null, convKey: null };
   const project = openTrackerProject({ title: 'folder and file', createdBy: AGENT, origin });
   return [1, 2, 3, 4].map((n) => openTrackerTask({
     projectId: project, title: `step ${n}`, status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
     stepNumber: n, totalSteps: 4, origin,
-  } as Parameters<typeof openTrackerTask>[0]));
+  }));
 }
 
+function stampAnswered(taskId: string): void {
+  stampTicket(taskId, {
+    activityTurn: ASK_TURN, activityAt: Date.now(), activityOutcome: 'answered',
+    answeredTurn: ASK_TURN, answeredAt: Date.now(), deliverySummary: 'via dashboard',
+  });
+}
+
+const askRow = (askId: string): { state: string; result_delivery_id: string | null } =>
+  db().prepare('SELECT state, result_delivery_id FROM work WHERE id = ?').get(askId) as { state: string; result_delivery_id: string | null };
 const closeRequest = (id: string): Record<string, unknown> | undefined => {
   const r = db().prepare(
     `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'validation_requested' ORDER BY id DESC LIMIT 1`,
@@ -109,6 +121,7 @@ const closeRequest = (id: string): Record<string, unknown> | undefined => {
 
 beforeEach(() => {
   mockDb.current?.close();
+  clock = 0;
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');
   mockDb.current = d;
@@ -118,120 +131,119 @@ beforeEach(() => {
   d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
 });
 
-describe('fix #1: a task whose ask has a recorded answer closes on it in a later turn', () => {
-  it('THE FIELD SHAPE: answered on the dashboard in turn N, complete_step in an A2A turn N+1 files Key 1 on that answer', () => {
-    const askId = seedAsk('msg-ask');
-    seedTurn(ASK_TURN);
+describe('fix #1: a task answered in turn N closes on that answer in a later turn (worker doors only)', () => {
+  it('THE FIELD SHAPE: ack, work, answer on the dashboard in turn N; complete_step in an A2A turn N+1 files Key 1 on the answer', () => {
+    const askId = seedOwnerAsk('msg-ask');
+    stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask');
-    seedReply('msg-answer', 'Done: the folder holds hello.txt, and ls lists it.', ASK_TURN);
-    seedDelivery('b2b026a7', ASK_TURN, 'msg-answer');
-    settleAsk(askId, 'msg-ask', 'b2b026a7', ASK_TURN);
-    // the PM's A2A turn: no new delivery to the owner exists in it
-    seedTurn(ASK_TURN + 1, 'a2a');
+    line('d-ack', 'On it, setting up the folder now.', ASK_TURN);
+    const answer = line('b2b026a7', 'Done: the folder holds hello.txt, and ls lists it.', ASK_TURN);
+    endTurnAndSettle(askId, 'msg-ask', answer);
+    expect(askRow(askId)).toEqual({ state: 'done', result_delivery_id: 'b2b026a7' });
+    laterA2ATurn();
 
-    expect(deliveryForTaskClose(steps[1])).toBe('b2b026a7');
     const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
     expect(out, out).toMatch(/^\[FILED\]/);
-    expect(out).not.toContain('needs a delivery');
     expect(closeRequest(steps[1])?.result_delivery_id).toBe('b2b026a7');
+    // M2: the request the PM reads names the same delivery the close filed on.
+    expect(resolveTaskAnswerPointer(steps[1])?.deliveryId).toBe('b2b026a7');
   });
 
-  it('a step with no ask edge of its own closes on its PROJECT\'s ask receipt', () => {
-    const askId = seedAsk('msg-ask-p');
-    seedTurn(ASK_TURN);
-    const origin = { kind: 'agent' as const, sourceMessageId: 'msg-ask-p', turn: null, convKey: null };
-    const project = openTrackerProject({ title: 'plan', createdBy: AGENT, origin });
-    const step = openTrackerTask({
-      projectId: project, title: 'step 2', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
-      origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
-    });
-    db().prepare('UPDATE work SET source_message_id = NULL WHERE id = ?').run(step);
-    seedReply('msg-answer-p', 'All four steps are done.', ASK_TURN);
-    seedDelivery('d-proj', ASK_TURN, 'msg-answer-p');
-    settleAsk(askId, 'msg-ask-p', 'd-proj', ASK_TURN);
-    seedTurn(ASK_TURN + 1, 'a2a');
-    expect(deliveryForTaskClose(step)).toBe('d-proj');
+  it('work_update status="complete" (the other worker door) files on the same answer', () => {
+    const askId = seedOwnerAsk('msg-ask-s');
+    stampClaimingTurn(askId, ASK_TURN);
+    const steps = seedSteps('msg-ask-s');
+    line('d-ack-s', 'On it.', ASK_TURN);
+    endTurnAndSettle(askId, 'msg-ask-s', line('d-ans-s', 'All four steps are done.', ASK_TURN));
+    laterA2ATurn();
+    const out = trackerUpdateStatus(AGENT, { taskId: steps[2], status: 'complete', ...CLOSE });
+    expect(out, out).toMatch(/\[FILED\]/);
+    expect(closeRequest(steps[2])?.result_delivery_id).toBe('d-ans-s');
   });
 
-  it('the ANSWERED STAMP: a task stamped answered on the turn that settled an ask closes on that ask\'s receipt', () => {
-    const askId = seedAsk('msg-ask-s');
-    seedTurn(ASK_TURN);
-    const step = openTrackerTask({
+  it('the ANSWERED STAMP edge: a task with no ask edge, stamped answered on the turn that settled the ask', () => {
+    const askId = seedOwnerAsk('msg-ask-st');
+    stampClaimingTurn(askId, ASK_TURN);
+    const t = openTrackerTask({
       title: 'tidy the folder', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
       origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
     });
-    db().prepare('UPDATE work SET source_message_id = NULL WHERE id = ?').run(step);
-    seedReply('msg-answer-s', 'Tidied: two files moved.', ASK_TURN);
-    seedDelivery('d-stamp', ASK_TURN, 'msg-answer-s');
-    settleAsk(askId, 'msg-ask-s', 'd-stamp', ASK_TURN);
-    stampTicket(step, {
-      activityTurn: ASK_TURN, activityAt: Date.now(), activityOutcome: 'answered',
-      answeredTurn: ASK_TURN, answeredAt: Date.now(), deliverySummary: 'via dashboard',
-    });
-    seedTurn(ASK_TURN + 1, 'a2a');
-    expect(deliveryForTaskClose(step)).toBe('d-stamp');
+    db().prepare('UPDATE work SET source_message_id = NULL WHERE id = ?').run(t);
+    line('d-ack-st', 'On it.', ASK_TURN);
+    endTurnAndSettle(askId, 'msg-ask-st', line('d-ans-st', 'Tidied: two files moved.', ASK_TURN));
+    db().prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?').run(ASK_TURN, 'msg-ask-st');
+    stampAnswered(t);
+    expect(resolveTaskAnswerPointer(t)?.deliveryId).toBe('d-ans-st');
   });
+});
 
-  it('A DELIVERY IN THE CLOSE\'S OWN TURN STILL WINS (the ordinary "answered then closed" shape)', () => {
-    const askId = seedAsk('msg-ask-c');
-    seedTurn(ASK_TURN);
-    const steps = seedSteps('msg-ask-c');
-    seedReply('msg-answer-c', 'first answer', ASK_TURN);
-    seedDelivery('d-old', ASK_TURN, 'msg-answer-c');
-    settleAsk(askId, 'msg-ask-c', 'd-old', ASK_TURN);
-    seedTurn(ASK_TURN + 3);
-    seedReply('msg-new', 'the follow-up result', ASK_TURN + 3);
-    seedDelivery('d-new', ASK_TURN + 3, 'msg-new');
-    expect(deliveryForTaskClose(steps[2])).toBe('d-new');
-  });
-
-  it('NEGATIVE CONTROL (T11): an ask that only got an ack has no receipt, and the later close still refuses', () => {
-    seedAsk('msg-ask-ack');
-    seedTurn(ASK_TURN);
+describe('review H1: an ack never closes a task, and never reads as delivered', () => {
+  it('NEGATIVE CONTROL, driven: the ask SETTLES on the "On it" line; the later close is refused and nothing coaches a close', () => {
+    const askId = seedOwnerAsk('msg-ask-ack');
+    stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask-ack');
-    seedReply('msg-ack', "On it, I'll get the folder made.", ASK_TURN);
-    seedDelivery('a133f5e1', ASK_TURN, 'msg-ack');
-    seedTurn(ASK_TURN + 1, 'a2a');
+    const ack = line('d-onit', "On it, I've opened a project with 4 steps and will work through them.", ASK_TURN);
+    endTurnAndSettle(askId, 'msg-ask-ack', ack);
+    // The premise the review proved: the real authority closes the ask on the ack.
+    expect(askRow(askId)).toEqual({ state: 'done', result_delivery_id: 'd-onit' });
+    for (const s of steps) stampAnswered(s);
+    laterA2ATurn();
 
-    expect(deliveryForTaskClose(steps[1])).toBeNull();
+    expect(resolveTaskAnswerPointer(steps[1])).toBeNull();
+    expect(taskWorkOnRecord(steps[1], null)).toBeNull();
     const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
     expect(out).toMatch(/^Error:/);
+    expect(out).toMatch(/No completion for this task has reached the owner yet/);
     expect(closeRequest(steps[1])).toBeUndefined();
+    const view = trackerGetStatus(AGENT, { taskId: steps[1] });
+    expect(view).not.toContain('ALREADY DELIVERED');
+    expect(view).not.toContain('CLOSE if done');
+  });
+
+  it('CONTROL: once the completion lands after that ack, the same task reads as delivered and closes', () => {
+    const askId = seedOwnerAsk('msg-ask-ok');
+    stampClaimingTurn(askId, ASK_TURN);
+    const steps = seedSteps('msg-ask-ok');
+    line('d-onit-ok', "On it, I've opened the steps.", ASK_TURN);
+    endTurnAndSettle(askId, 'msg-ask-ok', line('d-done-ok', 'Finished: hello.txt is in the folder.', ASK_TURN));
+    for (const s of steps) stampAnswered(s);
+    laterA2ATurn();
+    expect(trackerGetStatus(AGENT, { taskId: steps[3] })).toContain('ALREADY DELIVERED');
+    expect(trackerCompleteStep(AGENT, { task_id: steps[3], ...CLOSE })).toMatch(/^\[FILED\]/);
+  });
+});
+
+describe('review H2: every other close door is exactly as on base', () => {
+  it('the shared deliveryForTaskClose (scheduler closes, PM strike-2) finds nothing in a later turn, as on base', () => {
+    const askId = seedOwnerAsk('msg-ask-h2');
+    stampClaimingTurn(askId, ASK_TURN);
+    const steps = seedSteps('msg-ask-h2');
+    line('d-ack-h2', 'On it.', ASK_TURN);
+    endTurnAndSettle(askId, 'msg-ask-h2', line('d-ans-h2', 'Done.', ASK_TURN));
+    laterA2ATurn();
+    expect(resolveTaskAnswerPointer(steps[0])?.deliveryId).toBe('d-ans-h2');
+    expect(deliveryForTaskClose(steps[0])).toBeNull();
+  });
+
+  it('a delivery in the close\'s own turn still resolves from the shared helper (base behaviour)', () => {
+    seedOwnerAsk('msg-ask-own');
+    const steps = seedSteps('msg-ask-own');
+    laterA2ATurn();
+    line('d-now', 'the follow-up result', ASK_TURN + 1);
+    expect(deliveryForTaskClose(steps[2])).toBe('d-now');
   });
 });
 
 describe('fix #2: the G7 refusal states facts, never coaching', () => {
-  it('with nothing on record it says nothing has reached the owner yet, and gives no "send it first" order', () => {
-    seedAsk('msg-ask-none');
-    seedTurn(ASK_TURN);
+  it('with nothing on record: no completion has reached the owner, and no "send it first" order', () => {
+    const askId = seedOwnerAsk('msg-ask-none');
+    stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask-none');
-    seedTurn(ASK_TURN + 1, 'a2a');
+    laterA2ATurn();
     const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
-    expect(out).toMatch(/nothing has reached the owner for this task yet/i);
+    expect(out).toMatch(/No completion for this task has reached the owner yet/);
     expect(out).not.toMatch(/send the result first/i);
     expect(out).not.toMatch(/hand it back on the thread/i);
     expect(out).not.toMatch(/then set status/i);
-  });
-
-  it('with an answer on record it says so and names the delivery id', () => {
-    seedAsk('msg-ask-rec');
-    const steps = seedSteps('msg-ask-rec');
-    // the turn that answered this task's own ask, with its answer delivered, and nothing since
-    db().prepare(
-      `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, started_at, ended_at, exit_reason, answered, answer_message_id, source_message_id)
-       VALUES (?, ?, 'user', 'conv', datetime('now', '+1 seconds'), datetime('now', '+2 seconds'), 'answered', 1, 'msg-rec', 'msg-ask-rec')`,
-    ).run(AGENT, ASK_TURN);
-    seedReply('msg-rec', 'The folder is made and holds hello.txt.', ASK_TURN);
-    seedDelivery('d0c0ffee11', ASK_TURN, 'msg-rec');
-    db().prepare(
-      `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, started_at, ended_at, exit_reason, answered)
-       VALUES (?, ?, 'a2a', 'conv', datetime('now', '+3 seconds'), datetime('now', '+4 seconds'), 'answered', 0)`,
-    ).run(AGENT, ASK_TURN + 1);
-    const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
-    expect(out).toMatch(/^Error:/);
-    expect(out).toContain('An answer for this task is on record');
-    expect(out).toContain('d0c0ffee');
-    expect(out).not.toMatch(/nothing has reached/i);
-    expect(out).not.toMatch(/send the result first/i);
   });
 });

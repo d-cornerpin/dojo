@@ -71,14 +71,8 @@ beforeEach(() => {
     CREATE TABLE messages (id TEXT PRIMARY KEY, display_kind TEXT, content TEXT);
     CREATE TABLE deliveries (
       id TEXT PRIMARY KEY, agent_id TEXT, turn_number INTEGER, channel TEXT,
-      outcome TEXT, message_id TEXT, conversation_id TEXT
+      outcome TEXT, message_id TEXT
     );
-    -- OR-FIELD3(b) (field fix 3): the composer asks whether the bubble answered the turn's ask on
-    -- its own thread. These rows serve no ask, so every dashboard bubble here keeps its
-    -- non-tangible name; the ask-thread arm is driven in
-    -- a-dashboard-answer-to-a-dashboard-ask-is-a-handover.test.ts.
-    CREATE TABLE turns (agent_id TEXT, turn_number INTEGER, source_message_id TEXT);
-    CREATE TABLE work (id TEXT PRIMARY KEY, kind TEXT, conversation_id TEXT);
     CREATE TABLE turn_artifacts (
       agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT, payload_json TEXT, delivered_at TEXT
     );

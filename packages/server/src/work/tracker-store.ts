@@ -33,7 +33,7 @@ import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import {
-  transition, rejectClaim, appendWorkEvent, askIdForMessage,
+  transition, rejectClaim, appendWorkEvent,
   type Actor, type Claim, type WorkOutcome, type WorkState,
 } from './store.js';
 import {
@@ -907,63 +907,7 @@ export function deliveryForTaskClose(workId: string): string | null {
   const w = getDb().prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
     .get(workId) as { agent_id: string; opened_at: number } | undefined;
   if (!w) return null;
-  return deliveryForAgentSince(w.agent_id, w.opened_at, currentTurnNumber(w.agent_id) || null)
-    ?? recordedAnswerForTask(workId);
-}
-
-/**
- * v3.5 field fix 3 (#1): THE ANSWER THE ENGINE ALREADY RECORDED FOR THIS TASK'S REQUEST.
- *
- * The turn floor above is right about the NEWEST delivery: an earlier-turn delivery picked by
- * recency may be an acknowledgement (T11). It was wrong to stop there. On the owner's box a
- * four-step project was answered on the dashboard in turn 6559, the ask closed on that answer,
- * and every later close of steps 2-4 (A2A turns from the PM, with no new owner delivery in them)
- * was refused "needs a delivery", while the engine held the receipt.
- *
- * So, when the close's own turn delivered nothing, the close points at the receipt the ask
- * settlement authority wrote: the ask's own `result_delivery_id`. That is the compiled or final
- * answer, never "the newest delivery", so the T11 ack exclusion holds by construction: an ask
- * that only got an ack has no `result_delivery_id`. Two edges reach the ask, in order of how
- * directly they were recorded:
- *   (a) the task's ask edge (`source_message_id`), or its project's when the step has none;
- *   (b) the task's newest ANSWERED stamp: the asks that stamp's turn settled
- *       (`messages.served_by_turn`, written as part of the settlement).
- * Only a delivered, non-engine-ack row by the task's own agent counts. None: null, and G7 refuses.
- */
-export function recordedAnswerForTask(workId: string): string | null {
-  const db = getDb();
-  const w = db.prepare(
-    `SELECT w.agent_id AS agent_id, w.source_message_id AS source_message_id,
-            p.source_message_id AS parent_source_message_id
-       FROM work w LEFT JOIN work p ON p.id = w.parent_id
-      WHERE w.id = ?`,
-  ).get(workId) as { agent_id: string; source_message_id: string | null; parent_source_message_id: string | null } | undefined;
-  if (!w) return null;
-  const receiptOf = (askId: string): string | null => {
-    const r = db.prepare(
-      `SELECT d.id AS id FROM work a JOIN deliveries d ON d.id = a.result_delivery_id
-        WHERE a.id = ? AND a.kind = 'ask' AND d.agent_id = ? AND d.outcome = 'delivered' AND d.tool <> 'engine-ack'`,
-    ).get(askId, w.agent_id) as { id: string } | undefined;
-    return r?.id ?? null;
-  };
-  for (const m of [w.source_message_id, w.parent_source_message_id]) {
-    const hit = m ? receiptOf(askIdForMessage(m)) : null;
-    if (hit) return hit;
-  }
-  const stamp = db.prepare(
-    `SELECT json_extract(payload, '$.turn') AS turn FROM work_events
-      WHERE work_id = ? AND kind = '${WORK_EVENT.activity}' AND json_extract(payload, '$.answered') = 1
-      ORDER BY id DESC LIMIT 1`,
-  ).get(workId) as { turn: number | null } | undefined;
-  if (stamp?.turn == null) return null;
-  const served = db.prepare(
-    'SELECT id FROM messages WHERE agent_id = ? AND served_by_turn = ? ORDER BY created_at DESC',
-  ).all(w.agent_id, stamp.turn) as Array<{ id: string }>;
-  for (const m of served) {
-    const hit = receiptOf(askIdForMessage(m.id));
-    if (hit) return hit;
-  }
-  return null;
+  return deliveryForAgentSince(w.agent_id, w.opened_at, currentTurnNumber(w.agent_id) || null);
 }
 
 // ⟨TOMBSTONE⟩ `deliveryAboutWorkSince` lived here (t124): "has a person been told about THIS

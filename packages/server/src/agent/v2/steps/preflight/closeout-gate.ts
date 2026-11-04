@@ -147,11 +147,15 @@ export async function runCloseoutGate(
       // engine's own records show the work was answered/delivered, the gate
       // says so and names the right disposition instead of offering a menu.
       try {
-        const { findDeliveryEvidenceForTask, renderDeliveryEvidence } = await import('../../../../tracker/delivery-evidence.js');
+        // v3.5 field fix 3 (review H1): asked of THE task's record (`taskWorkOnRecord`). The
+        // tangible stamp keeps its 2026-07-22 standard and its stamp line; past it, only the
+        // task's answer (never its start ack) or a delivered file is evidence. Before, the live
+        // join's `deliveredVia` arm listed a task whose only line was "On it".
+        const { taskWorkOnRecord } = await import('../../../../tracker/delivery-evidence.js');
         const { renderTaskStamps, isTangibleDeliverySummary } = await import('../../../../tracker/task-stamps.js');
         const evidenced: string[] = [];
         for (const r of inProgressDanglers) {
-          // Stamps first (mig 124), live join as backfill for pre-stamp rows.
+          // Stamps first (mig 124), the task's record as backfill for pre-stamp rows.
           const st = db.prepare(
             `SELECT w.id AS id, ${stampColumns('w')} FROM work w WHERE w.id = ?`,
           ).get(r.id) as import('../../../../tracker/task-stamps.js').TaskStampFields | undefined;
@@ -160,16 +164,12 @@ export async function runCloseoutGate(
           // bare answered reply is often an ack on a task legitimately
           // waiting (delegation synthesis), and pushing CLOSE on it forged a
           // wrong close. Same standard as the strike-2 engine close.
-          // T19 (D7): asked of the ONE helper, so a dashboard bubble named in the summary
-          // cannot quietly become a handover here.
           if (st && st.last_answered_turn !== null && isTangibleDeliverySummary(st.last_delivery_summary)) {
             evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderTaskStamps(st)}`);
             continue;
           }
-          const ev = findDeliveryEvidenceForTask(r.id);
-          if (ev && (ev.artifacts.length > 0 || ev.deliveredVia.length > 0)) {
-            evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderDeliveryEvidence(ev)}`);
-          }
+          const rec = taskWorkOnRecord(r.id, null);
+          if (rec) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${rec}`);
         }
         if (evidenced.length > 0) {
           sections.push(
