@@ -16,47 +16,35 @@
 //   · the Ollama app, or Homebrew's service → `launchctl setenv` (launchd's environment is what they start with:
 //     docs, "If Ollama is run as a macOS application, environment variables should be set using launchctl"), and
 //     the running one is restarted ONCE;
-//   · a `serve` the Dojo started → restarted with the variable in its own environment, once;
-//   · anything else (a plain binary, the owner's own launchd job) → the Dojo changes nothing and tells the owner
-//     nothing. The pair still works: the engine's calls on it are pinned and take no lock slot, the lock keeps an
-//     agent's model to its own slots, and a model Ollama unloaded is loaded again by its next call (`ollama-lock.ts`).
-//   · no local Ollama → nothing at all.
-// THE RESTART (NB-1, NB-5): only when no call on the local Ollama and no pull is in flight (`ollama-quiet.ts
-// holdWhenQuiet`); calls that arrive meanwhile wait for it. A restart that did not happen stays owed and is
-// tried again at the next start.
+//   · anything else (a serve nothing supervises, a plain binary), nothing serving while Ollama is installed, or an Ollama
+//     older than the Dojo's models need → the one upkeep routine (`ollama-upgrade.ts ensureOllamaCurrent`) takes it over:
+//     current, started as the app or Homebrew's service, with the limit in launchd first (owner ruling OR-UPKEEP-AUTOMATIC);
+//   · a source build (version 0.0.0) nothing supervises → left as it is, and nothing is told;
+//   · no local Ollama, or none installed → nothing at all.
+// What the Dojo did is a log line; the owner is told only when it could not (OLLAMA_LIMIT_FAILED_WORDS).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { STANDARD_TAGS, localOllamaProvider } from './local-standard.js';
+import { STANDARD_DECISION_MODEL, STANDARD_TAGS, STANDARD_WRITER_MODEL, localOllamaProvider } from './local-standard.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { type OllamaHost, getOllamaHost, makeRealDeps } from './ollama-host.js';
 import {
-  LIMIT_VAR, classifyOllama, desiredLoaded, inUpkeep, limitFor, ownServeHasLimit, portOf, raisedLoadedLimit, readConfig, readOwnServe,
-  restartApp, restartBrewService, restartOwnServe, setConfig, setLaunchdLimit, startOwnServeOrTell,
+  LIMIT_VAR, classifyOllama, desiredLoaded, inUpkeep, portOf, raisedLoadedLimit, readConfig, restartApp, restartBrewService, setConfig, setLaunchdLimit,
 } from './ollama-restart.js';
+import { ensureOllamaCurrent } from './ollama-upgrade.js';
+import { isUnknownBuild, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
 import { childFailureText } from '../update/child-failure.js';
-import {
-  tellOwnerOnce, ownerConditionCleared, retireOllamaLimitManualCards, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS,
-} from '../healer/owner-notices.js';
+import { tellOwnerOnce, ownerConditionCleared, retireOllamaLimitManualCards, OLLAMA_LIMIT_FAILED_WORDS } from '../healer/owner-notices.js';
 
-export { OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, raisedLoadedLimit, makeRealDeps };
+export { OLLAMA_LIMIT_FAILED_WORDS, raisedLoadedLimit, makeRealDeps };
 export type OllamaLimitDeps = OllamaHost;
 const logger = createLogger('ollama-model-limit');
 
-const toldValue = (): string | null => readConfig('ollama_limit_told');
 const restartOwed = (): boolean => readConfig('ollama_limit_restart_owed') !== null;
 
 /** The limit the Dojo needs: the embedder + the pair + the lock's agent slots (see the header). */
 export const desiredOllamaMaxLoaded = (): number => desiredLoaded(STANDARD_TAGS.length);
-
-/** Told once per value (fix round 3): a reboot loses the variable and every start re-applies it silently. */
-function tellOncePerValue(key: string, told: string, words: string): void {
-  if (toldValue() === told) return;
-  ownerConditionCleared('ollama-limit-set');
-  if (tellOwnerOnce(key)) ownerCardFrame(words, 'warning');
-  setConfig('ollama_limit_told', told);
-}
 
 let restarting: Promise<void> | null = null;
 /** Resolves when no restart is pending (tests; never awaited by a boot or a request). */
@@ -73,39 +61,29 @@ export async function ensureOllamaModelLimit(
   const want = desiredOllamaMaxLoaded();
   try {
     const found = await classifyOllama(host, portOf(local.baseUrl));
-    if (found?.kind === 'other' || found?.kind === 'formula') {
-      logger.info('The local Ollama is not one the Dojo restarts; its loaded-model limit is left as it is', { program: found.path });
+    const need = requiredOllamaVersion([STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL]);
+    const have = found ? await readOllamaVersion(local.baseUrl) : null;
+    const lasts = found?.kind === 'app' || found?.kind === 'brew-service';
+    if (found && !lasts && isUnknownBuild(have)) {
+      logger.info('The local Ollama is a source build nothing supervises; its loaded-model limit is left as it is', { program: found.path });
       return 'unmanaged';
     }
-    if (found?.kind === 'own-serve') {
-      if (ownServeHasLimit(found.pid, limitFor(want))) { ownerConditionCleared('ollama-limit-failed'); return 'already'; }
-      restarting ??= inUpkeep(() => restartWhenQuiet(host, local)).finally(() => { restarting = null; });
+    if (!lasts || (need !== null && have !== null && !isUnknownBuild(have) && !ollamaAtLeast(have, need))) {
+      if (!found && !(await host.appInstalled()) && !(await host.brewFormulaInstalled())) return 'skipped';   // nothing to start: tried again next start
+      restarting ??= inUpkeep(() => ensureOllamaCurrent(host, local, need, STANDARD_TAGS.length)).then(() => undefined).finally(() => { restarting = null; });
       return 'set';
     }
-    if (!found && readOwnServe() && (await host.appPids()).length === 0) {
-      // The server the Dojo started died with the Dojo (a child of it), and nothing else serves: updates never leave Ollama down.
-      restarting ??= inUpkeep(async () => { await startOwnServeOrTell(host, local.baseUrl, STANDARD_TAGS.length); }).finally(() => { restarting = null; });
-      return 'set';
-    }
-    const appRunning = !!found || (await host.appPids()).length > 0;
-    if (!appRunning && !(await host.appInstalled())) return 'skipped';   // nothing serves and no app: tried again next start
     const raised = raisedLoadedLimit(await host.getenv(LIMIT_VAR), want);
-    if (raised === null && !(appRunning && restartOwed())) {
-      if (!appRunning) setConfig('ollama_limit_restart_owed', null);   // a stopped app reads the value when it starts
+    if (raised === null && !restartOwed()) {
       ownerConditionCleared('ollama-limit-failed');
       return 'already';
     }
     if (raised !== null) {
       await host.setenv(LIMIT_VAR, raised);
-      tellOncePerValue('ollama-limit-set', raised, OLLAMA_LIMIT_SET_WORDS);
-      logger.info('Raised Ollama\'s loaded-model limit', { value: raised });
+      logger.info('Raised Ollama\'s loaded-model limit; the running Ollama is restarted once to pick it up', { value: raised });
     }
-    if (appRunning) {
-      setConfig('ollama_limit_restart_owed', '1');   // owed until the restart has really happened (NB-5)
-      restarting ??= inUpkeep(() => restartWhenQuiet(host, local)).finally(() => { restarting = null; });
-    } else {
-      ownerConditionCleared('ollama-limit-failed');
-    }
+    setConfig('ollama_limit_restart_owed', '1');   // owed until the restart has really happened (NB-5)
+    restarting ??= inUpkeep(() => restartWhenQuiet(host, local)).finally(() => { restarting = null; });
     return 'set';
   } catch (err) {
     failed(err);
@@ -123,11 +101,8 @@ async function restartWhenQuiet(host: OllamaHost, local: { id: string; baseUrl: 
   const endHold = await holdWhenQuiet(local.id);
   try {
     const found = await classifyOllama(host, portOf(local.baseUrl));
-    // Queued behind an upgrade? Its restart carried the limit already: nothing is owed any more.
-    if (found?.kind === 'own-serve' ? ownServeHasLimit(found.pid, limitFor(desiredOllamaMaxLoaded())) : !restartOwed()) return;
-    if (found?.kind === 'own-serve') {
-      await restartOwnServe(host, local.baseUrl, found.pid, STANDARD_TAGS.length);
-    } else if (found?.kind === 'brew-service') {
+    if (!restartOwed()) return;   // queued behind an upgrade? Its restart carried the limit already: nothing is owed any more
+    if (found?.kind === 'brew-service') {
       await setLaunchdLimit(host, STANDARD_TAGS.length);
       await restartBrewService(host, local.baseUrl);
     } else {

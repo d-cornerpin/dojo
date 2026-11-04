@@ -15,23 +15,20 @@ vi.mock('../../../db/connection.js', () => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
 import { getOllamaLock } from '../../../services/ollama-lock.js';
-import { overrideOllamaHost, type OllamaHost } from '../../../services/ollama-host.js';
+import { overrideOllamaHost } from '../../../services/ollama-host.js';
+import { ollamaRestartSettled } from '../../../services/ollama-model-limit.js';
+import { fakeMac, type Mac } from '../../../services/__tests__/fake-mac.js';
 
-// Fix W: setup's "start" goes through the host seam (a fake here: no real `ollama serve` is ever started), so the
-// Dojo also REMEMBERS the server it started and can restart it with a newer Ollama later.
-const started = { envs: [] as Array<Record<string, string>> };
-const fakeHost = (): OllamaHost => ({
-  getenv: async () => null, setenv: async () => undefined, appPids: async () => [], appInstalled: async () => false,
-  terminate: () => undefined, alive: () => false, launchApp: async () => undefined, answers: async () => true, sleep: async () => undefined,
-  listener: async () => (started.envs.length > 0 ? { pid: 900, path: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama' } : null),
-  brewServicePid: async () => null, hasBrew: async () => true, brewCaskToken: async () => 'ollama-app', cliRuns: async () => true, brew: async () => undefined, restartBrewService: async () => undefined,
-  startServe: (env) => { started.envs.push(env); return 900; },
-});
+// Field failure 2: setup's "start" goes through the one Ollama upkeep (a fake Mac here: nothing real runs). What setup
+// installed is started as a kind that LASTS (Homebrew's service, here), never as a child of the Dojo that dies with it, and
+// the limit is in launchd's environment, which the service starts with.
+let mac: Mac;
+const start = async (): Promise<void> => { await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' }); await ollamaRestartSettled(); };
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
-  started.envs.length = 0; overrideOllamaHost(fakeHost());
+  mac = fakeMac({ running: null, formula: '0.41.0' }); overrideOllamaHost(mac);
   vi.stubGlobal('fetch', vi.fn(async () => new Response('Ollama is running', { status: 200 })));
 });
 afterEach(() => {
@@ -46,25 +43,22 @@ afterEach(() => {
 });
 
 describe('setup starts Ollama with room for the Dojo\'s models', () => {
-  it('OLLAMA_MAX_LOADED_MODELS = the embedder + the pair + the lock\'s agent slots (default 1 → 4)', async () => {
-    await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
-    expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '4' }]);
-    // …and the Dojo remembers which program it started, and that the limit is in place on this very server
-    const rows = Object.fromEntries((mockDb.current!.prepare("SELECT key, value FROM config WHERE key = 'ollama_own_serve'").all() as Array<{ key: string; value: string }>).map((r) => [r.key, r.value]));
-    expect(JSON.parse(rows.ollama_own_serve)).toEqual({ pid: 900, exe: '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama', limit: '4' });
+  it('Homebrew\'s service is started, OLLAMA_MAX_LOADED_MODELS = the embedder + the pair + the lock\'s agent slots (default 1 → 4)', async () => {
+    await start();
+    expect(mac.running?.by).toBe('brew-service');
+    expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
   }, 10_000);
 
   it('fix round 4 (NB-3): an owner\'s own higher value is never lowered', async () => {
-    process.env.OLLAMA_MAX_LOADED_MODELS = '8';
-    try {
-      await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
-      expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '8' }]);
-    } finally { delete process.env.OLLAMA_MAX_LOADED_MODELS; }
+    mac.env.OLLAMA_MAX_LOADED_MODELS = '8';
+    await start();
+    expect(mac.running?.by).toBe('brew-service');
+    expect(mac.setenvs).toEqual([]);
   }, 10_000);
 
   it('follows the owner\'s Max Concurrent Models setting', async () => {
     mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '2')").run();
-    await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
-    expect(started.envs).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '5' }]);
+    await start();
+    expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=5']);
   }, 10_000);
 });

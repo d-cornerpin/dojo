@@ -19,12 +19,12 @@ import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isLocalOllamaBaseUrl, computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
-import { pullOllamaModel } from './ollama-pull.js';
+import { pullOllamaModel, type PullOutcome } from './ollama-pull.js';
 import { localWorkBegins } from './ollama-quiet.js';
 import { getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
-import { registerStandardRow, assignStandard } from './standard-model-rows.js';
+import { registerStandardRow, assignStandard, unregisterStandardRow } from './standard-model-rows.js';
 import { ollamaReadyForPair, pairHeld, pairHeldNote, pairModelsAllIn, pairOllamaLines, retryMayStart, pullRefusedForVersion } from './ollama-pair-gate.js';
 import { isVersionRefusal } from './ollama-version.js';
 
@@ -142,7 +142,7 @@ function noteFor(s: Omit<StandardState, 'note'>): string {
   if (s.decision === 'pulling' || s.writer === 'pulling') return "Installing the Dojo's two models.";
   const missing = (['decision', 'writer'] as const).filter((w) => s[w] === 'missing');
   if (missing.length > 0) {
-    if (pairHeldNote()) return `Not installed yet: ${missing.map((w) => LABEL[w]).join(' and ')}. ${pairHeldNote()}`;
+    if (pairHeldNote()) return `Not installed yet: ${missing.map((w) => LABEL[w]).join(' and ')}. ${pairHeldNote()} Repair tries again.`;
     return `Not installed yet: ${missing.map((w) => `${LABEL[w]} (${TAG[w]})`).join(' and ')}. Use Repair to install it.`;
   }
   const total = totalRamBytes();
@@ -158,8 +158,8 @@ export async function standardState(): Promise<StandardState> {
   const provider = localOllamaProvider();
   const baseUrl = provider?.baseUrl ?? 'http://localhost:11434';
   const tags = await ollamaJson<{ models?: Array<{ name: string }> }>(baseUrl, '/api/tags');
-  const presence = (which: Which, installed: Set<string>): Presence =>
-    pulling.has(which) ? 'pulling' : installed.has(TAG[which]) ? 'installed' : 'missing';
+  const presence = (which: Which, installed: Set<string>): Presence =>   // an install under way (its Ollama upkeep too) is "installing"
+    installed.has(TAG[which]) && !pulling.has(which) ? 'installed' : pulling.has(which) || inFlight ? 'pulling' : 'missing';
   if (!tags) {
     const base = { decision: presence('decision', new Set()), writer: presence('writer', new Set()), ollama: provider ? 'stopped' as const : 'absent' as const, residentBytes: 0 };
     return { ...base, note: noteFor(base) };
@@ -189,7 +189,7 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
   // Ollama must answer before anything is written: a box without it gets no provider row from here.
   const tags = await ollamaJson<{ models?: Array<{ name: string }> }>(localOllamaProvider()?.baseUrl ?? 'http://localhost:11434', '/api/tags');
   if (!tags) {   // a box set up for Ollama whose Ollama does not answer: the pair cannot arrive, so he is told
-    if (localOllamaProvider() && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
+    if (localOllamaProvider() && !pairHeld() && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');   // held: the upkeep told its one card
     return standardState();
   }
   const provider = ensureLocalOllamaProvider();
@@ -201,28 +201,24 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
 
   for (const which of ['decision', 'writer'] as const) {
     const tag = TAG[which];
-    if (!installed.has(tag) && !(!ollamaReady && MIN[which])) {   // a model that needs the newer Ollama waits for it
+    const Label = `${LABEL[which][0].toUpperCase()}${LABEL[which].slice(1)} (${tag})`;
+    if (!installed.has(tag)) {
+      // E1 (field failure 2): a model that waits for the newer Ollama, or whose download failed, is not installed: no
+      // "installed" line, and no row or `decision_model_id` (a phantom row made the decision model look present).
+      if (!ollamaReady && MIN[which]) { unregisterStandardRow(provider.id, tag); continue; }
       pulling.add(which);
-      try {
-        const outcome = await pullOllamaModel(tag, {
-          baseUrl: provider.baseUrl,
-          onProgress: (p) => say(which, `Downloading ${LABEL[which]} (${tag}): ${p.total > 0 ? Math.floor((p.completed / p.total) * 100) : 0}%`),
-        });
-        if (!outcome.ok) {
-          say(which, `Downloading ${LABEL[which]} (${tag}): failed. The log has the details.`);   // the registry's own words go to the log only
-          logger.warn('Standard model pull failed', { tag, error: outcome.error });
-          if (isVersionRefusal(outcome.error)) onRefusedHere(outcome.error);   // handled after this install's work has ended (its upgrade restarts Ollama)
-          continue;
-        }
-      } catch (err) {
-        logger.warn('Standard model pull failed', { tag, error: err instanceof Error ? err.message : String(err) });
-        say(which, `Downloading ${LABEL[which]} (${tag}): failed. The log has the details.`);
-        continue;
-      } finally {
-        pulling.delete(which);
+      const outcome = await pullOllamaModel(tag, {
+        baseUrl: provider.baseUrl,
+        onProgress: (p) => say(which, `Downloading ${LABEL[which]} (${tag}): ${p.total > 0 ? Math.floor((p.completed / p.total) * 100) : 0}%`),
+      }).catch((err: unknown): PullOutcome => ({ ok: false, error: err instanceof Error ? err.message : String(err) })).finally(() => pulling.delete(which));
+      if (!(outcome.ok && installedTagsOf(await ollamaJson<{ models?: Array<{ name: string }> }>(provider.baseUrl, '/api/tags') ?? {}).has(tag))) {
+        say(which, `Downloading ${LABEL[which]} (${tag}): failed. The log has the details.`);   // the registry's own words go to the log only
+        logger.warn('Standard model pull failed', { tag, error: outcome.ok ? 'Ollama does not list it after the pull' : outcome.error });
+        if (!outcome.ok && isVersionRefusal(outcome.error)) onRefusedHere(outcome.error);   // handled after this install's work has ended (its upgrade restarts Ollama)
+        unregisterStandardRow(provider.id, tag); continue;
       }
     }
-    say(which, `Downloading ${LABEL[which]} (${tag}): installed`);
+    say(which, `${Label} is installed.`);
     ids[which] = registerStandardRow(provider.id, tag, CAPABILITIES[which], await getOllamaModelInfo(tag, provider.baseUrl));
     await computeAndStoreRecommendedNumCtx(ids[which] as string).catch(() => null);   // sized now, not at the next boot's backfill
   }
@@ -267,7 +263,8 @@ async function installAfterUpgrades(onProgress: ((line: string) => void) | undef
 export function ensureStandardModels(onProgress?: (line: string) => void): Promise<StandardState> {
   // Fix round 4: the whole install is in-flight work on the local Ollama: the model-limit restart never lands inside it.
   // Fix W: Ollama is made new enough BEFORE the install counts as in-flight work (its restart waits for nothing to be in flight).
-  if (!inFlight) inFlight = ollamaReadyForPair(localOllamaProvider(), PAIR).then((ready) => installAfterUpgrades(onProgress, ready)).finally(() => { inFlight = null; });
+  // Field failure 2: the state it resolves is read once the run has ended (while it runs, a missing model reads "installing").
+  if (!inFlight) inFlight = ollamaReadyForPair(localOllamaProvider(), PAIR).then((ready) => installAfterUpgrades(onProgress, ready)).finally(() => { inFlight = null; }).then(() => standardState());
   return inFlight;
 }
 

@@ -17,11 +17,9 @@ import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
 import {
   ensureLocalOllamaProvider, startStandardInstall, standardState, standardProgressLines,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS,
+  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
 } from '../../services/local-standard.js';
 import { ensureOllamaModelLimit } from '../../services/ollama-model-limit.js';
-import { getOllamaHost } from '../../services/ollama-host.js';
-import { startOwnServe } from '../../services/ollama-restart.js';
 import { releasePairHold } from '../../services/ollama-pair-gate.js';
 import { plainPullError } from '../../services/ollama-version.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
@@ -142,11 +140,10 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'ollama-start': {
-        // Start ollama serve in background, as a child the Dojo remembers it started (so it can upgrade and restart it), with
-        // room in its environment for the embedder, the Dojo's resident pair and the lock's agent slots (Ollama's default of 3
-        // runners would have an agent's model and one of those evict each other). `ollama-restart.ts` states the arithmetic.
-        const host = getOllamaHost();
-        if (host) void startOwnServe(host, 'http://localhost:11434', STANDARD_TAGS.length).catch((err) => logger.warn('Starting Ollama failed', { error: String(err) })); // fire and forget
+        // Field failure 2: the one Ollama upkeep (`ollama-upgrade.ts`, through the start hook) starts what was installed as a kind
+        // that lasts (the app, or Homebrew's service), at the version the Dojo's models need, with the loaded-model limit in launchd.
+        ensureLocalOllamaProvider();
+        void ensureOllamaModelLimit().catch((err) => logger.warn('Starting Ollama failed', { error: String(err) })); // fire and forget
         // Wait a moment for it to start
         await new Promise(r => setTimeout(r, 3000));
         try {

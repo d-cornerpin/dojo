@@ -34,6 +34,14 @@ describe('the Ollama card', () => {
     expect(screen.queryByText('Saved!')).toBeNull();
   });
 
+  it('field failure 2: the card says what the number really controls today, with no stale sizing advice', async () => {
+    render(<OllamaSettings />);
+    await screen.findByRole('button', { name: 'Save' });
+    expect(screen.queryByText(/Set to 1 for 16GB/)).toBeNull();
+    expect(screen.getByText(/How many different agent models each Ollama may keep loaded at once/)).toBeTruthy();
+    expect(screen.getByText(/The Dojo's own two models and the embedder always stay loaded beside them/)).toBeTruthy();
+  });
+
   it('an accepted value says Saved!', async () => {
     vi.mocked(api.setSetting).mockResolvedValue({ ok: true, data: { key: 'k', value: '2' } });
     render(<OllamaSettings />);

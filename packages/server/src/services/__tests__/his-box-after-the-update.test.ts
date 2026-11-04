@@ -1,0 +1,187 @@
+// FIELD FAILURE 2 OF 3.5, END TO END: THE OWNER'S OWN BOX, UPGRADED FROM 3.4.1.
+//
+// What he saw after the update (v35-field-failure-2-diagnosis.md): five cards (the "restart it yourself" card and four "You
+// chose…" cards), "Downloading the decision model (…): installed" next to "missing", a note telling him to download Ollama
+// from ollama.com, Ollama still on the old version, and a Repair that did nothing. Owner ruling OR-UPKEEP-AUTOMATIC: zero
+// cards after a normal update, the right version running, both models pulled, and Repair does the whole job in one press.
+//
+// His box here: the v3.4.1 shape (the local provider row and the rows discovery made, no record of any serve), the Homebrew
+// formula's old program serving, started by something nothing recorded (the 3.4.1 Dojo's `exec('ollama serve')`, a shell, an
+// agent), not Homebrew's service; the embedder and the writer installed, the decision model missing. The Mac is
+// `fake-mac.ts`: brew changes the disk only, the running version changes only when a serve is restarted. The whole screen is
+// judged: every live card frame AND the standing owner-notices list the dashboard loads, and the Settings Ollama section.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+vi.mock('../../home.js', async () => {
+  const p = await import('node:path');
+  const o = await import('node:os');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-his-box');
+  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs), isTestRun: (): boolean => true };
+});
+const mockDb = { current: null as Database.Database | null };
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
+  getDbPath: () => ':memory:',
+}));
+const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; error?: string; severity?: string }> }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { frames.list.push(f); }, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../gateway/routes/update.js', () => ({ getCurrentVersion: () => '3.5.0' }));
+
+import { runMigrations } from '../../db/migrations.js';
+import { ensureStandardModelsAtBoot, standardInstallSettled, standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { ollamaRestartSettled } from '../ollama-model-limit.js';
+import { overrideOllamaHost } from '../ollama-host.js';
+import { ollamaAtLeast } from '../ollama-version.js';
+import { announceDecidedSwitches, switchRecord } from '../../agent/decision-switch.js';
+import { getDecisionProvider } from '../../agent/decision-provider.js';
+import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
+import { configRouter } from '../../gateway/routes/config.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac } from './fake-mac.js';
+
+const EMBEDDER = 'nomic-embed-text:latest';
+const DECISION = STANDARD_DECISION_MODEL.tag;
+const WRITER = STANDARD_WRITER_MODEL.tag;
+const NO_CHORES = /download|ollama\.com|quit|start it again|restart it|brew upgrade/i;
+const db = (): Database.Database => mockDb.current!;
+let mac: Mac;
+
+/** The cards on his screen: every live card frame (an end, `info`, is not a card) and the standing list a reload shows. */
+const liveCards = (): string[] => frames.list.filter((f) => f.type === 'chat:error' && f.severity !== 'info').map((f) => f.error ?? '');
+async function standingCards(): Promise<string[]> {
+  return ((await (await configRouter.request('/owner-notices')).json()) as { data: Array<{ words: string }> }).data.map((c) => c.words);
+}
+/** The Settings → Dojo → Ollama section, as the dashboard reads it. */
+async function settings(): Promise<{ decision: string; writer: string; note: string; lines: string[] }> {
+  return ((await (await setupDepsRouter.request('/ollama/standard')).json()) as { data: { decision: string; writer: string; note: string; lines: string[] } }).data;
+}
+/** Every "installed" the section says is true of Ollama, and it asks him for no chore. */
+async function expectSettingsTellTheTruth(): Promise<void> {
+  const s = await settings();
+  for (const [which, tag] of [['decision', DECISION], ['writer', WRITER]] as const) {
+    expect(s[which], which).toBe(ollama.installed.has(tag) ? 'installed' : 'missing');
+    for (const line of s.lines.filter((l) => l.includes(tag))) if (/installed/.test(line)) expect(ollama.installed.has(tag), line).toBe(true);
+  }
+  const text = [...s.lines, s.note].join('\n');
+  expect(text).not.toMatch(NO_CHORES);
+  expect(text).not.toContain('—');
+  const decisionRow = db().prepare("SELECT value FROM config WHERE key = 'decision_model_id'").get() as { value: string } | undefined;
+  expect(!!decisionRow, 'decision_model_id is set only for a model Ollama lists').toBe(ollama.installed.has(DECISION));
+  expect(!!getDecisionProvider()).toBe(ollama.installed.has(DECISION));
+}
+
+/** The update's first boot, as `index.ts` runs it: the start hook (Ollama upkeep + the install once per version), then the four judgments. */
+async function updateFirstBoot(): Promise<void> {
+  await ensureStandardModelsAtBoot();
+  await ollamaRestartSettled(); await standardInstallSettled();
+  announceDecidedSwitches();
+}
+
+beforeEach(async () => {
+  mockDb.current = new Database(':memory:');
+  runMigrations(mockDb.current);
+  const baseUrl = await startFakeOllama();
+  // v3.4.1's shape: setup's auto-configure made the provider row and a row per model Ollama listed; nothing recorded a serve.
+  db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama (Local)', 'ollama', ?, 'none', 1)").run(baseUrl);
+  for (const name of [EMBEDDER, WRITER]) {
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES (?, 'ollama-local', ?, ?, '[]', 1)").run(`ollama-${name.replace(/[^a-z0-9]/gi, '-')}`, name, name);
+  }
+  db().prepare("INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
+  ollama.silent = new Set(); ollama.pulls = []; ollama.refuseAllBelow035 = false;
+  ollama.installed = new Set([EMBEDDER, WRITER]);
+  mac = fakeMac({ running: formulaServe('0.30.10'), formula: '0.30.10' });   // the formula's program, started by nothing recorded
+  overrideOllamaHost(mac);
+  frames.list.length = 0;
+});
+afterEach(async () => {
+  await standardInstallSettled(); await ollamaRestartSettled();
+  overrideOllamaHost(null);
+  await stopFakeOllama();
+  mockDb.current?.close(); mockDb.current = null;
+});
+
+describe('his box, upgraded from 3.4.1', () => {
+  it('the premise holds: nothing records the serve, it is not Homebrew\'s service, and the decision model is missing', async () => {
+    expect(db().prepare("SELECT 1 FROM config WHERE key LIKE 'ollama_own_serve%'").get()).toBeUndefined();
+    expect(await mac.brewServicePid()).toBeNull();
+    expect(ollama.serving?.version).toBe('0.30.10');
+    expect(ollama.installed.has(DECISION)).toBe(false);
+  });
+
+  it('the update\'s first boot: ZERO cards, the right Ollama running, both models pulled, and Settings tells the truth', async () => {
+    await updateFirstBoot();
+    expect(liveCards()).toEqual([]);
+    expect(await standingCards()).toEqual([]);
+    expect(ollamaAtLeast(ollama.serving?.version ?? null, STANDARD_DECISION_MODEL.minOllama)).toBe(true);
+    expect(ollama.serving?.version).toBe(LATEST);
+    expect(mac.running?.by).toBe('brew-service');   // a kind that lasts: the next Dojo restart does not end it
+    expect(ollama.installed.has(DECISION) && ollama.installed.has(WRITER)).toBe(true);
+    expect(standardModelRowId('decision')).not.toBeNull();
+    await expectSettingsTellTheTruth();
+    expect((await settings()).note).toMatch(/^Both standard models are installed/);
+    // The four judgments the product puts on the model are recorded, and none of them was told as his choice
+    expect(switchRecord('inbound_routing', 'simple_chat')?.state).toBe('model');
+    expect(frames.list.map((f) => f.error ?? '').join('\n')).not.toMatch(/You chose/);
+  });
+
+  it('the same boot on the box preflight.2 left: Homebrew\'s program already new on disk, the old serve still running, a phantom decision row and its old cards', async () => {
+    mac.disk.formula = LATEST;   // preflight.2 ran `brew upgrade ollama` and stopped there
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('ollama-tev1-4b-q4-K-M', 'ollama-local', ?, ?, '[\"decision\"]', 1)").run(DECISION, DECISION);
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', 'ollama-tev1-4b-q4-K-M')").run();
+    db().prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-restart-needed', 1), ('owner_told', 'ollama-limit-set', 1)").run();
+    await updateFirstBoot();
+    expect(liveCards()).toEqual([]);
+    expect(await standingCards()).toEqual([]);
+    expect(mac.terms).toEqual([500]);   // the old serve, which preflight.2 left running, is what had to go
+    expect(ollama.serving?.version).toBe(LATEST);
+    await expectSettingsTellTheTruth();
+  });
+
+  it('stuck (Homebrew could not fetch at boot): ONE plain card, a truthful Settings section; then ONE Repair fixes everything with no new card', async () => {
+    mac.failBrew = true;
+    await updateFirstBoot();
+    expect(liveCards().length).toBe(1);   // the one card, never a stack
+    expect(liveCards()[0]).toMatch(/^Dojo: /);
+    expect(liveCards()[0]).not.toMatch(NO_CHORES);
+    expect(ollama.serving?.version).toBe('0.30.10');
+    await expectSettingsTellTheTruth();   // the decision model is "missing", never "installed"; no decision_model_id
+    const told = liveCards().length;
+    mac.failBrew = false;                 // the network is back; the owner presses Repair once
+    await setupDepsRouter.request('/ollama/standard', { method: 'POST' });
+    await standardInstallSettled(); await ollamaRestartSettled();
+    expect(liveCards().length).toBe(told);   // zero new cards
+    expect(await standingCards()).toEqual([]);   // and the one card ended
+    expect(ollama.serving?.version).toBe(LATEST);
+    expect(mac.running?.by).toBe('brew-service');
+    expect(ollama.installed.has(DECISION) && ollama.installed.has(WRITER)).toBe(true);
+    await expectSettingsTellTheTruth();
+    // A second Repair is idempotent: no new card, no pull, nothing restarted
+    const [pulls, restarts] = [ollama.pulls.length, mac.serviceRestarts];
+    await setupDepsRouter.request('/ollama/standard', { method: 'POST' });
+    await standardInstallSettled();
+    expect([ollama.pulls.length, mac.serviceRestarts, liveCards().length]).toEqual([pulls, restarts, told]);
+  });
+
+  it('E1: a decision model that waits for Ollama is never "installed", never registered, and a phantom row from preflight.2 is retired', async () => {
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('ollama-tev1-4b-q4-K-M', 'ollama-local', ?, ?, '[\"decision\"]', 1)").run(DECISION, DECISION);
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', 'ollama-tev1-4b-q4-K-M')").run();
+    mac.running = formulaServe('0.30.10', { foreign: true });   // one the Dojo truly cannot stop
+    await updateFirstBoot();
+    expect(standardModelRowId('decision')).toBeNull();
+    expect((await settings()).lines.join('\n')).not.toMatch(/decision model.*installed/i);
+    await expectSettingsTellTheTruth();
+    expect(liveCards().join('\n')).not.toMatch(/You chose/);   // no model: nothing switched, nothing told
+    expect(liveCards().length).toBe(1);
+  });
+
+  it('while Repair works, the section reads "installing" (so the dashboard keeps polling) and never a false "installed"', async () => {
+    const seen: string[] = [];
+    await setupDepsRouter.request('/ollama/standard', { method: 'POST' });
+    for (let i = 0; i < 3; i++) { seen.push((await settings()).decision); await new Promise((r) => setTimeout(r, 0)); }
+    await standardInstallSettled(); await ollamaRestartSettled();
+    expect(seen.every((s) => s === 'pulling' || s === 'installed')).toBe(true);
+    expect(seen[0]).toBe('pulling');
+    expect((await settings()).decision).toBe('installed');
+  });
+});

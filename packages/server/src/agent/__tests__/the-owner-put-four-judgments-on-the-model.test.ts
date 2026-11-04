@@ -1,7 +1,7 @@
 // v3.5 OWNER DECISION (v35-reconciliation.md, OWNER ANSWERS item 11): exactly four judgments are answered by the
 // small local decision model in 3.5 - simple chat, deliverable, filler, and "the agent claims it sent something to
 // someone else". Every other judgment stays on its rule (or in shadow). A model that is absent or answers badly
-// leaves the judgment with its rule. The switch is recorded and told through the existing switch card.
+// leaves the judgment with its rule. The switch is recorded; a shipped default is never told as the owner's choice.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -73,7 +73,7 @@ describe('the owner put exactly four judgments on the decision model', () => {
     expect(modeFor(INBOUND_ROUTING_PURPOSE, 'simple_chat')).toBe('model');
   });
 
-  it('the switch is recorded and told once per judgment, only on a box that has the model', () => {
+  it('field failure 2: the four are a shipped default, so they are RECORDED silently, never told as the owner\'s choice (zero cards after an update)', () => {
     announceDecidedSwitches();
     expect(broadcast).not.toHaveBeenCalled();
     expect(switchRecord(INBOUND_ROUTING_PURPOSE, 'simple_chat')).toBeNull();
@@ -81,9 +81,7 @@ describe('the owner put exactly four judgments on the decision model', () => {
     announceDecidedSwitches();
     announceDecidedSwitches();
     for (const [p, q] of ON_THE_MODEL) expect(switchRecord(p, q)?.state, `${p}/${q}`).toBe('model');
-    const told = broadcast.mock.calls.map((c) => c[0] as { cardKey?: string; severity: string });
-    for (const c of told as Array<{ error: string }>) { expect(c.error).toMatch(/You chose/); expect(c.error).toMatch(/unavailable or answers badly/); expect(c.error).not.toMatch(/real cases|by itself|0%/); }
-    expect(told.map((c) => c.cardKey).sort()).toEqual(ON_THE_MODEL.map(([p, q]) => `decision-switch:${p}:${q}`).sort());
+    expect(broadcast).not.toHaveBeenCalled();
   });
 });
 

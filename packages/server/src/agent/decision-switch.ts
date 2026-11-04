@@ -10,7 +10,9 @@
 //   - tells the owner through the existing dashboard card (`owner-card-frames.ts`), one card per question.
 // Nothing here changes how a question is answered, types a threshold, or counts cases: the numbers are the score's.
 // A question the owner pinned to the rule, or a box with no decision model, records the flip but shows no card (the
-// model is not answering it). Safety gates never import this module (they do not reach `decision-ask.ts`).
+// model is not answering it). The four judgments the 3.5 product decision puts on the model (`ownerDecidedQuestions`) are
+// a shipped default, nothing the owner of a box did: they are recorded silently, never told as his choice (field failure 2,
+// owner ruling OR-UPKEEP-AUTOMATIC: zero cards after an update). Safety gates never import this module.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -52,9 +54,7 @@ export function switchedQuestions(): Array<{ purpose: string; question: string; 
   } catch { return []; }
 }
 
-const words = (purpose: string, question: string, s: QuestionScore | null, to: SwitchState, decided = false): string => decided && to === 'model'
-  ? `You chose to have the local decision model make the judgment "${plain(question)}" (${plain(purpose)}). Whenever the model is unavailable or answers badly, the Dojo uses the old rule for that judgment.`
-  : to === 'model'
+const words = (purpose: string, question: string, s: QuestionScore | null, to: SwitchState): string => to === 'model'
   ? `The decision model now answers the question "${plain(question)}" (${plain(purpose)}) itself. Over ${s?.n ?? 0} real cases it was right ${pct(s?.modelAcc ?? 0)} of the time against the old rule's ${pct(s?.ruleAcc ?? 0)}, and the gap was wide enough to be sure. If it gets worse, the Dojo goes back to the rule by itself.`
   : `The decision model no longer answers the question "${plain(question)}" (${plain(purpose)}): its recent results are no longer clearly better than the old rule's, so the Dojo went back to the rule. The model keeps being scored.`;
 
@@ -75,8 +75,9 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
       getDb().prepare('DELETE FROM config WHERE key = ?').run(keyOf(purpose, question));   // back to shadow: the default state carries no row
     }
     logger.info(`decision question ${now === 'model' ? 'switched to the model' : 'went back to shadow'}`, { purpose, question, n: record.n, ruleAcc: record.ruleAcc, modelAcc: record.modelAcc });
-    if (modeFor(purpose, question) === (now === 'model' ? 'model' : 'shadow')) {   // pinned to the rule / no model: nothing changed for the owner
-      if (now === 'model') ownerCardFrame(words(purpose, question, s, now, decided), 'warning', cardKeyOf(purpose, question));
+    // Pinned to the rule / no model: nothing changed for the owner. A shipped default (`decided`) is no evidence: recorded, never told.
+    if (!decided && modeFor(purpose, question) === (now === 'model' ? 'model' : 'shadow')) {
+      if (now === 'model') ownerCardFrame(words(purpose, question, s, now), 'warning', cardKeyOf(purpose, question));
       else { ownerCardEnded(words(purpose, question, s, 'shadow'), cardKeyOf(purpose, question)); }
     }
     return now;
@@ -86,8 +87,8 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
   }
 }
 
-/** Record and tell the owner's four decided judgments (once each; a box without the decision model records nothing, so
- *  it is told when the model arrives). Called at boot and when the standard models are ready. Never throws. */
+/** Record the four judgments the product puts on the model (once each, silently; a box without the decision model records
+ *  nothing, so they are recorded when the model arrives). Called at boot and when the standard models are ready. Never throws. */
 export function announceDecidedSwitches(): void {
   for (const q of ownerDecidedQuestions()) reviewSwitch(q.purpose, q.question);
 }
