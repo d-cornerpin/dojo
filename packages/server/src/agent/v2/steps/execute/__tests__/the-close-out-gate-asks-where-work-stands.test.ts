@@ -57,6 +57,21 @@ describe('the close-out gate refusal', () => {
     expect(text).not.toMatch(/never closed|resolve at least one/);
   });
 
+  it('field fix 3 (#2): the refusal never tells the agent to report the engine block to the person', () => {
+    const id = createTask({ title: 'Sort the inbox', assignedTo: AGENT, createdBy: AGENT, origin: { kind: null, sourceMessageId: null, turn: null, convKey: null } });
+    const state = {
+      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
+      structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
+      loopCount: 0, closeOutGateSatisfied: false, danglingTaskIds: [id], compileGateSatisfied: true, compileOwedAskIds: [],
+    };
+    const hatch = 'tell the person you are talking to what you were trying to do and that the engine blocked it';
+    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: hatch };
+    const text = runRefusalGates(state as never, { id: 'c3', name: 'send_to_agent', arguments: { to_agent: 'pm', message: 'x' } } as never, ctx as never, true).refusal?.content ?? '';
+    expect(text).toContain('Refused: engine tracker check.');
+    expect(text).not.toContain(hatch);
+    expect(text).not.toMatch(/engine blocked it/i);
+  });
+
   it('fix round 1 (I-2): the thrash refusal puts continuing first and offers complete only for done work', () => {
     const call = { id: 'c2', name: 'gmail_search', arguments: { query: 'in:inbox' } };
     const state = advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber: 1, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),

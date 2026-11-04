@@ -270,14 +270,18 @@ export function runRefusalGates(
   }
   if (closeOut.refuse) {
     const taskListShort = closeOut.live.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
+    // v3.5 field fix 3 (#2): NO ESCAPE HATCH HERE. The shared tail told the agent to "tell the
+    // person ... that the engine blocked it". On an A2A turn that made the primary text the
+    // owner about tracker plumbing. Steers state facts; the engine never sends the agent to
+    // narrate engine internals to the owner. The tracker call this gate asks for is always
+    // allowed, so the gate cannot trap a genuine need.
     const refusalText = (
       `Refused: engine tracker check. ${closeOut.live.length} in_progress task(s) of yours have not moved for a while ` +
       `(ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
       `Say where they stand before any other tool: work_note(task_id, notes="what is next") if you are continuing; ` +
       `work_update(action="status", status="paused"|"blocked") if you are waiting; status="complete" only if one is done. ` +
       `After any one of those the gate stands down for this turn and "${tc.name}" works normally. ` +
-      `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.\n\n` +
-      ENGINE_BLOCK_ESCAPE_HATCH
+      `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.`
     );
     try {
       broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
