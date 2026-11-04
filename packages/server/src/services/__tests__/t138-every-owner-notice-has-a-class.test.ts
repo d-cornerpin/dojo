@@ -300,7 +300,7 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
     { cls: 'progress', what: 'the agent is summarising its older memory in the background (shown at a turn on notes)', why: 'finishes on its own; replies are not held up' },
   ],
   'memory/embedding-switch.ts': [
-    { cls: 'action', what: 'the memory search model became a paid one; older memories are unsearchable until re-processed', why: 'only he can re-process them (switch to a local model, or spend): the Dojo will not spend his money unasked' },
+    { cls: 'informational', what: 'the memory search model became a paid one; older memories are unsearchable until re-processed', why: 'review round L1: an optional choice with no button; nothing is broken and nothing is billed until he acts' },
   ],
   'migration/import-recovery.ts': [
     { cls: 'action', what: 'an import failed and stopped what it stopped', why: 'he restarts the Dojo from the menu bar' },
@@ -362,7 +362,7 @@ describe('the owner-card door census (field fix 3 #9)', () => {
 
   it('a card that needs no action is never re-derived on a reload: the healer list skips the informational conditions', () => {
     const notices = fs.readFileSync(path.join(SRC, 'healer/owner-notices.ts'), 'utf8');
-    for (const key of ["'standard-models'", "'ollama-limit-failed'", "'fitunchecked:'"]) {
+    for (const key of ["'standard-models'", "'ollama-limit-failed'", "'fitunchecked:'", "'embedding-switch'"]) {
       expect(/export function isInformationalCondition[\s\S]*?\n}/.exec(notices)?.[0], `${key} is informational`).toContain(key);
     }
     expect(notices).toMatch(/!isInformationalCondition\(key\)/);

@@ -8,9 +8,10 @@
 //   · The new model is LOCAL (costs nothing): they are re-embedded in the background, here.
 //   · The new model is PAID (a hosted API): nothing is re-embedded automatically, because that would
 //     spend the owner's money without his say. He is told once, through the dashboard's existing
-//     persistent owner card (healer/owner-notices.ts, key `embedding-switch`: it is re-derived on every dashboard
-//     load and ends once no memory is left on the old model), how many memories still use the old model and
+//     owner card (healer/owner-notices.ts, key `embedding-switch`), how many memories still use the old model and
 //     that search will not find them until they are re-processed, and that switching to a local model re-processes them automatically.
+//     v3.5 field fix 3, review round L1 (OR-FIELD3 (c)): it is an INFORMATIONAL card, a toast that leaves by itself.
+//     Re-processing is optional, nothing is billed until he chooses, and the card has no button to press.
 //
 // The way to re-process them is to switch the memory search model to a local one (no agent tool or button
 // re-processes them on request; the owner's own POST /embeddings/backfill route also does, with no screen of its own).
@@ -76,5 +77,5 @@ export async function handleEmbeddingModelSwitch(previousKey: string): Promise<v
     return;
   }
   // Paid: nothing is spent. A lasting card, told once per switch.
-  if (tellOwnerOnce(EMBEDDING_SWITCH_KEY)) ownerCardFrame(wordsOf(EMBEDDING_SWITCH_KEY), 'warning', cardKeyOf(EMBEDDING_SWITCH_KEY), 'action');   // only his say re-processes them
+  if (tellOwnerOnce(EMBEDDING_SWITCH_KEY)) ownerCardFrame(wordsOf(EMBEDDING_SWITCH_KEY), 'warning', cardKeyOf(EMBEDDING_SWITCH_KEY), 'informational');   // an optional choice: nothing billed, no button
 }

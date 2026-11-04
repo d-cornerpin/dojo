@@ -139,10 +139,10 @@ describe('switching to a PAID model', () => {
     expect(modelsOf('embeddings')).toEqual([OLD]);
     expect(modelsOf('vault_entries')).toEqual([OLD]);
     expect(notices()).toHaveLength(1);
-    expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: 'platform', severity: 'warning', retryable: false });
-    // A lasting card: a dashboard opened later still finds it, with the live count.
-    expect(standing()).toHaveLength(1);
-    expect(standing()[0].words).toMatch(/4 saved memories still use the old model/);
+    // v3.5 field fix 3, review round L1 (OR-FIELD3 (c)): nothing is broken and nothing is billed until he chooses, and the
+    // card has no button to press, so it is INFORMATIONAL: a toast that leaves by itself, not re-derived on a reload.
+    expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: 'platform', severity: 'warning', retryable: false, cardClass: 'informational' });
+    expect(standing()).toEqual([]);
     expect(String(notices()[0].error)).toMatch(/4 saved memories still use the old model/);
     expect(String(notices()[0].error)).toMatch(/Switching the memory search model to a local one re-processes them automatically/);
     expect(String(notices()[0].error)).toMatch(/search will not find them until they are re-processed/);
@@ -152,11 +152,10 @@ describe('switching to a PAID model', () => {
     expect(notices()).toHaveLength(1);
   });
 
-  it('the card stands until no memory is left on the old model, then ends', async () => {
+  it('when no memory is left on the old model, the end frame is sent (a toast still on screen leaves)', async () => {
     seedOldMemories(2);
     setEmbeddingConfig({ provider: 'openai', baseUrl: 'https://embeddings.example.test/v1', model: 'big-hosted' });
     await until(() => notices().length > 0);
-    expect(standing()).toHaveLength(1);
     sent.length = 0;
     await runBackfill({ includeStale: true });   // the owner re-processes them
     await until(() => sent.some((e) => e.cardKey === 'embedding-switch' && e.severity === 'info'));

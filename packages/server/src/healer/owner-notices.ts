@@ -209,9 +209,9 @@ export function ownerConditionsOnAgentGone(agentId: string): void {
 /** v3.5 field fix 3 (#9, OR-FIELD3 (c)): the conditions whose card is INFORMATIONAL (the Dojo retries or checks by
  *  itself; nothing for the owner to do). Their frame is a toast that leaves by itself, so a reload never re-derives
  *  them; the told-record stays (it is still told once per condition). Their callers declare the same class
- *  (`local-standard.ts`, `ollama-model-limit.ts`, `local-model-fit.ts`; pinned by the t138 census). */
+ *  (`local-standard.ts`, `ollama-model-limit.ts`, `local-model-fit.ts`, `embedding-switch.ts`; pinned by the t138 census). */
 export function isInformationalCondition(key: string): boolean {
-  return key === 'standard-models' || key === 'ollama-limit-failed' || key.startsWith('fitunchecked:');
+  return key === 'standard-models' || key === 'ollama-limit-failed' || key.startsWith('fitunchecked:') || key === 'embedding-switch';   // review round L1
 }
 
 /** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed, and ACTION cards only. */
@@ -227,12 +227,11 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   // v3.5 field fix 3 (#9): STRIP the "fit not checked" standing rule (N7): that card is informational now, a toast
   // that leaves by itself, and is not re-derived on a reload.
   return rows.filter(({ key }) => wordsOf(key) !== '' && !isInformationalCondition(key)).filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
-    : key === 'embedding-switch' ? countMemoriesOnOtherModels() > 0   // stands until no memory is left on the old model
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama-too-old' || key === 'ollama-down' || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama-too-old' || key === 'ollama-down' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });
