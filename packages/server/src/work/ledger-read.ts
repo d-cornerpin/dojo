@@ -35,3 +35,21 @@ export function ledgerWorkEntries(workId: string): LedgerWorkEntry[] {
     : { kind: 'command' as const, what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail });
 }
 
+
+/** The task's file and command entries in the order a review SHOWS them (review M1): the commands
+ *  that failed first (newest first), then the files the work wrote (newest first), then the commands
+ *  that exited 0 (newest first). The ledger keeps everything; a reader lays this out in its own room. */
+export function ledgerListing(workId: string): LedgerWorkEntry[] {
+  const rows = getDb().prepare(
+    `SELECT item_key AS k, tool, detail FROM work_ledger WHERE work_id = ?
+       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}')
+     ORDER BY last_at DESC, rowid DESC`,
+  ).all(workId) as Array<{ k: string; tool: string; detail: string | null }>;
+  const entries = rows.map((r): LedgerWorkEntry => (r.k.startsWith(FILE_KEY)
+    ? { kind: 'file', what: r.k.slice(FILE_KEY.length), tool: r.tool, status: null }
+    : { kind: 'command', what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail }));
+  const failed = entries.filter((e) => e.kind === 'command' && e.status !== 'exit 0');
+  const files = entries.filter((e) => e.kind === 'file');
+  const clean = entries.filter((e) => e.kind === 'command' && e.status === 'exit 0');
+  return [...failed, ...files, ...clean];
+}

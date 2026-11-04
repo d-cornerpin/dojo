@@ -27,13 +27,15 @@ export interface ValidationRequestParts {
   headExtras: string;
   /** The evidence lines, the closer's last note and the delivered-answer pointer. */
   evidenceBlock: string;
+  /** The room this row's ledger listing may take (review M1, `reviewLedgerRoomTokens`). */
+  ledgerRoomTokens?: number;
 }
 
 export function unvalidatedCompleteText(taskId: string, p: ValidationRequestParts): string {
   return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) closed by ${p.agentName}, awaiting your validation.${p.headExtras}\n`
     + `  Goal: ${p.goal ?? '(no goal recorded, pre-migration row)'}\n`
     + `  Result: ${p.result ?? '(none)'}\n`
-    + `  Evidence:\n${p.evidenceBlock}${validationMeasureLines(taskId)}${ownerWordsLines(taskId)}\n`
+    + `  Evidence:\n${p.evidenceBlock}${validationMeasureLines(taskId, p.ledgerRoomTokens)}${ownerWordsLines(taskId)}\n`
     + `  Priority=${p.priority}, revert_count=${p.revertCount}.\n`
     + `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). `
     + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true) when the work demonstrably matches the goal. `

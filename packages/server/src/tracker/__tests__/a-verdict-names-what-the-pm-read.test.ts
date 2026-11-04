@@ -59,8 +59,10 @@ vi.mock('../delivery-evidence.js', async (importOriginal) => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { keepLedgerShownFor } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { recordTouched } from '../../work/ledger-store.js';
+import { validationMeasureLines } from '../job-loop-facts.js';
 import { writeTaskLog } from '../task-log.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { resetEmptyUpholdRefusals } from '../empty-uphold.js';
@@ -104,6 +106,7 @@ const eventPayload = (t: string, kind: string): Record<string, unknown> =>
   JSON.parse((mockDb.current!.prepare('SELECT payload FROM work_events WHERE work_id = ? AND kind = ? ORDER BY id DESC').get(t, kind) as { payload: string }).payload);
 
 beforeEach(() => {
+  keepLedgerShownFor(new Set());   // the shown pages are process memory: no clause inherits another's
   msgSeq = 0;
   pointer.on = null;
   resetEmptyUpholdRefusals();
@@ -310,10 +313,11 @@ describe('#5: the verdict records what the close request itself carried', () => 
     mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES ('owner-msg-1', ?, 'owner', 'user', 'make it one page', ?, ?)`).run(WORKER, Date.now(), Date.now());
     writeTaskLog({ taskId: t, fromEntity: 'engine', entryKind: 'newer_instruction', reason: 'owner-msg-1' });
     fileClose(t);
+    validationMeasureLines(t, 2000);   // the request the review put in front of the PM
     upholdClaim(t, 'done', 'pm', PM, 'x');
     const ref = JSON.parse(adj(t, 'upheld').evidence_ref!);
     expect(ref.measure).toEqual({ remaining: 0, initial: 12, named: null });
-    expect(ref.ledger).toEqual({ touched: 1, commands: 1, files: ['/work/summary.md'], commandsRun: [{ command: 'mkdir -p /work', status: 'exit 0' }] });
+    expect(ref.ledger).toEqual({ touched: 1, commands: 1, files: ['/work/summary.md'], commandsRun: [{ command: 'mkdir -p /work', status: 'exit 0' }], notListed: 0 });
     expect(ref.evidence).toEqual(['[file] summary written @ /work/summary.md', '[note] checked the totals']);
     expect(ref.deliveredAnswer).toBe('deliv-abcdef12');
     expect(ref.ownerWords).toEqual(['owner-msg-1']);
@@ -338,6 +342,28 @@ describe('#5: the verdict records what the close request itself carried', () => 
     const ref = JSON.parse(adj(t, 'upheld').evidence_ref!);
     expect(ref.ledger).toBeUndefined();
     expect(adj(t, 'upheld').note).toBe('PM validated: looked at nothing');
+  });
+});
+
+describe('review M1: the verdict records the ledger the request SHOWED, bounded the same way', () => {
+  it('a 500-command task: the record holds the counts and exactly the entries the request listed', () => {
+    const t = newTask();
+    for (let i = 0; i < 500; i += 1) recordTouched(t, 'exec', [`cmd:ls /work/part-${i}`], Date.now() + i, 'exit 0');
+    fileClose(t);
+    const shown = validationMeasureLines(t, 300);
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    const ledger = JSON.parse(adj(t, 'upheld').evidence_ref!).ledger as { commands: number; commandsRun: unknown[]; notListed: number };
+    expect(ledger.commands).toBe(500);
+    expect(ledger.commandsRun.length).toBe(shown.split('command run:').length - 1);
+    expect(ledger.commandsRun.length + ledger.notListed).toBe(500);
+    expect(ledger.commandsRun.length).toBeLessThan(500);
+  });
+  it('a verdict with no request shown in this process records the counts only, never a fresh unbounded list', () => {
+    const t = newTask();
+    for (let i = 0; i < 50; i += 1) recordTouched(t, 'exec', [`cmd:ls /work/p-${i}`], Date.now() + i, 'exit 0');
+    fileClose(t);
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).ledger).toEqual({ touched: 0, commands: 50 });
   });
 });
 

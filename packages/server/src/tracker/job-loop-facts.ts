@@ -6,7 +6,10 @@
 // new reads, would never be checked in on. The hold stands for such a job only while it is touching
 // items; one that is not lets the ladder run on its existing rungs, and the check-in carries the fact.
 import { getDb } from '../db/connection.js';
-import { ledgerLastNewItemAt, ledgerNewItemsSince, ledgerTotals, ledgerWorkEntries } from '../work/ledger-store.js';
+import { ledgerLastNewItemAt, ledgerNewItemsSince, ledgerTotals } from '../work/ledger-store.js';
+import { ledgerListing, type LedgerWorkEntry } from '../work/ledger-read.js';
+import { layOutInRoom } from '../memory/other-threads-room.js';
+import { noteLedgerShown } from './request-shown.js';
 import { lastTurnEnd } from '../work/job-momentum.js';
 import { parseMeasure, describeMeasure } from '../work/measure.js';
 import { listTaskLog } from './task-log.js';
@@ -86,21 +89,62 @@ function measureText(taskId: string, touched: number, commands: number, byTool: 
 
 /** What the validator judges a close on, from the records (done-is-measured E1): the measure, and the
  *  ledger of what the task's calls touched. The remainder the worker named rides on the Measure line. */
-export function validationMeasureLines(taskId: string): string {
+export function validationMeasureLines(taskId: string, roomTokens?: number): string {
   const { touched, commands, byTool } = ledgerTotals(taskId);
   // v3.5 field fix 3 (#6a): the files the task's calls wrote and the commands they ran, one per line,
   // so the validator can open what the work produced instead of reading the worker's account of it.
-  const work = ledgerWorkEntries(taskId).map((e) => e.kind === 'file'
-    ? `\n    file written: ${e.what} (${e.tool})`
-    : `\n    command run: ${excerpt(e.what)} (${e.tool}, ${e.status ?? 'exit unknown'})`).join('');
-  return `\n  Measure: ${measureText(taskId, touched, commands, byTool)}`
+  // Review M1: the review SHOWS a page of it, laid out in `roomTokens` (the PM's measured budget split
+  // across the rows it is asked about, `reviewLedgerRoomTokens`): failures first, then the files, then
+  // the clean commands, newest first; the rest is counted. The ledger itself records everything.
+  const entries = ledgerListing(taskId);
+  const head = `\n  Measure: ${measureText(taskId, touched, commands, byTool)}`
     + `\n  Ledger: ${fmt(touched)} items touched (${byTool.map((b) => `${b.tool} ${fmt(b.n)}`).join(', ') || 'none'})`
-    + `${commands > 0 ? `, ${commandsRun(commands)}` : ''}${work}`;
+    + `${commands > 0 ? `, ${commandsRun(commands)}` : ''}`;
+  const lineOf = (e: LedgerWorkEntry): string => (e.kind === 'file'
+    ? `\n    file written: ${e.what} (${e.tool})`
+    : `\n    command run: ${commandShown(e.what)} (${e.tool}, ${e.status ?? 'exit unknown'})`);
+  let listed = entries.length;
+  const out = layOutInRoom(entries.length, roomTokens, (n) => {
+    listed = n;
+    return head + entries.slice(0, n).map(lineOf).join('') + notListedLine(entries.slice(n));
+  });
+  const page = entries.slice(0, listed);
+  noteLedgerShown(taskId, {
+    files: page.filter((e) => e.kind === 'file').map((e) => e.what),
+    commandsRun: page.filter((e) => e.kind === 'command').map((e) => ({ command: commandShown(e.what), status: e.status })),
+    notListed: entries.length - listed,
+  });
+  return out;
 }
 
 const commandsRun = (n: number): string => `${fmt(n)} ${n === 1 ? 'command' : 'commands'} run`;
-const COMMAND_EXCERPT_CHARS = 300;   // a display excerpt; the ledger keeps the whole command
-const excerpt = (cmd: string): string => {
-  const flat = cmd.replace(/\s+/g, ' ').trim();
-  return flat.length > COMMAND_EXCERPT_CHARS ? `${flat.slice(0, COMMAND_EXCERPT_CHARS)}…` : flat;
-};
+
+/** A command as the review shows it, by its own shape: a one-line command whole, a script by its first
+ *  line and its size (the ledger keeps the whole text; the PM reads the files it produced). */
+function commandShown(cmd: string): string {
+  const lines = cmd.split('\n');
+  if (lines.length === 1) return cmd.trim();
+  return `${lines[0].trim()} (+${fmt(lines.length - 1)} more ${lines.length === 2 ? 'line' : 'lines'}, ${fmt(cmd.length)} characters)`;
+}
+
+/** The count of the entries the room could not list, by kind. Empty when everything was listed. */
+function notListedLine(rest: readonly LedgerWorkEntry[]): string {
+  if (rest.length === 0) return '';
+  const files = rest.filter((e) => e.kind === 'file').length;
+  const failed = rest.filter((e) => e.kind === 'command' && e.status !== 'exit 0').length;
+  const clean = rest.length - files - failed;
+  const parts = [
+    failed ? `${fmt(failed)} more ${failed === 1 ? 'command' : 'commands'} that failed` : '',
+    files ? `${fmt(files)} more ${files === 1 ? 'file' : 'files'}` : '',
+    clean ? `${fmt(clean)} more ${clean === 1 ? 'command' : 'commands'} that exited 0` : '',
+  ].filter(Boolean);
+  return `\n    … and ${parts.join(', ')}, not listed (all of it is on the ledger)`;
+}
+
+/** The room one row's ledger listing may take in a review: a declared layout share of the PM's measured
+ *  assembly budget (like the other-threads block's), split across the rows the review asks about. A
+ *  layout share, not a cap on what is recorded. */
+export const REVIEW_LEDGER_ROOM_SHARE = 0.25;
+export function reviewLedgerRoomTokens(assemblyBudgetTokens: number, rowsInReview: number): number {
+  return Math.max(0, Math.floor((assemblyBudgetTokens * REVIEW_LEDGER_ROOM_SHARE) / Math.max(1, rowsInReview)));
+}

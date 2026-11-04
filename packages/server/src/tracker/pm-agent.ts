@@ -1,6 +1,7 @@
 import { closeoutReceipts } from './closeout-receipts.js';
 import { unvalidatedCompleteText } from './validation-request.js';
-import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText } from './job-loop-facts.js';
+import { keepLedgerShownFor } from './request-shown.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -1908,6 +1909,18 @@ async function runPMReview(): Promise<void> {
   //     `closeRequestFiledExpr`'s to say, not this query's — the paused one was missing here
   //     for exactly as long as this query answered it itself.
   // Reading only the first shape is how the queue would go quiet while work waited in it.
+  // Review M1: the room each row's ledger listing may take is the PM's OWN measured assembly budget
+  // (the same `dialedPolicy` the turn's fit check uses), split across the rows this review asks about.
+  const pmBudgetTokens = await (async (): Promise<number> => {
+    try {
+      const { dialedPolicy } = await import('../agent/v2/steps/call-llm/reassemble-for-fit.js');
+      return (await dialedPolicy(pmId, pmAgent.model_id ?? '')).policy.assemblyBudgetTokens;
+    } catch (err) {
+      // The window alone (`pruneOldPMMessages`' own reading) when the tool payload cannot be measured.
+      logger.warn('PM review: the measured budget could not be read; the ledger listing uses the window alone', { error: err instanceof Error ? err.message : String(err) });
+      return contextWindowPolicy(agentTurnWindow(pmId, pmAgent.model_id ?? ''), { toolPayloadTokens: 0 }).assemblyBudgetTokens;
+    }
+  })();
   const unvalidatedCompleteRows = db.prepare(`
     SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
            w.result AS result, w.evidence_json AS evidence_json, w.last_smell_flag AS last_smell_flag,
@@ -1959,6 +1972,7 @@ async function runPMReview(): Promise<void> {
       .slice(0, 3)
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
+  keepLedgerShownFor(new Set(unvalidatedCompleteRows.map((r) => r.id)));   // review M1: the shown pages live only while a row awaits its verdict
   for (const cTask of unvalidatedCompleteRows) {
     // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
     // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/
@@ -2076,6 +2090,7 @@ async function runPMReview(): Promise<void> {
       text: unvalidatedCompleteText(cTask.id, {
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
         headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}${deliveredLine}`,
+        ledgerRoomTokens: reviewLedgerRoomTokens(pmBudgetTokens, unvalidatedCompleteRows.length),
       }),
     });
   }

@@ -27,7 +27,8 @@ import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { workOperation } from '../tools/work-verbs.js';
-import { ledgerTotals, ledgerWorkEntries } from '../work/ledger-read.js';
+import { ledgerTotals } from '../work/ledger-read.js';
+import { ledgerShownFor } from './request-shown.js';
 import { unvalidatedCloseExpr } from '../work/tracker-view.js';
 import { resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
@@ -44,7 +45,7 @@ export interface LookedAt {
   /** The Measure line: the reading (null = could not be read), its start, and the remainder the worker named. */
   measure?: { remaining: number | null; initial: number | null; named: string | null };
   /** The Ledger line: items touched (mailbox items and files), commands run, and the paths and commands themselves. */
-  ledger?: { touched: number; commands: number; files: string[]; commandsRun: Array<{ command: string; status: string | null }> };
+  ledger?: { touched: number; commands: number; files?: string[]; commandsRun?: Array<{ command: string; status: string | null }>; notListed?: number };
   /** The worker's evidence lines, as the request prints them. */
   evidence?: string[];
   /** The delivered answer the request pointed at (its delivery id). */
@@ -174,12 +175,10 @@ export function closeRequestFacts(workId: string): Pick<LookedAt, 'measure' | 'l
   }
   const { touched, commands } = ledgerTotals(workId);
   if (touched > 0 || commands > 0) {
-    const entries = ledgerWorkEntries(workId);
-    out.ledger = {
-      touched, commands,
-      files: entries.filter((e) => e.kind === 'file').map((e) => e.what),
-      commandsRun: entries.filter((e) => e.kind === 'command').map((e) => ({ command: e.what, status: e.status })),
-    };
+    // Review M1: the page the request SHOWED (laid out in the PM's room), never a fresh unbounded read
+    // of the whole ledger; the counts alone when no request for the row was shown in this process.
+    const page = ledgerShownFor(workId);
+    out.ledger = page ? { touched, commands, ...page } : { touched, commands };
   }
   try {
     const ev = JSON.parse(row?.evidence_json ?? '[]') as Array<{ kind?: string; claim?: string; pointer?: string }>;
