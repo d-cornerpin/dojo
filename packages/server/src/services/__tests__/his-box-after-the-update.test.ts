@@ -30,7 +30,9 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 vi.mock('../../gateway/routes/update.js', () => ({ getCurrentVersion: () => '3.5.0' }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { ensureStandardModelsAtBoot, standardInstallSettled, standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { ensureStandardModelsAtBoot, retryStandardModelsIfMissing, standardInstallSettled, standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ollamaRestartSettled } from '../ollama-model-limit.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { ollamaAtLeast } from '../ollama-version.js';
@@ -38,7 +40,7 @@ import { announceDecidedSwitches, switchRecord } from '../../agent/decision-swit
 import { getDecisionProvider } from '../../agent/decision-provider.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { configRouter } from '../../gateway/routes/config.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, LATEST, type Mac } from './fake-mac.js';
 
 const EMBEDDER = 'nomic-embed-text:latest';
 const DECISION = STANDARD_DECISION_MODEL.tag;
@@ -88,7 +90,7 @@ beforeEach(async () => {
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES (?, 'ollama-local', ?, ?, '[]', 1)").run(`ollama-${name.replace(/[^a-z0-9]/gi, '-')}`, name, name);
   }
   db().prepare("INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
-  ollama.silent = new Set(); ollama.pulls = []; ollama.refuseAllBelow035 = false;
+  ollama.silent = new Set(); ollama.pulls = []; ollama.refuseAllBelow035 = false; ollama.failPulls = false;
   ollama.installed = new Set([EMBEDDER, WRITER]);
   mac = fakeMac({ running: formulaServe('0.30.10'), formula: '0.30.10' });   // the formula's program, started by nothing recorded
   overrideOllamaHost(mac);
@@ -185,3 +187,61 @@ describe('his box, upgraded from 3.4.1', () => {
     expect((await settings()).decision).toBe('installed');
   });
 });
+
+// FIELD FIX 2 ROUND 5 (the paid run on 9400b4dc, RED 0/5): on the dev box Ollama was current and listed the decision model, yet
+// migration 209 had disabled its row and removed decision_model_id, and nothing re-enabled them because no install was needed.
+// What is registered must follow what Ollama lists at every boot it answers and at every health answer, never an install.
+describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and health answer', () => {
+  const MIGRATION_209 = (): string => fs.readFileSync(path.resolve(__dirname, '../../db/migrations/209_field_failure_2_retired_records.sql'), 'utf8');
+  const DECISION_ROW = 'ollama-tev1-4b-q4-K-M';
+  /** A v3.5 box: both models in Ollama and registered, the decision model assigned, the version already stamped (no install owed). */
+  function v35Box(listed: boolean): void {
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES (?, 'ollama-local', ?, ?, '[\"decision\"]', 1)").run(DECISION_ROW, DECISION, DECISION);
+    db().prepare("UPDATE models SET capabilities = '[\"chat\"]' WHERE api_model_id = ?").run(WRITER);
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', ?), ('standard_models_version', '3.5.0')").run(DECISION_ROW);
+    if (listed) ollama.installed.add(DECISION);
+    mac = fakeMac({ running: appServe(LATEST), app: LATEST }); overrideOllamaHost(mac);   // current, and the app: nothing to take over
+  }
+  const decisionRow = (): { is_enabled: number } | undefined => db().prepare('SELECT is_enabled FROM models WHERE id = ?').get(DECISION_ROW) as { is_enabled: number } | undefined;
+  const decisionId = (): string | undefined => (db().prepare("SELECT value FROM config WHERE key = 'decision_model_id'").get() as { value: string } | undefined)?.value;
+
+  it('(a) the dev box: Ollama current with the model listed, the row enabled before the update; migration 209 then the boot: enabled, assigned, zero cards', async () => {
+    v35Box(true);
+    db().exec(MIGRATION_209());   // the update's migration, as it ran on that box
+    await updateFirstBoot();
+    expect(mac.brews).toEqual([]);   // no install, no upgrade: the box needed nothing
+    expect(decisionRow()?.is_enabled).toBe(1);
+    expect(decisionId()).toBe(DECISION_ROW);
+    expect(getDecisionProvider()).not.toBeNull();
+    expect(liveCards()).toEqual([]);
+    expect(await standingCards()).toEqual([]);
+  });
+
+  it('(b) the preflight.2 phantom: the row registered but the model not listed; the boot disables it and clears the id', async () => {
+    v35Box(false);
+    ollama.failPulls = true;   // it cannot arrive at this boot either
+    db().exec(MIGRATION_209());
+    await updateFirstBoot();
+    expect(decisionRow()?.is_enabled).toBe(0);
+    expect(decisionId()).toBeUndefined();
+    expect(getDecisionProvider()).toBeNull();
+  });
+
+  it('(c) the model appears later: the next health answer enables its row and assigns it, with no install and no card', async () => {
+    v35Box(false);
+    ollama.failPulls = true;
+    await updateFirstBoot();
+    expect(decisionRow()?.is_enabled).toBe(0);
+    ollama.installed.add(DECISION);   // pulled by hand, or the registry was back
+    const pulls = ollama.pulls.length;
+    const told = liveCards().length;   // the boot told the one missing-models card: the registry was unreachable
+    retryStandardModelsIfMissing([...ollama.installed], ollama.serving ? (db().prepare("SELECT base_url FROM providers WHERE id = 'ollama-local'").get() as { base_url: string }).base_url : '');
+    await standardInstallSettled();
+    expect(decisionRow()?.is_enabled).toBe(1);
+    expect(decisionId()).toBe(DECISION_ROW);
+    expect(ollama.pulls.length).toBe(pulls);   // nothing was installed for it
+    expect(liveCards().length).toBe(told);   // no new card
+    expect(await standingCards()).toEqual([]);   // and the missing-models card ended
+  });
+});
+

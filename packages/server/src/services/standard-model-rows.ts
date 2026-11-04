@@ -49,3 +49,22 @@ export function unregisterStandardRow(providerId: string, tag: string): void {
   db.prepare("UPDATE models SET is_enabled = 0, updated_at = datetime('now') WHERE id = ?").run(row.id);
   db.prepare("DELETE FROM config WHERE key = 'decision_model_id' AND value = ?").run(row.id);
 }
+
+/** Field fix 2 round 5: what is REGISTERED follows what Ollama LISTS, at every boot that Ollama answers and at every later health
+ *  answer (`local-standard.ts retryStandardModelsIfMissing`), never only when an install runs (the paid run: migration 209 had
+ *  disabled a real decision row on a box that never needed an install, and nothing re-enabled it). A row of the pair whose tag is
+ *  listed is enabled, and the decision model's id is `decision_model_id`; the decision row whose tag is not listed is disabled and
+ *  its id cleared (E1). A listed tag with no row yet is the install's (it needs Ollama's model info). Nothing is told. */
+export function reconcileStandardRows(providerId: string, listed: ReadonlySet<string>, pair: ReadonlyArray<{ tag: string; decision: boolean }>): void {
+  try {
+    const db = getDb();
+    for (const { tag, decision } of pair) {
+      if (!listed.has(tag)) { if (decision) unregisterStandardRow(providerId, tag); continue; }
+      const row = db.prepare('SELECT id, is_enabled FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, tag) as { id: string; is_enabled: number } | undefined;
+      if (!row) continue;
+      if (!row.is_enabled) db.prepare("UPDATE models SET is_enabled = 1, updated_at = datetime('now') WHERE id = ?").run(row.id);
+      const id = (db.prepare("SELECT value FROM config WHERE key = 'decision_model_id'").get() as { value: string } | undefined)?.value;
+      if (decision && id !== row.id) assignStandard(null, row.id);
+    }
+  } catch { /* best-effort: the next answer reconciles again */ }
+}

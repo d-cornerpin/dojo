@@ -211,12 +211,11 @@ describe('H4 / M5 / L4: what earlier 3.5 builds left is gone before anything rea
     expect(db().prepare("SELECT key FROM healer_state WHERE key IN ('ollama-restart-needed', 'ollama-limit-set')").all()).toEqual([]);
   });
 
-  it('M5: a phantom decision row and decision_model_id are retired by the migration even while Ollama does not answer; the writer\'s row stays', () => {
+  it('M5: migration 209 retires a phantom decision row even while Ollama does not answer (the boot reconcile re-enables a real one), and drops orphaned keys', () => {
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('ollama-tev1-4b-q4-K-M', 'ollama-local', ?, ?, '[\"decision\"]', 1), ('ollama-qwen3-5-4b', 'ollama-local', 'qwen3.5:4b', 'qwen3.5:4b', '[\"chat\"]', 1)").run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
     db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', 'ollama-tev1-4b-q4-K-M'), ('ollama_own_serve', '{}'), ('ollama_limit_told', '4')").run();
-    expect(getDecisionProvider()).not.toBeNull();
     migrate();
-    expect(getDecisionProvider()).toBeNull();   // every judgment keeps its rule until the model is really there
+    expect(getDecisionProvider()).toBeNull();   // until Ollama lists it (his-box round 5 (a): the next answer)
     expect(db().prepare("SELECT is_enabled FROM models WHERE id = 'ollama-qwen3-5-4b'").get()).toEqual({ is_enabled: 1 });
     expect(db().prepare("SELECT key FROM config WHERE key IN ('decision_model_id', 'ollama_own_serve', 'ollama_limit_told')").all()).toEqual([]);
   });

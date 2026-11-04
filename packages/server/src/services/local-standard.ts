@@ -21,10 +21,10 @@ import { createLogger } from '../logger.js';
 import { isLocalOllamaBaseUrl, computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { pullOllamaModel, type PullOutcome } from './ollama-pull.js';
 import { localWorkBegins } from './ollama-quiet.js';
-import { getOllamaModelInfo } from './ollama.js';
+import { checkOllamaHealth, getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
-import { registerStandardRow, assignStandard, unregisterStandardRow } from './standard-model-rows.js';
+import { registerStandardRow, assignStandard, unregisterStandardRow, reconcileStandardRows } from './standard-model-rows.js';
 import { ollamaReadyForPair, pairHeld, pairHeldNote, pairModelsAllIn, pairOllamaLines, retryMayStart, pullRefusedForVersion } from './ollama-pair-gate.js';
 import { isVersionRefusal } from './ollama-version.js';
 
@@ -234,7 +234,9 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
  *  model of the pair missing runs the install again (no timer: answering IS the signal; single-flight). */
 export function retryStandardModelsIfMissing(installedNames: readonly string[], baseUrl: string): void {
   const provider = localOllamaProvider();
-  if (!provider || inFlight || provider.baseUrl !== baseUrl.replace(/\/+$/, '')) return;
+  if (!provider || provider.baseUrl !== baseUrl.replace(/\/+$/, '')) return;
+  reconcileStandardRows(provider.id, new Set(installedNames), [{ tag: TAG.decision, decision: true }, { tag: TAG.writer, decision: false }]);   // round 5: every answer
+  if (inFlight) return;
   if (STANDARD_TAGS.every((t) => installedNames.includes(t)) && standardModelRowId('writer') && standardModelRowId('decision')) {
     ownerConditionCleared(MISSING_CONDITION); pairModelsAllIn();   // N4: in and registered: the cards end (unregistered: the install registers, no pull)
     if (!installedNames.includes(STANDARD_DECISION_MODEL.windowTag)) windowRepair = import('./decision-window.js').then((m) => m.repairDecisionWindowTag(provider.baseUrl));   // t268 (I-1): made again locally
@@ -302,6 +304,8 @@ export async function ensureStandardModelsOncePerVersion(version: string): Promi
 /** The boot hook: background, never fatal. */
 export async function ensureStandardModelsAtBoot(): Promise<void> {
   await (await import('./ollama-model-limit.js')).ensureOllamaModelLimit();   // every start: launchctl's variable dies with a reboot
+  const local = localOllamaProvider();
+  if (local) await checkOllamaHealth(local.baseUrl);   // round 5: Ollama answering at boot reconciles the pair's rows with what it lists
   try {
     const { getCurrentVersion } = await import('../gateway/routes/update.js');
     await ensureStandardModelsOncePerVersion(getCurrentVersion());
