@@ -512,12 +512,21 @@ export async function finalizeTurnRecord(
     // complete_validated stays 0: the validation key still turns.
     if (answerRow) {
       try {
-        const { composeTurnDeliverySummary, isTangibleDeliverySummary } = await import('../../../../tracker/task-stamps.js');
+        const { composeTurnDeliverySummary, isTangibleDeliverySummary, ASK_THREAD_DELIVERY_SUMMARIES } = await import('../../../../tracker/task-stamps.js');
         const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
         // T19 (D7): "a TANGIBLE delivery on record" is asked of the ONE helper. The summary
         // now also NAMES a dashboard-only bubble (so the model's state line stops lying), and
         // that is deliberately NOT a handover: this close's narrow scope is unchanged.
-        if (isTangibleDeliverySummary(strike0Summary)) {
+        //
+        // ⚠ PENDING OWNER (v3.5 field fix 3, #8). OR-FIELD3(b) makes a dashboard or voice answer
+        // to an ask on that thread tangible, and every advisory reader now says so. Applied HERE
+        // it also closed, at the turn's end, every task a dashboard-ask turn opened while saying
+        // "On it, I have opened a task and will work through it": 23 driven clauses in t139, t145
+        // and t173 (every multi-step request lands on the task list) went red. The engine cannot
+        // tell that opening line from an answer by any record, so this ENGINE-initiated close
+        // keeps the old standard until the owner rules on that case. Fix #1 already lets the
+        // agent close such a task on the ask's recorded answer in any later turn.
+        if (isTangibleDeliverySummary(strike0Summary) && !ASK_THREAD_DELIVERY_SUMMARIES.includes(strike0Summary)) {
           const sameTurnOpen = db.prepare(
             `SELECT w.id AS id, w.title AS title FROM work w
               WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ?

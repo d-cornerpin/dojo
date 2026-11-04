@@ -53,7 +53,28 @@ const logger = createLogger('task-stamps');
  */
 export const NON_TANGIBLE_DELIVERY_SUMMARIES: readonly string[] = ['via dashboard', 'via voice'];
 
-/** Does this stored summary describe a TANGIBLE handover — the 2026-07-22 standard, unchanged?
+/**
+ * v3.5 field fix 3 (#8) — OWNER RULING OR-FIELD3(b), 2026-11-04: "A dashboard answer to a
+ * dashboard ask COUNTS as a tangible delivery for closing a task." The same channel-identity
+ * law makes a voice answer to a voice ask one too.
+ *
+ * The field shape: turn 6559 answered the owner's dashboard ask on the dashboard, and the
+ * strike-0 boundary close skipped the project's steps because `'via dashboard'` was declared
+ * non-tangible. The engine's own close refused the answer the owner read.
+ *
+ * WHY A NEW VALUE AND NOT A SHRUNK SET. `'via dashboard'` is already STORED on every ticket
+ * stamp written since T19 (`work_events` `activity` payloads), and there it means "a dashboard
+ * bubble on this turn", answering an ask or not (a status line on an engine wake included).
+ * Re-reading those rows as handovers would be old data read wrongly by new code. So the
+ * distinction is recorded where it is known, at write time: a dashboard or voice delivery to
+ * the conversation of the ask this turn was serving is named with one of these values, which
+ * the predicate counts as tangible because they are not in the non-tangible set. Any other
+ * dashboard or voice bubble keeps its non-tangible name. One writer, one predicate, closed sets.
+ */
+export const ASK_THREAD_DELIVERY_SUMMARIES: readonly string[] = ['via dashboard, answering the ask', 'via voice, answering the ask'];
+
+/** Does this stored summary describe a TANGIBLE handover? The 2026-07-22 standard, plus an
+ *  answer on the thread that asked (OR-FIELD3(b), `ASK_THREAD_DELIVERY_SUMMARIES`).
  *  The ONE predicate every consumer of the finished-work question asks. */
 export function isTangibleDeliverySummary(summary: string | null | undefined): boolean {
   return !!summary && !NON_TANGIBLE_DELIVERY_SUMMARIES.includes(summary);
@@ -65,6 +86,8 @@ export function isTangibleDeliverySummary(summary: string | null | undefined): b
  *  Two halves, in order: the TANGIBLE handover (files, out-of-band channels) exactly as
  *  before; and, only when there is no tangible handover at all, the honest naming of a
  *  dashboard/voice message the person actually read — see `NON_TANGIBLE_DELIVERY_SUMMARIES`.
+ *  Since OR-FIELD3(b), a dashboard/voice answer on the thread of the ask the turn served is
+ *  named with an `ASK_THREAD_DELIVERY_SUMMARIES` value instead, which is tangible.
  *  A chip is not a message: the dashboard half asks the same declared set
  *  (`NON_ANSWERING_DISPLAY_KINDS`) that the deliverable authority and the turn-receipt reader
  *  ask, so a `tool-turn` or `working-note` receipt names nothing. */
@@ -123,13 +146,25 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
     // truthfully, as one of the declared non-tangible values, so `(no delivery recorded)`
     // means what it says. Chips excluded by the same set the deliverable authority reads.
     const chipKinds = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
+    // OR-FIELD3(b): `answers_ask` is "this line went to the conversation of the ask the turn was
+    // serving". The turn's trigger is `turns.source_message_id`, and `ask:<messageId>` is the
+    // spine's own derivation of its ask (`work/store.ts:askIdForMessage`). A turn serving no ask
+    // (an engine wake, a notice) answers nothing, so its bubble keeps the non-tangible name.
     const seen = db.prepare(
-      `SELECT DISTINCT d.channel AS channel FROM deliveries d
+      `SELECT d.channel AS channel,
+              MAX(EXISTS (SELECT 1 FROM turns t JOIN work a ON a.id = 'ask:' || t.source_message_id AND a.kind = 'ask'
+                           WHERE t.agent_id = d.agent_id AND t.turn_number = d.turn_number
+                             AND a.conversation_id = d.conversation_id)) AS answers_ask
+         FROM deliveries d
         WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
           AND d.channel IN ('dashboard', 'voice')
           AND NOT EXISTS (SELECT 1 FROM messages m
-                           WHERE m.id = d.message_id AND m.display_kind IN (${chipKinds}))`,
-    ).all(agentId, turnNumber) as Array<{ channel: string }>;
+                           WHERE m.id = d.message_id AND m.display_kind IN (${chipKinds}))
+        GROUP BY d.channel`,
+    ).all(agentId, turnNumber) as Array<{ channel: string; answers_ask: number }>;
+    const onAskThread = ASK_THREAD_DELIVERY_SUMMARIES
+      .find((s) => seen.some((c) => c.answers_ask === 1 && s.startsWith(`via ${c.channel},`)));
+    if (onAskThread) return onAskThread;
     const named = NON_TANGIBLE_DELIVERY_SUMMARIES
       .find((s) => seen.some((c) => s === `via ${c.channel}`));
     return named ?? '';
