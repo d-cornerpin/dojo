@@ -38,6 +38,7 @@ import { getDb } from '../db/connection.js';
 import { kvBytesPerTokenOf } from './kv-bytes.js';
 import { STANDARD_TAGS } from './local-standard.js';
 import { dojoWorkingBytes } from './dojo-working-memory.js';
+import { isThisMachineUrl } from '../agent/stream-patience.js';
 
 // Detect whether an Ollama base URL points at the host machine we're
 // running on. Localhost → use os.totalmem(). Remote → use the user-entered
@@ -45,10 +46,8 @@ import { dojoWorkingBytes } from './dojo-working-memory.js';
 export function isLocalOllamaBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // default Ollama baseUrl is localhost:11434
   // v3.5 (I-d-1): the PARSED hostname decides, never a substring — `http://localhost@gpu-box` is
-  // gpu-box. Exactly localhost, 127.0.0.0/8 or ::1; anything that does not parse is not this machine.
-  let host: string;
-  try { host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`).hostname.toLowerCase(); } catch { return false; }
-  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+  // gpu-box. The one rule lives in `agent/stream-patience.ts` (the doom guard asks it too).
+  return isThisMachineUrl(baseUrl);
 }
 
 const logger = createLogger('num-ctx-calc');

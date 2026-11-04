@@ -31,10 +31,12 @@ describe('contextWindowPolicy — RED: a declared provider ceiling caps the admi
       ...MEASURED_PRIMARY,
       providerCeilingTokens: FIXTURE_CEILING,
     });
+    // v3.5 field fix 3 (#11): the cap bounds the window figure and the reserve comes off what it leaves
+    // (it was 51,300 flat: the reserve had been taken before the cap, so the capped budget ate it).
     expect(withCeiling.assemblyBudgetTokens).toBe(
-      providerAwareBudgetTokens(withoutCeiling.assemblyBudgetTokens, FIXTURE_CEILING),
+      providerAwareBudgetTokens(Math.floor(0.96 * 200_000), FIXTURE_CEILING) - RESERVE_PRIMARY,
     );
-    expect(withCeiling.assemblyBudgetTokens).toBe(51_300);
+    expect(withCeiling.assemblyBudgetTokens).toBe(51_300 - RESERVE_PRIMARY);
 
     // A would-be-60K assembly no longer fits admission — it must trim BEFORE any dial.
     expect(60_000).toBeGreaterThan(withCeiling.assemblyBudgetTokens);

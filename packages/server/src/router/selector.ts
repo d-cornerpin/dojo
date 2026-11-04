@@ -14,7 +14,7 @@ import { standardModelRowId } from '../services/local-standard.js';
 import type { DimensionScore } from './types.js';
 // T82a fix wave (round 2) — a LEAF import, deliberately not `agent/model.js`: see
 // `providerCeilingTokensFor` below for why the query is mirrored here instead.
-import { resolveStreamPatience, resolveDoomCeiling, providerAwareBudgetTokens } from '../agent/stream-patience.js';
+import { resolveStreamPatience, resolveDoomCeiling, providerAwareBudgetTokens, doomGuardApplies } from '../agent/stream-patience.js';
 import { CONTEXT_THRESHOLD } from '../memory/budget.js';
 
 const logger = createLogger('selector');
@@ -66,11 +66,13 @@ function providerCeilingTokensFor(modelId: string): number | null {
     const db = getDb();
     const row = db.prepare(`
       SELECT p.first_chunk_timeout_ms AS first_chunk_timeout_ms, p.prefill_tokens_per_sec AS prefill_tokens_per_sec,
-             p.measured_prefill_tokens_per_sec AS measured_prefill_tokens_per_sec
+             p.measured_prefill_tokens_per_sec AS measured_prefill_tokens_per_sec, p.type AS type, p.base_url AS base_url
       FROM models m JOIN providers p ON p.id = m.provider_id
       WHERE m.id = ?
-    `).get(modelId) as { first_chunk_timeout_ms: number | null; prefill_tokens_per_sec: number | null; measured_prefill_tokens_per_sec: number | null } | undefined;
+    `).get(modelId) as { first_chunk_timeout_ms: number | null; prefill_tokens_per_sec: number | null; measured_prefill_tokens_per_sec: number | null; type: string | null; base_url: string | null } | undefined;
     if (!row) return null;
+    // v3.5 field fix 3 (#11, OR-FIELD3 (a)), mirrored from `getProviderCeilingTokens`: a cloud provider has no doom ceiling.
+    if (!doomGuardApplies({ providerType: row.type, providerBaseUrl: row.base_url })) return null;
     const patience = resolveStreamPatience({ firstChunkTimeoutMs: row.first_chunk_timeout_ms, streamIdleTimeoutMs: null });
     // R6, mirrored from `getProviderCeilingTokens`: a declared throughput alone, with no
     // declared patience, is not "this provider declared both halves" — leave it unconstrained.

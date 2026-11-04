@@ -628,11 +628,12 @@ export function contextWindowPolicy(
 ): ContextWindowPolicy {
   const cw = clampWindow(contextWindow);
   const reserve = Math.max(0, toolAndOutputReserve(measured));
-  const windowBudget = Math.max(0, Math.floor(CONTEXT_THRESHOLD * cw) - reserve);
+  // v3.5 field fix 3 (#11): the cap bounds the WINDOW figure and the reserve comes off what it leaves, so a
+  // capped budget still holds the tools and the output (the cap was applied after the reserve, and ate it).
+  const windowFigure = Math.floor(CONTEXT_THRESHOLD * cw);
   const { providerCeilingTokens } = measured;
-  const assemblyBudgetTokens = providerCeilingTokens != null
-    ? Math.max(0, providerAwareBudgetTokens(windowBudget, providerCeilingTokens))
-    : windowBudget;
+  const cappedFigure = providerCeilingTokens != null ? providerAwareBudgetTokens(windowFigure, providerCeilingTokens) : windowFigure;
+  const assemblyBudgetTokens = Math.max(0, cappedFigure - reserve);
   return {
     contextWindow: cw,
     compactionThreshold: CONTEXT_THRESHOLD,

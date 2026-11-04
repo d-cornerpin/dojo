@@ -197,13 +197,17 @@ const seedOpenAICompatibleUndeclaredFirstChunk = (prefillTokensPerSec: number | 
   `).run();
 };
 
+/** v3.5 field fix 3 (#11, OR-FIELD3 (a)): the doom guard is a LOCAL box's, so the Anthropic-direct wiring is proved
+ *  on an Anthropic-shaped endpoint on this machine; `null` is the cloud row, which keeps its full window. */
+const LOCAL_ANTHROPIC_ENDPOINT = 'http://127.0.0.1:8081';
+
 /** Seed an Anthropic-direct provider whose row declares (or does not declare) throughput. */
-const seedAnthropicDirect = (prefillTokensPerSec: number | null): void => {
+const seedAnthropicDirect = (prefillTokensPerSec: number | null, baseUrl: string | null = LOCAL_ANTHROPIC_ENDPOINT): void => {
   const db = mockDb.current!;
   db.prepare(`
-    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec, is_validated, created_at, updated_at)
-    VALUES ('anthropic', 'Anthropic', 'anthropic', 'api_key', ?, ?, 1, datetime('now'), datetime('now'))
-  `).run(SCALED_PATIENCE_MS, prefillTokensPerSec);
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec, is_validated, created_at, updated_at)
+    VALUES ('anthropic', 'Anthropic', 'anthropic', ?, 'api_key', ?, ?, 1, datetime('now'), datetime('now'))
+  `).run(baseUrl, SCALED_PATIENCE_MS, prefillTokensPerSec);
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
     VALUES ('m-anthropic', 'anthropic', 'Claude', 'claude-x', '["text","tools"]', 200000, 8192, 1, datetime('now'), datetime('now'))
@@ -539,14 +543,14 @@ describe('C1 — a measured rate never arms the gate against a patience nobody d
 // ════════════════════════════════════════════════════════════════════════════════════
 
 /** Anthropic-direct, declared patience, NO declared throughput, measured. Post-C1 this arms. */
-const seedAnthropicDirectMeasuredOnly = (measuredTokensPerSec: number | null): void => {
+const seedAnthropicDirectMeasuredOnly = (measuredTokensPerSec: number | null, baseUrl: string | null = LOCAL_ANTHROPIC_ENDPOINT): void => {
   const db = mockDb.current!;
   db.prepare(`
-    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms,
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms,
                            prefill_tokens_per_sec, measured_prefill_tokens_per_sec, measured_prefill_at,
                            is_validated, created_at, updated_at)
-    VALUES ('anthropic', 'Anthropic', 'anthropic', 'api_key', ?, NULL, ?, datetime('now'), 1, datetime('now'), datetime('now'))
-  `).run(SCALED_PATIENCE_MS, measuredTokensPerSec);
+    VALUES ('anthropic', 'Anthropic', 'anthropic', ?, 'api_key', ?, NULL, ?, datetime('now'), 1, datetime('now'), datetime('now'))
+  `).run(baseUrl, SCALED_PATIENCE_MS, measuredTokensPerSec);
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
     VALUES ('m-anthropic', 'anthropic', 'Claude', 'claude-x', '["text","tools"]', 200000, 8192, 1, datetime('now'), datetime('now'))
@@ -578,6 +582,17 @@ describe('I1 — the Anthropic-direct dial site reads the measurement too', () =
   it('GREEN: the same measured rate dials a prompt that fits its ceiling', async () => {
     seedAnthropicDirectMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC);
     await callAnthropicDirect(SHORT_MESSAGE);
+    expect(anthropic.streamCalls).toHaveLength(1);
+  });
+  it('v3.5 field fix 3 (OR-FIELD3 (a)): the CLOUD row (no local endpoint) dials the same oversized prompt: its full window', async () => {
+    seedAnthropicDirectMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC, null);
+    await callAnthropicDirect(LONG_MESSAGE);
+    expect(anthropic.streamCalls).toHaveLength(1);
+  });
+
+  it('v3.5 field fix 3: a cloud row with a DECLARED throughput dials it too', async () => {
+    seedAnthropicDirect(SCALED_THROUGHPUT_TOK_PER_SEC, null);
+    await callAnthropicDirect(LONG_MESSAGE);
     expect(anthropic.streamCalls).toHaveLength(1);
   });
 });

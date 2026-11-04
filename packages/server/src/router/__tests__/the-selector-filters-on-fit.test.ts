@@ -43,8 +43,8 @@ function seedTier(db: Database.Database): void {
   `).run(CLOUD_MODEL, CLOUD_MODEL);
 
   db.prepare(`
-    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
-    VALUES ('slow-local', 'Slow Local', 'openai', 'api_key', 600000, 180)
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
+    VALUES ('slow-local', 'Slow Local', 'openai', 'http://localhost:8080/v1', 'api_key', 600000, 180)
   `).run();
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, is_enabled, capabilities, context_window, input_cost_per_m, output_cost_per_m)

@@ -58,6 +58,11 @@
 // declared a first-chunk patience, and every consumer still spends only
 // `PROVIDER_CEILING_SAFETY` (half) of the ceiling it derives.
 //
+// v3.5 field fix 3 (#11, owner ruling OR-FIELD3 (a)): the reading is still taken for every provider, but only a LOCAL
+// provider's is spent (`doomGuardApplies`, `agent/stream-patience.ts`). On a cloud model with prompt caching the
+// uncached input is small and the latency carries the generation, so the bound sat far below the real speed and
+// capped a 1M window at about 13%. Cloud models get their full window.
+//
 // The same arithmetic run on the incident's own row: the dev box's local-deepseek call billed
 // 35,237 uncached input tokens with a 194.6-second latency, which is 181 tok/s — within 10% of
 // the ~200 tok/s the owner measured by hand and wrote into `agent/stream-patience.ts`'s T73b

@@ -41,6 +41,10 @@ vi.mock('../../../../../db/connection.js', () => ({
 }));
 
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
+// v3.5 field fix 3 (#11): the tool and output reserve now comes off the CAPPED figure, so the fixture's own tool
+// payload is held small (as `t206` holds it) to keep the incident's numbers: the 600s/180tps ceiling, not the
+// tool surface, is this file's subject.
+vi.mock('../../../../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
 
 const generateSummarySpy = vi.fn();
 vi.mock('../../../../../memory/summarize.js', () => ({
@@ -98,8 +102,8 @@ function seed(opts: { declareCeiling: boolean; tailTokensEach: number }): void {
   db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, ?, 'idle', datetime('now'))`)
     .run(AGENT, 'Turn Budget Test');
   db.prepare(`
-    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
-    VALUES ('testprov', 'Test', 'openai', 'api_key', ?, ?)
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
+    VALUES ('testprov', 'Test', 'openai', 'http://localhost:8080/v1', 'api_key', ?, ?)
   `).run(
     opts.declareCeiling ? DECLARED_PATIENCE_MS : null,
     opts.declareCeiling ? DECLARED_TOKENS_PER_SEC : null,

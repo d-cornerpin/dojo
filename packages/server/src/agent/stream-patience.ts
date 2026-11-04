@@ -413,6 +413,38 @@ export function resolveDoomCeiling(
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// v3.5 field fix 3 (#11, owner ruling OR-FIELD3 (a)): THE DOOM CEILING IS A LOCAL BOX'S GUARD.
+//
+// "Cloud models get their FULL context window; the provider-ceiling (prefill doom) cap applies to
+// local models only." The ceiling exists for a slow box the owner runs himself. On a cloud
+// provider the measured rate is a lower bound read off cached calls (`costs/prefill-calibration.ts`),
+// far below the real speed, and it capped a 1M window at about 13% (field report 3, Problem 5a).
+// Every consumer (the admission budget through `getProviderCeilingTokens`, the router's fit filter,
+// the pre-dial backstop) asks this one predicate first.
+//
+// LOCAL, in the code's own two notions, nothing new: a provider TYPE that runs on the owner's
+// hardware (the free-and-local set the spend wall already exempts, `agent/model.ts`), or a base URL
+// whose parsed host is this machine (the rule `isLocalOllamaBaseUrl` applies to Ollama).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Provider types whose inference runs on the owner's own hardware (free and local). */
+export const LOCAL_PROVIDER_TYPES: ReadonlySet<string> = new Set(['ollama', 'local']);
+
+/** Does this base URL point at this machine? The PARSED hostname decides, never a substring:
+ *  exactly localhost, 127.0.0.0/8 or ::1. A URL that does not parse is not this machine. */
+export function isThisMachineUrl(baseUrl: string): boolean {
+  let host: string;
+  try { host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`).hostname.toLowerCase(); } catch { return false; }
+  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+/** Is the doom ceiling armed for this provider? Only for a local one (header above). */
+export function doomGuardApplies(provider: { providerType: string | null | undefined; providerBaseUrl: string | null | undefined }): boolean {
+  if (provider.providerType && LOCAL_PROVIDER_TYPES.has(provider.providerType)) return true;
+  return typeof provider.providerBaseUrl === 'string' && isThisMachineUrl(provider.providerBaseUrl);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // T82a (ANSWER-ANYWAY) — CENSUS ROW [safety fraction]: THE ADMISSION BUDGET LEARNS THE BOX.
 // ════════════════════════════════════════════════════════════════════════════════════════
 //
