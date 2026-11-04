@@ -130,6 +130,10 @@ export interface ExecuteScratch {
   readonly onceGuardExecuted: Map<string, string>;
   calledCompleteTask: boolean;
   calledFireAndForgetGen: boolean;
+  /** v3.5 field fix 3 (#7): send_to_agent / broadcast_to_group calls that reached the
+   *  executor in this response. A refused send never counts. A counter on the shared scratch,
+   *  not a `state` flag: the parallel `runOne` callbacks clobber each other's `state` writes. */
+  a2aSendsExecuted: number;
 }
 
 /** The step's outcome. On the proceed arm it carries the ONE declaration of this
@@ -162,6 +166,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
 
   const sc: ExecuteScratch = {
     state, recentSigs, onceGuardExecuted, calledCompleteTask, calledFireAndForgetGen,
+    a2aSendsExecuted: 0,
   };
   const runOne = (tc: ToolCall): Promise<PendingToolResult> => runOneToolCall(tc, ctx, sc);
 
@@ -287,15 +292,18 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   // and deliver attachments to the OWNER). The reply is already delivered +
   // recorded; there is nothing else to do.
   //
-  // Read THIS iteration's actual tool calls, not state.sentToAgentThisTurn:
-  // that flag is set via `state = advance(...)` inside the parallel
-  // `runOne` callbacks (Promise.all), where concurrent reassignments clobber
-  // each other, so it can silently fail to stick and the turn runs away.
-  // result.toolCalls is deterministic.
-  const issuedA2AReplyThisIteration = (result.toolCalls ?? []).some(
-    (tc) => tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group',
-  );
-  if (counterparty.kind === 'agent' && (state.sentToAgentThisTurn || issuedA2AReplyThisIteration)) {
+  // Read the EXECUTED sends counted on this response's scratch, not
+  // state.sentToAgentThisTurn: that flag is set via `state = advance(...)` inside
+  // the parallel `runOne` callbacks (Promise.all), where concurrent reassignments
+  // clobber each other, so it can silently fail to stick and the turn runs away.
+  //
+  // v3.5 field fix 3 (#7): this read `result.toolCalls`, the calls the model
+  // EMITTED, so a REFUSED send ended the turn as if it had gone out. On the
+  // owner's box the close-out gate refused the send and the loop logged "A2A
+  // reply sent" one millisecond later; the tracker call the gate asked for
+  // never got its turn. Only a send that reached the executor exits now, which
+  // keeps the runaway guard: an executed send still ends the turn at once.
+  if (counterparty.kind === 'agent' && sc.a2aSendsExecuted > 0) {
     logger.info('v2: A2A reply sent, exiting loop (send_to_agent is the response)', { agentId }, agentId);
     return requestExit(state, 'a2a-reply-sent') as ExecuteOutcome;
   }
