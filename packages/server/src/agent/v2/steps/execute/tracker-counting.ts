@@ -24,7 +24,7 @@ import { getDb } from '../../../../db/connection.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
 import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
-import { effectsFor } from '../../../tools/registry.js';
+import type { ToolEffect } from '../../../tools/types.js';
 import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
 
 /**
@@ -87,7 +87,12 @@ export function taskToCharge(agentId: string): string | null {
   return jobTaskOf(agentId, getDb())?.id ?? resolveCurrentClaimedTaskId(agentId);
 }
 
-export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: ExecuteContext, roundResults: ReadonlyArray<RoundResult> = []): AgentTurnState {
+export function countTrackerWorkThisIteration(
+  state: AgentTurnState, ctx: ExecuteContext, roundResults: ReadonlyArray<RoundResult> = [],
+  /** Each tool's declared effects (the registry's `effectsFor`), handed in by the executor, which already
+   *  loads the tool layer: importing it here would add a module edge (the first-import census). */
+  effectsOf: (toolName: string) => readonly ToolEffect[] | undefined = () => undefined,
+): AgentTurnState {
   const { agentId, turnCtx, result, counterparty, counterpartyIsAgentSender, engineStartAckDeliveredThisTurn } = ctx;
 
   // ── Runtime tracker nudge (v2.5.40) ──
@@ -202,7 +207,7 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
     const claimedTaskId = taskToCharge(agentId);
     if (claimedTaskId) {
       chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) }); // t172: repeat vs new; v3.5 D1: this turn's new SUCCESSFUL ones
-      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsFor); // v3.5: the items THIS round's successes touched; field fix 3: and the files and commands, from each tool's declared effects
+      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsOf); // v3.5: the items THIS round's successes touched; field fix 3: and the files and commands, from each tool's declared effects
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

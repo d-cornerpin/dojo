@@ -15,6 +15,7 @@ vi.mock('../../../../../db/connection.js', () => ({
 }));
 
 import { countTrackerWorkThisIteration } from '../tracker-counting.js';
+import { effectsFor } from '../../../../tools/registry.js';
 import { initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import type { ExecuteContext } from '../index.js';
@@ -156,7 +157,7 @@ describe('v3.5 field fix 3 (#6a): the ledger learns the worker\'s file and comma
       x1: { content: '(command completed with no output)' },
       x2: { content: 'stdout:\n3' },
       x3: { content: 'command_failed: exit 1' },
-    }));
+    }), effectsFor);
     expect(ledger('only')).toEqual([
       'cmd:false', 'cmd:ls /tmp/out | wc -l', 'cmd:mkdir -p /tmp/out',
       'file:/tmp/out/log.md', 'file:/tmp/out/summary.md',
@@ -174,16 +175,16 @@ describe('v3.5 field fix 3 (#6a): the ledger learns the worker\'s file and comma
       x1: { content: 'Error: exec takes an argv ARRAY', isError: true },
       x2: { content: 'denied', errorCode: 'PERMISSION_DENIED' },
       x3: { content: 'command_failed: exit 1' },
-    }));
+    }), effectsFor);
     expect(ledger('only')).toEqual(['cmd:false', 'file:/tmp/out/log.md']);
   });
 
   it('a re-run keeps one entry and its latest exit status', () => {
     seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
     const once: Call[] = [{ id: 'r1', name: 'exec', arguments: { argv: ['make', 'report'] } }];
-    countTrackerWorkThisIteration(stateWith(once), ctxFor(once), [{ toolCallId: 'r1', name: 'exec', content: 'command_failed: exit 2', isError: false }]);
+    countTrackerWorkThisIteration(stateWith(once), ctxFor(once), [{ toolCallId: 'r1', name: 'exec', content: 'command_failed: exit 2', isError: false }], effectsFor);
     const again: Call[] = [{ id: 'r2', name: 'exec', arguments: { argv: ['make', 'report'] } }];
-    countTrackerWorkThisIteration(stateWith(again), ctxFor(again), [{ toolCallId: 'r2', name: 'exec', content: 'stdout:\nbuilt', isError: false }]);
+    countTrackerWorkThisIteration(stateWith(again), ctxFor(again), [{ toolCallId: 'r2', name: 'exec', content: 'stdout:\nbuilt', isError: false }], effectsFor);
     expect(ledger('only')).toEqual(['cmd:make report']);
     expect(detailOf('only', 'cmd:make report')).toBe('exit 0');
   });

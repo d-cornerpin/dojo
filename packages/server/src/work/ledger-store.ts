@@ -12,7 +12,11 @@
 // the work and never an item: a command is as often a read (`ls`, `cat`) as a change, so the
 // measured-job readers below (momentum, "touched", the stall check) count items only.
 import { getDb } from '../db/connection.js';
-import { itemKeysOf, COMMAND_KEY, FILE_KEY } from '../tools/item-keys.js';
+import { itemKeysOf, COMMAND_KEY } from '../tools/item-keys.js';
+import { IS_ITEM } from './ledger-read.js';
+// The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
+// spine imports, so they must not pull this file's provider imports); re-exported here for the callers.
+export { ledgerTotals, ledgerWorkEntries, type LedgerWorkEntry } from './ledger-read.js';
 import type { ToolEffect } from '../agent/tools/types.js';
 import { appliedKeysOf } from '../google/gmail-label.js';
 import { appendWorkEvent } from './store.js';
@@ -22,9 +26,6 @@ import type { Measure, MeasureCount } from './measure.js';
 /** One reading of a task's measure, on the task's own spine. Written by the engine (`'engine'`),
  *  so a reading is a record and never reads as the task moving (`taskMovedAtSql`). */
 export const MEASURED_EVENT = 'measured' as const satisfies WorkEventKind;
-
-/** SQL: this ledger row is an item (anything but a command record). */
-const IS_ITEM = `substr(item_key, 1, ${COMMAND_KEY.length}) <> '${COMMAND_KEY}'`;
 
 /** Record the items a call touched for a task. Returns the rows inserted or touched. `detail`: a
  *  command's exit status (the newest run's), null for everything else. */
@@ -37,32 +38,6 @@ export function recordTouched(workId: string, tool: string, keys: string[], at: 
   );
   db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at, detail); })(keys);
   return keys.length;
-}
-
-/** `touched` and `byTool` are ITEMS (mailbox items and files); `commands` is how many distinct commands ran. */
-export function ledgerTotals(workId: string): { touched: number; commands: number; lastAt: number | null; byTool: Array<{ tool: string; n: number }> } {
-  const db = getDb();
-  const t = db.prepare(
-    `SELECT COALESCE(SUM(CASE WHEN ${IS_ITEM} THEN 1 ELSE 0 END), 0) AS n, COUNT(*) AS all_n, MAX(last_at) AS last FROM work_ledger WHERE work_id = ?`,
-  ).get(workId) as { n: number; all_n: number; last: number | null };
-  const byTool = db.prepare(`SELECT tool, COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND ${IS_ITEM} GROUP BY tool ORDER BY n DESC, tool`).all(workId) as Array<{ tool: string; n: number }>;
-  return { touched: t.n, commands: t.all_n - t.n, lastAt: t.last, byTool };
-}
-
-/** One file or command entry on a task's ledger, as the validation request and the verdict record show it. */
-export interface LedgerWorkEntry { kind: 'file' | 'command'; what: string; tool: string; status: string | null }
-
-/** The task's file and command entries, oldest first. Mailbox items are counted (`ledgerTotals`), not
- *  listed: a sweep touches thousands of ids and a path or a command is what a reviewer can open. */
-export function ledgerWorkEntries(workId: string): LedgerWorkEntry[] {
-  const rows = getDb().prepare(
-    `SELECT item_key AS k, tool, detail FROM work_ledger WHERE work_id = ?
-       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}')
-     ORDER BY first_at, rowid`,
-  ).all(workId) as Array<{ k: string; tool: string; detail: string | null }>;
-  return rows.map((r) => r.k.startsWith(FILE_KEY)
-    ? { kind: 'file' as const, what: r.k.slice(FILE_KEY.length), tool: r.tool, status: null }
-    : { kind: 'command' as const, what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail });
 }
 
 /** A command's exit status, from the head of its result: the process runner (`agent/tools/process-run.ts`)

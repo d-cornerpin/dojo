@@ -668,3 +668,7 @@ export function resultViewChars(toolName: string, content: string, isError = fal
   const ownPage = OWN_PAGE_TRAILERS.some((re) => re.test(tail));
   return Math.min(declared * CHARS_PER_TOKEN * (ownPage ? 2 : 1), TOOL_RESULT_VIEW_CHARS);
 }
+
+// v3.5 field fix 3 (#6a): each tool's declared effects, for the executor's ledger charge. LAST in the file on
+// purpose: `gates.js` above already loads the registry, so this re-export never moves evaluation order.
+export { effectsFor } from './registry.js';
