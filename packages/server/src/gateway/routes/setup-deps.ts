@@ -17,11 +17,11 @@ import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
 import {
   ensureLocalOllamaProvider, startStandardInstall, standardState, standardProgressLines,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
+  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS,
 } from '../../services/local-standard.js';
 import { ensureOllamaModelLimit } from '../../services/ollama-model-limit.js';
-import { releasePairHold } from '../../services/ollama-pair-gate.js';
-import { plainPullError } from '../../services/ollama-version.js';
+import { releasePairHold, ollamaCurrentForModel } from '../../services/ollama-pair-gate.js';
+import { isVersionRefusal, plainPullError } from '../../services/ollama-version.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -268,14 +268,17 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
 
   const model = body.model as string;
   try {
-    const outcome = await pullOllamaModel(model, { onProgress: (p) => { currentPullProgress = p; } });
+    const pull = () => pullOllamaModel(model, { onProgress: (p) => { currentPullProgress = p; } });
+    let outcome = await pull();   // field failure 2: one that needs a newer Ollama gets Repair's upkeep (made current), then again
+    const upkeep = !outcome.ok && isVersionRefusal(outcome.error) ? await ollamaCurrentForModel(ensureLocalOllamaProvider(), STANDARD_TAGS.length) : null;
+    if (upkeep?.ok) outcome = await pull();
     if (outcome.ok) {
       currentPullProgress = null;
       return c.json({ ok: true, data: { model, pulled: true, status: outcome.status } });
     }
     if (outcome.stalled) return routeFailure(c, logger, new Error(outcome.error), { status: 500 });
     logger.warn('Manual model pull failed', { model, error: outcome.error });
-    return c.json({ ok: false, error: plainPullError(outcome.error) }, 500);
+    return c.json({ ok: false, error: plainPullError(outcome.error, upkeep?.line) }, 500);
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }

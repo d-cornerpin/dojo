@@ -79,7 +79,8 @@ export async function ensureOllamaCurrent(
   const stale = need === 'newer' || !meets(before);
   const ok = (line?: string): UpgradeResult => { ownerConditionCleared('ollama-too-old'); ownerConditionCleared('ollama-down'); return { ok: true, line }; };
   if (!stale && (found.kind === 'app' || found.kind === 'brew-service' || isUnknownBuild(before))) return ok();
-  const tooOld = stale ? `Ollama ${before ?? '(unknown version)'} is older than the Dojo's models need${need !== 'newer' ? ` (${need})` : ''}. ` : '';
+  const tooOld = !stale ? '' : need === 'newer' ? `Ollama ${before ?? '(unknown version)'} is older than the model needs. `
+    : `Ollama ${before ?? '(unknown version)'} is older than the Dojo's models need (${need}). `;
   const cannot = (why: string): UpgradeResult => {
     logger.warn('The Dojo could not update or take over the local Ollama', { kind: found.kind, have: before, need, why });
     if (!stale) return ok();   // it serves what the models need; only the limit and lasting past a Dojo restart are missing

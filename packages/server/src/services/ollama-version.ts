@@ -53,5 +53,5 @@ export const isVersionRefusal = (error: string): boolean => /newer version of ol
 
 /** A manual pull's failure in the words the setup screen shows: the registry's version refusal becomes plain (its own
  *  text stays in the log); any other failure is the model name's or the network's and is shown as it came. */
-export const plainPullError = (error: string): string =>
-  (isVersionRefusal(error) ? 'This model needs a newer Ollama than this Mac runs. Download the latest from ollama.com, then try again.' : error);
+export const plainPullError = (error: string, why?: string | null): string =>
+  (isVersionRefusal(error) ? `This model needs a newer Ollama than this Mac runs. ${why ?? 'The Dojo could not update it by itself.'}` : error);

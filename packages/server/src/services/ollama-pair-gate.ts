@@ -88,6 +88,16 @@ export function ollamaReadyForPair(
   });
 }
 
+/** The owner's own pull (setup's model list: an agent's model) was refused as needing a newer Ollama: the same upkeep as
+ *  Repair makes Ollama current, then the caller pulls again (owner ruling OR-UPKEEP-AUTOMATIC: never "download it yourself").
+ *  Nothing of the pair is held; when it could not, the routine told its one card and its line says why. */
+export function ollamaCurrentForModel(
+  provider: { id: string; baseUrl: string } | null, residentCount: number, host: OllamaHost | null = getOllamaHost(),
+): Promise<UpgradeResult> {
+  if (!host || !provider) return Promise.resolve(noHost('Ollama is too old for this model.'));
+  return inUpkeep(() => ensureOllamaCurrent(host, provider, 'newer', residentCount));
+}
+
 /** The registry refused a pull as "needs a newer Ollama": the authoritative signal, whatever the version check said (it was
  *  unreadable, or a minimum is not declared or was too low). The same upgrade runs; true = Ollama was updated, pull again.
  *  Only a failed upgrade holds the pull and tells the card. */

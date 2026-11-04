@@ -20,7 +20,7 @@ export const OLLAMA_LIMIT_FAILED_WORDS = "Dojo: it could not raise Ollama's limi
 /** Fix W: the Dojo's own models need a newer Ollama than this box runs and the Dojo could not update it itself, in one of the
  *  few cases it cannot fix (another user's or the system's Ollama, no Homebrew); condition `ollama-too-old`, it ends when
  *  Ollama is new enough. The reason is the Settings line. Shown once, through the existing cards. */
-export const OLLAMA_TOO_OLD_WORDS = "Dojo: its own local models need a newer Ollama, and the Dojo could not update the Ollama on this Mac by itself. "
+export const OLLAMA_TOO_OLD_WORDS = "Dojo: a local model needs a newer Ollama, and the Dojo could not update the Ollama on this Mac by itself. "
   + `${settingsPath('ollama')} shows why. Everything else keeps working, and the Dojo tries again at its next start or when you press Repair there.`;
 /** Fix W: the Dojo stopped Ollama to start the updated one, and it did not come back (condition `ollama-down`; it ends when the
  *  Dojo's upkeep has Ollama answering again). */
