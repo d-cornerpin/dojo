@@ -492,6 +492,15 @@ export const validationThreadIdExpr = (a: string): string =>
  *  same millisecond as the clear before it read as already answered and the row left the
  *  hold it had just been put in. */
 export const awaitingUserVerdictExpr = (a: string): string =>
+  `(CASE WHEN ${a}.state NOT IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`
+  + ` AND ${userVerdictOpenOnLogExpr(a)} = 1 THEN 1 ELSE 0 END)`;
+
+/** v3.5 field fix 3 (#3a): the request's POSITION on the log alone, whatever the row's state.
+ *  `awaitingUserVerdictExpr` adds the scope bound: a finished row cannot be awaiting a verdict
+ *  on its status (the owner's box swept five done/cancelled rows every 30s for that reason).
+ *  This one is for the writers that answer a request as part of closing a row
+ *  (`work/store.ts:transition`) and for the repair migration's question. */
+export const userVerdictOpenOnLogExpr = (a: string): string =>
   `(CASE WHEN COALESCE(${lastEvent(a, WORK_EVENT.userVerdictRequested, 'id')}, -1)`
   + ` > COALESCE(${lastEvent(a, WORK_EVENT.userVerdictCleared, 'id')}, -1) THEN 1 ELSE 0 END)`;
 

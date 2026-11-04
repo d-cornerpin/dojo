@@ -273,10 +273,15 @@ async function sweepStaleOverrideRequests(): Promise<void> {
       // A TIMEOUT IS NOT A VERDICT, which is why the old schema had `auto_denied` as a value
       // distinct from `denied` and why nothing is written to `adjudications` here: nobody
       // ruled. The ask is answered and the requester is told.
-      resolveOverrideRequest(r.id, {
+      //
+      // v3.5 field fix 3 (#3, the sibling sweep): the audit row and the requester's notice
+      // follow ONLY a resolution that applied. `false` means the request was already answered
+      // (the PM ruled between the finder and here), and then nothing was auto-denied.
+      const resolved = resolveOverrideRequest(r.id, {
         outcome: 'auto_denied', resolvedBy: 'engine',
         reason: `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution`,
       });
+      if (!resolved) continue;
       writeTaskLog({
         taskId: r.taskId,
         fromEntity: 'engine',
@@ -329,25 +334,33 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
     }>;
     if (stale.length === 0) return;
 
-    const dropStmt = {
-      run: (id: string) => {
-        const r = setTrackerStatus(id, 'blocked', {
-          by: 'scheduler', actorId: 'scheduler',
-          reason: `the owner's verdict was never given within ${STALE_REQUEST_HOURS}h`,
-        });
-        if (workSettled(r)) {
-          clearUserVerdict(id, 'scheduler', 'verdict request timed out');
-          // The scheduler's own timeout IS the validation of this block — the same
-          // reasoning the `blocked_validated = 1` assignment carried.
-          upholdClaim(id, 'blocked', 'pm', 'scheduler', 'verdict request timed out; block recorded');
-        }
-      },
-    };
+    // v3.5 field fix 3 (#3c): RECORD ONLY WHAT HAPPENED. The audit row and both broadcasts
+    // used to run after the guarded clear whatever the drop's outcome, so a refused drop wrote
+    // "dropped to blocked, please review" and left the row in this finder's subject: the
+    // owner's box got the same false line on five finished tasks every 30s. Now every row
+    // either moves or leaves the subject, and the record names what really happened:
+    //   applied   -> clear, uphold the block, one audit row, one board update;
+    //   no_change -> already blocked: clear and uphold, nothing moved, so nothing to announce;
+    //   refused   -> clear with the refusal's reason (the row leaves the subject), one log line.
     const { writeTaskLog } = await import('../tracker/task-log.js');
     const { broadcast: bcast } = await import('../gateway/ws.js');
     let swept = 0;
     for (const t of stale) {
-      dropStmt.run(t.id);
+      const r = setTrackerStatus(t.id, 'blocked', {
+        by: 'scheduler', actorId: 'scheduler',
+        reason: `the owner's verdict was never given within ${STALE_REQUEST_HOURS}h`,
+      });
+      if (!workSettled(r)) {
+        const why = r.kind === 'refused' ? `${r.reason}${r.detail ? `: ${r.detail}` : ''}` : r.kind;
+        clearUserVerdict(t.id, 'scheduler', `verdict request timed out; the drop to blocked was refused (${why})`);
+        logger.info('Stale user verdict request cleared: the drop to blocked was refused', { taskId: t.id, refusal: why });
+        continue;
+      }
+      clearUserVerdict(t.id, 'scheduler', 'verdict request timed out');
+      // The scheduler's own timeout IS the validation of this block — the same
+      // reasoning the `blocked_validated = 1` assignment carried.
+      upholdClaim(t.id, 'blocked', 'pm', 'scheduler', 'verdict request timed out; block recorded');
+      if (r.kind !== 'applied') continue;
       writeTaskLog({
         taskId: t.id,
         fromEntity: 'engine',
