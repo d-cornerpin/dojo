@@ -164,7 +164,7 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 // ════════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════════
-// v3.5 field fix 3, review round (H1, M2) — THE ONE DEFINITION OF "THE TASK'S ANSWER".
+// v3.5 field fix 3, review round (H1, M2): THE ONE DEFINITION OF "THE TASK'S ANSWER".
 //
 // Three readers disagreed: the close fallback, this pointer, and the filed close's delivery.
 // This function is now the only one. The agent's own close doors fall back to it
