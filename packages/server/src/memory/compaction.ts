@@ -383,7 +383,10 @@ export interface CheckAndCompactOptions {
   inTheBackground?: boolean;
 }
 
-export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean };
+/** `cannotHelp` (v3.5 field fix 3 #12): the condensation pass's own measure says it cannot help this summary set
+ *  (every summary already fits, or fewer than two notes of one depth can merge). The routine check holds off until
+ *  the set changes (`context-gates.ts`). */
+export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean; cannotHelp?: true };
 
 const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 
@@ -708,10 +711,10 @@ async function condenseOnlyPass(
     logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {
       assembledTokens: est.total, budgetTokens: budget, uncompactedOutsideTail: compactableRows,
     }, agentId);
-    return NO_COMPACTION;
+    return { ...NO_COMPACTION, cannotHelp: true };
   }
   // t269: only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
-  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return NO_COMPACTION;
+  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return { ...NO_COMPACTION, cannotHelp: true };
   const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
   // ⚠ RECLAIMED IN SUMMARY TOKENS, NOT IN THE GATE'S TOTAL, and the module header says why:
   // the gate's total already reports the CAPPED figure, so condensation cannot move it. What

@@ -33,7 +33,8 @@ vi.mock('../../vault/archive.js', () => ({
 
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
-import { checkAndCompact } from '../compaction.js';
+import { checkAndCompact, rebuildContextItems } from '../compaction.js';
+import { createLeafSummary } from '../dag.js';
 import { runMigrations } from '../../db/migrations.js';
 
 const AGENT = 'agent-glyph';
@@ -81,5 +82,19 @@ describe('the leaving-view pass', () => {
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, { leaving: { cause: 'out-of-view', throughSeq: 6, rowsLeaving: 6 } });
     expect(result.leafCreated).toBeGreaterThan(0);
     expect(activity()).toEqual(['start', 'end']);
+  });
+});
+
+// v3.5 field fix 3 (#12): the condensation pass says when its own measure finds it cannot help, so the routine
+// check (`context-gates.ts`) stops asking it every tool round for the same summary set.
+describe('the summaries-dropped pass', () => {
+  it('one oversized note the lane cannot hold, nothing to merge it with: cannotHelp, and no activity', async () => {
+    seed(12);
+    createLeafSummary(AGENT, 'An old note about the garden plan. '.repeat(400), 60_000, ['m-0', 'm-1'], '2026-07-01 00:00:00', '2026-07-01 00:00:01');
+    rebuildContextItems(AGENT);
+    const result = await checkAndCompact(AGENT, MODEL, WINDOW);
+    expect(result.cannotHelp).toBe(true);
+    expect(generateSummarySpy).not.toHaveBeenCalled();
+    expect(activity()).toEqual([]);
   });
 });

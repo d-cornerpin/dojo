@@ -69,10 +69,21 @@ export async function runContextGates(
   routineMeasuredAtGate.set(agentId, dialModelId);
   const fill = await condenseForTheDialedModel({
     agentId, dialedModelId: dialModelId, contextWindow, writerModelId: configuredModelId, counterparty, measureOnly: replacing,
+    aPersonSpoke: state.loopCount === 1 && !!state.lastUserMessageId,
   });
   // D3: the view's fill — what it wants to show over the room it has — for the anti-hoarding advisory.
   return proceed(fill === null ? state : advance(state, { lastContextRatio: fill }));
 }
+
+// ── v3.5 field fix 3 (#12): A CHECK THAT SAID "CANNOT HELP" IS NOT ASKED AGAIN UNTIL SOMETHING CHANGES ──
+// "Summaries dropped" (the view's lane holds less than the summaries the agent owns) can stay true for ever on a
+// lived-in agent, and the condensation pass then finds, by its own measure, nothing to merge. The gate asked it on
+// every tool round: a writer resolution, a second dry run and a "Compaction check" line each time (field report 3,
+// Problem 5b). The pass's answer (`cannotHelp`) is recorded against the summary set it measured; the gate asks again
+// only when that set changes (a note written or merged, a changed raw size) or a person speaks (which earns the
+// writers a retry, `noteAPersonSpoke`). No clock: the signal is the set itself.
+const cannotHelpFor = new Map<string, string>();
+const summarySetOf = (view: { summaryCount: number; summaryRawTokens: number }): string => `${view.summaryCount}:${view.summaryRawTokens}`;
 
 /** THE ROUTINE CHECK for the model a call will dial, on the gauge (the assembler's own dry run): rows
  *  about to leave the view, or summaries the view drops? Then fold and condense exactly those, in the
@@ -82,14 +93,19 @@ export async function condenseForTheDialedModel(args: {
   /** Unused since t194: the gauge measures the system prompt itself. Kept for the call step's caller. */
   systemPromptTokens?: number;
   counterparty?: TurnCounterparty; measureOnly?: boolean;
+  /** The turn's first iteration on a person's fresh message: a "cannot help" answer is asked again (#12). */
+  aPersonSpoke?: boolean;
 }): Promise<number | null> {
   const { agentId, dialedModelId, contextWindow, writerModelId } = args;
   try {
+    if (args.aPersonSpoke) cannotHelpFor.delete(agentId);
     const { view, total } = await estimateAssembledTokens(agentId, contextWindow, dialedModelId,
       { turnContext: args.counterparty ? { latestUserSource: null, counterparty: args.counterparty } : undefined });
     const leaving = leavingFromView(view);
-    if (!args.measureOnly && (leaving || view.summaryRawTokens > view.summaryTokens)) {
-      condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving });
+    const summariesDropped = view.summaryRawTokens > view.summaryTokens
+      && !(leaving === null && cannotHelpFor.get(agentId) === summarySetOf(view));   // #12: it said so for this very set
+    if (!args.measureOnly && (leaving || summariesDropped)) {
+      condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving, summarySet: summarySetOf(view) });
     }
     return view.budgetTokens > 0 ? total / view.budgetTokens : null;
   } catch (err) {
@@ -109,8 +125,10 @@ export async function condenseForTheDialedModel(args: {
  */
 function condenseLeavingInBackground(args: {
   agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView | null;
+  /** The summary set the gate measured (#12): a "cannot help" answer is recorded against it. */
+  summarySet: string;
 }): boolean {
-  const { agentId, writerModelId, dialedModelId, contextWindow, leaving } = args;
+  const { agentId, writerModelId, dialedModelId, contextWindow, leaving, summarySet } = args;
   if (backgroundDrains.has(agentId)) return false;
   backgroundDrains.add(agentId);
   logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
@@ -123,6 +141,8 @@ function condenseLeavingInBackground(args: {
     inTheBackground: true,
   })
     .then((result) => {
+      if (result.cannotHelp && leaving === null) cannotHelpFor.set(agentId, summarySet);
+      else if (!result.lockBusy) cannotHelpFor.delete(agentId);
       logger.info('v2: background condense complete', {
         agentId, leafCreated: result.leafCreated, condensedCreated: result.condensedCreated, cause: leaving?.cause ?? 'summaries-dropped',
       }, agentId);
