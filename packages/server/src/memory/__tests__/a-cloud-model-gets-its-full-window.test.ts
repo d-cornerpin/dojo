@@ -99,7 +99,8 @@ describe('a slow LOCAL box keeps its doom guard', () => {
     seed({ type: 'openai-compatible', baseUrl: 'http://127.0.0.1:8080/v1' });
     expect(getProviderCeilingTokens(MODEL)).toBe(ceiling);
     const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 2_000, maxOutputTokens: getModelOutputCap(MODEL), providerCeilingTokens: getProviderCeilingTokens(MODEL) });
-    expect(policy.assemblyBudgetTokens).toBe(Math.floor(ceiling * PROVIDER_CEILING_SAFETY) - reserve());
+    // Review round L3: a prefill ceiling bounds INPUT, so only the tool payload (input) comes off it, not the output reserve.
+    expect(policy.assemblyBudgetTokens).toBe(Math.floor(ceiling * PROVIDER_CEILING_SAFETY) - 2_000);
     const { view } = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
     expect(view.budgetTokens).toBeLessThan(policy.assemblyBudgetTokens);
   });
@@ -110,7 +111,11 @@ describe('the reserve is taken after the cap', () => {
     const measured = { toolPayloadTokens: 17_502, maxOutputTokens: 64_000 };
     const r = toolAndOutputReserve(measured);
     const capped = contextWindowPolicy(200_000, { ...measured, providerCeilingTokens: 102_600 });
-    expect(capped.assemblyBudgetTokens).toBe(51_300 - r);
+    // Review round L3: the tool payload is prefilled, so it sits inside the ceiling; the output is not prefill, so it does
+    // not. 51,300 - 17,502 = 33,798 (the output reserve stays on the WINDOW side, where the output really lives).
+    expect(capped.assemblyBudgetTokens).toBe(51_300 - 17_502);
+    // A window smaller than the cap is still bounded by the window minus the whole reserve.
+    expect(contextWindowPolicy(40_000, { ...measured, providerCeilingTokens: 102_600 }).assemblyBudgetTokens).toBe(Math.floor(0.96 * 40_000) - r);
     const uncapped = contextWindowPolicy(200_000, measured);
     expect(uncapped.assemblyBudgetTokens, 'no ceiling: unchanged').toBe(Math.floor(0.96 * 200_000) - r);
   });
