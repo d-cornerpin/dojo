@@ -1,3 +1,5 @@
+import os from 'node:os';
+
 // ════════════════════════════════════════════════════════════════════════════════════════
 // HOW LONG A PROVIDER IS WORTH WAITING FOR (UX-REPAIR T64b).
 //
@@ -422,26 +424,66 @@ export function resolveDoomCeiling(
 // Every consumer (the admission budget through `getProviderCeilingTokens`, the router's fit filter,
 // the pre-dial backstop) asks this one predicate first.
 //
-// LOCAL, in the code's own two notions, nothing new: a provider TYPE that runs on the owner's
-// hardware (the free-and-local set the spend wall already exempts, `agent/model.ts`), or a base URL
-// whose parsed host is this machine (the rule `isLocalOllamaBaseUrl` applies to Ollama).
+// LOCAL means WHERE THE MODEL RUNS (review round M4): on the owner's own machines. A provider TYPE that only ever
+// serves his hardware (Ollama, wherever it runs), or a base URL whose host is on his own network: this machine
+// (loopback, the any-address, its own hostname or interface addresses), a private or link-local address (RFC1918,
+// 169.254/16, fe80::/10, fc00::/7), or a name only his network resolves (mDNS `.local`, `.lan`, `.home.arpa`, a
+// single-label host). That covers LM Studio, llama.cpp, vLLM or MLX on another of his Macs, typed `openai-compatible`.
+// Anything else is a cloud provider and gets its full window. ONE predicate (`doomGuardApplies`) for every door.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/** Provider types whose inference runs on the owner's own hardware (free and local). */
-export const LOCAL_PROVIDER_TYPES: ReadonlySet<string> = new Set(['ollama', 'local']);
+/** Provider types whose inference runs on the owner's own hardware. (`config/schema.ts` types are anthropic, openai,
+ *  openai-compatible and ollama; the `'local'` once listed beside Ollama is no type at all.) */
+export const LOCAL_PROVIDER_TYPES: ReadonlySet<string> = new Set(['ollama']);
+
+function hostOf(baseUrl: string): string | null {
+  try {
+    const h = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`).hostname.toLowerCase();
+    return h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
+  } catch { return null; }
+}
 
 /** Does this base URL point at this machine? The PARSED hostname decides, never a substring:
  *  exactly localhost, 127.0.0.0/8 or ::1. A URL that does not parse is not this machine. */
 export function isThisMachineUrl(baseUrl: string): boolean {
-  let host: string;
-  try { host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`).hostname.toLowerCase(); } catch { return false; }
-  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+  const host = hostOf(baseUrl);
+  return host !== null && (host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host));
 }
 
-/** Is the doom ceiling armed for this provider? Only for a local one (header above). */
+const isPrivateOrLinkLocalV4 = (h: string): boolean => {
+  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(h);
+  if (!m) return false;
+  const a = Number(m[1]); const b = Number(m[2]);
+  return a === 10 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+};
+const isPrivateOrLinkLocalV6 = (h: string): boolean => h.includes(':') && /^(fe[89ab][0-9a-f]|f[cd][0-9a-f]{2}):/.test(h);
+const LOCAL_NAME_SUFFIXES = ['.local', '.lan', '.home.arpa', '.localhost'];
+
+function ownNames(): Set<string> {
+  const names = new Set<string>();
+  try {
+    const h = os.hostname().toLowerCase();
+    names.add(h);
+    names.add(h.replace(/\.local$/, ''));
+    for (const list of Object.values(os.networkInterfaces())) for (const i of list ?? []) names.add(i.address.toLowerCase());
+  } catch { /* unreadable: the address classes still decide */ }
+  return names;
+}
+
+/** Is this base URL on the owner's own network (header)? */
+export function isOwnersNetworkUrl(baseUrl: string): boolean {
+  const host = hostOf(baseUrl);
+  if (host === null || host === '') return false;
+  if (isThisMachineUrl(baseUrl) || isPrivateOrLinkLocalV4(host) || isPrivateOrLinkLocalV6(host)) return true;
+  if (!host.includes('.') && !host.includes(':')) return true;   // a single-label name: only a local resolver answers it
+  if (LOCAL_NAME_SUFFIXES.some((s) => host.endsWith(s))) return true;
+  return ownNames().has(host);
+}
+
+/** Is the doom ceiling armed for this provider? Only for one on the owner's own hardware (header above). */
 export function doomGuardApplies(provider: { providerType: string | null | undefined; providerBaseUrl: string | null | undefined }): boolean {
   if (provider.providerType && LOCAL_PROVIDER_TYPES.has(provider.providerType)) return true;
-  return typeof provider.providerBaseUrl === 'string' && isThisMachineUrl(provider.providerBaseUrl);
+  return typeof provider.providerBaseUrl === 'string' && isOwnersNetworkUrl(provider.providerBaseUrl);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
