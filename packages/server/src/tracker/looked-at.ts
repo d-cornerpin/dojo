@@ -126,8 +126,21 @@ function receiptsShownIn(pmAgentId: string, w: ReadWindow, workId?: string): num
  *  that close was filed: from its own persisted tool calls (joined to their results) and the receipts its
  *  request showed. `workId`: the work being judged, so receipts are that task's. */
 export function lookedAtThisTurn(pmAgentId: string, turnNumber: number, workId?: string): LookedAt {
-  const l: LookedAt = { tasks: [], activity: [], files: [], messages: [], results: [], vault: [], failed: [], receiptsShown: 0 };
   const w: ReadWindow = { turn: turnNumber, sinceMs: workId ? closeFiledAt(workId) : null };
+  const l = readsIn(pmAgentId, w);
+  l.receiptsShown = receiptsShownIn(pmAgentId, w, workId);
+  if (workId) Object.assign(l, closeRequestFacts(workId));
+  return l;
+}
+
+/** The PM's successful (and failed) reads since `sinceMs` only: what it read after a refusal (review M3a). */
+export function readsSince(pmAgentId: string, sinceMs: number): LookedAt {
+  return readsIn(pmAgentId, { turn: -1, sinceMs });
+}
+
+/** The PM's reads in a window, from its persisted tool calls joined to their stored results. */
+function readsIn(pmAgentId: string, w: ReadWindow): LookedAt {
+  const l: LookedAt = { tasks: [], activity: [], files: [], messages: [], results: [], vault: [], failed: [], receiptsShown: 0 };
   const mine = getDb().prepare(
     `SELECT content FROM messages WHERE agent_id = ? AND ${inWindow} AND role = 'assistant' AND content LIKE '[{%' ORDER BY created_at, rowid`,
   ).all(pmAgentId, ...windowArgs(w)) as Row[];
@@ -148,8 +161,6 @@ export function lookedAtThisTurn(pmAgentId: string, turnNumber: number, workId?:
       case 'file_read': case 'file_list': into(l.files, a.path); break;
     }
   }
-  l.receiptsShown = receiptsShownIn(pmAgentId, w, workId);
-  if (workId) Object.assign(l, closeRequestFacts(workId));
   return l;
 }
 
@@ -185,21 +196,79 @@ export function closeRequestFacts(workId: string): Pick<LookedAt, 'measure' | 'l
     const lines = Array.isArray(ev) ? ev.map((e) => `[${e.kind ?? '?'}] ${e.claim ?? ''}${e.pointer ? ` @ ${e.pointer}` : ''}`) : [];
     if (lines.length > 0) out.evidence = lines;
   } catch { /* an unreadable evidence array is shown as none */ }
-  const answer = resolveTaskAnswerPointer(workId);
+  const answer = taskAnswerFor(workId);
   if (answer) out.deliveredAnswer = answer.deliveryId;
   const words = readLaterMessages(workId).map((m) => m.messageId).filter((id): id is string => !!id);
   if (words.length > 0) out.ownerWords = words;
   return out;
 }
 
+/** THE TASK'S ANSWER, the one place this module (and `empty-uphold.ts`) asks for it. Review M2: the tree is
+ *  collapsing "the task's recorded answer" into one function (`resolveTaskAnswerPointer`, f3-close), so
+ *  this wrapper is the single swap point; it adds no definition of its own. */
+export function taskAnswerFor(workId: string): { deliveryId: string; messageId: string | null; excerpt: string } | null {
+  return resolveTaskAnswerPointer(workId);
+}
+
+/** Absolute paths a piece of record text names (a command, an answer): the tokens that start with "/" or "~/". */
+function pathsIn(text: string): string[] {
+  return (text.match(/(?:^|[\s"'`=(])((?:\/|~\/)[^\s"'`;|&<>()]+)/g) ?? [])
+    .map((m) => m.replace(/^[\s"'`=(]/, '').replace(/[.,:]+$/, ''))
+    .filter((p) => p.length > 1);
+}
+
+/** What THIS row's record names for a reader to open (review M3b): the files its ledger wrote, the paths its
+ *  commands name, its evidence pointers, the delivered answer's message and the paths it names, and the
+ *  owner's recorded messages. A read binds to the row only when it opens one of these. */
+export function rowReadNames(workId: string): { paths: string[]; messages: string[] } {
+  const db = getDb();
+  const paths: string[] = [];
+  const messages: string[] = [];
+  const keys = db.prepare('SELECT item_key AS k FROM work_ledger WHERE work_id = ?').all(workId) as Array<{ k: string }>;
+  for (const { k } of keys) {
+    if (k.startsWith('file:')) paths.push(k.slice('file:'.length));
+    else if (k.startsWith('cmd:')) paths.push(...pathsIn(k.slice('cmd:'.length)));
+  }
+  try {
+    const ev = JSON.parse((db.prepare('SELECT evidence_json AS e FROM work WHERE id = ?').get(workId) as { e: string | null } | undefined)?.e ?? '[]') as Array<{ pointer?: unknown }>;
+    for (const e of Array.isArray(ev) ? ev : []) {
+      if (typeof e?.pointer !== 'string' || !e.pointer.trim()) continue;
+      const p = e.pointer.trim();
+      if (p.startsWith('/') || p.startsWith('~/')) paths.push(p); else messages.push(p);
+    }
+  } catch { /* no readable evidence names nothing */ }
+  const answer = taskAnswerFor(workId);
+  if (answer?.messageId) messages.push(answer.messageId);
+  if (answer?.excerpt) paths.push(...pathsIn(answer.excerpt));
+  for (const m of readLaterMessages(workId)) if (m.messageId) messages.push(m.messageId);
+  return { paths: [...new Set(paths)], messages: [...new Set(messages)] };
+}
+
+const trimSlash = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+/** Does reading `read` open the named `named`? The same path, a file inside a named folder, or the folder
+ *  that directly holds a named file (a listing of it). */
+function opens(read: string, named: string): boolean {
+  const r = trimSlash(read);
+  const n = trimSlash(named);
+  if (r === n || r.startsWith(`${n}/`)) return true;
+  const parent = n.slice(0, n.lastIndexOf('/'));
+  return parent.length > 0 && r === parent;
+}
+const sameMessage = (read: string, named: string): boolean => read === named || (read.length >= 8 && named.startsWith(read));
+
+/** Did these reads open THIS row's work (review M3b)? Its activity, or something its record names. */
+export function readsBoundToRow(l: LookedAt, workId: string, names = rowReadNames(workId)): boolean {
+  return l.activity.some((id) => matchesWork(workId, id))
+    || l.files.some((f) => names.paths.some((p) => opens(f, p)))
+    || [...l.messages, ...l.results].some((m) => names.messages.some((n) => sameMessage(m, n)));
+}
+
 /** Does anything STRUCTURAL back this close (v3.5 field fix 3, #6b)? A measure at 0 or with a named
  *  remainder, a ledger entry, a delivered answer, the owner's recorded words (what a decision task is
- *  judged on, per the request's own rule), or a PM read of the WORK (a file, a message, a tool result,
- *  the task's activity, the vault). Reading the task record alone is the worker's own account and backs
- *  nothing. */
+ *  judged on, per the request's own rule), or a PM read of THIS row's work (`readsBoundToRow`). Reading the
+ *  task record alone is the worker's own account and backs nothing. */
 export function closeBacking(l: LookedAt, workId: string): { backed: boolean; read: boolean } {
-  const read = l.files.length > 0 || l.messages.length > 0 || l.results.length > 0 || l.vault.length > 0
-    || l.activity.some((id) => matchesWork(workId, id));
+  const read = readsBoundToRow(l, workId);   // review M3b: a read backs only the row whose work it opened
   const measured = !!l.measure && (l.measure.remaining === 0 || !!l.measure.named);
   const ledger = !!l.ledger && (l.ledger.touched > 0 || l.ledger.commands > 0);
   return { backed: read || measured || ledger || !!l.deliveredAnswer || !!l.ownerWords?.length, read };
