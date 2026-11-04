@@ -125,7 +125,8 @@ describe('E1: the request text itself, from the real assembly', () => {
   });
   it('states how a measured and an unmeasured close are judged, and the real escalation route', async () => {
     const text = unvalidatedCompleteText(TASK, parts());
-    expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the ledger and receipts above, not the result text. A task whose job is a decision (nothing to file or send) is delivered when the owner\'s recorded words or the recorded answer above settle it; the agent\'s own notes quoting the owner do not count. With no such record and nothing touched, reject it.');
+    expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the ledger and receipts above, not the result text. A task whose job is a decision (nothing to file or send) is delivered when the owner\'s recorded words or the recorded answer above settle it; the agent\'s own notes quoting the owner do not count.');
+    expect(text).not.toContain('With no such record and nothing touched');   // v3.5 field fix 3 (#6b): the engine refuses at the PM's door instead
     expect(text).not.toContain('the same escalation you use for a block');
     expect(text).toContain(`task_id="${TASK}", valid=true)`);
     expect(text).toContain('target_status="in_progress") when it does not.');

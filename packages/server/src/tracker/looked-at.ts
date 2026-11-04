@@ -11,14 +11,27 @@
 // attaches to it: the whole record into `adjudications.evidence_ref` and into the claim event's
 // payload, and one plain line for the owner's card. Outside a live PM turn (the scheduler's
 // timeout, a test) there is no turn to read, so nothing is attached and the verdict reads as it
-// always did. A verdict with NOTHING looked at is still a verdict; the line says "looked at
-// nothing", which is the finding.
+// always did.
+//
+// v3.5 field fix 3 (#5): the record is no longer only this turn's reads.
+//   * Its WINDOW is every PM read since the row's close was filed (plus the ruling turn): a PM that
+//     read in a review turn which ended without a verdict, and ruled in the next, read the work.
+//   * It carries what the CLOSE REQUEST itself showed, from the same records the request prints
+//     (`tracker/validation-request.ts`): the measure and any named remainder, the ledger (files
+//     written, commands run), the evidence lines, the delivered-answer id and the owner's words.
+// `closeBacking` (below) is what the PM's door reads to refuse an uphold nothing backs (#6b,
+// `tracker/empty-uphold.ts`); a verdict that reaches the store is still recorded as it is.
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { workOperation } from '../tools/work-verbs.js';
+import { ledgerTotals, ledgerWorkEntries } from '../work/ledger-read.js';
+import { unvalidatedCloseExpr } from '../work/tracker-view.js';
+import { resolveTaskAnswerPointer } from './delivery-evidence.js';
+import { readLaterMessages } from '../memory/task-list-words.js';
+import { readAuditTrail } from '../work/audit-trail.js';
 
 export interface LookedAt {
   tasks: string[]; activity: string[]; files: string[]; messages: string[]; results: string[]; vault: string[];
@@ -26,9 +39,18 @@ export interface LookedAt {
   failed: string[];
   /** Engine receipts filed against the task that the request showed the PM (counted when the request was built). */
   receiptsShown: number;
-  /** The measure and ledger lines the validation request carried (the measured plan's E1). Not yet
-   *  carried by any request on this base, so never set here; the field is the place it lands. */
-  measure?: { remaining: number | null; touched: number };
+  // ── What the close request carried (v3.5 field fix 3, #5). Set only while a close is filed and
+  //    unblessed, which is when the validation request shows them; absent otherwise. ──
+  /** The Measure line: the reading (null = could not be read), its start, and the remainder the worker named. */
+  measure?: { remaining: number | null; initial: number | null; named: string | null };
+  /** The Ledger line: items touched (mailbox items and files), commands run, and the paths and commands themselves. */
+  ledger?: { touched: number; commands: number; files: string[]; commandsRun: Array<{ command: string; status: string | null }> };
+  /** The worker's evidence lines, as the request prints them. */
+  evidence?: string[];
+  /** The delivered answer the request pointed at (its delivery id). */
+  deliveredAnswer?: string;
+  /** The owner's recorded words on the task (message ids). */
+  ownerWords?: string[];
 }
 
 type Row = { content: string };
@@ -47,12 +69,28 @@ function callsOf(rows: Row[]): Block[] {
   return out;
 }
 
-/** Tool-use id -> did its result succeed, for the results stored in this turn. */
-function resultsOf(pmAgentId: string, turnNumber: number): Map<string, boolean> {
+/** Which of the PM's rows count: the ruling turn's, and every row since the close was filed. */
+interface ReadWindow { turn: number; sinceMs: number | null }
+const inWindow = "(turn_number = ? OR (? IS NOT NULL AND created_at >= ?))";
+const windowArgs = (w: ReadWindow): unknown[] => [w.turn, w.sinceMs, w.sinceMs];
+
+/** When the row's close was filed: the newest Key-1 request, or the engine's own receipt close. Null
+ *  when no close is on record (the window is then the ruling turn alone, as it always was). */
+export function closeFiledAt(workId: string): number | null {
+  const r = getDb().prepare(
+    `SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ?
+       AND ((kind = 'validation_requested' AND json_extract(payload, '$.requested_state') = 'done')
+         OR (kind = 'transition' AND json_extract(payload, '$.to') = 'done'))`,
+  ).get(workId) as { at: number | null } | undefined;
+  return r?.at ?? null;
+}
+
+/** Tool-use id -> did its result succeed, for the results stored in the window. */
+function resultsOf(pmAgentId: string, w: ReadWindow): Map<string, boolean> {
   const out = new Map<string, boolean>();
   const rows = getDb().prepare(
-    "SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'tool' AND content LIKE '[{%'",
-  ).all(pmAgentId, turnNumber) as Row[];
+    `SELECT content FROM messages WHERE agent_id = ? AND ${inWindow} AND role = 'tool' AND content LIKE '[{%'`,
+  ).all(pmAgentId, ...windowArgs(w)) as Row[];
   for (const r of rows) {
     try {
       for (const b of JSON.parse(r.content) as Block[]) if (b?.type === 'tool_result' && b.tool_use_id) out.set(b.tool_use_id, !b.is_error);
@@ -63,11 +101,11 @@ function resultsOf(pmAgentId: string, turnNumber: number): Map<string, boolean> 
 
 /** Receipts the PM's requests this turn showed for `workId` (or for any task when omitted), from the
  *  count the request builder kept with the task's trail entry beside the thread the request rode. */
-function receiptsShownThisTurn(pmAgentId: string, turnNumber: number, workId?: string): number {
+function receiptsShownIn(pmAgentId: string, w: ReadWindow, workId?: string): number {
   const db = getDb();
   const threads = new Set((db.prepare(
-    "SELECT DISTINCT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'user' AND a2a_thread_id IS NOT NULL",
-  ).all(pmAgentId, turnNumber) as Array<{ t: string }>).map((r) => r.t));
+    `SELECT DISTINCT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND ${inWindow} AND role = 'user' AND a2a_thread_id IS NOT NULL`,
+  ).all(pmAgentId, ...windowArgs(w)) as Array<{ t: string }>).map((r) => r.t));
   if (threads.size === 0) return 0;
   const entries = db.prepare(
     `SELECT json_extract(payload, '$.evidence_json') AS ev FROM work_events
@@ -83,14 +121,16 @@ function receiptsShownThisTurn(pmAgentId: string, turnNumber: number, workId?: s
   return shown;
 }
 
-/** What the PM read in turn `turnNumber`, from its own persisted tool calls (joined to their results)
- *  and the receipts its request showed. `workId`: the work being judged, so receipts are that task's. */
+/** What the PM read in turn `turnNumber` and, when `workId` has a close on record, in every turn since
+ *  that close was filed: from its own persisted tool calls (joined to their results) and the receipts its
+ *  request showed. `workId`: the work being judged, so receipts are that task's. */
 export function lookedAtThisTurn(pmAgentId: string, turnNumber: number, workId?: string): LookedAt {
   const l: LookedAt = { tasks: [], activity: [], files: [], messages: [], results: [], vault: [], failed: [], receiptsShown: 0 };
+  const w: ReadWindow = { turn: turnNumber, sinceMs: workId ? closeFiledAt(workId) : null };
   const mine = getDb().prepare(
-    "SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND content LIKE '[{%'",
-  ).all(pmAgentId, turnNumber) as Row[];
-  const results = resultsOf(pmAgentId, turnNumber);
+    `SELECT content FROM messages WHERE agent_id = ? AND ${inWindow} AND role = 'assistant' AND content LIKE '[{%' ORDER BY created_at, rowid`,
+  ).all(pmAgentId, ...windowArgs(w)) as Row[];
+  const results = resultsOf(pmAgentId, w);
   for (const c of callsOf(mine)) {
     const ok = c.id ? results.get(c.id) : undefined;
     if (ok === undefined) continue;   // no stored result: the PM had not read it when it judged
@@ -107,8 +147,63 @@ export function lookedAtThisTurn(pmAgentId: string, turnNumber: number, workId?:
       case 'file_read': case 'file_list': into(l.files, a.path); break;
     }
   }
-  l.receiptsShown = receiptsShownThisTurn(pmAgentId, turnNumber, workId);
+  l.receiptsShown = receiptsShownIn(pmAgentId, w, workId);
+  if (workId) Object.assign(l, closeRequestFacts(workId));
   return l;
+}
+
+/** Is a close filed on this row and still unblessed (the request's own subject)? */
+function closeIsPending(workId: string): boolean {
+  const r = getDb().prepare(`SELECT 1 AS y FROM work w WHERE w.id = ? AND ${unvalidatedCloseExpr('w')}`).get(workId) as { y: number } | undefined;
+  return !!r;
+}
+
+const REMAINDER_NOTE = 'Remainder named at close:';
+
+/** What the validation request for this row carries, from the same records it prints them from. Empty
+ *  when no close is pending: outside a request, nothing a request showed can be claimed. */
+export function closeRequestFacts(workId: string): Pick<LookedAt, 'measure' | 'ledger' | 'evidence' | 'deliveredAnswer' | 'ownerWords'> {
+  if (!closeIsPending(workId)) return {};
+  const out: Pick<LookedAt, 'measure' | 'ledger' | 'evidence' | 'deliveredAnswer' | 'ownerWords'> = {};
+  const row = getDb().prepare('SELECT measure_json, measure_initial, measure_remaining, evidence_json FROM work WHERE id = ?')
+    .get(workId) as { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null; evidence_json: string | null } | undefined;
+  if (row?.measure_json) {
+    const named = row.measure_remaining === 0 ? undefined
+      : readAuditTrail(workId, { kinds: ['observation'] }).map((e) => e.note ?? '').find((x) => x.startsWith(REMAINDER_NOTE));   // newest first, as the request reads it
+    out.measure = { remaining: row.measure_remaining, initial: row.measure_initial, named: named ? named.slice(REMAINDER_NOTE.length).trim() : null };
+  }
+  const { touched, commands } = ledgerTotals(workId);
+  if (touched > 0 || commands > 0) {
+    const entries = ledgerWorkEntries(workId);
+    out.ledger = {
+      touched, commands,
+      files: entries.filter((e) => e.kind === 'file').map((e) => e.what),
+      commandsRun: entries.filter((e) => e.kind === 'command').map((e) => ({ command: e.what, status: e.status })),
+    };
+  }
+  try {
+    const ev = JSON.parse(row?.evidence_json ?? '[]') as Array<{ kind?: string; claim?: string; pointer?: string }>;
+    const lines = Array.isArray(ev) ? ev.map((e) => `[${e.kind ?? '?'}] ${e.claim ?? ''}${e.pointer ? ` @ ${e.pointer}` : ''}`) : [];
+    if (lines.length > 0) out.evidence = lines;
+  } catch { /* an unreadable evidence array is shown as none */ }
+  const answer = resolveTaskAnswerPointer(workId);
+  if (answer) out.deliveredAnswer = answer.deliveryId;
+  const words = readLaterMessages(workId).map((m) => m.messageId).filter((id): id is string => !!id);
+  if (words.length > 0) out.ownerWords = words;
+  return out;
+}
+
+/** Does anything STRUCTURAL back this close (v3.5 field fix 3, #6b)? A measure at 0 or with a named
+ *  remainder, a ledger entry, a delivered answer, the owner's recorded words (what a decision task is
+ *  judged on, per the request's own rule), or a PM read of the WORK (a file, a message, a tool result,
+ *  the task's activity, the vault). Reading the task record alone is the worker's own account and backs
+ *  nothing. */
+export function closeBacking(l: LookedAt, workId: string): { backed: boolean; read: boolean } {
+  const read = l.files.length > 0 || l.messages.length > 0 || l.results.length > 0 || l.vault.length > 0
+    || l.activity.some((id) => matchesWork(workId, id));
+  const measured = !!l.measure && (l.measure.remaining === 0 || !!l.measure.named);
+  const ledger = !!l.ledger && (l.ledger.touched > 0 || l.ledger.commands > 0);
+  return { backed: read || measured || ledger || !!l.deliveredAnswer || !!l.ownerWords?.length, read };
 }
 
 /** A task id as the tools accept it: the full id or its 8-character prefix, never anything shorter. */
@@ -132,7 +227,11 @@ export function lookedAtLine(l: LookedAt, workId?: string): string {
   if (l.vault.length) parts.push(`consulted the vault ${n(l.vault.length, 'time', 'times')}`);
   if (l.failed.length) parts.push(`tried to read ${l.failed.join(', ')} (failed)`);
   if (l.receiptsShown) parts.push(n(l.receiptsShown, 'receipt shown', 'receipts shown'));
-  if (l.measure) parts.push(`measure ${l.measure.remaining ?? 'unknown'} remaining`);
+  if (l.measure) parts.push(`measure ${l.measure.remaining ?? 'unknown'} remaining${l.measure.remaining && l.measure.named ? ' (remainder named)' : ''}`);
+  if (l.ledger) parts.push(`ledger ${n(l.ledger.touched, 'item touched', 'items touched')}${l.ledger.commands ? ` and ${n(l.ledger.commands, 'command run', 'commands run')}` : ''}`);
+  if (l.evidence) parts.push(n(l.evidence.length, 'evidence line', 'evidence lines'));
+  if (l.deliveredAnswer) parts.push(`delivered answer ${l.deliveredAnswer.slice(0, 8)}`);
+  if (l.ownerWords) parts.push(`owner words ${n(l.ownerWords.length, 'message', 'messages')}`);
   return parts.length ? parts.join(', ') : 'looked at nothing';
 }
 
