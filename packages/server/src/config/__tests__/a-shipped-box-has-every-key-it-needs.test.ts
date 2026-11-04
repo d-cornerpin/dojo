@@ -286,10 +286,9 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
 
   // ── spend alerting: thresholds and their one-shot "already alerted" latches ──
   openrouter_warning_threshold: 'OPTIONAL — absent means no warning threshold is armed for this box',
-  ollama_limit_told: 'WRITTEN — v3.5: the Ollama model-limit value (or `manual:<n>` when this box\'s Ollama is not the app) the owner was last told about, so a reboot that loses the launchctl variable re-applies it silently; absent means "never told", so the first set is told once',
-  ollama_own_serve: 'WRITTEN — Fix W: `{pid, exe, limit}` of an `ollama serve` the Dojo itself started (setup\'s "start"), written when the child is spawned and completed when it listens, so the Dojo tells its own server from one the owner started and upgrades, restarts and re-starts only that one; absent means "the Dojo started none"',
   ollama_limit_restart_owed: 'WRITTEN — v3.5 fix round 4: the Ollama app still owes the restart that applies the raised model limit (set before it, cleared once it happened), so a restart that failed or was cut short by a Dojo stop is tried again at the next start; absent means nothing is owed',
   decision_model_window: 'WRITTEN — v3.5 t268: the window the derived decision tag was made at (`services/decision-window.ts`, at install); absent means the tag is not made yet, so `decide()` asks the base tag at its built-in 8,192 and the next install tries again',
+  decision_model_id: 'WRITTEN — v3.5: the standard-models install sets it to the decision model\'s row once that model is really pulled, and removes it when the model is not installed (field failure 2, E1); absent means "no decision model on this box", which is the correct initial state',
   standard_models_version: 'WRITTEN — v3.5: the once-per-version standard-models install stamps it at boot when both models are installed; absent means "not yet", so the next boot tries again',
   shipped_souls_version: 'WRITTEN — the once-per-version soul refresh stamps it at boot; absent means "never refreshed", so the first boot of an updated build refreshes once',
   openrouter_threshold_alerted: 'WRITTEN — the one-shot latch the alert sets so it fires once; absent means not yet alerted',

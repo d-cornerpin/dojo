@@ -58,7 +58,7 @@ export const StandardModels = ({ repair, onState }: { repair?: boolean; onState?
   return (
     <div className="space-y-1.5">
       <div className="text-xs text-ui/70">
-        {`Dojo's own models: ${state.tags.decision} (decision) — ${word(state.decision)}, ${state.tags.writer} (writer) — ${word(state.writer)}`}
+        {`Dojo's own models: ${state.tags.decision} (decision): ${word(state.decision)}; ${state.tags.writer} (writer): ${word(state.writer)}`}
       </div>
       {state.lines.map((line) => <div key={line} className="text-xs text-ui/55">{line}</div>)}
       <div className="text-xs text-ui/40">{state.note}</div>

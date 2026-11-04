@@ -37,3 +37,37 @@ export function assignStandard(writerId: string | null, decisionId: string | nul
     if (decisionId) upsert.run('decision_model_id', decisionId);
   })();
 }
+
+/** Field failure 2 (E1): the DECISION model is not installed. A row an earlier install registered for it without pulling it is
+ *  disabled (it then reads as absent and every judgment keeps its rule), and so is `decision_model_id`. The next install that
+ *  really pulls it registers and re-enables the row. Only the decision row (review M5): the writer's row may be an agent's model,
+ *  and a failed download of it says nothing about that. */
+export function unregisterStandardRow(providerId: string, tag: string): void {
+  const db = getDb();
+  const row = db.prepare(`SELECT id FROM models WHERE provider_id = ? AND api_model_id = ? AND is_enabled = 1 AND capabilities LIKE '%"decision"%'`).get(providerId, tag) as { id: string } | undefined;
+  if (!row) return;
+  db.prepare("UPDATE models SET is_enabled = 0, updated_at = datetime('now') WHERE id = ?").run(row.id);
+  db.prepare("DELETE FROM config WHERE key = 'decision_model_id' AND value = ?").run(row.id);
+}
+
+/** Field fix 2 round 5: what is REGISTERED follows what Ollama LISTS, at every boot that Ollama answers and at every later health
+ *  answer (`local-standard.ts retryStandardModelsIfMissing`), never only when an install runs (the paid run: migration 209 had
+ *  disabled a real decision row on a box that never needed an install, and nothing re-enabled it). A row of the pair whose tag is
+ *  listed is enabled, and the decision model's id is `decision_model_id`; the decision row whose tag is not listed is disabled and
+ *  its id cleared (E1). A listed tag with no row yet is the install's (it needs Ollama's model info). Nothing is told.
+ *  ⚠ Migration 209 disables every decision row (its bytes are applied on dev and kit boxes, so they stay as they are) and relies on
+ *  THIS to heal a real one: it must stay on every health answer and at boot (`ollama-pair-gate.ts reconcileWhenOllamaAnswers`),
+ *  never only behind `inFlight` or on the install path. `his-box-after-the-update.test.ts` round 5 (a), (d) and (e) pin it. */
+export function reconcileStandardRows(providerId: string, listed: ReadonlySet<string>, pair: ReadonlyArray<{ tag: string; decision: boolean }>): void {
+  try {
+    const db = getDb();
+    for (const { tag, decision } of pair) {
+      if (!listed.has(tag)) { if (decision) unregisterStandardRow(providerId, tag); continue; }
+      const row = db.prepare('SELECT id, is_enabled FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, tag) as { id: string; is_enabled: number } | undefined;
+      if (!row) continue;
+      if (!row.is_enabled) db.prepare("UPDATE models SET is_enabled = 1, updated_at = datetime('now') WHERE id = ?").run(row.id);
+      const id = (db.prepare("SELECT value FROM config WHERE key = 'decision_model_id'").get() as { value: string } | undefined)?.value;
+      if (decision && id !== row.id) assignStandard(null, row.id);
+    }
+  } catch { /* best-effort: the next answer reconciles again */ }
+}

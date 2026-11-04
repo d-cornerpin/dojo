@@ -20,10 +20,8 @@ import {
   STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS,
 } from '../../services/local-standard.js';
 import { ensureOllamaModelLimit } from '../../services/ollama-model-limit.js';
-import { getOllamaHost } from '../../services/ollama-host.js';
-import { startOwnServe } from '../../services/ollama-restart.js';
-import { releasePairHold } from '../../services/ollama-pair-gate.js';
-import { plainPullError } from '../../services/ollama-version.js';
+import { releasePairHold, ollamaCurrentForModel } from '../../services/ollama-pair-gate.js';
+import { isVersionRefusal, plainPullError } from '../../services/ollama-version.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -142,11 +140,10 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'ollama-start': {
-        // Start ollama serve in background, as a child the Dojo remembers it started (so it can upgrade and restart it), with
-        // room in its environment for the embedder, the Dojo's resident pair and the lock's agent slots (Ollama's default of 3
-        // runners would have an agent's model and one of those evict each other). `ollama-restart.ts` states the arithmetic.
-        const host = getOllamaHost();
-        if (host) void startOwnServe(host, 'http://localhost:11434', STANDARD_TAGS.length).catch((err) => logger.warn('Starting Ollama failed', { error: String(err) })); // fire and forget
+        // Field failure 2: the one Ollama upkeep (`ollama-upgrade.ts`, through the start hook) starts what was installed as a kind
+        // that lasts (the app, or Homebrew's service), at the version the Dojo's models need, with the loaded-model limit in launchd.
+        ensureLocalOllamaProvider();
+        void ensureOllamaModelLimit().catch((err) => logger.warn('Starting Ollama failed', { error: String(err) })); // fire and forget
         // Wait a moment for it to start
         await new Promise(r => setTimeout(r, 3000));
         try {
@@ -271,14 +268,17 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
 
   const model = body.model as string;
   try {
-    const outcome = await pullOllamaModel(model, { onProgress: (p) => { currentPullProgress = p; } });
+    const pull = () => pullOllamaModel(model, { onProgress: (p) => { currentPullProgress = p; } });
+    let outcome = await pull();   // field failure 2: one that needs a newer Ollama gets Repair's upkeep (made current), then again
+    const upkeep = !outcome.ok && isVersionRefusal(outcome.error) ? await ollamaCurrentForModel(ensureLocalOllamaProvider(), STANDARD_TAGS.length) : null;
+    if (upkeep?.ok) outcome = await pull();
     if (outcome.ok) {
       currentPullProgress = null;
       return c.json({ ok: true, data: { model, pulled: true, status: outcome.status } });
     }
     if (outcome.stalled) return routeFailure(c, logger, new Error(outcome.error), { status: 500 });
     logger.warn('Manual model pull failed', { model, error: outcome.error });
-    return c.json({ ok: false, error: plainPullError(outcome.error) }, 500);
+    return c.json({ ok: false, error: plainPullError(outcome.error, upkeep?.line) }, 500);
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }

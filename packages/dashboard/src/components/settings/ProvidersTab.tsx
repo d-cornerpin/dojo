@@ -801,16 +801,8 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
             className="finput"
           />
           <p className="text-[11px] text-ui/40 mt-1">
-            Ollama runs models locally — no account needed.{' '}
-            <a
-              href="https://ollama.com/download"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-cp-teal hover:text-cp-teal/80 underline"
-            >
-              Download Ollama ↗
-            </a>{' '}
-            if you don't have it installed yet.
+            Ollama runs models locally, no account needed. On this Mac the Dojo installs Ollama at setup and keeps it
+            current by itself; for Ollama on another machine, enter that machine's address.
           </p>
         </div>
       )}

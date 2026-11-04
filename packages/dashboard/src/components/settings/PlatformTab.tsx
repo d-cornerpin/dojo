@@ -377,8 +377,8 @@ const OllamaSettingsEditor = ({ initial }: { initial: string | null }) => {
     <div className="tile">
       <div className="scard__title">Ollama (Local Models)</div>
       <div className="scard__desc">
-        Controls how many different Ollama models can be loaded in RAM simultaneously.
-        Set to 1 for 16GB machines, 2+ if you have more RAM.
+        How many different agent models each Ollama may keep loaded at once; an agent that needs another model waits its turn.
+        The Dojo's own two models and the embedder always stay loaded beside them, and the Dojo sets Ollama's own limit to fit.
       </div>
       <StandardModels repair />
       <label className="flabel">Max Concurrent Models</label>

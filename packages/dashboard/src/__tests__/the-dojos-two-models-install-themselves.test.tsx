@@ -84,6 +84,9 @@ describe('Settings → Platform: the Ollama tile', () => {
     const line = screen.getByText(/Dojo's own models:/).textContent ?? '';
     expect(line).toContain('decider-tag:1 (decision)');
     expect(line).toContain('writer-tag:1 (writer)');
+    // field failure 2: plain punctuation, no em-dash in owner text
+    expect(line).toBe("Dojo's own models: decider-tag:1 (decision): installed; writer-tag:1 (writer): missing");
+    expect(line).not.toContain('\u2014');
     expect(screen.getByText(/Not installed yet: the writer/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Repair' }));
     await waitFor(() => expect(posts).toContain('/setup/ollama/standard'));
