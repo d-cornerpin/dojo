@@ -1,4 +1,4 @@
-// v3.5 FIELD FIX 3 (#4) — A REVIEW THE PM NEVER RAN IS NOT A MISS.
+// v3.5 FIELD FIX 3 (#4): A REVIEW THE PM NEVER RAN IS NOT A MISS.
 //
 // The owner's box, 3.5.0-preflight.3: `runPMReview` posted its report and awaited
 // `runtime.handleMessage(pm)`. The PM was already mid-run, so `handleMessage` only queued a wakeup

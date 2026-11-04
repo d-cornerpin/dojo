@@ -207,7 +207,7 @@ export function countTrackerWorkThisIteration(
     const claimedTaskId = taskToCharge(agentId);
     if (claimedTaskId) {
       chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) }); // t172: repeat vs new; v3.5 D1: this turn's new SUCCESSFUL ones
-      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsOf); // v3.5: the items THIS round's successes touched; field fix 3: and the files and commands, from each tool's declared effects
+      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsOf, agentId); // v3.5: the items THIS round's successes touched; field fix 3: and the files and commands, from each tool's declared effects
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

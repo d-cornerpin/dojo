@@ -72,6 +72,7 @@ describe('a failed label call that changed something still counts what it change
       [{ id: 'c1', name: 'gmail_label', arguments: { message_ids: ['m1', 'm2', 'm3'], add_labels: ['X'] } }],
       [{ toolCallId: 'c1', isError: true, content: PARTIAL_MSG }],
       () => undefined,
+      'agent-under-test',
     );
     expect(ledgerTotals(TASK).touched).toBe(2);
     expect(rowKeys()).toEqual(['gmail:msg:m1', 'gmail:msg:m2']);
@@ -83,6 +84,7 @@ describe('a failed label call that changed something still counts what it change
       [{ id: 'c1', name: 'gmail_label', arguments: { message_ids: ['m1', 'm2', 'm3'], add_labels: ['X'] } }],
       [{ toolCallId: 'c1', isError: true, content: 'Error modifying labels: HTTP 500\nIt was NOT changed on 3 messages (ids m1, m2, m3); retry those.' }],
       () => undefined,
+      'agent-under-test',
     );
     expect(ledgerTotals(TASK).touched).toBe(0);
   });
@@ -93,6 +95,7 @@ describe('a failed label call that changed something still counts what it change
       [{ id: 'c1', name: 'gmail_label', arguments: { message_ids: ['m1', 'm2', 'm3'], add_labels: ['X'] } }],
       [{ toolCallId: 'c1', isError: false, content: 'Labels updated on 3 messages (ids m1, m2, m3).' }],
       () => undefined,
+      'agent-under-test',
     );
     expect(ledgerTotals(TASK).touched).toBe(3);
   });

@@ -14,6 +14,7 @@
 import { getDb } from '../db/connection.js';
 import { itemKeysOf, COMMAND_KEY } from '../tools/item-keys.js';
 import { IS_ITEM } from './ledger-read.js';
+import { redactHandedCredentials } from '../credentials/secret-values.js';
 // The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
 // spine imports, so they must not pull this file's provider imports); re-exported here for the callers.
 export { ledgerTotals, ledgerWorkEntries, type LedgerWorkEntry } from './ledger-read.js';
@@ -71,24 +72,31 @@ export function recordCallsTouched(
   roundResults: ReadonlyArray<RoundResult>,
   /** Each tool's declared effects (`agent/tools/registry.ts` `effectsFor`), for its file and command work. */
   effectsOf: (toolName: string) => readonly ToolEffect[] | undefined,
+  /** The agent that made the calls: whose handed credentials are scrubbed from every key and detail. */
+  agentId: string,
 ): void {
   const ok = succeededIn(roundResults);
+  // Review H3 (architecture rule 6): a command or a path can carry a credential the agent was handed
+  // (the model sees the real value), so every key and every detail goes through the tree's ONE
+  // redactor before it is written, exactly as the process audit row does (`agent/tools/util.ts:88`).
+  // The request and the verdict record read the ledger, so they only ever see the redacted form.
+  const safe = (k: string): string => redactHandedCredentials(agentId, k);
   for (const tc of calls) {
     if (ok(tc)) {
-      const keys = itemKeysOf(tc.name, tc.arguments ?? {}, effectsOf(tc.name) ?? []);
+      const keys = [...new Set(itemKeysOf(tc.name, tc.arguments ?? {}, effectsOf(tc.name) ?? []).map(safe))];
       const commands = keys.filter((k) => k.startsWith(COMMAND_KEY));
       const items = keys.filter((k) => !k.startsWith(COMMAND_KEY));
       if (items.length > 0) recordTouched(workId, tc.name, items);
       if (commands.length > 0) {
         const r = roundResults.find((x) => x.toolCallId === tc.id);
-        recordTouched(workId, tc.name, commands, Date.now(), exitStatusOf(r?.keptWhole ?? r?.content ?? ''));
+        recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(r?.keptWhole ?? r?.content ?? '')));
       }
       continue;
     }
     const r = roundResults.find((x) => x.toolCallId === tc.id);
     if (!r?.isError || base(tc.name) !== 'gmail_label') continue;
     const applied = appliedKeysOf(r.keptWhole ?? r.content ?? '');
-    if (applied && applied.length > 0) recordTouched(workId, tc.name, applied);
+    if (applied && applied.length > 0) recordTouched(workId, tc.name, applied.map(safe));
   }
 }
 
