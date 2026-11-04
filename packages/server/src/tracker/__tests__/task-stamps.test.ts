@@ -99,14 +99,17 @@ describe('stampTasksAtTurnFinalize', () => {
 });
 
 describe('renderTaskStamps / renderStepFacts (caps + owner wording)', () => {
-  it('answered tickets render facts plus the CLOSE instruction, one line', () => {
+  // v3.5 field fix 3, review round 2 (ruled): the CLOSE instruction is gone; an ack never counts
+  // as completion on any channel and close-coaching in engine text is a defect. Facts only.
+  it('answered tickets render facts only (what was sent, when), one line', () => {
     const line = renderTaskStamps({
       last_activity_turn: 5, last_activity_at: '2026-07-22 07:10:00', last_activity_outcome: 'answered',
       last_answered_turn: 5, last_answered_at: '2026-07-22 07:10:00',
       last_delivery_summary: 'file report.md; via imessage',
     });
     expect(line).toContain('answered T5');
-    expect(line).toContain('CLOSE if done');
+    expect(line).toContain('file report.md; via imessage');
+    expect(line).not.toContain('CLOSE');
     expect(line).not.toContain('\n');
     expect(line.length).toBeLessThanOrEqual(160);
   });

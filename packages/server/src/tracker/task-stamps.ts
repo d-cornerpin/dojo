@@ -268,19 +268,16 @@ export interface TaskStampOptions {
   relative?: boolean;
 }
 
-/** The one compact stamp line the model reads (<=~90 chars typical).
- *  Owner ruling: facts PLUS instruction on answered tickets. */
+/** The one compact stamp line the model reads (<=~90 chars typical). FACTS ONLY.
+ *
+ *  v3.5 field fix 3, review round 2 (ruled): an ack never counts as completion, on any channel,
+ *  and close-coaching in engine text is a defect. This line used to append "CLOSE if done" on any
+ *  tangible summary, so an iMessage "On it" read as a finished handover. It now says what was
+ *  sent and when, and nothing else; whether the task's work is DELIVERED is a different question,
+ *  answered only by `tracker/delivery-evidence.ts:taskWorkOnRecord` (the ack-order rule). */
 export function renderTaskStamps(t: TaskStampFields, opts?: TaskStampOptions): string {
   const relAgo = opts?.relative === false ? absInstant : relAgoFromNow;
   if (t.last_answered_turn !== null && t.last_answered_at) {
-    // The CLOSE instruction requires a TANGIBLE handover on record, the same
-    // standard as the strike-2 engine close. A reply without a recorded
-    // delivery is often just an ack ("back with you soon"); nudging CLOSE on
-    // it strangled a delegation synthesis task mid-wait (battery catch,
-    // 2026-07-22). Facts only in that case.
-    if (isTangibleDeliverySummary(t.last_delivery_summary)) {
-      return `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}; ${t.last_delivery_summary}; CLOSE if done`;
-    }
     // T19 (D7): "facts only" used to mean "(no delivery recorded)", which on the owner's
     // primary channel was FALSE — and the model read it in the same tool result as an
     // ALREADY-DELIVERED assertion built from the same window. Facts only still means facts

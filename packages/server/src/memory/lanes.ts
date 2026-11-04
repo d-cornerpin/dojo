@@ -558,7 +558,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // v3.5 (done is measured): 3,980 -> 4,501 (+521), a current row's Progress line (its touched count, the
     // longest countable tool's name, its query and unit at the title width, three 10-digit counts, the instant).
     // v3.5 (plan before project): 4,501 -> 4,759 (+258), a current row's plan line, cut at the last-note width (+ its `...`).
-    reserveTokens: 4759,
+    // v3.5 field fix 3 review round 2: 4,759 -> 4,740 (-19), the stamp line's "; CLOSE if done" left (facts only).
+    reserveTokens: 4740,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '

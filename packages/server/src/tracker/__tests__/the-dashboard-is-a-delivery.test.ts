@@ -135,7 +135,9 @@ describe('D7 — a message the owner read on the dashboard is a delivery', () =>
 
 // ══════════════════════════════════════════════════════════════════════════════
 describe('the tangibility rule survives verbatim', () => {
-  it('CONTROL: an out-of-band channel is a TANGIBLE handover and still pushes CLOSE', () => {
+  // Review round 2 (ruled): the stamp line no longer pushes CLOSE on any channel; the turn-level
+  // tangibility of the SUMMARY is unchanged for its turn-level readers.
+  it('CONTROL: an out-of-band channel is a TANGIBLE summary, and the stamp line states it without coaching', () => {
     seedDelivery({ id: 'd1', channel: 'imessage', displayKind: null });
     const summary = composeTurnDeliverySummary(AGENT, TURN);
     expect(summary).toBe('via imessage');
@@ -145,7 +147,8 @@ describe('the tangibility rule survives verbatim', () => {
       last_answered_turn: TURN, last_answered_at: '2026-08-10 10:45:00',
       last_delivery_summary: summary,
     });
-    expect(line).toContain('CLOSE if done');
+    expect(line).toContain('via imessage');
+    expect(line).not.toContain('CLOSE');
   });
 
   it('CONTROL: a file artifact is tangible and still names the file', () => {
@@ -185,9 +188,12 @@ describe('the tangibility rule survives verbatim', () => {
     const engine = engineText();
     expect((engine.match(/isTangibleDeliverySummary/g) ?? []).length,
       'the close-out gate AND the strike-0 close both ask the helper').toBeGreaterThanOrEqual(2);
-    // The tool door is not a step package and is read directly.
+    // The tool door is not a step package and is read directly. Since field fix 3 review round 2
+    // its task-level "delivered" readings ask the one task-level helper (`taskWorkOnRecord`,
+    // the ack-order rule), never the per-turn summary.
     const here = path.dirname(url.fileURLToPath(import.meta.url));
     const tools = fs.readFileSync(path.resolve(here, '../tools.ts'), 'utf8');
-    expect(tools).toContain('isTangibleDeliverySummary');
+    expect(tools).toContain('taskWorkOnRecord');
+    expect(tools).not.toContain('isTangibleDeliverySummary');
   });
 });

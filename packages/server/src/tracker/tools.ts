@@ -31,7 +31,7 @@ import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
-import { renderTaskStamps, renderStepFacts, isTangibleDeliverySummary, type TaskStampFields } from './task-stamps.js';
+import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
@@ -2953,8 +2953,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           const evLine = taskWorkOnRecord(task.id, getTaskStampFields(task.id) ?? null);
           if (evLine) {
             parts.push(
+              // Review round 2: facts, not close-coaching (product law, "Finishing, not closing").
               `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${evLine}. ` +
-              `If that delivery completed the task, close it with work_update(action="status", status="complete", result, evidence); if not, continue. ` +
               `Do NOT redo or re-deliver what was already delivered.]`
             );
           }
@@ -3118,11 +3118,12 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
               const steps = renderStepFacts(st);
               parts.push(`      ^ state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
             }
-            if (!st || st.last_answered_turn === null || !isTangibleDeliverySummary(st.last_delivery_summary)) {
-              // v3.5 field fix 3 (review H1): THE task's record, never a bare dashboard bubble.
-              const rec = taskWorkOnRecord(tid, null);
+            {
+              // v3.5 field fix 3 (review H1, round 2): THE task's record, never a bare line on any
+              // channel, and facts only: what is on record, not an order to close it.
+              const rec = taskWorkOnRecord(tid, st ?? null);
               if (rec) {
-                parts.push(`      ^ ENGINE RECORD: appears already delivered (${rec}); close it complete, do not redo.`);
+                parts.push(`      ^ ENGINE RECORD: appears already delivered (${rec}); do not redo it.`);
               }
             }
           }

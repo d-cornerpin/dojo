@@ -32,8 +32,6 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope, msToText } from '../work/tracker-view.js';
-// `task-stamps.ts` does not import this module, so this adds no cycle.
-import { isTangibleDeliverySummary } from './task-stamps.js';
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
 
 const logger = createLogger('delivery-evidence');
@@ -169,8 +167,8 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 // Three readers disagreed: the close fallback, this pointer, and the filed close's delivery.
 // This function is now the only one. The agent's own close doors fall back to it
 // (`tracker/tools.ts`), G7's refusal text states it, the PM's validation request prints it,
-// and every advisory reader that tells the agent "already delivered" or "CLOSE if done" asks
-// it (`taskWorkOnRecord` below).
+// and every reader that tells the agent its work is "already delivered" asks it
+// (`taskWorkOnRecord` below). The stamp line no longer coaches a close at all (review round 2).
 //
 // ── AN ACK IS NEVER THE ANSWER (owner law: start ack AND completion are both required) ──
 // An ask settles on the turn's final model line, and that line can be "On it, I've opened the
@@ -314,17 +312,18 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
 }
 
 /**
- * The advisory readers' one question: is this task's work on record as DELIVERED, and in what
- * words? A tangible stamp (a file, an out-of-band channel; the 2026-07-22 standard, unchanged),
- * a delivered file from its answered turn, or THE task's answer (`resolveTaskAnswerPointer`).
- * A dashboard or voice bubble alone is never enough: it may be the start ack.
+ * The readers' one question: is this task's work on record as DELIVERED, and in what words?
+ * A delivered FILE (stamped, or from its answered turn: a work product is never an ack), or THE
+ * task's answer (`resolveTaskAnswerPointer`, the ack-order rule). A line on any channel alone,
+ * dashboard, voice or out-of-band, is never enough: it may be the start ack (review round 2,
+ * ruled: an ack never counts as completion on any channel).
  * Null when none, and the readers then say nothing about delivery.
  */
 export function taskWorkOnRecord(
   taskId: string,
   stamp: { last_answered_turn: number | null; last_answered_at: string | null; last_delivery_summary: string | null } | null,
 ): string | null {
-  if (stamp && stamp.last_answered_turn !== null && isTangibleDeliverySummary(stamp.last_delivery_summary)) {
+  if (stamp && stamp.last_answered_turn !== null && stamp.last_delivery_summary?.startsWith('file ')) {
     return `answered on turn ${stamp.last_answered_turn} (${stamp.last_answered_at} UTC); ${stamp.last_delivery_summary}`;
   }
   const ev = findDeliveryEvidenceForTask(taskId);

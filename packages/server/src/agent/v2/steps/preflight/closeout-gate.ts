@@ -152,30 +152,25 @@ export async function runCloseoutGate(
         // task's answer (never its start ack) or a delivered file is evidence. Before, the live
         // join's `deliveredVia` arm listed a task whose only line was "On it".
         const { taskWorkOnRecord } = await import('../../../../tracker/delivery-evidence.js');
-        const { renderTaskStamps, isTangibleDeliverySummary } = await import('../../../../tracker/task-stamps.js');
         const evidenced: string[] = [];
         for (const r of inProgressDanglers) {
           // Stamps first (mig 124), the task's record as backfill for pre-stamp rows.
           const st = db.prepare(
             `SELECT w.id AS id, ${stampColumns('w')} FROM work w WHERE w.id = ?`,
           ).get(r.id) as import('../../../../tracker/task-stamps.js').TaskStampFields | undefined;
-          // Tangibility rule (battery catch 2026-07-22): only a recorded
-          // HANDOVER (file or channel delivery) earns the close-this text; a
-          // bare answered reply is often an ack on a task legitimately
-          // waiting (delegation synthesis), and pushing CLOSE on it forged a
-          // wrong close. Same standard as the strike-2 engine close.
-          if (st && st.last_answered_turn !== null && isTangibleDeliverySummary(st.last_delivery_summary)) {
-            evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderTaskStamps(st)}`);
-            continue;
-          }
-          const rec = taskWorkOnRecord(r.id, null);
+          // Tangibility rule (battery catch 2026-07-22): a bare reply is often an ack on a task
+          // legitimately waiting, and pushing CLOSE on it forged a wrong close. Review round 2
+          // (ruled): that holds on EVERY channel, so the stamp's channel is not evidence here;
+          // only a delivered file or the task's answer is.
+          const rec = taskWorkOnRecord(r.id, st ?? null);
           if (rec) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${rec}`);
         }
         if (evidenced.length > 0) {
           sections.push(
             `The engine's records show a delivery for these, on their own conversations:\n${evidenced.join('\n')}\n` +
-            `If that delivery finished one, close it with work_update(action="status", status="complete", result, evidence); if something remains, say what in a work_note and continue. ` +
-            `Do not pause it in place of either, and do not redo or re-deliver what was already delivered.`
+            // Review round 2: facts, not close-coaching (product law, "Finishing, not closing").
+            `If something remains, say what in a work_note and continue. ` +
+            `Do not redo or re-deliver what was already delivered.`
           );
         }
       } catch { /* evidence consult is best-effort; the gate still fires */ }
