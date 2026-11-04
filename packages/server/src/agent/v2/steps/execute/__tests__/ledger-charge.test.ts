@@ -132,3 +132,59 @@ describe('the ledger charge', () => {
     expect(ledger('paused-new')).toEqual([]);
   });
 });
+
+// v3.5 FIELD FIX 3 (#6a): on the owner's box a file-creation task was upheld on the worker's word,
+// because the ledger only knew mailbox items. The worker's file and command work now lands on the
+// SAME ledger, at the SAME seam, from the tools' own declared effects (`fs_write`, `proc`, `shell`).
+describe('v3.5 field fix 3 (#6a): the ledger learns the worker\'s file and command work', () => {
+  const detailOf = (taskId: string, key: string): string | null =>
+    (mockDb.current!.prepare('SELECT detail FROM work_ledger WHERE work_id = ? AND item_key = ?').get(taskId, key) as { detail: string | null } | undefined)?.detail ?? null;
+  const WORK: Call[] = [
+    { id: 'f1', name: 'file_write', arguments: { path: '/tmp/out/summary.md', content: 'x' } },
+    { id: 'f2', name: 'file_append', arguments: { path: '/tmp/out/log.md', content: 'y' } },
+    { id: 'f3', name: 'file_read', arguments: { path: '/tmp/out/summary.md' } },
+    { id: 'x1', name: 'exec', arguments: { argv: ['mkdir', '-p', '/tmp/out'] } },
+    { id: 'x2', name: 'shell', arguments: { script: 'ls /tmp/out | wc -l' } },
+    { id: 'x3', name: 'exec', arguments: { argv: ['false'] } },
+  ];
+  const round = (over: Record<string, Partial<RoundResult>> = {}): RoundResult[] =>
+    roundOf(WORK).map((r) => ({ ...r, ...(over[r.toolCallId] ?? {}) }));
+
+  it('files written are recorded by path, commands by their text with the exit status; a read is not', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(WORK), ctxFor(WORK), round({
+      x1: { content: '(command completed with no output)' },
+      x2: { content: 'stdout:\n3' },
+      x3: { content: 'command_failed: exit 1' },
+    }));
+    expect(ledger('only')).toEqual([
+      'cmd:false', 'cmd:ls /tmp/out | wc -l', 'cmd:mkdir -p /tmp/out',
+      'file:/tmp/out/log.md', 'file:/tmp/out/summary.md',
+    ]);
+    expect(detailOf('only', 'cmd:mkdir -p /tmp/out')).toBe('exit 0');
+    expect(detailOf('only', 'cmd:ls /tmp/out | wc -l')).toBe('exit 0');
+    expect(detailOf('only', 'cmd:false')).toBe('exit 1');
+    expect(detailOf('only', 'file:/tmp/out/summary.md')).toBeNull();
+  });
+
+  it('a refused command (nothing ran) and a failed write are not work done', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(WORK), ctxFor(WORK), round({
+      f1: { content: 'Error: permission denied', isError: true },
+      x1: { content: 'Error: exec takes an argv ARRAY', isError: true },
+      x2: { content: 'denied', errorCode: 'PERMISSION_DENIED' },
+      x3: { content: 'command_failed: exit 1' },
+    }));
+    expect(ledger('only')).toEqual(['cmd:false', 'file:/tmp/out/log.md']);
+  });
+
+  it('a re-run keeps one entry and its latest exit status', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    const once: Call[] = [{ id: 'r1', name: 'exec', arguments: { argv: ['make', 'report'] } }];
+    countTrackerWorkThisIteration(stateWith(once), ctxFor(once), [{ toolCallId: 'r1', name: 'exec', content: 'command_failed: exit 2', isError: false }]);
+    const again: Call[] = [{ id: 'r2', name: 'exec', arguments: { argv: ['make', 'report'] } }];
+    countTrackerWorkThisIteration(stateWith(again), ctxFor(again), [{ toolCallId: 'r2', name: 'exec', content: 'stdout:\nbuilt', isError: false }]);
+    expect(ledger('only')).toEqual(['cmd:make report']);
+    expect(detailOf('only', 'cmd:make report')).toBe('exit 0');
+  });
+});

@@ -70,7 +70,7 @@ export function createWorkTable(db: DatabaseType.Database): void {
     -- deleter clears it (work-refs.ts) and a fixture without it would make those paths throw.
     CREATE TABLE IF NOT EXISTS work_ledger (
       work_id TEXT NOT NULL REFERENCES work(id), item_key TEXT NOT NULL, tool TEXT NOT NULL,
-      first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, PRIMARY KEY (work_id, item_key)
+      first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, detail TEXT, PRIMARY KEY (work_id, item_key)
     );
     CREATE TABLE IF NOT EXISTS work_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT NOT NULL,

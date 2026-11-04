@@ -81,6 +81,24 @@ describe('E1: the Ledger line', () => {
   });
 });
 
+describe('v3.5 field fix 3 (#6a): the Ledger names the worker\'s files and commands', () => {
+  it('a file-creation task: the ledger lists the paths written and the commands run with their exit status', async () => {
+    recordTouched(TASK, 'file_write', ['file:/tmp/out/summary.md'], T0);
+    recordTouched(TASK, 'exec', ['cmd:mkdir -p /tmp/out'], T0 - 1000, 'exit 0');
+    const out = await lines();
+    expect(out).toContain('\n  Measure: none set; ledger shows 1 items touched by file_write\n');
+    expect(out).toContain('\n  Ledger: 1 items touched (file_write 1), 1 command run'
+      + '\n    command run: mkdir -p /tmp/out (exec, exit 0)'
+      + '\n    file written: /tmp/out/summary.md (file_write)');
+  });
+  it('commands only: none set, and the ledger still says what ran', async () => {
+    recordTouched(TASK, 'shell', ['cmd:ls /tmp/out'], T0, 'exit 0');
+    const out = await lines();
+    expect(out).toContain('\n  Measure: none set; ledger shows 1 command run\n');
+    expect(out).toContain('\n  Ledger: 0 items touched (none), 1 command run\n    command run: ls /tmp/out (shell, exit 0)');
+  });
+});
+
 describe('E1: an unparsable measure is never "none set"', () => {
   it('a stored measure the engine cannot read renders as could not be read', async () => {
     db().prepare('UPDATE work SET measure_json = ?, measure_initial = 5, measure_remaining = 5 WHERE id = ?').run('{"tool":"nope"}', TASK);

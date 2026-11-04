@@ -6,7 +6,7 @@
 // new reads, would never be checked in on. The hold stands for such a job only while it is touching
 // items; one that is not lets the ladder run on its existing rungs, and the check-in carries the fact.
 import { getDb } from '../db/connection.js';
-import { ledgerNewItemsSince, ledgerTotals } from '../work/ledger-store.js';
+import { ledgerLastNewItemAt, ledgerNewItemsSince, ledgerTotals, ledgerWorkEntries } from '../work/ledger-store.js';
 import { lastTurnEnd } from '../work/job-momentum.js';
 import { parseMeasure, describeMeasure } from '../work/measure.js';
 import { listTaskLog } from './task-log.js';
@@ -22,7 +22,7 @@ export function continuedJobTouchingNothing(taskId: string, sinceMs: number): bo
 /** The fact the check-in carries: continuations since the job last touched an item, and what is left. */
 export function continuedJobFact(taskId: string): string | null {
   const db = getDb();
-  const lastItem = (db.prepare('SELECT MAX(first_at) AS at FROM work_ledger WHERE work_id = ?').get(taskId) as { at: number | null }).at ?? 0;
+  const lastItem = ledgerLastNewItemAt(taskId);
   const n = (db.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'continued' AND created_at > ?`).get(taskId, lastItem) as { n: number }).n;
   if (n === 0) return null;
   const left = (db.prepare('SELECT measure_remaining AS r FROM work WHERE id = ?').get(taskId) as { r: number | null } | undefined)?.r ?? null;
@@ -57,14 +57,17 @@ type Reading = { ok?: boolean; remaining?: number | null; at?: number; error?: s
 
 /** The Measure line of the validation request, in one of its shapes: a reading, a reading with the
  *  remainder the worker named, a reading that could not be made, or no measure at all. */
-function measureText(taskId: string, touched: number, byTool: Array<{ tool: string }>): string {
+function measureText(taskId: string, touched: number, commands: number, byTool: Array<{ tool: string }>): string {
   const db = getDb();
   const r = db.prepare('SELECT measure_json, measure_initial, measure_remaining, measure_at FROM work WHERE id = ?')
     .get(taskId) as { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null; measure_at: number | null } | undefined;
   let parsed: ReturnType<typeof parseMeasure> | null = null;
   try { parsed = r?.measure_json ? parseMeasure(JSON.parse(r.measure_json)) : null; } catch { parsed = null; }
   if (r?.measure_json && !parsed?.ok) return 'could not be read (measure unparsable)';   // a measure IS set; it cannot be understood
-  if (!r || !parsed?.ok) return touched > 0 ? `none set; ledger shows ${fmt(touched)} items touched by ${byTool.map((b) => b.tool).join(', ')}` : 'none set';
+  if (!r || !parsed?.ok) {
+    if (touched > 0) return `none set; ledger shows ${fmt(touched)} items touched by ${byTool.map((b) => b.tool).join(', ')}`;
+    return commands > 0 ? `none set; ledger shows ${commandsRun(commands)}` : 'none set';
+  }
   const name = describeMeasure(parsed.measure);
   if (r.measure_remaining === null) {
     // The newest reading that worked, and why the latest did not: both are on the task's own spine.
@@ -84,7 +87,20 @@ function measureText(taskId: string, touched: number, byTool: Array<{ tool: stri
 /** What the validator judges a close on, from the records (done-is-measured E1): the measure, and the
  *  ledger of what the task's calls touched. The remainder the worker named rides on the Measure line. */
 export function validationMeasureLines(taskId: string): string {
-  const { touched, byTool } = ledgerTotals(taskId);
-  return `\n  Measure: ${measureText(taskId, touched, byTool)}`
-    + `\n  Ledger: ${fmt(touched)} items touched (${byTool.map((b) => `${b.tool} ${fmt(b.n)}`).join(', ') || 'none'})`;
+  const { touched, commands, byTool } = ledgerTotals(taskId);
+  // v3.5 field fix 3 (#6a): the files the task's calls wrote and the commands they ran, one per line,
+  // so the validator can open what the work produced instead of reading the worker's account of it.
+  const work = ledgerWorkEntries(taskId).map((e) => e.kind === 'file'
+    ? `\n    file written: ${e.what} (${e.tool})`
+    : `\n    command run: ${excerpt(e.what)} (${e.tool}, ${e.status ?? 'exit unknown'})`).join('');
+  return `\n  Measure: ${measureText(taskId, touched, commands, byTool)}`
+    + `\n  Ledger: ${fmt(touched)} items touched (${byTool.map((b) => `${b.tool} ${fmt(b.n)}`).join(', ') || 'none'})`
+    + `${commands > 0 ? `, ${commandsRun(commands)}` : ''}${work}`;
 }
+
+const commandsRun = (n: number): string => `${fmt(n)} ${n === 1 ? 'command' : 'commands'} run`;
+const COMMAND_EXCERPT_CHARS = 300;   // a display excerpt; the ledger keeps the whole command
+const excerpt = (cmd: string): string => {
+  const flat = cmd.replace(/\s+/g, ' ').trim();
+  return flat.length > COMMAND_EXCERPT_CHARS ? `${flat.slice(0, COMMAND_EXCERPT_CHARS)}…` : flat;
+};

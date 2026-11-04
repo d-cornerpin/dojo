@@ -24,6 +24,7 @@ import { getDb } from '../../../../db/connection.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
 import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
+import { effectsFor } from '../../../tools/registry.js';
 import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
 
 /**
@@ -201,7 +202,7 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
     const claimedTaskId = taskToCharge(agentId);
     if (claimedTaskId) {
       chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) }); // t172: repeat vs new; v3.5 D1: this turn's new SUCCESSFUL ones
-      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults); // v3.5: the items THIS round's successes touched
+      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsFor); // v3.5: the items THIS round's successes touched; field fix 3: and the files and commands, from each tool's declared effects
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

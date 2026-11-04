@@ -5,8 +5,15 @@
 // The ledger is written by the engine from the agent's successful mutation calls
 // (agent/v2/steps/execute/tracker-counting.ts, beside the effort charge), never by the model.
 // One row per (task, item): a re-touch moves `last_at`, so COUNT(*) is "distinct items touched".
+//
+// v3.5 field fix 3 (#6a): the same ledger holds the worker's file and command work, so a task done
+// in files and shell has a structural record too. A file it wrote is an item ("file:<path>"). A
+// command it ran ("cmd:<command>", with its exit status in `detail`, migration 211) is a RECORD of
+// the work and never an item: a command is as often a read (`ls`, `cat`) as a change, so the
+// measured-job readers below (momentum, "touched", the stall check) count items only.
 import { getDb } from '../db/connection.js';
-import { itemKeysOf } from '../tools/item-keys.js';
+import { itemKeysOf, COMMAND_KEY, FILE_KEY } from '../tools/item-keys.js';
+import type { ToolEffect } from '../agent/tools/types.js';
 import { appliedKeysOf } from '../google/gmail-label.js';
 import { appendWorkEvent } from './store.js';
 import type { WorkEventKind } from './event-kinds.js';
@@ -16,23 +23,53 @@ import type { Measure, MeasureCount } from './measure.js';
  *  so a reading is a record and never reads as the task moving (`taskMovedAtSql`). */
 export const MEASURED_EVENT = 'measured' as const satisfies WorkEventKind;
 
-/** Record the items a call touched for a task. Returns the rows inserted or touched. */
-export function recordTouched(workId: string, tool: string, keys: string[], at: number = Date.now()): number {
+/** SQL: this ledger row is an item (anything but a command record). */
+const IS_ITEM = `substr(item_key, 1, ${COMMAND_KEY.length}) <> '${COMMAND_KEY}'`;
+
+/** Record the items a call touched for a task. Returns the rows inserted or touched. `detail`: a
+ *  command's exit status (the newest run's), null for everything else. */
+export function recordTouched(workId: string, tool: string, keys: string[], at: number = Date.now(), detail: string | null = null): number {
   if (keys.length === 0) return 0;
   const db = getDb();
   const stmt = db.prepare(
-    `INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(work_id, item_key) DO UPDATE SET last_at = excluded.last_at, tool = excluded.tool`,
+    `INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at, detail) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(work_id, item_key) DO UPDATE SET last_at = excluded.last_at, tool = excluded.tool, detail = excluded.detail`,
   );
-  db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at); })(keys);
+  db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at, detail); })(keys);
   return keys.length;
 }
 
-export function ledgerTotals(workId: string): { touched: number; lastAt: number | null; byTool: Array<{ tool: string; n: number }> } {
+/** `touched` and `byTool` are ITEMS (mailbox items and files); `commands` is how many distinct commands ran. */
+export function ledgerTotals(workId: string): { touched: number; commands: number; lastAt: number | null; byTool: Array<{ tool: string; n: number }> } {
   const db = getDb();
-  const t = db.prepare('SELECT COUNT(*) AS n, MAX(last_at) AS last FROM work_ledger WHERE work_id = ?').get(workId) as { n: number; last: number | null };
-  const byTool = db.prepare('SELECT tool, COUNT(*) AS n FROM work_ledger WHERE work_id = ? GROUP BY tool ORDER BY n DESC, tool').all(workId) as Array<{ tool: string; n: number }>;
-  return { touched: t.n, lastAt: t.last, byTool };
+  const t = db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN ${IS_ITEM} THEN 1 ELSE 0 END), 0) AS n, COUNT(*) AS all_n, MAX(last_at) AS last FROM work_ledger WHERE work_id = ?`,
+  ).get(workId) as { n: number; all_n: number; last: number | null };
+  const byTool = db.prepare(`SELECT tool, COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND ${IS_ITEM} GROUP BY tool ORDER BY n DESC, tool`).all(workId) as Array<{ tool: string; n: number }>;
+  return { touched: t.n, commands: t.all_n - t.n, lastAt: t.last, byTool };
+}
+
+/** One file or command entry on a task's ledger, as the validation request and the verdict record show it. */
+export interface LedgerWorkEntry { kind: 'file' | 'command'; what: string; tool: string; status: string | null }
+
+/** The task's file and command entries, oldest first. Mailbox items are counted (`ledgerTotals`), not
+ *  listed: a sweep touches thousands of ids and a path or a command is what a reviewer can open. */
+export function ledgerWorkEntries(workId: string): LedgerWorkEntry[] {
+  const rows = getDb().prepare(
+    `SELECT item_key AS k, tool, detail FROM work_ledger WHERE work_id = ?
+       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}')
+     ORDER BY first_at, rowid`,
+  ).all(workId) as Array<{ k: string; tool: string; detail: string | null }>;
+  return rows.map((r) => r.k.startsWith(FILE_KEY)
+    ? { kind: 'file' as const, what: r.k.slice(FILE_KEY.length), tool: r.tool, status: null }
+    : { kind: 'command' as const, what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail });
+}
+
+/** A command's exit status, from the head of its result: the process runner (`agent/tools/process-run.ts`)
+ *  leads a failed run with "command_failed: <reason>" and writes nothing of the kind on a clean exit. */
+function exitStatusOf(content: string): string {
+  const m = /^command_failed: ([^\n]+)/.exec(content);
+  return m ? m[1].trim() : 'exit 0';
 }
 
 /** One of THIS round's tool results, as the executor hands them to the count (`turnToolResults`). */
@@ -57,12 +94,20 @@ export function recordCallsTouched(
   workId: string,
   calls: ReadonlyArray<{ id: string; name: string; arguments?: Record<string, unknown> }>,
   roundResults: ReadonlyArray<RoundResult>,
+  /** Each tool's declared effects (`agent/tools/registry.ts` `effectsFor`), for its file and command work. */
+  effectsOf: (toolName: string) => readonly ToolEffect[] | undefined,
 ): void {
   const ok = succeededIn(roundResults);
   for (const tc of calls) {
     if (ok(tc)) {
-      const keys = itemKeysOf(tc.name, tc.arguments ?? {});
-      if (keys.length > 0) recordTouched(workId, tc.name, keys);
+      const keys = itemKeysOf(tc.name, tc.arguments ?? {}, effectsOf(tc.name) ?? []);
+      const commands = keys.filter((k) => k.startsWith(COMMAND_KEY));
+      const items = keys.filter((k) => !k.startsWith(COMMAND_KEY));
+      if (items.length > 0) recordTouched(workId, tc.name, items);
+      if (commands.length > 0) {
+        const r = roundResults.find((x) => x.toolCallId === tc.id);
+        recordTouched(workId, tc.name, commands, Date.now(), exitStatusOf(r?.keptWhole ?? r?.content ?? ''));
+      }
       continue;
     }
     const r = roundResults.find((x) => x.toolCallId === tc.id);
@@ -74,14 +119,19 @@ export function recordCallsTouched(
 
 /** Distinct items touched (or re-touched) after `sinceMs`. */
 export function ledgerTouchedSince(workId: string, sinceMs: number): number {
-  return (getDb().prepare('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND last_at > ?').get(workId, sinceMs) as { n: number }).n;
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND last_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
 }
 
 /** v3.5 D1: items this task touched for the FIRST time after `sinceMs`. The turn end's momentum reads
  *  this, not `ledgerTouchedSince`: re-touching what the task already touched is not progress, so a
  *  loop over the same items cannot keep a job continuing (`post-call-classify/job-continues.ts`). */
 export function ledgerNewItemsSince(workId: string, sinceMs: number): number {
-  return (getDb().prepare('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ?').get(workId, sinceMs) as { n: number }).n;
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
+}
+
+/** When the task last touched an ITEM for the first time (0 when never): the continued-job fact's anchor. */
+export function ledgerLastNewItemAt(workId: string): number {
+  return (getDb().prepare(`SELECT MAX(first_at) AS at FROM work_ledger WHERE work_id = ? AND ${IS_ITEM}`).get(workId) as { at: number | null }).at ?? 0;
 }
 
 /** Store a reading of the task's measure. `remaining` null = the measure could not be read at `at`;
