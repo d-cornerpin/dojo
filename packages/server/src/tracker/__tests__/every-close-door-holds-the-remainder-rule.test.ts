@@ -184,8 +184,9 @@ describe('minors', () => {
     await call('work_update:status', { task_id: id, status: 'in_progress' });
     const named = { ...CLOSE, remainder: { disposition: 'skipped', reason: '7 are calendar invites the owner said to leave' } };
     countMeasure.mockResolvedValueOnce({ ok: true, count: 7 });
-    // No delivery yet: the close is refused AFTER the measure door ("needs a delivery").
-    expect((await call('work_update:status', { task_id: id, status: 'complete', ...named })).content).toMatch(/needs a delivery/);
+    // No delivery yet: the close is refused AFTER the measure door (G7's refusal; since field fix 3
+    // it states the fact, "a task closes on a delivery", instead of coaching a re-send).
+    expect((await call('work_update:status', { task_id: id, status: 'complete', ...named })).content).toMatch(/closes on a delivery/);
     expect(remainderNotes(id)).toBe(0);
     seedDelivery();
     countMeasure.mockResolvedValueOnce({ ok: true, count: 7 });

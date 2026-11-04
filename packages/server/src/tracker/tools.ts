@@ -30,7 +30,7 @@ import {
 import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, isTangibleDeliverySummary, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
@@ -499,12 +499,17 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
       `to close a different way, say so in a note with work_note.`
     );
   }
+  // v3.5 field fix 3 (#2): FACTS, NOT COACHING. This said "Send the result first (reply,
+  // message, file, or hand it back on the thread that asked)". In an A2A turn the agent's only
+  // person channel was iMessage, so it texted the owner about engine plumbing. The engine
+  // detects and the agent speaks: the refusal says what is on record and nothing else.
   if (r.reason === 'done-requires-delivery' || r.reason === 'delivery-unresolved') {
-    return (
-      `Error: "${wanted}" needs a delivery to point at. Work is done because something reached the person, ` +
-      `not because the tracker says so. Send the result first (reply, message, file, or hand it back on the ` +
-      `thread that asked), then set status="complete" — the engine records the delivery for you.`
-    );
+    const answer = resolveTaskAnswerPointer(taskId);
+    const fact = answer
+      ? `An answer for this task is on record (delivery ${answer.deliveryId.slice(0, 8)}` +
+        `${answer.channel ? `, via ${answer.channel}` : ''}${answer.at ? `, ${answer.at} UTC` : ''}).`
+      : `Nothing has reached the owner for this task yet.`;
+    return `Error: "${wanted}" was not recorded for task ${taskId.slice(0, 8)}: a task closes on a delivery. ${fact}`;
   }
   // ── t129: THE BLOCKED-WORK DISPOSAL REFUSAL, AND IT POINTS AT THE ESCALATION PATH ──
   //
