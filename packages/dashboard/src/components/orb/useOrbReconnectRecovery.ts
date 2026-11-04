@@ -2,7 +2,8 @@ import { useEffect, useRef, type MutableRefObject } from 'react';
 import { getAgents } from '../../lib/api';
 import { engineRoleOf, loadEngineRoleIds } from '../../lib/engine-role-ids';
 
-export interface EngineItem { id: string; kind: 'compaction' | 'dreamer' | 'healer'; }
+/** `agentId`: whose work it is (null or absent: the box's own, like the nightly maintenance). */
+export interface EngineItem { id: string; kind: 'compaction' | 'dreamer' | 'healer'; agentId?: string | null; }
 
 /** After a reconnect, rebuild the orb's engine items from what the agents are doing now. */
 export function useOrbReconnectRecovery(

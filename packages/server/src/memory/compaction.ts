@@ -776,6 +776,13 @@ export async function leavingViewPass(
   const floorRows = 1;
   const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
+  // v3.5 field fix 3 (#10): an empty span is no work. Nothing is archived, written or shown: the orb's compaction
+  // glyph went up and down around this pass on every tool round (field report 3, Problem 5), and no brake is armed
+  // by it either (an empty span says nothing about the writer).
+  if (span.length === 0) {
+    logger.info('Leaving-view condense skipped: every row through the boundary already has its summary', { cause: leaving.cause, throughSeq: leaving.throughSeq }, agentId);
+    return NO_COMPACTION;
+  }
   if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;
 
   const pass = (writer: string, left?: LeftBehind): Promise<number> => runLeafCompaction(agentId, writer, contextWindow,

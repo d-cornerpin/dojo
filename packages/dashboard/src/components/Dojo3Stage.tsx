@@ -153,7 +153,7 @@ export function Dojo3Stage({
 
   /* Drive the orb's task glyph (image/audio/song/video/compaction/dreamer/
      healer) from real engine work, and react to errors. */
-  useOrbActivity();
+  useOrbActivity(activeAgent.agentId);
   const [fanOpen, setFanOpen] = useState(false);
   const [resetArmed, setResetArmed] = useState(false);
   /* Presence (in the dojo / out) now lives in the composer's bottom-left, but

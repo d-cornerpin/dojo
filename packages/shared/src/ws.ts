@@ -517,8 +517,10 @@ export interface GenerationJobUpdateEvent {
  * Memory compaction fires this directly (start/end correlated by `id`). The
  * Dreamer and Healer are surfaced by the indicator from their agent:status
  * instead, since they run as agents. The ActiveJobsIndicator renders these
- * as in-flight rows with NO Stop button (engine-managed, not user-cancellable)
- * and shows them regardless of which agent is selected.
+ * as in-flight rows with NO Stop button (engine-managed, not user-cancellable).
+ * An item with an `agentId` is that agent's work and shows (on the orb and in the
+ * indicator) only while that agent is the one viewed; `agentId: null` is the box's
+ * own work and shows everywhere (v3.5 field fix 3 #10).
  */
 export interface EngineActivityEvent {
   type: 'engine:activity';

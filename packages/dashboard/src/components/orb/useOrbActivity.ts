@@ -19,6 +19,13 @@ import type { OrbTaskName } from './dojoOrbEngine';
  *     plus agent:status for the dreamer/healer agents.
  * Media jobs take priority over engine agents; when nothing is active we end
  * the task. chat:error nudges the orb to a "confused" demeanor.
+ *
+ * v3.5 field fix 3 (#10): an agent's memory work (kind `compaction` with an
+ * `agentId`) is shown only while that agent is the one being viewed. The orb
+ * speaks for the agent on screen, so a service agent's housekeeping (the PM's,
+ * the Healer's) no longer reads as the owner's agent compacting. Work that
+ * belongs to the box (no `agentId`, the nightly maintenance) and the Dreamer's
+ * and Healer's own glyphs stay box-wide.
  */
 
 import type { EngineItem } from './useOrbReconnectRecovery';
@@ -28,8 +35,15 @@ function jobToTask(kind: GenJobDto['kind']): OrbTaskName {
   return kind === 'music' ? 'song' : kind;
 }
 
-export function useOrbActivity(): void {
+/** Is this engine item the viewed agent's to show? (header, field fix 3 #10) */
+function shownFor(item: EngineItem, viewedAgentId: string | undefined): boolean {
+  return item.kind !== 'compaction' || !item.agentId || item.agentId === viewedAgentId;
+}
+
+export function useOrbActivity(viewedAgentId?: string): void {
   const dojoOrb = useDojoOrb();
+  const viewedRef = useRef(viewedAgentId);
+  viewedRef.current = viewedAgentId;
   const { subscribe, reconnectCount } = useWebSocket();
   const jobsRef = useRef<GenJobDto[]>([]);
   const engineRef = useRef<EngineItem[]>([]);
@@ -37,7 +51,7 @@ export function useOrbActivity(): void {
 
   const sync = useCallback(() => {
     const job = jobsRef.current[0];
-    const eng = engineRef.current[0];
+    const eng = engineRef.current.find((it) => shownFor(it, viewedRef.current));
     const next: OrbTaskName | null = job ? jobToTask(job.kind) : eng ? eng.kind : null;
     if (next === currentRef.current) return;
     if (next) {
@@ -49,6 +63,9 @@ export function useOrbActivity(): void {
     }
     currentRef.current = next;
   }, [dojoOrb]);
+
+  // Another agent on screen: its own memory work, not the last one's (field fix 3 #10).
+  useEffect(() => { sync(); }, [viewedAgentId, sync]);
 
   // A new orb engine (or a remount) has no task running: forget what the old one was told.
   useEffect(() => () => { currentRef.current = null; }, [dojoOrb]);
@@ -79,7 +96,7 @@ export function useOrbActivity(): void {
       const d = event.data;
       if (d.phase === 'start') {
         if (!engineRef.current.some((it) => it.id === d.id)) {
-          engineRef.current = [...engineRef.current, { id: d.id, kind: d.kind }];
+          engineRef.current = [...engineRef.current, { id: d.id, kind: d.kind, agentId: d.agentId }];
         }
       } else {
         engineRef.current = engineRef.current.filter((it) => it.id !== d.id);
