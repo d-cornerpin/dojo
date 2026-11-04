@@ -54,7 +54,7 @@ const logger = createLogger('task-stamps');
 export const NON_TANGIBLE_DELIVERY_SUMMARIES: readonly string[] = ['via dashboard', 'via voice'];
 
 /**
- * v3.5 field fix 3 (#8) — OWNER RULING OR-FIELD3(b), 2026-11-04: "A dashboard answer to a
+ * v3.5 field fix 3 (#8). OWNER RULING OR-FIELD3(b), 2026-11-04: "A dashboard answer to a
  * dashboard ask COUNTS as a tangible delivery for closing a task." The same channel-identity
  * law makes a voice answer to a voice ask one too.
  *

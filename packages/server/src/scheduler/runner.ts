@@ -357,7 +357,7 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
         continue;
       }
       clearUserVerdict(t.id, 'scheduler', 'verdict request timed out');
-      // The scheduler's own timeout IS the validation of this block — the same
+      // The scheduler's own timeout IS the validation of this block, the same
       // reasoning the `blocked_validated = 1` assignment carried.
       upholdClaim(t.id, 'blocked', 'pm', 'scheduler', 'verdict request timed out; block recorded');
       if (r.kind !== 'applied') continue;

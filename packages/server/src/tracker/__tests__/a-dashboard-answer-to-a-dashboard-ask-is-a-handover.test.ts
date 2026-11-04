@@ -1,4 +1,4 @@
-// v3.5 field fix 3, ranked fix #8 — OWNER RULING OR-FIELD3(b), 2026-11-04:
+// v3.5 field fix 3, ranked fix #8. OWNER RULING OR-FIELD3(b), 2026-11-04:
 // "A dashboard answer to a dashboard ask COUNTS as a tangible delivery for closing a task."
 // (And, by the same channel-identity law, a voice answer to a voice ask.)
 //
