@@ -121,7 +121,7 @@ describe('the Dojo raises Ollama\'s model limit', () => {
     expect(healerOwnerCards()).toEqual([]);
   });
 
-  it('an upgraded box still holding the "limit raised" card of an earlier 3.5 build: its record is removed at the start', async () => {
+  it('an upgraded box still holding the "limit raised" card of an earlier 3.5 build: it is never shown, in any card\'s words', async () => {
     mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-set', 1), ('owner_told', 'ollama-restart-needed', 1)").run();
     expect(await ensureOllamaModelLimit(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }), 'darwin')).toBe('already');
     expect(healerOwnerCards()).toEqual([]);   // never read back as another card's words
@@ -319,8 +319,9 @@ describe('NB-2: act only where it is true', () => {
     expect(frames.list).toEqual([]);
   });
 
-  it('nothing serving and no Ollama app on the box: nothing, and no card', async () => {
+  it('nothing serving and no Ollama installed at all: nothing, and no card', async () => {
     const deps = fakeDeps({}, { server: null, installed: false });
+    deps.cliRuns = async () => false;
     expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('skipped');
     expect(deps.sets).toEqual([]);
     expect(frames.list).toEqual([]);
@@ -394,17 +395,26 @@ describe('NB-5: no AppleScript; a failed restart is tried again at the next star
 });
 
 describe('fix round 5', () => {
-  it('NB4-1: a relaunched app that does not ANSWER is a failed restart — owed kept, failed card, the hold released, retried next start', async () => {
+  it('NB4-1 / review M2: a relaunched app that is alive but not answering yet is a slow start, not a failure: no card, the hold released', async () => {
     const env: Record<string, string> = {};
-    const silent = fakeDeps(env, { neverAnswers: true });
-    expect(await ensureOllamaModelLimit(silent, 'darwin')).toBe('set');
+    const slow = fakeDeps(env, { neverAnswers: true });
+    expect(await ensureOllamaModelLimit(slow, 'darwin')).toBe('set');
     await settle();
-    const call = getOllamaLock().acquire(LOCAL, 'agent-model:7b');   // waits on the hold, then proceeds into Ollama-down
+    const call = getOllamaLock().acquire(LOCAL, 'agent-model:7b');   // waits on the hold, then proceeds
     await ollamaRestartSettled();
     await call;
     getOllamaLock().release(LOCAL, 'agent-model:7b');
+    expect(frames.list.filter((f) => f.error !== undefined)).toEqual([]);   // only the waiting row: no card
+    expect(healerOwnerCards()).toEqual([]);
+  });
+
+  it('NB4-1: a relaunched app that is GONE is a failed restart — owed kept, the failed card, retried next start', async () => {
+    const env: Record<string, string> = {};
+    const dead = fakeDeps(env, { neverAnswers: true });
+    dead.launchApp = async () => { dead.log.push('launch'); };   // opened, but nothing of it is running
+    expect(await ensureOllamaModelLimit(dead, 'darwin')).toBe('set');
+    await ollamaRestartSettled();
     expect(frames.list.map((f) => f.error)).toContain(OLLAMA_LIMIT_FAILED_WORDS);
-    expect(healerOwnerCards().map((c) => c.words)).toContain(OLLAMA_LIMIT_FAILED_WORDS);
     const next = fakeDeps(env);
     expect(await ensureOllamaModelLimit(next, 'darwin')).toBe('set');   // still owed
     await ollamaRestartSettled();
@@ -439,10 +449,10 @@ describe('fix round 5', () => {
     release();
   });
 
-  it('the manual card of 3.5.0-preflight.1 is retired: its record on an upgraded box is removed at the start, and nothing names the variable to the owner', async () => {
+  it('the manual card of 3.5.0-preflight.1 is retired: a record of it left on a box is never shown (migration 209 removes it), and nothing names the variable', async () => {
     mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-manual:4', 1)").run();
     expect(await ensureOllamaModelLimit(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '8' }), 'darwin')).toBe('already');
-    expect(mockDb.current!.prepare("SELECT 1 FROM healer_state WHERE key LIKE 'ollama-limit-manual:%'").get()).toBeUndefined();
+    expect(healerOwnerCards()).toEqual([]);
     expect(OLLAMA_LIMIT_FAILED_WORDS).not.toMatch(/OLLAMA_|environment variable/);
   });
 });

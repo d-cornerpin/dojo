@@ -82,7 +82,8 @@ describe('an Ollama that is too old is updated AND restarted BEFORE the pull, by
   it('the Ollama app (Homebrew\'s): quit, `brew upgrade --cask`, opened again with the limit in launchd; then the pull works', async () => {
     const mac = use(fakeMac({ running: appServe('0.30.1'), app: '0.30.1' }));
     const state = await ensureStandardModels();
-    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
+    expect(mac.brews).toEqual([['fetch', '--cask', 'ollama-app'], ['upgrade', '--cask', 'ollama-app']]);
+    expect(mac.heldDuringBrew).toEqual([false, true]);   // review M1: the download runs while local calls go on
     expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(mac.launches).toBe(1);
     expect(ollama.serving?.version).toBe(LATEST);
@@ -131,7 +132,7 @@ describe('an Ollama that is too old is updated AND restarted BEFORE the pull, by
     ollama.installed = new Set(['nomic-embed-text:latest']); ollama.pulls = [];
     const repair = use(fakeMac({ running: appServe('0.30.1'), app: '0.30.1' }));
     startStandardInstall(); await standardInstallSettled();
-    expect(repair.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
+    expect(repair.brews).toEqual([['fetch', '--cask', 'ollama-app'], ['upgrade', '--cask', 'ollama-app']]);
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
   });
 
@@ -149,8 +150,8 @@ describe('an app Homebrew did not install (downloaded from ollama.com) is taken 
   it('"the proper version is installed, period": quit, `brew install --cask --force ollama-app`, opened again, then pulled; Homebrew owns it from then on', async () => {
     const mac = use(fakeMac({ running: appServe('0.30.1'), app: '0.30.1', appCask: null }));
     const state = await ensureStandardModels();
-    expect(mac.brews).toEqual([['install', '--cask', '--force', 'ollama-app']]);
-    expect(mac.heldDuringBrew).toEqual([true]); expect(mac.downAtBrew).toEqual([true]);   // quit first, inside the quiet hold
+    expect(mac.brews).toEqual([['fetch', '--cask', 'ollama-app'], ['install', '--cask', '--force', 'ollama-app']]);
+    expect(mac.heldDuringBrew).toEqual([false, true]); expect(mac.downAtBrew).toEqual([false, true]);   // fetched first; quit, then installed from the cache
     expect(mac.launches).toBe(1);
     expect(ollama.serving?.version).toBe(LATEST);
     expect(state.decision).toBe('installed');
@@ -243,8 +244,21 @@ describe('what the Dojo truly cannot fix: ONE plain card, and no endless pulling
     expect(owner()).toEqual([OLLAMA_TOO_OLD_WORDS]);
   });
 
-  it('M3: the Ollama it stopped did not come back — ONE "Dojo:" card that it is down (not a second "too old" one)', async () => {
+  it('review H2: Homebrew\'s service cannot start after the TERM ("Bootstrap failed"): the program on disk runs as a detached serve, never down', async () => {
     const mac = use(fakeMac({ running: formulaServe('0.30.1'), formula: '0.30.1' })); mac.serviceWorks = false;
+    const state = await ensureStandardModels();
+    expect(mac.terms).toEqual([500]);
+    expect(mac.serves).toEqual([{ OLLAMA_MAX_LOADED_MODELS: '4' }]);   // the limit in its own environment
+    expect(ollama.serving?.version).toBe(LATEST);
+    expect(state.decision).toBe('installed');
+    expect(owner()).toEqual([]);
+    // the next start finds it serving and current: it is settled, not stopped again
+    expect(await ensureOllamaModelLimit(mac, 'darwin')).toBe('set'); await ollamaRestartSettled();
+    expect(mac.terms).toEqual([500]);
+  });
+
+  it('M3: the Ollama it stopped did not come back and nothing on disk runs — ONE "Dojo:" card that it is down (not a second "too old" one)', async () => {
+    const mac = use(fakeMac({ running: formulaServe('0.30.1'), formula: '0.30.1' })); mac.serviceWorks = false; mac.serveWorks = false;
     await ensureStandardModels();
     expect(mac.terms).toEqual([500]);
     expect(owner()).toEqual([OLLAMA_DOWN_WORDS]);
@@ -270,7 +284,7 @@ describe('round 3: one sequenced Ollama upkeep, and no wrong advice', () => {
     expect(SLASH_PULLS()).toEqual([]);   // not yet: it waits for the upkeep under way, it does not judge a listener that is down
     open();
     await boot; await ollamaRestartSettled();
-    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);   // once: the install found it current
+    expect(mac.brews).toEqual([['fetch', '--cask', 'ollama-app'], ['upgrade', '--cask', 'ollama-app']]);   // once: the install found it current
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
     expect((await standardState()).decision).toBe('installed');
     expect(owner()).toEqual([]);
@@ -297,16 +311,16 @@ describe('round 3: one sequenced Ollama upkeep, and no wrong advice', () => {
   it('M2: the cask upgrade runs INSIDE the quiet hold after the Dojo quit the app, under the token Homebrew holds, never reinstall', async () => {
     const mac = use(fakeMac({ running: appServe('0.30.1'), app: '0.30.1', appCask: 'ollama' }));   // before the cask was renamed
     await ensureStandardModels();
-    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama']]);
-    expect(mac.heldDuringBrew).toEqual([true]);
-    expect(mac.downAtBrew).toEqual([true]);
+    expect(mac.brews).toEqual([['fetch', '--cask', 'ollama'], ['upgrade', '--cask', 'ollama']]);
+    expect(mac.heldDuringBrew).toEqual([false, true]);
+    expect(mac.downAtBrew).toEqual([false, true]);
     expect(mac.brews.flat()).not.toContain('reinstall');
   });
 
   it('N1: Homebrew has nothing newer (exit 0, version unchanged) — no false "updated", the card tells the truth, the app is open again', async () => {
     const mac = use(fakeMac({ running: appServe('0.30.1'), app: '0.30.1' })); mac.latest = '0.30.1';
     await ensureStandardModels();
-    expect(mac.brews).toEqual([['upgrade', '--cask', 'ollama-app']]);
+    expect(mac.brews).toEqual([['fetch', '--cask', 'ollama-app'], ['upgrade', '--cask', 'ollama-app']]);
     expect(mac.launches).toBe(1);
     expect(standardProgressLines().join(' ')).toContain('Homebrew has no newer Ollama to install.');
     expect(standardProgressLines().join(' ')).not.toMatch(/Updated/);

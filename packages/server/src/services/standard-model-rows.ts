@@ -38,12 +38,13 @@ export function assignStandard(writerId: string | null, decisionId: string | nul
   })();
 }
 
-/** Field failure 2 (E1): one of the pair is NOT installed. A row an earlier install registered for it without pulling it is
- *  disabled (the decision model then reads as absent and every judgment keeps its rule), and so is `decision_model_id`.
- *  The next install that really pulls it registers and re-enables the row. */
+/** Field failure 2 (E1): the DECISION model is not installed. A row an earlier install registered for it without pulling it is
+ *  disabled (it then reads as absent and every judgment keeps its rule), and so is `decision_model_id`. The next install that
+ *  really pulls it registers and re-enables the row. Only the decision row (review M5): the writer's row may be an agent's model,
+ *  and a failed download of it says nothing about that. */
 export function unregisterStandardRow(providerId: string, tag: string): void {
   const db = getDb();
-  const row = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ? AND is_enabled = 1').get(providerId, tag) as { id: string } | undefined;
+  const row = db.prepare(`SELECT id FROM models WHERE provider_id = ? AND api_model_id = ? AND is_enabled = 1 AND capabilities LIKE '%"decision"%'`).get(providerId, tag) as { id: string } | undefined;
   if (!row) return;
   db.prepare("UPDATE models SET is_enabled = 0, updated_at = datetime('now') WHERE id = ?").run(row.id);
   db.prepare("DELETE FROM config WHERE key = 'decision_model_id' AND value = ?").run(row.id);

@@ -17,7 +17,7 @@ import { type OllamaHost, getOllamaHost } from './ollama-host.js';
 import { ensureOllamaCurrent, tellOllamaTooOld, type UpgradeResult } from './ollama-upgrade.js';
 import { inUpkeep } from './ollama-restart.js';
 import { isUnknownBuild, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
-import { ownerConditionCleared } from '../healer/owner-notices.js';
+import { ownerConditionCleared, ownerToldOf } from '../healer/owner-notices.js';
 
 const logger = createLogger('ollama-pair-gate');
 
@@ -29,7 +29,8 @@ let line: string | null = null;
 export const pairOllamaLines = (): string[] => (line ? [line] : []);
 /** The Settings note while an Ollama the Dojo could not update blocks the pair (what it tried and why it could not); null when nothing does. */
 export const pairHeldNote = (): string | null => (heldAt === null ? null : line);
-export const pairHeld = (): boolean => heldAt !== null;
+/** Held, or the upkeep's one card stands (it outlives a restart; review L1: never a second card beside it). */
+export const pairHeld = (): boolean => heldAt !== null || ownerToldOf('ollama-too-old') || ownerToldOf('ollama-down');
 /** Both models are in: nothing is held and the card (if it stands) ends. */
 export function pairModelsAllIn(): void { heldAt = null; line = null; cardsEnd(); }
 /** The owner pressed Repair: the version refusal is looked at again. */
@@ -58,6 +59,7 @@ const noHost = (line: string): UpgradeResult => { tellOllamaTooOld(); return { o
 async function afterUpgrade(done: UpgradeResult, baseUrl: string, have: string | null): Promise<boolean> {
   line = done.line ?? null;
   if (done.ok) { heldAt = null; return true; }
+  if (done.starting) { heldAt = 'starting'; return false; }   // held until it first answers (any version differs from this): no card meanwhile
   if (done.transient) { logger.info('Ollama was not answering when the upkeep looked; nothing is held', { line: done.line }); return false; }
   heldAt = (await readOllamaVersion(baseUrl)) ?? have ?? 'unknown';
   logger.warn('Ollama is too old for the Dojo\'s models and was not updated', { have, line: done.line });

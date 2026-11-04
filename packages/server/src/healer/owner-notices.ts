@@ -151,17 +151,13 @@ export function wordsOf(key: string): string {
     : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : kind === 'ollama-too-old' ? OLLAMA_TOO_OLD_WORDS : kind === 'ollama-down' ? OLLAMA_DOWN_WORDS
     : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
-    : HEALER_BROKEN_WORDS;
+    : kind === 'healer-broken' ? HEALER_BROKEN_WORDS
+    : '';   // review H4: a key no card has (one an earlier build told and this one retired) has no words, and is never shown
 }
 
-/** Cards earlier 3.5 builds told and this one never does (owner ruling OR-UPKEEP-AUTOMATIC): the manual card
- *  (`ollama-limit-manual:<n>`, "start Ollama with a variable"), "the limit was raised" (`ollama-limit-set`) and "restart the
- *  Ollama the Dojo did not start" (`ollama-restart-needed`). Any told or dismissed record of them left on a box is removed at
- *  the start: an unknown key would otherwise be read back as another card's words (`wordsOf` ends in the Healer's). */
-export function retireOllamaLimitManualCards(): void {
-  try {
-    getDb().prepare("DELETE FROM healer_state WHERE scope IN (?, ?) AND (key LIKE 'ollama-limit-manual:%' OR key IN ('ollama-limit-set', 'ollama-restart-needed'))").run(TOLD, DISMISSED);
-  } catch { /* best-effort */ }
+/** Is the condition `key` told and standing (not dismissed)? (The missing-models card waits behind the upkeep's own one.) */
+export function ownerToldOf(key: string): boolean {
+  try { return !!getDb().prepare('SELECT 1 FROM healer_state t WHERE t.scope = ? AND t.key = ? AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)').get(TOLD, key, DISMISSED); } catch { return false; }
 }
 
 /** The condition cleared (its `key`, or every key under `family`): forget he was told and
@@ -224,7 +220,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   // tier, a setting): a pick that a door then refused, or that was changed since, says nothing (N7).
   const fitStillOwed = (modelId: string): boolean => !!db.prepare(`SELECT 1 FROM healer_state WHERE scope = 'local_fit_unchecked' AND key IN (?, ?)`).get(`agent:${modelId}`, `job:${modelId}`)
     && !!db.prepare('SELECT 1 FROM agents WHERE model_id = ? UNION SELECT 1 FROM router_tier_models WHERE model_id = ? UNION SELECT 1 FROM config WHERE value = ?').get(modelId, modelId, modelId);
-  return rows.filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
+  return rows.filter(({ key }) => wordsOf(key) !== '').filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
     : key.startsWith('fitunchecked:') ? fitStillOwed(key.slice('fitunchecked:'.length))
     : key === 'embedding-switch' ? countMemoriesOnOtherModels() > 0   // stands until no memory is left on the old model
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {

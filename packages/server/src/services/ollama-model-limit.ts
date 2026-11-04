@@ -30,12 +30,12 @@ import { ownerCardFrame } from './owner-card-frames.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { type OllamaHost, getOllamaHost, makeRealDeps } from './ollama-host.js';
 import {
-  LIMIT_VAR, classifyOllama, desiredLoaded, inUpkeep, portOf, raisedLoadedLimit, readConfig, restartApp, restartBrewService, setConfig, setLaunchdLimit,
+  LIMIT_VAR, classifyOllama, desiredLoaded, inUpkeep, portOf, raisedLoadedLimit, readConfig, restartApp, setConfig, setLaunchdLimit, startLasting,
 } from './ollama-restart.js';
 import { ensureOllamaCurrent } from './ollama-upgrade.js';
 import { isUnknownBuild, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
 import { childFailureText } from '../update/child-failure.js';
-import { tellOwnerOnce, ownerConditionCleared, retireOllamaLimitManualCards, OLLAMA_LIMIT_FAILED_WORDS } from '../healer/owner-notices.js';
+import { tellOwnerOnce, ownerConditionCleared, OLLAMA_LIMIT_FAILED_WORDS } from '../healer/owner-notices.js';
 
 export { OLLAMA_LIMIT_FAILED_WORDS, raisedLoadedLimit, makeRealDeps };
 export type OllamaLimitDeps = OllamaHost;
@@ -55,7 +55,6 @@ export async function ensureOllamaModelLimit(
 ): Promise<'already' | 'set' | 'unmanaged' | 'failed' | 'skipped'> {
   if (platform !== 'darwin') return 'skipped';
   if (!host) return 'skipped';                         // a test run's real launchctl and real app are never touched
-  retireOllamaLimitManualCards();
   const local = localOllamaProvider();
   if (!local) return 'skipped';                        // NB-2: no local Ollama — nothing, no card
   const want = desiredOllamaMaxLoaded();
@@ -64,12 +63,12 @@ export async function ensureOllamaModelLimit(
     const need = requiredOllamaVersion([STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL]);
     const have = found ? await readOllamaVersion(local.baseUrl) : null;
     const lasts = found?.kind === 'app' || found?.kind === 'brew-service';
-    if (found && !lasts && isUnknownBuild(have)) {
-      logger.info('The local Ollama is a source build nothing supervises; its loaded-model limit is left as it is', { program: found.path });
+    if (found && !lasts && (found.kind === 'not-ollama' || isUnknownBuild(have))) {   // review H1: never another program
+      logger.info('The local Ollama is not one the Dojo takes over (not Ollama, or a source build); its limit is left as it is', { program: found.path });
       return 'unmanaged';
     }
     if (!lasts || (need !== null && have !== null && !isUnknownBuild(have) && !ollamaAtLeast(have, need))) {
-      if (!found && !(await host.appInstalled()) && !(await host.brewFormulaInstalled())) return 'skipped';   // nothing to start: tried again next start
+      if (!found && !(await host.appInstalled()) && !(await host.brewFormulaInstalled()) && !(await host.cliRuns())) return 'skipped';   // nothing to start
       restarting ??= inUpkeep(() => ensureOllamaCurrent(host, local, need, STANDARD_TAGS.length)).then(() => undefined).finally(() => { restarting = null; });
       return 'set';
     }
@@ -104,7 +103,8 @@ async function restartWhenQuiet(host: OllamaHost, local: { id: string; baseUrl: 
     if (!restartOwed()) return;   // queued behind an upgrade? Its restart carried the limit already: nothing is owed any more
     if (found?.kind === 'brew-service') {
       await setLaunchdLimit(host, STANDARD_TAGS.length);
-      await restartBrewService(host, local.baseUrl);
+      // review H2: the service, or the program on disk as the detached serve when the service cannot start
+      if (await startLasting(host, local.baseUrl, STANDARD_TAGS.length) === 'dead') throw new Error('Ollama did not start again after the limit restart');
     } else {
       await restartApp(host, local.baseUrl, found?.kind === 'app' ? found.pid : undefined);
     }

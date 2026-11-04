@@ -51,6 +51,11 @@ export interface OllamaHost {
   restartBrewService(): Promise<void>;
   /** Is Homebrew's `ollama` formula installed (`brew list --formula --versions ollama`, local, no network)? */
   brewFormulaInstalled(): Promise<boolean>;
+  /** The macOS major version (`sw_vers -productVersion`), or null when unreadable. The Ollama app's cask needs 14 (Sonoma). */
+  macosMajor(): Promise<number | null>;
+  /** `ollama serve` from the program on the PATH, DETACHED in its own process group (so it outlives a Dojo restart), with `env`
+   *  added: the fallback when Homebrew's service cannot start, and a plain binary's only way to run. Its pid, or null. */
+  startServe(env: Record<string, string>): number | null;
 }
 
 type Run = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
@@ -61,7 +66,9 @@ const BREW_PATHS = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
 const EXTENDED_PATH = `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:${process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin'}`;
 
 /** The real commands, built over `run`/`kill`/`spawnChild` so a test can read their argv without running any. */
-export function makeRealDeps(run: Run, kill: Kill, spawnChild: (cmd: string, args: string[]) => WatchableChild): OllamaHost {
+export function makeRealDeps(
+  run: Run, kill: Kill, spawnChild: (cmd: string, args: string[]) => WatchableChild, serve: (env: Record<string, string>) => number | null = () => null,
+): OllamaHost {
   const pids = (out: string): number[] => out.split('\n').map((l) => parseInt(l, 10)).filter((n) => Number.isInteger(n) && n > 0);
   const brewPath = async (): Promise<string | null> => {
     for (const p of BREW_PATHS) { try { await run('/bin/test', ['-x', p]); return p; } catch { /* not here */ } }
@@ -127,6 +134,8 @@ export function makeRealDeps(run: Run, kill: Kill, spawnChild: (cmd: string, arg
       const brew = await brewPath();
       try { return !!brew && (await run(brew, ['list', '--formula', '--versions', 'ollama'])).stdout.trim() !== ''; } catch { return false; }
     },
+    macosMajor: async () => { try { return parseInt((await run('sw_vers', ['-productVersion'])).stdout, 10) || null; } catch { return null; } },
+    startServe: (env) => serve(env),
   };
 }
 
@@ -134,6 +143,11 @@ const execRun = promisify(execFile);
 const REAL = makeRealDeps(
   (cmd, args) => execRun(cmd, args, { env: { ...process.env, PATH: EXTENDED_PATH } }), (pid, sig) => process.kill(pid, sig),
   (cmd, args) => spawn(cmd, args, { env: { ...process.env, PATH: EXTENDED_PATH } }),
+  (env) => {   // detached + unref: its own process group, so launchd ending the Dojo's job does not end it (`agent/effects/proc-tree.ts`)
+    const child = spawn('ollama', ['serve'], { env: { ...process.env, PATH: EXTENDED_PATH, ...env }, stdio: 'ignore', detached: true });
+    child.on('error', () => undefined); child.unref();
+    return child.pid ?? null;
+  },
 );
 
 let override: OllamaHost | null = null;
