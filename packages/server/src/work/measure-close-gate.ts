@@ -39,22 +39,26 @@ export function withNamedRemainder<T>(taskId: string, close: () => T): T {
 }
 
 /** A measured task's last stored reading and unit; null when it is not measured or was not read. */
-function lastReading(id: string): { left: number; unit: string; pending: boolean } | null {
+function lastReading(id: string): { left: number; initial: number | null; unit: string; pending: boolean } | null {
   const row = getDb().prepare(
-    `SELECT w.measure_json AS m, w.measure_remaining AS left, ${pendingCloseRequestExpr('w')} AS pending
+    `SELECT w.measure_json AS m, w.measure_remaining AS left, w.measure_initial AS initial, ${pendingCloseRequestExpr('w')} AS pending
        FROM work w WHERE w.id = ? AND w.kind = 'task'`,
-  ).get(id) as { m: string | null; left: number | null; pending: number } | undefined;
+  ).get(id) as { m: string | null; left: number | null; initial: number | null; pending: number } | undefined;
   if (!row?.m || row.left === null) return null;
   let unit = 'items';
   try { unit = String((JSON.parse(row.m) as { unit?: string }).unit ?? 'items'); } catch { /* the count is the fact */ }
-  return { left: row.left, unit, pending: row.pending === 1 };
+  return { left: row.left, initial: row.initial, unit, pending: row.pending === 1 };
 }
 
 /** v3.5 field fix 3 review round 4: a MEASURED task whose last stored reading is 0, which is what an
- *  engine close may count (done is measured). Null when unmeasured, unread, or items are left. */
+ *  engine close may count (done is measured). Null when unmeasured, unread, or items are left.
+ *  Re-review 2 (S2): and only a 0 the count CAME DOWN to (`measure_initial > 0`), the PM uphold's own
+ *  rule (`tracker/looked-at.ts` closeBacking). A measure that read 0 from the start counted nothing:
+ *  a wrong-case glob, the wrong folder, a query matching nothing. An engine close names no remainder,
+ *  so the remainder arm is the worker's, at its own door. */
 export function measureReadsZero(id: string): { unit: string } | null {
   const r = lastReading(id);
-  return r && r.left === 0 ? { unit: r.unit } : null;
+  return r && r.left === 0 && (r.initial ?? 0) > 0 ? { unit: r.unit } : null;
 }
 
 /** How many items a measured task's last reading says are left (0: unmeasured, unread, or done). */

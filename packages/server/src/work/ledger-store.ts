@@ -85,11 +85,13 @@ export function ledgerNewItemsSince(workId: string, sinceMs: number): number {
 }
 
 /** Store a reading of the task's measure. `remaining` null = the measure could not be read at `at`;
- *  `initial` is given only when the measure is set (a new measure is a new scope). */
+ *  `initial` is given only when the measure is set (a new measure is a new scope). Field fix 3
+ *  re-review 2 (S2): a measure that could not be read at set takes its first successful reading as
+ *  its start, so "did the count come down" has an answer for it too. */
 export function writeMeasured(workId: string, remaining: number | null, at: number, initial?: number): void {
   getDb().prepare(
-    'UPDATE work SET measure_remaining = ?, measure_at = ?, measure_initial = COALESCE(?, measure_initial) WHERE id = ?',
-  ).run(remaining, at, initial ?? null, workId);
+    'UPDATE work SET measure_remaining = ?, measure_at = ?, measure_initial = COALESCE(?, measure_initial, ?) WHERE id = ?',
+  ).run(remaining, at, initial ?? null, remaining, workId);
 }
 
 /** A measure is SET on a task (open, or an edit: a new measure is a new scope), with its first reading. */
