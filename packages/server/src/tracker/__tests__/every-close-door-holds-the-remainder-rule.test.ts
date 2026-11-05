@@ -124,7 +124,11 @@ describe('A4-I2: the schedule door and the project door hold the same rule', () 
     countMeasure.mockResolvedValueOnce({ ok: true, count: 9 });
     const out = await call('work_schedule:pause', { action: 'pause', task_id: id, mark_complete: true });
     expect(out.content).toMatch(/^Refused: work_schedule\(action="pause", mark_complete=true\) on a measured task\. .*still returns 9 messages/);
-    expect(out.content).toContain('work_update(action="status", status="complete", remainder=');
+    // Field fix 3 review round 4: still names the door that takes a remainder, as a fact, with no
+    // "close it with ... complete" menu (close-coaching is a defect).
+    expect(out.content).toContain('remainder={disposition:"skipped"');
+    expect(out.content).toContain('taken by work_update(action="status"), not by this door');
+    expect(out.content).not.toMatch(/close it with/);
     expect(out.isError).toBe(true);
     expect(readWork(id).state).not.toBe('done');
     expect(countMeasure).toHaveBeenCalledTimes(2);

@@ -73,10 +73,12 @@ export function remainderGate(taskId: string, args: Record<string, unknown>, doo
   return (
     `Refused: ${door} on a measured task. Its measure (${describeMeasure(f.measure)}) still returns ${f.left} ${unit} ` +
     `(${f.initial ?? '?'} when the task started; ${ledgerTotals(taskId).touched} touched so far). The task is not done. ` +
-    `Continue working through what the measure lists. If the rest genuinely cannot or should not be done, say which and why: ` +
-    (takesRemainder
-      ? `status="blocked" with the reason, or close again with ${named}; the PM sees that count and your reason.`
-      : `status="blocked" with the reason, or close it with work_update(action="status", status="complete", ${named}); the PM sees that count and your reason.`)
+    // v3.5 field fix 3 review round 4: FACTS, NOT CLOSE-COACHING (product law, "Finishing, not
+    // closing"). It offered "close again with" / "close it with work_update(... complete ...)" as a
+    // menu option. It now states what the measure says and what a remainder is.
+    `What the measure lists is what remains. Items that genuinely cannot or should not be done are a remainder: ` +
+    `${named}${takesRemainder ? '' : ' (taken by work_update(action="status"), not by this door)'}; ` +
+    `blocked work is status="blocked" with the reason. The PM sees that count and your reason.`
   );
 }
 

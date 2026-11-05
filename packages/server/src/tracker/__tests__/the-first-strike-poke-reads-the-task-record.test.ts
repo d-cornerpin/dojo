@@ -174,6 +174,28 @@ describe('review round 3: the first-strike poke never treats an ack as a handove
     expect((db().prepare("SELECT state FROM work WHERE id = 'task-ack'").get() as { state: string }).state).toBe('claimed');
   });
 
+  it('STRIKE-2 TWIN (round 4): a TEXT answer on record (the ask settled on it) never earns the steer or an engine close', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    evidence.on = true;
+    const now = Date.now();
+    claimedTask('task-text', 'book the table', now - 6 * MIN, null);
+    db().prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-t', 'helper', 'dashboard', 'owner')`).run();
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at) VALUES ('msg-t', 'helper', 'user', 'book it', 'owner', 'conv-t', ?)`).run(now - 7 * MIN);
+    // The R1 shape: a line "On it." after the task opened, then the progress line the ask settles on.
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, display_kind, created_at) VALUES ('m-ack', 'helper', 'assistant', 'On it.', 'owner', 'conv-t', 'agent-text', ?)`).run(now - 5.5 * MIN);
+    db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at) VALUES ('d-ack', 'helper', 7, 'dashboard', 'dashboard', 'conv-t', 'm-ack', 'delivered', ?)`).run(sqlTime(now - 5.5 * MIN));
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, display_kind, created_at) VALUES ('m-ans', 'helper', 'assistant', 'Found three tables; booking next.', 'owner', 'conv-t', 'agent-text', ?)`).run(now - 5 * MIN);
+    db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at) VALUES ('d-ans', 'helper', 7, 'dashboard', 'dashboard', 'conv-t', 'm-ans', 'delivered', ?)`).run(sqlTime(now - 5 * MIN));
+    const { openAsk } = await import('../../work/store.js');
+    openAsk({ agentId: 'helper', messageId: 'msg-t', conversationId: 'conv-t', requesterId: 'owner', openedAt: now - 7 * MIN, title: 'book it' });
+    db().prepare(`UPDATE work SET state = 'done', closed_at = ?, result_delivery_id = 'd-ans' WHERE id = 'ask:msg-t'`).run(now - 5 * MIN);
+    db().prepare("UPDATE work SET source_message_id = 'msg-t' WHERE id = 'task-text'").run();
+    for (const m of [0, 10, 25]) await sweepAt(now + m * MIN);
+    expect(checkIns('task-text').join('\n---\n')).not.toMatch(/DELIVERY ON RECORD/);
+    expect(closeLogged('task-text')).toBe(0);
+    expect((db().prepare("SELECT state FROM work WHERE id = 'task-text'").get() as { state: string }).state).toBe('claimed');
+  });
+
   it('CONTROL: a delivered file on record still gets the steer, stated as facts with no "close it"', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     evidence.on = true;

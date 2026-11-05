@@ -2,6 +2,12 @@
 // "A dashboard answer to a dashboard ask COUNTS as a tangible delivery for closing a task."
 // (And, by the same channel-identity law, a voice answer to a voice ask.)
 //
+// REVIEW ROUND 4 (binding ruling): the ack is identified STRUCTURALLY, by the engine's own marking
+// (`origin_intent = engine_start_ack` on its row, the `engine-ack` lane on its channel push), never
+// by "the first line". The answer is a delivered line on the asking conversation, by the task's agent,
+// after the ask arrived (ordered by `messages.seq`), that is not the marked ack. It is read only by the
+// worker's own close, G7's text and the validation request; the engine never closes on it.
+//
 // REVIEW ROUND (H1): the first cut made every dashboard line on the ask's thread a handover
 // through the per-turn delivery SUMMARY, and an "On it" final line therefore read as delivered.
 // The ruling is now carried by THE task's answer (`resolveTaskAnswerPointer`), where an ack is
@@ -82,53 +88,76 @@ beforeEach(() => {
   d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Primary', 'idle', '1970-01-01')`).run(AGENT);
 });
 
+const markAck = (id: string): void => {
+  db().prepare("UPDATE messages SET origin_intent = 'engine_start_ack' WHERE id = ?").run(`m-${id}`);
+};
+
 describe('OR-FIELD3(b): an answer on the channel that asked is the task\'s answer', () => {
-  it('THE FIELD SHAPE: ack, then the answer, both on the dashboard thread of a dashboard ask', () => {
+  it('THE FIELD SHAPE: the marked ack, then the answer, on the dashboard thread of a dashboard ask', () => {
     seedConversation('conv-dash', 'dashboard');
     const { askId, taskId } = seedAskAndTask('msg-ask', 'conv-dash');
     line('d-ack', 'dashboard', 'conv-dash');
+    markAck('d-ack');
     settle(askId, line('b2b026a7', 'dashboard', 'conv-dash'));
     const p = resolveTaskAnswerPointer(taskId);
     expect(p?.deliveryId).toBe('b2b026a7');
     expect(p?.channel).toBe('dashboard');
-    expect(taskWorkOnRecord(taskId, null)).toContain('b2b026a7'.slice(0, 8));
   });
 
   it('a voice answer to a voice ask counts the same way', () => {
     seedConversation('conv-voice', 'voice');
     const { askId, taskId } = seedAskAndTask('msg-ask-v', 'conv-voice');
-    line('d-ack-v', 'voice', 'conv-voice');
     settle(askId, line('d-voice', 'voice', 'conv-voice'));
     expect(resolveTaskAnswerPointer(taskId)?.channel).toBe('voice');
+  });
+
+  it('an answer with no ack before it counts (the ack is marked, not inferred from order)', () => {
+    seedConversation('conv-dash', 'dashboard');
+    const { askId, taskId } = seedAskAndTask('msg-ask-1', 'conv-dash');
+    settle(askId, line('d-only', 'dashboard', 'conv-dash'));
+    expect(resolveTaskAnswerPointer(taskId)?.deliveryId).toBe('d-only');
+  });
+
+  it('a text answer is never "work on record" for the engine (only a file or a measure is)', () => {
+    seedConversation('conv-dash', 'dashboard');
+    const { askId, taskId } = seedAskAndTask('msg-ask-w', 'conv-dash');
+    settle(askId, line('d-text', 'dashboard', 'conv-dash'));
+    expect(taskWorkOnRecord(taskId, null)).toBeNull();
   });
 });
 
 describe('what never counts', () => {
-  it('the ask settled on its FIRST line after the task opened (the start ack) is not the answer', () => {
+  it('the marked start ack is never the answer, even when it is the ask\'s receipt', () => {
     seedConversation('conv-dash', 'dashboard');
     const { askId, taskId } = seedAskAndTask('msg-ask-a', 'conv-dash');
-    settle(askId, line('d-onit', 'dashboard', 'conv-dash'));
+    const ack = line('d-onit', 'dashboard', 'conv-dash');
+    markAck('d-onit');
+    settle(askId, ack);
     expect(resolveTaskAnswerPointer(taskId)).toBeNull();
-    expect(taskWorkOnRecord(taskId, null)).toBeNull();
   });
 
-  it('an ack on ANOTHER conversation does not make the asking thread\'s first line a completion', () => {
+  it('the engine-ack lane (the start line pushed to a channel) is never the answer', () => {
+    seedConversation('conv-im', 'imessage');
+    const { askId, taskId } = seedAskAndTask('msg-ask-e', 'conv-im');
+    const d = line('d-eack', 'imessage', 'conv-im');
+    db().prepare("UPDATE deliveries SET tool = 'engine-ack' WHERE id = ?").run(d);
+    settle(askId, d);
+    expect(resolveTaskAnswerPointer(taskId)).toBeNull();
+  });
+
+  it('a line to ANOTHER conversation than the ask\'s is not its answer', () => {
     seedConversation('conv-dash', 'dashboard');
     seedConversation('conv-other', 'dashboard');
     const { askId, taskId } = seedAskAndTask('msg-ask-o', 'conv-dash');
-    line('d-elsewhere', 'dashboard', 'conv-other');
-    settle(askId, line('d-first-here', 'dashboard', 'conv-dash'));
+    settle(askId, line('d-elsewhere', 'dashboard', 'conv-other'));
     expect(resolveTaskAnswerPointer(taskId)).toBeNull();
   });
 
-  it('a line recorded BEFORE the task opened is not its answer', () => {
+  it('a line written BEFORE the ask arrived (by message seq, never by the clock) is not its answer', () => {
     seedConversation('conv-dash', 'dashboard');
-    db().prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-       VALUES ('d-old', ?, ?, 'dashboard', 'dashboard', 'conv-dash', NULL, 'delivered', datetime('now', '-1 hour'))`,
-    ).run(AGENT, TURN - 3);
+    const early = line('d-early', 'dashboard', 'conv-dash');
     const { askId, taskId } = seedAskAndTask('msg-ask-b', 'conv-dash');
-    settle(askId, 'd-old');
+    settle(askId, early.replace(/^m-/, ''));
     expect(resolveTaskAnswerPointer(taskId)).toBeNull();
   });
 

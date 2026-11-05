@@ -513,32 +513,32 @@ export async function finalizeTurnRecord(
     if (answerRow) {
       try {
         const { composeTurnDeliverySummary } = await import('../../../../tracker/task-stamps.js');
-        const { taskWorkOnRecord, resolveTaskAnswerPointer } = await import('../../../../tracker/delivery-evidence.js');
+        const { taskWorkOnRecord } = await import('../../../../tracker/delivery-evidence.js');
         const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
-        // v3.5 field fix 3, review round 3: EACH TASK IS ASKED OF ITS OWN RECORD. This read the
-        // TURN's summary: any out-of-band line ("via imessage") was a handover, so a turn whose
-        // only line was an iMessage "On it" engine-closed the tasks it had just opened, and a real
-        // dashboard answer never closed them (OR-FIELD3(b)). Owner law: an ack never closes a
-        // task. `taskWorkOnRecord` counts a delivered file, or THE task's answer under the
-        // ack-order rule (the ask settled before this, so its receipt is readable here).
-        if (strike0Summary) {
+        // v3.5 field fix 3, review rounds 3-4 (binding ruling): THE ENGINE CLOSES ONLY ON WHAT IT
+        // CAN COUNT. Base read the TURN's summary, so any out-of-band line ("via imessage") was a
+        // handover and an iMessage "On it" engine-closed the tasks it had just opened. A line of
+        // text never closes a task by the engine, on any channel (done is measured, never
+        // declared): `taskWorkOnRecord` counts a delivered FILE or a measure that reads 0. A text
+        // answer stays the worker's to close on (its own door files Key 1 for the PM).
+        // What is per task and what is not: the measure is the task's own; the file arm still
+        // reads the TURN's delivered file (turn_artifacts carry no task id), so one delivered file
+        // closes every task the turn opened, exactly as on base (re-review R4, pre-existing).
+        const turnDelivery = terminalDeliveryForTurn(agentId, turnNumber);
+        if (turnDelivery) {
           const sameTurnOpen = db.prepare(
             `SELECT w.id AS id, w.title AS title FROM work w
               WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ?
                 AND w.state = 'claimed' AND w.is_paused = 0`,
           ).all(agentId, turnNumber) as Array<{ id: string; title: string }>;
-          // The receipt this close is made of — the same delivery `composeTurnDeliverySummary`
-          // just described — is what G7 requires, so the engine's strike-0 close points at
-          // the thing the person actually received.
-          const turnDelivery = terminalDeliveryForTurn(agentId, turnNumber);
+          // The receipt this close is made of (the turn's terminal delivery) is what G7 requires,
+          // so the engine's strike-0 close points at the thing the person actually received.
           for (const t of sameTurnOpen) {
             const onRecord = taskWorkOnRecord(t.id, {
               last_answered_turn: turnNumber, last_answered_at: new Date().toISOString(), last_delivery_summary: strike0Summary,
             });
             if (!onRecord) continue;
-            // A close on the task's answer points at that answer; a close on a delivered file at
-            // the turn's own terminal delivery, as before.
-            const strike0Delivery = resolveTaskAnswerPointer(t.id)?.deliveryId ?? turnDelivery;
+            const strike0Delivery = turnDelivery;
             const r0 = setTrackerStatus(t.id, 'complete', {
               by: strike0Delivery ? 'engine' : 'agent', actorId: agentId,
               evidenceRef: strike0Delivery,

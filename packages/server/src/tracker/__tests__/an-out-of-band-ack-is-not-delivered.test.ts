@@ -27,7 +27,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { openAsk, askIdForMessage } from '../../work/store.js';
 import { openTrackerTask, stampTicket } from '../../work/tracker-store.js';
 import { renderTaskStamps } from '../task-stamps.js';
-import { trackerGetStatus, trackerListActive } from '../tools.js';
+import { trackerGetStatus, trackerListActive, trackerUpdateStatus } from '../tools.js';
 
 const AGENT = 'agent-primary';
 const CONV = 'conv-imessage';
@@ -96,15 +96,26 @@ describe('an iMessage start ack is not a completion', () => {
     expect(list).not.toContain('CLOSE if done');
   });
 
-  it('CONTROL: a later iMessage completion after that ack reads as delivered, and still coaches nothing', () => {
+  it('CONTROL (round 4): a later iMessage completion is the worker\'s to file on; the engine still reads no delivery', () => {
     const { askId, taskId } = seedAskAndTask();
-    imessage('d-onit');
+    const ack = imessage('d-onit');
+    db().prepare("UPDATE deliveries SET tool = 'engine-ack' WHERE id = ?").run(ack);   // the engine's own marking
     settle(askId, imessage('d-booked'));
     stamp(taskId);
     const view = trackerGetStatus(AGENT, { taskId });
-    expect(view).toMatch(DELIVERED);
-    expect(view).toContain('d-booked'.slice(0, 8));
+    expect(view).not.toMatch(DELIVERED);
     expect(view).not.toContain('CLOSE if done');
+    const out = trackerUpdateStatus(AGENT, { taskId, status: 'complete', result: 'booked', evidence: [{ kind: 'claim', claim: 'confirmation 4471 sent' }] });
+    expect(out, out).toMatch(/\[FILED\]/);
+  });
+
+  it('the start ack on the engine-ack lane is never the task\'s answer: the worker\'s close is refused', () => {
+    const { askId, taskId } = seedAskAndTask();
+    const ack = imessage('d-onit');
+    db().prepare("UPDATE deliveries SET tool = 'engine-ack' WHERE id = ?").run(ack);
+    settle(askId, ack);
+    const out = trackerUpdateStatus(AGENT, { taskId, status: 'complete', result: 'booked', evidence: [{ kind: 'claim', claim: 'x' }] });
+    expect(out).toMatch(/No completion for this task has reached the owner yet/);
   });
 
   it('the stamp line states facts only, on every channel (no "CLOSE if done")', () => {

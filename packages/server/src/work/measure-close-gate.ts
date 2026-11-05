@@ -50,6 +50,13 @@ function lastReading(id: string): { left: number; unit: string; pending: boolean
   return { left: row.left, unit, pending: row.pending === 1 };
 }
 
+/** v3.5 field fix 3 review round 4: a MEASURED task whose last stored reading is 0, which is what an
+ *  engine close may count (done is measured). Null when unmeasured, unread, or items are left. */
+export function measureReadsZero(id: string): { unit: string } | null {
+  const r = lastReading(id);
+  return r && r.left === 0 ? { unit: r.unit } : null;
+}
+
 /** How many items a measured task's last reading says are left (0: unmeasured, unread, or done). */
 export function measuredItemsLeft(id: string): number {
   return lastReading(id)?.left ?? 0;

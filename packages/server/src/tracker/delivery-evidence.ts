@@ -32,7 +32,9 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope, msToText } from '../work/tracker-view.js';
-import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
+import { NON_ANSWERING_DISPLAY_KINDS, ENGINE_SENT_TOOLS } from '../work/ask-settlement.js';
+import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
+import { measureReadsZero } from '../work/measure-close-gate.js';
 
 const logger = createLogger('delivery-evidence');
 
@@ -162,39 +164,30 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 // ════════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════════
-// v3.5 field fix 3, review round (H1, M2): THE ONE DEFINITION OF "THE TASK'S ANSWER".
+// v3.5 field fix 3, review rounds 1-4: THE ONE DEFINITION OF "THE TASK'S ANSWER".
 //
-// Three readers disagreed: the close fallback, this pointer, and the filed close's delivery.
-// This function is now the only one. The agent's own close doors fall back to it
-// (`tracker/tools.ts`), G7's refusal text states it, the PM's validation request prints it,
-// and every reader that tells the agent its work is "already delivered" asks it
-// (`taskWorkOnRecord` below). The stamp line no longer coaches a close at all (review round 2).
+// WHO READS IT (round 4, binding ruling): only the WORKER's own close (it files Key 1 on it for the
+// PM, OR-FIELD3(b), `tracker/tools.ts`), G7's refusal text, and the validation request that shows
+// it to the PM. The ENGINE never closes on it and never calls a task "delivered" on it: done is
+// measured, never declared, so the engine's own closes and its "already delivered" readings count
+// only what the engine can count (`taskWorkOnRecord` below: a delivered file, or a measure at 0).
 //
-// ── AN ACK IS NEVER THE ANSWER (owner law: start ack AND completion are both required) ──
-// An ask settles on the turn's final model line, and that line can be "On it, I've opened the
-// steps and will work through them" (`work/ask-settlement.ts` qualifyingDelivery): a real
-// receipt naming an acknowledgement. No prose test may decide which one it is. The structural
-// fact is ORDER, set by the always-ack rule: tracked work is acknowledged when it starts, and
-// the engine asks for that line as soon as the work is tracked (`start-ack-door.ts`, raised
-// when the agent opens its own project and by the scaffold floor). So the FIRST line that
-// reaches the asking thread after the task opened is that task's start acknowledgement, and
-// only a LATER line on the same thread can be its completion. A candidate qualifies only when:
-//   * it is delivered, by the task's own agent, not on the `engine-ack` lane, not a chip;
-//   * it was recorded at or after the task opened;
-//   * an EARLIER delivered line by that agent reached the same conversation since the task
-//     opened (the start ack). The engine's own promoted start line counts as that ack.
-// The cost of the rule falls on the safe side: a one-line job that never acknowledged reads as
-// "no completion on record", and the agent writes one. Ruling 10(d): ambiguity resolves toward
-// answering again, never toward closing.
+// THE ACK IS IDENTIFIED STRUCTURALLY, by the marking the engine already writes when it delivers
+// the start line (`agent/v2/steps/post-call-classify/terminal-text.ts` -> `deliverEngineUserAck`):
+// the row carries `origin_intent = engine_start_ack` (START_ACK_ORIGIN_INTENT), and its channel push
+// is recorded on the `engine-ack` lane. Every other engine-written line is named by its delivery
+// tool (`ENGINE_SENT_TOOLS`, the `<channel>-door` crossings). None of these is ever the answer.
+// Order is never a test of "ack or answer" (the round-3 "any later line" rule was a prose-order
+// guess, re-review R1/R2).
 //
-// The candidates, in order of how directly each was recorded:
-//   (a) the ask the task exists for (its `source_message_id`, else its project's): the ask's
-//       own `result_delivery_id`, written by the settlement authority;
+// THE ANSWER is a delivered line, by the task's own agent, on the ASK's conversation, written after
+// the ask arrived (by `messages.seq`, never by a second-rounded clock), that is not a chip and not
+// engine-written. Candidates, in order of how directly each was recorded:
+//   (a) the ask the task exists for (its `source_message_id`, else its project's): the ask's own
+//       `result_delivery_id`, written by the settlement authority;
 //   (b) the asks settled by the turn of the task's newest ANSWERED stamp
 //       (`messages.served_by_turn`, written as part of the settlement);
 //   (c) the task's own answered turn (`findDeliveryEvidenceForTask`).
-// OR-FIELD3(b) is carried here: a dashboard answer to a dashboard ask qualifies like any
-// other delivered line, under the same ack rule.
 // ════════════════════════════════════════════════════════════════════════════════
 
 export interface TaskAnswerPointer {
@@ -209,37 +202,44 @@ export interface TaskAnswerPointer {
 }
 
 const ANSWER_EXCERPT_CHARS = 400;
-// A chip is not a line the person read: the same declared set the settlement authority reads,
-// rendered at call time (never at module scope, see `memory/origin-intents.ts` on import order).
-const chipKindsSql = (): string => NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
+// Rendered at call time, never at module scope (see `memory/origin-intents.ts` on import order).
+const sqlList = (xs: Iterable<string>): string => [...xs].map((k) => `'${k}'`).join(', ');
 
-/** The candidate, if it is this task's completion and not its start ack (rules above). */
+interface AskAnchor { conversationId: string | null; seq: number | null }
+
+/** The ask's conversation and its arrival position on the message log. */
+function askAnchor(messageId: string): AskAnchor {
+  const r = getDb().prepare(
+    `SELECT a.conversation_id AS conversation_id, m.seq AS seq
+       FROM messages m LEFT JOIN work a ON a.id = ? AND a.kind = 'ask'
+      WHERE m.id = ?`,
+  ).get(`ask:${messageId}`, messageId) as { conversation_id: string | null; seq: number | null } | undefined;
+  return { conversationId: r?.conversation_id ?? null, seq: r?.seq ?? null };
+}
+
+/** The candidate, if it is the agent's answer on the ask's thread and not an engine-marked line. */
 function answerPointer(
-  deliveryId: string, basis: TaskAnswerPointer['basis'],
-  task: { agent_id: string; opened_at: number },
+  deliveryId: string, basis: TaskAnswerPointer['basis'], agentId: string, ask: AskAnchor,
 ): TaskAnswerPointer | null {
-  const db = getDb();
-  const d = db.prepare(
-    `SELECT d.rowid AS seq, d.id AS id, d.message_id AS message_id, d.channel AS channel,
-            d.conversation_id AS conversation_id, d.created_at AS created_at, m.content AS content
+  const d = getDb().prepare(
+    `SELECT d.id AS id, d.message_id AS message_id, d.channel AS channel, d.conversation_id AS conversation_id,
+            d.created_at AS created_at, m.content AS content, m.seq AS seq
        FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id
-      WHERE d.id = ? AND d.outcome = 'delivered' AND d.agent_id = ? AND d.tool <> 'engine-ack'
-        AND (m.display_kind IS NULL OR m.display_kind NOT IN (${chipKindsSql()}))
-        AND CAST(strftime('%s', d.created_at) AS INTEGER) >= ? / 1000`,
-  ).get(deliveryId, task.agent_id, task.opened_at) as {
-    seq: number; id: string; message_id: string | null; channel: string | null;
-    conversation_id: string | null; created_at: string; content: string | null;
+      WHERE d.id = ? AND d.outcome = 'delivered' AND d.agent_id = ?
+        AND d.tool NOT IN (${sqlList(ENGINE_SENT_TOOLS)}) AND d.tool NOT LIKE '%-door'
+        AND (m.id IS NULL OR m.origin_intent IS NULL OR m.origin_intent <> '${START_ACK_ORIGIN_INTENT}')
+        AND (m.display_kind IS NULL OR m.display_kind NOT IN (${sqlList(NON_ANSWERING_DISPLAY_KINDS)}))`,
+  ).get(deliveryId, agentId) as {
+    id: string; message_id: string | null; channel: string | null; conversation_id: string | null;
+    created_at: string; content: string | null; seq: number | null;
   } | undefined;
   if (!d) return null;
-  const ackBefore = db.prepare(
-    `SELECT 1 AS hit FROM deliveries e LEFT JOIN messages me ON me.id = e.message_id
-      WHERE e.agent_id = ? AND e.outcome = 'delivered' AND e.rowid < ?
-        AND e.conversation_id IS ?
-        AND (me.display_kind IS NULL OR me.display_kind NOT IN (${chipKindsSql()}))
-        AND CAST(strftime('%s', e.created_at) AS INTEGER) >= ? / 1000
-      LIMIT 1`,
-  ).get(task.agent_id, d.seq, d.conversation_id, task.opened_at);
-  if (!ackBefore) return null;
+  if (ask.conversationId && d.conversation_id !== ask.conversationId) return null;
+  // After the ask arrived, on the message log. A channel send with no message row has no position;
+  // only an ask receipt (arms a and b, whose settlement already required it to postdate the ask)
+  // may be one.
+  if (d.seq !== null && ask.seq !== null && d.seq <= ask.seq) return null;
+  if (d.seq === null && basis === 'task-turn-answer') return null;
   const raw = (d.content ?? '').replace(/^\[[^\]]*\]\s*/g, '').replace(/\s+/g, ' ').trim()
     || '(a channel send with no message row to quote)';
   return {
@@ -248,25 +248,27 @@ function answerPointer(
   };
 }
 
-/** THE task's answer: its completion on record, never its start ack. Null when there is none.
- *  The one definition; see the block above. */
+/** THE task's answer (rules above). Null when there is none. Read by the worker's close, G7's
+ *  text and the validation request only; never by an engine close. */
 export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | null {
   try {
     const db = getDb();
     const task = db.prepare(
-      `SELECT w.agent_id AS agent_id, w.opened_at AS opened_at, w.source_message_id AS source_message_id,
+      `SELECT w.agent_id AS agent_id, w.source_message_id AS source_message_id,
               p.source_message_id AS parent_source_message_id
          FROM work w LEFT JOIN work p ON p.id = w.parent_id
         WHERE ${taskScope('w')} AND w.id = ?`,
     ).get(taskId) as {
-      agent_id: string; opened_at: number; source_message_id: string | null; parent_source_message_id: string | null;
+      agent_id: string; source_message_id: string | null; parent_source_message_id: string | null;
     } | undefined;
     if (!task) return null;
     const askReceipt = (messageId: string): TaskAnswerPointer | null => {
       // `ask:<messageId>` is the spine's own derivation (`work/store.ts:askIdForMessage`).
       const ask = db.prepare(`SELECT result_delivery_id FROM work WHERE id = ? AND kind = 'ask'`)
         .get(`ask:${messageId}`) as { result_delivery_id: string | null } | undefined;
-      return ask?.result_delivery_id ? answerPointer(ask.result_delivery_id, 'parent-ask-receipt', task) : null;
+      return ask?.result_delivery_id
+        ? answerPointer(ask.result_delivery_id, 'parent-ask-receipt', task.agent_id, askAnchor(messageId))
+        : null;
     };
 
     // (a) the ask this task (or its project) exists for.
@@ -282,23 +284,23 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
     ).get(taskId) as { turn: number | null } | undefined;
     if (stamp?.turn != null) {
       const served = db.prepare(
-        'SELECT id FROM messages WHERE agent_id = ? AND served_by_turn = ? ORDER BY created_at DESC',
+        'SELECT id FROM messages WHERE agent_id = ? AND served_by_turn = ? ORDER BY seq DESC',
       ).all(task.agent_id, stamp.turn) as Array<{ id: string }>;
       for (const m of served) {
         const p = askReceipt(m.id);
         if (p) return p;
       }
     }
-    // (c) the task's own answered turn.
+    // (c) the task's own answered turn, on its own ask's thread.
     const evidence = findDeliveryEvidenceForTask(taskId);
-    if (evidence?.answerMessageId) {
+    if (evidence?.answerMessageId && task.source_message_id) {
       const d = db.prepare(
         `SELECT id FROM deliveries
           WHERE agent_id = ? AND message_id = ? AND outcome = 'delivered'
-          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+          ORDER BY rowid DESC LIMIT 1`,
       ).get(task.agent_id, evidence.answerMessageId) as { id: string } | undefined;
       if (d) {
-        const p = answerPointer(d.id, 'task-turn-answer', task);
+        const p = answerPointer(d.id, 'task-turn-answer', task.agent_id, askAnchor(task.source_message_id));
         if (p) return p;
       }
     }
@@ -312,11 +314,13 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
 }
 
 /**
- * The readers' one question: is this task's work on record as DELIVERED, and in what words?
- * A delivered FILE (stamped, or from its answered turn: a work product is never an ack), or THE
- * task's answer (`resolveTaskAnswerPointer`, the ack-order rule). A line on any channel alone,
- * dashboard, voice or out-of-band, is never enough: it may be the start ack (review round 2,
- * ruled: an ack never counts as completion on any channel).
+ * WHAT THE ENGINE CAN COUNT (round 4, binding ruling: done is measured, never declared). The one
+ * question behind every engine close (strike-0, strike-2) and every engine "already delivered"
+ * reading (the task view, the list, the close-out gate, the PM's first-strike steer): a delivered
+ * FILE (stamped, or from the task's answered turn), or a measure whose last reading is 0. A line of
+ * text, on any channel, is never counted here: it may be an ack, or progress, and only the worker
+ * may file a close on it (`resolveTaskAnswerPointer`), which the PM then judges. An engine close
+ * never names a remainder (that is the worker's, at its own door), so none is counted here.
  * Null when none, and the readers then say nothing about delivery.
  */
 export function taskWorkOnRecord(
@@ -328,11 +332,8 @@ export function taskWorkOnRecord(
   }
   const ev = findDeliveryEvidenceForTask(taskId);
   if (ev && ev.artifacts.length > 0) return renderDeliveryEvidence(ev);
-  const answer = resolveTaskAnswerPointer(taskId);
-  if (answer) {
-    return `its answer was delivered (delivery ${answer.deliveryId.slice(0, 8)}`
-      + `${answer.channel ? `, via ${answer.channel}` : ''}${answer.at ? `, ${answer.at} UTC` : ''})`;
-  }
+  const zero = measureReadsZero(taskId);
+  if (zero) return `its measure reads 0 ${zero.unit}`;
   return null;
 }
 

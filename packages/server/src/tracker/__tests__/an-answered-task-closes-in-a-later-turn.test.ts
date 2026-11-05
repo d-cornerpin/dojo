@@ -177,15 +177,20 @@ describe('fix #1: a task answered in turn N closes on that answer in a later tur
   });
 });
 
-describe('review H1: an ack never closes a task, and never reads as delivered', () => {
-  it('NEGATIVE CONTROL, driven: the ask SETTLES on the "On it" line; the later close is refused and nothing coaches a close', () => {
+const markAck = (deliveryId: string): void => {
+  // The engine's own marking of its start line (`terminal-text.ts`).
+  db().prepare("UPDATE messages SET origin_intent = 'engine_start_ack' WHERE id = ?").run(`m-${deliveryId}`);
+};
+
+describe('review H1 / round 4: an ack never closes a task; a text line is the worker\'s to file on, for the PM', () => {
+  it('NEGATIVE CONTROL, driven: the MARKED start ack is the turn\'s only line; no receipt, the later close is refused, nothing reads as delivered', () => {
     const askId = seedOwnerAsk('msg-ask-ack');
     stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask-ack');
     const ack = line('d-onit', "On it, I've opened a project with 4 steps and will work through them.", ASK_TURN);
+    markAck('d-onit');
     endTurnAndSettle(askId, 'msg-ask-ack', ack);
-    // The premise the review proved: the real authority closes the ask on the ack.
-    expect(askRow(askId)).toEqual({ state: 'done', result_delivery_id: 'd-onit' });
+    expect(askRow(askId).result_delivery_id, 'the settlement never takes the marked ack as a receipt').toBeNull();
     for (const s of steps) stampAnswered(s);
     laterA2ATurn();
 
@@ -200,16 +205,39 @@ describe('review H1: an ack never closes a task, and never reads as delivered', 
     expect(view).not.toContain('CLOSE if done');
   });
 
-  it('CONTROL: once the completion lands after that ack, the same task reads as delivered and closes', () => {
-    const askId = seedOwnerAsk('msg-ask-ok');
+  it('THE PROBE (R1): ack, then a PROGRESS line the ask settles on; the worker\'s close FILES for the PM and does not close by itself', () => {
+    const askId = seedOwnerAsk('msg-ask-pr');
     stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-ok');
-    line('d-onit-ok', "On it, I've opened the steps.", ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask-ok', line('d-done-ok', 'Finished: hello.txt is in the folder.', ASK_TURN));
-    for (const s of steps) stampAnswered(s);
+    const steps = seedSteps('msg-ask-pr');
+    line('d-ack-pr', 'On it.', ASK_TURN);
+    markAck('d-ack-pr');
+    endTurnAndSettle(askId, 'msg-ask-pr', line('d-progress', 'Found three tables that fit; I will book one next and send you the confirmation.', ASK_TURN));
+    expect(askRow(askId).result_delivery_id).toBe('d-progress');
     laterA2ATurn();
-    expect(trackerGetStatus(AGENT, { taskId: steps[3] })).toContain('ALREADY DELIVERED');
-    expect(trackerCompleteStep(AGENT, { task_id: steps[3], ...CLOSE })).toMatch(/^\[FILED\]/);
+    // The engine never reads a text line as delivered work.
+    expect(taskWorkOnRecord(steps[1], null)).toBeNull();
+    expect(trackerGetStatus(AGENT, { taskId: steps[1] })).not.toContain('ALREADY DELIVERED');
+    // The worker's own close files Key 1 on the line the owner read; the PM judges it.
+    const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
+    expect(out).toMatch(/^\[FILED\]/);
+    expect(closeRequest(steps[1])?.result_delivery_id).toBe('d-progress');
+    expect((db().prepare('SELECT state FROM work WHERE id = ?').get(steps[1]) as { state: string }).state).toBe('claimed');
+  });
+
+  it('R2: "On it." delivered BEFORE work_open, then the real answer; the worker\'s close is accepted and G7 never says nothing reached the owner', () => {
+    const askId = seedOwnerAsk('msg-ask-r2');
+    stampClaimingTurn(askId, ASK_TURN);
+    line('d-ack-r2', 'On it.', ASK_TURN);
+    markAck('d-ack-r2');
+    db().prepare('UPDATE deliveries SET created_at = datetime(\'now\', \'-2 seconds\') WHERE id = ?').run('d-ack-r2');
+    const steps = seedSteps('msg-ask-r2');
+    endTurnAndSettle(askId, 'msg-ask-r2', line('d-booked-r2', 'Booked: a table for four on Friday at 7pm, confirmation 4471.', ASK_TURN));
+    laterA2ATurn();
+    expect(resolveTaskAnswerPointer(steps[0])?.deliveryId).toBe('d-booked-r2');
+    const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
+    expect(out, out).toMatch(/^\[FILED\]/);
+    expect(out).not.toMatch(/No completion|nothing has reached/i);
+    expect(closeRequest(steps[0])?.result_delivery_id).toBe('d-booked-r2');
   });
 });
 

@@ -1,15 +1,18 @@
-// v3.5 field fix 3, review round 3: THE STRIKE-0 BOUNDARY CLOSE CLOSES ON A COMPLETION, NEVER AN ACK.
+// v3.5 field fix 3, review rounds 3 and 4: THE STRIKE-0 BOUNDARY CLOSE NEVER CLOSES ON A LINE OF TEXT.
 //
-// Strike-0 (`finalize-record.ts`) closes, at the turn's end, the tasks that turn opened when the
-// turn delivered their work. It used to read the TURN's delivery summary: any out-of-band line
-// ("via imessage") counted, so a turn whose only line was an iMessage "On it" engine-closed the
-// tasks it had just opened, and a real dashboard answer never did (owner ruling OR-FIELD3(b)).
-// Owner law: an ack never closes a task; the start ack AND the completion are both required.
-// Now each task is asked of its own record (`taskWorkOnRecord`): a delivered file, or THE task's
-// answer under the ack-order rule.
+// Strike-0 (`finalize-record.ts`) is the ENGINE closing, at the turn's end, the tasks that turn
+// opened. Base closed them on the turn's delivery summary: any out-of-band line ("via imessage")
+// counted, so an iMessage "On it" engine-closed the tasks it had just opened. Round 3 asked each
+// task for "its answer", and the re-review measured a start ack followed by a PROGRESS line
+// engine-closing every step ("Found three tables; I will book one next").
+//
+// THE RULING (binding, round 4): done is measured, never declared. The engine's own closes count
+// only what the engine can count: a delivered FILE, or a measure that reads 0. A line of text never
+// closes a task by the engine, on any channel. A text answer is the WORKER's to close on, filed for
+// the PM (OR-FIELD3(b), `tracker/tools.ts`).
 //
 // Driven through the real `finalizeTurnRecord` on a real migrated database: the real settlement
-// closes the ask on the turn's answer line, then strike-0 runs.
+// runs on the turn's answer line, then strike-0 runs.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -122,33 +125,59 @@ beforeEach(() => {
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
-describe('(a) a turn whose only line is an ack does NOT engine-close the tasks it opened', () => {
+const markAck = (lineId: string): void => {
+  // The engine's own marking of the start line (`terminal-text.ts`): its message row carries
+  // `origin_intent = engine_start_ack`, and its channel push is recorded on the `engine-ack` lane.
+  db().prepare("UPDATE messages SET origin_intent = 'engine_start_ack' WHERE id = ?").run(`m-${lineId}`);
+  db().prepare("UPDATE deliveries SET tool = 'engine-ack' WHERE id = ?").run(lineId);
+};
+
+describe('(a) a turn whose only line is the start ack does NOT engine-close the tasks it opened', () => {
   for (const channel of ['imessage', 'dashboard']) {
-    it(`${channel}: "On it" is the answer key and the ask settles on it; both tasks stay open`, async () => {
+    it(`${channel}: the marked "On it" only; both tasks stay open`, async () => {
       const { conv, tasks } = askAndTasks(channel);
       const ack = line('d-onit', channel, conv, "On it, I've opened two tasks and will book the table.");
+      markAck('d-onit');
+      await finalizeTurnRecord(freshState(), ctxFor(conv, channel, ack));
+      expect(states(tasks)).toEqual(['claimed', 'claimed']);
+    });
+    it(`${channel}: an UNMARKED "On it" final line (the ask settles on it) still closes nothing`, async () => {
+      const { conv, tasks } = askAndTasks(channel);
+      const ack = line('d-onit-plain', channel, conv, "On it, I've opened two tasks and will book the table.");
       await finalizeTurnRecord(freshState(), ctxFor(conv, channel, ack));
       expect(states(tasks)).toEqual(['claimed', 'claimed']);
     });
   }
 });
 
-describe('(b) a turn that delivers the completion after its ack closes them', () => {
-  for (const channel of ['imessage', 'dashboard']) {
-    it(`${channel}: ack, then the booking confirmation; both tasks close on the confirmation`, async () => {
+describe('THE RE-REVIEW PROBE (R1): the start ack, then a PROGRESS line, closes nothing', () => {
+  for (const channel of ['dashboard', 'imessage']) {
+    it(`${channel}: "On it." then "Found three tables, booking next" leaves both tasks open`, async () => {
       const { conv, tasks } = askAndTasks(channel);
       line('d-ack', channel, conv, 'On it.');
-      const answer = line('d-booked', channel, conv, 'Booked: a table for four on Friday at 7pm, confirmation 4471.');
-      await finalizeTurnRecord(freshState(), ctxFor(conv, channel, answer));
-      expect(states(tasks)).toEqual(['done', 'done']);
-      const rd = tasks.map((t) => (db().prepare('SELECT result_delivery_id AS r FROM work WHERE id = ?').get(t) as { r: string }).r);
-      expect(rd).toEqual(['d-booked', 'd-booked']);
+      markAck('d-ack');
+      const progress = line('d-progress', channel, conv, 'Found three tables that fit; I will book one next and send you the confirmation.');
+      await finalizeTurnRecord(freshState(), ctxFor(conv, channel, progress));
+      expect(states(tasks)).toEqual(['claimed', 'claimed']);
     });
   }
 });
 
-describe('(c) a turn that delivers a file closes them', () => {
-  it('a delivered file artifact (a work product is never an ack) closes both tasks', async () => {
+describe('(b) a real text completion is the WORKER\'s to close on, never the engine\'s', () => {
+  for (const channel of ['imessage', 'dashboard']) {
+    it(`${channel}: ack, then the booking confirmation; strike-0 leaves both tasks open`, async () => {
+      const { conv, tasks } = askAndTasks(channel);
+      line('d-ack', channel, conv, 'On it.');
+      markAck('d-ack');
+      const answer = line('d-booked', channel, conv, 'Booked: a table for four on Friday at 7pm, confirmation 4471.');
+      await finalizeTurnRecord(freshState(), ctxFor(conv, channel, answer));
+      expect(states(tasks)).toEqual(['claimed', 'claimed']);
+    });
+  }
+});
+
+describe('(c) what the engine can count still closes them', () => {
+  it('a delivered file artifact closes both tasks', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     const only = line('d-file-line', 'dashboard', conv, 'Here is the confirmation.');
     db().prepare(
@@ -156,5 +185,14 @@ describe('(c) a turn that delivers a file closes them', () => {
     ).run(AGENT, TURN);
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
     expect(states(tasks)).toEqual(['done', 'done']);
+  });
+
+  it('a measured task whose measure reads 0 closes; its unmeasured sibling stays open', async () => {
+    const { conv, tasks } = askAndTasks('dashboard');
+    db().prepare(`UPDATE work SET measure_json = ?, measure_initial = 12, measure_remaining = 0, measure_at = ? WHERE id = ?`)
+      .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), tasks[0]);
+    const only = line('d-swept', 'dashboard', conv, 'The inbox is clear.');
+    await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
+    expect(states(tasks)).toEqual(['done', 'claimed']);
   });
 });
