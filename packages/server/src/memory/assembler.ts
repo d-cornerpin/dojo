@@ -71,7 +71,7 @@ import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
-import { A2A_INBOUND_RE, a2aThreadTokenMatches, parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
+import { A2A_INBOUND_RE, a2aThreadTokenMatches, parseA2AThreadShort, parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -1268,8 +1268,64 @@ function buildContentLanes(
  * the truncator speak one language. The stamp/parse difference between a stored row and its
  * emitted form rides inside the declared post-budget reserve.
  */
+// ════════════════════════════════════════════════════════════════════════════════════════
+// v3.5 owner test 2, fix rank 1: THE MODEL SEES WHAT IT SAID BESIDE A TOOL CALL.
+//
+// When a round's text rides with tool calls and is not the turn's answer, the engine demotes it to a working note
+// (owner ruling 2026-07-10, demote don't discard): a `role='system'` `[working-note]` row the owner reads as a dimmed
+// bubble, and an assistant row holding only the `tool_use` blocks. A system row never enters model context, so the
+// model's own words left the only record it reads, and it said them again on the next round ("On it" four times, the
+// same list three times; T52's recorded root, `post-call-classify/terminal-text.ts`).
+//
+// So here, at the model's one reader: a demoted note of the same turn that precedes an assistant row carrying
+// `tool_use` and no text is that row's text, rendered as its first block. THE STORED ROWS DO NOT CHANGE. The note
+// stays the owner's display, and the assistant row's bytes stay what every reader of assistant TEXT reads (the reply
+// floors, channel routing, ask settlement, the dashboard's answer rules), so none of them starts counting narration as
+// a reply. The render is a pure function of stable rows, so the cached prefix does not move. One copy: a note the
+// engine retired because it delivered the same words as the answer (`finalize/deferred-recovery.ts`) is not rendered.
+// ════════════════════════════════════════════════════════════════════════════════════════
+function demotedNarrationByRow(rows: readonly Message[]): Map<string, string> {
+  const out = new Map<string, string>();
+  let pending: { turn: number | null | undefined; ids: string[]; texts: string[] } | null = null;
+  const candidates: Array<{ rowId: string; noteIds: string[]; texts: string[] }> = [];
+  for (const msg of rows) {
+    if (msg.role === 'system') {
+      const note = parseWorkingNote(msg.content);
+      if (note && note.text.trim()) {
+        if (!pending || pending.turn !== msg.turnNumber) pending = { turn: msg.turnNumber, ids: [], texts: [] };
+        pending.ids.push(msg.id);
+        pending.texts.push(note.text.trim());
+      }
+      continue;
+    }
+    if (pending && msg.role === 'assistant' && pending.turn === msg.turnNumber) {
+      try {
+        const parsed: unknown = JSON.parse(msg.content);
+        if (Array.isArray(parsed) && parsed.some((b) => (b as { type?: string }).type === 'tool_use')
+          && !parsed.some((b) => (b as { type?: string }).type === 'text')) {
+          candidates.push({ rowId: msg.id, noteIds: pending.ids, texts: pending.texts });
+        }
+      } catch { /* plain text: an answer row, never a tool round */ }
+    }
+    pending = null;
+  }
+  if (candidates.length === 0) return out;
+  const allIds = candidates.flatMap((c) => c.noteIds);
+  let retired = new Set<string>();
+  try {
+    const found = getDb().prepare(`SELECT id FROM messages WHERE retired_at IS NOT NULL AND id IN (${allIds.map(() => '?').join(',')})`).all(...allIds) as Array<{ id: string }>;
+    retired = new Set(found.map((r) => r.id));
+  } catch { /* unreadable: render every note (the model seeing its words twice is the lesser fault) */ }
+  for (const c of candidates) {
+    const texts = c.texts.filter((_, i) => !retired.has(c.noteIds[i]));
+    if (texts.length > 0) out.set(c.rowId, texts.join('\n\n'));
+  }
+  return out;
+}
+
 function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   let rows = sanitizeToolPairs(payload.rows);
+  const narration = demotedNarrationByRow(rows);
   rows = stubOldToolResults(rows, payload.agentId);
   const labels = labelRows(payload.agentId, rows);
   const messages: LaneMessage[] = [];
@@ -1290,7 +1346,9 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
     if (msg.role === 'tool') {
       messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
     } else if (msg.role === 'user' || msg.role === 'assistant') {
-      const out: LaneMessage = { role: msg.role, content: labelContent(parsed, labels.get(msg.id) ?? null) };
+      const said = msg.role === 'assistant' ? narration.get(msg.id) : undefined;   // test-2 rank 1 (above)
+      const own = said !== undefined && Array.isArray(parsed) ? [{ type: 'text' as const, text: said }, ...parsed] : parsed;
+      const out: LaneMessage = { role: msg.role, content: labelContent(own, labels.get(msg.id) ?? null) };
       // T56 leg (b): a row whose reasoning was RETIRED at a compaction boundary renders
       // without it, for ever after. The stamp is durable and one-way, which is what makes
       // this stable: between two compactions the same row renders byte-identically, so no
