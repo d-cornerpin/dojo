@@ -654,7 +654,7 @@ export async function fetchAgendaItemsForAccountMs(
  * themselves re-escaped), then `"`. Runs before encodeURIComponent so the
  * literal backslash and quote survive URL encoding into the request.
  */
-function escapeGraphSearch(q: string): string {
+export function escapeGraphSearch(q: string): string {
   return q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
