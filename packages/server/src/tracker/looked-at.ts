@@ -217,17 +217,24 @@ function pathsIn(text: string): string[] {
     .filter((p) => p.length > 1);
 }
 
-/** What THIS row's record names for a reader to open (review M3b): the files its ledger wrote, the paths its
- *  commands name, its evidence pointers, the delivered answer's message and the paths it names, and the
- *  owner's recorded messages. A read binds to the row only when it opens one of these. */
-export function rowReadNames(workId: string): { paths: string[]; messages: string[] } {
+/** What THIS row's record names for a reader to open (review M3b, tightened in round 2 R7): the specific
+ *  files its ledger wrote, the specific paths its commands name, its evidence pointers, the delivered
+ *  answer's message and the paths it names, the owner's recorded messages; and the folders the ledger
+ *  WROTE into (only these: a folder a command or a pointer merely names is never a licence for the reads
+ *  under it). A read binds to the row only when it opens one of these. */
+export function rowReadNames(workId: string): { paths: string[]; messages: string[]; wroteInto: string[] } {
   const db = getDb();
   const paths: string[] = [];
   const messages: string[] = [];
+  const wroteInto: string[] = [];
   const keys = db.prepare('SELECT item_key AS k FROM work_ledger WHERE work_id = ?').all(workId) as Array<{ k: string }>;
   for (const { k } of keys) {
-    if (k.startsWith('file:')) paths.push(k.slice('file:'.length));
-    else if (k.startsWith('cmd:')) paths.push(...pathsIn(k.slice('cmd:'.length)));
+    if (k.startsWith('file:')) {
+      const f = trimSlash(k.slice('file:'.length));
+      paths.push(f);
+      const dir = f.slice(0, f.lastIndexOf('/'));
+      if (dir) wroteInto.push(dir);
+    } else if (k.startsWith('cmd:')) paths.push(...pathsIn(k.slice('cmd:'.length)));
   }
   try {
     const ev = JSON.parse((db.prepare('SELECT evidence_json AS e FROM work WHERE id = ?').get(workId) as { e: string | null } | undefined)?.e ?? '[]') as Array<{ pointer?: unknown }>;
@@ -241,25 +248,23 @@ export function rowReadNames(workId: string): { paths: string[]; messages: strin
   if (answer?.messageId) messages.push(answer.messageId);
   if (answer?.excerpt) paths.push(...pathsIn(answer.excerpt));
   for (const m of readLaterMessages(workId)) if (m.messageId) messages.push(m.messageId);
-  return { paths: [...new Set(paths)], messages: [...new Set(messages)] };
+  return { paths: [...new Set(paths.map(trimSlash))], messages: [...new Set(messages)], wroteInto: [...new Set(wroteInto)] };
 }
 
-const trimSlash = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p);
-/** Does reading `read` open the named `named`? The same path, a file inside a named folder, or the folder
- *  that directly holds a named file (a listing of it). */
-function opens(read: string, named: string): boolean {
+function trimSlash(p: string): string { return p.length > 1 ? p.replace(/\/+$/, '') : p; }
+/** Does reading `read` open the row's work? The very path the record names, or a file inside a folder the
+ *  row's own ledger wrote into (never that folder itself, never a folder merely named). */
+function opensRowWork(read: string, names: { paths: string[]; wroteInto: string[] }): boolean {
   const r = trimSlash(read);
-  const n = trimSlash(named);
-  if (r === n || r.startsWith(`${n}/`)) return true;
-  const parent = n.slice(0, n.lastIndexOf('/'));
-  return parent.length > 0 && r === parent;
+  if (names.paths.includes(r)) return true;
+  return names.wroteInto.some((d) => r.startsWith(`${d}/`));
 }
 const sameMessage = (read: string, named: string): boolean => read === named || (read.length >= 8 && named.startsWith(read));
 
-/** Did these reads open THIS row's work (review M3b)? Its activity, or something its record names. */
+/** Did these reads open THIS row's work (review M3b, R7)? Its activity, or something its record names. */
 export function readsBoundToRow(l: LookedAt, workId: string, names = rowReadNames(workId)): boolean {
   return l.activity.some((id) => matchesWork(workId, id))
-    || l.files.some((f) => names.paths.some((p) => opens(f, p)))
+    || l.files.some((f) => opensRowWork(f, names))
     || [...l.messages, ...l.results].some((m) => names.messages.some((n) => sameMessage(m, n)));
 }
 
