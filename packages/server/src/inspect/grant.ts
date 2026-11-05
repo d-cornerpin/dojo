@@ -10,8 +10,8 @@
 // the Healer too (fix round 4 ruling: the switch means what it shows); naming it is its own grant.
 //
 // Asked by the advertised list (`agent/tools/surface.ts`, advice) and by the executor's gate row
-// (`agent/tools/gate-eval.ts`, the wall), so "advertised" and "permitted" cannot drift; and by
-// the shell redirect (`agent/brokers/dojo-redirect.ts`), which points only a holder at the tool.
+// (`agent/tools/gate-eval.ts`, the wall), so "advertised" and "permitted" cannot drift. The shell
+// door on the database (`agent/brokers/dojo-redirect.ts`) does not ask it: that door is an allowlist by role.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { isHealerAgent, isPrimaryAgent } from '../config/platform.js';
