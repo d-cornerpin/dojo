@@ -141,7 +141,6 @@ describe('review round M4: a model on the owner\'s own network is local', () => 
     ['mDNS .local', 'http://studio.local:8080/v1'],
     ['.lan', 'http://gpu.lan:8080/v1'],
     ['.home.arpa', 'http://mini.home.arpa:8080/v1'],
-    ['single-label host', 'http://studio:8080/v1'],
     ['this machine\'s hostname', `http://${os.hostname()}:8080/v1`],
   ])('%s is local', (_label, url) => { expect(compat(url)).toBe(true); });
 
@@ -151,6 +150,9 @@ describe('review round M4: a model on the owner\'s own network is local', () => 
     ['a public hostname', 'https://api.example.com/v1'],
     ['a name that only looks local', 'https://local.example.com/v1'],
     ['no base URL on a cloud type', ''],
+    // review round 2: a bare single-word host is not local by its name (a Docker proxy in front of cloud models looks the
+    // same); it is local only once it resolves to local addresses (`the-owners-network-is-classified-once.test.ts`).
+    ['a bare single-word host, by its name alone', 'http://zz-unresolved-proxy:4000/v1'],
   ])('CONTROL: %s is cloud', (_label, url) => { expect(compat(url)).toBe(false); });
 
   it('Ollama is local by type wherever it runs; the nonexistent "local" type is not in the set', () => {

@@ -426,10 +426,22 @@ export function resolveDoomCeiling(
 //
 // LOCAL means WHERE THE MODEL RUNS (review round M4): on the owner's own machines. A provider TYPE that only ever
 // serves his hardware (Ollama, wherever it runs), or a base URL whose host is on his own network: this machine
-// (loopback, the any-address, its own hostname or interface addresses), a private or link-local address (RFC1918,
-// 169.254/16, fe80::/10, fc00::/7), or a name only his network resolves (mDNS `.local`, `.lan`, `.home.arpa`, a
-// single-label host). That covers LM Studio, llama.cpp, vLLM or MLX on another of his Macs, typed `openai-compatible`.
-// Anything else is a cloud provider and gets its full window. ONE predicate (`doomGuardApplies`) for every door.
+// (loopback, the any-address, its own hostname or interface addresses), a private, shared or link-local address
+// (RFC1918, Tailscale's 100.64/10, 169.254/16, fe80::/10, fc00::/7), or a name only his network serves (mDNS `.local`,
+// `.lan`, `.home.arpa`, Tailscale's `.ts.net`). That covers LM Studio, llama.cpp, vLLM or MLX on another of his Macs,
+// typed `openai-compatible`. Anything else is a cloud provider and gets its full window. ONE predicate
+// (`doomGuardApplies`) for every door.
+//
+// Review round 2:
+//   - A BARE single-word host (`http://gateway:4000`) is not local by its name: a Docker proxy in front of cloud models
+//     looks exactly like that, and capping it breaks OR-FIELD3 (a). The choice is by provider type and ADDRESS, not by
+//     resolving the name: Ollama is local by type wherever it runs; any other type is local only when its URL is a
+//     local or private address or a name only the owner's network serves. A bare host is cloud whatever it resolves to
+//     (the owner names a LAN box by its address, or `.local`, to keep its guard). Resolving it was rejected: a DNS
+//     lookup from this leaf module is a new way out of the engine (`only-the-audited-door-can-reach-the-wire`), and its
+//     answer would arrive after the first, synchronous check.
+//   - The machine's own names and interface addresses are read once per process (the router runs this per candidate
+//     inside its 2ms budget, `selector-latency.test.ts`).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /** Provider types whose inference runs on the owner's own hardware. (`config/schema.ts` types are anthropic, openai,
@@ -450,16 +462,23 @@ export function isThisMachineUrl(baseUrl: string): boolean {
   return host !== null && (host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host));
 }
 
-const isPrivateOrLinkLocalV4 = (h: string): boolean => {
-  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(h);
-  if (!m) return false;
-  const a = Number(m[1]); const b = Number(m[2]);
-  return a === 10 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
-};
-const isPrivateOrLinkLocalV6 = (h: string): boolean => h.includes(':') && /^(fe[89ab][0-9a-f]|f[cd][0-9a-f]{2}):/.test(h);
-const LOCAL_NAME_SUFFIXES = ['.local', '.lan', '.home.arpa', '.localhost'];
+/** An address on the owner's own network: loopback, any-address, RFC1918, Tailscale's 100.64/10, link-local, ULA. */
+function isLocalAddress(addr: string): boolean {
+  const a6 = addr.toLowerCase();
+  if (a6 === '::1' || a6 === '::') return true;
+  const v4 = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(a6);
+  if (v4) {
+    const a = Number(v4[1]); const b = Number(v4[2]);
+    return a === 127 || a === 10 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+      || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  return a6.includes(':') && /^(fe[89ab][0-9a-f]|f[cd][0-9a-f]{2}):/.test(a6);
+}
+const LOCAL_NAME_SUFFIXES = ['.local', '.lan', '.home.arpa', '.localhost', '.ts.net'];
 
-function ownNames(): Set<string> {
+let ownNamesCache: ReadonlySet<string> | null = null;
+function ownNames(): ReadonlySet<string> {
+  if (ownNamesCache) return ownNamesCache;
   const names = new Set<string>();
   try {
     const h = os.hostname().toLowerCase();
@@ -467,17 +486,22 @@ function ownNames(): Set<string> {
     names.add(h.replace(/\.local$/, ''));
     for (const list of Object.values(os.networkInterfaces())) for (const i of list ?? []) names.add(i.address.toLowerCase());
   } catch { /* unreadable: the address classes still decide */ }
+  ownNamesCache = names;
   return names;
+}
+
+/** Tests only: forget the per-process answers. */
+export function __resetOwnersNetworkCacheForTests(): void {
+  ownNamesCache = null;
 }
 
 /** Is this base URL on the owner's own network (header)? */
 export function isOwnersNetworkUrl(baseUrl: string): boolean {
   const host = hostOf(baseUrl);
   if (host === null || host === '') return false;
-  if (isThisMachineUrl(baseUrl) || isPrivateOrLinkLocalV4(host) || isPrivateOrLinkLocalV6(host)) return true;
-  if (!host.includes('.') && !host.includes(':')) return true;   // a single-label name: only a local resolver answers it
+  if (host === 'localhost' || isLocalAddress(host)) return true;
   if (LOCAL_NAME_SUFFIXES.some((s) => host.endsWith(s))) return true;
-  return ownNames().has(host);
+  return ownNames().has(host);   // review round 2: a bare single-word host is NOT local by its name (header)
 }
 
 /** Is the doom ceiling armed for this provider? Only for one on the owner's own hardware (header above). */
