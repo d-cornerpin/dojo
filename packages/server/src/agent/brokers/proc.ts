@@ -83,23 +83,23 @@ const VALUE_LETTERS: Readonly<Record<string, string>> = {
  * given by option, every operand is a file. A pattern or program FILE (`-f FILE`, `--file=FILE`) is
  * read, so it IS scanned. Any other option's value is scanned too: a misread can only scan more.
  */
-function fileOperands(cmd: string, args: readonly string[]): string[] {
+function fileOperands(cmd: string, words: readonly string[]): string[] {
   const textFirst = PATTERN_FIRST.has(cmd) || SCRIPT_FIRST.has(cmd);
-  if (!textFirst) return args.filter((a) => !a.startsWith('-'));
+  if (!textFirst) return words.filter((a) => !a.startsWith('-'));
   const textOpt = PATTERN_FIRST.has(cmd) ? ['--regexp'] : cmd === 'sed' ? ['--expression'] : [];
   const textShort = cmd === 'awk' ? '' : 'e';   // awk has no -e program option
   const out: string[] = [];
   let textGiven = false;
   let operandsOnly = false;
   const operands: string[] = [];
-  for (let k = 0; k < args.length; k++) {
-    const a = args[k];
+  for (let k = 0; k < words.length; k++) {
+    const a = words[k];
     if (operandsOnly || !a.startsWith('-') || a === '-') { operands.push(a); continue; }
     if (a === '--') { operandsOnly = true; continue; }
     if (a.startsWith('--')) {
       const [name, ...val] = a.split('=');
       if (textOpt.includes(name)) { textGiven = true; if (val.length === 0) k++; continue; }   // the text itself: not a file
-      if (name === '--file') { textGiven = true; if (val.length > 0) out.push(val.join('=')); else if (k + 1 < args.length) out.push(args[++k]); continue; }
+      if (name === '--file') { textGiven = true; if (val.length > 0) out.push(val.join('=')); else if (k + 1 < words.length) out.push(words[++k]); continue; }
       if (val.length > 0) out.push(val.join('='));
       continue;
     }
@@ -107,8 +107,8 @@ function fileOperands(cmd: string, args: readonly string[]): string[] {
     for (let c = 1; c < a.length; c++) {
       const letter = a[c];
       if (letter === textShort) { textGiven = true; if (c === a.length - 1) k++; break; }   // -e TEXT / -eTEXT
-      if (letter === 'f') { textGiven = true; const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < args.length) out.push(args[++k]); break; }
-      if ((VALUE_LETTERS[cmd] ?? '').includes(letter)) { const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < args.length) out.push(args[++k]); break; }
+      if (letter === 'f') { textGiven = true; const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < words.length) out.push(words[++k]); break; }
+      if ((VALUE_LETTERS[cmd] ?? '').includes(letter)) { const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < words.length) out.push(words[++k]); break; }
     }
   }
   return [...out, ...(textGiven ? operands : operands.slice(1))];
@@ -242,13 +242,13 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
   for (let i = 0; i < tokens.length; i++) {
     const cmd = path.basename(tokens[i]);
     if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
-    const args: string[] = [];
+    const operands: string[] = [];
     for (let j = i + 1; j < tokens.length; j++) {
       const arg = tokens[j];
       if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
-      args.push(arg);
+      operands.push(arg);
     }
-    for (const arg of fileOperands(cmd, args)) {
+    for (const arg of fileOperands(cmd, operands)) {
       const expanded = resolvePath(arg);
       if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
         return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
