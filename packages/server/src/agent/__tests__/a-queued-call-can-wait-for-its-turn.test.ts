@@ -27,7 +27,7 @@ vi.mock('../v2/loop.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { getAgentRuntime } from '../runtime.js';
-import { activeRuns, pendingWakeups } from '../shared-state.js';
+import { activeRuns, pendingWakeups, stoppedAgents } from '../shared-state.js';
 
 const AGENT = 'queued-wait-agent';
 const until = async (ok: () => boolean, ms = 5000): Promise<void> => {
@@ -42,6 +42,7 @@ beforeEach(() => {
   turns.gates.length = 0; turns.started = 0;
 });
 afterEach(async () => {
+  stoppedAgents.delete(AGENT);
   while (turns.gates.length) turns.gates.shift()!();
   await until(() => !activeRuns.has(AGENT) && !pendingWakeups.has(AGENT));
   mockDb.current?.close(); mockDb.current = null;
@@ -74,5 +75,38 @@ describe('M5: whenQueuedRunEnds', () => {
     const waiting = rt.whenQueuedRunEnds(AGENT);
     expect(await rt.handleMessage(AGENT, '')).toBe('not-run');
     expect(await waiting).toBe('not-run');
+  });
+});
+
+// Review round 2 (R5): a queued wakeup the runtime DECLINES leaves no caller waiting.
+describe('R5: a declined queued wakeup answers its waiters not-run', () => {
+  async function queueBehindARun(): Promise<{ result: () => string | null; first: Promise<unknown> }> {
+    const rt = getAgentRuntime();
+    const first = rt.handleMessage(AGENT, '');
+    await until(() => turns.started === 1);
+    expect(await rt.handleMessage(AGENT, '')).toBe('queued');
+    let done: string | null = null;
+    void rt.whenQueuedRunEnds(AGENT).then((o) => { done = o; });
+    return { result: () => done, first };
+  }
+
+  it('the user stopped the agent while the wakeup was armed: the waiter gets not-run, and no turn runs', async () => {
+    const q = await queueBehindARun();
+    turns.gates.shift()!();
+    await q.first;
+    stoppedAgents.add(AGENT);          // the stop lands inside the 500 ms the drain timer is armed
+    await until(() => q.result() !== null, 3000);
+    expect(q.result()).toBe('not-run');
+    expect(turns.started).toBe(1);
+  });
+
+  it('the agent entered a stop state (terminated) before the wakeup fired: the waiter gets not-run', async () => {
+    const q = await queueBehindARun();
+    turns.gates.shift()!();
+    await q.first;
+    mockDb.current!.prepare("UPDATE agents SET status = 'terminated' WHERE id = ?").run(AGENT);
+    await until(() => q.result() !== null, 3000);
+    expect(q.result()).toBe('not-run');
+    expect(turns.started).toBe(1);
   });
 });

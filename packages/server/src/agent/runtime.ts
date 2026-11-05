@@ -717,6 +717,13 @@ export type RunOutcome = 'ran' | 'queued' | 'not-run';
  *  found terminated first. */
 const queuedRunWaiters = new Map<string, Array<(o: RunOutcome) => void>>();
 
+/** The queued turn will not run (the agent is terminated, stopped, or in a stop state): every caller waiting
+ *  for it is answered 'not-run' now, so no promise is left pending (review round 2, R5). */
+function declineQueuedWaiters(agentId: string): void {
+  for (const w of queuedRunWaiters.get(agentId) ?? []) w('not-run');
+  queuedRunWaiters.delete(agentId);
+}
+
 class AgentRuntime {
   /** After `handleMessage` answered 'queued': resolves when the queued turn has run (its outcome), so a
    *  caller that judges that turn (the PM review's coverage check) judges a turn that happened. */
@@ -734,8 +741,7 @@ class AgentRuntime {
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
       logger.info('Skipping run, agent is terminated', { agentId }, agentId);
-      for (const w of queuedRunWaiters.get(agentId) ?? []) w('not-run');
-      queuedRunWaiters.delete(agentId);
+      declineQueuedWaiters(agentId);
       return 'not-run';
     }
     if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // t148: a message to a parked agent is answered on arrival
@@ -1155,6 +1161,7 @@ class AgentRuntime {
           // this timer never gates.
           if (isStopFenced(agentId)) {
             logger.info('Queued wakeup declined: the user stopped this agent', { agentId }, agentId);
+            declineQueuedWaiters(agentId);
             return;
           }
           // Skip the wakeup if the agent has been terminated since the
@@ -1171,6 +1178,7 @@ class AgentRuntime {
           // served on the next real inbound or an explicit resume.
           if (isSelfResumeBlockedStatus(status)) {
             logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
+            declineQueuedWaiters(agentId);
             dropDrainJobWake(agentId); return; // the park's continuation will never run: its job is over
           }
           logger.info('Processing queued wakeup', { agentId }, agentId);

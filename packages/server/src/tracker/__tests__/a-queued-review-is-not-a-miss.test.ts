@@ -52,12 +52,14 @@ const { pm } = vi.hoisted(() => ({ pm: {
   outcome: 'ran' as string, calls: 0, to: [] as string[],
   // The queued wakeup turn: `whenQueuedRunEnds` answers when the test ends it.
   queuedEnd: null as null | ((o: string) => void), waits: 0,
+  /** Every review waiting on the queued turn (two reviews can queue behind one busy run). */
+  waiting: [] as Array<(o: string) => void>,
 } }));
 vi.mock('../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({
     notifyPrimaryOfInjury: vi.fn(async () => undefined),
     handleMessage: vi.fn(async (agentId: string) => { pm.to.push(agentId); if (agentId === 'pm') pm.calls += 1; return pm.outcome; }),
-    whenQueuedRunEnds: vi.fn(() => { pm.waits += 1; return new Promise<string>((resolve) => { pm.queuedEnd = resolve; }); }),
+    whenQueuedRunEnds: vi.fn(() => { pm.waits += 1; return new Promise<string>((resolve) => { pm.queuedEnd = resolve; pm.waiting.push(resolve); }); }),
     getAgentUptime: () => 0,
   }),
   stopAgent: vi.fn(),
@@ -91,6 +93,7 @@ beforeEach(() => {
   pm.to = [];
   pm.queuedEnd = null;
   pm.waits = 0;
+  pm.waiting = [];
   d.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('prov-a', 'Cloud Provider', 'openai-compatible', 'api_key')`).run();
   d.prepare(`INSERT INTO models (id, provider_id, name, api_model_id) VALUES ('m-a', 'prov-a', 'Model A', 'model-a')`).run();
   d.prepare(`INSERT INTO agents (id, name, status, model_id, classification) VALUES
@@ -184,6 +187,43 @@ describe('review M5: a queued review is judged when its queued turn actually run
     await settle();
     expect(misses('task-m5n')).toBe(0);
     expect(drainValidationDoorbell()).toContain('task-m5n');
+  });
+});
+
+/** The PM's turn ledger: the real turn a queued review is judged on. */
+const pmTurn = (n: number): void => {
+  db().prepare(`INSERT INTO turns (agent_id, turn_number, kind, subject_kind, started_at, ended_at, exit_reason, answered)
+    VALUES ('pm', ?, 'engine', 'engine_event', datetime('now'), datetime('now'), 'answered', 0)`).run(n);
+};
+
+describe('review round 2 (R5): one miss per row per REAL PM turn', () => {
+  it('two reviews queued behind one busy run both judge the same turn: each row gets ONE miss', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    filedClose('task-d1', now - 3 * MIN);
+    pm.outcome = 'queued';
+    await sweepAt(now);                     // review 1 asks about d1, queued
+    filedClose('task-d2', now - 2 * MIN);
+    await sweepAt(now + 20_000);            // review 2 asks about d1 and d2, queued behind the same run
+    expect(pm.waits).toBe(2);
+    pmTurn(41);                              // the one queued turn ran, and ruled on nothing
+    for (const w of pm.waiting.splice(0)) w('ran');
+    await settle();
+    expect(misses('task-d1')).toBe(1);
+    expect(misses('task-d2')).toBe(1);
+  });
+
+  it('a LATER real turn that also ruled on nothing is a second miss', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    filedClose('task-d3', now - 3 * MIN);
+    pm.outcome = 'ran';
+    pmTurn(50);
+    await sweepAt(now);
+    expect(misses('task-d3')).toBe(1);
+    pmTurn(51);
+    await sweepAt(now + 2 * MIN);           // the re-drive: a new review, a new real turn
+    expect(misses('task-d3')).toBe(2);
   });
 });
 

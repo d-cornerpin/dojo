@@ -1,6 +1,7 @@
 import { closeoutReceipts } from './closeout-receipts.js';
 import { unvalidatedCompleteText } from './validation-request.js';
 import { keepLedgerShownFor } from './request-shown.js';
+import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
@@ -895,6 +896,18 @@ function idsStillAwaitingKeyTwo(ids: readonly string[]): Set<string> {
     // board is not a validated one, so nothing is reported as covered.
     return new Set(ids);
   }
+}
+
+/** Review round 2 (R5): ONE miss per row per real PM turn. Two reviews queued behind one busy run are both
+ *  judged on the same turn, and the second must not count that turn again: the miss count orders the queue
+ *  and releases the owner escalation. The turn rides on the miss record (`pm_turn`); 0 = unknown, never deduped. */
+function missAlreadyCounted(rowId: string, pmTurn: number): boolean {
+  if (pmTurn <= 0) return false;
+  return !!getDb().prepare(
+    `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'audit'
+       AND json_extract(payload, '$.action_taken') = ?
+       AND json_extract(json_extract(payload, '$.evidence_json'), '$.pm_turn') = ? LIMIT 1`,
+  ).get(rowId, VALIDATION_ATTEMPT_MISS, pmTurn);
 }
 
 export function validationCoverageAfterReview(input: ValidationCoverageInput): ValidationCoverage {
@@ -2346,7 +2359,9 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
         // until one of these exists), and its COUNT is what orders the queue so a stubborn
         // row stops leading every review. The marker string is single-sourced in
         // `work/validation-drive.ts` so the writer here and the reader there cannot drift.
+        const judgedTurn = turn === 'ran' ? currentTurnNumber(pmId) : 0;   // R5: one miss per row per real PM turn
         for (const m of coverage.missed) {
+          if (missAlreadyCounted(m.id, judgedTurn)) continue;
           writeTaskLog({
             taskId: m.id,
             fromEntity: 'pm',
@@ -2358,6 +2373,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
               (m.pastOwnerBound
                 ? ` — PAST the ${VALIDATION_ESCALATION_MIN}-minute owner-escalation bound, so the owner has been (or is about to be) told this is unvalidated before its validator ruled`
                 : ''),
+            ...(judgedTurn > 0 ? { evidenceJson: JSON.stringify({ pm_turn: judgedTurn }) } : {}),
           });
         }
       }
