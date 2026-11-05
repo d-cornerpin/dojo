@@ -30,7 +30,7 @@
 // non-holder's read of the log.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { isHealerAgent } from '../../config/platform.js';
+import { isHealerAgent, isPrimaryAgent } from '../../config/platform.js';
 import { deny, type Verdict } from './types.js';
 
 /** The live database file by its basename, as a whole path segment (not `dojo.db.bak`). */
@@ -209,6 +209,7 @@ export function classifyDojoLine(line: string): DojoLineClass | null {
 
 // A plain fact (field fix 3, Mac-belongs round): what the file is and what a write does to it.
 const WRITE_REFUSAL = "Refused: dojo.db and its -wal and -shm files are the running Dojo's live database, and a write to them from the shell corrupts it. Reading them is allowed.";
+const READ_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
 /**
  * The refusal for a line that WRITES the live database, or null. Asked only after the broker allowed
@@ -226,7 +227,12 @@ const WRITE_REFUSAL = "Refused: dojo.db and its -wal and -shm files are the runn
  */
 export function redirectDojoQuestion(agentId: string, line: string): Verdict | null {
   const cls = classifyDojoLine(line);
-  if (cls !== 'write' && cls !== 'repair') return null;
+  if (!cls) return null;
   if (cls === 'repair' && isHealerAgent(agentId)) return null;   // the repair agent's statements (fix rounds 2 and 4)
-  return deny('ladder-parity', 'dojo-db-shell-write', 'a shell write to the live Dojo database corrupts it', WRITE_REFUSAL);
+  if (cls === 'write' || cls === 'repair') return deny('ladder-parity', 'dojo-db-shell-write', 'a shell write to the live Dojo database corrupts it', WRITE_REFUSAL);
+  // AUDIT ROUND (#3): the owner's words name the MAIN agent ("the main agent owns the Mac they live
+  // in"), so the shell read of the live database is the main agent's and the Healer's. A worker's
+  // stays refused, as it was before field fix 3; its read of the platform log is unchanged.
+  if (cls === 'logs' || isPrimaryAgent(agentId) || isHealerAgent(agentId)) return null;
+  return deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo database is read through the shell by the main agent and the Healer only', READ_REFUSAL);
 }

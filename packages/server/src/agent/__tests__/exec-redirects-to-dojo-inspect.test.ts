@@ -111,11 +111,20 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
       `sqlite3 ~/.dojo/data/dojo.db "pragma table_info(messages)"`, `sqlite3 ~/.dojo/data/dojo.db '.schema work'`,
       'tail -200 ~/.dojo/logs/dojo.log', "grep -i 'error' ~/.dojo/logs/dojo.log | tail -50", `grep -c WATCHDOG ${HOME}/.dojo/logs/dojo.log.1`,
       'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', 'sqlite3 ~/.dojo/data/*.db "select 1"'];
-    for (const agent of [PRIMARY, HEALER, WORKER]) {
+    // Audit round (#3, owner: "the main agent owns the Mac"): the main agent and the Healer.
+    for (const agent of [PRIMARY, HEALER]) {
       for (const script of reads) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
     }
     expect(verdict(PRIMARY, 'proc', ['sqlite3', '-readonly', DB, 'select count(*) from deliveries']).allowed).toBe(true);
     expect(verdict(WORKER, 'proc', ['tail', '-n', '50', `${HOME}/.dojo/logs/dojo.log`]).allowed).toBe(true);
+  });
+
+  it('audit round: a WORKER\'s shell read of the live database stays refused, as a plain fact (its log read is unchanged)', () => {
+    for (const script of [`sqlite3 ${DB} "select * from google_accounts"`, 'strings ~/.dojo/data/dojo.db | grep token', 'cp ~/.dojo/data/dojo.db /tmp/copy.db']) {
+      expect(refusal(WORKER, 'shell', script), script)
+        .toBe("Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.");
+    }
+    expect(verdict(WORKER, 'shell', 'tail -20 ~/.dojo/logs/dojo.log').allowed).toBe(true);
   });
 });
 
