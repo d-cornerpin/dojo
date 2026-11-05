@@ -1292,7 +1292,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // recovered agents and the engine's info-level events (HEALER_DISPATCHED,
       // AGENT_RECOVERED, SEMANTIC_DUPLICATE dedup) showing as red errors.
       const isRateLimit = e.code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
-      const sev: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
+      const declared: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
+      // Rulings audit #7 (owner, M11): "It shouldn't be a persistent notification if it doesn't require the
+      // intervention of the user. It also shouldn't be red." A sticky red card is for a frame that declares the owner
+      // must act (`cardClass: 'action'`); any other error reads as a warning that leaves by itself.
+      const sev: 'info' | 'warning' | 'error' = declared === 'error' && e.cardClass !== 'action' ? 'warning' : declared;
       if (sev === 'info') {
         toast.success(e.error);
         // Recovered → clear isWorking lock so UI re-enables input.
@@ -1302,6 +1306,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         }
       } else if (sev === 'warning') {
         toast.warning(e.error);
+        if (declared === 'error') { setIsWorking(false); reconcileStreamingBubbles(); }   // the turn ended either way
       } else {
         toast.error(e.error); // stays until dismissed
         setIsWorking(false);

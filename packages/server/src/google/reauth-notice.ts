@@ -172,6 +172,7 @@ export function flushPendingGoogleReauthToast(): void {
       error: TOAST_MESSAGE,
       code: 'AUTH_INVALID',
       severity: 'error',
+      cardClass: 'action',   // he reconnects the account
     });
 
     db.prepare(

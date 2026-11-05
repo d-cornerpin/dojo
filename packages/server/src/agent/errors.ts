@@ -104,7 +104,7 @@ export function recordError(agentId: string): boolean {
     // fold into one card (t138 round 3). v2.3.19: plain language, the count stays in logs.
     const words = pausedWords(agentId);
     void sendAlert(words, 'notice', { agentId });
-    broadcast({ type: 'chat:error', agentId, error: words, code: 'ERROR_LOOP', severity: 'error', retryable: false });
+    broadcast({ type: 'chat:error', agentId, error: words, code: 'ERROR_LOOP', severity: 'error', cardClass: 'action', retryable: false });   // paused until he acts
 
     return true; // Signal: agent was paused
   }

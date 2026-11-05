@@ -198,6 +198,7 @@ export function recordPermanentFailure(
       error: cardText(providerId, reason),
       code: 'QUOTA_EXHAUSTED',
       severity: 'error',
+      cardClass: 'action',   // he tops up or changes the key
       retryable: false,
     });
   } catch { /* a card nobody could be shown is not a reason to keep dialling */ }

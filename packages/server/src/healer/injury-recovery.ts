@@ -67,6 +67,7 @@ function broadcastInjuryEvent(agentId: string, severity: 'info' | 'warning' | 'e
       error: message,
       code,
       severity,
+      cardClass: severity === 'error' ? 'action' : 'informational',   // audit #7: the Healer broken or missing is his; the rest is news
       retryable: false,
     });
   } catch { /* best effort */ }

@@ -728,6 +728,7 @@ async function tryPlatformErrorRecovery(
     error: humanText,
     code,
     severity: 'error',
+    cardClass: 'action',   // a platform lock: the engine cannot proceed until he fixes the account, the quota or the network
     retryable: false,
   });
 
@@ -880,7 +881,10 @@ async function recordInjury(
     agentId,
     error: userMsg,
     code: isRateLimit ? 'RATE_LIMITED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
-    severity: isRateLimit ? 'warning' : 'error',
+    // Audit #7 (M11, owner: "It shouldn't be a persistent notification if it doesn't require the intervention of the
+    // user. It also shouldn't be red."): "the Healer is looking into it" asks nothing of him. Only a paused agent is his.
+    severity: paused ? 'error' : 'warning',
+    cardClass: paused ? 'action' : 'informational',
     retryable: isRateLimit,
   });
 }

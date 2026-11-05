@@ -133,10 +133,11 @@ export function notePlaudReauthRequired(agentId?: string | null): boolean {
       broadcast({
         type: 'chat:error',
         agentId,
-        error: 'Your Plaud login has expired, so I can\'t reach your recordings. '
+        error: 'Your Plaud login has expired, so your recordings cannot be reached. '
              + 'Reconnect it in Settings → Integrations → Plaud.',
         code: 'AUTH_INVALID',
         severity: 'error',
+        cardClass: 'action',   // he signs in again
         retryable: false,
       });
     } catch { /* best effort */ }

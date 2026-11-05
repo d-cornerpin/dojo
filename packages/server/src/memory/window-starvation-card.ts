@@ -107,6 +107,7 @@ export function reportStarvedWindow(
       error: ((r) => (r ? autoStarvedCardText(r) : starvedWindowCardText(policy)))(autoRouterContext(agentId)),
       code: 'WINDOW_TOO_SMALL',
       severity: 'error',
+      cardClass: 'action',   // he gives it a bigger model or fewer tools
       // FALSE, and that is the honest value. Unlike a provider outage or a summary writer
       // coming back, nothing about this clears itself: the tool list or the model has to
       // change. A `true` here would promise a recovery that cannot happen.

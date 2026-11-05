@@ -108,6 +108,7 @@ export function maybeAlertOnFailure(params: {
       agentId: 'system',
       error: message,
       severity: 'error',
+      cardClass: 'action',   // he reconnects the account
       retryable: false,
     });
   } catch { /* best effort */ }
