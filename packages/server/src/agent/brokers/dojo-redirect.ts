@@ -31,6 +31,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { isHealerAgent, isPrimaryAgent } from '../../config/platform.js';
+import { getDb } from '../../db/connection.js';
+import { refuseDeniedSql } from '../../inspect/redact.js';
 import { deny, type Verdict } from './types.js';
 
 /** The live database file by its basename, as a whole path segment (not `dojo.db.bak`). */
@@ -233,6 +235,50 @@ export function redirectDojoQuestion(agentId: string, line: string): Verdict | n
   // AUDIT ROUND (#3): the owner's words name the MAIN agent ("the main agent owns the Mac they live
   // in"), so the shell read of the live database is the main agent's and the Healer's. A worker's
   // stays refused, as it was before field fix 3; its read of the platform log is unchanged.
-  if (cls === 'logs' || isPrimaryAgent(agentId) || isHealerAgent(agentId)) return null;
-  return deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo database is read through the shell by the main agent and the Healer only', READ_REFUSAL);
+  if (cls === 'logs') return null;
+  if (!isPrimaryAgent(agentId) && !isHealerAgent(agentId)) {
+    return deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo database is read through the shell by the main agent and the Healer only', READ_REFUSAL);
+  }
+  // OR-AUDIT-ANSWERS (a), the owner: "Keep secrets hidden." The credential tables stay hidden from
+  // EVERY agent, the main agent included, exactly as dojo_inspect hides them: the same list and the
+  // same check (`inspect/redact.ts` refuseDeniedSql), never a copy.
+  const credential = credentialReadRefusal(line);
+  return credential ? deny('ladder-parity', 'dojo-db-credential-read', 'the Dojo database\'s credential tables stay hidden', credential) : null;
+}
+
+const WHOLE_FILE_REFUSAL = "Refused: a whole-file read of the Dojo's database carries its credential tables, which stay hidden from every agent. A sqlite3 query of the other tables runs.";
+/** sqlite3 dot-commands that print or copy the whole database, credential tables included. */
+const WHOLE_DB_DOT = /\.(?:dump|clone|backup|save|archive|recover|dbtotxt)\b/i;
+
+/** The SQL a sqlite3 segment carries: its quoted arguments, or every word after the database path. */
+function sqlOf(words: string[], segment: string): string[] {
+  const quoted = [...segment.matchAll(/"([^"]*)"|'([^']*)'/g)].map((m) => m[1] ?? m[2] ?? '').filter((q) => !namesDb(q));
+  if (quoted.length > 0) return quoted;
+  const at = words.findIndex(namesDb);
+  return at >= 0 && at < words.length - 1 ? [words.slice(at + 1).join(' ')] : [];
+}
+
+/** The fact that refuses a read reaching the credential tables, or null when the read reaches none. */
+function credentialReadRefusal(line: string): string | null {
+  for (const segment of line.split(/\|\|?|;|&&/)) {
+    const r = resolveCommand(segment.trim().split(/\s+/).filter(Boolean));
+    if (r.shellText !== undefined) { const inner = credentialReadRefusal(r.shellText); if (inner) return inner; continue; }
+    const words = r.words;
+    if (!words.some(namesDb)) continue;
+    const program = (words[0] ?? '').split('/').pop() ?? '';
+    if (r.opaque || program !== 'sqlite3') {
+      // Only a look at the FILE (ls, stat, du, wc, lsof, ...) passes; anything reading its contents
+      // other than a sqlite3 query carries every table.
+      if (r.opaque || SQL_PROGRAMS.has(program) || CONTENT_READERS.has(program) || program === 'dd') return WHOLE_FILE_REFUSAL;
+      continue;
+    }
+    if (WHOLE_DB_DOT.test(segment)) return WHOLE_FILE_REFUSAL;
+    let db: ReturnType<typeof getDb> | undefined;
+    try { db = getDb(); } catch { db = undefined; }
+    for (const sql of sqlOf(words, segment)) {
+      const refused = refuseDeniedSql(sql, db);
+      if (refused) return refused;
+    }
+  }
+  return null;
 }

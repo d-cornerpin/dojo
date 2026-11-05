@@ -106,17 +106,33 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
   });
 
   it('every read shape runs: queries, schema looks, log tails, a copy out, both doors, every agent', () => {
+    // OR-AUDIT-ANSWERS (a) "Keep secrets hidden": a whole-file read (strings, cp, xxd) would carry the
+    // credential tables, so only sqlite3 queries and log reads are in this list (see the next clause).
     const reads = [`sqlite3 ~/.dojo/data/dojo.db "select id, title, state from work order by opened_at desc limit 5"`,
-      `sqlite3 ${DB} "SELECT content FROM messages WHERE seq=42"`, `strings ~/.dojo/data/dojo.db | grep -i garden`,
+      `sqlite3 ${DB} "SELECT content FROM messages WHERE seq=42"`,
       `sqlite3 ~/.dojo/data/dojo.db "pragma table_info(messages)"`, `sqlite3 ~/.dojo/data/dojo.db '.schema work'`,
       'tail -200 ~/.dojo/logs/dojo.log', "grep -i 'error' ~/.dojo/logs/dojo.log | tail -50", `grep -c WATCHDOG ${HOME}/.dojo/logs/dojo.log.1`,
-      'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', 'sqlite3 ~/.dojo/data/*.db "select 1"'];
+      'sqlite3 ~/.dojo/data/*.db "select 1"'];
     // Audit round (#3, owner: "the main agent owns the Mac"): the main agent and the Healer.
     for (const agent of [PRIMARY, HEALER]) {
       for (const script of reads) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
     }
     expect(verdict(PRIMARY, 'proc', ['sqlite3', '-readonly', DB, 'select count(*) from deliveries']).allowed).toBe(true);
     expect(verdict(WORKER, 'proc', ['tail', '-n', '50', `${HOME}/.dojo/logs/dojo.log`]).allowed).toBe(true);
+  });
+
+  it('OR-AUDIT-ANSWERS (a): the main agent\'s sqlite3 -readonly SELECT of a non-credential table runs; one touching a credential table is refused with a fact', () => {
+    expect(verdict(PRIMARY, 'shell', `sqlite3 -readonly ${DB} "SELECT key, value FROM config WHERE key='user_presence'"`).allowed).toBe(true);
+    expect(verdict(PRIMARY, 'proc', ['sqlite3', '-readonly', DB, 'select id, name from agents']).allowed).toBe(true);
+    for (const script of [`sqlite3 -readonly ${DB} "SELECT * FROM google_accounts"`, `sqlite3 -readonly ${DB} "select a.name, c.* from agents a join agent_credentials c on c.agent_id = a.id"`,
+      `sqlite3 -readonly ${DB} "select content from vault_entries limit 3"`]) {
+      const msg = refusal(PRIMARY, 'shell', script);
+      expect(msg, script).toMatch(/^Refused: the statement reaches \w+, which holds credentials/);
+    }
+    // A whole-file read carries every table, the credential ones included: refused for the main agent too.
+    for (const script of ['strings ~/.dojo/data/dojo.db | grep -i garden', 'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', `sqlite3 ${DB} .dump`]) {
+      expect(refusal(PRIMARY, 'shell', script), script).toMatch(/^Refused: a whole-file read of the Dojo's database carries its credential tables/);
+    }
   });
 
   it('audit round: a WORKER\'s shell read of the live database stays refused, as a plain fact (its log read is unchanged)', () => {
