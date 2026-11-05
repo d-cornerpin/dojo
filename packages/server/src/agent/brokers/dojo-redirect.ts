@@ -40,7 +40,9 @@
 //
 // THE LIMIT, STATED PLAINLY: a shell door reads the command line, so it cannot see inside a script
 // file the agent writes and then runs, or a program that opens the database by itself. This door
-// keeps the everyday shell honest; it is not what protects a credential. The real protections are
+// keeps the everyday shell honest; it is not what protects a credential. The trigger is a word scan
+// of the line (raw, and as the shell will unquote it), so a path put together while the command
+// runs (a variable, a string built inside another program) is not seen. The real protections are
 // encryption at rest for credentials and the blocked key file.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -68,8 +70,35 @@ const SYSTEM_BIN = new Set(['/bin', '/usr/bin', '/usr/sbin', '/sbin']);
 const OUTPUT_FLAGS = new Set(['-readonly', '-header', '-noheader', '-csv', '-json', '-line', '-column', '-list', '-box', '-table', '-markdown', '-tabs']);
 const READ_PRAGMAS = new Set(['table_info', 'table_xinfo', 'index_list', 'index_info', 'index_xinfo', 'foreign_key_list']);
 const TILDE_PATH = '~/.dojo/data/dojo.db';
-/** Functions the sqlite3 shell adds that read or write files or load code: not a plain SELECT. */
-const SIDE_EFFECT_FUNCTION = /\b(?:load_extension|readfile|writefile|edit|fts3_tokenizer)\s*\(/i;
+/** Tables and functions the sqlite3 shell (or a build of it) adds that read raw pages or files,
+ *  write files or load code. Refused by name wherever they appear, for a CLI that may differ from
+ *  the server's SQLite (re-review 3 M1). */
+const CLI_ONLY_NAME = /(?<![\w$])(?:sqlite_dbpage|sqlite_dbdata|sqlite_dbptr|fsdir|lsdir|zipfile|sqlar(?:_\w+)?|sha3_query|sha3_agg|sha3|readfile|writefile|edit|load_extension|fts3_tokenizer)(?![\w$])/i;
+/** Table-valued functions a read may name in its FROM clause. Any other one is refused. */
+const SAFE_TABLE_FUNCTIONS = new Set(['json_each', 'json_tree', 'pragma_table_info', 'pragma_table_xinfo', 'pragma_index_list', 'pragma_index_info', 'pragma_index_xinfo', 'pragma_foreign_key_list']);
+/** Keywords that end a FROM clause at its own depth. */
+const FROM_ENDS = new Set(['where', 'group', 'order', 'limit', 'having', 'window', 'union', 'intersect', 'except', 'on', 'using', 'select', 'values', 'returning']);
+
+/** The table-valued functions a bare statement names as row sources (`FROM f(...)`, `JOIN f(...)`,
+ *  `, f(...)` inside a FROM clause), lowercased. */
+function tableFunctions(b: string): string[] {
+  const tokens = b.toLowerCase().match(/[a-z_][\w$]*|[(),]/g) ?? [];
+  const found: string[] = [];
+  const inFrom: boolean[] = [false];   // one flag per parenthesis depth
+  let expectSource = false;
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k];
+    const d = inFrom.length - 1;
+    if (t === '(') { inFrom.push(false); expectSource = false; continue; }
+    if (t === ')') { if (inFrom.length > 1) inFrom.pop(); expectSource = false; continue; }
+    if (t === ',') { expectSource = inFrom[d]; continue; }
+    if (t === 'from' || t === 'join') { inFrom[d] = true; expectSource = true; continue; }
+    if (FROM_ENDS.has(t)) { inFrom[d] = false; expectSource = false; continue; }
+    if (expectSource && tokens[k + 1] === '(') found.push(t);
+    expectSource = false;
+  }
+  return found;
+}
 
 // ── does the line refer to the database file or the data folder? ──
 /** The live database file by its basename, as a whole path segment (`dojo.db.bak` is not it). */
@@ -212,7 +241,13 @@ function openDb(): Database.Database | undefined {
 /** Is this one statement a read the door admits (before the credential check)? */
 function isAdmittedRead(stmt: string, db: Database.Database | undefined): boolean {
   const b = bare(stmt);
-  if (SIDE_EFFECT_FUNCTION.test(b)) return false;
+  if (CLI_ONLY_NAME.test(b)) return false;
+  if (tableFunctions(b).some((f) => !SAFE_TABLE_FUNCTIONS.has(f))) return false;
+  // FAIL CLOSED (re-review 3 M1): the server's own SQLite is the reference. A statement it cannot
+  // compile, or that it compiles as anything but read-only, is not an admitted read, and with no
+  // connection to check against nothing is admitted.
+  if (!db) return false;
+  try { if (!db.prepare(stmt).readonly) return false; } catch { return false; }
   const kw = firstKeyword(stmt);
   if (kw === 'pragma') {
     const m = /^\s*pragma\s+([a-z_]+)\s*(?:\(\s*(?:[\w]+|''|"")\s*\))?\s*$/i.exec(b.replace(/^(?:\s|--[^\n]*)+/, ''));
@@ -222,19 +257,20 @@ function isAdmittedRead(stmt: string, db: Database.Database | undefined): boolea
   const top = topLevelWords(b);
   if (top.some((t, k) => ['insert', 'update', 'delete', 'upsert', 'attach', 'detach'].includes(t) || (t === 'replace' && top[k + 1] === 'into'))) return false;
   if (kw === 'with' && !top.includes('select')) return false;
-  if (db) {
-    try { if (!db.prepare(stmt).readonly) return false; } catch { /* SQLite's own error is sqlite3's to report */ }
-  }
   return true;
 }
 
 // ── the Healer's repairs: a short fixed set ──
 const LIT = String.raw`(?:'(?:[^']|'')*'|-?\d+(?:\.\d+)?|null|datetime\('now'\))`;
 const PERSIST = String.raw`json_set\(\s*config\s*,\s*'\$\.persist'\s*,\s*[01]\s*\)`;
-const REPAIR_COLUMNS: Record<string, { where: string; cols: Record<string, string> }> = {
-  agents: { where: 'id', cols: { model_id: LIT, status: LIT, config: PERSIST } },
-  work: { where: 'id', cols: { state: LIT, next_run_at: LIT, schedule_status: LIT, updated_at: LIT } },
-  config: { where: 'key', cols: { value: LIT, updated_at: LIT } },
+// These are MATCHERS for SQL text the Healer may run, not writes the engine makes: each entry pairs
+// a SQL column NAME (a string) with the value shape the door accepts for it. They are kept as
+// [name, shape] pairs, not object keys, so a matcher is never read as an assignment of that field
+// (the schedule census in tracker/__tests__/schedule-echo-seam.test.ts scans for field writes).
+const REPAIR_COLUMNS: Record<string, { where: string; cols: ReadonlyArray<readonly [string, string]> }> = {
+  agents: { where: 'id', cols: [['model_id', LIT], ['status', LIT], ['config', PERSIST]] },
+  work: { where: 'id', cols: [['state', LIT], ['next_run_at', LIT], ['schedule_status', LIT], ['updated_at', LIT]] },
+  config: { where: 'key', cols: [['value', LIT], ['updated_at', LIT]] },
 };
 const WAL_CHECKPOINT = /^\s*pragma\s+wal_checkpoint\s*(?:\(\s*(?:passive|full|restart|truncate)\s*\))?\s*$/i;
 
@@ -262,7 +298,7 @@ export function isHealerRepair(stmt: string): boolean {
   if (!spec || m[3].toLowerCase() !== spec.where) return false;
   return topLevelCommas(m[2]).every((a) => {
     const am = /^(\w+)\s*=\s*([\s\S]+)$/.exec(a);
-    const valueShape = am ? spec.cols[am[1].toLowerCase()] : undefined;
+    const valueShape = am ? spec.cols.find(([name]) => name === am[1].toLowerCase())?.[1] : undefined;
     return !!valueShape && new RegExp(`^${valueShape}$`, 'i').test(am![2].trim());
   });
 }
@@ -291,11 +327,13 @@ function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
   if (statements.length === 0) return { outcome: 'refused', message: FACT_REFUSAL };
   const db = openDb();
   const repair = role === 'healer' && statements.length === 1 && isHealerRepair(statements[0]);
-  if (!repair && !statements.every((s) => isAdmittedRead(s, db))) return { outcome: 'refused', message: FACT_REFUSAL };
+  // The credential check first, so a statement that names a credential table is refused with the
+  // sentence that names it; then the read-only check, which fails closed.
   for (const s of statements) {
     const refused = refuseDeniedSql(s, db);
     if (refused) return { outcome: 'credential', message: refused };
   }
+  if (!repair && !statements.every((s) => isAdmittedRead(s, db))) return { outcome: 'refused', message: FACT_REFUSAL };
   return { outcome: 'allowed' };
 }
 
@@ -307,7 +345,7 @@ function shapeSql(words: readonly Word[]): string | null {
   while (i < words.length && words[i].plain && OUTPUT_FLAGS.has(words[i].value)) i++;
   const p = words[i];
   if (!p || p.expands) return null;
-  const literal = (p.tilde && p.value === TILDE_PATH) || (!p.tilde && abs !== null && p.value === abs && (p.plain || p.quotedWhole));
+  const literal = (p.tilde && p.plain && p.value === TILDE_PATH) || (!p.tilde && abs !== null && p.value === abs && (p.plain || p.quotedWhole));
   if (!literal) return null;
   const sql = words[i + 1];
   if (!sql || i + 2 !== words.length || sql.expands || !sql.quotedWhole) return null;
@@ -321,7 +359,10 @@ function shapeSql(words: readonly Word[]): string | null {
  */
 export function dojoDoorVerdict(command: string | readonly string[], role: DoorRole): DoorVerdict {
   const text = typeof command === 'string' ? command : command.join(' ');
-  if (!refersToDojoDatabase(text)) return { outcome: 'untouched' };
+  // The words as the shell will unquote them count too, so `~/.do''jo/...` is still the folder.
+  const lexed = typeof command === 'string' ? lex(command) : null;
+  const unquoted = lexed ? lexed.segments.flatMap((seg) => seg.words.map((w) => w.value)).join(' ') : '';
+  if (!refersToDojoDatabase(text) && !refersToDojoDatabase(unquoted)) return { outcome: 'untouched' };
   if (role === 'worker') return { outcome: 'refused', message: WORKER_REFUSAL };
   if (typeof command !== 'string') {
     // No shell: every element is literal text, so nothing expands and the SQL element is whole.
@@ -330,11 +371,10 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
     const sql = shapeSql(words);
     return sql === null ? { outcome: 'refused', message: FACT_REFUSAL } : sqlVerdict(sql, role);
   }
-  const lexed = lex(command);
   if (!lexed || lexed.special) return { outcome: 'refused', message: FACT_REFUSAL };
   let result: DoorVerdict = { outcome: 'allowed' };
   for (const seg of lexed.segments) {
-    if (!refersToDojoDatabase(seg.text)) continue;
+    if (!refersToDojoDatabase(seg.text) && !refersToDojoDatabase(seg.words.map((w) => w.value).join(' '))) continue;
     if (!seg.pipedIn && isMetadataLook(seg.words)) continue;   // a look at the file, not its rows
     const sql = seg.pipedIn ? null : shapeSql(seg.words);
     if (sql === null) return { outcome: 'refused', message: FACT_REFUSAL };

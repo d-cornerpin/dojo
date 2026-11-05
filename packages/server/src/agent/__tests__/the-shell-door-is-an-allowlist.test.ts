@@ -86,6 +86,9 @@ const ALLOWED: Row[] = [
   { who: MAIN, line: `/bin/ls -la ${ABS}`, want: 'allow', why: 'a metadata program from a system folder, absolute path' },
   { who: MAIN, line: 'ls -la ~/.dojo/data', want: 'allow', why: 'a listing of the data folder shows names and sizes' },
   { who: HEALER, line: `ls -la ${DB} ${DB}-wal ${DB}-shm && lsof ${DB}`, want: 'allow', why: 'the Healer\'s diagnostic looks' },
+  // ── re-review 3 M1: table-valued functions on the known-safe list still run ──
+  { who: MAIN, line: `sqlite3 -readonly ${DB} "select key, value from json_each('[1,2]')"`, want: 'allow', why: 'json_each is on the known-safe table-valued list' },
+  { who: MAIN, line: `sqlite3 -readonly ${DB} "select name from pragma_table_info('messages')"`, want: 'allow', why: 'a schema pragma function is on the known-safe list' },
 ];
 
 const REFUSED: Row[] = [
@@ -116,6 +119,15 @@ const REFUSED: Row[] = [
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select 1; select * from agent_credentials"`, want: 'refuse', why: 'the second statement names a credential table' },
   { who: MAIN, line: `sqlite3 ${DB} "select 1; delete from messages"`, want: 'refuse', why: 'the second statement writes' },
   { who: MAIN, line: `sqlite3 ${DB} "select ';'; delete from messages"`, want: 'refuse', why: 'a semicolon inside a literal does not hide the second statement' },
+  // ── re-review 3 M1: a statement the server cannot compile and check, or a CLI-only table or function ──
+  ...[
+    'select pgno from sqlite_dbpage', 'select * from sqlite_dbdata', 'select * from sqlite_dbptr', "select name from fsdir('/tmp')",
+    "select name from lsdir('/tmp')", "select name from zipfile('/tmp/x.zip')", 'select name from sqlar', "select sha3_query('select 1')",
+    "select readfile('/tmp/x')", "select writefile('/tmp/x', 'y')", "select edit('x')", 'select * from no_such_table_in_this_schema',
+  ].map((sql): Row => ({ who: MAIN, line: `sqlite3 -readonly ${DB} "${sql}"`, want: 'refuse', why: `not compiled and checked by the server, or a CLI-only table or function: ${sql}` })),
+  // ── a path spelled apart with quotes is still the path ──
+  { who: MAIN, line: `sqlite3 -readonly ~/.do''jo/data/dojo''.db "select 1"`, want: 'refuse', why: 'the path is not given literally' },
+  { who: MAIN, line: "cp -r ~/.do''jo/da''ta /tmp/d", want: 'refuse', why: 'a whole-folder copy, the path spelled apart' },
   // ── a write statement ──
   { who: MAIN, line: `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'"`, want: 'refuse', why: 'an UPDATE by the main agent' },
   { who: MAIN, line: `sqlite3 ${DB} "INSERT INTO config (key, value) VALUES ('k', 'v')"`, want: 'refuse', why: 'an INSERT' },

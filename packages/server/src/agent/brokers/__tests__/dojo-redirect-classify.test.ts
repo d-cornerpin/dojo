@@ -49,7 +49,7 @@ const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
   { line: 'cat dojo.db | grep x', want: 'refused', why: 'the left pipe segment reads the db; the right (grep x) touches nothing' },
   { line: 'cp dojo.db backup.db', want: 'refused', why: 'reading the db out: cp is a content reader and the destination is not the db' },
   { line: 'dd if=dojo.db of=x', want: 'refused', why: 'dd reads the db in (if=) into another file' },
-  { line: 'sqlite3 ~/.dojo/data/dojo.db "select * from agents"', want: 'allowed', why: 'the exact shape: sqlite3, the literal path, one quoted read' },
+  { line: 'sqlite3 ~/.dojo/data/dojo.db "select 1"', want: 'allowed', why: 'the exact shape: sqlite3, the literal path, one quoted read (select 1: this pure test has no schema, and a statement the server cannot compile is refused)' },
 
   // ── 'schema': a schema look, not a data read ──
   { line: 'sqlite3 dojo.db ".schema"', want: 'refused', why: 'a .schema dot-command is a schema look' },
