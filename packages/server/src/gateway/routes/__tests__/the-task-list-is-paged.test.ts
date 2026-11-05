@@ -68,3 +68,48 @@ describe('S4: GET /tracker/tasks pages the finished tasks', () => {
     expect(p.closedHasOlder).toBe(true);
   });
 });
+
+// Re-review 3 (M3). Walk the finished pages the way the board does: the cursor is the oldest finished
+// task the caller holds, sent back for the page before.
+async function walkFinished(): Promise<string[]> {
+  const seen: string[] = [];
+  let p = await get();
+  for (let guard = 0; guard < 20; guard += 1) {
+    const closed = closedOf(p);
+    seen.push(...closed.map((t) => t.id));
+    if (!p.closedHasOlder) return seen;
+    const oldest = closed[closed.length - 1];
+    if (!oldest) throw new Error('closedHasOlder with no finished task to page from: the button would do nothing');
+    p = await get(`?closedBefore=${encodeURIComponent(oldest.completedAt!)}&closedBeforeId=${oldest.id}`);
+  }
+  throw new Error('paging did not end');
+}
+
+describe('re-review 3 (M3): hidden tasks are filtered before the page is cut, and the cursor is strict', () => {
+  it('a whole page of a system agent\'s finished tasks still reaches the older visible ones', async () => {
+    const db = mockDb.current!;
+    db.prepare("INSERT INTO agents (id, name, status) VALUES ('pm1', 'Overseer', 'idle')").run();
+    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_id', 'pm1')").run();
+    // Newer than every visible finished task, and more than a page of them.
+    for (let i = 0; i < TASK_CLOSED_PAGE + 3; i += 1) {
+      seedTrackerTask(db, { id: `sys-${String(i).padStart(3, '0')}`, agentId: 'pm1', status: 'cancelled', title: `sys ${i}`,
+        opened_at: T0, updated_at: T0 + 10_000_000 + i * 1000, closed_at: T0 + 10_000_000 + i * 1000 } as never);
+    }
+    const seen = await walkFinished();
+    expect(seen.some((id) => id.startsWith('sys-'))).toBe(false);
+    expect(seen).toHaveLength(TASK_CLOSED_PAGE + 7);   // every visible finished task, none lost
+  });
+
+  it('tasks closed within the same second, in the opposite order to their ids, lose nothing at a page edge', async () => {
+    const db = mockDb.current!;
+    db.prepare("DELETE FROM work WHERE id LIKE 'done-%'").run();
+    // One second holds them all; the ms order runs against the id order.
+    for (let i = 0; i < TASK_CLOSED_PAGE + 4; i += 1) {
+      seedTrackerTask(db, { id: `tie-${String(i).padStart(3, '0')}`, agentId: 'w1', status: 'cancelled', title: `tie ${i}`,
+        opened_at: T0, updated_at: T0, closed_at: T0 + 900 - (i % 900) } as never);
+    }
+    const seen = await walkFinished();
+    expect(new Set(seen).size).toBe(seen.length);   // nothing twice
+    expect(seen).toHaveLength(TASK_CLOSED_PAGE + 4);   // nothing skipped
+  });
+});

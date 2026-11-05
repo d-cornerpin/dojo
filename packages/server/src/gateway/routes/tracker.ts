@@ -204,52 +204,16 @@ trackerRouter.get('/tasks', (c) => {
   // time, newest closed first, with the cursor of the oldest one the caller holds for the page before.
   const closedBefore = c.req.query('closedBefore');
   const closedBeforeId = c.req.query('closedBeforeId');
-  const page = listTasksPage(Object.keys(filter).length > 0 ? filter : undefined,
-    closedBefore && closedBeforeId ? { before: { at: closedBefore, id: closedBeforeId } } : {});
-  const all = page.tasks;
-  const closedHasOlder = page.closedHasOlder;
-  if (includeSystem) return c.json({ ok: true, data: all, closedHasOlder });
-  const hidden = hiddenAgentIdSet();
-
-  // v2.9.22: tasks assigned to system agents (PM/Healer/Dreamer) are
-  // hidden by default because they're platform mechanics the user
-  // shouldn't see in their kanban. BUT if such a task is in dispute
-  // (PM has rejected it before, or it's been escalated to user
-  // verdict, or it's an auto-created STALEMATE task), surface it so
-  // the user can intervene. Otherwise these get stuck in pause/
-  // in_progress loops with no user-visible surface to resolve them
-  // (production incident 2026-06-07).
-  //
-  // revertCount and awaitingUserVerdict aren't on the Task shared
-  // type, so pull the disputed-IDs in a single side query.
-  const disputedSystemTaskIds = new Set<string>();
-  if (hidden.size > 0) {
-    try {
-      const hiddenArr = Array.from(hidden);
-      const placeholders = hiddenArr.map(() => '?').join(',');
-      const rows = getDb().prepare(
-        `SELECT w.id AS id FROM work w
-         WHERE ${taskScope('w')} AND w.agent_id IN (${placeholders})
-           AND (${revertCountExpr('w')} > 0
-                OR ${awaitingUserVerdictExpr('w')} = 1
-                OR w.title LIKE 'STALEMATE on %')`,
-      ).all(...hiddenArr) as Array<{ id: string }>;
-      for (const r of rows) disputedSystemTaskIds.add(r.id);
-    } catch (err) {
-      logger.warn('disputed-system-task lookup failed; surfacing none', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  const tasks = all.filter(t => {
-    if (t.createdBy && hidden.has(t.createdBy)) return false;
-    if (t.assignedTo && hidden.has(t.assignedTo)) {
-      if (!disputedSystemTaskIds.has(t.id)) return false;
-    }
-    return true;
+  // v2.9.22: tasks of the system agents (PM/Healer/Dreamer) are platform mechanics the owner should not
+  // see on the board, so they are hidden by default; one in dispute (thrown back, awaiting the owner's
+  // verdict, or a STALEMATE task) stays visible so he can intervene (production incident 2026-06-07).
+  // Re-review 3 (M3): the hiding happens in the page's own query, before the page is cut, so a page of
+  // hidden tasks can never stall the "show older" cursor. ?includeSystem=true shows them all.
+  const page = listTasksPage(Object.keys(filter).length > 0 ? filter : undefined, {
+    ...(closedBefore && closedBeforeId ? { before: { at: closedBefore, id: closedBeforeId } } : {}),
+    ...(includeSystem ? {} : { hideAgentIds: hiddenAgentIdSet() }),
   });
-  return c.json({ ok: true, data: tasks, closedHasOlder });
+  return c.json({ ok: true, data: page.tasks, closedHasOlder: page.closedHasOlder });
 });
 
 // GET /tasks/:id — task detail

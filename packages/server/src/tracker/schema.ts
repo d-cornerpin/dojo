@@ -20,7 +20,7 @@ import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
 import {
   taskRowColumns, projectRowColumns, taskScope, projectScope, dueScope,
-  statusToState, tsToMs, msToText, type TrackerStatus,
+  statusToState, tsToMs, msToText, revertCountExpr, awaitingUserVerdictExpr, type TrackerStatus,
 } from '../work/tracker-view.js';
 import { TERMINAL_STATE_NAMES } from '../work/terminal-states.js';
 import {
@@ -977,24 +977,32 @@ export const TASK_CLOSED_PAGE = 50;
  */
 export function listTasksPage(
   filter: TaskListFilter | undefined,
-  page: { before?: { at: string; id: string } } = {},
+  page: { before?: { at: string; id: string }; hideAgentIds?: ReadonlySet<string> } = {},
 ): { tasks: Task[]; closedHasOlder: boolean } {
   const db = getDb();
   const { conditions, params } = taskListWhere(filter);
+  // Re-review 3 (M3): the system agents' tasks are dropped HERE, before the page is cut. Dropped after,
+  // a page made only of them reached the board empty, its cursor never moved, and the older visible
+  // tasks were out of reach. A system agent's task in dispute (thrown back, awaiting the owner's verdict,
+  // or a stalemate) stays visible so the owner can act on it.
+  const hidden = [...(page.hideAgentIds ?? [])];
+  if (hidden.length > 0) {
+    const marks = hidden.map(() => '?').join(', ');
+    conditions.push(`COALESCE(work.requester_id, '') NOT IN (${marks})`);
+    conditions.push(`(COALESCE(work.agent_id, '') NOT IN (${marks}) OR ${revertCountExpr('work')} > 0`
+      + ` OR ${awaitingUserVerdictExpr('work')} = 1 OR work.title LIKE 'STALEMATE on %')`);
+    params.push(...hidden, ...hidden);
+  }
   const terminal = `work.state IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`;
-  const open = page.before ? [] : (db.prepare(
-    `${TASK_COLS} WHERE ${[...conditions, `NOT ${terminal}`].join(' AND ')}${TASK_LIST_ORDER}`,
-  ).all(...params) as TaskRow[]);
+  const open = page.before ? [] : (db.prepare(`${TASK_COLS} WHERE ${[...conditions, `NOT ${terminal}`].join(' AND ')}${TASK_LIST_ORDER}`).all(...params) as TaskRow[]);
+  // The order and the cursor share ONE key: the closed time as the caller sees it (`completedAt`, to
+  // the second), then the id. Ordering by the ms value while comparing at the second let two tasks
+  // closed in the same second straddle a page edge in the wrong order (re-review 3, M3).
   const closedAt = msToText('work.closed_at');
   const cursor = page.before ? [`(${closedAt} < ? OR (${closedAt} = ? AND work.id < ?))`] : [];
   const cursorParams = page.before ? [page.before.at, page.before.at, page.before.id] : [];
-  const closed = db.prepare(
-    `${TASK_COLS} WHERE ${[...conditions, terminal, ...cursor].join(' AND ')} ORDER BY work.closed_at DESC, work.id DESC LIMIT ?`,
-  ).all(...params, ...cursorParams, TASK_CLOSED_PAGE + 1) as TaskRow[];
-  return {
-    tasks: [...open, ...closed.slice(0, TASK_CLOSED_PAGE)].map(mapTaskRow),
-    closedHasOlder: closed.length > TASK_CLOSED_PAGE,
-  };
+  const closed = db.prepare(`${TASK_COLS} WHERE ${[...conditions, terminal, ...cursor].join(' AND ')} ORDER BY ${closedAt} DESC, work.id DESC LIMIT ?`).all(...params, ...cursorParams, TASK_CLOSED_PAGE + 1) as TaskRow[];
+  return { tasks: [...open, ...closed.slice(0, TASK_CLOSED_PAGE)].map(mapTaskRow), closedHasOlder: closed.length > TASK_CLOSED_PAGE };
 }
 
 /**
