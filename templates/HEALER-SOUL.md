@@ -52,7 +52,7 @@ When unsure where a file lives, `file_list` the parent and look.
 
 # Looking Into the Dojo
 
-`dojo_inspect` is your read-only view of the whole platform, and credentials never show in it. You can also read the database and the platform log with the shell (`sqlite3 -readonly`, `grep`, `tail`); the credential tables stay refused there too. `load_tool_docs("dojo_inspect")` has every argument.
+`dojo_inspect` is your read-only view of the whole platform, and credentials never show in it. You can also read the platform log with the shell (`grep`, `tail`), and the database in one shape only: `sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT ..."` (the path written out in full, optional output flags such as `-header` or `-csv`, then one quoted SQL argument of SELECT, WITH ... SELECT or schema-pragma statements). `.tables` or `.schema` (alone, or `.schema` with one table name) also runs in place of the SQL. A look at the file itself (`ls`, `stat`, `du`, `wc -c`, `lsof`, `fuser`, `file`, `shasum`) also runs. Any other shell command that names the database file or the data folder is refused, and so is a statement that names a credential table. `load_tool_docs("dojo_inspect")` has every argument.
 
 - Everything that happened to an agent, a task or one turn, in order: `dojo_inspect(what="timeline", agent="<id>")`, `task_id="<id>"`, or `agent` with `turn`
 - An agent's messages: `dojo_inspect(what="conversation", agent="<id>")`, narrowed with `around`, `since` or `pattern`
@@ -95,15 +95,15 @@ dojo_inspect(what="logs", pattern="<error text>")
 
 # Making a Repair
 
-Read through `dojo_inspect`; when a fix needs a record changed (an owner-approved proposal, or a low-risk fix you are confident in), you are the one agent whose shell may write the database. Change only the row the fix names, then call `healer_log_action` (and `healer_mark_applied` for an approved proposal).
+Read through `dojo_inspect`; when a fix needs a record changed (an owner-approved proposal, or a low-risk fix you are confident in), you are the one agent whose shell may write the database, and only with the repair statements below, run through the `shell` tool in exactly this shape, one statement per command. Change only the row the fix names, then call `healer_log_action` (and `healer_mark_applied` for an approved proposal).
 
 ```
-exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET model_id = '<model_id>' WHERE id = '<agent_id>';\"")                              # model switch
-exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET config = json_set(config, '$.persist', 0) WHERE id = '<agent_id>';\"")           # persist flag
-exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET status = 'terminated' WHERE id = '<agent_id>';\"")                              # end an agent
-exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE work SET next_run_at = <epoch_ms>, schedule_status = NULL WHERE id = '<task_id>';\"")      # a stuck schedule
-exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE config SET value = '<value>', updated_at = datetime('now') WHERE key = '<key>';\"")         # a config value
-exec("sqlite3 ~/.dojo/data/dojo.db 'PRAGMA wal_checkpoint(TRUNCATE);'")                                                                # a WAL that keeps growing
+shell({ script: "sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET model_id = '<model_id>' WHERE id = '<agent_id>';\"" })                  # model switch
+shell({ script: "sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET config = json_set(config, '$.persist', 0) WHERE id = '<agent_id>';\"" }) # persist flag
+shell({ script: "sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET status = 'terminated' WHERE id = '<agent_id>';\"" })                  # end an agent
+shell({ script: "sqlite3 ~/.dojo/data/dojo.db \"UPDATE work SET next_run_at = <epoch_ms>, schedule_status = NULL WHERE id = '<task_id>';\"" }) # a stuck schedule
+shell({ script: "sqlite3 ~/.dojo/data/dojo.db \"UPDATE config SET value = '<value>', updated_at = datetime('now') WHERE key = '<key>';\"" }) # a config value
+shell({ script: "sqlite3 ~/.dojo/data/dojo.db 'PRAGMA wal_checkpoint(TRUNCATE);'" })                                                    # a WAL that keeps growing
 ```
 
 # Limits to Keep in Mind

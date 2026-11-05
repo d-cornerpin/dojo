@@ -36,6 +36,7 @@ import path from 'node:path';
 import { foldPath } from '../fs-case.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { GLOBAL_EXEC_DENY_SUBSTRINGS, isSensitivePath } from './deny.js';
+import { lexShellLine, shellUnquoted } from './shell-words.js';
 import {
   authorizeSudoLine, isSudoLine, mentionsPrivilegeToken, privilegeTokenIsQuotedData,
   privilegedInnerCommands,
@@ -105,9 +106,14 @@ function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'by
       );
     }
   }
+  // Folded so `cat ~/.dojo/Secrets.yaml` (the same file on APFS) is caught.
+  return secretsSubstringDeny(trimmed, basis);
+}
+
+/** The secrets-file substring over one spelling of the line, one voice for its refusal. */
+function secretsSubstringDeny(spelling: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict | null {
   for (const needle of GLOBAL_EXEC_DENY_SUBSTRINGS) {
-    // Folded so `cat ~/.dojo/Secrets.yaml` — the same file on APFS — is caught.
-    if (foldPath(trimmed).includes(needle)) {
+    if (foldPath(spelling).includes(needle)) {
       return deny(
         basis,
         `global-exec-substring:${needle}`,
@@ -148,8 +154,25 @@ function globalExecDeny(trimmed: string): Verdict | null {
   const asTyped = globalExecDenyOneSpelling(trimmed, 'ladder-parity');
   if (asTyped) return asTyped;
   const normalized = basenameNormalized(trimmed);
-  if (normalized) return globalExecDenyOneSpelling(normalized, 'bypass-hardening');
-  return null;
+  if (normalized) {
+    const v = globalExecDenyOneSpelling(normalized, 'bypass-hardening');
+    if (v) return v;
+  }
+  return secretsSubstringUnquoted(trimmed);
+}
+
+/**
+ * THE SECRETS SUBSTRING, ASKED OF THE LINE AS THE SHELL WILL UNQUOTE IT (field fix 3, re-review 4).
+ * The owner's ruling: secrets stay hidden from every agent. The shell joins `secr''ets.yaml`,
+ * `"secrets".yaml` and `secr\ets.yaml` back into the protected name, so the substring is also asked of
+ * the unquoted reading (`shell-words.ts`, the one lexer the database door uses too). Only the
+ * substring is asked of it, not the command-prefix denies, whose quoted data (`echo "rm -rf /"`) must
+ * stay data. It can only refuse more.
+ */
+function secretsSubstringUnquoted(trimmed: string): Verdict | null {
+  const unquoted = shellUnquoted(trimmed);
+  if (unquoted === null || unquoted === trimmed) return null;
+  return secretsSubstringDeny(unquoted, 'bypass-hardening');
 }
 
 /**
@@ -159,6 +182,12 @@ function globalExecDeny(trimmed: string): Verdict | null {
  * matters.
  */
 export function commandReadsSensitiveFile(command: string): { blocked: true; reason: string } | { blocked: false } {
+  // Re-review 4: the same scan over the words as the shell will unquote them, one simple command at a
+  // time, so a path split apart with quotes or a backslash is the path (`shell-words.ts`).
+  for (const seg of lexShellLine(command)?.segments ?? []) {
+    const scan = argvReadsSensitiveFile(seg.words.map((w) => w.value));
+    if (scan.blocked) return scan;
+  }
   const tokens = command.split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return { blocked: false };
   for (let i = 0; i < tokens.length; i++) {

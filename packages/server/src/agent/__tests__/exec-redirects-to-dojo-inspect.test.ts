@@ -7,6 +7,12 @@
 // statements exempt exactly as before. The clauses below that pinned the old refusals are rewritten to
 // the ruling; the write and Healer clauses are unchanged apart from the refusal's wording.
 //
+// FIELD FIX 3 ALLOWLIST (v35-field-fix-3): the door now fails closed. A line that refers to the live
+// database file or the Dojo data folder runs only as `sqlite3 [-readonly] [output flags] <literal path>
+// '<one quoted read-only SQL>'` (the full shape is in the header of dojo-redirect.ts); anything else that
+// refers to them, a look at the file (ls, stat, du, lsof) and a schema dot-command included, is refused
+// with one sentence. The clauses below are revised to that; the new table is the-shell-door-is-an-allowlist.test.ts.
+//
 // (original header follows)
 // v3.5 inspect C2 — THE SHELL SENDS DOJO QUESTIONS TO dojo_inspect.
 //
@@ -97,6 +103,8 @@ function refusal(agent: string, door: 'proc' | 'shell', raw: unknown): string {
   return v.allowed ? '' : (v.blockedMessage ?? '');
 }
 
+const SHAPE = /^Refused: dojo_inspect answers questions about the Dojo's database, and the shell allows only a plain read-only sqlite3 SELECT of it/;
+
 describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database or log runs, for every agent', () => {
   const OWNER_COMMAND = (): string => `grep -n "error" ~/.dojo/logs/dojo.log | tail -100; sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT value, updated_at FROM config WHERE key='user_presence';"`;
 
@@ -110,9 +118,8 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
     // credential tables, so only sqlite3 queries and log reads are in this list (see the next clause).
     const reads = [`sqlite3 ~/.dojo/data/dojo.db "select id, title, state from work order by opened_at desc limit 5"`,
       `sqlite3 ${DB} "SELECT content FROM messages WHERE seq=42"`,
-      `sqlite3 ~/.dojo/data/dojo.db "pragma table_info(messages)"`, `sqlite3 ~/.dojo/data/dojo.db '.schema work'`,
-      'tail -200 ~/.dojo/logs/dojo.log', "grep -i 'error' ~/.dojo/logs/dojo.log | tail -50", `grep -c WATCHDOG ${HOME}/.dojo/logs/dojo.log.1`,
-      'sqlite3 ~/.dojo/data/*.db "select 1"'];
+      `sqlite3 ~/.dojo/data/dojo.db "pragma table_info(messages)"`,
+      'tail -200 ~/.dojo/logs/dojo.log', "grep -i 'error' ~/.dojo/logs/dojo.log | tail -50", `grep -c WATCHDOG ${HOME}/.dojo/logs/dojo.log.1`];
     // Audit round (#3, owner: "the main agent owns the Mac"): the main agent and the Healer.
     for (const agent of [PRIMARY, HEALER]) {
       for (const script of reads) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
@@ -129,10 +136,13 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
       const msg = refusal(PRIMARY, 'shell', script);
       expect(msg, script).toMatch(/^Refused: the statement reaches \w+, which holds credentials/);
     }
-    // A whole-file read carries every table, the credential ones included: refused for the main agent too.
-    for (const script of ['strings ~/.dojo/data/dojo.db | grep -i garden', 'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', `sqlite3 ${DB} .dump`]) {
-      expect(refusal(PRIMARY, 'shell', script), script).toMatch(/^Refused: a whole-file read of the Dojo's database carries its credential tables/);
+    // Allowlist: anything but the one sqlite3 read shape is refused, a whole-file read included.
+    for (const script of ['strings ~/.dojo/data/dojo.db | grep -i garden', 'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', `sqlite3 ${DB} .dump`,
+      'sqlite3 ~/.dojo/data/*.db "select 1"']) {
+      expect(refusal(PRIMARY, 'shell', script), script).toMatch(SHAPE);
     }
+    // Re-review 4, coordinator's call: .schema prints table definitions, which are not secrets.
+    expect(verdict(PRIMARY, 'shell', `sqlite3 ~/.dojo/data/dojo.db '.schema work'`).allowed).toBe(true);
   });
 
   it('audit round: a WORKER\'s shell read of the live database stays refused, as a plain fact (its log read is unchanged)', () => {
@@ -158,24 +168,30 @@ describe('what the redirect leaves exactly as it was', () => {
     expect(verdict(WORKER, 'shell', 'tail -20 ~/.dojo/logs/dojo.log').allowed).toBe(true);
   });
 
-  it('t267 review: a look at the FILE, not its contents (size, WAL growth, who holds it) — every agent', () => {
+  it('t267 review, kept by the allowlist: a look at the FILE, not its contents (size, WAL growth, who holds it), for the main agent and the Healer', () => {
+    const looks = ['ls -la ~/.dojo/data/dojo.db', 'du -sh ~/.dojo/data/dojo.db-wal', 'stat ~/.dojo/data/dojo.db-shm', 'lsof ~/.dojo/data/dojo.db', 'wc -c ~/.dojo/data/dojo.db'];
     for (const agent of [PRIMARY, HEALER, WORKER]) {
-      for (const script of ['ls -la ~/.dojo/data/dojo.db', 'du -sh ~/.dojo/data/dojo.db-wal', 'stat ~/.dojo/data/dojo.db-shm', 'lsof ~/.dojo/data/dojo.db',
-        'ls -la ~/.dojo/logs/dojo.log.1', 'wc -c ~/.dojo/logs/dojo.log', 'ls -la ~/.dojo/data/*.db']) {
+      for (const script of ['ls -la ~/.dojo/logs/dojo.log.1', 'wc -c ~/.dojo/logs/dojo.log']) {
         expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
       }
+      // A worker is refused any reference to the database file, a look included.
+      for (const script of looks) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(agent !== WORKER);
+      // A glob is not plain words, and a line count reads the contents.
+      for (const script of ['ls -la ~/.dojo/data/*.db', 'wc -l ~/.dojo/data/dojo.db']) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(false);
     }
   });
 
   it('sqlite3 on any other database file, a write included', () => {
     expect(verdict(PRIMARY, 'shell', `sqlite3 ${HOME}/Projects/app.db "UPDATE items SET done = 1 WHERE id = 3"`).allowed).toBe(true);
-    expect(verdict(WORKER, 'shell', 'cp ~/.dojo/data/dojo.db.bak /tmp/old.db').allowed).toBe(true);
+    // A backup outside the data folder is another file; one inside the data folder is refused.
+    expect(verdict(WORKER, 'shell', 'cp /tmp/dojo.db.bak /tmp/old.db').allowed).toBe(true);
+    expect(verdict(WORKER, 'shell', 'cp ~/.dojo/data/dojo.db.bak /tmp/old.db').allowed).toBe(false);
   });
 });
 
 // ORCHESTRATOR RULING (2026-10-24), concerns 1-2 of the first report.
 describe('the shell does not write the Dojo\'s own database — except the Healer, the repair agent', () => {
-  const WRITE = /^Refused: dojo\.db and its -wal and -shm files are the running Dojo's live database, and a write to them from the shell corrupts it\./;
+  const WRITE = SHAPE;   // allowlist: a write gets the same one-sentence fact as any other shape
   const REPAIRS = (): string[] => [`sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'"`, `sqlite3 ${DB} "UPDATE agents SET status = 'terminated' WHERE id = 'x'"`,
     `sqlite3 ${DB} "UPDATE work SET state = 'on_deck', next_run_at = 1725810300000 WHERE id = 'w1'"`, `sqlite3 ${DB} "pragma wal_checkpoint(TRUNCATE)"`];
 
@@ -193,7 +209,8 @@ describe('the shell does not write the Dojo\'s own database — except the Heale
     for (const [agent, script] of [[PRIMARY, 'echo x >> ~/.dojo/data/dojo.db-wal'], [PRIMARY, 'cp /tmp/restore.db ~/.dojo/data/dojo.db'],
       [WORKER, 'mv /tmp/x ~/.dojo/data/dojo.db'], [WORKER, 'rm ~/.dojo/data/dojo.db-shm'], [PRIMARY, `dd if=/dev/zero of=${DB} count=1`],
       [WORKER, 'cat /tmp/x | tee ~/.dojo/data/dojo.db']] as const) {
-      expect(refusal(agent, 'shell', script), script).toMatch(WRITE);
+      // A worker is refused any reference to the database at all, with its own sentence.
+      expect(refusal(agent, 'shell', script), script).toMatch(agent === WORKER ? /^Refused: the Dojo's own database is read through the shell by the main agent and the Healer only/ : WRITE);
     }
   });
 

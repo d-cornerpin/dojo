@@ -44,7 +44,10 @@ const SCHEMA_PRAGMA = /\bpragma_(table_info|table_xinfo|index_list|index_info|in
 
 /** t285 F1: the child shows `config` through a TEMP VIEW of the same name whose credential values
  *  are already blanked. A schema-qualified name (`main.config`, `"main"."config"`) would skip it. */
-const SCHEMA_QUALIFIED_CONFIG = /(?:"(?:[^"]|"")*"|\[[^\]]*\]|`[^`]*`|[A-Za-z_][\w$]*)\s*\.\s*(?:"config"|\[config\]|`config`|config\b)/i;
+// Re-review 4: only a SCHEMA name qualifies a table. ATTACH never runs on either read path (the
+// read-only door and the shell door both refuse it), so the schemas are `main` and `temp`; an alias
+// column such as `a.config` (a column named config of the table aliased `a`) is not the config table.
+const SCHEMA_QUALIFIED_CONFIG = /(?:"(?:main|temp)"|\[(?:main|temp)\]|`(?:main|temp)`|(?<![\w$])(?:main|temp))\s*\.\s*(?:"config"|\[config\]|`config`|config\b)/i;
 const CONFIG_QUALIFIED = 'Refused: name the config table without a schema (from config, not main.config).';
 const stripLiterals = (sql: string): string => sql.replace(/'(?:[^']|'')*'/g, "''").replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
 
