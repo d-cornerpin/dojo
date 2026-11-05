@@ -35,12 +35,13 @@ beforeEach(() => {
 describe('gmail_label message_ids — batchModify in chunks of 1,000', () => {
   it('1,250 ids become two batchModify POSTs (1,000 + 250) with the right bodies', async () => {
     const all = ids(1250);
-    const out = await run({ message_ids: all, add_labels: ['X'], remove_labels: ['INBOX'] });
+    // A label change that is NOT an archive labels the messages named (W18 widens only archives).
+    const out = await run({ message_ids: all, add_labels: ['X'], remove_labels: ['UNREAD'] });
     expect(googleWrite).toHaveBeenCalledTimes(2);
     expect(url(0)).toMatch(/\/messages\/batchModify$/);
     expect(url(1)).toMatch(/\/messages\/batchModify$/);
-    expect(body(0)).toEqual({ ids: all.slice(0, 1000), addLabelIds: ['X'], removeLabelIds: ['INBOX'] });
-    expect(body(1)).toEqual({ ids: all.slice(1000), addLabelIds: ['X'], removeLabelIds: ['INBOX'] });
+    expect(body(0)).toEqual({ ids: all.slice(0, 1000), addLabelIds: ['X'], removeLabelIds: ['UNREAD'] });
+    expect(body(1)).toEqual({ ids: all.slice(1000), addLabelIds: ['X'], removeLabelIds: ['UNREAD'] });
     expect(out).toMatch(/^Labels updated on 1250 messages/);
     for (const id of ['m1', 'm1000', 'm1250']) expect(out).toContain(id);
     expect(vi.mocked(googleRead).mock.calls.every((c) => String(c[0]).endsWith('/labels'))).toBe(true); // no per-message thread lookup; only the label list may be read
@@ -124,5 +125,45 @@ describe('gmail_label — the existing single-target behaviour is unchanged', ()
     expect(out).toMatch(/^Error/);
     expect(out).toContain('message_ids');
     expect(googleWrite).not.toHaveBeenCalled();
+  });
+});
+
+// ════════════════════════════════════════
+// v3.5 field fix 3, audit W18 (owner card 2026-10-17: "Whole conversation"): a BATCH archive takes
+// the whole conversation too. Gmail's inbox is per conversation, so removing INBOX from the named
+// messages left their conversations in the inbox whenever another message there still carried it,
+// and the junk "came back". The single archive already widened (gmail-archive.ts); the batch did not.
+// ════════════════════════════════════════
+describe('W18: a batch archive takes each message\'s whole conversation', () => {
+  const threadOf: Record<string, string> = { m1: 't1', m2: 't1', m3: 't2' };
+  beforeEach(() => {
+    vi.mocked(googleRead).mockImplementation(async (u: string) => {
+      const m = /\/messages\/([^/?]+)\?format=minimal/.exec(String(u));
+      if (m) return (threadOf[m[1]] ? ok({ threadId: threadOf[m[1]] }) : { ok: false, data: null, error: 'Not Found', apiEndpoint: 'x' }) as never;
+      return ok({ labels: [] }) as never;
+    });
+  });
+
+  it('message_ids + INBOX removal: each conversation is archived once, by threads.modify', async () => {
+    const out = await run({ message_ids: ['m1', 'm2', 'm3'], remove_labels: ['INBOX'] });
+    const urls = vi.mocked(googleWrite).mock.calls.map((c) => String(c[1]));
+    expect(urls.filter((u) => /\/messages\/batchModify$/.test(u))).toEqual([]);
+    expect(urls.filter((u) => /\/threads\/t1\/modify$/.test(u))).toHaveLength(1);
+    expect(urls.filter((u) => /\/threads\/t2\/modify$/.test(u))).toHaveLength(1);
+    expect(out).toMatch(/^Labels updated on 2 conversations \(thread ids t1, t2\)/);
+    expect(out).toContain('the WHOLE conversation of each message named');
+  });
+
+  it('a message whose conversation cannot be found is NOT silently archived on its own: it is named as not changed', async () => {
+    const out = await run({ message_ids: ['m1', 'mX'], remove_labels: ['INBOX'] });
+    expect(out).toMatch(/^Error/);
+    expect(out).toContain('It was NOT changed on 1 message (ids mX)');
+    expect(out).toContain('The change WAS applied to 1 conversation (thread ids t1)');
+  });
+
+  it('this_message_only=true keeps the old per-message batch', async () => {
+    await run({ message_ids: ['m1', 'm2'], remove_labels: ['INBOX'], this_message_only: true });
+    const urls = vi.mocked(googleWrite).mock.calls.map((c) => String(c[1]));
+    expect(urls).toEqual([expect.stringMatching(/\/messages\/batchModify$/)]);
   });
 });

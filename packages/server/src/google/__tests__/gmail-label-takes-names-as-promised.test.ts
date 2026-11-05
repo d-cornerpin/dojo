@@ -22,7 +22,9 @@ const labels = { labels: [
   { id: 'Label_7', name: 'Receipts/2026', type: 'user' },
 ] };
 const sentBody = (): Record<string, unknown> => vi.mocked(googleWrite).mock.calls[0]?.[2] as Record<string, unknown>;
-const run = (args: Record<string, unknown>) => executeGoogleWriteTool('gmail_label', { message_ids: ['m1'], ...args }, 'agent-1', 'A Worker');
+// `this_message_only`: these clauses are about label NAMES; since audit W18 a batch archive also looks up
+// each message's conversation (gmail-label-batch.test.ts), which is a different subject.
+const run = (args: Record<string, unknown>) => executeGoogleWriteTool('gmail_label', { message_ids: ['m1'], this_message_only: true, ...args }, 'agent-1', 'A Worker');
 
 beforeEach(() => {
   vi.mocked(googleRead).mockReset(); vi.mocked(googleWrite).mockReset();
