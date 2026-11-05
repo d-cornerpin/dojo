@@ -877,6 +877,9 @@ const tableOfHandlers: ToolHandlerMap = {
       task_id: args.task_id as string,
       status: args.status as string,
       user_quote: args.user_quote as string,
+      // Read, never refused: both ride the verdict's transition reason.
+      reason: noteWithReason(args.reason, undefined),
+      feedback: noteWithReason(args.feedback, undefined),
     });
     return { content, isError };
   },
@@ -894,7 +897,9 @@ const tableOfHandlers: ToolHandlerMap = {
       task_id: args.task_id as string,
       validated: args.validated as boolean,
       user_quote: args.user_quote as string,
-      feedback: args.feedback as string | undefined,
+      // `reason` is read, never refused: it is the feedback when none was given, else joined to it.
+      feedback: noteWithReason(args.feedback, args.reason),
+      reason: noteWithReason(args.reason, undefined),
     });
     return { content, isError };
   },

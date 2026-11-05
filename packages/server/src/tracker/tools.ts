@@ -4185,7 +4185,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
  */
 export async function trackerApplyUserValidation(
   callerAgentId: string,
-  args: { task_id: string; validated: boolean; user_quote: string; feedback?: string },
+  args: { task_id: string; validated: boolean; user_quote: string; feedback?: string; reason?: string },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -4243,7 +4243,7 @@ export async function trackerApplyUserValidation(
   }
 
   if (args.validated) {
-    upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}`);
+    upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}${args.reason ? ` (${args.reason})` : ''}`);
     // Real-time sync after direct SQL flag-set.
     const freshUserValid = getTask(taskId);
     if (freshUserValid) broadcast({ type: 'tracker:task_updated', data: freshUserValid });
@@ -5171,7 +5171,7 @@ export async function trackerRequestUserVerdict(
  */
 export async function trackerApplyUserVerdict(
   agentId: string,
-  args: { task_id: string; status: string; user_quote: string },
+  args: { task_id: string; status: string; user_quote: string; reason?: string; feedback?: string },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -5202,7 +5202,7 @@ export async function trackerApplyUserVerdict(
   const ownerClose = status !== 'complete' || ownerSaidSinceVerdictAsked(taskId, userQuote);
   const verdict = setTaskStatusResult(taskId, status as TrackerStatus, {
     by: ownerClose ? 'owner' : 'pm', actorId: ownerClose ? 'user' : agentId, claim: 'authoritative',
-    reason: `owner's verdict: ${userQuote.slice(0, 200)}`,
+    reason: `owner's verdict: ${userQuote.slice(0, 200)}${[args.reason, args.feedback].filter(Boolean).map((x) => `; ${x}`).join('')}`,
     resultDeliveryId: status === 'complete' ? deliveryForTaskClose(taskId) : null,
   });
   if (!workSettled(verdict.result)) return closeRefusalText(taskId, verdict.result, status);

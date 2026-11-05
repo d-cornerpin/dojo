@@ -307,7 +307,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "tracker/tools.ts",
-  "line": "upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}`);",
+  "line": "upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}${args.reason ? ` (${args.reason})` : ''}`);",
   "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
  },
  {

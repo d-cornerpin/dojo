@@ -37,6 +37,8 @@ import { WORK_OP_READS, WORK_OP_ACCEPTS, WORK_OPS, workOperation } from '../../.
 import { getAllToolDefinitions } from '../definitions.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
 import { appendWorkEvent } from '../../../work/store.js';
+import { requestUserVerdict } from '../../../work/tracker-store.js';
+import { trackerHandlers } from '../cat/tracker.js';
 
 const AGENT = 'unread-args-agent';
 const TASK = 'task-unread-0001';
@@ -188,5 +190,49 @@ describe('a PM verdict that carries a reason is applied, never refused', () => {
     expect(unknownArgsAgainstSchema('work_update', { action: 'status', task_id: TASK, status: 'complete', result: 'r', reason: 'done' }).unread).toEqual([]);
     expect(unknownArgsAgainstSchema('work_update', { action: 'complete_step', task_id: TASK, result: 'r', reason: 'done' }).unread).toEqual([]);
     expect(unknownArgsAgainstSchema('work_update', { action: 'close_project', project_id: 'p', notes: 'done' }).unread).toEqual([]);
+  });
+});
+
+// The owner's verdict doors, as the PM transcribes them: `reason` (and `feedback`) are read, never refused,
+// and each lands on the verdict's own record.
+describe('the owner-verdict doors read reason, never refuse it', () => {
+  const run = async (op: string, args: Record<string, unknown>): Promise<string> =>
+    String((await trackerHandlers[op]({ agentId: 'pm', name: 'work_validate', callId: 'x', args, toolCall: { id: 'x', name: 'work_validate', input: {} } } as never)).content);
+  const payloads = (): string => (db().prepare('SELECT payload FROM work_events WHERE work_id = ? ORDER BY id').all(TASK) as { payload: string }[]).map((r) => r.payload).join('\n');
+  const note = (verdict: string): string => (db().prepare('SELECT note FROM adjudications WHERE work_id = ? AND verdict = ? ORDER BY id DESC').get(TASK, verdict) as { note: string }).note;
+  const setState = (state: string): void => { db().prepare('UPDATE work SET state = ? WHERE id = ?').run(state, TASK); };
+
+  it('the map reads them, so the door never refuses the call over them', () => {
+    expect(unknownArgsAgainstSchema('work_validate', { action: 'apply_user_verdict', task_id: TASK, status: 'on_deck', user_quote: 'q', reason: 'r', feedback: 'f' }).unread).toEqual([]);
+    expect(unknownArgsAgainstSchema('work_validate', { action: 'apply_user_validation', task_id: TASK, validated: true, user_quote: 'q', reason: 'r' }).unread).toEqual([]);
+  });
+
+  it('apply_user_verdict: reason and feedback both ride the transition reason', async () => {
+    requestUserVerdict(TASK, 'pm', { why: 'stalemate' });
+    const out = await run('work_validate:apply_user_verdict', { task_id: TASK, status: 'on_deck', user_quote: 'park it for now', reason: 'the owner wants it later', feedback: 'start with the oldest label' });
+    expect(out, out).toMatch(/^\[OK\]/);
+    expect(payloads()).toContain('the owner wants it later');
+    expect(payloads()).toContain('start with the oldest label');
+  });
+
+  it('apply_user_validation, validated=false with reason only: the reason is the feedback', async () => {
+    setState('blocked');
+    const out = await run('work_validate:apply_user_validation', { task_id: TASK, validated: false, user_quote: 'no, not done', reason: 'two labels are still there' });
+    expect(out, out).toMatch(/^\[OK\]/);
+    expect(note('rejected')).toBe('two labels are still there');
+  });
+
+  it('apply_user_validation, validated=false with feedback and reason: both are kept', async () => {
+    setState('blocked');
+    await run('work_validate:apply_user_validation', { task_id: TASK, validated: false, user_quote: 'no', feedback: 'clear the label', reason: 'two are left' });
+    expect(note('rejected')).toBe('clear the label\ntwo are left');
+    expect(payloads()).toContain('clear the label\\ntwo are left');
+  });
+
+  it('apply_user_validation, validated=true with reason: the uphold carries it', async () => {
+    setState('blocked');
+    const out = await run('work_validate:apply_user_validation', { task_id: TASK, validated: true, user_quote: 'yes, it is blocked', reason: 'waiting on the vendor' });
+    expect(out, out).toMatch(/^\[OK\]/);
+    expect(note('upheld')).toContain('waiting on the vendor');
   });
 });
