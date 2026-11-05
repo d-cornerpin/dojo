@@ -13,7 +13,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const gm = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../../google/measure-count.js', () => ({ countGmailSearch: async () => ({ ok: true, count: gm.count }) }));
@@ -23,6 +22,7 @@ vi.mock('../../db/connection.js', () => ({ getDb: () => ({ prepare: () => ({ get
 import { countFileSet } from '../../tools/file-set-count.js';
 import { readMeasureArg } from '../../agent/tools/cat/measure-door.js';
 import { activeAbortControllers, abortInFlight } from '../../agent/shared-state.js';
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 
 let dir = '';
 beforeEach(() => { dir = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'measure-zero-')); gm.count = 0; });
@@ -90,8 +90,10 @@ describe('S10: the walk is bounded, honest and safe', () => {
   });
 
   it('the end-of-turn count passes the same gates as set and close (the measure door)', () => {
-    const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../agent/v2/steps/post-call-classify/job-turn-end.ts'), 'utf8');
-    expect(src).toMatch(/gatedMeasureCount\(/);
-    expect(src).not.toMatch(/\bcountMeasure\(facts\.measure/);
+    // Located through the shared engine-source derivation (the guard-corpus census), never by path.
+    const turnEnd = engineFileContaining('export async function readJobAtPassEnd(');
+    expect(turnEnd, 'the turn-end reading is in the engine').not.toBeNull();
+    expect(turnEnd!.text).toMatch(/gatedMeasureCount\(/);
+    expect(turnEnd!.text).not.toMatch(/\bcountMeasure\(facts\.measure/);
   });
 });
