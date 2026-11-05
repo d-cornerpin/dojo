@@ -19,12 +19,12 @@ import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import { withUnit } from '../db/unit.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
-  awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
+  pendingCloseRequestExpr, type TrackerStatus,
 } from '../work/tracker-view.js';
 import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-requests.js';
 import {
-  patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
-  recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
+  patchWork, setTrackerStatus, bumpWorkAttempts,
+  recordValidationEscalation, deliveryForTaskClose,
   deliveryForAgentSince,
 } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
@@ -57,7 +57,8 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
 import { recordMove } from '../work/move-record.js';
-import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { OWNER_ALERT_HEADS_UP_PREFIX, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
+import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 // t114 (census row 30): the liveness fact every other reaper in the tree guards on. Until
 // now `scheduler/` imported it nowhere, which is why this was the only reaper that could
 // force-fail a run that was still executing.
@@ -147,7 +148,7 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   // scheduler tick). The agent's resolve call will unpause + apply the
   // chosen action. D12: stamp missed_runs_paused_at so the engine can
   // deterministically auto-resolve as SKIP when nothing resolves this
-  // pause within MISSED_RUNS_AUTO_RESOLVE_MINUTES; the model tool clears
+  // pause once the agent has run a whole turn past it; the model tool clears
   // the stamp on every action and therefore takes precedence when called
   // first. The UPDATE is guarded on is_paused = 0 so overlapping ticks or
   // processes pause and notify exactly once.
@@ -160,7 +161,7 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   // adjudicate it (validate or reject). The engine still OWNS the resolution of
   // this specific pause via D12: autoResolveStaleMissedRunPauses keys ONLY on
   // is_paused + missed_runs_paused_at (never pause_validated) and skips to the
-  // next future anchor within MISSED_RUNS_AUTO_RESOLVE_MINUTES, so it is a
+  // next future anchor once the agent has run a whole turn past it, so it is a
   // transient pause, not a forever-unvalidated dangler. The OWNER-facing
   // validation sweep (sweepUnvalidatedTasksForUserEscalation) still skips it via
   // its missed_runs_paused_at guard (now load-bearing, see there), so the owner
@@ -257,7 +258,11 @@ const STALE_REQUEST_HOURS = 12;
  */
 export async function sweepStaleRequests(): Promise<void> {
   await sweepStaleOverrideRequests();
-  await sweepStaleUserVerdictRequests();
+  // ⟨TOMBSTONE⟩ FIELD FIX 3 AUDIT ROUND (#9): `sweepStaleUserVerdictRequests` ran here and dropped a
+  // task to blocked when the owner had not given his verdict within 12 hours, a fixed clock on the
+  // owner's own time (owner: "I don't want to put hard limits on the dojo"). The request now stays
+  // open until it is answered or the task moves on; a move into a terminal state still answers it
+  // (`clearUserVerdict` on the transition), and the board still shows the open question.
 }
 
 async function sweepStaleOverrideRequests(): Promise<void> {
@@ -273,10 +278,15 @@ async function sweepStaleOverrideRequests(): Promise<void> {
       // A TIMEOUT IS NOT A VERDICT, which is why the old schema had `auto_denied` as a value
       // distinct from `denied` and why nothing is written to `adjudications` here: nobody
       // ruled. The ask is answered and the requester is told.
-      resolveOverrideRequest(r.id, {
+      //
+      // v3.5 field fix 3 (#3, the sibling sweep): the audit row and the requester's notice
+      // follow ONLY a resolution that applied. `false` means the request was already answered
+      // (the PM ruled between the finder and here), and then nothing was auto-denied.
+      const resolved = resolveOverrideRequest(r.id, {
         outcome: 'auto_denied', resolvedBy: 'engine',
         reason: `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution`,
       });
+      if (!resolved) continue;
       writeTaskLog({
         taskId: r.taskId,
         fromEntity: 'engine',
@@ -312,67 +322,6 @@ async function sweepStaleOverrideRequests(): Promise<void> {
   }
 }
 
-async function sweepStaleUserVerdictRequests(): Promise<void> {
-  const db = getDb();
-  try {
-    const stale = db.prepare(`
-      SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to,
-             ${STATE_TO_STATUS_SQL('w.state')} as current_status,
-             ${msToText(`(SELECT MAX(e.created_at) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'user_verdict_requested')`)} AS user_verdict_requested_at
-      FROM work w
-      WHERE ${taskScope('w')} AND ${awaitingUserVerdictExpr('w')} = 1
-        AND (SELECT MAX(e.created_at) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'user_verdict_requested') < ?
-      LIMIT 50
-    `).all(Date.now() - STALE_REQUEST_HOURS * 3600_000) as Array<{
-      id: string; title: string; assigned_to: string | null;
-      current_status: string; user_verdict_requested_at: string;
-    }>;
-    if (stale.length === 0) return;
-
-    const dropStmt = {
-      run: (id: string) => {
-        const r = setTrackerStatus(id, 'blocked', {
-          by: 'scheduler', actorId: 'scheduler',
-          reason: `the owner's verdict was never given within ${STALE_REQUEST_HOURS}h`,
-        });
-        if (workSettled(r)) {
-          clearUserVerdict(id, 'scheduler', 'verdict request timed out');
-          // The scheduler's own timeout IS the validation of this block — the same
-          // reasoning the `blocked_validated = 1` assignment carried.
-          upholdClaim(id, 'blocked', 'pm', 'scheduler', 'verdict request timed out; block recorded');
-        }
-      },
-    };
-    const { writeTaskLog } = await import('../tracker/task-log.js');
-    const { broadcast: bcast } = await import('../gateway/ws.js');
-    let swept = 0;
-    for (const t of stale) {
-      dropStmt.run(t.id);
-      writeTaskLog({
-        taskId: t.id,
-        fromEntity: 'engine',
-        entryKind: 'auto_sweep',
-        fromStatus: t.current_status,
-        toStatus: 'blocked',
-        actionTaken: 'user verdict timed out',
-        reason: `pending more than ${STALE_REQUEST_HOURS}h since user_verdict_requested_at=${t.user_verdict_requested_at}; dropped to blocked, please review`,
-      });
-      // Re-select the FULL row so the board doesn't blank every other column on
-      // this card (a 2-field partial under `data:` cleared the guard but wiped
-      // the rest of the kanban card until reload). Same idiom as the resume path.
-      const freshBlocked = getTask(t.id);
-      if (freshBlocked) bcast({ type: 'tracker:task_updated', data: freshBlocked });
-      swept++;
-    }
-    if (swept > 0) {
-      logger.info('Auto-expired user verdict requests', { swept, hours: STALE_REQUEST_HOURS });
-    }
-  } catch (err) {
-    logger.warn('sweepStaleUserVerdictRequests failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 // ── 5-minute validation escalation ──
 //
@@ -579,14 +528,18 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         // blocked-arm fix turns into a LIE for the PM-upheld case it newly admits.
         // `ownerEscalationAlertLine` composes it from the row's recorded facts and omits any
         // clause whose fact is not on file; the argument lives with it in `validation-drive`.
-        recordFloorGhost({
+        // Field fix 3 audit round (#9), OR-ENGINE-LABELLED: the row is labelled as the Dojo, and the
+        // main agent is told exactly what the Dojo put in front of the owner.
+        const ownerLine = ownerEscalationAlertLine({
+          title: t.title, status: t.status, since: t.updated, agentName,
+          steers: steersSpent, failures: t.failures,
+          blockedValidated: t.blocked_validated === 1, obstacle: t.obstacle,
+        });
+        const ghost = recordFloorGhost({
           agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
           attempts: steersSpent,
-          ownerLine: ownerEscalationAlertLine({
-            title: t.title, status: t.status, since: t.updated, agentName,
-            steers: steersSpent, failures: t.failures,
-            blockedValidated: t.blocked_validated === 1, obstacle: t.obstacle,
-          }),
+          label: OWNER_ALERT_DOJO_PREFIX,
+          ownerLine,
           detail: {
             steers: steersSpent, task_title: t.title,
             // The facts the sentence was built from, on the row's own durable history, so the
@@ -595,6 +548,11 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
             stated_obstacle: t.obstacle, since: t.updated,
           },
         }, { broadcast });
+        tellAgentWhatDojoSent({
+          agentId: primaryId, recipient: 'the owner (on the dashboard)', text: `${OWNER_ALERT_DOJO_PREFIX} ${ownerLine}`,
+          sent: ghost.noticeId !== null,
+          why: `because "${t.title}" was ${t.status} with no record of anyone bringing it to the owner after ${steersSpent} reminders to you`,
+        });
         stamp.run(threadId, t.id);
         writeTaskLog({
           taskId: t.id,
@@ -664,26 +622,32 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
 // agent to resolve via work_schedule(action="resolve_missed"). Before D12 that model
 // call was the ONLY path back to 'waiting': a model that ignored the notice
 // once left the recurring task paused forever, silently. The engine now
-// auto-resolves as SKIP once the pause has sat unresolved for more than
-// MISSED_RUNS_AUTO_RESOLVE_MINUTES: advance next_run_at to the next FUTURE
+// auto-resolves as SKIP once the agent has run a whole turn past the
+// pause without resolving it: advance next_run_at to the next FUTURE
 // anchor for its cadence, clear the pause back to the waiting convention,
 // record a task_log note, and log loudly. The model tool takes precedence
 // when called first because every resolve action clears
 // missed_runs_paused_at, which disarms this fallback. The fallback never
 // completes, deletes, or reassigns a task.
 
-const MISSED_RUNS_AUTO_RESOLVE_MINUTES = 10;
+// FIELD FIX 3 AUDIT ROUND (#9): "unresolved for more than 10 minutes" was a fixed clock, so a slow
+// model still reading the notice lost the choice. The signal now is the agent's own record: the
+// agent the notice went to (the task's assignee, else the main agent, as `alertMissedRuns` picks)
+// has had a whole turn that STARTED after the pause, and the pause is still unresolved. D12's
+// reason stands: a model that ignores the notice does not leave the task paused forever.
+const MISSED_RUNS_PASSED_OVER = 'the agent ran a whole turn after the missed-runs notice and did not resolve it';
 
-async function autoResolveStaleMissedRunPauses(): Promise<void> {
+export async function autoResolveStaleMissedRunPauses(): Promise<void> {
   const db = getDb();
   try {
     const stale = db.prepare(`
       SELECT ${scheduleRowColumns('w')} FROM work w
       WHERE ${taskScope('w')} AND w.is_paused = 1
         AND w.missed_runs_paused_at IS NOT NULL
-        AND w.missed_runs_paused_at <= ?
+        AND w.missed_runs_paused_at < (SELECT MAX(CAST(strftime('%s', t.started_at) AS INTEGER) * 1000) FROM turns t
+              WHERE t.agent_id = COALESCE(w.agent_id, ?) AND t.ended_at IS NOT NULL)
       LIMIT 25
-    `).all(Date.now() - MISSED_RUNS_AUTO_RESOLVE_MINUTES * 60_000) as Array<Record<string, unknown>>;
+    `).all(getPrimaryAgentId()) as Array<Record<string, unknown>>;
     if (stale.length === 0) return;
 
     const { writeTaskLog } = await import('../tracker/task-log.js');
@@ -715,7 +679,7 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
         if (!guard || guard.is_paused !== 1 || guard.missed_runs_paused_at == null) continue;
         const releasedRes = setTrackerStatus(taskId, 'on_deck', {
           by: 'scheduler', actorId: 'scheduler', expectedState: 'paused',
-          reason: `missed-runs pause unresolved for ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes; skipped to the next anchor`,
+          reason: `${MISSED_RUNS_PASSED_OVER}; skipped to the next anchor`,
         });
         if (releasedRes.kind !== 'applied') continue;
         noteUnsettled(setNextRun(taskId, {
@@ -730,7 +694,7 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
           fromStatus: 'paused',
           toStatus: 'on_deck',
           actionTaken: `engine auto-skipped ${missedSlots} missed run${missedSlots === 1 ? '' : 's'} to the next scheduled time`,
-          reason: `paused-for-missed-runs was not resolved within ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes (work_schedule(action="resolve_missed") never ran); schedule resumed, next run at ${nextRun}`,
+          reason: `${MISSED_RUNS_PASSED_OVER} (work_schedule(action="resolve_missed") never ran); schedule resumed, next run at ${nextRun}`,
         });
         logger.warn('Scheduler: AUTO-RESOLVED stale missed-runs pause, skipped to next future anchor', {
           taskId, title: task.title, missedSlots, nextRun, pausedAt: task.missed_runs_paused_at,
@@ -857,7 +821,7 @@ export async function checkScheduledTasks(): Promise<void> {
   //   resumeExpiredPauses                       -> `expired-pauses`               @30s
   //   sweepUnvalidatedTasksForUserEscalation    -> `validation-escalation`        @30s
   //   closeRunsThatDelivered                    -> `steered-run-delivery-close`   @30s
-  //   pruneTerminalTasks                        -> `terminal-task-prune`          @1h
+  //   (pruneTerminalTasks -> `terminal-task-prune` @1h was here; deleted, field fix 3 audit round #9)
   //
   // (The plan wrote "the five non-scheduling sweeps". Re-derived at HEAD it is SIX: SWEEP
   // CORE-1 CT2 added `closeRunsThatDelivered` after the plan was written, and its own
@@ -2044,7 +2008,6 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 
 // ── Prune terminal tasks ──
 
-const TERMINAL_TASK_CAP = 50;
 
 // ⟨TOMBSTONE⟩ `lastPruneAt` + `PRUNE_INTERVAL_MS = 3600_000` lived here: a module-scope
 // wall-clock throttle inside a function called by a 30-second timer, so the function ran 120
@@ -2094,37 +2057,12 @@ export function resumeExpiredPauses(): void {
   }
 }
 
-/**
- * Keep each terminal state (complete, blocked, fallen, cancelled) capped at 50 tasks.
- * Oldest tasks beyond the cap are deleted along with their runs and poke logs.
- */
-export function pruneTerminalTasks(): void {
-  const db = getDb();
-
-  // T18: `cancelled` joins the list. A terminal state missing from here is one that never
-  // gets pruned — unbounded growth of exactly the rows nobody looks at again.
-  for (const status of ['complete', 'blocked', 'fallen', 'cancelled']) {
-    const overflow = db.prepare(`
-      SELECT w.id AS id FROM work w
-      WHERE ${taskScope('w')} AND w.state = ?
-      ORDER BY w.updated_at DESC
-      LIMIT -1 OFFSET ?
-    `).all(statusToState(status), TERMINAL_TASK_CAP) as Array<{ id: string }>;
-
-    if (overflow.length === 0) continue;
-
-    const ids = overflow.map(r => r.id);
-    const placeholders = ids.map(() => '?').join(',');
-
-    // Clear agent references first
-    db.prepare(`UPDATE agents SET task_id = NULL WHERE task_id IN (${placeholders})`).run(...ids);
-    // Delete related records. The poke rows are `work_events` now (T8c item 1), and the runs
-    // are occurrence CHILDREN of each task (PHASE-2 T10F) — `deleteTrackerRow` deletes
-    // children, their events and their adjudications in the same transaction as the row
-    // itself, so there is no separate cleanup to do for either.
-    // Delete the tasks (children, events and adjudications go with them)
-    for (const id of ids) deleteTrackerRow(id);
-
-    logger.info(`Scheduler: pruned ${ids.length} old ${status} task(s)`, { status, pruned: ids.length });
-  }
-}
+// ⟨TOMBSTONE⟩ FIELD FIX 3 AUDIT ROUND (#9): `pruneTerminalTasks` lived here and deleted, every hour,
+// the oldest complete, blocked, fallen and cancelled tasks past 50 of each, with their runs and
+// events. Blocked is open, owed work; the rest are the work records ruling 9d keeps. The audit's
+// fix: "prune history only with the owner's say-so". There is no say-so, so there is no prune.
+// requirement preserved: the board stays readable without deleting history. The task list is paged
+// for that (re-review 2, S4): `tracker/schema.ts` `listTasksPage` returns every live task and the
+// finished ones a page at a time, newest first, and `GET /tracker/tasks` and the board's "Show older
+// finished tasks" read it. Two internal readers still read every task (`tracker/pm-agent.ts` and
+// `agent/v2/steps/execute/tracker-floors.ts`) and are noted in the re-review 2 report.

@@ -48,6 +48,9 @@ import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
 import { notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
+// v3.5 field fix 3 (#3b): the verdict request's log position. `tracker-view.ts` imports only TYPES
+// from this module, so this value import creates no cycle.
+import { userVerdictOpenOnLogExpr, WORK_EVENT } from './tracker-view.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
@@ -494,6 +497,20 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       claim: input.claim ?? null,
       note: input.note ?? null,
     }, at);
+
+    // EFFECT (v3.5 field fix 3, #3b): A FINISHED ROW ANSWERS ITS OPEN VERDICT REQUEST. The
+    // request asked the owner to rule on the row's status; once the row is finished by any
+    // door (a cancel, a bulk close, an owner drag, the PM) there is nothing left to rule on.
+    // Only four callers ever cleared a request, so a row closed any other way kept it "open"
+    // for ever, and the 12h sweep re-picked it every 30s on the owner's box. One place, in the
+    // same transaction as the state change, so every door is covered.
+    if (terminal && !isTerminal(from)) {
+      const open = db.prepare(`SELECT ${userVerdictOpenOnLogExpr('w')} AS o FROM work w WHERE w.id = ?`)
+        .get(workId) as { o: number } | undefined;
+      if (open?.o === 1) {
+        appendEvent(workId, WORK_EVENT.userVerdictCleared, actorId, { reason: `closed: ${input.to} (${input.reason})` }, at);
+      }
+    }
 
     // EFFECT: the fan-out countdown. A child settling is the ONLY thing that decrements it,
     // and it decrements atomically in the same transaction as the child's own state change —

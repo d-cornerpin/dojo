@@ -160,7 +160,9 @@ export function injectTaskAssignmentNotification(
     (() => { try { const o = findTaskOriginChain(taskId); return o ? `Origin: ${renderTaskOriginChain(o)}` : ''; } catch { return ''; } })(),
     ``,
     assignmentMeasureLine(taskId),
-    `Close it with work_update(action="status", task_id="${taskId}", status="complete", result, evidence) only when it is done. If you cannot proceed, status="blocked" with the reason.`,
+    // v3.5 field fix 3 (test-2 round): facts, never close-coaching (product law, "Finishing, not
+    // closing"). This line told the assignee "Close it with work_update(... complete ...)".
+    `It is done when its work is done, and the PM validates its close. If you cannot proceed, status="blocked" with the reason.`,
   ].filter(Boolean);
   const content = lines.join('\n');
 

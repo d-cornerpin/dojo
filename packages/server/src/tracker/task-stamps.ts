@@ -139,11 +139,19 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
 }
 
 /** Did this turn DO something (an effectful tool call, counted on the turn's own row)? */
-function turnMadeEffectfulCall(db: ReturnType<typeof getDb>, agentId: string, turnNumber: number): boolean {
+function turnMadeEffectfulCall(db: ReturnType<typeof getDb>, agentId: string, turnNumber: number, taskId: string | null): boolean {
   try {
-    const r = db.prepare('SELECT effectful_calls AS n FROM turns WHERE agent_id = ? AND turn_number = ?')
-      .get(agentId, turnNumber) as { n: number | null } | undefined;
-    return (r?.n ?? 0) > 0;
+    const r = db.prepare(`SELECT effectful_calls AS n, CAST(strftime('%s', started_at) AS INTEGER) * 1000 AS started_ms
+        FROM turns WHERE agent_id = ? AND turn_number = ?`)
+      .get(agentId, turnNumber) as { n: number | null; started_ms: number | null } | undefined;
+    if ((r?.n ?? 0) === 0) return false;
+    // Field fix 3 re-review 3 (L7, the S3 residual): an effectful call counts as work on THIS task only
+    // when it reached the task's own items (its ledger) during the turn. Counted turn-wide, a turn the
+    // poke woke that did effectful work on something else re-armed the poked task's ladder.
+    if (!taskId) return true;
+    const touched = db.prepare('SELECT 1 FROM work_ledger WHERE work_id = ? AND last_at >= ? LIMIT 1')
+      .get(taskId, r?.started_ms ?? 0);
+    return !!touched;
   } catch { return false; /* no record of an effect: a turn that only talked, as before */ }
 }
 
@@ -171,7 +179,7 @@ export function stampTasksAtTurnFinalize(input: {
     // t151 (B): and the turn's reply to the notice is an ANSWER, not progress — a chat line the person read
     // ('via dashboard') is the answer itself. Only real work re-arms the ladder: a tangible deliverable, or an
     // effectful call the turn's own record counts (`turns.effectful_calls`, made durable at the effect).
-    const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber);
+    const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber, input.servedTaskId);
     const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
     const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
     // Which turns worked a task, on each task's own spine (`work/task-turns.ts`): the same served set, less a notice-only wake.
@@ -268,19 +276,16 @@ export interface TaskStampOptions {
   relative?: boolean;
 }
 
-/** The one compact stamp line the model reads (<=~90 chars typical).
- *  Owner ruling: facts PLUS instruction on answered tickets. */
+/** The one compact stamp line the model reads (<=~90 chars typical). FACTS ONLY.
+ *
+ *  v3.5 field fix 3, review round 2 (ruled): an ack never counts as completion, on any channel,
+ *  and close-coaching in engine text is a defect. This line used to append "CLOSE if done" on any
+ *  tangible summary, so an iMessage "On it" read as a finished handover. It now says what was
+ *  sent and when, and nothing else; whether the task's work is DELIVERED is a different question,
+ *  answered only by `tracker/delivery-evidence.ts:taskWorkOnRecord` (a delivered file or a measure at 0). */
 export function renderTaskStamps(t: TaskStampFields, opts?: TaskStampOptions): string {
   const relAgo = opts?.relative === false ? absInstant : relAgoFromNow;
   if (t.last_answered_turn !== null && t.last_answered_at) {
-    // The CLOSE instruction requires a TANGIBLE handover on record, the same
-    // standard as the strike-2 engine close. A reply without a recorded
-    // delivery is often just an ack ("back with you soon"); nudging CLOSE on
-    // it strangled a delegation synthesis task mid-wait (battery catch,
-    // 2026-07-22). Facts only in that case.
-    if (isTangibleDeliverySummary(t.last_delivery_summary)) {
-      return `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}; ${t.last_delivery_summary}; CLOSE if done`;
-    }
     // T19 (D7): "facts only" used to mean "(no delivery recorded)", which on the owner's
     // primary channel was FALSE — and the model read it in the same tool result as an
     // ALREADY-DELIVERED assertion built from the same window. Facts only still means facts

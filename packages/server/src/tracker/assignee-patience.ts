@@ -87,8 +87,9 @@ export interface PokeThresholds { first: number; second: number; escalate: numbe
 export interface PatienceFloor {
   /** Seconds one legitimate model call may take on this assignee's provider, patience total. */
   floorSeconds: number;
-  /** `declared` when a provider row named it, `default` when nothing is declared (R6 path). */
-  basis: 'declared' | 'default';
+  /** `declared` when a provider row named it, `default` when nothing is declared (R6 path),
+   *  `measured` when the assignee's own recent calls took longer than either. */
+  basis: 'declared' | 'default' | 'measured';
   modelId: string | null;
 }
 
@@ -101,6 +102,24 @@ export interface PatienceFloor {
  * only safe direction: an unknown provider must not buy itself extra silence.
  */
 export function patienceFloorFor(agentId: string | null | undefined): PatienceFloor {
+  const declared = declaredPatienceFloorFor(agentId);
+  const measured = measuredCallSeconds(agentId);
+  return measured > declared.floorSeconds ? { ...declared, floorSeconds: measured, basis: 'measured' } : declared;
+}
+
+/** FIELD FIX 3 AUDIT ROUND (#8): "no hard limits, waits scale with measured model pace." The slowest
+ *  of the assignee's last 20 model calls, in seconds (0 when none is on record). The floor is one
+ *  legitimate call per rung, and a call this agent really made is a legitimate call. */
+function measuredCallSeconds(agentId: string | null | undefined): number {
+  if (!agentId) return 0;
+  try {
+    const r = getDb().prepare(`SELECT MAX(latency_ms) AS ms FROM (SELECT latency_ms FROM cost_records
+        WHERE agent_id = ? AND latency_ms IS NOT NULL ORDER BY created_at DESC LIMIT 20)`).get(agentId) as { ms: number | null } | undefined;
+    return r?.ms ? Math.ceil(r.ms / 1000) : 0;
+  } catch { return 0; }
+}
+
+function declaredPatienceFloorFor(agentId: string | null | undefined): PatienceFloor {
   const fallback: PatienceFloor = {
     floorSeconds: Math.ceil((resolveStreamPatience(null).firstChunkMs
       + resolveStreamPatience(null).idleMs) / 1000),

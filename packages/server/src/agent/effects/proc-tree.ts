@@ -69,8 +69,15 @@ export function signalProcessTree(child: Pick<ProcessTreeRoot, 'pid' | 'kill'>, 
   try { child.kill(signal); } catch { /* already gone */ }
 }
 
-/** Each agent's commands that have not ended yet, as the cut that ends one. */
+/** Each agent's commands that have not ended yet, as the cut that ends one. A thrown turn ends these. */
 const running = new Map<string, Set<() => void>>();
+/** Field fix 3 re-review 3 (M2): the cut of each running child, by its pid, so a command handed to the
+ *  background can be found again. */
+const cutByPid = new Map<number, { agentId: string; cut: () => void }>();
+/** The agent's commands handed to the BACKGROUND (a person's message came first). They are the agent's
+ *  own jobs, not any one turn's: a later turn that throws does not end them (`endAgentCommands` reads
+ *  `running` only). The owner's Stop still ends them, and so does a graceful exit (the toolbox groups). */
+const background = new Map<string, Map<number, { what: string; startedAt: number }>>();
 
 export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): () => void {
   if (child.pid !== undefined) {
@@ -92,6 +99,7 @@ export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): () => 
   let cuts = running.get(agentId);
   if (!cuts) { cuts = new Set(); running.set(agentId, cuts); }
   cuts.add(cut);
+  if (child.pid !== undefined) cutByPid.set(child.pid, { agentId, cut });
   void wait.stopped.then(cut);
   const settle = (): void => {
     over = true;
@@ -99,10 +107,36 @@ export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): () => 
     wait.dispose();
     cuts.delete(cut);
     if (cuts.size === 0 && running.get(agentId) === cuts) running.delete(agentId);
+    if (child.pid !== undefined) {
+      cutByPid.delete(child.pid);
+      const jobs = background.get(agentId);
+      jobs?.delete(child.pid);
+      if (jobs && jobs.size === 0) background.delete(agentId);
+    }
   };
   child.once('close', settle);
   child.once('error', settle);
   return cut;
+}
+
+/** Field fix 3 re-review 3 (M2): the command `pid` (started by `agentId`) now belongs to the agent as a
+ *  background job: it leaves the turn's cut set, so a later turn's teardown does not end it; the Stop
+ *  still does. False when no running command of this agent has that pid. */
+export function handToBackground(agentId: string, pid: number, what: string): boolean {
+  const entry = cutByPid.get(pid);
+  if (!entry || entry.agentId !== agentId) return false;
+  const cuts = running.get(agentId);
+  cuts?.delete(entry.cut);
+  if (cuts && cuts.size === 0) running.delete(agentId);
+  let jobs = background.get(agentId);
+  if (!jobs) { jobs = new Map(); background.set(agentId, jobs); }
+  jobs.set(pid, { what, startedAt: Date.now() });
+  return true;
+}
+
+/** The agent's background commands still running: pid, what it is, since when. */
+export function backgroundCommandsOf(agentId: string): Array<{ pid: number; what: string; startedAt: number }> {
+  return [...(background.get(agentId) ?? new Map())].map(([pid, j]) => ({ pid, ...j }));
 }
 
 /** A turn that threw is over: end whatever it left running for this agent. Returns how many. */

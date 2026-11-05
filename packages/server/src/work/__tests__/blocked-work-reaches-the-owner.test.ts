@@ -30,7 +30,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { OWNER_ALERT_SYSTEM_PREFIXES } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -162,7 +162,7 @@ const ownerAlerts = (): string[] =>
       ORDER BY rowid`,
   ).all(PRIMARY) as Array<{ content: string }>)
     .map((r) => r.content)
-    .filter((c) => c.startsWith(OWNER_ALERT_HEADS_UP_PREFIX));
+    .filter((c) => OWNER_ALERT_SYSTEM_PREFIXES.some((p) => c.startsWith(p)));
 
 /**
  * Drive the real sweep the scheduler drives. Imported lazily so the module graph is built
@@ -634,7 +634,7 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
     const line = ownerEscalationAlertLine({ ...base, obstacle: OBSTACLE });
     expect(line, 'the platform does not claim a fact it has no record of')
       .not.toMatch(/nobody has brought it to you/);
-    expect(line, 'it reports what it actually holds').toContain('I have no record of anyone bringing it to you');
+    expect(line, 'it reports what it actually holds').toContain('the Dojo has no record of anyone bringing it to you');
 
     // THE MUTANT THIS FORBIDS, stated as a property rather than a phrase: the alert must make
     // no bare claim about what the AGENT did or did not do. Every remaining clause is either
@@ -880,6 +880,25 @@ describe('§7 a slow model gets more room than a fast one before the owner is to
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §6 · THE STEER LEDGER still works the way the ladder reads it.
 // ════════════════════════════════════════════════════════════════════════════════════════
+
+// FIELD FIX 3 AUDIT ROUND (#9). OR-ENGINE-LABELLED (owner, verbatim): "it should probably be clear it
+// is the dojo engine speaking and not the agent AND the agent should be made aware of any messages the
+// engine sends." The alert after two steers was written as "Heads up: ... I have no record ...", in the
+// first person, and the main agent was never told it had gone out.
+describe('§8 the alert after two steers is the Dojo speaking, and the main agent is told', () => {
+  it('THE RED: labelled "Dojo:", no first person, and a notice to the main agent quotes it', async () => {
+    seedBlocked('t-voice');
+    await driveLadderToTheEnd();
+    const alerts = ownerAlerts();
+    expect(alerts.length).toBeGreaterThanOrEqual(1);
+    expect(alerts[0]).toMatch(/^Dojo: /);
+    expect(alerts[0]).not.toMatch(/\bI\b/);
+    const told = (mockDb.current!.prepare(
+      `SELECT content FROM messages WHERE agent_id = ? AND content LIKE '%The Dojo itself (not you)%'`,
+    ).all(PRIMARY) as Array<{ content: string }>).map((r) => r.content).join('\n');
+    expect(told).toContain('has no record of anyone bringing it to you');
+  });
+});
 
 describe('§6 the ladder spends exactly two steers before it speaks', () => {
   it('a steer is recorded per pass and the platform only speaks after the bound', async () => {

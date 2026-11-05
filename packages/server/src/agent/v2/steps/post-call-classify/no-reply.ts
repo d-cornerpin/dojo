@@ -25,6 +25,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
+import { holdAndSteer } from './closeout-floors.js';
 import { DECLINE_OPENER_RE, replyClaim } from '../../reply-claims.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
@@ -96,7 +97,7 @@ export async function runNoReply(
   // swallows a substantive reply that merely mentions "no reply" mid-sentence.
   // v3.5 C1: the rule is `reply-claims.ts`'s DECLINE_OPENER_RE. A suppression has no ledger row behind it, so
   // the decision model, once proven, may take a rule hit away (its documented false positive) and never add one.
-  const isDeclineNonReply =
+  const declineRead =
     persistedContent !== null &&
     result.toolCalls.length === 0 &&
     !isBareNoReply &&
@@ -109,6 +110,22 @@ export async function runNoReply(
     // honored for chatter-prevention; only the FUZZY prose-decline is guarded.
     !triggerRow &&
     DECLINE_OPENER_RE.test(persistedContent) && replyClaim(ctx, 'declines_to_reply', true);
+
+  // Field fix 3 audit round (#11): a prose decline was nulled as a no-reply on the rule's word list.
+  // Now the agent is told how its line reads and decides: [no-reply] is its choice to make, and the
+  // same line written again goes out as written.
+  if (declineRead && persistedContent) {
+    const t = persistedContent.replace(/\s+/g, ' ').trim();
+    const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc }, {
+      floor: 'prose-decline', text: persistedContent,
+      steer: `[Engine record: your reply opens as a decision not to reply: "${t.length > 120 ? `${t.slice(0, 120)}…` : t}". `
+        + 'It has not been sent; written as your final reply again, it is sent as written. A final reply of [no-reply] sends nothing.]',
+    });
+    if (held) return held;
+  }
+  // A prose decline is never a no-reply on the engine's reading any more: once told, the agent's
+  // repeat is its reply. Only the agent's own [no-reply] is a no-reply.
+  const isDeclineNonReply = false;
 
   // REG-3 refinement (2026-07-16, the trivial-save sequence): intentional
   // silence stands on turns nobody is waiting on (the narration-resurrection

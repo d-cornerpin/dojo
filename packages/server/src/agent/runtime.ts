@@ -2,6 +2,8 @@
 // 2055-line runAgentLoop they fed. What stays serves the v2 dispatch shell,
 // the helpers re-exported via getAgentRuntime (notifyPrimaryOfInjury,
 // stopAgent, preempt, etc.), and shared module-level state.
+import { orphanedModelRepairText } from './engine-lines.js';
+import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { beginContinuationRun, beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
@@ -408,6 +410,7 @@ import {
   // T81c FIX ROUND 1 (NO-DOOMED-DIALS): the turn-scoped marker that replaced the first cut's
   // unscoped `agents.last_error` read (see the marker's own doc for the reproduced defect).
   declaredPatienceHonestFailTurn,
+  noteArrivalWhileBusy,
 } from './shared-state.js';
 import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
@@ -729,6 +732,7 @@ class AgentRuntime {
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
+      noteArrivalWhileBusy(agentId);   // field fix 3 re-review 3: a command waiting on "your messages come first" is told
       return;
     }
 
@@ -1717,11 +1721,13 @@ function repairOrphanedModelPointers(): void {
         broadcast({
           type: 'chat:error',
           agentId: agent.id,
-          error: `${agent.name} was pointed at a model that no longer exists. I switched them to auto-routing so they keep working, pick a specific model in Settings if you want one.`,
+          // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the Dojo speaking, never "I"; the agent is told.
+          error: orphanedModelRepairText(agent.name),
           code: 'MODEL_FAILED',
           severity: 'warning',
           retryable: false,
         });
+        tellAgentWhatDojoSent({ agentId: agent.id, recipient: 'the owner (a dashboard card)', text: orphanedModelRepairText(agent.name), why: 'because your model no longer existed and the Dojo switched you to auto-routing' });
       } catch { /* best effort */ }
     }
   } catch (err) {

@@ -163,8 +163,11 @@ export async function runProcess(input: {
   cwd: string | undefined;
   note: string | null;
   audit: ProcessAudit;
+  /** OWNER RULING "Your messages come first" (field fix 3, re-review 2 and 3). Absent: the call
+   *  waits for the command, as before. */
+  personFirst?: PersonFirst;
 }): Promise<string> {
-  const { auditTarget, file, argv, timeout, cwd, note, audit } = input;
+  const { auditTarget, file, argv, timeout, cwd, note, audit, personFirst } = input;
   // ── HONEST FAILURE FOR SUDO (owner ruling 2026-09-26, v3.2.2) ──
   // A sudo line on a box with no NOPASSWD rule does not fail — it BLOCKS on a password prompt nobody
   // can type into, and the turn dies on the timeout with nothing to read. `sudoWouldHang` probes it
@@ -175,15 +178,56 @@ export async function runProcess(input: {
     audit(auditTarget, 'error', 'sudo requires a password on this box; nothing was run');
     return hang;
   }
+  // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and the run
+  // streams so each chunk can re-arm it. A healthy long build talks the whole way through and
+  // survives; a wedged command says nothing and is still killed. Its bounds and the Stop button
+  // reach the child the same way whether or not the call has been handed back.
+  let pid: number | undefined;
+  const startedAt = Date.now();
+  // The person-first watch starts BEFORE the child: only a message that arrives after this instant
+  // hands the call back (re-review 3, T1). The asks the turn already knew of when it chose to run the
+  // command never interrupt it.
+  const watch = personFirst?.watchFrom(startedAt);
+  const running = runWithIdleBound(file, argv, {
+    idleMs: timeout,
+    ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
+    ...(cwd ? { cwd } : {}),
+    onSpawn: (p) => { pid = p; },
+  });
+  const settle = (p: Promise<{ stdout: string; stderr: string }>): Promise<string> => settleProcess(p, input);
+  if (!personFirst || !watch) return settle(running);
+  const outcome = settle(running);
+  const first = await Promise.race([outcome, watch.arrived.then(() => 'person' as const)]);
+  watch.cancel();
+  if (first !== 'person') return first;
+  personFirst.handedBack(pid, outcome);
+  return handBackText(pid);
+}
+
+/** One background hand-off, as the exec door wires it (`tools/person-first.ts`). */
+export interface PersonFirst {
+  /** Resolves when a person's message ARRIVES after this call (the newest message row now). Never for one already open. */
+  watchFrom(startedAt: number): { arrived: Promise<void>; cancel(): void };
+  /** The call was handed back: own the still-running command, and hand its result over when it ends. */
+  handedBack(pid: number | undefined, outcome: Promise<string>): void;
+}
+
+/** What the agent reads when the call is handed back: the fact, the consequence, and the handle. */
+export function handBackText(pid: number | undefined): string {
+  return '[A message from a person arrived while this command was running, and it comes first, so the command was moved to the background'
+    + `${pid !== undefined ? ` (pid ${pid})` : ''}. Its result is NOT available yet. Nothing that depends on this command's result can run now: `
+    + 'wait for the Dojo to hand you the result, which it does when the command ends, and wake you. '
+    + `${pid !== undefined ? `It is still running as process group ${pid}; \`kill -- -${pid}\` through the shell ends it and everything it started, and so does the Stop button.` : 'The Stop button ends it.'}]`;
+}
+
+/** The command's result as the agent reads it, and its audit row. */
+async function settleProcess(
+  running: Promise<{ stdout: string; stderr: string }>,
+  input: { auditTarget: string; timeout: number; note: string | null; audit: ProcessAudit },
+): Promise<string> {
+  const { auditTarget, timeout, note, audit } = input;
   try {
-    // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and
-    // the run streams so each chunk can re-arm it. A healthy long build talks the whole way
-    // through and survives; a wedged command says nothing and is still killed.
-    const { stdout, stderr } = await runWithIdleBound(file, argv, {
-      idleMs: timeout,
-      ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
-      ...(cwd ? { cwd } : {}),
-    });
+    const { stdout, stderr } = await running;
     const out = (stdout ?? '').trim();
     const err = (stderr ?? '').trim();
     audit(auditTarget, 'success',

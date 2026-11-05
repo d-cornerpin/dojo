@@ -51,7 +51,9 @@ describe('the assignment notice', () => {
     const text = notice(id);
     expect(text).toContain('Work it through. If it covers a set of mailbox messages, set its measure');
     expect(text).toContain(`work_update(action="edit", task_id="${id}", measure=`);
-    expect(text).toContain('only when it is done. If you cannot proceed, status="blocked" with the reason.');
+    // Field fix 3 test-2 round: facts, never close-coaching.
+    expect(text).toContain('It is done when its work is done, and the PM validates its close. If you cannot proceed, status="blocked" with the reason.');
+    expect(text).not.toMatch(/Close it with/);
     expect(text).not.toMatch(/When finished|Begin working/);
   });
 
@@ -62,7 +64,7 @@ describe('the assignment notice', () => {
     const text = notice(id);
     expect(text).toContain('This task is measured: gmail_search "in:inbox -label:Sorted" returns 37 messages now. It is done when that reads 0;');
     expect(text).toContain('the engine continues you on the next turn');
-    expect(text.indexOf('This task is measured')).toBeLessThan(text.indexOf('Close it with'));
+    expect(text.indexOf('This task is measured')).toBeLessThan(text.indexOf('It is done when its work is done'));
     expect(text).not.toMatch(/When finished|Begin working/);
   });
 

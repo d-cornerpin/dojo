@@ -194,6 +194,33 @@ describe('rollback.sh edge cases found in review', () => {
   }
 });
 
+// Field fix 3 audit round (#4). The owner is furious when the Dojo tells him to do it himself. The
+// recovery script states what is where and what did not start; it does not hand him a command.
+describe('rollback.sh states facts, never a chore for the owner', () => {
+  it('when the running build cannot be put back either: where it is, no "Restore it manually with: mv"', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    // Every move onto .../platform fails: the restore and the put-back.
+    fs.writeFileSync(path.join(binDir, 'mv'),
+      '#!/bin/sh\nfor last; do :; done\ncase "$last" in */platform) exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(out).toContain('could not be put back either');
+    expect(out).toMatch(/platform\.failed-/);
+    expect(out).not.toMatch(/Restore it manually|restore with: mv|remove or rename it first/);
+  });
+
+  it('a service that does not start is named, with no "Run the rollback again"', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    fs.writeFileSync(path.join(binDir, 'launchctl'),
+      `#!/bin/sh\necho "$@" >> "${path.join(home, 'launchctl.log')}"\ncase "$1 $2" in "load "*watchdog*) exit 1;; esac\nexit 0\n`, { mode: 0o755 });
+    const { out } = run();
+    expect(out).toContain('watchdog');
+    expect(out).not.toMatch(/Run the rollback again|restart Dojo from the menu bar/);
+  });
+});
+
 // Re-check fixes 1, 2 and 5.
 describe('rollback.sh re-check fixes', () => {
   it('SIGTERM during the first unload still reloads both services', async () => {
@@ -237,7 +264,10 @@ describe('rollback.sh re-check fixes', () => {
     expect(out).not.toContain('Rolled back');
   });
 
-  it('when the previous build cannot be put back and platform/ is in the way, the manual command says to clear it first', () => {
+  // Field fix 3 audit round (#4): this clause pinned an owner chore ("remove or rename it first, then
+  // restore with mv"). The requirement it guarded, that the words are TRUE about a folder still in the
+  // way, is kept as a fact.
+  it('when the previous build cannot be put back and platform/ is in the way, the words say so, as a fact', () => {
     makeBuild(path.join(dojo, 'platform'), '3.1.18');
     makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
     // Restore leaves a partial platform/, and every later move fails.
@@ -246,8 +276,8 @@ describe('rollback.sh re-check fixes', () => {
       'for last; do :; done\nif [ "$n" = 1 ]; then exec /bin/mv "$@"; fi\n' +
       'if [ "$n" = 2 ]; then mkdir -p "$last"; echo half > "$last/p"; exit 1; fi\nexit 1\n', { mode: 0o755 });
     const { out } = run();
-    expect(out).toContain('in the way');
-    expect(out).toContain('remove or rename');
+    expect(out).toContain('is still in its place');
+    expect(out).not.toMatch(/remove or rename|restore with: mv/);
   });
 });
 

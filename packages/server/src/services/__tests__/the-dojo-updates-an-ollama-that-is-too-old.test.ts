@@ -214,13 +214,16 @@ describe('what the Dojo truly cannot fix: ONE plain card, and no endless pulling
     await ensureStandardModels();
     const names = [...ollama.installed];
     for (let i = 0; i < 6; i++) retryStandardModelsIfMissing(names, baseUrl);   // six health checks
-    await settle();
+    // Field fix 3: an AWAITED signal, never a sleep. A held health check asks Ollama its version in the
+    // background (`ollama-pair-gate.ts retryMayStart`); `standardInstallSettled` now waits for that ask
+    // and for the install it may start. The 30 ms `settle()` that stood here lost that race under load.
+    await standardInstallSettled();
     expect(SLASH_PULLS()).toEqual([]);
     expect(owner().length).toBe(1);   // the card was told once
     // The other user's Ollama is restarted at the new version: the next health check sees it, and the install goes on
     mac.running = formulaServe(LATEST, { foreign: true });
     retryStandardModelsIfMissing(names, baseUrl);
-    await settle(); await standardInstallSettled();
+    await standardInstallSettled();
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
     expect((await standardState()).decision).toBe('installed');
     expect(healerOwnerCards()).toEqual([]);   // the card ended with the condition

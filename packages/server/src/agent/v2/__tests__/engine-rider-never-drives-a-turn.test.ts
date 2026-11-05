@@ -199,6 +199,8 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     'healer',
     // A failure the agent must voice (image not generated, file not delivered): the agent is woken to tell the person.
     'delivery_failure_owed',
+    // Field fix 3 re-review 3 (L1): a command handed to the background has ended; its result is the reason for the turn.
+    'background_command_done',
     // proof-fix-f (review B2): messages an older version left unanswered, parked owed on the first boot of the build
     // that hands orphans back. ONE per agent; it IS the reason for a turn — the agent decides which still matter.
     'owed_messages_inherited',

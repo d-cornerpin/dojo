@@ -102,9 +102,10 @@ export async function routeTerminalReply(
         ownerAffinityChannel: turnCtx.ownerAffinityDestination,
         inboundChannel: boundInbound,
         presence: presenceNow,
+        personAskedHere: (turnCtx.address?.kind ?? (counterparty.kind === 'agent' ? 'agent' : 'person')) === 'person',
       });
       if (affinityRefused) {
-        logger.info('v2.7.23 route: affinity-only iMessage promotion refused, no inbound this turn and owner not away; text stays in dashboard', {
+        logger.info('v2.7.23 route: affinity iMessage promotion refused (no basis: no inbound with the owner not away, or the owner asked on the dashboard); text stays in dashboard', {
           agentId, turnNumber, convKey: chosenConvKey ?? null, presence: presenceNow,
         }, agentId);
       }

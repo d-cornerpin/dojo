@@ -1968,7 +1968,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         path: {
           type: 'string',
-          description: 'Absolute local path to an audio file. Must be inside ~/.dojo/uploads/. Use this only when you have a path but no fileId.',
+          description: 'Absolute local path to an audio file. The main agent may name any audio file on the Mac; any other agent, a file inside ~/.dojo/uploads/. Use this only when you have a path but no fileId.',
         },
         url: {
           type: 'string',

@@ -147,10 +147,19 @@ export function affinityPromotionRefusedNoBasis(params: {
   ownerAffinityChannel: 'imessage' | null;
   inboundChannel: string | null;
   presence: 'in_dojo' | 'away';
+  /** The turn is a PERSON's ask (the turn address's kind is 'person'), not an engine or
+   *  notification turn whose reply merely defaults to the dashboard. */
+  personAskedHere?: boolean;
 }): boolean {
   // Only meaningful when affinity actually resolved to a proactive channel this turn;
   // with no affinity there is nothing to refuse.
   if (params.ownerAffinityChannel !== 'imessage') return false;
+  // v3.5 field fix 3, test-2 rank 2: CHANNEL IDENTITY. RC-10 follows the owner to iMessage when
+  // a reply would otherwise land on "the invisible dashboard" (its header: notification and
+  // engine-triggered turns). When the owner HIMSELF asked on the dashboard this turn, the
+  // dashboard is where he is: affinity never moves that reply. (The away override is a
+  // separate, owner-facing rule and is untouched here.)
+  if (params.inboundChannel === 'dashboard' && params.personAskedHere === true) return true;
   // Refused when the promotion would rest on affinity ALONE: no inbound this turn and
   // the owner is not away. (An away owner keeps the promotion via the away override;
   // a real inbound this turn is itself the affirmative basis.)

@@ -167,7 +167,11 @@ describe('complete_task (a spawned agent ending)', () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 40 });
     const out = await completeTask({ status: 'complete', summary: 'labelled what I could' });
     expect(out.content).toMatch(/^Refused: complete_task\(status="complete"\) on a measured task\. .*still returns 40 messages/);
-    expect(out.content).toContain('work_update(action="status", status="complete", remainder=');
+    // Field fix 3 review round 4: still names the door that takes a remainder, as a fact, with no
+    // "close it with ... complete" menu (close-coaching is a defect).
+    expect(out.content).toContain('remainder={disposition:"skipped"');
+    expect(out.content).toContain('taken by work_update(action="status"), not by this door');
+    expect(out.content).not.toMatch(/close it with/);
     expect(out.isError).toBe(true);
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).not.toBe('terminated');
     expect(readWork(id).state).toBe('claimed');

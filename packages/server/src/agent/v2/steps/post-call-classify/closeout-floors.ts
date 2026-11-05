@@ -21,7 +21,9 @@ import { isRowLabelOnly } from '../../../../memory/row-label-only.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveSendStreak } from '../../proactive-budget.js';
-import { proceed, type StepOutcome } from '../step-outcome.js';
+import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
+import { steerFired, type SteerFloorId } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
 import { continuedJobStillGoing } from './job-turn-end.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -58,6 +60,32 @@ function demoteToWorkingNote(
   } catch { /* cosmetic; never block the turn */ }
 }
 
+/**
+ * FIELD FIX 3 AUDIT ROUND (#11, V11): STEER, DO NOT SUPPRESS. Owner law: the engine detects, the agent
+ * speaks. A floor that found something about the agent's final reply holds it ONCE: the streamed bubble
+ * becomes a working note (the words are kept, never discarded), the fact goes to the agent as a steer,
+ * and the loop runs again so the agent decides (the one re-entry for all three floors that use it).
+ * When the floor has already steered this turn, `null`: the reply goes out as written.
+ */
+export function holdAndSteer(
+  state: AgentTurnState,
+  at: { agentId: string; messageId: string; turnNumber: number; sc: PostCallScratch },
+  p: { floor: SteerFloorId; text: string; steer: string },
+): StepOutcome | null {
+  if (steerFired(state.steerQueue, p.floor)) return null;
+  at.sc.persistedContent = null;
+  broadcast({ type: 'chat:chunk', agentId: at.agentId, messageId: at.messageId, content: '', done: true });
+  demoteToWorkingNote({ agentId: at.agentId, messageId: at.messageId, turnNumber: at.turnNumber, text: p.text });
+  return continueLoop(persistEngineSteer(state, {
+    agentId: at.agentId, content: p.steer, turnNumber: at.turnNumber, floor: p.floor, atLoop: state.loopCount,
+  }, { broadcast }));
+}
+
+const quoteOf = (text: string): string => {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > 120 ? `${t.slice(0, 120)}…` : t;
+};
+
 /** "Respond once": the closeout floors and the surfaced-reply arm. No way out. */
 export function runCloseoutFloors(
   state: AgentTurnState,
@@ -91,15 +119,18 @@ export function runCloseoutFloors(
     result.toolCalls.length === 0 &&
     turnDeliveredToPerson(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
   ) {
-    persistedContent = null;
-    broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-    // T9: the third and last empty-chat:message "drop" hack; no row is written here
-    // by design ("No system marker, the agent already replied"), so a retraction is
-    // exactly what this is.
-    broadcast({ type: 'chat:retract', agentId, messageId });
-    logger.info('v2: suppressed a redundant closeout — the engine holds a delivery receipt for this turn, so the person already has the answer', {
-      agentId, turnNumber, loopCount: state.loopCount,
-    }, agentId);
+    // Field fix 3 audit round (#11): was a null + `chat:retract`. Now the agent is told and decides.
+    const held = holdAndSteer(state, { agentId, messageId, turnNumber, sc }, {
+      floor: 'redundant-closeout', text: persistedContent,
+      steer: `[Engine record: this turn already delivered its answer to the person. Your line "${quoteOf(persistedContent)}" has not been sent; `
+        + 'written as your final reply again, it is sent as a further message. A final reply of [no-reply] sends nothing.]',
+    });
+    if (held) {
+      logger.info('v2: held a short closeout after a delivered answer and told the agent (field fix 3 #11)', {
+        agentId, turnNumber, loopCount: state.loopCount,
+      }, agentId);
+      return held;
+    }
   }
 
   // P4b (owner status-truth family): the owed-interrupt near-duplicate

@@ -565,10 +565,12 @@ const newestPokeRung = (taskId: string): number | null => {
 };
 
 describe('THE CHECK-IN: a "still working" answer is recorded (it is not progress); no timed escalation against a working agent', () => {
-  // t151 (R-V333-20, replaces "a work_note re-arms the ladder"): a reply to a check-in is an answer, not
-  // progress. The note is recorded and answers the check-in, but only real work moves the task, so the
-  // ladder climbs on the task's own idle clock (it does not start over at a first rung).
-  it('a work_note after a check-in answers it but does not re-arm: no remediation, and the next check-in is the second rung', async () => {
+  // Field fix 3 audit round (#8), OR-LONG-JOBS (owner, verbatim): "If the agent gives the PM a response
+  // that suggests they are still working on the project, then the PM should let them work." This
+  // replaces t151's R-V333-20 ("a note is an answer, not progress: it re-arms nothing"), which was not
+  // the owner's ruling and sent the second check-in on the task's old clock. The note re-arms the
+  // ladder: a new cycle, timed from the answer, starting at the first rung.
+  it('a work_note after a check-in re-arms the ladder: a remediation, and the next check-in is a first rung timed from the answer', async () => {
     const t0 = Date.now();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
@@ -580,11 +582,11 @@ describe('THE CHECK-IN: a "still working" answer is recorded (it is not progress
     vi.setSystemTime(t0 + 7 * MIN);
     await sweep();
     const closed = db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-q' AND kind = 'poke_remediation'").get() as { n: number };
-    expect(closed.n).toBe(0);
-    expect(newestPokeRung('task-q')).toBe(1); // 14 idle minutes: not yet the second rung's own clock
+    expect(closed.n).toBe(1);
+    expect(newestPokeRung('task-q')).toBe(1); // six minutes from the answer: the new cycle's first rung
     vi.setSystemTime(t0 + 10 * MIN);
     await sweep();
-    expect(newestPokeRung('task-q')).toBe(2); // the climb continues; it did not start over
+    expect(newestPokeRung('task-q')).toBe(1); // nine minutes from the answer: no second rung yet
     expect(ownerTexts()).toBe(0);
   });
 

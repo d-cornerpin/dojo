@@ -393,7 +393,11 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // rung required exactly that) and it set a number nothing read. Real extra room now rides
     // the grind rung's existing retry arm. Exits UNCHANGED at eight: no way out was added or
     // converted, a dead one was deleted.
-    expect(continueSites).toBe(16);
+    // ⚠ RE-DERIVED (field fix 3 audit round #11): SIXTEEN -> SEVENTEEN. The +1 is `holdAndSteer`
+    // (closeout-floors.ts), the ONE re-entry shared by the three floors that used to NULL the
+    // agent's reply (redundant closeout, near-duplicate, prose decline) and now steer instead.
+    // Exits UNCHANGED at nine: a suppression became a re-entry, no way out was added.
+    expect(continueSites).toBe(17);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
@@ -452,6 +456,8 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
       'silent-closeout', 'add-notes-stop', 'going-idle-in-progress', 'owed-interrupt',
       'promise-floor', 'a2a-handoff-floor', 'reminder-silence', 'ghosted-ask',
       'ghosted-ask-answer', 'a2a-missed-reply', 'tracker-closeout',
+      // field fix 3 audit round (#11): the three floors that used to suppress the reply now steer
+      'redundant-closeout', 'near-duplicate-reply', 'prose-decline',
     ];
     for (const f of FLOORS) expect(text).toContain(`'${f}'`);
     //     ⚠ AND THE DENOMINATOR NOW RUNS BOTH WAYS (PHASE-6 T-PROMISE). The loop above

@@ -47,6 +47,12 @@ vi.mock('../../../../services/transcription.js', () => ({
   transcribeAudio: vi.fn(),
 }));
 
+// OR-AUDIT-ANSWERS (the owner removed this fence for the main agent): 'main' is the main agent here.
+vi.mock('../../../../config/platform.js', async (orig) => ({
+  ...(await orig<typeof import('../../../../config/platform.js')>()),
+  isPrimaryAgent: (id: string) => id === 'main',
+}));
+
 vi.mock('../../util.js', async (orig) => ({
   ...(await orig()),
   auditLog: vi.fn(),
@@ -89,9 +95,9 @@ afterEach(() => {
   fs.rmSync(homeRef.dir, { recursive: true, force: true });
 });
 
-async function callTranscribe(args: Record<string, unknown>) {
+async function callTranscribe(args: Record<string, unknown>, agentId = 'a1') {
   return mediaHandlers.transcribe_audio({
-    agentId: 'a1', name: 'transcribe_audio', args, callId: 'c', toolCall: {} as never,
+    agentId, name: 'transcribe_audio', args, callId: 'c', toolCall: {} as never,
   });
 }
 
@@ -124,7 +130,24 @@ describe('transcribe_audio path source', () => {
     expect(out.isError).toBe(false);
   });
 
-  it('still refuses a path outside the uploads dir', async () => {
+  it('OR-AUDIT-ANSWERS: the MAIN agent transcribes an audio file anywhere on the Mac', async () => {
+    const desk = path.join(homeRef.dir, 'Desktop');
+    fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, 'meeting.m4a'), Buffer.from('FAKE-AUDIO-BYTES'));
+    const out = await callTranscribe({ path: '~/Desktop/meeting.m4a' }, 'main');
+    expect(out.isError, out.content).toBe(false);
+  });
+
+  it('OR-AUDIT-ANSWERS (a) "Keep secrets hidden": even the main agent may not hand a key file to the transcriber', async () => {
+    const ssh = path.join(homeRef.dir, '.ssh');
+    fs.mkdirSync(ssh, { recursive: true });
+    fs.writeFileSync(path.join(ssh, 'id_ed25519'), 'KEY');
+    const out = await callTranscribe({ path: '~/.ssh/id_ed25519' }, 'main');
+    expect(out.isError).toBe(true);
+    expect(out.content).toMatch(/sensitive-files block list/);
+  });
+
+  it('still refuses a path outside the uploads dir (an agent other than the main agent)', async () => {
     const out = await callTranscribe({ path: '/etc/hosts' });
     expect(out.isError).toBe(true);
     expect(out.content).toContain('must be inside ~/.dojo/uploads/');

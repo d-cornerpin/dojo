@@ -538,6 +538,9 @@ async function main(): Promise<void> {
   // the delivery that answered it instead of being re-answered or stranded.
   {
     reapToolboxGroupsAtBoot();   // v3.5 P6c: a hard kill left no exit hook to end what agents backgrounded
+    // Field fix 3 re-review 3 (M2): a command handed to the background was ended by this restart, and the
+    // result it promised its agent cannot come; the agent is told so on its next turn.
+    void import('./agent/background-commands.js').then((m) => m.tellAgentsOfCommandsCutByRestart()).catch(() => { /* best effort */ });
     // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed — no conversation identity,
     // or a root message that no longer exists — get an honest terminal state instead of sitting `open` forever, telling
     // every settled read a person is waiting (`transition()`'s CAS). BEFORE the hand-back (review M3).

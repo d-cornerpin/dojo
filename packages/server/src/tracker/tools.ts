@@ -30,8 +30,8 @@ import {
 import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
-import { renderTaskStamps, renderStepFacts, isTangibleDeliverySummary, type TaskStampFields } from './task-stamps.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
+import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
@@ -499,12 +499,17 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
       `to close a different way, say so in a note with work_note.`
     );
   }
+  // v3.5 field fix 3 (#2): FACTS, NOT COACHING. This said "Send the result first (reply,
+  // message, file, or hand it back on the thread that asked)". In an A2A turn the agent's only
+  // person channel was iMessage, so it texted the owner about engine plumbing. The engine
+  // detects and the agent speaks: the refusal says what is on record and nothing else.
   if (r.reason === 'done-requires-delivery' || r.reason === 'delivery-unresolved') {
-    return (
-      `Error: "${wanted}" needs a delivery to point at. Work is done because something reached the person, ` +
-      `not because the tracker says so. Send the result first (reply, message, file, or hand it back on the ` +
-      `thread that asked), then set status="complete" — the engine records the delivery for you.`
-    );
+    const answer = resolveTaskAnswerPointer(taskId);
+    const fact = answer
+      ? `An answer for this task is on record (delivery ${answer.deliveryId.slice(0, 8)}` +
+        `${answer.channel ? `, via ${answer.channel}` : ''}${answer.at ? `, ${answer.at} UTC` : ''}).`
+      : `No completion for this task has reached the owner yet.`;
+    return `Error: "${wanted}" was not recorded for task ${taskId.slice(0, 8)}: a task closes on a delivery. ${fact}`;
   }
   // ── t129: THE BLOCKED-WORK DISPOSAL REFUSAL, AND IT POINTS AT THE ESCALATION PATH ──
   //
@@ -2113,7 +2118,11 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
         reason: `work_update(action="status") -> ${String(statusUpdate)}`,
-        resultDeliveryId: statusUpdate === 'complete' ? deliveryForTaskClose(taskId) : null,
+        // v3.5 field fix 3 (#1, review H2): ONLY the worker's own close falls back to the task's
+        // recorded answer. Every other close door keeps the turn-floor receipt alone.
+        resultDeliveryId: statusUpdate === 'complete'
+          ? (deliveryForTaskClose(taskId) ?? (callerIsPM ? null : resolveTaskAnswerPointer(taskId)?.deliveryId ?? null))
+          : null,
         pausedUntilMs: updates.pausedUntil !== undefined ? tsToMs(updates.pausedUntil as string | null) : undefined,
         // The tool path is the one that stops the schedule with the status (updateTask's
         // own rule); the engine's ball-is-with-the-owner pause deliberately does not.
@@ -2938,21 +2947,14 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         if (task.status === 'in_progress') {
           // Tangibility rule (battery catch 2026-07-22): the ALREADY-DELIVERED
           // block requires a recorded handover, never a bare reply.
-          const st = getTaskStampFields(task.id);
-          // T19 (D7): the tangibility question is asked of the ONE helper. A dashboard bubble
-          // is now NAMED in the summary (so the state line above stops lying) and is still
-          // not a handover, so this block's 2026-07-22 standard is byte-for-byte the same.
-          const stamped = !!st && st.last_answered_turn !== null
-            && isTangibleDeliverySummary(st.last_delivery_summary);
-          const evRaw = stamped ? null : findDeliveryEvidenceForTask(task.id);
-          const ev = evRaw && (evRaw.artifacts.length > 0 || evRaw.deliveredVia.length > 0) ? evRaw : null;
-          if (stamped || ev) {
-            const evLine = stamped
-              ? `answered on turn ${st!.last_answered_turn} (${st!.last_answered_at} UTC)${st!.last_delivery_summary ? `; ${st!.last_delivery_summary}` : ''}`
-              : renderDeliveryEvidence(ev!);
+          // v3.5 field fix 3 (review H1): asked of THE task's record (`taskWorkOnRecord`), so a
+          // dashboard line that was only the start ack never reads as delivered. Before, the
+          // live join's `deliveredVia` arm coached a close on any dashboard bubble.
+          const evLine = taskWorkOnRecord(task.id, getTaskStampFields(task.id) ?? null);
+          if (evLine) {
             parts.push(
+              // Review round 2: facts, not close-coaching (product law, "Finishing, not closing").
               `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${evLine}. ` +
-              `If that delivery completed the task, close it with work_update(action="status", status="complete", result, evidence); if not, continue. ` +
               `Do NOT redo or re-deliver what was already delivered.]`
             );
           }
@@ -3116,10 +3118,12 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
               const steps = renderStepFacts(st);
               parts.push(`      ^ state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
             }
-            if (!st || st.last_answered_turn === null || !isTangibleDeliverySummary(st.last_delivery_summary)) {
-              const ev = findDeliveryEvidenceForTask(tid);
-              if (ev && (ev.artifacts.length > 0 || ev.deliveredVia.length > 0)) {
-                parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
+            {
+              // v3.5 field fix 3 (review H1, round 2): THE task's record, never a bare line on any
+              // channel, and facts only: what is on record, not an order to close it.
+              const rec = taskWorkOnRecord(tid, st ?? null);
+              if (rec) {
+                parts.push(`      ^ ENGINE RECORD: appears already delivered (${rec}); do not redo it.`);
               }
             }
           }
@@ -3517,7 +3521,9 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     }
 
     // Mark current task as complete
-    const stepDelivery = deliveryForTaskClose(taskId);
+    // v3.5 field fix 3 (#1, review H2): the worker's own close, so it falls back to THE task's
+    // answer (`resolveTaskAnswerPointer`) when its own turn delivered nothing.
+    const stepDelivery = deliveryForTaskClose(taskId) ?? resolveTaskAnswerPointer(taskId)?.deliveryId ?? null;
     const stepRes = setTrackerStatus(taskId, 'complete', {
       by: 'agent', actorId: agentId, resultDeliveryId: stepDelivery,
       reason: 'work_update(action="complete_step"): the step is finished',

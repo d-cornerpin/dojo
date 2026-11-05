@@ -52,7 +52,7 @@ When unsure where a file lives, `file_list` the parent and look.
 
 # Looking Into the Dojo
 
-`dojo_inspect` is your read-only view of the whole platform, and credentials never show in it. The shell refuses `sqlite3` reads of the database and reads of the platform log, and names the `dojo_inspect` call that answers instead. `load_tool_docs("dojo_inspect")` has every argument.
+`dojo_inspect` is your read-only view of the whole platform, and credentials never show in it. You can also read the database and the platform log with the shell (`sqlite3 -readonly`, `grep`, `tail`); the credential tables stay refused there too. `load_tool_docs("dojo_inspect")` has every argument.
 
 - Everything that happened to an agent, a task or one turn, in order: `dojo_inspect(what="timeline", agent="<id>")`, `task_id="<id>"`, or `agent` with `turn`
 - An agent's messages: `dojo_inspect(what="conversation", agent="<id>")`, narrowed with `around`, `since` or `pattern`

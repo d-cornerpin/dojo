@@ -53,9 +53,8 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   const {
     agentId, turnCtx, triggerRow, hasUnansweredUser, counterparty, identicalCallState,
     startAckArmed, startAckArmedAtMs, engineStartAckDeliveredThisTurn, fireStartAckIfOwed,
-    engineBlockEscapeHatch, engineStartAckAfterMs,
+    engineStartAckAfterMs,
   } = ctx;
-  const ENGINE_BLOCK_ESCAPE_HATCH = engineBlockEscapeHatch;
   const ENGINE_START_ACK_AFTER_MS = engineStartAckAfterMs;
   const onceGuardExecuted = sc.onceGuardExecuted;
   let { state, recentSigs } = sc;
@@ -109,7 +108,7 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     return done({
       toolCallId: tc.id,
       name: tc.name,
-      content: loopCheck.refusalMessage! + '\n\n' + ENGINE_BLOCK_ESCAPE_HATCH,
+      content: loopCheck.refusalMessage!,
       isError: true,
     });
   }
@@ -189,6 +188,8 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
         }
       }
     } else {
+      // field fix 3 (#7): the A2A turn ends on an EXECUTED send only (`index.ts`).
+      if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') sc.a2aSendsExecuted += 1;
       const raced = await runUnlessStopped(agentId, tc, () => executeTool(agentId, tc));
       if (raced.stopped) return done(raced.result); // t203: the owner's Stop cut it (`stop-race.ts`)
       toolResult = toolResultOf(raced.outcome);

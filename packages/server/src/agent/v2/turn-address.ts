@@ -97,6 +97,7 @@ export function resolveDeliveryChannel(
     ownerAffinityChannel: live.ownerAffinityChannel,
     inboundChannel: addr.boundChannel,
     presence: live.presence,
+    personAskedHere: addr.kind === 'person',
   });
   return resolveReplyDestination({
     state: { inboundChannel: addr.boundChannel },
@@ -104,6 +105,7 @@ export function resolveDeliveryChannel(
     imessageBridgeConfigured: live.imessageBridgeConfigured,
     counterpartyIsOwner: addr.isOwner,
     ownerAffinityChannel: affinityRefused ? null : live.ownerAffinityChannel,
+    personAskedHere: addr.kind === 'person',
   });
 }
 

@@ -29,7 +29,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { OWNER_ALERT_SYSTEM_PREFIXES } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -150,7 +150,7 @@ const ownerAlerts = (): string[] =>
       ORDER BY rowid`,
   ).all(PRIMARY) as Array<{ content: string }>)
     .map((r) => r.content)
-    .filter((c) => c.startsWith(OWNER_ALERT_HEADS_UP_PREFIX));
+    .filter((c) => OWNER_ALERT_SYSTEM_PREFIXES.some((p) => c.startsWith(p)));   // the validation alert is labelled "Dojo:" (field fix 3 audit round #9)
 
 /** How many times the platform steered the primary about this row (durable ledger). */
 const steersOn = (id: string): number =>

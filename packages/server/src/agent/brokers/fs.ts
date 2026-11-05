@@ -23,10 +23,11 @@
 // `basis: 'bypass-hardening'` and Step 4 stages them.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { isTrainerAgent } from '../../config/platform.js';
+import { isTrainerAgent, isHealerAgent } from '../../config/platform.js';
 import { isProtectedIdentityPath } from '../path-resolve.js';
+import { ownsTheMac } from '../owns-the-mac.js';
 import { hasSquadWorkspaceAccess } from '../squad-workspace.js';
-import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier } from './deny.js';
+import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier, type DenyViewerArg } from './deny.js';
 import { evaluateRules, matchPathPattern, type Grant, type GrantEffectKind } from './grants.js';
 import type { ResolvedPath } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
@@ -61,15 +62,15 @@ const GRANT_KIND: Record<FsKind, GrantEffectKind> = {
  * verdict is `bypass-hardening`; when the lexical path is denied it is
  * `ladder-parity`, because that is the refusal the tree already produced.
  */
-export function globalDeny(kind: FsKind, resource: ResolvedPath): Verdict | null {
+export function globalDeny(kind: FsKind, resource: ResolvedPath, viewer?: DenyViewerArg): Verdict | null {
   for (const tier of tiersForKind(kind)) {
-    const lexicalRule = denyRuleFor(resource.lexical, tier);
+    const lexicalRule = denyRuleFor(resource.lexical, tier, viewer);
     if (lexicalRule) {
       const basis = lexicalRule.since === 'legacy' ? 'ladder-parity' : 'bypass-hardening';
       return deny(basis, lexicalRule.id, globalDenyReason(kind, tier, resource.raw));
     }
     if (resource.real !== resource.lexical) {
-      const realRule = denyRuleFor(resource.real, tier);
+      const realRule = denyRuleFor(resource.real, tier, viewer);
       if (realRule) {
         // The WRITE tier already resolved symlinks before T2, so a link caught
         // on that tier is parity; the read/delete tiers did not, so a link
@@ -127,7 +128,8 @@ export function authorizeFs(
     if (shared) return shared;
   }
 
-  const globallyDenied = globalDeny(kind, resource);
+  // Field fix 3: a row scoped to one agent (the Healer's log discipline) binds that agent only.
+  const globallyDenied = globalDeny(kind, resource, () => (ownsTheMac(grant.agentId) ? 'main' : isHealerAgent(grant.agentId) ? 'healer' : 'other'));
   if (globallyDenied) return globallyDenied;
 
   // FU-4: the technique trainer holds broad file_write ('*') for technique work,

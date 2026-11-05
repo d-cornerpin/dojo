@@ -142,8 +142,14 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     // owner, so this clause pins two things where it used to pin one: both halves are still
     // required, AND the second half is asked of `isTangibleDeliverySummary` rather than of a
     // truthiness check any future edit could quietly widen.
-    expect(engineText())
-      .toMatch(/st\.last_answered_turn !== null && isTangibleDeliverySummary\(st\.last_delivery_summary\)/);
+    //
+    // v3.5 field fix 3 review round 2 (ruled: an ack never counts as completion on any channel):
+    // the close-out gate's consult now asks the one task-level helper, whose stamp half requires
+    // an answered turn AND a delivered FILE; a channel line counts only as the task's answer under
+    // the ack-order rule. Both halves are still required, at the helper.
+    expect(engineText()).toMatch(/taskWorkOnRecord\(r\.id, st \?\? null\)/);
+    const evidence = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../delivery-evidence.ts'), 'utf8');
+    expect(evidence).toMatch(/stamp\.last_answered_turn !== null && stamp\.last_delivery_summary\?\.startsWith\('file '\)/);
     // and no consumer of the finished-work question may go back to reading the raw column
     expect(engineText()).not.toMatch(/last_answered_turn !== null && !?!?st\.last_delivery_summary\b/);
   });

@@ -69,9 +69,9 @@ const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8
 // 1. THE DEADLINE TABLE — thirteen rows, each carried from its own site
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('T9 — the per-kind deadline table has all THIRTEEN cliffs, each with its reason', () => {
-  it('thirteen ids, no more and no fewer', () => {
-    expect(DEADLINE_IDS).toHaveLength(13);
+describe('T9: the per-kind deadline table has all TWELVE cliffs, each with its reason', () => {
+  it('twelve ids, no more and no fewer (close_out_idle left in field fix 3 audit round #8)', () => {
+    expect(DEADLINE_IDS).toHaveLength(12);
     expect(Object.keys(DEADLINES).sort()).toEqual([...DEADLINE_IDS].sort());
   });
 
@@ -147,8 +147,9 @@ describe('T9 — the per-kind deadline table has all THIRTEEN cliffs, each with 
     // step package). Not weaker: the literal must still exist and still be exactly 10; the
     // widening only lets the clause find it wherever the cut put it, instead of going red for
     // a reason (the file moved) that has nothing to do with the deadline it guards.
-    expect(engineText()).toMatch(/const CLOSE_OUT_IDLE_MINUTES = 10;/);
-    expect(DEADLINES.close_out_idle.ms).toBe(10 * 60_000);
+    // Field fix 3 audit round (#8): the close-out gate's 10-minute clock is gone; the gate reads the
+    // agent's last whole turn. The literal must NOT come back.
+    expect(engineText()).not.toMatch(/CLOSE_OUT_IDLE_MINUTES/);
     // PHASE-6 GUARD-AUDIT 2026-08-04: `STALE_TASK_WINDOW_MINUTES` is declared at loop.ts:560 —
     // MODULE LEVEL, outside `runV2TurnBody` — so no tranche moves it and this clause CANNOT go
     // quiet from a step cut. Left reading the driver by path deliberately: naming the one file

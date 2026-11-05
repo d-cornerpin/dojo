@@ -259,7 +259,8 @@ export async function installPlatformTree(a: InstallTreeArgs): Promise<InstallTr
     if (marked) settlePendingInstall(a.dojoDir);
     logger.error('install failed during the swap', { error: (err as Error).message });
     return fail(`The update to ${a.targetVersion} stopped while switching versions (${(err as Error).message}). `
-      + `Dojo is now running ${treeVersion(platformDir) ?? 'no version'}; if it does not come back on its own, run ~/.dojo/scripts/rollback.sh.`);
+      // Field fix 3 audit round: a fact, never a chore (it told the owner to run rollback.sh).
+      + `Dojo is now running ${treeVersion(platformDir) ?? 'no version'}. The watchdog puts the previous version back if this one does not start.`);
   } finally {
     release();
   }

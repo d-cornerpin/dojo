@@ -2,7 +2,7 @@ import { closeoutReceipts } from './closeout-receipts.js';
 import { unvalidatedCompleteText } from './validation-request.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { getBoxTimeZone } from '../scheduler/engine.js';
@@ -56,7 +56,7 @@ import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // may import from it, never the reverse, so no cycle.
 import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
 import { effortNoveltyLines } from './effort-ledger.js';
-import { taskLastMovedAt, agentIsLive } from './liveness.js';
+import { taskLastMovedAt, agentIsLive, answeredSinceCheckIn } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
 import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './effort-verdict-failures.js';
@@ -2597,15 +2597,22 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     if ((assigneeStatus === 'working' && !looping) || leftAlone) holdLadder(task.id, getPMAgentId());
     else resumeLadder(task.id, getPMAgentId(), thresholds.first * 1000);
     if (assigneeStatus === 'working') continue;
-    const idleSeconds = Math.max(0, Math.floor((now - movedAt - heldMsSince(task.id, movedAt)) / 1000));
+    // Field fix 3 audit round (#8): the clock runs from the assignee's newest answer since the first
+    // check-in (a turn that worked THIS task: a "still working" note, a served turn, a ledger touch; re-review 2 S3, never tokens alone), when that
+    // is newer than the task's movement: an agent that said it is working is let work (OR-LONG-JOBS).
+    const answeredAt = answeredSinceCheckIn(task.id, task.assignedTo, movedAt);
+    const clockFrom = Math.max(movedAt, answeredAt ?? 0);
+    const idleSeconds = Math.max(0, Math.floor((now - clockFrom - heldMsSince(task.id, clockFrom)) / 1000));
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
     // the same, the store is the spine, and the previous cycle's pokes survive a remediation.
     // t143/t151: real work on the task since the last check-in (a status, an edit, a deliverable, a turn that
-    // did something) closes it. A reply or a plain note is an ANSWER, recorded, not progress: it re-arms nothing.
+    // did something) closes the cycle. Field fix 3 audit round (#8): so does the assignee's answer (a
+    // "still working" note) or a turn that worked this task; the old "a plain note re-arms nothing" sent the second
+    // check-in at 15 minutes and the escalation at 30 to an agent that had said it was working.
     const answered = lastPokeOf(task.id);
-    if (answered && movedAt > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
+    if (answered && clockFrom > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
     const lastPoke = lastPokeOf(task.id);
     const lastPokeNumber = currentRung(task.id);
 
@@ -2724,7 +2731,11 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // `deliveredVia` is a DISTINCT read of `deliveries` inside `findDeliveryEvidenceForTask`
     // (delivery-evidence.ts), so strike 2's tangible-handover test reads the delivery ledger
     // directly — T8c item 1's requirement, verified rather than rebuilt.
-    const tangibleHandover = !!deliveryEvidence && (deliveryEvidence.artifacts.length > 0 || deliveryEvidence.deliveredVia.length > 0);
+    // v3.5 field fix 3, review rounds 3-4: the handover is what the engine can count
+    // (`taskWorkOnRecord`: a delivered file, or a measure at 0). `deliveredVia` counted any
+    // channel line, so an "On it" read as a handover here and strike 2 could close on it.
+    const workOnRecord = deliveryEvidence ? taskWorkOnRecord(task.id, null) : null;
+    const tangibleHandover = !!workOnRecord;
     // The poke's instant is epoch ms now (`work_events.created_at`); the evidence's is the
     // `turns` table's TEXT instant. Compare as numbers, never as strings of different shapes.
     const evidenceAtMs = deliveryEvidence
@@ -2770,8 +2781,8 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     const escalateToAssignee = pokeType === 'escalate_primary' && (primaryId === task.assignedTo
       || !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId)));
     const basePokeMessage = deliveryEvidence && tangibleHandover
-      ? `DELIVERY ON RECORD: task "${task.title}" (${task.id}) still says in_progress, and the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
-        `If that delivery finished the task, close it with work_update(action="status", task_id="${task.id}", status="complete", result, evidence). ` +
+      // Review round 3: facts only, never close-coaching (product law, "Finishing, not closing").
+      ? `DELIVERY ON RECORD: task "${task.title}" (${task.id}) still says in_progress, and the engine's own records show ${workOnRecord}. ` +
         `If something remains, say what in a work_note and continue. ` +
         `Do NOT redo the work, and do NOT re-deliver what the user already has.`
       : buildPokeMessage(task, escalateToAssignee ? 'escalate_assignee' : pokeType, pokeNumber, idleSeconds, pokesSentThisCycle(task.id));

@@ -256,7 +256,7 @@ describe('A5 the scheduler tick keeps only scheduling', () => {
     const { REAPER_KINDS, REAPER_BASE_TICK_MS } = await import('../../work/work-reaper.js');
     const ids = REAPER_KINDS.map((k) => k.id);
     for (const id of ['orphaned-and-stale-runs', 'expired-pauses', 'validation-escalation',
-      'steered-run-delivery-close', 'terminal-task-prune']) {
+      'steered-run-delivery-close']) {
       expect(ids, `reaper is missing kind ${id}`).toContain(id);
     }
     // Every kind's period is an exact multiple of the base tick — the reaper's own law.
@@ -266,10 +266,9 @@ describe('A5 the scheduler tick keeps only scheduling', () => {
     }
   });
 
-  it('the hourly prune keeps its OWN period — the cadence is carried, not re-chosen', async () => {
+  it('there is no hourly prune: work records are kept (field fix 3 audit round #9, ruling 9d)', async () => {
     const { REAPER_KINDS } = await import('../../work/work-reaper.js');
-    const prune = REAPER_KINDS.find((k) => k.id === 'terminal-task-prune');
-    expect(prune?.everyMs).toBe(3_600_000);
+    expect(REAPER_KINDS.find((k) => k.id === 'terminal-task-prune')).toBeUndefined();
   });
 
   it('the validation escalation is declared as a kind that WAKES — the storm law can see it', async () => {

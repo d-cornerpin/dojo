@@ -18,14 +18,16 @@ import type { TurnCounterparty } from '../counterparty.js';
 
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
-const mk = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard', p: 'in_dojo' | 'away') =>
+// Owner ruling 2026-11-04: a person's DASHBOARD ask stays on the dashboard whatever the presence,
+// so the away shapes here use an owner turn that no dashboard message started (inbound null).
+const mk = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, p: 'in_dojo' | 'away') =>
   computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: p, imessageBridgeConfigured: true, ownerAffinityChannel: null });
 
 beforeEach(() => { presence.now = 'in_dojo'; ownerNumbers.clear(); ownerMail.length = 0; endTurnContext('primary'); });
 
 describe('R1: engine texts read the live address', () => {
   it('the start-ack steer follows a presence flip: told dashboard at preflight, the owner goes away, the line now says iMessage', () => {
-    const address = mk(owner, 'dashboard', 'in_dojo');
+    const address = mk(owner, null, 'in_dojo');
     expect(startAckSteerText({ address } as never)).toContain('reaches them by the dashboard chat');
     presence.now = 'away';
     expect(startAckSteerText({ address } as never)).toContain('reaches them by iMessage');
@@ -36,7 +38,7 @@ describe('R2: the owner is matched by the channel\'s own owner rule', () => {
   function ownerTurnAway() {
     presence.now = 'away';
     const t = openTurnContext('primary');
-    t.address = mk(owner, 'dashboard', 'away');
+    t.address = mk(owner, null, 'away');
   }
   it('emailing the owner\'s connected mailbox is the person this turn is talking to, never "not"', () => {
     ownerMail.push({ address: 'owner@owner-mail.test' });

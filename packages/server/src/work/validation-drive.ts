@@ -1093,7 +1093,7 @@ export function ownerEscalationAlertLine(p: {
   // Asserted: `__tests__/blocked-work-reaches-the-owner.test.ts` §5 (the sentence) and
   // `__tests__/t142-a-person-was-told.test.ts` §1 (the line is not spoken after a tell).
   const parts: string[] = [
-    `"${title}" has been ${p.status} since ${p.since}, and I have no record of anyone bringing it to you.`,
+    `"${title}" has been ${p.status} since ${p.since}, and the Dojo has no record of anyone bringing it to you.`,
   ];
 
   // THE VALIDATOR'S VERDICT, three-valued and never collapsed. "Upheld" is the case fix 1

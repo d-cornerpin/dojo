@@ -63,7 +63,8 @@ export type SteerFloorId =
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
   | 'output-grind' | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
   | 'repetition' | 'no-results' | 'add-notes-stop'
-  | 'tracker-stop-directive' | 'tracker-scaffold' | 'tracker-closeout' | 'hoarding-advisory';
+  | 'tracker-stop-directive' | 'tracker-scaffold' | 'tracker-closeout' | 'hoarding-advisory'
+  | 'redundant-closeout' | 'near-duplicate-reply' | 'prose-decline';
 
 export interface SteerFloorSpec {
   readonly id: SteerFloorId;
@@ -143,6 +144,11 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'tracker-stop-directive', priority: 70, why: 'multi-step work with no tracker entry' },
   { id: 'tracker-scaffold',      priority: 71, why: 'the engine opened the work row itself' },
   { id: 'tracker-closeout',      priority: 72, why: 'in_progress tasks left open on a non-user turn' },
+  // FIELD FIX 3 AUDIT ROUND (#11, V11): three floors that used to NULL the agent's reply now hold it
+  // once and state the fact; written again, the reply goes out. The reply has not reached the person.
+  { id: 'redundant-closeout',    priority: 73, why: 'a short final line after this turn already delivered its answer' },
+  { id: 'near-duplicate-reply',  priority: 74, why: 'a final reply matching one already sent' },
+  { id: 'prose-decline',         priority: 75, why: 'a final reply that opens as a decision not to reply' },
   { id: 'hoarding-advisory',     priority: 90, why: 'advice only — it never blocks and says so' },
 ];
 

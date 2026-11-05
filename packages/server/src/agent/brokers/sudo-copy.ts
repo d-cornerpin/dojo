@@ -149,20 +149,17 @@ export function sudoersDropInLine(username: string): string {
 }
 
 /**
- * The truthful, actionable answer when sudo would hang.
- *
- * It names WHAT happened (not a refusal — an unconfigured box), the ONE command to run, where it
- * goes, and the alternative (set the policy to `blocked`) so the reader is not cornered into
- * granting root to make a message go away.
+ * The truthful answer when sudo would hang: what happened, and which sudoers line makes it work, as
+ * FACTS. Field fix 3 audit round (#4): it used to hand the owner a chore ("a HUMAN runs this ONCE, by
+ * hand, in a terminal"); the owner is furious when the engine tells him to do it himself. The Dojo
+ * still never writes that file (the standing sudo rule), so the line is stated, not run.
  */
 export function sudoPasswordPromptMessage(username: string, policy: SudoPolicy): string {
   return 'Refused, and this is a box-setup gap rather than a permission denial: `sudo` on this '
-    + 'machine wants a password, and nothing here can type one — a non-interactive sudo would hang '
-    + 'at the prompt until the turn times out, so it is not attempted.\n\n'
-    + `The sudo policy is \`${policy}\`, so the command is allowed in principle. To make it actually `
-    + 'work, a HUMAN runs this ONCE, by hand, in a terminal on this Mac:\n\n'
-    + `    echo '${sudoersDropInLine(username)}' | sudo tee /etc/sudoers.d/dojo && sudo chmod 0440 /etc/sudoers.d/dojo\n\n`
-    + 'That grants passwordless sudo to this user account. Nothing in the platform writes that file '
-    + 'for you, on purpose. If you would rather not grant it, set Settings → Security → Administrator privileges '
-    + 'to `blocked` and the agent will stop asking.';
+    + 'machine wants a password, and nothing here can type one, so it is not attempted (a non-interactive '
+    + 'sudo would wait at the prompt until the turn times out).\n\n'
+    + `The sudo policy is \`${policy}\`, so the command is allowed in principle. sudo runs without a password `
+    + `for this account once /etc/sudoers.d/dojo holds this line, with mode 0440:\n\n    ${sudoersDropInLine(username)}\n\n`
+    + 'The Dojo never writes that file. With Settings → Security → Administrator privileges set to `blocked`, '
+    + 'the agent does not ask for sudo.';
 }

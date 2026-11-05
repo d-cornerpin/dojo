@@ -348,13 +348,16 @@ describe('§4 parseSudo', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§5 the password-prompt message', () => {
-  it('names the ONE command a human runs once, and the escape hatch', () => {
+  // Field fix 3 audit round (#4): the owner is furious when the engine hands him a chore ("I fucking
+  // LOVE when the agent tells the user 'do it yourself'"). The message states the facts (what sudo
+  // needs, which file and line make it run, that the Dojo never writes it), with no "run this by hand".
+  it('states what sudo needs and which sudoers line makes it run, as facts, with no chore for the owner', () => {
     const msg = sudoPasswordPromptMessage('dojo', 'gated');
     expect(msg).toContain('wants a password');
-    expect(msg).toContain('a HUMAN runs this ONCE');
+    expect(msg).not.toMatch(/a HUMAN runs|by hand|runs this|run this/i);
     expect(msg).toContain('/etc/sudoers.d/dojo');
     expect(msg).toContain(sudoersDropInLine('dojo'));
-    expect(msg).toContain('chmod 0440');
+    expect(msg).toContain('0440');
     // the escape hatch, so the reader is not cornered into granting root
     expect(msg).toContain('`blocked`');
     // and it is honest about what it is: not a permission denial

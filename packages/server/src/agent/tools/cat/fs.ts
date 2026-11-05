@@ -41,6 +41,7 @@ import { queueLinkArtifact } from '../../pending-attachments.js';
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
 import { resolveArgvArg } from '../../brokers/resolve.js';
 import { runProcess, resolveProcessCwd, processTimeout, type ProcessAudit } from '../process-run.js';
+import { personFirstFor } from '../person-first.js';
 import { auditLog, registerSharedFile, syncCanvasAfterWrite, toolsLogger as logger } from '../util.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
@@ -72,6 +73,7 @@ async function executeArgv(agentId: string, args: Record<string, unknown>): Prom
     argv: [...resolved.value.argv.slice(1)],
     timeout, cwd, note,
     audit: processAuditFor(agentId),
+    personFirst: personFirstFor(agentId, resolved.value.display),   // "your messages come first" (tools/person-first.ts)
   });
 }
 
@@ -99,6 +101,7 @@ async function executeShellScript(agentId: string, args: Record<string, unknown>
     argv: ['-c', script],
     timeout, cwd, note,
     audit: processAuditFor(agentId),
+    personFirst: personFirstFor(agentId, `shell script "${script.length > 200 ? `${script.slice(0, 200)}...` : script}"`),
   });
 }
 

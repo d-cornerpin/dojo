@@ -20,11 +20,9 @@
 //     checkpoint), which have no engine tool and keep working exactly as before v3.5. A file-level
 //     write (and sqlite3's `.restore`/`.open`/`.shell`/`.system`, which replace the file or leave sqlite3) is not a repair: refused for
 //     the Healer too (orchestrator rulings 2026-10-24, fix rounds 2 and 4).
-//   • a READ of the live database: an agent that HOLDS dojo_inspect is pointed at the view that
-//     answers (`schema` for a schema look, otherwise `sql`); any other agent is refused (same
-//     ruling): the file holds the platform's internals and the credential tables, which
-//     dojo_inspect refuses and the shell would not.
-//   • a read of the platform log (`dojo.log`, `dojo.log.1`): a holder is pointed at `logs`.
+//   • a READ of the live database or the platform log: ALLOWED for every agent since field fix 3
+//     (OR-MAC-BELONGS-TO-THE-AGENT, see `redirectDojoQuestion`). It used to point a dojo_inspect
+//     holder at the view and refuse any other agent; the classifier still names the read shapes.
 //
 // WHAT IT LEAVES ALONE, each pinned by a test: a command that looks only at the FILE (ls, stat,
 // du, wc, lsof, … — see the program lists below); any other file (another database, a backup like
@@ -32,8 +30,9 @@
 // non-holder's read of the log.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { holdsDojoInspect } from '../../inspect/grant.js';
-import { isHealerAgent } from '../../config/platform.js';
+import { isHealerAgent, isPrimaryAgent } from '../../config/platform.js';
+import { getDb } from '../../db/connection.js';
+import { refuseDeniedSql } from '../../inspect/redact.js';
 import { deny, type Verdict } from './types.js';
 
 /** The live database file by its basename, as a whole path segment (not `dojo.db.bak`). */
@@ -210,28 +209,76 @@ export function classifyDojoLine(line: string): DojoLineClass | null {
   return out;
 }
 
-const WRITE_REFUSAL = "Refused: the shell does not change the Dojo's own database (dojo.db and its -wal and -shm files). The platform's own tools make changes and repairs, so its records stay consistent; if no tool can make this change, report it instead.";
-const READ_REFUSAL = "Refused: the Dojo's own database is not read through the shell: it holds the platform's internals and its credentials. Ask the main agent if you need something looked up in it.";
+// A plain fact (field fix 3, Mac-belongs round): what the file is and what a write does to it.
+const WRITE_REFUSAL = "Refused: dojo.db and its -wal and -shm files are the running Dojo's live database, and a write to them from the shell corrupts it. Reading them is allowed.";
+const READ_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
-const VIEW_CALL = {
-  sql: 'dojo_inspect(what="sql", query="…")',
-  schema: 'dojo_inspect(what="schema", table="…")',
-  logs: 'dojo_inspect(what="logs", pattern="…")',
-} as const;
-
-/** The refusal for a line that writes the database, reads it, or asks the log a question; or null.
- *  Asked only after the broker allowed the line. */
+/**
+ * The refusal for a line that WRITES the live database, or null. Asked only after the broker allowed
+ * the line.
+ *
+ * OWNER RULING OR-MAC-BELONGS-TO-THE-AGENT (2026-10-31, verbatim): "The dojo should be able to save
+ * wherever it needs to save and create whatever folders it needs to create anywhere on the Mac.
+ * Remember, the Mac belongs to the dojo agent. That's the point." This used to refuse a shell READ of
+ * the database or the platform log too (pointing a dojo_inspect holder at the view, and refusing any
+ * other agent), and on the owner's box it refused the read-only `grep` and `sqlite3 -readonly` he
+ * asked his main agent to run. A read is now allowed for every agent. A write to the live database is
+ * still refused for every agent: that is the Dojo protecting itself while it runs, not a fence on the
+ * Mac (orchestrator's call, 2026-11-04). The Healer's repair STATEMENTS stay exempt exactly as before.
+ * `holdsDojoInspect` is no longer read here; the tools guidance still names the view as a fact.
+ */
 export function redirectDojoQuestion(agentId: string, line: string): Verdict | null {
   const cls = classifyDojoLine(line);
   if (!cls) return null;
   if (cls === 'repair' && isHealerAgent(agentId)) return null;   // the repair agent's statements (fix rounds 2 and 4)
-  if (cls === 'write' || cls === 'repair') return deny('ladder-parity', 'dojo-db-shell-write', 'the shell does not change the Dojo\'s own database', WRITE_REFUSAL);
-  const holder = holdsDojoInspect(agentId);
-  if (!holder) return cls === 'logs' ? null : deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo\'s own database is not read through the shell', READ_REFUSAL);
-  return deny(
-    'ladder-parity',
-    `dojo-inspect-redirect:${cls}`,
-    `the Dojo's ${cls === 'logs' ? 'log' : 'database'} is read through dojo_inspect, not the shell`,
-    `Refused: the Dojo's database and logs are read through dojo_inspect, not the shell. For this question: ${VIEW_CALL[cls]}. Call load_tool_docs("dojo_inspect") for the arguments.`,
-  );
+  if (cls === 'write' || cls === 'repair') return deny('ladder-parity', 'dojo-db-shell-write', 'a shell write to the live Dojo database corrupts it', WRITE_REFUSAL);
+  // AUDIT ROUND (#3): the owner's words name the MAIN agent ("the main agent owns the Mac they live
+  // in"), so the shell read of the live database is the main agent's and the Healer's. A worker's
+  // stays refused, as it was before field fix 3; its read of the platform log is unchanged.
+  if (cls === 'logs') return null;
+  if (!isPrimaryAgent(agentId) && !isHealerAgent(agentId)) {
+    return deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo database is read through the shell by the main agent and the Healer only', READ_REFUSAL);
+  }
+  // OR-AUDIT-ANSWERS (a), the owner: "Keep secrets hidden." The credential tables stay hidden from
+  // EVERY agent, the main agent included, exactly as dojo_inspect hides them: the same list and the
+  // same check (`inspect/redact.ts` refuseDeniedSql), never a copy.
+  const credential = credentialReadRefusal(line);
+  return credential ? deny('ladder-parity', 'dojo-db-credential-read', 'the Dojo database\'s credential tables stay hidden', credential) : null;
+}
+
+const WHOLE_FILE_REFUSAL = "Refused: a whole-file read of the Dojo's database carries its credential tables, which stay hidden from every agent. A sqlite3 query of the other tables runs.";
+/** sqlite3 dot-commands that print or copy the whole database, credential tables included. */
+const WHOLE_DB_DOT = /\.(?:dump|clone|backup|save|archive|recover|dbtotxt)\b/i;
+
+/** The SQL a sqlite3 segment carries: its quoted arguments, or every word after the database path. */
+function sqlOf(words: string[], segment: string): string[] {
+  const quoted = [...segment.matchAll(/"([^"]*)"|'([^']*)'/g)].map((m) => m[1] ?? m[2] ?? '').filter((q) => !namesDb(q));
+  if (quoted.length > 0) return quoted;
+  const at = words.findIndex(namesDb);
+  return at >= 0 && at < words.length - 1 ? [words.slice(at + 1).join(' ')] : [];
+}
+
+/** The fact that refuses a read reaching the credential tables, or null when the read reaches none. */
+function credentialReadRefusal(line: string): string | null {
+  for (const segment of line.split(/\|\|?|;|&&/)) {
+    const r = resolveCommand(segment.trim().split(/\s+/).filter(Boolean));
+    if (r.shellText !== undefined) { const inner = credentialReadRefusal(r.shellText); if (inner) return inner; continue; }
+    const words = r.words;
+    if (!words.some(namesDb)) continue;
+    const program = (words[0] ?? '').split('/').pop() ?? '';
+    if (r.opaque || program !== 'sqlite3') {
+      // Only a look at the FILE (ls, stat, du, wc, lsof, ...) passes; anything reading its contents
+      // other than a sqlite3 query carries every table.
+      if (r.opaque || SQL_PROGRAMS.has(program) || CONTENT_READERS.has(program) || program === 'dd') return WHOLE_FILE_REFUSAL;
+      continue;
+    }
+    if (WHOLE_DB_DOT.test(segment)) return WHOLE_FILE_REFUSAL;
+    let db: ReturnType<typeof getDb> | undefined;
+    try { db = getDb(); } catch { db = undefined; }
+    for (const sql of sqlOf(words, segment)) {
+      const refused = refuseDeniedSql(sql, db);
+      if (refused) return refused;
+    }
+  }
+  return null;
 }

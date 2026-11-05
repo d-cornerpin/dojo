@@ -5,14 +5,7 @@
 import { postAgentNotice } from './agent-notice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 
-/** The label every engine-spoken message to a person starts with. */
-export const DOJO_VOICE_PREFIX = 'Dojo:';
-
-/** The text as the Dojo speaking: starts with "Dojo:" (added once, never doubled). */
-export function dojoVoice(text: string): string {
-  const t = text.trim();
-  return t.startsWith(DOJO_VOICE_PREFIX) ? t : `${DOJO_VOICE_PREFIX} ${t}`;
-}
+export { DOJO_VOICE_PREFIX, dojoVoice } from './dojo-voice-label.js';
 
 /**
  * Tell an agent, on its next turn, what the Dojo sent on its behalf: the exact text and the recipient. Call it only AFTER the send; pass `sent: false` when it failed.

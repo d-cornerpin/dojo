@@ -4101,7 +4101,7 @@ describe('PHASE-6 CUT 7: the execute span kept the A2A re-send cap nobody tested
     // The refusal names the recipient and the cap, and says WHY re-sending cannot help.
     expect(refusals[0]).toContain('"alice"');
     expect(refusals[0]).toContain('5 messages this turn');
-    expect(refusals[0]).toContain('ASYNCHRONOUS');
+    expect(refusals[0]).toContain('asynchronous');   // field fix 3 audit round: a fact, no capitals, no order
   });
 
   it('DIFFERENT RECIPIENTS ARE INDEPENDENT — the cap is per recipient, not per turn', async () => {
@@ -4379,21 +4379,22 @@ describe('PHASE-6 CUT 8: a sub-agent that closes with text ends the turn, and th
 // from the one this guard describes.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is waiting on', () => {
-  /** The engine's own idle window; asserted against its declaration by the provenance
-   *  clause below, so a fixture that has drifted off the real threshold fails loudly
-   *  instead of quietly seeding a dangler the gate was never going to see. */
-  const CLOSE_OUT_IDLE_MINUTES = 10;
-
-  /** A task this agent claimed and has not touched since well before the window — the
-   *  exact row shape `(1) Tasks the agent is in_progress on` selects. */
+  /** A task this agent claimed and then passed over for a whole turn: the exact row shape
+   *  `(1) Tasks the agent is in_progress on` selects. Field fix 3 audit round (#8): the gate
+   *  reads the agent's last whole turn, not a 10-minute clock, so the fixture seeds that turn. */
   function seedDangler(id = 'w-dangler'): void {
-    const stale = Date.now() - (CLOSE_OUT_IDLE_MINUTES + 20) * 60_000;
+    const stale = Date.now() - 30 * 60_000;
     mockDb.current!.prepare(
       `INSERT INTO work (id, agent_id, kind, requester, root_kind, root_id, state, intent,
                          wakes, closes_thread, title, opened_at, updated_at)
        VALUES (?, 'primary', 'task', 'owner', 'tracker', ?, 'claimed',
                'action', 1, 0, 'the abandoned one', ?, ?)`,
     ).run(id, id, stale, stale);
+    const sqlAt = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+    mockDb.current!.prepare(
+      `INSERT OR IGNORE INTO turns (agent_id, turn_number, kind, subject_kind, answered, started_at, ended_at, exit_reason)
+       VALUES ('primary', 900, 'user', 'conv', 1, ?, ?, 'answered')`,
+    ).run(sqlAt(Date.now() - 20 * 60_000), sqlAt(Date.now() - 19 * 60_000));
   }
 
   /** The model reaches straight for a NON-tracker tool, then answers. That first call is
@@ -4429,12 +4430,10 @@ describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is wai
         && e.result.includes('Refused: engine tracker check');
     });
 
-  it('PROVENANCE: the idle window seeded here is the engine\'s own declaration', () => {
-    // Over the ENGINE's source — the driver plus every step package — so this clause
-    // follows the code through the cut instead of going quiet when it moves.
-    expect(engineSource()).toMatch(
-      new RegExp(`const CLOSE_OUT_IDLE_MINUTES = ${CLOSE_OUT_IDLE_MINUTES};`),
-    );
+  it('PROVENANCE: the gate has no idle clock to seed against (field fix 3 audit round #8)', () => {
+    // Over the ENGINE source (the driver plus every step package). The 10-minute clock is gone;
+    // the gate reads the agent's last whole turn, and the fixture above seeds one.
+    expect(engineSource()).not.toMatch(/CLOSE_OUT_IDLE_MINUTES/);
   });
 
   it('POSITIVE CONTROL: on a background turn the gate ARMS and REFUSES the non-tracker call', async () => {

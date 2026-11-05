@@ -383,6 +383,10 @@ describe('ROUND 4 (C1): "moving" is no blanket shield — only the job in flight
     db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
                   VALUES ('asst-onit', 'helper', 'assistant', 'On it - I will have the prices shortly.', 9, ?)`).run(now - MIN);
     modelCallFinished(now - MIN);
+    // The "on it" turn's own record (field fix 3 audit round #8: the close-out gate reads the agent's
+    // last whole turn, not a 10-minute clock; this is the turn that passed the task over).
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+                  VALUES ('helper', 9, ?, ?, 'answered', 1)`).run(sqlTime(now - 2 * MIN), sqlTime(now - MIN));
   }
 
   it('the "on it" + claimed-and-left task is named by the close-out gate and nudged by the PM on schedule, however recently the agent spoke', async () => {
@@ -514,6 +518,8 @@ describe('ROUND 5 (R4-C1): the job carry has no clock — only its tasks closing
     beginJobRun('helper', 'timer');
     const tc = openTurnContext('helper');
     tc.turnNumber = 42;
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+                  VALUES ('helper', 42, ?, ?, 'answered', 0)`).run(sqlTime(now - 50 * MIN), sqlTime(now - 49 * MIN));
     endTurnContext('helper');
     endJobRun('helper');
     vi.setSystemTime(now);

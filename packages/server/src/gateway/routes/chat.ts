@@ -179,6 +179,11 @@ export async function submitUserMessage(
 
   queueEmbedding('message', messageId, agentId, content);
 
+  // ⟨TOMBSTONE⟩ Field fix 3 re-review 2 (S9): a presence flip lived here (a dashboard message while
+  // "away" set presence to in-dojo and broadcast `system:presence`). The owner's words ("if a user
+  // types a message on the dashboard, they get a response on the dashboard") are met by the reply
+  // binding alone (`agent/v2/reply-destination.ts`); the flip went past them. Presence is his switch.
+
   // NOTE (duplicate-work root fix): we deliberately do NOT preempt the running
   // turn here. preemptAgentForUrgentMessage aborts the in-flight turn so the new
   // message can run sooner — but the abort lands AFTER the turn has already

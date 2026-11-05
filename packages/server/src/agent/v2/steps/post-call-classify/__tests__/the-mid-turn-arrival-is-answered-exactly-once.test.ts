@@ -376,7 +376,8 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
     expect((src.match(/type: 'chat:workingnote'/g) ?? []).length).toBe(1);
     // 1 declaration + 3 calls (v3.5 D1 pre-review ruling 2 added the third: a continued job's progress
     // line, through the SAME helper — which is what this clause protects).
-    expect((src.match(/demoteToWorkingNote\(/g) ?? []).length).toBe(4);
+    // Field fix 3 audit round (#11): +1, `holdAndSteer` keeps the held reply through the SAME helper.
+    expect((src.match(/demoteToWorkingNote\(/g) ?? []).length).toBe(5);
   });
 });
 
