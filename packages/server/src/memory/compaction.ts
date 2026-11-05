@@ -1138,7 +1138,7 @@ export async function runLeafCompaction(
         targetTokens: Math.min(summaryTargetTokens(content, modelCharsPerToken(modelId)), leafKeepCap(viewBudget, conversationLabels(chunk).labelOf.get(chunk[0].id), modelCharsPerToken(modelId))),
         agentId,
         modelId,
-        abortSignal: opts?.abortSignal, spanIds: messageIds,   // v3.5: a span whose check failed is known by its rows
+        abortSignal: opts?.abortSignal, spanIds: messageIds, spanOpen: chunks.length === 0,   // v3.5: known by its rows; S6: the last chunk is open
       });
 
       // PHASE-3 T5 Step 2: a REFUSAL leaves the chunk exactly where it is. `createLeafSummary`

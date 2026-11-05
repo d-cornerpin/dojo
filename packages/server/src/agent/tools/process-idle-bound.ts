@@ -33,7 +33,7 @@ export type { ChildRunFailure };
  * failure string in `process-run.ts` is untouched.
  *
  * `idleMs` re-arms on each chunk from either stream. `ceilingMs` (optional; the agent's own door passes none,
- * rulings audit #14) does not re-arm — it is the one bound on total life, and the two are distinguished in the rejection so the agent is told which
+ * rulings audit #14) does not re-arm: it is the one bound on total life, and the two are distinguished in the rejection so the agent is told which
  * one ended its command rather than a single ambiguous "timed out".
  */
 export async function runWithIdleBound(

@@ -155,13 +155,13 @@ export function summaryCheckRefusedSince(agentId: string, sinceMs: number): bool
   } catch { return false; }
 }
 
-import { spanKeys, spanRefused, recordRefusedSpan, clearRefusedSpan, type SummaryParams } from './summary-check-ledger.js';
+import { spanKeys, spanHeld, recordRefusedSpan, clearRefusedSpan, type SummaryParams } from './summary-check-ledger.js';
 
 /** `generateSummary`'s body: write (settled), then keep only what passes. `write` is the settled writer call. */
 export async function writeThenCheck<P extends SummaryParams>(params: P, write: (p: P) => Promise<SummaryResult>): Promise<SummaryResult> {
   const keys = params.modelId ? spanKeys(params) : [];
-  if (keys.length > 0 && summaryCheckActs() && spanRefused(keys)) {   // never loops: a refused span waits for a real signal
-    return { ok: false, checkFailed: true, reason: 'this span failed its accuracy check; it is left as it is until the summary writer changes or new rows join it' };
+  if (keys.length > 0 && summaryCheckActs() && spanHeld(keys, params.spanOpen === true)) {   // S6: handled; it waits for a real signal
+    return { ok: false, checkFailed: true, reason: 'this span failed its accuracy check; it is left as it is until its writer changes or it closes with new rows' };
   }
   const written = await write(params);
   if (!written.ok || !params.modelId) return written;

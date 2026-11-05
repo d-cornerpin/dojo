@@ -97,7 +97,7 @@ vi.mock('../../gateway/ws.js', () => ({
  * prompt `getDepthPrompt` builds for that depth, which is how the depth-2 clause proves the
  * previously-unreachable prompt is now the one sent — and answers however the clause says.
  */
-interface SummaryCall { depth: number; targetTokens: number; contentTokens: number; prompt: string }
+interface SummaryCall { depth: number; targetTokens: number; contentTokens: number; prompt: string; spanOpen?: boolean }
 const calls: SummaryCall[] = [];
 type Answer = (p: { depth: number; targetTokens: number; content: string }) =>
   Promise<{ ok: true; text: string; tokenCount: number } | { ok: false; reason: string }>;
@@ -117,9 +117,9 @@ vi.mock('../summarize.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../summarize.js')>();
   return {
     ...actual,
-    generateSummary: async (p: { depth: number; targetTokens: number; content: string }) => {
+    generateSummary: async (p: { depth: number; targetTokens: number; content: string; spanOpen?: boolean }) => {
       calls.push({
-        depth: p.depth, targetTokens: p.targetTokens,
+        depth: p.depth, targetTokens: p.targetTokens, spanOpen: p.spanOpen,
         contentTokens: Math.ceil(p.content.length / 4),
         prompt: actual.getDepthPrompt(p.depth, p.targetTokens),
       });
@@ -671,6 +671,17 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
     expect(result.leafCreated, 'the rows before the protected recent part are folded').toBeGreaterThan(0);
     expect(compactionFailureReason(AGENT), 'and it is not a failing compaction').not.toBe('no_yield');
     expect(frames.filter(f => f.type === 'chat:error'), 'the owner is not blamed for a tail the platform grew').toEqual([]);
+  });
+
+  // Re-review 2 S6: a fold marks only its LAST chunk open (still growing), so a refused row there holds that span until
+  // it closes instead of re-running the check on every busy pass (summary-check-ledger.ts spanHeld).
+  it('S6: only the fold\'s last leaf chunk is marked open', async () => {
+    mockDb.current!.prepare('UPDATE messages SET token_count = 4000 WHERE agent_id = ?').run(AGENT);
+    __resetEstimateCacheForTests();
+    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+    const leaves = calls.filter((c) => c.depth === 0).map((c) => c.spanOpen === true);
+    expect(leaves.length, 'non-vacuity: the fold wrote more than one chunk').toBeGreaterThan(1);
+    expect(leaves).toEqual([...Array(leaves.length - 1).fill(false), true]);
   });
 });
 

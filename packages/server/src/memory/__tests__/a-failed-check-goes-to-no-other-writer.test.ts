@@ -103,16 +103,16 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
 
   it('fix round 4 (NB-9): refusals under an earlier writer setting are pruned; a span summarized after all leaves none', async () => {
     const refused = (): string[] => (db().prepare("SELECT key FROM healer_state WHERE scope = 'summary_span_refused' ORDER BY key").all() as Array<{ key: string }>).map((r) => r.key);
-    // v3.5 field fix 3: the key's setting part is empty now (no setting); a row an earlier build wrote under a pick is
-    // pruned by the next refusal, so a box that carried the pick keeps no stale refusals.
+    // Re-review 2 S6: the key's middle part is the agent's OWN model (the owner's pick, what writes its summaries); a
+    // row recorded under an earlier own model is pruned by the next refusal, for this agent only.
     db().prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('summary_span_refused', ?, 1)").run(`${AGENT}|writer-small|msg-7`);
     await generateSummary({ ...span, modelId: 'writer-small' });
-    expect(refused()).toEqual([`${AGENT}||msg-1`, `${AGENT}||msg-2`]);   // the old setting's row is gone
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);   // the old own model's row is gone
     await generateSummary({ ...span, spanIds: ['msg-9'], modelId: 'paid-own' });
-    expect(refused()).toEqual([`${AGENT}||msg-1`, `${AGENT}||msg-2`, `${AGENT}||msg-9`]);
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`, `${AGENT}|paid-own|msg-9`]);
     writers.fine.add('SPAN-B');
     await generateSummary({ ...span, content: rows('SPAN-B'), spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
-    expect(refused()).toEqual([`${AGENT}||msg-1`, `${AGENT}||msg-2`]);   // summarized with a new row: none left for its own rows
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);   // summarized with a new row: none left for its own rows
   });
 
   it('(iii) never blocks the newer placeholders of the agent: each span is its own', async () => {
