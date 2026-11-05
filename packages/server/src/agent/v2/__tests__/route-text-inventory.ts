@@ -191,26 +191,6 @@ export const ALLOW: readonly AllowEntry[] = [
   "reason": "the no-person fallback of an address-aware text"
  },
  {
-  "file": "agent/v2/steps/assemble/technique-hints.ts",
-  "line": "`[DOJO TECHNIQUE, engine-injected. This is technique guidance (precedence: task/technique notes); the user's live message above outranks it wherever they conflict.]`;",
-  "reason": "technique guidance saying the live message outranks it; refers to the live message, not to a recipient"
- },
- {
-  "file": "agent/v2/steps/assemble/technique-hints.ts",
-  "line": "`${header}\\nThis task matches the \"${strongMatch.technique.name}\" technique. The full instructions are too long to inline (${md.length} chars), load it via use_technique('${strongMatch.technique.id}') before doing the work, then follow its steps unless the user said otherwise.`;",
-  "reason": "technique guidance saying the live message outranks it; refers to the live message, not to a recipient"
- },
- {
-  "file": "agent/v2/steps/assemble/technique-hints.ts",
-  "line": "`${header}\\nThis task matches the \"${strongMatch.technique.name}\" technique. Follow the procedure below unless the user's message says otherwise.\\n\\n` +",
-  "reason": "technique guidance saying the live message outranks it; refers to the live message, not to a recipient"
- },
- {
-  "file": "agent/v2/steps/assemble/technique-hints.ts",
-  "line": "`Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\\n\\n` +",
-  "reason": "technique guidance saying the live message outranks it; refers to the live message, not to a recipient"
- },
- {
   "file": "agent/v2/steps/execute/refusal-gates.ts",
   "line": "`You've already called this tool with these exact arguments; the first call's result is in this conversation.\\n\\n` +",
   "reason": "a context phrase ('the first call's result is in this conversation'), not a route"

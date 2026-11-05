@@ -308,6 +308,41 @@ function toolFamilyIndex(): Map<string, IntegrationFamily> {
 /** Test seam — the index is derived from a module constant, so forgetting is always safe. */
 export function forgetToolFamilyIndex(): void {
   familyIndex = null;
+  toolNamePattern = null;
+}
+
+// ── v3.5 owner test 2, fix rank 5: WHICH INTEGRATION A SAVED TECHNIQUE WORKS IN ──
+// A technique declares no family field, but its procedure names the tools it calls (`outlook_send`,
+// `user_gmail_search`), and those are identifiers from this one table, never prose. A technique's families are the
+// families of the tool names its text names, plus a tag that IS a family name. None named: it is not an integration
+// technique, and no family gate applies to it.
+let toolNamePattern: RegExp | null = null;
+const FAMILY_NAMES: readonly IntegrationFamily[] = ['google', 'microsoft', 'plaud'];
+
+/** The integration families a technique's procedure and tags name (see above). */
+export function techniqueFamilies(text: string | null | undefined, tags: readonly string[] = []): Set<IntegrationFamily> {
+  const index = toolFamilyIndex();
+  const out = new Set<IntegrationFamily>();
+  for (const t of tags) if ((FAMILY_NAMES as readonly string[]).includes(t.toLowerCase())) out.add(t.toLowerCase() as IntegrationFamily);
+  if (!text) return out;
+  if (!toolNamePattern) {
+    const names = [...index.keys()].sort((a, b) => b.length - a.length).map((n) => n.replace(/[^a-z0-9_]/gi, ''));
+    toolNamePattern = new RegExp(`\\b(${names.join('|')})\\b`, 'g');
+  }
+  for (const m of text.matchAll(toolNamePattern)) {
+    const family = index.get(m[1]);
+    if (family) out.add(family);
+  }
+  return out;
+}
+
+/** The integration families this agent can use now: configured, granted to it, and connected. */
+export async function usableIntegrationFamilies(agentId: string): Promise<Set<IntegrationFamily>> {
+  try {
+    return new Set((await integrationRows(agentId)).filter((r) => r.connected).map((r) => r.family));
+  } catch {
+    return new Set();
+  }
 }
 
 /** The open failure each family carries for this agent; `readToolOutcomes` is newest-first and
