@@ -163,8 +163,14 @@ export async function runProcess(input: {
   cwd: string | undefined;
   note: string | null;
   audit: ProcessAudit;
+  /** OWNER RULING "Your messages come first" (field fix 3, re-review 2): is a person's message
+   *  waiting for this agent right now? While one is, the call hands the turn back and the command
+   *  keeps running in the background. Absent: the call waits for the command, as before. */
+  personWaiting?: () => boolean;
+  /** Where a command's result goes when it ends after the call was handed back. */
+  whenDoneLater?: (text: string) => void;
 }): Promise<string> {
-  const { auditTarget, file, argv, timeout, cwd, note, audit } = input;
+  const { auditTarget, file, argv, timeout, cwd, note, audit, personWaiting, whenDoneLater } = input;
   // ── HONEST FAILURE FOR SUDO (owner ruling 2026-09-26, v3.2.2) ──
   // A sudo line on a box with no NOPASSWD rule does not fail — it BLOCKS on a password prompt nobody
   // can type into, and the turn dies on the timeout with nothing to read. `sudoWouldHang` probes it
@@ -175,15 +181,44 @@ export async function runProcess(input: {
     audit(auditTarget, 'error', 'sudo requires a password on this box; nothing was run');
     return hang;
   }
-  try {
-    // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and
-    // the run streams so each chunk can re-arm it. A healthy long build talks the whole way
-    // through and survives; a wedged command says nothing and is still killed.
-    const { stdout, stderr } = await runWithIdleBound(file, argv, {
-      idleMs: timeout,
-      ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
-      ...(cwd ? { cwd } : {}),
+  // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and the run
+  // streams so each chunk can re-arm it. A healthy long build talks the whole way through and
+  // survives; a wedged command says nothing and is still killed. The idle bound, the ceiling and the
+  // Stop button reach the child the same way whether or not the call has been handed back.
+  const running = runWithIdleBound(file, argv, {
+    idleMs: timeout,
+    ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
+    ...(cwd ? { cwd } : {}),
+  });
+  const settle = (p: Promise<{ stdout: string; stderr: string }>): Promise<string> => settleProcess(p, input);
+  if (personWaiting && whenDoneLater) {
+    // "Your messages come first": the call races the command against a person's message arriving.
+    // The check is the record (a waiting message), read on a short poll; no clock decides anything.
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const handedBack = new Promise<'person'>((resolve) => {
+      const check = (): void => { try { if (personWaiting()) resolve('person'); } catch { /* keep waiting on the command */ } };
+      check();
+      poll = setInterval(check, 250);
     });
+    const outcome = settle(running);
+    const first = await Promise.race([outcome, handedBack]);
+    clearInterval(poll);
+    if (first !== 'person') return first;
+    void outcome.then((text) => { try { whenDoneLater(text); } catch { /* the hand-over is best effort */ } });
+    return '[The command is still running in the background: a message from a person is waiting, and it comes first. '
+      + 'The command keeps running; when it ends, the Dojo hands you its full result and wakes you.]';
+  }
+  return settle(running);
+}
+
+/** The command's result as the agent reads it, and its audit row. */
+async function settleProcess(
+  running: Promise<{ stdout: string; stderr: string }>,
+  input: { auditTarget: string; timeout: number; note: string | null; audit: ProcessAudit },
+): Promise<string> {
+  const { auditTarget, timeout, note, audit } = input;
+  try {
+    const { stdout, stderr } = await running;
     const out = (stdout ?? '').trim();
     const err = (stderr ?? '').trim();
     audit(auditTarget, 'success',
