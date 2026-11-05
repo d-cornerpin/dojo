@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // v3.5 — WHAT THE SUMMARY CHECK HAS RECORDED (split from `summary-check.ts`, fix round 2): the spans that
 // failed their check (so no writer is handed them again until something changes), and the running numbers
-// the Healer report and the owner's Summarization Model card read.
+// the Healer report reads.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createHash } from 'node:crypto';
@@ -90,7 +90,7 @@ export type SummaryParams = { content: string; agentId: string; modelId?: string
 // `summary_span_refused`, key agent|setting|row id): a span is refused when every one of its rows is.
 const REFUSED_SCOPE = 'summary_span_refused';
 export const spanKeys = (p: SummaryParams): string[] => {
-  const setting = (getDb().prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value ?? '';
+  const setting = '';   // v3.5 field fix 3: there is no summary-writer setting (owner ruling); the key's part stays empty
   const ids = p.spanIds && p.spanIds.length > 0 ? p.spanIds : [`content:${createHash('sha256').update(p.content).digest('hex').slice(0, 32)}`];
   return ids.map((id) => `${p.agentId}|${setting}|${id}`);
 };
@@ -128,23 +128,6 @@ export function summaryCheckLine(): string | null {
     return `Summary check (kept window): ${r.n} checked, ${r.ok ?? 0} kept as written, ${r.rw ?? 0} kept after one rewrite, `
       + `${r.failed ?? 0} left the rows whole, ${r.un ?? 0} unchecked (decision model unavailable).`;
   } catch { return null; }
-}
-
-/**
- * (iv, fix round 2) What the owner's Summarization Model card says: is THIS BOX'S SUMMARY WRITER failing the check
- * in the kept window? It is his pick; with none (t268, owner 2026-10-24: each agent's own model writes), the writer
- * this box's checks were last made for. Owner 2026-10-20: "the user is encouraged to
- * change the summarization model to another larger model" — the card says so while this is true.
- */
-export function summaryWriterStatus(): { writer: string | null; failed: number; total: number; failing: boolean } {
-  try {
-    const db = getDb();
-    const writer = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value
-      || (db.prepare("SELECT writer_model_id AS w FROM summary_checks WHERE outcome != 'unavailable' ORDER BY id DESC LIMIT 1").get() as { w: string } | undefined)?.w;
-    if (!writer) return { writer: null, failed: 0, total: 0, failing: false };
-    const status = writerFailing(writer);
-    return { writer, ...status, failing: status.failing && summaryCheckActs() };   // t268: a shadow verdict tells no one
-  } catch { return { writer: null, failed: 0, total: 0, failing: false }; }
 }
 
 /**

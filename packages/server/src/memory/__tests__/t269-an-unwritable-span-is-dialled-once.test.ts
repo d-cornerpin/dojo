@@ -56,6 +56,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { condenseUntilFits } from '../condense-until-fits.js';
 import { rebuildContextItems } from '../compaction.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { insertMessage } from '../message-store.js';
 import { findToolResult } from '../kept-results.js';
 import { __resetSummaryWriterHealthForTests, noteSummaryWriterOutcome } from '../summary-writer-health.js';
@@ -73,7 +74,6 @@ beforeEach(() => {
   runMigrations();
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('p-w', 'W', 'openai-compatible', 'http://127.0.0.1:1', 'api_key', 1)").run();
   db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-w', 'p-w', 'w', 'w', '[\"chat\"]', 131072, 0, 1)").run();
-  db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-w')").run();
   db().prepare("INSERT INTO agents (id, name, model_id, status, config, session_started_at) VALUES (?, 'Unwritable', 'm-w', 'idle', '{}', '1970-01-01')").run(AGENT);
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
@@ -164,7 +164,14 @@ describe('t269 I1 — a single row no writer can summarise is kept whole behind 
 });
 
 // ── Fix round 2 (re-review N1, N2) ───────────────────────────────────────────────────────────
-describe('t269 fix round 2 — the mark is the writers\' verdict under the owner\'s writer setting (N1)', () => {
+// v3.5 field fix 3 (edited throughout this block: the second writer was the owner's Settings pick, a setting the owner
+// ruled must not exist): the writers are the agent's own model and, here, the Dojo's small writer.
+describe('t269 fix round 2: the mark is the writers\' verdict, and a change of writer tries the span again (N1)', () => {
+  /** The Dojo's small writer on the box's local Ollama: the fallback after the agent's own model. */
+  const smallWriter = (): void => {
+    db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1)").run();
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-std', 'ollama-local', ?, ?, '[\"chat\"]', 131072, 0, 1)").run(STANDARD_WRITER_MODEL.tag, STANDARD_WRITER_MODEL.tag);
+  };
   /** A second, bigger writer on its own provider (so its health is its own). */
   const bigWriter = (): void => {
     db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('p-big', 'B', 'openai-compatible', 'http://127.0.0.1:2', 'api_key', 1)").run();
@@ -173,21 +180,21 @@ describe('t269 fix round 2 — the mark is the writers\' verdict under the owner
   };
   const parents = (): number => (db().prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND depth = 1').get(AGENT) as { n: number }).n;
 
-  it('the owner picks a bigger writer: a span marked under the old setting is tried again, and merges', async () => {
+  it('the owner gives the agent a bigger model: a span marked by the old writer is tried again, and merges', async () => {
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense(); await condense();
     expect(writer.dials).toBe(1);
     bigWriter();
-    db().prepare("UPDATE config SET value = 'm-big' WHERE key = 'compaction_model_id'").run();
+    db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = ?").run(AGENT);
     await condense();
     expect(parents(), 'merged by the new writer').toBe(1);
   });
 
-  // t268's one writer order: the Summarization pick, then the agent's own model (`m-w` here), then the small writer.
+  // The writer order: the agent's own model, then the small writer (no pick: v3.5 field fix 3).
   it('an outage: a writer passed over is never marked as refusing; when it answers again the span is tried, and merges', async () => {
     bigWriter();
-    db().prepare("UPDATE config SET value = 'm-big' WHERE key = 'compaction_model_id'").run();   // the pick: capable
-    noteSummaryWriterOutcome('m-big', false);   // …but not answering: not eligible; the agent's own model is
+    db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = ?").run(AGENT);   // the agent's own model: capable
+    noteSummaryWriterOutcome('m-big', false);   // …but not answering: not eligible, and nothing else can write
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense();
     const afterOutage = writer.dials;
@@ -200,9 +207,7 @@ describe('t269 fix round 2 — the mark is the writers\' verdict under the owner
   });
 
   it('every candidate writer cut it: marked, and no writer is dialled again', async () => {
-    db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('p-2', 'W2', 'openai-compatible', 'http://127.0.0.1:3', 'api_key', 1)").run();
-    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-2', 'p-2', 'w2', 'w2', '[\"chat\"]', 131072, 1, 1)").run();
-    db().prepare("UPDATE config SET value = 'm-2' WHERE key = 'compaction_model_id'").run();   // the pick, then the own model
+    smallWriter();   // the own model, then the Dojo's small writer
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     for (let i = 0; i < 4; i += 1) await condense();
     expect(writer.dials, 'each of the two candidates once').toBe(2);
@@ -222,22 +227,26 @@ describe('t269 fix round 2 — a span no writer is left for is not counted as me
 describe('t269 N6 — an oversize placeholder is split when every ANSWERING writer refused it; an out writer never blocks the split', () => {
   const maxSeq = (): number => (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
   const notes = () => db().prepare('SELECT kind, content FROM summaries WHERE agent_id = ? ORDER BY earliest_at').all(AGENT) as Array<{ kind: string; content: string }>;
-  it('the pick is out (server off): the own model\'s refusals split the span to single rows, none kept whole; when the pick is back it writes them', async () => {
+  // v3.5 field fix 3 (edited: the out writer was the Settings pick): the out writer is the agent's own model, and the
+  // Dojo's small writer (here unable to write the rows whole) is the one answering.
+  it('the own model is out (server off): the small writer\'s refusals split the span to single rows, none kept whole; when the own model is back it writes them', async () => {
     db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('p-big', 'B', 'openai-compatible', 'http://127.0.0.1:2', 'api_key', 1)").run();
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-big', 'p-big', 'b', 'b', '[\"chat\"]', 1000000, 1, 1)").run();
-    db().prepare("UPDATE config SET value = 'm-big' WHERE key = 'compaction_model_id'").run();
+    db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1)").run();
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-std', 'ollama-local', ?, ?, '[\"chat\"]', 131072, 0, 1)").run(STANDARD_WRITER_MODEL.tag, STANDARD_WRITER_MODEL.tag);
+    db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = ?").run(AGENT);
     writer.capable.add('m-big');
-    noteSummaryWriterOutcome('m-big', false);   // the pick is out
+    noteSummaryWriterOutcome('m-big', false);   // the own model is out
     for (let t = 1; t <= 4; t += 1) insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `UNWRITABLE row ${t}: ${'filler words '.repeat(40)}`, turnNumber: t });
     const through = maxSeq();
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: 'ok', turnNumber: 9 });
     writeUncondensedPlaceholders(AGENT, through);
     await replaceUncondensedPlaceholders(AGENT);
-    expect(writer.dials, 'the own model: 1 + 2 + 4').toBe(7);
-    expect(notes().map((s) => s.kind), 'split to single rows, none kept whole: the pick has not been asked').toEqual(['uncondensed', 'uncondensed', 'uncondensed', 'uncondensed']);
+    expect(writer.dials, 'the small writer: 1 + 2 + 4').toBe(7);
+    expect(notes().map((s) => s.kind), 'split to single rows, none kept whole: the own model has not been asked').toEqual(['uncondensed', 'uncondensed', 'uncondensed', 'uncondensed']);
     noteSummaryWriterOutcome('m-big', true);
     await replaceUncondensedPlaceholders(AGENT);
-    expect(notes().map((s) => s.kind), 'the pick, back, writes each row').toEqual(['leaf', 'leaf', 'leaf', 'leaf']);
+    expect(notes().map((s) => s.kind), 'the own model, back, writes each row').toEqual(['leaf', 'leaf', 'leaf', 'leaf']);
   });
 });
 

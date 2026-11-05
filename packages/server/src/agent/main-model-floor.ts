@@ -100,4 +100,4 @@ export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [
  * service agents' main models above, and the engine jobs a person picks a model for: the summary writer,
  * the voice opener and the vision fallback (owner ruling 2026-10-19, "an agent or anything else").
  */
-export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'compaction_model_id', 'voice.opener_model', 'dojo_fallback_vision_model_id'];
+export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'voice.opener_model', 'dojo_fallback_vision_model_id'];

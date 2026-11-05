@@ -31,7 +31,6 @@ export const SETTINGS_CARDS = {
   textToSpeech: { tab: 'models', title: 'Text-to-Speech (TTS) Model' },
   musicGeneration: { tab: 'models', title: 'Music Generation Model' },
   transcription: { tab: 'models', title: 'Transcription Model' },
-  summarization: { tab: 'models', title: 'Summarization Model' },
   yourMailboxes: { tab: 'profile', title: 'Your Mailboxes' },
   sudoPolicy: { tab: 'security', title: 'Administrator privileges' },
   healing: { tab: 'sensei', title: 'Healing' },

@@ -36,7 +36,8 @@ import { SUMMARY_CHECK_NOTICE_CODE, passMark, checkSummary, summaryChecksSettled
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { CHARS_PER_TOKEN } from '../budget.js';
 import { unfenceExternal } from '../../tools/external-content.js';
-import { summaryCheckLine, summaryWriterStatus } from '../summary-check-ledger.js';
+import { summaryCheckLine, writerFailing } from '../summary-check-ledger.js';
+import { summaryCheckFailingNotice } from '../summary-check.js';
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
@@ -130,9 +131,10 @@ describe('a summary is checked against its source before it is kept', () => {
     await write();
     expect(notices()).toHaveLength(1);
     expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: AGENT });
-    expect(notices()[0].error).toBe(
-      "This box's memory summaries keep failing the accuracy check (2 of the last 2). This box's summary writer may be too small for its conversations; pick a larger model under Settings → Models → Summarization Model.",   // t268 fix round 2 (edited): no single 'small writer' writes them now
-    );
+    // v3.5 field fix 3 (edited: it sent the owner to a Summarization Model setting the owner ruled must not exist): a fact.
+    expect(notices()[0].error).toBe(summaryCheckFailingNotice('writer-small', 2, 2));
+    expect(notices()[0].error).toBe('Memory summaries written by writer-small keep failing the accuracy check (2 of the last 2), so the older messages they would cover are kept whole. Nothing is lost.');
+    expect(notices()[0].error).not.toMatch(/Settings|\u2014/);
     writer.outputs = ['INVENTED g.', 'INVENTED h.', 'INVENTED i.', 'INVENTED j.'];
     await write('writer-large'); await write('writer-large');
     expect(notices()).toHaveLength(2);
@@ -153,25 +155,18 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(r.ok === false && r.checkFailed).toBe(true);
   });
 
-  it('t268 fix round 2: with no Settings pick, the card follows the writer this box\'s checks were last made for', async () => {
-    expect(summaryWriterStatus()).toEqual({ writer: null, failed: 0, total: 0, failing: false });
-    writer.outputs = ['INVENTED x.', 'INVENTED y.', 'INVENTED z.', 'INVENTED w.'];
-    await write('writer-large'); await write('writer-large');
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-large', failed: 2, total: 2, failing: true });
-  });
-
-  it('(iv) the Summarization card is told when the current summary writer is failing', async () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'writer-small')").run();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 0, total: 0, failing: false });
+  // v3.5 field fix 3: the two clauses that pinned the Summarization card's status (`summaryWriterStatus`) are deleted with
+  // the card. What the card read is the writer's own record, still pinned here:
+  it('"keep failing" is a failure that repeats, on the writer\'s own record', async () => {
     writer.outputs = ['fine', 'INVENTED x.', 'INVENTED y.'];
     await write(); await write();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 1, total: 2, failing: false });   // one isolated failure
+    expect(writerFailing('writer-small')).toEqual({ failed: 1, total: 2, failing: false });   // one isolated failure
     writer.outputs = ['INVENTED z.', 'INVENTED w.'];
     await write();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 2, total: 3, failing: true });   // it failed again
+    expect(writerFailing('writer-small')).toEqual({ failed: 2, total: 3, failing: true });   // it failed again
     writer.outputs = ['fine'];
     await write();
-    expect(summaryWriterStatus()).toMatchObject({ failing: false });   // the latest passed: it is not failing now
+    expect(writerFailing('writer-small')).toMatchObject({ failing: false });   // the latest passed
   });
 
   it('the Healer section carries the running numbers', async () => {

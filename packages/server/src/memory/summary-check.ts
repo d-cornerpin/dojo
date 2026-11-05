@@ -3,7 +3,8 @@
 //
 // OWNER RULING 2026-10-20: "Check each summary against the decision model. If there are significant
 // summarization failures on a dojo, the user is encouraged to change the summarization model to
-// another larger model." Whoever writes it, the decision model reads the summary against the rows it
+// another larger model." (v3.5 field fix 3, owner ruling: there is no summarization model setting; each agent's
+// own model writes, so the notice states the fact and points at no setting.) Whoever writes it, the decision model reads the summary against the rows it
 // summarizes (`generateSummary`, the one door every summary comes through), and:
 //   pass                → kept as written;
 //   fail                → rewritten ONCE with the failed questions named, then checked again;
@@ -112,6 +113,14 @@ function record(agentId: string, writer: string, outcome: Outcome, c: SummaryChe
 }
 
 export const SUMMARY_CHECK_NOTICE_CODE = 'SUMMARY_CHECK_FAILING';
+/** v3.5 field fix 3: the notice's words, as a fact (owner ruling: there is no summarization model setting to point at). */
+export function summaryCheckFailingNotice(writer: string, failed: number, total: number): string {
+  let name = writer;
+  try { name = (getDb().prepare('SELECT name FROM models WHERE id = ?').get(writer) as { name: string | null } | undefined)?.name || writer; } catch { /* the id is the name */ }
+  return `Memory summaries written by ${name} keep failing the accuracy check (${failed} of the last ${total}), `
+    + 'so the older messages they would cover are kept whole. Nothing is lost.';
+}
+
 /** One latch PER WRITER MODEL (fix round 1, I-B4-2): `summary_check_noticed.<writer id>`. */
 const noticedKey = (writer: string): string => `summary_check_noticed.${writer}`;
 
@@ -137,8 +146,7 @@ function noticeIfFailing(agentId: string, writer: string): void {
     broadcast({
       type: 'chat:error',
       agentId,
-      error: `This box's memory summaries keep failing the accuracy check (${failed} of the last ${row.total}). `
-        + "This box's summary writer may be too small for its conversations; pick a larger model under Settings → Models → Summarization Model.",
+      error: summaryCheckFailingNotice(writer, failed, row.total),
       code: SUMMARY_CHECK_NOTICE_CODE,
       severity: 'warning',
       retryable: false,

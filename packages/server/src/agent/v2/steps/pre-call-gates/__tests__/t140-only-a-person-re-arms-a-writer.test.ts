@@ -172,16 +172,6 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     expect(hasUncondensedPlaceholders(AGENT)).toBe(false);
   });
 
-  it('the owner changing the Settings writer re-arms it', async () => {
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWN);
-    await gate(AGENT, 900, 1, true);                         // the Settings writer fails
-    // The owner picks another model on the same provider in Settings.
-    db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
-                  VALUES ('m-t140-own-b', 'p-0', 'own-b', 'own-b', '["text","tools"]', 200000, 4096, 1, 1, 2)`).run();
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', 'm-t140-own-b')").run();
-    summariser.answering = true;
-    summariser.calls = [];
-    await gate(AGENT, 900, 2, false);   // the next iteration: no person in between
-    expect(summariser.calls[0], 'the newly chosen writer is tried').toBe('m-t140-own-b');
-  });
+  // v3.5 field fix 3: the clause 'the owner changing the Settings writer re-arms it' is deleted with the setting it
+  // pinned (owner ruling: there is no summarization model setting).
 });

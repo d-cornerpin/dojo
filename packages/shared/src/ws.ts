@@ -370,7 +370,7 @@ export interface ChatErrorEvent {
     // floor was introduced. Nothing is stopped or changed; the person is told once.
     | 'MAIN_MODEL_SMALL'
     // v3.5 B4. This box's summary writer wrote summaries that failed the accuracy check twice; the
-    // rows stayed whole. Told once per writer model, with a pointer to the Summarization Model card.
+    // rows stayed whole. Told once per writer model (v3.5 field fix 3: as a fact; there is no summarization setting).
     | 'SUMMARY_CHECK_FAILING';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;

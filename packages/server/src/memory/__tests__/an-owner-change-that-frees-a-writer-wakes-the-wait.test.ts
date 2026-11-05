@@ -168,18 +168,7 @@ const json = (method: string, body: unknown): RequestInit => ({ method, headers:
 async function afterTheWake(): Promise<void> { await settle(1_300); await Promise.all(wakes.turns); }
 
 describe('an owner change that can make a writer runnable wakes each waiting agent once', () => {
-  it('the Summarization pick changed in Settings: each waiting agent wakes once and the pick writes; a second save wakes none', async () => {
-    await bothWaiting();
-    expect((await configRouter.request('/settings/compaction_model_id', json('PUT', { value: ALT }))).status).toBe(200);
-    await afterTheWake();
-    expect(wakes.by).toEqual({ [AGENT]: 1, [OTHER]: 1 });
-    expect(realSummaries(AGENT)).toBeGreaterThan(0);
-    expect(realSummaries(OTHER)).toBeGreaterThan(0);
-    expect(writers.calls.filter((m) => m !== OWN && m !== ALT), 'nothing the owner did not choose').toEqual([]);
-    await configRouter.request('/settings/compaction_model_id', json('PUT', { value: ALT }));
-    await afterTheWake();
-    expect(wakes.by, 'nothing waits any more: no second wake').toEqual({ [AGENT]: 1, [OTHER]: 1 });
-  });
+  // v3.5 field fix 3: deleted with the Summarization setting (owner ruling: there is none): the pick saved in Settings.
 
   it('a change that frees no writer (the router window: a models change, but no writer of theirs can run) wakes nobody', async () => {
     await bothWaiting();
@@ -207,14 +196,7 @@ describe('an owner change that can make a writer runnable wakes each waiting age
     expect(realSummaries(AGENT)).toBeGreaterThan(0);
   });
 
-  it('a model enabled: the agents whose pick it is wake once', async () => {
-    db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run(ALT);
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(ALT);
-    await bothWaiting();
-    expect((await configRouter.request('/models/enable', json('POST', { modelIds: [ALT] }))).status).toBe(200);
-    await afterTheWake();
-    expect(wakes.by).toEqual({ [AGENT]: 1, [OTHER]: 1 });
-  });
+  // v3.5 field fix 3: deleted with the Summarization setting (owner ruling: there is none): a model enabled that was the pick.
 
   it('a provider saved (the owner edits the down model\'s provider): its waiting agents wake once for a re-test', async () => {
     await bothWaiting();

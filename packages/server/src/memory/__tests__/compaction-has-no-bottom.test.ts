@@ -604,9 +604,12 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
 
     const cards = frames.filter(f => f.code === 'COMPACTION_FAILING');
     expect(cards.length, 'the owner is told once').toBe(1);
-    expect(cards[0].error).toContain('memory compaction is failing');
-    expect(cards[0].error).toContain('returned nothing usable');
-    expect(cards[0].error).toContain('Settings → Models');
+    // v3.5 field fix 3 (owner ruling: there is no summarization setting): a fact naming the agent's own model, sending
+    // the owner to no setting, informational (a toast that leaves by itself, never red).
+    expect(cards[0].error).toContain("own model returned nothing usable for a memory summary");
+    expect(cards[0].error).toContain('it retries by itself');
+    expect(cards[0].error).not.toMatch(/Settings|provider|\u2014/);
+    expect(cards[0].severity).toBe('warning');
     expect(cards[0].retryable, 'TRUE: fix the model and compaction resumes by itself').toBe(true);
     // Not a dead end, in the two words the deleted card used: nothing here asks the owner to
     // destroy their agent's memory.
@@ -957,8 +960,8 @@ describe('§6 the D3 line and the I3 card', () => {
     expect(compactionFailureReason(AGENT)).toBe('summary_writer_unresolvable');
     const cards = frames.filter(f => f.code === 'COMPACTION_FAILING');
     expect(cards.length, 'the owner is told once').toBe(1);
-    expect(cards[0].error).toContain('no enabled model can write its summaries');
-    expect(cards[0].error).toContain('Settings → Models');
+    expect(cards[0].error).toContain('has no model that can write a memory summary right now');
+    expect(cards[0].error).not.toMatch(/Settings/);
     expect(cards[0].retryable).toBe(true);
     expect(defectLines().length, 'and the repair audience gets its line').toBe(1);
     expect(defectLines()[0].meta.stage).toBe('summary_writer_unresolvable');

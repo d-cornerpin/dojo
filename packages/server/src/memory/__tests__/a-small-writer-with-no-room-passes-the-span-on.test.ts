@@ -139,7 +139,7 @@ describe('N-B: on a 16 GB box the small writer never fits a summary; it is refus
 });
 
 // Fix round 5 (ORCHESTRATOR CORRECTION, the owner's law "a fix must not quietly move work onto pricier models"): the
-// order is the Summarization pick, the agent's own model, the small writer when it fits — and NOTHING after it.
+// order is the agent's own model, then the small writer when it fits, and NOTHING after it (v3.5 field fix 3: no pick).
 describe('round 5: nothing after the small writer — never a cloud model the owner did not pick for summaries', () => {
   it('16 GB, the agent\'s model unreachable, a cloud model enabled: zero calls to it; the span waits, unbraked, and is summarised once the own model returns', async () => {
     seed();
@@ -162,10 +162,11 @@ describe('round 5: nothing after the small writer — never a cloud model the ow
     expect(eligibleSummaryWriters(OWN, AGENT), 'its own model answered: the small writer is its fallback again').toEqual([OWN, WRITER]);
   });
 
-  it('the order holds only the pick, the own model and the small writer', () => {
+  // v3.5 field fix 3 (owner ruling: there is no summarization setting): an old `compaction_model_id` row is not read.
+  it('the order holds only the own model and the small writer, whatever an old setting row says', () => {
     expect(summaryWriterCandidates(OWN, AGENT)).toEqual([OWN, WRITER]);
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(NEXT);
-    expect(summaryWriterCandidates(OWN, AGENT)).toEqual([NEXT, OWN, WRITER]);
+    expect(summaryWriterCandidates(OWN, AGENT)).toEqual([OWN, WRITER]);
   });
 });
 
@@ -192,5 +193,39 @@ describe('N-C: the free memory counts what loaded models really hold', () => {
     const total = 32 * GIB;
     const open = total - pickDesktopReserve(total) - ENGINE_RESERVE_BYTES - SIZES.embedder - SIZES.writer - SIZES.decision - KV * (2_048 + 27_648);
     expect(await freeWriterWindowTokens()).toBe(2_048 + Math.floor(open / KV));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// v3.5 field fix 3, owner box evidence (owner-box-imessage-2026-11-04.txt): COMPACTION_DEFECT stage `summariser_refused`,
+// detail "the memory free now cannot hold a summary on the Dojo's writer", on a box whose resolved writer was a CLOUD
+// model (DeepSeek, the old Settings pick). The memory gate (`writer-fallback-room.ts`) never judged the cloud model: it
+// returns null for every model but the Dojo's own (local) writer. The pair walk (`condense-until-fits.ts`) asked the
+// cloud writer first (it answered "cannot hold this input"), then the small writer (no room), and the defect line kept
+// only the LAST writer's reason, so the record blamed the local writer's memory for a cloud writer's verdict.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('a cloud own-model writer is never refused for local memory', () => {
+  it('CONTROL: on a 16 GB box with no room for the small writer, the agent\'s own cloud model is dialled and writes', async () => {
+    writers.unreachable.clear();
+    const r = await generateSummary({ content: 'r'.repeat(4_000), depth: 0, targetTokens: 1_000, agentId: AGENT, modelId: OWN });
+    expect(r).toMatchObject({ ok: true });
+    expect(writers.calls).toEqual([OWN]);
+  });
+
+  it('the pair walk\'s refusal names the own model\'s verdict, not only the small writer\'s memory', async () => {
+    writers.unreachable.clear();
+    const { createLeafSummary } = await import('../dag.js');
+    const { condenseUntilFits } = await import('../condense-until-fits.js');
+    const { rebuildContextItems } = await import('../compaction.js');
+    seed(2);
+    const ids = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
+    const big = 'Earlier summary: the crew counted the depot and filed the manifests, bay by bay. '.repeat(1_400);   // more than the own 32K model holds as a pair
+    createLeafSummary(AGENT, big, 30_000, [ids[0]], '2026-07-01 00:00:00', '2026-07-01 00:00:01');
+    createLeafSummary(AGENT, big, 30_000, [ids[1]], '2026-07-01 00:00:02', '2026-07-01 00:00:03');
+    rebuildContextItems(AGENT);
+    const out = await condenseUntilFits({ agentId: AGENT, modelId: OWN, minFanout: 2, measure: async () => ({ total: 200_000, summaryTokens: 0 }), rebuild: () => rebuildContextItems(AGENT) });
+    expect(out.condensedCreated).toBe(0);
+    expect(writers.calls, 'neither writer was dialled').toEqual([]);
+    expect(out.refusedDetail ?? '', 'the own model is named with its own verdict').toContain(`${OWN}: the summary writer cannot hold this input`);
   });
 });

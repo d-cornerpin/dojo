@@ -46,25 +46,19 @@ export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
 const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT]);
 
 /** Providers whose writer has not answered since it failed or ran past a turn's patience: one `healer_state`
- *  row each, `key` = provider + separator + the Settings writer then (so a Settings change stops it matching). */
+ *  row each, `key` = provider + separator. (The part after the separator was the Settings writer then; v3.5 field
+ *  fix 3: there is no such setting, owner ruling, so it is always empty, the shape every row a box without a pick
+ *  already carried.) */
 const MARK_SCOPE = 'summary_writer_not_answering';
 const MARK_SEP = '|';
-
-function settingsWriter(): string | null {
-  try {
-    return (getDb().prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value ?? null;
-  } catch {
-    return null;
-  }
-}
-const markKey = (provider: string, settings: string | null): string => `${provider}${MARK_SEP}${settings ?? ''}`;
+const markKey = (provider: string): string => `${provider}${MARK_SEP}`;
 
 /** Best effort: a failed write leaves the writer dialled. */
 function markNotAnswering(provider: string): void {
   try {
     clearMark(provider);
     getDb().prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)')
-      .run(MARK_SCOPE, markKey(provider, settingsWriter()), nextMoment());
+      .run(MARK_SCOPE, markKey(provider), nextMoment());
   } catch (err) {
     logger.warn('could not record that a summary writer is not answering', { providerKey: provider, error: err instanceof Error ? err.message : String(err) });
   }
@@ -81,7 +75,7 @@ function clearMark(provider: string): boolean {
 function markOf(provider: string): number | null {
   try {
     const row = getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?')
-      .get(MARK_SCOPE, markKey(provider, settingsWriter())) as { at_ms: number } | undefined;
+      .get(MARK_SCOPE, markKey(provider)) as { at_ms: number } | undefined;
     return row ? row.at_ms : null;
   } catch { return null; }
 }
@@ -181,12 +175,14 @@ function notAnswering(modelId: string, agentId?: string): boolean {
 }
 
 /**
- * Every writer a summary of this agent's conversation MAY go to, in order — and only these (t268 fix round 5, the
+ * Every writer a summary of this agent's conversation MAY go to, in order, and only these (t268 fix round 5, the
  * owner's law: a fix must not quietly move work onto pricier models):
- *   1. the owner's Settings writer (the Summarization pick), when one is set and usable;
- *   2. the agent's own model (owner 2026-10-24: "The agents model."); an auto-routed agent's is its router's
+ *   1. the agent's own model (owner 2026-10-24: "The agents model."); an auto-routed agent's is its router's
  *      standard-tier pick, through the router's own order and filters;
- *   3. the Dojo's small local writer — the FALLBACK, when it fits the memory free then (`writer-fallback-room.ts`).
+ *   2. the Dojo's small local writer, the FALLBACK, when it fits the memory free then (`writer-fallback-room.ts`).
+ * v3.5 field fix 3, owner ruling verbatim: "I was very clear that there was not to be a summarization/compaction model
+ * setting and that each agents own model would do the compaction summarization." The Settings pick that stood first
+ * here is gone; an old `compaction_model_id` row is not read (migration 212 deletes it).
  * None of them can run: nothing is dialled and the span waits, rows whole, until one can.
  */
 export function summaryWriterCandidates(preferredModelId?: string, agentId?: string): string[] {
@@ -199,12 +195,10 @@ export function summaryWriterCandidates(preferredModelId?: string, agentId?: str
   ).all() as Array<{ id: string; provider: string }>)
     .filter((u) => summaryRoom(u.id) > 0);   // t149 F4: a window with no budget left (4K, "against a budget of 0") holds no call
   const isUsable = (id: string | undefined): id is string => !!id && usable.some((u) => u.id === id);
-  const explicitId = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
-  const explicit = isUsable(explicitId) ? explicitId : undefined;
   const fixed = preferredModelId && preferredModelId !== 'auto' && preferredModelId !== '__auto__' ? preferredModelId : undefined;
   const own = fixed ? (isUsable(fixed) ? fixed : undefined) : standardTierChain(agentId).find(isUsable);
   // t268 fix round 5: NOTHING after the small writer (no "cheapest text model", no other model of the agent's provider).
-  return [...new Set([explicit, own, standardModelRowId('writer') ?? undefined].filter(isUsable))];
+  return [...new Set([own, standardModelRowId('writer') ?? undefined].filter(isUsable))];
 }
 
 /** The writers anything may dial now for `agentId`, turn or background: no open breaker, answering. */

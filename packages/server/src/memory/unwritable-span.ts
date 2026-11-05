@@ -30,8 +30,9 @@ const SCOPE = 'summary_unwritable';
 
 export interface SpanItem { id: string; content: string }
 
-const setting = (): string =>
-  (getDb().prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value ?? '';
+/** The key's setting part. It held the Summarization pick; v3.5 field fix 3 (owner ruling: no such setting) leaves it
+ *  empty, the value every box without a pick already wrote, so the key's shape and its prune stay as they were. */
+const setting = (): string => '';
 const agentModel = (agentId: string): string | undefined =>
   (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
 

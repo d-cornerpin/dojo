@@ -231,7 +231,8 @@ describe('t168 (iv) a real writer refusal is told once; with no writer left, the
     expect(defects[0].meta).toMatchObject({ stage: 'summariser_refused', detail: 'summarizer returned empty text', repairableByTheOwner: true });
     const cards = frames.filter((f) => f.code === 'COMPACTION_FAILING');
     expect(cards.length, 'the owner is told once').toBe(1);
-    expect(cards[0].error).toBe(compactionFailingCardText('summariser_refused'));
+    expect(cards[0].error).toBe(compactionFailingCardText('summariser_refused', AGENT));
+    expect(cards[0].severity, 'v3.5 field fix 3: informational, never red').toBe('warning');
     expect(cards[0].retryable).toBe(true);
 
     // and the next forced pass inside the window dials nothing

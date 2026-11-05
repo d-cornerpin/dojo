@@ -77,8 +77,9 @@ describe('a fallback summary on the Dojo\'s writer fits the memory free now', ()
     expect(writer.calls).toBe(1);
   });
 
-  it('summaries assigned to the writer (the explicit pick): its room is reserved, so nothing here refuses', async () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+  // v3.5 field fix 3 (no Summarization setting): summaries are assigned to the writer by an agent whose own model it is.
+  it('summaries assigned to the writer (an agent\'s own model): its room is reserved, so nothing here refuses', async () => {
+    db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-on-writer', 'On Writer', 'm-writer', 'idle', '{}')").run();
     loaded.push({ name: AGENT_MODEL, size: 13_000_000_000 });
     expect(await summarize(120_000)).toMatchObject({ ok: true });
   });

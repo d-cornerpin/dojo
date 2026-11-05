@@ -28,7 +28,7 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { SUMMARY_CHECK_NOTICE_CODE, summaryCheckRefusedSince, summaryChecksSettled } from '../summary-check.js';
-import { summaryWriterStatus, spanKeys, recordRefusedSpan } from '../summary-check-ledger.js';
+import { spanKeys, recordRefusedSpan } from '../summary-check-ledger.js';
 import { modeFor } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { proveSummaryCheck } from './summary-check-proven.js';
@@ -84,11 +84,11 @@ describe('in shadow (no measured accuracy yet): the check is asked and recorded,
     expect(JSON.parse(shadow[1].model_said)).toEqual({ type: 'noul', noul: 0.93 });
   });
 
-  it('failures that repeat fire no notice, and the Summarization card does not say the writer is failing', async () => {
+  // v3.5 field fix 3: the Summarization card this also pinned is deleted (owner ruling: no summarization setting).
+  it('failures that repeat fire no notice', async () => {
     writer.outputs = ['INVENTED a.', 'INVENTED b.', 'INVENTED c.', 'INVENTED d.'];
     for (let i = 0; i < 4; i++) expect((await write()).ok).toBe(true);
     expect(notices()).toEqual([]);
-    expect(summaryWriterStatus()).toMatchObject({ failing: false });
   });
 
   it('no failed-span hold: a span refused earlier is still written, and the fold is not stopped', async () => {
@@ -113,7 +113,6 @@ describe('once the policy flips a question to `model` on measured accuracy, toda
     expect(checks().map((c) => c.outcome)).toEqual(['not_kept']);
     await write();
     expect(notices()).toHaveLength(1);
-    expect(summaryWriterStatus()).toMatchObject({ failing: true });
   });
 
   it('per question: only a PROVEN question acts — "stated_current" proven, "invented" still shadow', async () => {

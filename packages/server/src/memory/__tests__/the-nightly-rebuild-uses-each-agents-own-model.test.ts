@@ -79,10 +79,11 @@ describe('the nightly rebuild writes each agent\'s summaries with that agent\'s 
     expect(writerFor('agent-two')).toEqual(['std-writer']);
   });
 
-  it('an explicit Settings pick writes every agent\'s summaries', async () => {
+  // v3.5 field fix 3, owner ruling: there is no Summarization setting. An old pick row changes nothing.
+  it('an old Settings pick row is not read: each agent\'s own model still writes its summaries', async () => {
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'own-one')").run();
     await runSummaryRebuildBatch();
     expect(writerFor('agent-one')).toEqual(['own-one']);
-    expect(writerFor('agent-two')).toEqual(['own-one']);
+    expect(writerFor('agent-two')).toEqual(['own-two']);
   });
 });

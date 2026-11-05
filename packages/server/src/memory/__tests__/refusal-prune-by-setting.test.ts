@@ -74,15 +74,15 @@ describe('t269 fix round 3 — pruning an earlier setting\'s refusals, by the se
     expect(keysOf('S')).toEqual(['a1||w|h']);
   });
 
-  it('recordRefusal: an earlier setting whose text equals a writer name is pruned (FAILS on v35)', () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm1')").run();
+  // v3.5 field fix 3 (edited: the current setting was a Summarization pick 'm1'): there is no setting (owner ruling), so
+  // the current setting field is empty; every row written under an earlier pick is pruned by the next refusal.
+  it('recordRefusal: a row written under an earlier pick is pruned; the current row has an empty setting field', () => {
     db().prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)').run('summary_unwritable', 'a1|m0|m1|h', 1);
     recordRefusal('a1', 'w', [{ id: 'r1', content: 'x' }]);
     expect(db().prepare('SELECT 1 FROM healer_state WHERE scope = ? AND key = ?').get('summary_unwritable', 'a1|m0|m1|h'),
       'the stale row is gone').toBeUndefined();
-    const rows = db().prepare("SELECT key FROM healer_state WHERE scope = ? AND key LIKE 'a1|m1|w|%'").all('summary_unwritable') as Array<{ key: string }>;
-    expect(rows.length, 'exactly one row for the current writer and setting').toBe(1);
-    expect(rows[0].key.startsWith('a1|m1|w|')).toBe(true);
+    const rows = db().prepare("SELECT key FROM healer_state WHERE scope = ? AND key LIKE 'a1||w|%'").all('summary_unwritable') as Array<{ key: string }>;
+    expect(rows.length, 'exactly one row for the current writer').toBe(1);
   });
 
   it('recordRefusedSpan: a stale row kept by a LIKE wildcard setting is pruned (FAILS on v35)', () => {

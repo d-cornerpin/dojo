@@ -1,8 +1,7 @@
-// v3.5 — OWNER RULING 2026-10-24 ("The agents model."), replacing the 2026-10-20 "small writer is the
-// default": with no Summarization model picked in Settings, each agent's OWN model writes its summaries, as in
-// v3.4; the Dojo's small local writer is only the FALLBACK when the agent's model cannot be reached. The order:
-// the Settings pick, then the agent's own model and provider, then the standard writer, then the rest. The
-// decision model never writes.
+// v3.5: OWNER RULING 2026-10-24 ("The agents model."), replacing the 2026-10-20 "small writer is the default", and the
+// v3.5 field fix 3 ruling that there is no summarization model setting at all: each agent's OWN model writes its
+// summaries, as in v3.4; the Dojo's small local writer is only the FALLBACK when the agent's model cannot be reached.
+// The order: the agent's own model, then the standard writer, and nothing else. The decision model never writes.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -42,7 +41,7 @@ afterEach(() => { clearRateLimits(); mockDb.current?.close(); mockDb.current = n
 
 describe("the agent's own model writes its summaries", () => {
   // Fix round 5 (edited: its provider's other models and "the cheapest" followed; the round removed both).
-  it("with no Settings pick: the agent's own model, then the standard writer — and nothing else", () => {
+  it("the agent's own model, then the standard writer, and nothing else", () => {
     expect(summaryWriterCandidates('big-cloud')).toEqual(['big-cloud', 'std-writer']);
   });
 
@@ -51,10 +50,13 @@ describe("the agent's own model writes its summaries", () => {
     expect(eligibleSummaryWriters('big-cloud', 'agent-a')[0]).toBe('std-writer');
   });
 
-  it('an explicit Settings pick wins over the agent\'s own model and the standard writer', () => {
+  // OWNER RULING (v3.5 field fix 3, verbatim): "I was very clear that there was not to be a summarization/compaction
+  // model setting and that each agents own model would do the compaction summarization." The Settings pick is gone; a
+  // box that still carries the old `compaction_model_id` row (written by an earlier build) is not read.
+  it('a box whose old compaction_model_id row names another model: the agent\'s own model still writes, then the standard writer', () => {
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'aaa-free-cloud')").run();
-    expect(summaryWriterCandidates('big-cloud')[0]).toBe('aaa-free-cloud');
-    expect(summaryWriterCandidates('big-cloud').indexOf('big-cloud')).toBeLessThan(summaryWriterCandidates('big-cloud').indexOf('std-writer'));
+    expect(summaryWriterCandidates('big-cloud')).toEqual(['big-cloud', 'std-writer']);
+    expect(eligibleSummaryWriters('big-cloud', 'agent-a')[0]).toBe('big-cloud');
   });
 
   // Fix round 3 (owner ruling, "The agents model."; edited: this clause put an auto-routed agent on the small

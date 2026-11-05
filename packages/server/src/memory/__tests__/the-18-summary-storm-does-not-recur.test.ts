@@ -125,7 +125,6 @@ const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir())
 const AGENT = 'agent-the-18';
 const MAIN = 'm-main';       // the agent's own model: a 128K window (its calls peak at ~110K)
 const PEER = 'agent-the-18-peer';
-const WRITER = 'm-writer';   // the memory writer: a different model on a different row, as in the report (model ordinal 1)
 
 // ── the report's shape, in numbers read off its telemetry ─────────────────────────────────
 const TWO_HOURS_MS = 120 * 60_000;
@@ -256,9 +255,10 @@ beforeEach(() => {
              VALUES ('p-main', 'Main Cloud', 'openai-compatible', 'http://127.0.0.1:1/v1', 'api_key', 1, datetime('now'), datetime('now'))`).run();
   const model = d.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, thinking_enabled, thinking_level, is_enabled, created_at, updated_at)
                            VALUES (?, ?, ?, ?, '["text","thinking","tools"]', ?, ?, 1, 'high', 1, datetime('now'), datetime('now'))`);
-  model.run(MAIN, 'p-main', 'Main', 'main-model', WINDOW, 4096);
-  model.run(WRITER, 'p-ds', 'Writer', 'writer-model', 1_000_000, DEFAULT_OUTPUT_CAP);
-  d.prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(WRITER);
+  // v3.5 field fix 3 (edited: the writer was a separate model picked in Settings, as in #18's report): the owner ruled
+  // there is no summarization setting and each agent's own model writes its summaries, so the agent's own model is
+  // the stub writer here (its provider), at its own 128K window. Nothing else about the shape moves.
+  model.run(MAIN, 'p-ds', 'Main', 'main-model', WINDOW, DEFAULT_OUTPUT_CAP);
   d.prepare("INSERT INTO agents (id, name, model_id, status, config, session_started_at, created_at, updated_at) VALUES (?, 'Replay Agent', ?, 'idle', '{}', '1970-01-01', datetime('now'), datetime('now'))").run(AGENT, MAIN);
   d.prepare("INSERT INTO agents (id, name, model_id, status, config, session_started_at, created_at, updated_at) VALUES (?, 'Peer Agent', ?, 'idle', '{}', '1970-01-01', datetime('now'), datetime('now'))").run(PEER, MAIN);
   setProviderCredential('p-ds', 'sk-writer', 'api_key');
