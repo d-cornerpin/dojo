@@ -42,11 +42,16 @@ import { noteArrivalWhileBusy } from '../../shared-state.js';
 import { backgroundCommandsOf, endAgentCommands } from '../../effects/proc-tree.js';
 import { recordHandOff, tellAgentsOfCommandsCutByRestart } from '../../background-commands.js';
 import { openAsk } from '../../../work/store.js';
+import { authorizeExecShapedCall, grantFor } from '../../brokers/index.js';
+import { clearPlatformConfigCache } from '../../../config/platform.js';
 
 const db = (): Database.Database => mockDb.current!;
 let n = 0;
-/** A person's message on the dashboard, with its own open ask, written at `atMs`. */
-function personWrites(atMs: number): void {
+/** What production stores as `created_at` for a row written at `ms`: whole seconds (`NOW_MS`). */
+const storedAt = (ms: number): number => Math.floor(ms / 1000) * 1000;
+/** A person's message on the dashboard, with its own open ask, as production stores it at `ms`. */
+function personWrites(ms: number): void {
+  const atMs = storedAt(ms);
   const id = `msg-${++n}`;
   db().prepare(`INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, channel, created_at) VALUES (?, ?, 'user', 'and thanks', 'owner', 'conv-1', 'dashboard', ?)`)
     .run(id, AGENT, atMs);
@@ -70,6 +75,8 @@ beforeEach(() => {
   runMigrations();
   db().prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Main', 'working', '1970-01-01')`).run(AGENT);
   db().prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`).run(AGENT);
+  db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(AGENT);
+  clearPlatformConfigCache();
 });
 
 describe('a person\'s message that was already open never sends a command to the background', () => {
@@ -102,11 +109,55 @@ describe('a person\'s message that was already open never sends a command to the
 });
 
 describe('a person\'s message arriving mid-command hands it back, and the command has an owner', () => {
+  it('THE RED (re-review 4, N1): a message in the SAME second as the command\'s start, stored in whole seconds, hands it back', async () => {
+    const g = gate();
+    const started = Date.now();
+    const run = shell(`while [ ! -f '${g.flag}' ]; do sleep 0.05; done; echo finished-late`);
+    await new Promise((r) => setTimeout(r, 50));
+    personWrites(started);                            // created_at = the start's own second, so below the start in ms
+    noteArrivalWhileBusy(AGENT);
+    expect(await run).toMatch(/moved to the background/);
+    g.release();
+    await waitFor(() => engineEvents('background_command_done').length > 0);
+    fs.rmSync(g.dir, { recursive: true, force: true });
+  });
+
+  it('THE RED (re-review 4, N2): the hand-back names the whole group; `kill -- -<pid>` through the shell ends a two-step script, and the shell door allows it', async () => {
+    const run = shell('sleep 30; echo two-steps-done');
+    await new Promise((r) => setTimeout(r, 50));
+    personWrites(Date.now());
+    noteArrivalWhileBusy(AGENT);
+    const text = await run;
+    const pid = Number(/process group (\d+)/.exec(text)![1]);
+    expect(text).toContain(`kill -- -${pid}`);
+    expect(authorizeExecShapedCall(grantFor(AGENT), 'shell', `kill -- -${pid}`).allowed).toBe(true);
+    await shell(`kill -- -${pid}`);
+    await waitFor(() => !backgroundCommandsOf(AGENT).some((j) => j.pid === pid));   // the group's sleep ended with its leader
+    await waitFor(() => engineEvents('background_command_done').length > 0);
+    const result = engineEvents('background_command_done')[0].split('Its result:')[1];
+    expect(result).toMatch(/command_failed/);                 // ended by the signal, not run to its end
+    expect(result).not.toContain('two-steps-done');
+  });
+
+  it('the result keeps its lines (re-review 4, LOW)', async () => {
+    const g = gate();
+    const run = shell(`while [ ! -f '${g.flag}' ]; do sleep 0.05; done; printf 'line-one\\nline-two\\n'`);
+    await new Promise((r) => setTimeout(r, 50));
+    personWrites(Date.now());
+    noteArrivalWhileBusy(AGENT);
+    await run;
+    g.release();
+    await waitFor(() => engineEvents('background_command_done').length > 0);
+    expect(engineEvents('background_command_done')[0]).toMatch(/line-one\nline-two/);
+    expect(db().prepare('SELECT COUNT(*) AS n FROM background_commands').get()).toEqual({ n: 0 });   // cleared once saved
+    fs.rmSync(g.dir, { recursive: true, force: true });
+  });
+
   it('hands back with the consequence and the pid; a later failed turn does not end it; its result wakes the agent', async () => {
     const g = gate();
     const run = shell(`while [ ! -f '${g.flag}' ]; do sleep 0.05; done; echo finished-late`);
     await new Promise((r) => setTimeout(r, 50));      // the command has started
-    personWrites(Date.now() + 5);                     // the owner writes during it
+    personWrites(Date.now());                         // the owner writes during it (stored in whole seconds)
     noteArrivalWhileBusy(AGENT);
     const text = await run;
     expect(text).toMatch(/moved to the background \(pid \d+\)/);
@@ -121,7 +172,7 @@ describe('a person\'s message arriving mid-command hands it back, and the comman
     fs.rmSync(g.dir, { recursive: true, force: true });
   });
 
-  it('a restart cut a handed-back command: the agent is told which, and that its result will not come', async () => {
+  it('a restart cut a handed-back command (a database row, migration 213): the agent is told which, and that its result will not come', async () => {
     recordHandOff({ agentId: AGENT, pid: 4242, what: 'shell script "npm run build"', startedAt: Date.now() });
     expect(await tellAgentsOfCommandsCutByRestart()).toBe(1);
     const told = (db().prepare("SELECT content FROM messages WHERE agent_id = ? AND content LIKE '%Dojo restart%'").all(AGENT) as Array<{ content: string }>)

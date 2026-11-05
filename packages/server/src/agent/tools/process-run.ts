@@ -206,7 +206,7 @@ export async function runProcess(input: {
 
 /** One background hand-off, as the exec door wires it (`tools/person-first.ts`). */
 export interface PersonFirst {
-  /** Resolves when a person's message ARRIVES after `startedAt`. Never for one already open. */
+  /** Resolves when a person's message ARRIVES after this call (the newest message row now). Never for one already open. */
   watchFrom(startedAt: number): { arrived: Promise<void>; cancel(): void };
   /** The call was handed back: own the still-running command, and hand its result over when it ends. */
   handedBack(pid: number | undefined, outcome: Promise<string>): void;
@@ -217,7 +217,7 @@ export function handBackText(pid: number | undefined): string {
   return '[A message from a person arrived while this command was running, and it comes first, so the command was moved to the background'
     + `${pid !== undefined ? ` (pid ${pid})` : ''}. Its result is NOT available yet. Nothing that depends on this command's result can run now: `
     + 'wait for the Dojo to hand you the result, which it does when the command ends, and wake you. '
-    + `${pid !== undefined ? `It is still running as pid ${pid}; \`kill ${pid}\` through the shell ends it.` : ''}]`;
+    + `${pid !== undefined ? `It is still running as process group ${pid}; \`kill -- -${pid}\` through the shell ends it and everything it started, and so does the Stop button.` : 'The Stop button ends it.'}]`;
 }
 
 /** The command's result as the agent reads it, and its audit row. */

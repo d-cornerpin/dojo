@@ -25,7 +25,10 @@ export async function tellAgentAndWake(opts: { agentId: string; from: string; br
       postAgentNotice({ toAgentId: opts.agentId, fromName: opts.from, brief: opts.brief, selfIntro: false });
       return;
     }
-    const content = `[SOURCE: AGENT NOTICE from ${opts.from}] ${opts.brief.replace(/\s+/g, ' ').trim()}`;
+    // Re-review 4 (LOW): a background command's result keeps its lines (a listing, a build log); every
+    // other brief is one line, as before.
+    const body = opts.intent === 'background_command_done' ? opts.brief.trim() : opts.brief.replace(/\s+/g, ' ').trim();
+    const content = `[SOURCE: AGENT NOTICE from ${opts.from}] ${body}`;
     // Field fix 3 re-review 3 (L1): a background command's finished result names itself; it is not a failure.
     if (opts.intent === 'background_command_done') {
       insertEngineEventIfAbsent({ id: uuidv4(), agentId: opts.agentId, content, sourceAgentId: null, originIntent: 'background_command_done', work: null });
