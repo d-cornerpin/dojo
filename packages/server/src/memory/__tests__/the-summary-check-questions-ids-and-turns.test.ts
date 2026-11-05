@@ -1,3 +1,5 @@
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // t268 fix round 1 (M-3, I-4, M-1): the summary check's questions, ids and part splitter, and its turn on Ollama.
 // (M-2, "in shadow the summary is kept first, checked after", is gone: OR-AUDIT-ANSWERS (c) makes the check act,
 // so it runs before the summary is kept; see a-failing-summary-is-rewritten-before-it-is-kept.test.ts.)
@@ -140,7 +142,7 @@ describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + l
 
   it('the one rewrite: the failed text and the kept rewrite have distinct ids; the row carries the rewrite\'s', async () => {
     const ids = rowsFor(3, 'e');
-    writer.outputs.push('INVENTED: the owner approved a venue.', 'The owner asked for the offsite budget.');
+    writer.outputs.push('PENDING: the owner approved a venue.', 'The owner asked for the offsite budget.');
     const r = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
     expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget.' });
     const summaryId = createLeafSummary(AGENT, r.ok ? r.text : '', 10, ids, new Date().toISOString(), new Date().toISOString()).id;

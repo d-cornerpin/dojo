@@ -16,11 +16,18 @@ export const SUMMARY_CHECK_QUESTIONS = ['invented', 'dropped', 'stated_current']
 export type SummaryCheckQuestion = typeof SUMMARY_CHECK_QUESTIONS[number];
 /**
  * OR-AUDIT-ANSWERS (c), owner ruling (supersedes t268 ruling 1's shadow for this check): "Redo bad summaries". A
- * summary that fails the accuracy check is rewritten by the agent's own model before it is kept. So every question
- * the model is asked ACTS on its verdict, whatever mode the decision policy reads (the shadow rows are still
- * recorded, so the policy's record keeps growing). A question held to the rule is not asked and so cannot act.
+ * summary that fails the accuracy check is rewritten by the agent's own model before it is kept. A LIVE question
+ * (below) acts on its verdict whatever mode the decision policy reads; every asked question's verdict is recorded in
+ * the shadow log. A question held to the rule is not asked and so cannot act.
  */
-export const actingQuestions = (): SummaryCheckQuestion[] => askedQuestions();
+export const actingQuestions = (): SummaryCheckQuestion[] => askedQuestions().filter((q) => LIVE_QUESTIONS.has(q));
+/**
+ * Summary-check round (owner ruling 1): only a question MEASURED reliable acts. `stated_current` agreed with a careful
+ * reading on 34 of 40 (overhaul-plans/v35-writer-measure.md); `invented` (21 of 40) and `dropped` (22 of 40) did not,
+ * so they are asked and recorded as shadow verdicts and decide nothing. A question joins this set only after it
+ * reaches about 9 in 10 agreement with two independent judges, where they agree with each other.
+ */
+const LIVE_QUESTIONS: ReadonlySet<SummaryCheckQuestion> = new Set(['stated_current']);
 export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
 /** Fix round 1 (M-3): the questions the model is asked at all — every one not held to the rule. */
 export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) !== 'rule');

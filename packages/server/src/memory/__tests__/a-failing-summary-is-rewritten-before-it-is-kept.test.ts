@@ -1,3 +1,5 @@
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // ════════════════════════════════════════════════════════════════════════════════════════
 // OR-AUDIT-ANSWERS (c), owner ruling on rulings audit #12, "Redo bad summaries": a summary that fails the accuracy
 // check is rewritten by the agent's own model before it is kept, and no card is shown. The check is taken out of
@@ -65,17 +67,17 @@ const checks = (): Array<{ outcome: string; invented: number | null }> =>
 
 describe('a summary that fails the accuracy check is rewritten before it is kept (no proof needed, no card)', () => {
   it('the policy still reads shadow (nothing measured); the check acts anyway', async () => {
-    expect(modeFor('summary_check', 'invented')).toBe('shadow');
-    writer.outputs = ['INVENTED: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent is drafting it.'];
+    expect(modeFor('summary_check', 'stated_current')).toBe('shadow');
+    writer.outputs = ['PENDING: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent is drafting it.'];
     const r = await write(['m-1', 'm-2']);
     expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget; the agent is drafting it.' });
     expect(writer.prompts).toHaveLength(2);                                     // the one rewrite
-    expect(writer.prompts[1]).toContain('it stated something the input does not say');
+    expect(writer.prompts[1]).toContain('it described something as currently pending or owed');
     expect(checks().map((c) => c.outcome)).toEqual(['rewritten_ok']);
   });
 
   it('a rewrite that also fails is not kept: the rows stay whole, and no card of any kind is sent', async () => {
-    writer.outputs = ['INVENTED a.', 'INVENTED b.'];
+    writer.outputs = ['PENDING a.', 'PENDING b.'];
     const r = await write(['m-3', 'm-4']);
     expect(r.ok === false && r.checkFailed).toBe(true);
     expect(writer.prompts).toHaveLength(2);                                     // never a third try in the same pass
@@ -84,13 +86,13 @@ describe('a summary that fails the accuracy check is rewritten before it is kept
   });
 
   it('repeated failures send no card either', async () => {
-    writer.outputs = ['INVENTED a.', 'INVENTED b.', 'INVENTED c.', 'INVENTED d.', 'INVENTED e.', 'INVENTED f.'];
+    writer.outputs = ['PENDING a.', 'PENDING b.', 'PENDING c.', 'PENDING d.', 'PENDING e.', 'PENDING f.'];
     for (let i = 0; i < 3; i++) expect((await write([`r-${i}`])).ok).toBe(false);
     expect(cards.list).toEqual([]);
   });
 
   it('never loops: the same span is not handed to a writer again until a real signal (new rows join it)', async () => {
-    writer.outputs = ['INVENTED a.', 'INVENTED b.'];
+    writer.outputs = ['PENDING a.', 'PENDING b.'];
     expect((await write(['s-1', 's-2'])).ok).toBe(false);
     const again = await write(['s-1', 's-2']);                                  // the same rows, nothing changed
     expect(again.ok === false && again.checkFailed).toBe(true);

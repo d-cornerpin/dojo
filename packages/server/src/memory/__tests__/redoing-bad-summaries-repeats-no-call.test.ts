@@ -1,3 +1,5 @@
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // ════════════════════════════════════════════════════════════════════════════════════════
 // Re-review 2, S6: THE COST OF REDOING BAD SUMMARIES. With the check acting (OR-AUDIT-ANSWERS (c)), a failing span
 // costs four model calls (write, check, rewrite, check). A span that failed twice was held only until new rows joined
@@ -80,7 +82,7 @@ const pass = (opts: { open: boolean; modelId?: string }) => generateSummary({
   modelId: opts.modelId ?? 'writer-small', spanIds: [...rows], spanOpen: opts.open,
 });
 const calls = (): number => writer.prompts.length + decisionCalls.n;
-const failing = () => { writer.outputs = Array.from({ length: 200 }, (_, i) => `INVENTED ${i}.`); };
+const failing = () => { writer.outputs = Array.from({ length: 200 }, (_, i) => `PENDING ${i}.`); };
 
 describe('S6: a span that failed its check is handled; ten passes of an always-failing check repeat no call', () => {
   it('the same span, ten passes: four calls on the first, none after', async () => {

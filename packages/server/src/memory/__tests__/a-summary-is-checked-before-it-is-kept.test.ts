@@ -1,3 +1,5 @@
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // v3.5 B4, OWNER RULING 2026-10-20: "Check each summary against the decision model." Whoever writes a summary, the
 // decision model reads it against the rows it summarizes before the engine replaces those rows with it.
 // OR-AUDIT-ANSWERS (c) (owner, rulings audit #12): a failing summary is rewritten by the agent's own model before it is
@@ -61,30 +63,30 @@ beforeEach(() => {
   for (const id of ['writer-small', 'writer-large']) {
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES (?, 'ollama-local', ?, ?, '["chat"]', 32000, 1)`).run(id, id, id);
   }
-  // The decision model: a summary carrying INVENTED states what the source does not say.
+  // The decision model: a summary carrying PENDING describes work as still owed (the one question that acts).
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
     if (url.endsWith('/api/ps')) return Response.json({ models: [] });   // t268: decide() sizes its timeout; not a decision
     decisions.asked++;
     if (!decisions.up) throw new Error('fetch failed: ECONNREFUSED');
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
-    const invented = state.summary.includes('INVENTED') ? 0.93 : 0.04;
-    return Response.json({ answers: { invented: { noul: invented }, dropped: { noul: 0.06 }, stated_current: { noul: 0.05 } } });
+    const pending = state.summary.includes('PENDING') ? 0.93 : 0.04;
+    return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: 0.06 }, stated_current: { noul: pending } } });
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });  
 
 let span = 0;   // each write is its own span (fix round 2: a span that failed is not tried again by anyone)
 const write = (modelId = 'writer-small') => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId });
-const checks = (): Array<{ outcome: string; invented: number | null }> =>
-  db().prepare('SELECT outcome, invented FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; invented: number | null }>;
+const checks = (): Array<{ outcome: string; stated_current: number | null }> =>
+  db().prepare('SELECT outcome, stated_current FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; stated_current: number | null }>;
 
 describe('a summary is checked against its source before it is kept', () => {
   it('a summary that invents a closed task fails and is rewritten once; the rewrite that passes is kept', async () => {
-    writer.outputs = ['The owner asked for the budget; INVENTED: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent began drafting it.'];
+    writer.outputs = ['The owner asked for the budget; PENDING: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent began drafting it.'];
     const r = await write();
     expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget; the agent began drafting it.' });
     expect(writer.prompts).toHaveLength(2);
-    expect(writer.prompts[1]).toContain('it stated something the input does not say');
+    expect(writer.prompts[1]).toContain('it described something as currently pending or owed');
     expect(writer.prompts[0]).not.toContain('accuracy check');
     expect(checks().map((c) => c.outcome)).toEqual(['rewritten_ok']);
   });
@@ -97,35 +99,35 @@ describe('a summary is checked against its source before it is kept', () => {
   });
 
   it('two failures keep the rows whole: nothing is kept, the failure is logged with its numbers, and the writer is not blamed as unreachable', async () => {
-    writer.outputs = ['INVENTED one.', 'INVENTED two.'];
+    writer.outputs = ['PENDING one.', 'PENDING two.'];
     const r = await write();
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.tooBig).toBeFalsy();
-    expect(checks()).toEqual([{ outcome: 'not_kept', invented: 0.93 }]);
+    expect(checks()).toEqual([{ outcome: 'not_kept', stated_current: 0.93 }]);
     expect(writerPassedOver('writer-small', AGENT)).toBe(false);
   });
 
   it('decide() unavailable → the summary is kept and the check is logged unavailable', async () => {
     decisions.up = false;
-    writer.outputs = ['INVENTED but nobody can tell.'];
+    writer.outputs = ['PENDING but nobody can tell.'];
     expect(await write()).toMatchObject({ ok: true });
     expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
   });
 
   it('OR-AUDIT-ANSWERS (c): failures, isolated or repeating, on one writer or two, send no card', async () => {
-    writer.outputs = ['fine', 'INVENTED a.', 'INVENTED b.', 'INVENTED c.', 'INVENTED d.', 'INVENTED e.', 'INVENTED f.'];
+    writer.outputs = ['fine', 'PENDING a.', 'PENDING b.', 'PENDING c.', 'PENDING d.', 'PENDING e.', 'PENDING f.'];
     await write(); await write(); await write(); await write('writer-large');
     expect(cards.list).toEqual([]);
   });
 
   it('I-B4-1: a summary that failed twice says so on its result, so no caller walks it to another writer', async () => {
-    writer.outputs = ['INVENTED one.', 'INVENTED two.'];
+    writer.outputs = ['PENDING one.', 'PENDING two.'];
     const r = await write();
     expect(r.ok === false && r.checkFailed).toBe(true);
   });
 
   it('the Healer section carries the running numbers', async () => {
-    writer.outputs = ['fine', 'INVENTED x.', 'better', 'INVENTED y.', 'INVENTED z.'];
+    writer.outputs = ['fine', 'PENDING x.', 'better', 'PENDING y.', 'PENDING z.'];
     await write(); await write(); await write();
     expect(summaryCheckLine()).toBe('Summary check (kept window): 3 checked, 1 kept as written, 1 kept after one rewrite, 1 left the rows whole, 0 unchecked (decision model unavailable).');
     expect(getDecisionScoreItems()[0].detail).toContain('Summary check (kept window): 3 checked');

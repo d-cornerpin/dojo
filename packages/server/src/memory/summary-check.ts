@@ -37,15 +37,18 @@ const logger = createLogger('summary-check');
 export interface SummaryCheck { ok: boolean; invented: number; dropped: number; statedCurrent: number; answers: Record<string, Answer> | null }
 
 const PURPOSE = SUMMARY_CHECK_PURPOSE;
+// Summary-check round (owner ruling 2, his insight verbatim: "if the question is 'does the summary state something the
+// messages never did' then the answer will almost always be yes because the point of a summary is to reword ... maybe
+// the question needs more specificity"). `invented` and `dropped` are reworded for that; `stated_current` is unchanged.
 const QUESTIONS: Record<SummaryCheckQuestion, Question> = {
-  invented: { type: 'noul', instructions: 'Does `summary` state anything that `source_rows` does not say?' },
-  dropped: { type: 'noul', instructions: 'Does `summary` leave out a request, decision, instruction or name that `source_rows` contains?' },
+  invented: { type: 'noul', instructions: 'Does `summary` introduce a fact, concept or meaning that `source_rows` never included? Rewording or shortening what `source_rows` says is not a new fact.' },
+  dropped: { type: 'noul', instructions: 'Does `source_rows` contain a decision, a promise, a name, a date, a number or an unfinished task that `summary` does not mention?' },
   stated_current: { type: 'noul', instructions: 'Does `summary` describe anything as currently pending or owed?' },
 };
 /** What the rewrite is told, per failed question (the writer's own words for the input: "the input"). */
 const FEEDBACK: Record<keyof typeof QUESTIONS, string> = {
-  invented: 'it stated something the input does not say',
-  dropped: 'it left out a request, decision, instruction or name the input contains',
+  invented: 'it introduced a fact, concept or meaning the input never included',
+  dropped: 'it left out a decision, promise, name, date, number or unfinished task the input contains',
   stated_current: 'it described something as currently pending or owed',
 };
 
