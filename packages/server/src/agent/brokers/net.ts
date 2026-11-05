@@ -25,6 +25,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { assertPublicHttpTarget, NetGuardError, privateAddressClass } from '../net-guard.js';
+import { ownsTheMac } from '../owns-the-mac.js';
 import { createLogger } from '../../logger.js';
 import { evaluateRules, matchDomainPattern, type Grant } from './grants.js';
 import type { ResolvedUrl } from './resolve.js';
@@ -69,6 +70,10 @@ export async function authorizeNet(grant: Grant, resource: ResolvedUrl): Promise
       `[BLOCKED] Blocked: outbound web tools only speak http and https, not "${resource.protocol}" (${resource.raw}).`,
     );
   }
+
+  // OR-AUDIT-ANSWERS: the owner removed the private / LAN / loopback fence for the MAIN agent (its web
+  // tools reach the router page, a printer, a local server); every other agent keeps the guard.
+  if (ownsTheMac(grant.agentId)) return allow(domainVerdict.rule);
 
   // The literal-IP class answers without any I/O; do it first so the common
   // metadata-endpoint shapes never spend a DNS round trip.

@@ -97,7 +97,8 @@ import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender 
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
 import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobStartedIn } from '../../wake-with-notice.js';
-import { resolvePath } from '../../path-guards.js';
+import { resolvePath, isSensitivePath } from '../../path-guards.js';
+import { ownsTheMac } from '../../owns-the-mac.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
 import { submitVideoJob } from '../../../services/video-generation.js';
@@ -788,9 +789,17 @@ const handlers = {
       // Sandbox the path to the dojo uploads dir to prevent the
       // agent from accidentally (or maliciously) reading arbitrary
       // files off disk.
+      // OR-AUDIT-ANSWERS (field fix 3 audit round): the owner removed this fence for the MAIN
+      // agent ("the main agent owns the Mac they live in"); other agents keep it. Key and password
+      // files stay hidden from every agent ("Keep secrets hidden"): the one sensitive-files list.
       const uploadsRoot = pathModule.join(homeDir(), '.dojo', 'uploads');
       const resolvedPath = pathModule.resolve(resolvePath(pathArg));
-      if (!resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
+      if (isSensitivePath(resolvedPath)) {
+        content = `[BLOCKED] transcribe_audio refused: ${resolvedPath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials).`;
+        isError = true;
+        return { content, isError };
+      }
+      if (!ownsTheMac(agentId) && !resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
         content = `Error: path must be inside ~/.dojo/uploads/ (got ${resolvedPath}).`;
         isError = true;
         return { content, isError };

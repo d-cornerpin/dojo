@@ -480,6 +480,16 @@ describe('§8 — the net broker: private/internal address classes, THROUGH the 
     }
   });
 
+  it('OR-AUDIT-ANSWERS: the MAIN agent reaches a LAN or loopback address (the owner removed this fence for it); a non-http scheme stays refused', async () => {
+    const primary = grantForManifest('agent-primary', JSON.parse(wildcardManifest));
+    for (const raw of ['http://192.168.1.10/', 'http://10.0.0.5/status', 'http://localhost:8080/', 'http://printer.local/']) {
+      const v = await authorize(primary, { kind: 'net', resource: mustResolveUrl(raw) });
+      expect(v.allowed, `${raw}: ${JSON.stringify(v)}`).toBe(true);
+    }
+    const r = resolveUrlArg('gopher://example.com/');
+    if (r.ok) expect((await authorize(primary, { kind: 'net', resource: r.value })).allowed).toBe(false);
+  });
+
   it('refuses a non-http scheme at the broker', async () => {
     for (const raw of ['file:///etc/passwd', 'gopher://example.com/']) {
       const r = resolveUrlArg(raw);

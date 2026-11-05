@@ -9,6 +9,7 @@ import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { assertPublicHttpTarget } from './net-guard.js';
+import { ownsTheMac } from './owns-the-mac.js';
 import { outsideSpan, stripOutsideMarks } from '../tools/external-content.js';
 
 const logger = createLogger('browser');
@@ -124,7 +125,7 @@ export class BrowserSession {
     // T11 (SSRF): refuse loopback/LAN/metadata BEFORE a browser is launched.
     // Playwright follows redirects and sub-resources itself, so this covers the
     // requested URL only — per-hop enforcement is Phase 5's net broker.
-    const { address } = await assertPublicHttpTarget(url);
+    const address = ownsTheMac(this.agentId) ? null : (await assertPublicHttpTarget(url)).address;   // OR-AUDIT-ANSWERS: the main agent
     const page = await this.ensurePage();
 
     logger.info('Browser navigate', { url, address }, this.agentId);
