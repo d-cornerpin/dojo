@@ -310,7 +310,10 @@ describe('T1 — an answered, delivered turn clears its untracked-work debt', ()
     expect(steer, 'the floor still files its steer').not.toBeNull();
     expect(steer).toContain('[System] The engine opened tracker task');
     expect(steer).toMatch(/task_id: /);
-    expect(steer).toContain('close it with work_update(action="status", complete)');
+    // Field fix 3 review round 3: the note states facts and how to keep the row current; it no
+    // longer coaches a close (product law, "Finishing, not closing").
+    expect(steer).toContain('update it with work_note as you go');
+    expect(steer).not.toMatch(/close it with/);
     // …and it IS the recorded note, byte for byte, so record and delivery cannot drift.
     expect(steer).toBe(engineNote());
 

@@ -512,12 +512,16 @@ export async function finalizeTurnRecord(
     // complete_validated stays 0: the validation key still turns.
     if (answerRow) {
       try {
-        const { composeTurnDeliverySummary, isTangibleDeliverySummary } = await import('../../../../tracker/task-stamps.js');
+        const { composeTurnDeliverySummary } = await import('../../../../tracker/task-stamps.js');
+        const { taskWorkOnRecord, resolveTaskAnswerPointer } = await import('../../../../tracker/delivery-evidence.js');
         const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
-        // T19 (D7): "a TANGIBLE delivery on record" is asked of the ONE helper. The summary
-        // now also NAMES a dashboard-only bubble (so the model's state line stops lying), and
-        // that is deliberately NOT a handover: this close's narrow scope is unchanged.
-        if (isTangibleDeliverySummary(strike0Summary)) {
+        // v3.5 field fix 3, review round 3: EACH TASK IS ASKED OF ITS OWN RECORD. This read the
+        // TURN's summary: any out-of-band line ("via imessage") was a handover, so a turn whose
+        // only line was an iMessage "On it" engine-closed the tasks it had just opened, and a real
+        // dashboard answer never closed them (OR-FIELD3(b)). Owner law: an ack never closes a
+        // task. `taskWorkOnRecord` counts a delivered file, or THE task's answer under the
+        // ack-order rule (the ask settled before this, so its receipt is readable here).
+        if (strike0Summary) {
           const sameTurnOpen = db.prepare(
             `SELECT w.id AS id, w.title AS title FROM work w
               WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ?
@@ -526,8 +530,15 @@ export async function finalizeTurnRecord(
           // The receipt this close is made of — the same delivery `composeTurnDeliverySummary`
           // just described — is what G7 requires, so the engine's strike-0 close points at
           // the thing the person actually received.
-          const strike0Delivery = terminalDeliveryForTurn(agentId, turnNumber);
+          const turnDelivery = terminalDeliveryForTurn(agentId, turnNumber);
           for (const t of sameTurnOpen) {
+            const onRecord = taskWorkOnRecord(t.id, {
+              last_answered_turn: turnNumber, last_answered_at: new Date().toISOString(), last_delivery_summary: strike0Summary,
+            });
+            if (!onRecord) continue;
+            // A close on the task's answer points at that answer; a close on a delivered file at
+            // the turn's own terminal delivery, as before.
+            const strike0Delivery = resolveTaskAnswerPointer(t.id)?.deliveryId ?? turnDelivery;
             const r0 = setTrackerStatus(t.id, 'complete', {
               by: strike0Delivery ? 'engine' : 'agent', actorId: agentId,
               evidenceRef: strike0Delivery,

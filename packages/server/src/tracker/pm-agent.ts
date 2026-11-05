@@ -2,7 +2,7 @@ import { closeoutReceipts } from './closeout-receipts.js';
 import { unvalidatedCompleteText } from './validation-request.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { getBoxTimeZone } from '../scheduler/engine.js';
@@ -2724,7 +2724,11 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // `deliveredVia` is a DISTINCT read of `deliveries` inside `findDeliveryEvidenceForTask`
     // (delivery-evidence.ts), so strike 2's tangible-handover test reads the delivery ledger
     // directly — T8c item 1's requirement, verified rather than rebuilt.
-    const tangibleHandover = !!deliveryEvidence && (deliveryEvidence.artifacts.length > 0 || deliveryEvidence.deliveredVia.length > 0);
+    // v3.5 field fix 3, review round 3: the handover is THE task's record (`taskWorkOnRecord`: a
+    // delivered file, or the task's answer under the ack-order rule). `deliveredVia` counted any
+    // channel line, so an "On it" read as a handover here and strike 2 could close on it.
+    const workOnRecord = deliveryEvidence ? taskWorkOnRecord(task.id, null) : null;
+    const tangibleHandover = !!workOnRecord;
     // The poke's instant is epoch ms now (`work_events.created_at`); the evidence's is the
     // `turns` table's TEXT instant. Compare as numbers, never as strings of different shapes.
     const evidenceAtMs = deliveryEvidence
@@ -2770,8 +2774,8 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     const escalateToAssignee = pokeType === 'escalate_primary' && (primaryId === task.assignedTo
       || !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId)));
     const basePokeMessage = deliveryEvidence && tangibleHandover
-      ? `DELIVERY ON RECORD: task "${task.title}" (${task.id}) still says in_progress, and the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
-        `If that delivery finished the task, close it with work_update(action="status", task_id="${task.id}", status="complete", result, evidence). ` +
+      // Review round 3: facts only, never close-coaching (product law, "Finishing, not closing").
+      ? `DELIVERY ON RECORD: task "${task.title}" (${task.id}) still says in_progress, and the engine's own records show ${workOnRecord}. ` +
         `If something remains, say what in a work_note and continue. ` +
         `Do NOT redo the work, and do NOT re-deliver what the user already has.`
       : buildPokeMessage(task, escalateToAssignee ? 'escalate_assignee' : pokeType, pokeNumber, idleSeconds, pokesSentThisCycle(task.id));

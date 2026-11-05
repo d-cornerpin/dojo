@@ -73,6 +73,10 @@ vi.mock('../delivery-evidence.js', async (importOriginal) => ({
   findDeliveryEvidenceForTask: (taskId: string) => (evidence.on
     ? { turnNumber: 7, answeredAt: '2020-01-01 00:00:00', artifacts: ['/tmp/report.md'], deliveredVia: ['dashboard'], taskId } as never
     : null),
+  // Field fix 3 review round 3: the poke's handover is the task's record, which the mocked
+  // evidence above stands for (a delivered file). An ESM mock of one export does not reach the
+  // module's own internal call, so the record is stated here with the same premise.
+  taskWorkOnRecord: () => (evidence.on ? 'delivered file(s): /tmp/report.md' : null),
 }));
 
 import { runMigrations } from '../../db/migrations.js';

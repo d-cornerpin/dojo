@@ -249,7 +249,8 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           `(work calls with no tracker entry — this turn: ${state.nonTrackerToolCalls}; ` +
           `total untracked in this conversation: ${effectiveUntracked}; floor: ${TRACKER_AUTO_SCAFFOLD_AT}; ` +
           `untracked multi-step work drifts and the PM cannot monitor it). ` +
-          `Keep working; rename it with work_update(action="edit", title=…) to what you are doing, update it with work_note as you go, and close it with work_update(action="status", complete) plus result/evidence when done.`
+          // Review round 3: facts and how to keep the row honest; no close-coaching (product law).
+          `Keep working; rename it with work_update(action="edit", title=…) to what you are doing, and update it with work_note as you go.`
         );
         state = persistEngineSteer(
           state,
