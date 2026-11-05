@@ -320,10 +320,6 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
 
   // Track which tools we've listed so we can report any uncategorized at the end
   const listed = new Set<string>();
-  // T80b: true once ANY category line below had to fall back to a `user_`
-  // twin because the canonical name was withheld. Selects which
-  // "User-account variants" sentence renders further down.
-  let anyCategorySubstituted = false;
 
   for (const category of TOOL_CATEGORIES) {
     // T80b substitution rule (was: `category.tools.filter(name =>
@@ -344,7 +340,6 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
         const userTwin = `user_${canonical}`;
         if (toolMap.has(userTwin)) {
           rendered.push(userTwin);
-          anyCategorySubstituted = true;
         }
       }
     }
@@ -377,18 +372,21 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   const trueOther = uncategorized.filter(t => !isMirroredUserVariant(t.name));
 
   if (mirroredUserVariants.length > 0) {
-    // "every ... tool above also has a twin" is only true when nothing
-    // above was substituted (every line above is genuinely canonical). The
-    // instant a category fell back to a `user_` name, that blanket claim
-    // stops being true for it, so the sentence is reworded to describe only
-    // what it still covers. Unsubstituted branch stays byte-identical to
-    // pre-T80b output — a full-access agent always takes it (cache-prefix
-    // gate, PRESERVE 3(a)).
-    if (!anyCategorySubstituted) {
-      lines.push(`**User-account variants (${mirroredUserVariants.length}):** every Gmail / Google / Microsoft tool above also has a \`user_\`-prefixed twin (e.g. \`user_gmail_send\`, \`user_calendar_create\`, \`user_outlook_inbox\`) that acts on the OWNER's personal account instead of your agent account. Call \`load_tool_docs\` on the \`user_\` name exactly as you would the base tool.`);
-    } else {
-      lines.push(`**User-account variants (${mirroredUserVariants.length}):** where a category above shows a canonical name, it also has a \`user_\`-prefixed twin (e.g. \`user_gmail_send\`, \`user_calendar_create\`, \`user_outlook_inbox\`) that acts on the OWNER's personal account instead of your agent account — call \`load_tool_docs\` on the \`user_\` name exactly as you would the base tool. Where a category above already shows a \`user_\`-prefixed name, that IS the tool you hold; it has no further twin.`);
+    // v3.5 field fix 3, test-2 rank 7: the held twins are NAMED, literally, never covered by a pattern
+    // sentence with three examples. The owner's field test: an agent holding both forms concluded
+    // `user_gmail_list_labels` "doesn't appear to exist" because the index never printed it. Order is
+    // the categories' DECLARED order (category by category, name by name), so the line is a function of
+    // the held names only: stable, sorted the same way every time, nothing volatile. This replaces both
+    // pattern sentences (the "every ... tool above" one and its T80b rewording).
+    const held = new Set(mirroredUserVariants.map((t) => t.name));
+    const ordered: string[] = [];
+    for (const category of TOOL_CATEGORIES) {
+      for (const canonical of category.tools) {
+        const twin = `user_${canonical}`;
+        if (held.has(twin) && !ordered.includes(twin)) ordered.push(twin);
+      }
     }
+    lines.push(`**User-account variants (${ordered.length}):** these act on the OWNER's personal account instead of your agent account, each the twin of the tool above with the same name after \`user_\`. Call \`load_tool_docs\` on the \`user_\` name exactly as you would the base tool: ${ordered.map((n) => `\`${n}\``).join(', ')}`);
     lines.push('');
   }
   if (trueOther.length > 0) {
