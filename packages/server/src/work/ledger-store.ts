@@ -130,12 +130,30 @@ export function writeMeasured(workId: string, remaining: number | null, at: numb
 }
 
 /** A measure is SET on a task (open, or an edit: a new measure is a new scope), with its first reading. */
-export function setMeasure(workId: string, measure: Measure, count: MeasureCount, at: number): void {
+/**
+ * Re-review 3 (M4): a count that could not read every folder it covers is NO READING for any close. The
+ * files still to do may sit exactly in the folder it could not read (a revoked permission, an offline
+ * volume), so its number is a lower bound and a 0 from it would read as done. The task's row therefore
+ * stores it as a reading that could not be made; the event keeps the partial number and the folders,
+ * named, for display.
+ */
+export function readingForClose(count: MeasureCount): MeasureCount {
+  if (!count.ok || !count.unreadable || count.unreadable.length === 0) return count;
+  const n = count.unreadable.length;
+  return {
+    ok: false,
+    error: `${n} ${n === 1 ? 'folder' : 'folders'} could not be read (${count.unreadable.join(', ')}); `
+      + `${count.count} counted in the folders that could be read`,
+  };
+}
+
+export function setMeasure(workId: string, measure: Measure, raw: MeasureCount, at: number): void {
+  const count = readingForClose(raw);
   const n = count.ok ? count.count : null;
   getDb().prepare(
     'UPDATE work SET measure_json = ?, measure_initial = ?, measure_remaining = ?, measure_at = ? WHERE id = ?',
   ).run(JSON.stringify(measure), n, n, at, workId);
-  appendMeasured(workId, count, n, at);
+  appendMeasured(workId, count, n, at, raw.ok && raw.unreadable?.length ? { partial: raw.count, unreadable: raw.unreadable } : null);
 }
 
 /** A task's measure was re-read. `remaining` null on the row = it could not be read at `at`. The
@@ -145,16 +163,21 @@ export function setMeasure(workId: string, measure: Measure, count: MeasureCount
  *  the close gate read that row, and one failed sweep must not end the job or free a close. The
  *  close door's re-read never passes it: NULL there is the ruling (an outage never refuses a close). */
 export function recordMeasured(
-  workId: string, count: MeasureCount, at: number, opts?: { keepStoredOnFailure?: boolean },
+  workId: string, raw: MeasureCount, at: number, opts?: { keepStoredOnFailure?: boolean },
 ): void {
+  const count = readingForClose(raw);
+  const partial = raw.ok && raw.unreadable?.length ? { partial: raw.count, unreadable: raw.unreadable } : null;
   const row = getDb().prepare('SELECT measure_initial FROM work WHERE id = ?').get(workId) as { measure_initial: number | null } | undefined;
   const initial = row?.measure_initial ?? (count.ok ? count.count : null);
   if (count.ok || !opts?.keepStoredOnFailure) writeMeasured(workId, count.ok ? count.count : null, at, initial ?? undefined);
-  appendMeasured(workId, count, initial, at);
+  appendMeasured(workId, count, initial, at, partial);
 }
 
-function appendMeasured(workId: string, count: MeasureCount, initial: number | null, at: number): void {
+function appendMeasured(
+  workId: string, count: MeasureCount, initial: number | null, at: number,
+  partial: { partial: number; unreadable: string[] } | null = null,
+): void {
   appendWorkEvent(workId, MEASURED_EVENT, 'engine', count.ok
-    ? { remaining: count.count, initial, at, ok: true, ...(count.unreadable ? { unreadable: count.unreadable } : {}) }
-    : { remaining: null, initial, at, ok: false, error: count.error }, at);
+    ? { remaining: count.count, initial, at, ok: true }
+    : { remaining: null, initial, at, ok: false, error: count.error, ...(partial ?? {}) }, at);
 }

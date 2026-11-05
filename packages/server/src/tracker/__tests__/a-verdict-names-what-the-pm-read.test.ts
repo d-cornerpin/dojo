@@ -64,7 +64,7 @@ vi.mock('../delivery-evidence.js', async (importOriginal) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { keepLedgerShownFor, noteAnswerShown } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
-import { recordTouched } from '../../work/ledger-store.js';
+import { recordTouched, setMeasure, recordMeasured } from '../../work/ledger-store.js';
 import { validationMeasureLines } from '../job-loop-facts.js';
 import { writeTaskLog } from '../task-log.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
@@ -525,6 +525,20 @@ describe('#6b: an uphold with nothing structural behind it is refused at the PM\
     mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 0, measure_remaining = 0 WHERE id = ?').run(
       JSON.stringify({ tool: 'file_list', args: { path: '/work/wrong-folder', pattern: '*.pdf' }, unit: 'files' }), t);
     fileClose(t, undefined, seedDelivery('deliv-z0'));
+    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
+    expect(upheld(t)).toBe(0);
+  });
+
+  it('re-review 3 (M4): the remaining files sit in an UNREADABLE folder, so a 0 is no reading: no backing, and the folder is named', async () => {
+    const t = newTask();
+    const m = { tool: 'file_list', args: { path: '/work/inbox', pattern: '**/*.pdf' }, unit: 'files' } as const;
+    setMeasure(t, m as never, { ok: true, count: 6 }, Date.now() - 60_000);
+    recordMeasured(t, { ok: true, count: 0, unreadable: ['/work/inbox/scans'] }, Date.now());
+    const row = mockDb.current!.prepare('SELECT measure_remaining AS r FROM work WHERE id = ?').get(t) as { r: number | null };
+    expect(row.r).toBeNull();   // for any close, this is a reading that could not be made
+    expect(validationMeasureLines(t)).toContain('/work/inbox/scans');
+    expect(validationMeasureLines(t)).toContain('0 counted in the folders that could be read');
+    fileClose(t, undefined, seedDelivery('deliv-m4'));
     expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
     expect(upheld(t)).toBe(0);
   });

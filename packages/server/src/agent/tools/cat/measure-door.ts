@@ -43,7 +43,8 @@ export async function readMeasureArg(agentId: string, raw: unknown): Promise<{ r
   // Re-review 2 (S2): a measure that reads 0 when it is set has counted nothing, so it can never show
   // progress (a wrong folder, a pattern in the wrong case, a query that matches nothing); left standing,
   // its 0 would read as done. Refused with the fact; never coaching.
-  if (count.ok && count.count === 0) return { error: `Error: ${MEASURE_READS_ZERO}.` };
+  // A 0 with folders it could not read is not a 0 (re-review 3, M4): it is set as a reading not made.
+  if (count.ok && count.count === 0 && !count.unreadable?.length) return { error: `Error: ${MEASURE_READS_ZERO}.` };
   return { reading: { measure: parsed.measure, count, at: Date.now() } };
 }
 

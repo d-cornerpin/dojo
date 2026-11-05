@@ -5,8 +5,10 @@
 // whose path relative to it matches the glob `pattern`, by walking the real directory: the count is
 // bounded by what is on disk, never by a number. Glob: `*` and `?` stay within one folder, `**` crosses
 // folders. A pattern without `**` is only walked as deep as it reaches. Symlinked folders are not
-// followed (a loop cannot inflate the count). A directory that is not there, or cannot be read, is a
-// reading that could not be made, never 0.
+// followed (a loop cannot inflate the count). A top folder that is not there, or cannot be read, is a
+// reading that could not be made, never 0. A SUBFOLDER that cannot be read is named in the reading
+// (`unreadable`); the count of the rest is kept for display, but the task's row stores the whole reading
+// as one that could not be made (`work/ledger-store.ts readingForClose`), so it is never a 0 for any close.
 //
 // Authorization: the measure is checked with `file_list`'s own gates before every count
 // (`agent/tools/cat/measure-door.ts` `refusalFor`), so this walk only ever reads a tree the agent's
@@ -25,7 +27,7 @@ import { isFsCaseInsensitive } from '../agent/fs-case.js';
 //   * BOUND: the walk is registered under the agent's own stop (`openAgentCall`, `turn` scope), so the
 //     turn's abort ends it; a stopped walk is no reading, never a partial count. No count or depth limit.
 //   * UNREADABLE: a subfolder that cannot be read is NAMED in the reading (`unreadable`) and the rest is
-//     still counted; only an unreadable top folder is no reading.
+//     still counted for display; for any close the reading is one that could not be made (re-review 3, M4).
 //   * SYMLINKS: never followed (a symlinked folder is neither walked nor counted), so no loop.
 
 /** The folder's own case sensitivity: stat it under a case-flipped name and compare the inode. */
