@@ -25,7 +25,7 @@ import { getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 import { registerStandardRow, assignStandard, unregisterStandardRow, reconcileStandardRows } from './standard-model-rows.js';
-import { ollamaReadyForPair, reconcileWhenOllamaAnswers, pairHeld, pairHeldNote, pairModelsAllIn, pairOllamaLines, retryMayStart, pullRefusedForVersion } from './ollama-pair-gate.js';
+import { ollamaReadyForPair, reconcileWhenOllamaAnswers, pairHeld, pairHeldNote, pairModelsAllIn, pairOllamaLines, retryMayStart, pullRefusedForVersion, heldVersionAsksSettled } from './ollama-pair-gate.js';
 import { isVersionRefusal } from './ollama-version.js';
 
 export { STANDARD_MODELS_MISSING_WORDS };
@@ -270,8 +270,13 @@ export function ensureStandardModels(onProgress?: (line: string) => void): Promi
   return inFlight;
 }
 
-/** Resolves when the install (or the window tag's repair) running now has finished. Starts nothing. */
-export async function standardInstallSettled(): Promise<void> { await inFlight?.catch(() => undefined); await windowRepair?.catch(() => undefined); }
+/** Resolves when the install (or the window tag's repair) running now has finished. Starts nothing.
+ *  Field fix 3: it first waits for a held health check's version ask, which may START the install,
+ *  so a caller never reads "nothing in flight" while that ask is still answering. */
+export async function standardInstallSettled(): Promise<void> {
+  await heldVersionAsksSettled();
+  await inFlight?.catch(() => undefined); await windowRepair?.catch(() => undefined);
+}
 
 /** Start the install in the background (setup, the Repair button); progress is read back by polling. */
 export function startStandardInstall(): void {

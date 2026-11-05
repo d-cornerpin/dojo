@@ -51,12 +51,19 @@ export function reconcileWhenOllamaAnswers(baseUrl: string, untilStarted: boolea
   return asking;
 }
 
+/** The version asks a held health check made, still answering (field fix 3: an awaited signal, never a sleep). */
+let versionAsks: Promise<void> = Promise.resolve();
+
 /** A health check found a model missing: may the install start? While held, only a changed Ollama version lets it. */
 export function retryMayStart(baseUrl: string, start: () => void): boolean {
   if (heldAt === null) return true;
-  void readOllamaVersion(baseUrl).then((v) => { if (v !== null && v !== heldAt) { heldAt = null; start(); } });
+  const ask = readOllamaVersion(baseUrl).then((v) => { if (v !== null && v !== heldAt) { heldAt = null; start(); } }, () => undefined);
+  versionAsks = Promise.all([versionAsks, ask]).then(() => undefined);
   return false;
 }
+
+/** Resolves when every version ask a held health check made has answered (and started the install, if it did). */
+export function heldVersionAsksSettled(): Promise<void> { return versionAsks; }
 
 async function installedNames(baseUrl: string): Promise<string[] | null> {
   try {
