@@ -65,6 +65,55 @@ const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
   'xxd', 'od', 'hexdump',
 ]);
 
+/** Readers whose first operand is a search PATTERN, unless one is given with an option. */
+const PATTERN_FIRST: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
+/** Readers whose first operand is a SCRIPT (sed) or PROGRAM (awk), unless given with an option. */
+const SCRIPT_FIRST: ReadonlySet<string> = new Set(['sed', 'awk']);
+/** Short options that take a value (a count, a glob, a variable), per program, so the word after
+ *  one is not mistaken for the pattern. The value is still scanned. */
+const VALUE_LETTERS: Readonly<Record<string, string>> = {
+  grep: 'ABCmdD', egrep: 'ABCmdD', fgrep: 'ABCmdD', rg: 'ABCmgtTjM', ag: 'ABCmGg', ack: 'ABCm', sed: 'l', awk: 'vF',
+};
+
+/**
+ * The arguments of one reader that name a FILE it reads, for the sensitive-path scan (re-review 5
+ * P2). A grep-family PATTERN and a sed/awk SCRIPT are text, not a path: `grep ".env" src` searches
+ * for the text `.env`, so it is not scanned as a file. The pattern is the first operand, or the
+ * value of `-e`/`--regexp` (grep family) or `-e`/`--expression` (sed); once a pattern or script is
+ * given by option, every operand is a file. A pattern or program FILE (`-f FILE`, `--file=FILE`) is
+ * read, so it IS scanned. Any other option's value is scanned too: a misread can only scan more.
+ */
+function fileOperands(cmd: string, args: readonly string[]): string[] {
+  const textFirst = PATTERN_FIRST.has(cmd) || SCRIPT_FIRST.has(cmd);
+  if (!textFirst) return args.filter((a) => !a.startsWith('-'));
+  const textOpt = PATTERN_FIRST.has(cmd) ? ['--regexp'] : cmd === 'sed' ? ['--expression'] : [];
+  const textShort = cmd === 'awk' ? '' : 'e';   // awk has no -e program option
+  const out: string[] = [];
+  let textGiven = false;
+  let operandsOnly = false;
+  const operands: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (operandsOnly || !a.startsWith('-') || a === '-') { operands.push(a); continue; }
+    if (a === '--') { operandsOnly = true; continue; }
+    if (a.startsWith('--')) {
+      const [name, ...val] = a.split('=');
+      if (textOpt.includes(name)) { textGiven = true; if (val.length === 0) k++; continue; }   // the text itself: not a file
+      if (name === '--file') { textGiven = true; if (val.length > 0) out.push(val.join('=')); else if (k + 1 < args.length) out.push(args[++k]); continue; }
+      if (val.length > 0) out.push(val.join('='));
+      continue;
+    }
+    // A short cluster: the first letter that takes a value ends it.
+    for (let c = 1; c < a.length; c++) {
+      const letter = a[c];
+      if (letter === textShort) { textGiven = true; if (c === a.length - 1) k++; break; }   // -e TEXT / -eTEXT
+      if (letter === 'f') { textGiven = true; const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < args.length) out.push(args[++k]); break; }
+      if ((VALUE_LETTERS[cmd] ?? '').includes(letter)) { const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < args.length) out.push(args[++k]); break; }
+    }
+  }
+  return [...out, ...(textGiven ? operands : operands.slice(1))];
+}
+
 /**
  * The same line with its PROGRAM spelled as a basename.
  *
@@ -193,10 +242,13 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
   for (let i = 0; i < tokens.length; i++) {
     const cmd = path.basename(tokens[i]);
     if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
+    const args: string[] = [];
     for (let j = i + 1; j < tokens.length; j++) {
       const arg = tokens[j];
       if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
-      if (arg.startsWith('-')) continue; // flags
+      args.push(arg);
+    }
+    for (const arg of fileOperands(cmd, args)) {
       const expanded = resolvePath(arg);
       if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
         return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
@@ -354,9 +406,7 @@ export function argvReadsSensitiveFile(argv: readonly string[]): { blocked: true
   for (let i = 0; i < argv.length; i++) {
     const cmd = path.basename(argv[i]);
     if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
-    for (let j = i + 1; j < argv.length; j++) {
-      const arg = argv[j];
-      if (arg.startsWith('-')) continue; // flags
+    for (const arg of fileOperands(cmd, argv.slice(i + 1))) {
       const expanded = resolvePath(arg);
       if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
         return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
