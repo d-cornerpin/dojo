@@ -212,7 +212,7 @@ async function checkOne(w: Watched): Promise<void> {
     const words = `${w.label} balance is $${balance.toFixed(2)}, at or below your ${usd(threshold)} warning threshold. Add credits at ${w.topUpAt}.`;
     setLatch(latchKey, { words });
     logger.warn(`${w.label} balance at or below its warning threshold`, { balance, threshold });
-    void sendAlert(words, 'notice');
+    void sendAlert(words, 'notice', { kind: 'budget' });
   } else if (latched && balance > threshold) {
     setLatch(latchKey, null);
     logger.info(`${w.label} balance back above its warning threshold, re-armed`, { balance, threshold });

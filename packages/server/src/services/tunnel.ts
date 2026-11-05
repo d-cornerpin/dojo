@@ -10,7 +10,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential, setProviderCredential } from '../config/loader.js';
 import { broadcast } from '../gateway/ws.js';
-import { sendAlert } from './imessage-bridge.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('tunnel');
@@ -492,13 +491,8 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         logger.info('Quick tunnel active', { url: tunnelUrl });
         broadcastStatus();
 
-        // Send the new URL via iMessage so the owner always has it.
-        // 'notice' severity — routes to iMessage like critical does, but
-        // without the "[CRITICAL]" prefix. This is a friendly status
-        // announcement, not an incident, so it shouldn't shout.
-        try {
-          void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { card: false }); // a status line, not a card
-        } catch { /* iMessage bridge may not be running yet */ }
+        // OR-AUDIT-ANSWERS (d): a new dashboard address is no platform text (the owner's set: offline and back
+        // online, budget, broken agent, Mac critical). The Remote Access settings show the current address.
       }
     };
 

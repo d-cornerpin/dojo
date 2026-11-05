@@ -1437,7 +1437,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "prompt/assembler.ts",
-  "line": "`## ${displayName[s.name]} (disconnected)\\n\\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in Dashboard -> Integrations. Do not say the capability is unsupported; it only needs a reconnect.${localCarveOut[s.name] ?? ''}`,",
+  "line": "`## ${displayName[s.name]} (disconnected)\\n\\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in ${settingsPath('channels')}. Do not say the capability is unsupported; it only needs a reconnect.${localCarveOut[s.name] ?? ''}`,",
   "reason": "static system-prompt law or soul text describing the chat reader generically (true for every counterparty), or the healer/PM soul whose person is the owner by design"
  },
  {

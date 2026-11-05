@@ -36,7 +36,7 @@ export function noteCriticalMemory(freeMb: number): void {
     const told = readMemoryLow();
     if (low && told === null) {
       writeMemoryLow({ at: Date.now() });
-      void sendAlert(MEMORY_LOW_WORDS, 'critical');
+      void sendAlert(MEMORY_LOW_WORDS, 'critical', { kind: 'mac-critical' });
     } else if (!low && told !== null) {
       writeMemoryLow(null);
       ownerCardEnded(MEMORY_LOW_WORDS); // round 4: the card leaves open dashboards now

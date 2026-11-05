@@ -96,7 +96,7 @@ async function endStuckStart(host: OllamaHost, baseUrl: string, residentCount: n
   const started: Start = formula ? await startLasting(host, baseUrl, residentCount, was === 'app') : 'dead';
   if (started === 'starting') setConfig(STARTING, await startingNow(host));
   if (started !== 'dead') return null;
-  if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning', undefined, 'action');
+  if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning', undefined, 'informational');   // audit #7: it asks nothing of him
   return 'dead';
 }
 
@@ -155,7 +155,7 @@ export async function ensureOllamaCurrent(
     else return cannot(WHY[step]);
   }
   if (started === 'dead') {   // it was stopped and nothing on disk would run: the one card that it is down
-    if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning', undefined, 'action');
+    if (tellOwnerOnce('ollama-down')) ownerCardFrame(OLLAMA_DOWN_WORDS, 'warning', undefined, 'informational');   // audit #7: it asks nothing of him
     return { ok: false, line: `${tooOld}Ollama stopped while the Dojo was updating it and has not come back yet.` };
   }
   if (started === 'starting') { setConfig(STARTING, await startingNow(host)); return { ok: false, transient: true, starting: true, line: 'Ollama is starting again after the update.' }; }

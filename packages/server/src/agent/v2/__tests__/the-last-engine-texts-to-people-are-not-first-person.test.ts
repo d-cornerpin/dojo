@@ -52,12 +52,12 @@ describe('engine texts to people carry no first person', () => {
     const voice = fs.readFileSync(path.join(SRC, 'agent/dojo-voice.ts'), 'utf8');
     expect(voice).toContain('aboutAgentId ?? getPrimaryAgentId()');   // about no agent: the primary is told
     for (const [file, call] of [
-      ['agent/errors.ts', "sendAlert(words, 'notice', { agentId })"],
-      ['healer/injury-recovery.ts', "sendAlert(broken, 'notice', { agentId })"],
-      ['healer/injury-recovery.ts', "sendAlert(userMsg, 'notice', { agentId })"],
-      ['agent/rate-limit-retry.ts', "'critical', { agentId })"],
+      ['agent/errors.ts', "sendAlert(words, 'notice', { kind: 'broken-agent', agentId })"],
+      ['healer/injury-recovery.ts', "sendAlert(broken, 'notice', { kind: 'broken-agent', agentId })"],
+      ['healer/injury-recovery.ts', "sendAlert(userMsg, 'notice', { kind: 'broken-agent', agentId })"],
+      ['agent/rate-limit-retry.ts', "'critical', { kind: 'broken-agent', agentId })"],
       ['agent/v2/honest-stop.ts', 'agentId }'],
-      ['agent/v2/full-context-wait.ts', "sendAlert(wordsOf(key), 'notice', { agentId })"],
+      ['agent/v2/full-context-wait.ts', "sendAlert(wordsOf(key), 'notice', { kind: 'broken-agent', agentId })"],
       ['tracker/liveness.ts', 'agentId: a.id'],
     ] as const) {
       expect(fs.readFileSync(path.join(SRC, file), 'utf8'), file).toContain(call);

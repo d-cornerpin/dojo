@@ -2098,8 +2098,20 @@ const ownerNoticeLog = createLogger('owner-notice');
  * escalation ladder does not raise the same row with him again. The id is data the caller holds,
  * never read from the words.
  */
-export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string } = {}): Promise<void> {
+/**
+ * OR-AUDIT-ANSWERS (d), owner ruling: the Dojo's own texts to the owner are exactly these. Offline and back online
+ * (an update that failed included) are the watchdog's (watchdog/src/index.ts); the server's door carries the other
+ * three, and every caller names which one, so a text outside the set does not type-check and is refused here.
+ */
+export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical'] as const;
+export type PlatformTextKind = typeof PLATFORM_TEXT_KINDS[number];
+
+export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string }): Promise<void> {
   try {
+    if (!(PLATFORM_TEXT_KINDS as readonly string[]).includes(opts.kind)) {
+      logger.warn('Alert refused: not one of the owner\'s platform texts', { kind: opts.kind });
+      return;
+    }
     const scrubbed = scrubTechnicalDetail(message);
 
     if (urgency !== 'critical' && urgency !== 'notice') {

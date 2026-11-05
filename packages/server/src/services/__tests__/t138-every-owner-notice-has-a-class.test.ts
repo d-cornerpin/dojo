@@ -1,14 +1,13 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // t138 — THE OWNER-NOTICE DOOR'S CENSUS: every `sendAlert` caller, by class, counted both ways.
 //
-// `sendAlert` (services/imessage-bridge.ts) is the platform's one door to the owner's phone —
-// the only place the PLATFORM, rather than an agent, speaks to him. Owner rulings bound what may
-// pass through it:
-//   - ruling 10(a): the platform does not tell the owner things, the agent does — except the
-//     platform telling him the platform itself is in trouble;
-//   - OR-V333-SET (3): plus exactly two more — budget alerts, and an agent that is broken or
-//     silent.
-// So there are three classes and no fourth. This census names every call site's class and
+// `sendAlert` (services/imessage-bridge.ts) is the server's one door to the owner's phone, the
+// only place the PLATFORM, rather than an agent, texts him. OR-AUDIT-ANSWERS (d), owner ruling
+// (supersedes the "platform-trouble" class this census once invented): the Dojo's own texts are
+// exactly offline and back online (an update that failed included), budget alerts, a broken
+// agent, and the Mac critical (disk and memory). Offline/online and disk are the watchdog's
+// (`update/__tests__/the-dojo-texts-only-the-owners-set.test.ts`); this door carries the other
+// three, and each call names its kind (`opts.kind`), so there are three classes and no fourth. This census names every call site's class and
 // severity. A NEW caller anywhere in the server fails here until someone classifies it (and a
 // class outside the three needs the owner first); a REMOVED caller fails as a stale entry; a
 // caller that quietly changes severity fails too. The table is the record; the reasons are
@@ -30,14 +29,14 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '..', '..');
 
-type NoticeClass = 'budget' | 'agent-trouble' | 'platform-trouble';
+type NoticeClass = 'budget' | 'broken-agent' | 'mac-critical';
 type Severity = 'critical' | 'notice' | 'warning' | 'info';
 /** The dashboard side of a phone-bound site (t138 round 3): it raises a card (default), raises
  *  none (`none`, a status line), or removes the trouble card it answers (`clears`, an all-clear). */
 type Card = 'card' | 'none' | 'clears';
 interface Site { cls: NoticeClass; severity: Severity; what: string; muted?: string; card?: Card }
 
-const CLASSES: readonly NoticeClass[] = ['budget', 'agent-trouble', 'platform-trouble'];
+const CLASSES: readonly NoticeClass[] = ['budget', 'broken-agent', 'mac-critical'];
 
 /** Every caller, in source order within its file. */
 const CENSUS: Record<string, Site[]> = {
@@ -48,48 +47,33 @@ const CENSUS: Record<string, Site[]> = {
     { cls: 'budget', severity: 'notice', what: 'a provider account balance fell to its warning threshold (once)' },
   ],
   'agent/errors.ts': [
-    { cls: 'agent-trouble', severity: 'notice', what: 'an agent was paused after repeated errors' },
+    { cls: 'broken-agent', severity: 'notice', what: 'an agent was paused after repeated errors' },
     {
-      cls: 'agent-trouble', severity: 'warning', what: 'an agent is being rate-limited (strike 3); it will retry by itself',
+      cls: 'broken-agent', severity: 'warning', what: 'an agent is being rate-limited (strike 3); it will retry by itself',
       muted: 'ruling R-V333-4 (orchestrator, following the owner\'s "true blockers only"): not a blocker, so dashboard only — rate-limit-retry.ts shows the agent as rate-limited; "retries exhausted" stays on the phone at critical',
     },
   ],
   'agent/v2/honest-stop.ts': [
-    { cls: 'agent-trouble', severity: 'notice', what: 'an agent is parked because none of its models can hold it (once per condition; its card ends when the agent is released, t148)' },
+    { cls: 'broken-agent', severity: 'notice', what: 'an agent is parked because none of its models can hold it (once per condition; its card ends when the agent is released, t148)' },
     { cls: 'budget', severity: 'notice', what: 'a budget stop parked an agent: the limit is reached (once per budget window, shared with the crossing alert; its card ends with the last release, t167)' },
   ],
   'agent/v2/full-context-wait.ts': [
-    { cls: 'agent-trouble', severity: 'notice', what: 't168: a full agent whose compaction brake let go and whose pass still reclaimed nothing is stuck (the Healer\'s stuck words and card, once per incident; ends when a pass reclaims or the context fits)' },
+    { cls: 'broken-agent', severity: 'notice', what: 't168: a full agent whose compaction brake let go and whose pass still reclaimed nothing is stuck (the Healer\'s stuck words and card, once per incident; ends when a pass reclaims or the context fits)' },
   ],
   'agent/rate-limit-retry.ts': [
-    { cls: 'agent-trouble', severity: 'critical', what: 'rate-limit retries exhausted' },
+    { cls: 'broken-agent', severity: 'critical', what: 'rate-limit retries exhausted' },
   ],
   'healer/injury-recovery.ts': [
-    { cls: 'agent-trouble', severity: 'critical', what: 'the Healer itself is broken' },
-    { cls: 'agent-trouble', severity: 'notice', what: 't143 BROKEN: a provider refused the agent in a way only the owner can fix (once per incident)' },
-    { cls: 'agent-trouble', severity: 'notice', what: 'auto-recovery gave up on a stuck agent (first entry into backoff)' },
-    { cls: 'agent-trouble', severity: 'critical', what: 'an agent is stuck and the Healer is missing' },
-  ],
-  'google/auth.ts': [
-    { cls: 'platform-trouble', severity: 'critical', what: 'a Google account connection expired' },
-    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own (its card ends where the sign-in is restored)', card: 'none' },
-  ],
-  'microsoft/auth.ts': [
-    { cls: 'platform-trouble', severity: 'critical', what: 'a Microsoft account connection expired' },
-    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own (its card ends where the sign-in is restored)', card: 'none' },
+    { cls: 'broken-agent', severity: 'critical', what: 'the Healer itself is broken' },
+    { cls: 'broken-agent', severity: 'notice', what: 't143 BROKEN: a provider refused the agent in a way only the owner can fix (once per incident)' },
+    { cls: 'broken-agent', severity: 'notice', what: 'auto-recovery gave up on a stuck agent (first entry into backoff)' },
+    { cls: 'broken-agent', severity: 'critical', what: 'an agent is stuck and the Healer is missing' },
   ],
   'tracker/liveness.ts': [
-    { cls: 'agent-trouble', severity: 'notice', what: 't143 SILENT: no movement at all past the agent\'s silent window (once per incident)' },
+    { cls: 'broken-agent', severity: 'notice', what: 't143 SILENT: no movement at all past the agent\'s silent window (once per incident)' },
   ],
   'services/memory-low-notice.ts': [
-    { cls: 'platform-trouble', severity: 'critical', what: 'the box is nearly out of memory (once per low stretch, round 3)' },
-  ],
-  'services/tunnel.ts': [
-    { cls: 'platform-trouble', severity: 'notice', what: 'the remote address changed; the old link no longer reaches the box', card: 'none' },
-  ],
-  'services/watcher-status.ts': [
-    { cls: 'platform-trouble', severity: 'critical', what: 'a mail/chat watcher has been failing' },
-    { cls: 'platform-trouble', severity: 'critical', what: 'the all-clear: the watcher recovered', card: 'clears' },
+    { cls: 'mac-critical', severity: 'critical', what: 'the box is nearly out of memory (once per low stretch, round 3)' },
   ],
 };
 
@@ -180,7 +164,7 @@ function bareReferences(code: string): string[] {
   return out;
 }
 
-interface Found { rel: string; severity: string; card: Card }
+interface Found { rel: string; severity: string; card: Card; kind: string }
 
 /** Every `sendAlert(…)` CALL in the server's source (the definition excluded), with the
  *  severity literal it passes as its last argument (or `<not a literal>`). */
@@ -204,7 +188,8 @@ function findCalls(): { calls: Found[]; importers: string[]; aliased: string[] }
       // The severity is the second argument; an options object may follow it (t138 round 3).
       const sev = /,\s*'(info|warning|critical|notice)'\s*(?:,[\s\S]*)?\)$/.exec(text);
       const card: Card = /\bclears\s*:/.test(text) ? 'clears' : /\bcard\s*:\s*false\b/.test(text) ? 'none' : 'card';
-      calls.push({ rel, severity: sev ? sev[1] : '<not a literal>', card });
+      const kind = /\bkind\s*:\s*'([a-z-]+)'/.exec(text)?.[1] ?? '<not a literal>';
+      calls.push({ rel, severity: sev ? sev[1] : '<not a literal>', card, kind });
     }
   }
   return { calls, importers, aliased };
@@ -218,7 +203,17 @@ describe('the owner-notice census', () => {
     for (const c of calls) (actual[c.rel] ??= []).push(c.severity);
     const declared: Record<string, string[]> = {};
     for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.severity);
-    expect(actual, 'a new or changed sendAlert caller: classify it in CENSUS (budget | agent-trouble | platform-trouble)').toEqual(declared);
+    expect(actual, 'a new or changed sendAlert caller: classify it in CENSUS (budget | broken-agent | mac-critical)').toEqual(declared);
+  });
+
+  it('OR-AUDIT-ANSWERS (d): every call names the kind its census entry declares, one of the three', () => {
+    const actual: Record<string, string[]> = {};
+    for (const c of calls) (actual[c.rel] ??= []).push(c.kind);
+    const declared: Record<string, string[]> = {};
+    for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.cls);
+    expect(actual).toEqual(declared);
+    const door = fs.readFileSync(path.join(SRC, 'services/imessage-bridge.ts'), 'utf8');
+    expect(/export const PLATFORM_TEXT_KINDS = \[([^\]]*)\]/.exec(door)?.[1]).toBe("'budget', 'broken-agent', 'mac-critical'");
   });
 
   it('every caller raises, withholds or clears its dashboard card as declared (t138 round 3)', () => {
@@ -228,7 +223,7 @@ describe('the owner-notice census', () => {
     for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.card ?? 'card');
     expect(actual, 'an all-clear or status line must declare its card; a trouble notice raises one').toEqual(declared);
     const noCard = Object.values(CENSUS).flat().filter((s) => (s.card ?? 'card') !== 'card');
-    expect(noCard.every((s) => s.cls === 'platform-trouble'), 'budget and agent-trouble always raise a card').toBe(true);
+    expect(noCard, 'OR-AUDIT-ANSWERS (d): no status line or all-clear text is left; every text is trouble with its card').toEqual([]);
   });
 
   it('every file that imports the door calls it, and every caller imports it; no alias, re-export or hand-off of the door', () => {
@@ -302,6 +297,12 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
   'memory/embedding-switch.ts': [
     { cls: 'informational', what: 'the memory search model became a paid one; older memories are unsearchable until re-processed', why: 'review round L1: an optional choice with no button; nothing is broken and nothing is billed until he acts' },
   ],
+  'google/auth.ts': [
+    { cls: 'action', what: 'a Google account connection expired', why: 'he signs in again (OR-AUDIT-ANSWERS (d): a card, no longer a text)' },
+  ],
+  'microsoft/auth.ts': [
+    { cls: 'action', what: 'a Microsoft account connection expired', why: 'he signs in again (OR-AUDIT-ANSWERS (d): a card, no longer a text)' },
+  ],
   'migration/import-recovery.ts': [
     { cls: 'action', what: 'an import failed and stopped what it stopped', why: 'he restarts the Dojo from the menu bar' },
   ],
@@ -317,8 +318,11 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
   ],
   'services/ollama-upgrade.ts': [
     { cls: 'action', what: 'a local model needs a newer Ollama and the Dojo could not update it by itself', why: 'one of the few cases the Dojo cannot fix (another user\'s or the system\'s Ollama, no Homebrew): OR-UPKEEP-AUTOMATIC\'s ONE plain card' },
-    { cls: 'action', what: 'Ollama stopped during its update and has not come back', why: 'the local models are down until the next start; his Repair press is the one way back sooner' },
-    { cls: 'action', what: 'the same condition, from the restart path', why: 'the same answer' },
+    { cls: 'informational', what: 'Ollama stopped during its update and has not come back', why: 'audit #7: the Dojo tries again at its next start; the card asks nothing of him (no hidden Repair button)' },
+    { cls: 'informational', what: 'the same condition, from the restart path', why: 'the same answer' },
+  ],
+  'services/watcher-status.ts': [
+    { cls: 'action', what: 'a mail/chat watcher has been failing', why: 'he reconnects the account (OR-AUDIT-ANSWERS (d): a card, no longer a text)' },
   ],
   'vault/lessons-announce.ts': [
     { cls: 'informational', what: "a count of yesterday's lessons, in the Dreamer's report", why: 'a report to read, nothing to do' },
@@ -362,7 +366,7 @@ describe('the owner-card door census (field fix 3 #9)', () => {
 
   it('a card that needs no action is never re-derived on a reload: the healer list skips the informational conditions', () => {
     const notices = fs.readFileSync(path.join(SRC, 'healer/owner-notices.ts'), 'utf8');
-    for (const key of ["'standard-models'", "'ollama-limit-failed'", "'fitunchecked:'", "'embedding-switch'"]) {
+    for (const key of ["'standard-models'", "'ollama-limit-failed'", "'fitunchecked:'", "'embedding-switch'", "'ollama-down'"]) {
       expect(/export function isInformationalCondition[\s\S]*?\n}/.exec(notices)?.[0], `${key} is informational`).toContain(key);
     }
     expect(notices).toMatch(/!isInformationalCondition\(key\)/);

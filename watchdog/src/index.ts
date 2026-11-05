@@ -788,13 +788,12 @@ async function checkDiskSpace(): Promise<void> {
   }
 }
 
+// OR-AUDIT-ANSWERS (d), owner ruling: the Dojo's own texts are exactly offline and back online (an update that failed
+// included), budget alerts, a broken agent, and the Mac critical (disk and memory). A failed integrity check is none
+// of them, so it is logged and recorded, not texted (if the platform then goes down, the offline text says so).
 async function alertDbIntegrity(status: string): Promise<void> {
   log('error', 'Database integrity check FAILED', { status });
-  const imRecipient = getImessageRecipient();
-  if (claimAlertFor('db_integrity', imRecipient)) {
-    await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
-    recordAlert(`DB integrity: ${status}`);
-  }
+  recordAlert(`DB integrity: ${status}`);
 }
 
 async function checkDatabaseIntegrity(): Promise<void> {

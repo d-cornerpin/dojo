@@ -211,7 +211,8 @@ export function ownerConditionsOnAgentGone(agentId: string): void {
  *  them; the told-record stays (it is still told once per condition). Their callers declare the same class
  *  (`local-standard.ts`, `ollama-model-limit.ts`, `local-model-fit.ts`, `embedding-switch.ts`; pinned by the t138 census). */
 export function isInformationalCondition(key: string): boolean {
-  return key === 'standard-models' || key === 'ollama-limit-failed' || key.startsWith('fitunchecked:') || key === 'embedding-switch';   // review round L1
+  return key === 'standard-models' || key === 'ollama-limit-failed' || key.startsWith('fitunchecked:') || key === 'embedding-switch'   // review round L1
+    || key === 'ollama-down';   // audit #7: the Dojo retries; the card asks nothing of him
 }
 
 /** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed, and ACTION cards only. */

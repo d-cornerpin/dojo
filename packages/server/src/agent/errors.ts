@@ -103,7 +103,7 @@ export function recordError(agentId: string): boolean {
     // The owner first, then the agent's own chat in the SAME words, so on that chat the two
     // fold into one card (t138 round 3). v2.3.19: plain language, the count stays in logs.
     const words = pausedWords(agentId);
-    void sendAlert(words, 'notice', { agentId });
+    void sendAlert(words, 'notice', { kind: 'broken-agent', agentId });
     broadcast({ type: 'chat:error', agentId, error: words, code: 'ERROR_LOOP', severity: 'error', cardClass: 'action', retryable: false });   // paused until he acts
 
     return true; // Signal: agent was paused
@@ -136,7 +136,7 @@ export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'o
     const msg = errorType === 'rate_limit'
       ? `${name} hit an API rate limit. Requests are being throttled. The agent will retry automatically.`
       : `${name} got an API overloaded error. Anthropic's servers are at capacity. The agent will retry automatically.`;
-    void sendAlert(msg, 'warning'); // R-V333-4: 'will retry' is no blocker; the dashboard shows it
+    void sendAlert(msg, 'warning', { kind: 'broken-agent' }); // R-V333-4: 'will retry' is no blocker; the dashboard shows it
   } catch (err) {
     logger.warn('Failed to send rate limit iMessage alert', { agentId, error: err instanceof Error ? err.message : String(err) });
   }

@@ -409,8 +409,8 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
 describe('the filter is NOT loosened: a class that was never granted the phone still cannot reach it', () => {
   it("'warning' and 'info' stay off the phone", async () => {
     const { bridge } = await boot();
-    await bridge.sendAlert('an ungranted class of message', 'warning');
-    await bridge.sendAlert('another ungranted class of message', 'info');
+    await bridge.sendAlert('an ungranted class of message', 'warning', { kind: 'broken-agent' });
+    await bridge.sendAlert('another ungranted class of message', 'info', { kind: 'broken-agent' });
     expect(sentTexts()).toHaveLength(0);
     expect((await settled(ownerTexts))).toHaveLength(0);
   });

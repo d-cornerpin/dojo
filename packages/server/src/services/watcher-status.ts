@@ -9,7 +9,7 @@
 // ════════════════════════════════════════
 
 import { broadcast } from '../gateway/ws.js';
-import { sendAlert } from './imessage-bridge.js';
+import { ownerCardEnded, ownerCardFrame } from './owner-card-frames.js';
 import { recordFailureTold, clearFailure, watcherFailingOnRecord, watchedForMail } from './watcher-owner-cards.js';
 import { settingsPath } from '@dojo/shared';
 export { watcherFailingOnRecord, watchedForMail };
@@ -112,10 +112,9 @@ export function maybeAlertOnFailure(params: {
       retryable: false,
     });
   } catch { /* best effort */ }
-  // v2.5 — watcher failures are critical for iMessage routing because
-  // when Gmail/Outlook/Teams stops polling, the user's email/chat input
-  // stops reaching their agents. Real user-impact event, not just noise.
-  try { void sendAlert(message, 'critical'); } catch { /* best effort */ }
+  // OR-AUDIT-ANSWERS (d): a failing watcher is no platform text (the owner's set: offline and back online, budget,
+  // broken agent, Mac critical). His lasting owner card is how he hears it (it was born with the text before).
+  try { ownerCardFrame(message, 'error', undefined, 'action'); } catch { /* re-derived on the next load */ }
   recordFailureTold(params.name, account, message);
   return true;
 }
@@ -152,11 +151,8 @@ export function maybeAlertOnRecovery(params: {
       retryable: false,
     });
   } catch { /* best effort */ }
-  // v2.5 — pair to the failure alert above. Critical so the recovery
-  // confirmation reaches the same channel (the phone) that got the
-  // failure alert. Without this the user is left wondering whether the
-  // problem is still ongoing.
-  try { void sendAlert(message, 'critical', told === null ? { card: false } : { clears: told.words }); } catch { /* best effort */ }
+  // The failure card ends here (OR-AUDIT-ANSWERS (d): no text either way).
+  if (told !== null) { try { ownerCardEnded(told.words); } catch { /* re-derived on the next load */ } }
   return false;
 }
 
