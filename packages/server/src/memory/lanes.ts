@@ -638,7 +638,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.integration-status',
     slot: MessageSlot.IntegrationStatusTail,
-    reserveTokens: 562,
+    reserveTokens: 612,   // test-2 rank 6: the failure term names its account (was 562)
     measured:
       'T76b, DERIVED BY CALLING THE RENDERER: `integrationStatusWorstCaseTokens()` '
       + '(`memory/integration-status-lane.ts`) builds LANE_LIMITS[\'lane.integration-status\'] '

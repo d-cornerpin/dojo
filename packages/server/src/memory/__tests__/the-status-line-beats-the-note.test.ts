@@ -192,7 +192,7 @@ describe('T76b §1 — the line carries only what a ledger records', () => {
   it('an unresolved failure prints its tool, its instant and its count', async () => {
     seedFailure('outlook_search', DAY_ONE - 2 * HOUR, 4);
     const block = await buildIntegrationStatusLane(AGENT);
-    expect(block).toMatch(/• Microsoft 365[^\n]*UNRESOLVED FAILURE: outlook_search, last failed \[[^\]]+\], 4 in a row, with no success of that tool since\./);
+    expect(block).toMatch(/• Microsoft 365[^\n]*UNRESOLVED FAILURE on the agent's own account: outlook_search, last failed \[[^\]]+\], 4 in a row, with no later call of that account's tools in this family\./);
   });
 
   it('NO failure row is itself a printed fact — a success ends the tool failure, so silence means clear', async () => {
@@ -219,7 +219,7 @@ describe('T76b §1 — the line carries only what a ledger records', () => {
   it('the failure is attributed to the family the CATEGORY TABLE names, not a typed prefix', async () => {
     seedFailure('plaud_recent_recordings', DAY_ONE - HOUR, 2);
     const block = await buildIntegrationStatusLane(AGENT);
-    expect(block).toMatch(/• Plaud[^\n]*UNRESOLVED FAILURE: plaud_recent_recordings/);
+    expect(block).toMatch(/• Plaud[^\n]*UNRESOLVED FAILURE on the agent's own account: plaud_recent_recordings/);
     // And a LOCAL Office tool is not evidence about the Graph connection: those tools run on
     // this machine with no Microsoft account (the carve-out `renderIntegrationReconnect`
     // already declares), so a failure in one says nothing about Microsoft 365.
