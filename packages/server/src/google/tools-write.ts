@@ -141,16 +141,16 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_label',
-    description: 'Add or remove labels on an email. Archiving (removing INBOX) acts on the WHOLE conversation by default, because Gmail keeps a conversation in the inbox while any message in it is there; pass this_message_only=true to change just that one message. Pass thread_id instead of message_id to act on a conversation directly. To change many at once, pass message_ids (any number; each message is changed on its own, with no widening to its conversation) and/or thread_ids (whole conversations) in ONE call instead of one call per item. A call with no add_labels and no remove_labels changes nothing and is refused. Call gmail_list_labels first if you do not know what custom labels exist on the account.',
+    description: 'Add or remove labels on an email. Archiving (removing INBOX) acts on the WHOLE conversation by default, because Gmail keeps a conversation in the inbox while any message in it is there. This holds for message_ids too: each message named is archived with its whole conversation. Pass this_message_only=true to archive only the messages themselves. Any other label change is made to each message on its own. Pass thread_id instead of message_id to act on a conversation directly. To change many at once, pass message_ids (any number) and/or thread_ids (whole conversations) in ONE call instead of one call per item. A call with no add_labels and no remove_labels changes nothing and is refused. Call gmail_list_labels first if you do not know what custom labels exist on the account.',
     effects: [],
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID' },
-        message_ids: { type: 'array', items: { type: 'string' }, description: 'Several message IDs in one call (labelled one message each, in batches)' },
+        message_ids: { type: 'array', items: { type: 'string' }, description: 'Several message IDs in one call. Archiving takes each one\'s whole conversation unless this_message_only=true; any other change is made to each message on its own.' },
         thread_id: { type: 'string', description: 'Conversation (thread) ID, instead of message_id' },
         thread_ids: { type: 'array', items: { type: 'string' }, description: 'Several conversation (thread) IDs in one call' },
-        this_message_only: { type: 'boolean', description: 'Archive only the one message, not its conversation' },
+        this_message_only: { type: 'boolean', description: 'Archive only the message or messages named, not their conversations' },
         add_labels: { type: 'array', items: { type: 'string' }, description: "Labels to add (e.g., 'IMPORTANT', 'STARRED', or a custom label name from gmail_list_labels)" },
         remove_labels: { type: 'array', items: { type: 'string' }, description: "Labels to remove (e.g., 'INBOX' to archive)" },
       },
