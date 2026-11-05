@@ -368,10 +368,8 @@ export interface ChatErrorEvent {
     | 'WINDOW_TOO_SMALL'
     // t202 D10. An agent that was ALREADY on a model under the 32K main-model floor when the
     // floor was introduced. Nothing is stopped or changed; the person is told once.
-    | 'MAIN_MODEL_SMALL'
-    // v3.5 B4. This box's summary writer wrote summaries that failed the accuracy check twice; the
-    // rows stayed whole. Told once per writer model (v3.5 field fix 3: as a fact; there is no summarization setting).
-    | 'SUMMARY_CHECK_FAILING';
+    | 'MAIN_MODEL_SMALL';
+    // (v3.5 B4's SUMMARY_CHECK_FAILING card is gone, OR-AUDIT-ANSWERS (c): a failing summary is rewritten, no card.)
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
   /** v3.5 N42 r2: an owner card whose words can change while it stands (the no-fit card names the router's
@@ -379,7 +377,10 @@ export interface ChatErrorEvent {
   cardKey?: string;
   /** v3.5 field fix 3 (#9): an owner card's class. `action` (absent means action, as every card before it): the
    *  owner must do something, a sticky card holding the orb's red alert. `informational`: a plain toast that
-   *  leaves by itself, never red. Background progress is no card at all (`engine:activity`). */
+   *  leaves by itself, never red. Background progress is no card at all (`engine:activity`).
+   *  Audit #7: an AGENT's chat:error declares it too. There, only `action` with severity `error` is sticky and red;
+   *  an `error` frame that declares no class reads as a warning (the census `every-sticky-red-card-asks-for-action`
+   *  makes every server site that sends `error` declare one). */
   cardClass?: 'action' | 'informational';
 }
 

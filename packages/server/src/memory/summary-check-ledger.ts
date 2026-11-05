@@ -16,11 +16,12 @@ export const SUMMARY_CHECK_PURPOSE = 'summary_check';
 export const SUMMARY_CHECK_QUESTIONS = ['invented', 'dropped', 'stated_current'] as const;
 export type SummaryCheckQuestion = typeof SUMMARY_CHECK_QUESTIONS[number];
 /**
- * t268 (orchestrator ruling 1): the check runs in SHADOW under B3's policy, like every other decide() question.
- * A question's failing verdict ACTS (refusal, the one rewrite, the span hold, the owner's notice) only once the
- * policy has flipped it to `model` on measured accuracy; in `rule`/`shadow` the summary is kept as before v3.5.
+ * OR-AUDIT-ANSWERS (c), owner ruling (supersedes t268 ruling 1's shadow for this check): "Redo bad summaries". A
+ * summary that fails the accuracy check is rewritten by the agent's own model before it is kept. So every question
+ * the model is asked ACTS on its verdict, whatever mode the decision policy reads (the shadow rows are still
+ * recorded, so the policy's record keeps growing). A question held to the rule is not asked and so cannot act.
  */
-export const actingQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) === 'model');
+export const actingQuestions = (): SummaryCheckQuestion[] => askedQuestions();
 export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
 /** Fix round 1 (M-3): the questions the model is asked at all — every one not held to the rule. */
 export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) !== 'rule');
@@ -32,7 +33,8 @@ export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTI
  * `summaryCheckIdOfRow`.
  * NO PRODUCTION TRUTH SOURCE, BY RULING (2026-10-31): whether a summary invents, drops or states-current is a reading
  * of two texts that no later engine event records, so nothing in production calls `recordSummaryTruth`, no question
- * here is promoted to `model`, and the check stays in shadow. The ruling: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
+ * here is promoted to `model` by measurement (the ruling: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts).
+ * The check acts anyway, by the owner's ruling (`actingQuestions`, OR-AUDIT-ANSWERS (c)).
  */
 export const summaryCheckId = (agentId: string, spanIds: readonly string[]): string =>
   `summary-check:${createHash('sha256').update(`${agentId}|${[...spanIds].sort().join('|')}`).digest('hex').slice(0, 32)}`;
@@ -128,21 +130,6 @@ export function summaryCheckLine(): string | null {
     return `Summary check (kept window): ${r.n} checked, ${r.ok ?? 0} kept as written, ${r.rw ?? 0} kept after one rewrite, `
       + `${r.failed ?? 0} left the rows whole, ${r.un ?? 0} unchecked (decision model unavailable).`;
   } catch { return null; }
-}
-
-/**
- * Is this writer "keep failing" the check (fix round 4)? Owner 2026-10-20: "significant summarization failures";
- * plan B4: "the real signal, not a count", in the words "keep failing". So: its failure REPEATS — its latest
- * checked summary failed AND so did the one before it, with no pass between. One isolated failure among passes
- * is not it, and the next pass ends it. `failed`/`total` are the kept window's numbers the words quote.
- */
-export function writerFailing(writer: string): { failed: number; total: number; failing: boolean } {
-  const db = getDb();
-  const r = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
-    .get(writer) as { failed: number | null; total: number };
-  const latest = db.prepare("SELECT outcome FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable' ORDER BY id DESC LIMIT 2")
-    .all(writer) as Array<{ outcome: string }>;
-  return { failed: r.failed ?? 0, total: r.total, failing: latest.length === 2 && latest.every((x) => x.outcome === 'not_kept') };
 }
 
 /**
