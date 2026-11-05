@@ -2,7 +2,7 @@
 // leader. The boot reap must still end the job, and the ledger must live in the Dojo folder (D2).
 // Only the group this test starts is ever signalled.
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,24 +19,52 @@ const until = async (f: () => boolean, ms = 8_000): Promise<boolean> => {
   return f();
 };
 
+/**
+ * A one-shot script that backgrounds a job, then waits for the test to let it exit.
+ *
+ * FIELD FIX 3 (re-review 3 follow-up): this used to be `sleep 300 & sleep 1`, read at once. Under a
+ * loaded suite the shell had not yet forked the background job when the group's members were read,
+ * so the member list came back empty ("expected 0 to be greater than 0"), and the leader's one-second
+ * life was a second bet on the same clock. Now the script says when the job is forked (`&` has
+ * returned, so the job is in the group), and the leader lives until the test releases it, so the
+ * identity and the members are read on signals, never on time.
+ */
+async function scriptThatBackgroundsAJob(): Promise<{ pgid: number; child: ChildProcess; release: () => void }> {
+  const gateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-gate-'));
+  const gate = path.join(gateDir, 'go');
+  const child = spawn('/bin/sh', ['-c', `sleep 300 >/dev/null 2>&1 & echo forked; while [ ! -f '${gate}' ]; do sleep 0.05; done`],
+    { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  child.unref();
+  await new Promise<void>((resolve, reject) => {
+    let out = '';
+    child.stdout!.on('data', (c: Buffer) => { out += c.toString(); if (out.includes('forked')) resolve(); });
+    child.once('exit', () => reject(new Error('the script exited before it backgrounded its job')));
+  });
+  (child.stdout as unknown as { unref?: () => void }).unref?.();
+  releases.push(() => fs.rmSync(gateDir, { recursive: true, force: true }));
+  return { pgid: child.pid as number, child, release: () => fs.writeFileSync(gate, '') };
+}
+const releases: Array<() => void> = [];
+
 let dir: string;
 let pgid = 0;
 afterEach(() => {
   if (pgid > 1) { try { process.kill(-pgid, 'SIGKILL'); } catch { /* gone */ } }
+  for (const r of releases.splice(0)) r();
   if (dir) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('a job the script backgrounded survives its leader', () => {
   it('is ended at the next boot although the recorded leader is gone', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-real-'));
-    const child = spawn('/bin/sh', ['-c', 'sleep 300 >/dev/null 2>&1 & sleep 1'], { detached: true, stdio: 'ignore' });
-    child.unref();
-    pgid = child.pid as number;
+    const job = await scriptThatBackgroundsAJob();
+    pgid = job.pgid;
     const identity = identityOfPid(pgid) ?? '';   // read while the leader still runs
     expect(identity).not.toBe('');
     const members = membersOfGroup(pgid).filter((m) => !m.startsWith(`${pgid} `));   // what the toolbox notes at the leader's exit
     expect(members.length).toBeGreaterThan(0);
     recordToolboxGroups(dir, [{ pgid, identity, members }]);
+    job.release();
     expect(await until(() => identityOfPid(pgid) === null)).toBe(true);   // leader exited
     expect(groupAlive(pgid)).toBe(true);                                   // the sleep lives on
     const out = reapLeftoverToolboxGroups({ dir, graceMs: 0 });
@@ -49,13 +77,13 @@ describe('a job the script backgrounded survives its leader', () => {
 describe('a reused group id is never ours', () => {
   it('a leaderless group whose members were not noted is not signalled', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-real-'));
-    const child = spawn('/bin/sh', ['-c', 'sleep 300 >/dev/null 2>&1 & sleep 1'], { detached: true, stdio: 'ignore' });
-    child.unref();
-    pgid = child.pid as number;
+    const job = await scriptThatBackgroundsAJob();
+    pgid = job.pgid;
     const identity = identityOfPid(pgid) ?? '';
     expect(identity).not.toBe('');
     // Stands in for the unrelated daemon that took the id: the ledger names members that are not these.
     recordToolboxGroups(dir, [{ pgid, identity, members: ['1 Mon Jan  1 00:00:00 2001'] }]);
+    job.release();
     expect(await until(() => identityOfPid(pgid) === null)).toBe(true);
     expect(groupAlive(pgid)).toBe(true);
     expect(reapLeftoverToolboxGroups({ dir, graceMs: 0 }).ended).toEqual([]);
@@ -65,10 +93,10 @@ describe('a reused group id is never ours', () => {
 
 describe('the toolbox notes what a leaving leader left behind', () => {
   it('writes the survivors into the ledger in the Dojo data folder when the leader exits', async () => {
-    const child = spawn('/bin/sh', ['-c', 'sleep 300 >/dev/null 2>&1 & sleep 1'], { detached: true, stdio: 'ignore' });
-    child.unref();
-    pgid = child.pid as number;
-    endsWithTheStop('ledger-note-test', child);
+    const job = await scriptThatBackgroundsAJob();
+    pgid = job.pgid;
+    endsWithTheStop('ledger-note-test', job.child);
+    job.release();
     const file = path.join(dojoDir('data'), 'toolbox-groups.json');
     const noted = (): string[] => {
       try {
