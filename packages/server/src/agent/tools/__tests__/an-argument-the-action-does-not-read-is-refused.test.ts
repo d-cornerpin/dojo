@@ -36,6 +36,7 @@ import { toolResultOf } from '../../tool-outcome.js';
 import { WORK_OP_READS, WORK_OP_ACCEPTS, WORK_OPS, workOperation } from '../../../tools/work-verbs.js';
 import { getAllToolDefinitions } from '../definitions.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
+import { appendWorkEvent } from '../../../work/store.js';
 
 const AGENT = 'unread-args-agent';
 const TASK = 'task-unread-0001';
@@ -49,8 +50,8 @@ beforeEach(() => {
   seedTrackerTask(db(), { id: TASK, agentId: AGENT, status: 'in_progress', title: 'sort the labels', opened_at: Date.now(), updated_at: Date.now(), priority: 'normal' } as never);
 });
 
-async function call(name: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
-  const r = toolResultOf(await executeTool(AGENT, { id: `c-${Math.random()}`, name, arguments: args } as never));
+async function call(name: string, args: Record<string, unknown>, as = AGENT): Promise<{ content: string; isError: boolean }> {
+  const r = toolResultOf(await executeTool(as, { id: `c-${Math.random()}`, name, arguments: args } as never));
   return { content: String(r.content), isError: !!r.isError };
 }
 const events = (kind: string): number => (db().prepare('SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = ?').get(TASK, kind) as { n: number }).n;
@@ -140,5 +141,52 @@ describe('rank 3: the map cannot drift from the handlers or the schemas', () => 
   it('workOperation and the map agree on the operation ids', () => {
     expect(Object.keys(WORK_OP_READS).sort()).toEqual([...WORK_OPS].sort());
     expect(workOperation('work_update', { action: 'complete_step' })).toBe('work_update:complete_step');
+  });
+});
+
+// The $0 dry run: the PM's verdict on a finished, measured job carried `reason`, and the map (which listed
+// only `reject_reason`) refused it ten times; the task stayed claimed and the owner was escalated. The
+// validate door READS `reason` now: an uphold carries it, a rejection with no `reject_reason` uses it.
+describe('a PM verdict that carries a reason is applied, never refused', () => {
+  const PM = 'pm';   // the platform's default PM id (`config/platform.ts:getPMAgentId`)
+  beforeEach(() => { db().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'PM', 'idle', 'sensei')").run(PM); });
+  const fileClose = (): void => {
+    db().prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES ('d-unread-1', ?, NULL, 'dashboard', 'dashboard', 'delivered', datetime('now'))`,
+    ).run(AGENT);
+    appendWorkEvent(TASK, 'validation_requested', AGENT, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: 'd-unread-1' });
+  };
+  const state = (): string => (db().prepare('SELECT state FROM work WHERE id = ?').get(TASK) as { state: string }).state;
+  const lastVerdict = (verdict: string): { note: string } | undefined =>
+    db().prepare('SELECT note FROM adjudications WHERE work_id = ? AND verdict = ? ORDER BY id DESC').get(TASK, verdict) as never;
+  const spineReason = (): string => {
+    const rows = db().prepare("SELECT payload FROM work_events WHERE work_id = ? ORDER BY id DESC").all(TASK) as { payload: string }[];
+    return rows.map((r) => r.payload).join('\n');
+  };
+
+  it('valid=true with reason: the close is upheld and the reason is on the record', async () => {
+    fileClose();
+    const r = await call('work_validate', { action: 'validate', kind: 'complete', task_id: TASK, valid: true, reason: 'the measure reads 0 and the label is gone' }, PM);
+    expect(r.content).not.toMatch(/^Refused:/);
+    expect(r.content, r.content).toMatch(/^\[OK\]/);
+    expect(r.isError).toBe(false);
+    expect(state()).toBe('done');
+    expect(lastVerdict('upheld')).toBeDefined();
+    expect(spineReason()).toContain('the measure reads 0 and the label is gone');
+  });
+
+  it('valid=false with reason and no reject_reason: the close is rejected for that reason', async () => {
+    fileClose();
+    const r = await call('work_validate', { action: 'validate', kind: 'complete', task_id: TASK, valid: false, reason: 'two messages still carry the label; clear them and resubmit' }, PM);
+    expect(r.content).not.toMatch(/^Refused:/);
+    expect(r.content).toContain('two messages still carry the label; clear them and resubmit');
+    expect(state()).not.toBe('done');
+    expect(lastVerdict('rejected')?.note).toBe('two messages still carry the label; clear them and resubmit');
+  });
+
+  it('the close doors keep a note-like argument instead of refusing the call over it', () => {
+    expect(unknownArgsAgainstSchema('work_update', { action: 'status', task_id: TASK, status: 'complete', result: 'r', reason: 'done' }).unread).toEqual([]);
+    expect(unknownArgsAgainstSchema('work_update', { action: 'complete_step', task_id: TASK, result: 'r', reason: 'done' }).unread).toEqual([]);
+    expect(unknownArgsAgainstSchema('work_update', { action: 'close_project', project_id: 'p', notes: 'done' }).unread).toEqual([]);
   });
 });

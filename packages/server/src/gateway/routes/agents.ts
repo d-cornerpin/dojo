@@ -9,6 +9,7 @@ import { isRunUnwinding } from '../../agent/shared-state.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
+import { noteOwnerStop } from '../../migration/import-agents.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -674,6 +675,7 @@ agentsRouter.post('/:id/stop', (c) => {
   }
 
   stopAgent(id);
+  noteOwnerStop(id);   // a failed import in flight must not lift the owner's own stop
 
   // T83 — THE ROUTE NO LONGER WRITES THE ENGINE'S LIE A SECOND TIME. What stood here was a raw
   // `UPDATE agents SET status = 'idle'` plus an idle broadcast, "so the UI updates right away",

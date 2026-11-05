@@ -3723,7 +3723,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
 
 export async function trackerValidatePause(
   pmAgentId: string,
-  args: { task_id: string; valid: boolean; reject_reason?: string; target_status?: string },
+  args: { task_id: string; valid: boolean; reject_reason?: string; reason?: string; target_status?: string },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -4467,7 +4467,7 @@ async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise
  */
 export async function trackerValidateComplete(
   pmAgentId: string,
-  args: { task_id: string; valid: boolean; reject_reason?: string; target_status?: string },
+  args: { task_id: string; valid: boolean; reject_reason?: string; reason?: string; target_status?: string },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -4539,7 +4539,7 @@ export async function trackerValidateComplete(
       const keyTwo = setTrackerStatus(taskId, 'complete', {
         by: 'pm', actorId: pmAgentId, claim: 'authoritative',
         resultDeliveryId: closeDelivery,
-        reason: 'PM validated the close against the goal (Key 2 on the worker\'s close request)',
+        reason: 'PM validated the close against the goal (Key 2 on the worker\'s close request)' + (args.reason ? `: ${args.reason}` : ''),
       });
       if (!workSettled(keyTwo)) {
         return closeRefusalText(taskId, keyTwo, 'complete');
@@ -4751,7 +4751,7 @@ export async function trackerValidateComplete(
  */
 export async function trackerValidateBlocked(
   pmAgentId: string,
-  args: { task_id: string; valid: boolean; reject_reason?: string; target_status?: string },
+  args: { task_id: string; valid: boolean; reject_reason?: string; reason?: string; target_status?: string },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';

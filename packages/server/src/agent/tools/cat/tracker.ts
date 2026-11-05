@@ -418,7 +418,8 @@ const tableOfHandlers: ToolHandlerMap = {
       taskId: args.task_id as string,
       status: args.status as string,
     };
-    if (args.notes) updateArgs.notes = args.notes;
+    const statusNotes = noteWithReason(args.notes, args.reason);   // a close's `reason` is kept as its note, never refused
+    if (statusNotes) updateArgs.notes = statusNotes;
     if (args.resume_at) updateArgs.resume_at = args.resume_at;
     if (args.complete_all_runs) updateArgs.complete_all_runs = args.complete_all_runs;
     // Phase B.1: result + evidence forwarded for the complete hard gate.
@@ -747,7 +748,7 @@ const tableOfHandlers: ToolHandlerMap = {
     // pass whatever the model sent (possibly undefined) straight through.
     content = await closeWithMeasure(agentId, closeTargetOf(agentId, args.task_id ?? args.taskId), args, () => trackerCompleteStep(agentId, {
       taskId: (args.task_id ?? args.taskId) as string | undefined,
-      notes: args.notes as string | undefined,
+      notes: noteWithReason(args.notes, args.reason),   // a close's `reason` is kept as its note, never refused
       // t193 (owner decision 27): the same close-out proof as status="complete".
       result: args.result,
       evidence: args.evidence,
@@ -773,7 +774,13 @@ const tableOfHandlers: ToolHandlerMap = {
     const vp = {
       task_id: args.task_id as string,
       valid: args.valid as boolean,
-      reject_reason: args.reject_reason as string | undefined,
+      // v3.5 field fix 3 follow-up: the PM's `reason` is READ, never refused. A rejection with no
+      // `reject_reason` is rejected for that reason; an uphold carries it on the spine's transition
+      // and in the verdict record (`looked-at.ts:reasonGiven`). Refusing it stranded a finished close.
+      reject_reason: (typeof args.reject_reason === 'string' && args.reject_reason.trim())
+        ? args.reject_reason
+        : (typeof args.reason === 'string' ? args.reason : undefined),
+      reason: typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : undefined,
       target_status: args.target_status as string | undefined,
     };
     if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
@@ -895,16 +902,18 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_update:close_project"({ agentId, args }) {
     let content = '';
     let isError = false;
+    // A project close that carries `notes` instead of (or beside) `reason` is closed for them, never refused.
+    const closeReason = noteWithReason(args.reason, args.notes);
     const tcpErr = checkRequired([
       { name: 'project_id', value: args.project_id, type: 'string' },
-      { name: 'reason', value: args.reason, type: 'string' },
+      { name: 'reason', value: closeReason, type: 'string' },
     ]);
     if (tcpErr) { content = tcpErr; isError = true; return { content, isError }; }
     await remeasureProject(agentId, args.project_id, args.status);
     content = trackerCloseProject(agentId, {
       project_id: args.project_id as string,
       status: args.status as string | undefined,
-      reason: args.reason as string,
+      reason: closeReason as string,
       user_quote: args.user_quote,
     });
     return { content, isError: content.startsWith('Refused:') };
@@ -1015,6 +1024,18 @@ const tableOfHandlers: ToolHandlerMap = {
 // identical-call brake. The rule is stated here, once, for every handler in the table (a handler
 // added later gets it too); a handler may still set `isError` itself for a refusal that does not
 // begin with `Error`.
+/**
+ * v3.5 field fix 3 follow-up: a close or verdict door READS the natural note-like argument a model
+ * puts on it, rather than refusing the whole call over it (the PM's `reason` on validate was refused
+ * ten times and the finished work stayed claimed). `primary` is the door's own field; `extra` is the
+ * sibling spelling, kept beside it when both are given, so neither is silently lost.
+ */
+function noteWithReason(primary: unknown, extra: unknown): string | undefined {
+  const parts = [primary, extra].filter((v): v is string => typeof v === 'string' && v.trim() !== '').map((v) => v.trim());
+  if (parts.length === 2 && parts[0] === parts[1]) parts.pop();
+  return parts.length ? parts.join('\n') : undefined;
+}
+
 export const trackerHandlers: ToolHandlerMap = Object.fromEntries(
   Object.entries(tableOfHandlers).map(([key, handler]) => [key, async (ctx) => {
     const out = await handler(ctx);

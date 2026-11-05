@@ -139,11 +139,13 @@ describe('a stopped run cannot wake itself', () => {
 
 describe('the stop flag outlives the checkpoint that honoured it', () => {
   it('THE CENSUS: only the run\'s own exit path and a human\'s own request clear it', () => {
-    // Three clears are legitimate and each is named:
+    // Four clears are legitimate and each is named:
     //   • agent/runtime.ts        — the run's `finally`, the ONE owner
     //   • gateway/routes/chat.ts  — a fresh user message means "act" (2026-06-02)
     //   • gateway/routes/agents.ts— reset-session starts a clean slate
-    const ALLOWED = new Set(['agent/runtime.ts', 'gateway/routes/chat.ts', 'gateway/routes/agents.ts']);
+    //   • migration/import-agents.ts, a failed import brings back the agents IT stopped (owner ruling); never one
+    //     the owner stopped (`a-failed-import-brings-its-agents-back.test.ts` holds that)
+    const ALLOWED = new Set(['agent/runtime.ts', 'gateway/routes/chat.ts', 'gateway/routes/agents.ts', 'migration/import-agents.ts']);
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       const src = fs.readFileSync(file, 'utf-8');

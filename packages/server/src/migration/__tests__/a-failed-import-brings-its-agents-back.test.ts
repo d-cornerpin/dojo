@@ -14,7 +14,7 @@ const stopped = vi.hoisted(() => ({ ids: [] as string[] }));
 vi.mock('../../agent/runtime.js', () => ({ stopAgent: (id: string) => { stopped.ids.push(id); } }));
 
 import { activeRuns, stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
-import { stopAgentRunsForImport, resumeAgentsAfterFailedImport } from '../import-agents.js';
+import { stopAgentRunsForImport, resumeAgentsAfterFailedImport, noteOwnerStop } from '../import-agents.js';
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -38,5 +38,27 @@ describe('a failed import brings its agents back', () => {
     expect(stoppedAgents.has('a')).toBe(false);
     expect(JSON.parse((mockDb.current!.prepare("SELECT config FROM agents WHERE id = 'a'").get() as { config: string }).config)).toEqual({ keep: 1 });
     expect(pendingWakeups.has('a')).toBe(true);
+  });
+
+  it('a stop the owner pressed before the import is never lifted by a failed import', () => {
+    activeRuns.add('a'); activeRuns.add('b');
+    stoppedAgents.add('a');   // the owner's stop; the run is still unwinding
+    const ids = stopAgentRunsForImport();
+    expect(ids).toEqual(['b']);
+    expect(stopped.ids).toEqual(['a', 'b']);   // both runs still stop for the database swap
+    resumeAgentsAfterFailedImport(ids);
+    expect(stoppedAgents.has('a')).toBe(true);
+    expect(pendingWakeups.has('a')).toBe(false);
+    expect(JSON.parse((mockDb.current!.prepare("SELECT config FROM agents WHERE id = 'a'").get() as { config: string }).config).stopMarkerPending).toBe(true);
+  });
+
+  it('a stop the owner pressed during the import is never lifted by a failed import', () => {
+    activeRuns.add('a');
+    const ids = stopAgentRunsForImport();
+    expect(ids).toEqual(['a']);
+    stoppedAgents.add('a'); noteOwnerStop('a');   // the stop route: stopAgent, then the note
+    resumeAgentsAfterFailedImport(ids);
+    expect(stoppedAgents.has('a')).toBe(true);
+    expect(pendingWakeups.has('a')).toBe(false);
   });
 });

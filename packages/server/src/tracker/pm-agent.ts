@@ -17,7 +17,7 @@ import { writeAgentStatus } from '../agent/agent-status.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, revertCountExpr,
   awaitingUserVerdictExpr, unvalidatedCloseExpr, unvalidatedPauseExpr, unvalidatedBlockExpr,
-  stampColumns,
+  stampColumns, closeRequestFiledExpr,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
 import { noteUnsettled } from '../work/store.js';
@@ -2560,11 +2560,24 @@ export async function checkInAtThePark(taskId: string): Promise<void> {
 }
 
 /** The check-in ladder over these in-progress tasks (the sweep's own loop). */
+/** The worker's close request is filed on this row and no verdict has landed yet. */
+function closeFiledAwaitingVerdict(taskId: string): boolean {
+  try {
+    return !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${closeRequestFiledExpr('w')} = 1`).get(taskId);
+  } catch { return false; }   // a read that fails leaves the ladder as it was
+}
+
 async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[number]>, atThePark = false): Promise<void> {
   const now = Date.now();
 
   for (const task of inProgressTasks) {
     if (!task.assignedTo) continue;
+
+    // A filed close waits on its verdict (the PM's, or the owner's when it was escalated), and the
+    // filing told the worker nothing further is needed from it. The ball is not the worker's, so
+    // the ladder is held: no check-in, and the wait never counts as the worker's idleness. A
+    // rejection moves the row back to the worker, which is movement, and the ladder starts again.
+    if (closeFiledAwaitingVerdict(task.id)) { holdLadder(task.id, getPMAgentId()); continue; }
 
     // P2 drive boundary: the per-priority threshold table IS the grace. The
     // old blanket 30-minute POKE_GRACE_PERIOD_MS silently neutered the
