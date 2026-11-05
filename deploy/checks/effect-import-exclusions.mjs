@@ -261,6 +261,12 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     residual: 'a resource an earlier tool call influenced is written when the platform acts, so it is gate-DECIDED and not facade-carried.',
   },
   {
+    file: 'tools/file-set-count.ts',
+    klass: 'honest-label',
+    why: 'v3.5 field fix 3 (audit #5): the file-set measure is counted by the engine at the end of a turn and at a close, outside any tool call\'s capability. Before every count the measure is checked with file_list\'s own gates for the agent (agent/tools/cat/measure-door.ts refusalFor), so the walk only reads a tree the agent\'s read grant covers.',
+    residual: 'the walk itself is not facade-carried; it reads directory listings only (names and types, never contents) under the path the gates just allowed.',
+  },
+  {
     file: 'agent/image-prep.ts',
     klass: 'honest-label',
     why: 'PART 4. Image preparation runs on the platform\'s own ingest timing, outside the dispatch that produced the image.',
