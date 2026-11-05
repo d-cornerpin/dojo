@@ -62,6 +62,14 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
+// Field fix 3 (OR-MAC-BELONGS-TO-THE-AGENT): the healer-log read rows now bind the Healer only, and
+// they are this file's example of a PERMISSION-layer refusal (not the sensitive list). So the agent
+// under test is the Healer for that lookup; any other agent now reads healer.log like any file
+// (`agent/brokers/__tests__/negative-corpus.test.ts` §10).
+vi.mock('../../config/platform.js', async (orig) => ({
+  ...(await orig<typeof import('../../config/platform.js')>()),
+  isHealerAgent: (id: string) => id === 'agent-under-test',
+}));
 
 vi.mock('../../services/tunnel.js', () => ({
   getTunnelStatus: () => ({ status: 'inactive', url: null }),

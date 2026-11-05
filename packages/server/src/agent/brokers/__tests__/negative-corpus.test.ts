@@ -556,10 +556,38 @@ describe('§10 — ONE deny list: the merge is a SUPERSET of both twins, proven'
     'authorized_keys', 'known_hosts', '.npmrc', '.pypirc', '.netrc', 'credentials',
   ];
 
-  it('every legacy GLOBAL_FILE_READ_DENY pattern is still denied on the read tier', () => {
+  // FIELD FIX 3, Mac-belongs round (owner ruling OR-MAC-BELONGS-TO-THE-AGENT, 2026-10-31: "the Mac
+  // belongs to the dojo agent"): the three Healer-log rows were a read fence on EVERY agent, while
+  // their own stated requirement is the HEALER's log discipline ("the Healer may ASK ABOUT its
+  // history but not via raw file reads"). They are now scoped to the Healer, so this clause no
+  // longer says "every legacy pattern is still denied for everyone": secrets.yaml is, for every
+  // agent; the Healer logs are, for the Healer; the main agent reads them like any file.
+  it('every legacy GLOBAL_FILE_READ_DENY pattern is still denied on the read tier for the agent it protects', () => {
     for (const pattern of LEGACY_GLOBAL_FILE_READ_DENY) {
       const probe = pattern.replace('/**', '/anything.log').replace('~', fixtureHome);
-      expect(deniedTiers(probe), `${pattern} lost its read deny`).toContain('global_read');
+      expect(deniedTiers(probe, 'healer'), `${pattern} lost its read deny for the Healer`).toContain('global_read');
+    }
+    expect(deniedTiers(SECRETS, 'other'), 'secrets.yaml is denied for every agent').toContain('global_read');
+  });
+
+  it('the Healer-log rows bind the Healer only: any other agent reads them like any file', async () => {
+    for (const pattern of LEGACY_GLOBAL_FILE_READ_DENY.filter((p) => p.includes('healer'))) {
+      const probe = pattern.replace('/**', '/anything.log').replace('~', fixtureHome);
+      expect(deniedTiers(probe, 'other'), `${pattern} still fences a non-Healer agent`).not.toContain('global_read');
+    }
+    const log = mustResolvePath(path.join(dojoDir, 'logs', 'healer.log'));
+    expect((await authorize(wildcard(), { kind: 'fs_read', resource: log })).allowed, 'the main agent reads healer.log').toBe(true);
+    const healer = grantForManifest('agent-healer', JSON.parse(wildcardManifest));
+    expect((await authorize(healer, { kind: 'fs_read', resource: log })).allowed, 'the Healer still may not').toBe(false);
+  });
+
+  it('SOUL files: the Dojo\'s own souls under ~/.dojo/prompts stay write-denied; a SOUL.md elsewhere on the Mac is an ordinary file', async () => {
+    for (const name of ['SOUL.md', 'PM-SOUL.md', 'HEALER-SOUL.md', 'AGENT-X-SOUL.md']) {
+      expect(deniedTiers(path.join(dojoDir, 'prompts', name)), name).toContain('global_write');
+    }
+    for (const elsewhere of [path.join(projects, 'SOUL.md'), path.join(projects, 'novel', 'MY-SOUL.md')]) {
+      expect(deniedTiers(elsewhere), elsewhere).not.toContain('global_write');
+      expect((await authorize(wildcard(), { kind: 'fs_write', resource: mustResolvePath(elsewhere) })).allowed, elsewhere).toBe(true);
     }
   });
 

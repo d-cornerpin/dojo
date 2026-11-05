@@ -71,8 +71,17 @@ export interface DenyRule {
   readonly since: DenyProvenance;
   /** What this row protects, in the words a removal would have to argue with. */
   readonly reason: string;
+  /** Field fix 3 (OR-MAC-BELONGS-TO-THE-AGENT): a row that protects ONE agent's discipline rather
+   *  than a resource. It binds only that agent; any other agent reads the path like any file. */
+  readonly onlyFor?: 'healer';
   readonly test: (ctx: DenyMatchContext) => boolean;
 }
+
+/** Who is asking, as far as a scoped row cares. Omitted means unknown, and a scoped row then
+ *  applies (the conservative reading for a caller that names no agent). A function is asked only
+ *  when a scoped row's path matches, so the common path never looks the agent up. */
+export type DenyViewer = 'healer' | 'other';
+export type DenyViewerArg = DenyViewer | (() => DenyViewer);
 
 // ── The basenames the sensitive tier has always carried (verbatim from
 //    path-guards.ts's SENSITIVE_BASENAMES at `16bd0b8`; entries are lower-case
@@ -176,10 +185,15 @@ export const DENY_RULES: readonly DenyRule[] = [
     test: ({ folded, home }) => folded === path.join(home, '.kube', 'config'),
   },
   // ── the rest of GLOBAL_FILE_READ_DENY: Dreamer-style log discipline ──
+  // FIELD FIX 3 (OR-MAC-BELONGS-TO-THE-AGENT, 2026-10-31: "the Mac belongs to the dojo agent"): these
+  // three rows fenced EVERY agent's file_read, the main agent's included, while their requirement is
+  // the HEALER's own log discipline. Scoped to the Healer (`onlyFor`); the main agent reads them like
+  // any file.
   {
     id: 'healer-log',
     tiers: ['global_read'],
     since: 'legacy',
+    onlyFor: 'healer',
     reason:
       'the Healer may ASK ABOUT its history but not via raw file reads — those bypass the engine helpers ' +
       'that cap response size and would choke its prompt. Use healer_recent_actions / healer_action_detail.',
@@ -189,6 +203,7 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'healer-report-log',
     tiers: ['global_read'],
     since: 'legacy',
+    onlyFor: 'healer',
     reason: 'same log discipline as healer.log.',
     test: ({ folded, home }) => folded === path.join(home, '.dojo', 'logs', 'healer-report.log'),
   },
@@ -196,6 +211,7 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'healer-archives',
     tiers: ['global_read'],
     since: 'legacy',
+    onlyFor: 'healer',
     reason: 'same log discipline as healer.log, for the rotated archive tree.',
     test: ({ folded, home }) => folded.startsWith(path.join(home, '.dojo', 'logs', 'healer-archives') + path.sep),
   },
@@ -232,7 +248,12 @@ export const DENY_RULES: readonly DenyRule[] = [
     // The legacy matcher folded BOTH the pattern and the value, so on a
     // case-SENSITIVE volume only the exact spelling matched. Folding the
     // pattern here keeps that true in both directions.
-    test: ({ base }) => base === foldPath('SOUL.md') || base.endsWith(foldPath('-SOUL.md')),
+    // FIELD FIX 3 (OR-MAC-BELONGS-TO-THE-AGENT): the Dojo's OWN souls only, the ones it reads
+    // (`~/.dojo/prompts`, `prompt/assembler.ts` PROMPTS_DIR). It matched the basename anywhere, so a
+    // SOUL.md in a project folder on the Mac was unwritable; that is an ordinary file.
+    test: ({ folded, base, home }) =>
+      folded.startsWith(path.join(home, '.dojo', 'prompts') + path.sep)
+      && (base === foldPath('SOUL.md') || base.endsWith(foldPath('-SOUL.md'))),
   },
   // ── GLOBAL_FILE_DELETE_DENY ──
   {
@@ -265,21 +286,24 @@ function contextFor(absPath: string): DenyMatchContext {
 }
 
 /** Every tier on which `absPath` is denied, in table order. */
-export function deniedTiers(absPath: string): DenyTier[] {
+const bindsViewer = (rule: DenyRule, viewer?: DenyViewerArg): boolean =>
+  !rule.onlyFor || viewer === undefined || (typeof viewer === 'function' ? viewer() : viewer) === rule.onlyFor;
+
+export function deniedTiers(absPath: string, viewer?: DenyViewerArg): DenyTier[] {
   const ctx = contextFor(absPath);
   const out = new Set<DenyTier>();
   for (const rule of DENY_RULES) {
-    if (!rule.test(ctx)) continue;
+    if (!rule.test(ctx) || !bindsViewer(rule, viewer)) continue;
     for (const tier of rule.tiers) out.add(tier);
   }
   return DENY_TIERS.filter((t) => out.has(t));
 }
 
 /** The first rule that shuts `tier` on `absPath`, or null. */
-export function denyRuleFor(absPath: string, tier: DenyTier): DenyRule | null {
+export function denyRuleFor(absPath: string, tier: DenyTier, viewer?: DenyViewerArg): DenyRule | null {
   const ctx = contextFor(absPath);
   for (const rule of DENY_RULES) {
-    if (rule.tiers.includes(tier) && rule.test(ctx)) return rule;
+    if (rule.tiers.includes(tier) && rule.test(ctx) && bindsViewer(rule, viewer)) return rule;
   }
   return null;
 }
