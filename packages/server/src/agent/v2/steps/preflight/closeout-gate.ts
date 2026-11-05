@@ -147,10 +147,9 @@ export async function runCloseoutGate(
       // engine's own records show the work was answered/delivered, the gate
       // says so and names the right disposition instead of offering a menu.
       try {
-        // v3.5 field fix 3 (review H1): asked of THE task's record (`taskWorkOnRecord`). The
-        // tangible stamp keeps its 2026-07-22 standard and its stamp line; past it, only the
-        // task's answer (never its start ack) or a delivered file is evidence. Before, the live
-        // join's `deliveredVia` arm listed a task whose only line was "On it".
+        // v3.5 field fix 3 (review rounds 1-4): asked of what the engine can count
+        // (`taskWorkOnRecord`: a delivered file, or a measure at 0). Before, the live join's
+        // `deliveredVia` arm listed a task whose only line was "On it".
         const { taskWorkOnRecord } = await import('../../../../tracker/delivery-evidence.js');
         const evidenced: string[] = [];
         for (const r of inProgressDanglers) {
@@ -161,7 +160,7 @@ export async function runCloseoutGate(
           // Tangibility rule (battery catch 2026-07-22): a bare reply is often an ack on a task
           // legitimately waiting, and pushing CLOSE on it forged a wrong close. Review round 2
           // (ruled): that holds on EVERY channel, so the stamp's channel is not evidence here;
-          // only a delivered file or the task's answer is.
+          // only a delivered file or a measure at 0 is.
           const rec = taskWorkOnRecord(r.id, st ?? null);
           if (rec) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${rec}`);
         }

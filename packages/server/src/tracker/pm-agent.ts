@@ -2724,8 +2724,8 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // `deliveredVia` is a DISTINCT read of `deliveries` inside `findDeliveryEvidenceForTask`
     // (delivery-evidence.ts), so strike 2's tangible-handover test reads the delivery ledger
     // directly — T8c item 1's requirement, verified rather than rebuilt.
-    // v3.5 field fix 3, review round 3: the handover is THE task's record (`taskWorkOnRecord`: a
-    // delivered file, or the task's answer under the ack-order rule). `deliveredVia` counted any
+    // v3.5 field fix 3, review rounds 3-4: the handover is what the engine can count
+    // (`taskWorkOnRecord`: a delivered file, or a measure at 0). `deliveredVia` counted any
     // channel line, so an "On it" read as a handover here and strike 2 could close on it.
     const workOnRecord = deliveryEvidence ? taskWorkOnRecord(task.id, null) : null;
     const tangibleHandover = !!workOnRecord;

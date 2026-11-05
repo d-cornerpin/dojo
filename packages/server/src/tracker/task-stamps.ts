@@ -274,7 +274,7 @@ export interface TaskStampOptions {
  *  and close-coaching in engine text is a defect. This line used to append "CLOSE if done" on any
  *  tangible summary, so an iMessage "On it" read as a finished handover. It now says what was
  *  sent and when, and nothing else; whether the task's work is DELIVERED is a different question,
- *  answered only by `tracker/delivery-evidence.ts:taskWorkOnRecord` (the ack-order rule). */
+ *  answered only by `tracker/delivery-evidence.ts:taskWorkOnRecord` (a delivered file or a measure at 0). */
 export function renderTaskStamps(t: TaskStampFields, opts?: TaskStampOptions): string {
   const relAgo = opts?.relative === false ? absInstant : relAgoFromNow;
   if (t.last_answered_turn !== null && t.last_answered_at) {
