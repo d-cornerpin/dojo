@@ -2061,5 +2061,8 @@ export function resumeExpiredPauses(): void {
 // the oldest complete, blocked, fallen and cancelled tasks past 50 of each, with their runs and
 // events. Blocked is open, owed work; the rest are the work records ruling 9d keeps. The audit's
 // fix: "prune history only with the owner's say-so". There is no say-so, so there is no prune.
-// requirement preserved: the board stays readable without deleting history, because its readers
-// page and filter (the tracker views), not because rows vanish.
+// requirement preserved: the board stays readable without deleting history. The task list is paged
+// for that (re-review 2, S4): `tracker/schema.ts` `listTasksPage` returns every live task and the
+// finished ones a page at a time, newest first, and `GET /tracker/tasks` and the board's "Show older
+// finished tasks" read it. Two internal readers still read every task (`tracker/pm-agent.ts` and
+// `agent/v2/steps/execute/tracker-floors.ts`) and are noted in the re-review 2 report.
