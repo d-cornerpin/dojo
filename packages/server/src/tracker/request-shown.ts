@@ -19,10 +19,16 @@ export interface LedgerShown {
 }
 
 const shown = new Map<string, LedgerShown>();
+/** Audit #5: the delivered answer (its delivery id) whose excerpt the last request for the row printed. */
+const answers = new Map<string, string>();
 
 export function noteLedgerShown(taskId: string, page: LedgerShown): void { shown.set(taskId, page); }
 export function ledgerShownFor(taskId: string): LedgerShown | undefined { return shown.get(taskId); }
+/** The review's request printed this answer's excerpt (pm-agent's DELIVERED ANSWER line). */
+export function noteAnswerShown(taskId: string, deliveryId: string): void { answers.set(taskId, deliveryId); }
+export function answerShownFor(taskId: string): string | undefined { return answers.get(taskId); }
 /** Drop every row not in `pending` (the rows still awaiting a verdict). */
 export function keepLedgerShownFor(pending: ReadonlySet<string>): void {
   for (const id of [...shown.keys()]) if (!pending.has(id)) shown.delete(id);
+  for (const id of [...answers.keys()]) if (!pending.has(id)) answers.delete(id);
 }

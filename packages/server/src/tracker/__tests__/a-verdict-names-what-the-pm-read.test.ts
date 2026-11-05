@@ -19,6 +19,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', async () => {
@@ -59,7 +62,7 @@ vi.mock('../delivery-evidence.js', async (importOriginal) => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { keepLedgerShownFor } from '../request-shown.js';
+import { keepLedgerShownFor, noteAnswerShown } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { recordTouched } from '../../work/ledger-store.js';
 import { validationMeasureLines } from '../job-loop-facts.js';
@@ -475,12 +478,38 @@ describe('#6b: an uphold with nothing structural behind it is refused at the PM\
     expect(emptyUpholdRefusalsHeld()).toBe(1);
   });
 
-  it('a normal, real close upholds in ONE review: a delivered answer on record', async () => {
+  it('a normal, real close upholds in ONE review: a delivered answer the request showed the PM', async () => {
     const t = newTask();
     fileClose(t, undefined, seedDelivery('deliv-3'));
     pointer.on = { deliveryId: 'deliv-3', messageId: null };
+    noteAnswerShown(t, 'deliv-3');   // the review's request printed this answer's excerpt (pm-agent's delivered line)
     expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
     expect(upheld(t)).toBe(1);
+  });
+
+  it('audit #5: the worker\'s delivered line ALONE (never shown to the PM) does not back an uphold', async () => {
+    const t = newTask();
+    fileClose(t, undefined, seedDelivery('deliv-3b'));
+    pointer.on = { deliveryId: 'deliv-3b', messageId: 'msg-progress' };   // e.g. a line the request never put in front of the PM
+    const r = await validate(t, true);
+    expect(r.content).toMatch(/^Refused: nothing on record/);
+    expect(r.content).toContain('The delivered answer on record (message msg-prog) has not been shown to you in a review.');
+    expect(upheld(t)).toBe(0);
+    call('history_get', { id: 'msg-progress' });   // reading it is a read of this row's work
+    expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
+  });
+
+  it('audit #5: an answer shown for a DIFFERENT delivery than the one on record does not back it', async () => {
+    const t = newTask();
+    fileClose(t, undefined, seedDelivery('deliv-3c'));
+    pointer.on = { deliveryId: 'deliv-3c', messageId: null };
+    noteAnswerShown(t, 'deliv-older');
+    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
+  });
+
+  it('the review records which answer its request showed, where it prints the delivered line', () => {
+    const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../pm-agent.ts'), 'utf8');
+    expect(src).toMatch(/noteAnswerShown\(cTask\.id, answerPointer\.deliveryId\)/);
   });
 
   it('a normal, real close upholds in ONE review: a ledger with the files the work wrote', async () => {

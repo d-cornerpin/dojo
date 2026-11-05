@@ -1,6 +1,6 @@
 import { closeoutReceipts } from './closeout-receipts.js';
 import { unvalidatedCompleteText } from './validation-request.js';
-import { keepLedgerShownFor } from './request-shown.js';
+import { keepLedgerShownFor, noteAnswerShown } from './request-shown.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
@@ -2083,6 +2083,8 @@ async function runPMReview(): Promise<void> {
     // review could not do this before: the PM's ~40 `history_search` calls on S4 were searching
     // lanes the answer does not live in, because the payload gave it nothing to open.
     const answerPointer = resolveTaskAnswerPointer(cTask.id);
+    // Audit #5: the answer backs an uphold only once a request has put its excerpt in front of the PM.
+    if (answerPointer) noteAnswerShown(cTask.id, answerPointer.deliveryId);
     const deliveredLine = answerPointer
       ? `\n  📄 DELIVERED ANSWER ON RECORD (${answerPointer.basis === 'parent-ask-receipt'
           ? 'the receipt the engine recorded for the request this task exists for'

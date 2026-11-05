@@ -96,7 +96,9 @@ function emptyRecordFacts(row: { evidence_json: string | null; measure_json: str
       : `Its measure reads ${row.measure_remaining.toLocaleString('en-US')} remaining, with no remainder named.`;
   // The one answer definition (`taskAnswerFor`). A refusal only ever reaches here with none on record, so
   // the sentence states that and nothing that could contradict it (review M2).
-  const delivered = taskAnswerFor(taskId) ? '' : 'No delivered answer is on record for it.';
+  const answer = taskAnswerFor(taskId);
+  const delivered = !answer ? 'No delivered answer is on record for it.'
+    : `The delivered answer on record (${answer.messageId ? `message ${answer.messageId.slice(0, 8)}` : `delivery ${answer.deliveryId.slice(0, 8)}`}) has not been shown to you in a review.`;
   let pointers: string[] = [];
   try {
     const ev = JSON.parse(row.evidence_json ?? '[]') as Array<{ pointer?: unknown }>;

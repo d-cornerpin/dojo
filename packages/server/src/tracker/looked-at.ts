@@ -28,7 +28,7 @@ import { turnContext } from '../agent/turn-context.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { workOperation } from '../tools/work-verbs.js';
 import { ledgerTotals } from '../work/ledger-read.js';
-import { ledgerShownFor } from './request-shown.js';
+import { answerShownFor, ledgerShownFor } from './request-shown.js';
 import { unvalidatedCloseExpr } from '../work/tracker-view.js';
 import { resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
@@ -269,14 +269,19 @@ export function readsBoundToRow(l: LookedAt, workId: string, names = rowReadName
 }
 
 /** Does anything STRUCTURAL back this close (v3.5 field fix 3, #6b)? A measure at 0 or with a named
- *  remainder, a ledger entry, a delivered answer, the owner's recorded words (what a decision task is
+ *  remainder, a ledger entry, a delivered answer a request has shown the PM, the owner's recorded words (what a decision task is
  *  judged on, per the request's own rule), or a PM read of THIS row's work (`readsBoundToRow`). Reading the
  *  task record alone is the worker's own account and backs nothing. */
 export function closeBacking(l: LookedAt, workId: string): { backed: boolean; read: boolean } {
   const read = readsBoundToRow(l, workId);   // review M3b: a read backs only the row whose work it opened
   const measured = !!l.measure && (l.measure.remaining === 0 || !!l.measure.named);
   const ledger = !!l.ledger && (l.ledger.touched > 0 || l.ledger.commands > 0);
-  return { backed: read || measured || ledger || !!l.deliveredAnswer || !!l.ownerWords?.length, read };
+  // Audit #5 (W15): the worker's delivered line is the worker's own words. It backs an uphold only when a
+  // review's request has shown its excerpt to the PM (that showing IS the PM reading it, ruling R3); the
+  // pointer itself (`resolveTaskAnswerPointer`, the one answer definition) never names an ack. A line
+  // never shown backs nothing until the PM reads it, and that read binds to the row (`rowReadNames`).
+  const answer = !!l.deliveredAnswer && answerShownFor(workId) === l.deliveredAnswer;
+  return { backed: read || measured || ledger || answer || !!l.ownerWords?.length, read };
 }
 
 /** A task id as the tools accept it: the full id or its 8-character prefix, never anything shorter. */
