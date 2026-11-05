@@ -66,7 +66,7 @@ export const budgetStopWords = (budgetId: string): string => budgetId.startsWith
     + `Raise the limit on the Ledger page to let them go on now, or they go on by themselves when the window turns over. `
     + `Their messages are kept and answered then.`;
 export const healerMissingWords = (name: string): string =>
-  `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
+  `${name} is stuck and the Healer agent is missing, so nothing is unsticking it. A message to ${name} may get it going again.`;   // audit #13 (V13): no "Restore the Healer" control exists in Settings → Sensei
 
 /**
  * True exactly when the owner has NOT yet been told about this condition — its own `key`, or,

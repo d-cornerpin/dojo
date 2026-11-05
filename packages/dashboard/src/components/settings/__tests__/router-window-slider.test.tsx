@@ -55,7 +55,7 @@ describe('the Router tab\'s window slider', () => {
   it('the readout names the smallest model on the router, and which agent sets the low end', async () => {
     render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(slider()).toBeTruthy());
-    expect(screen.getByText(/128k — the smallest model on the router is Dock Standard \(128k\)/)).toBeTruthy();
+    expect(screen.getByText(/128k: the smallest model on the router is Dock Standard \(128k\)/)).toBeTruthy();
     expect(screen.getByText(/Dock Desk/)).toBeTruthy();
   });
 

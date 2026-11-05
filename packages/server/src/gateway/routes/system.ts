@@ -287,7 +287,7 @@ systemRouter.post('/debug-toast', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const agentId = (body.agentId as string | undefined) ?? getPrimaryAgentId();
   const severity = (body.severity as 'info' | 'warning' | 'error' | undefined) ?? 'info';
-  const message = (body.message as string | undefined) ?? `Test ${severity.toUpperCase()} toast — ${new Date().toLocaleTimeString()}`;
+  const message = (body.message as string | undefined) ?? `Test ${severity.toUpperCase()} toast at ${new Date().toLocaleTimeString()}`;
   broadcast({
     type: 'chat:error',
     agentId,

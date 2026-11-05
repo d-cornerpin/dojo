@@ -25,8 +25,11 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 const COMMENT_LINE = /^\s*(\/\/|\/\*|\*|\{\/\*)/;
-const START = /(?<![A-Za-z])(?<!System )Settings\s*(?:→|->|›|>)\s*(?=[A-Za-z$"'`])/g;
-const ARROW = /^\s*(→|->|›|>)\s*/;
+const START = /(?<![A-Za-z])(?<!System )Settings\s*(?:→|->|›|>|▸)\s*(?=[A-Za-z$"'`])/g;
+const ARROW = /^\s*(→|->|›|>|▸)\s*/;
+// Audit round (rulings audit #13, V13): a path written from somewhere that is not the Settings menu ("Dashboard ->
+// Integrations": there is no such place) is wrong whatever follows it.
+const NOT_A_MENU = /(?<![A-Za-z])Dashboard\s*(?:→|->|›|>|▸)\s*[A-Za-z]/;
 
 /** Every wrong path in one file, as "line: text". */
 function badPaths(file: string): string[] {
@@ -36,6 +39,7 @@ function badPaths(file: string): string[] {
   const bad: string[] = [];
   lines.forEach((line, i) => {
     if (!isMd && COMMENT_LINE.test(line)) return;
+    if (NOT_A_MENU.test(line)) bad.push(`${i + 1}: a path that starts outside Settings: ${line.trim().slice(0, 100)}`);
     for (const m of line.matchAll(START)) {
       if (!m[0].includes('→')) { bad.push(`${i + 1}: arrow other than "→": ${line.trim().slice(0, 100)}`); continue; }
       let rest = line.slice(m.index! + m[0].length);
@@ -90,9 +94,11 @@ describe('menu paths in messages are real', () => {
       "const e = 'Open Settings → Models → Ollama (Local Models)';",
       "const g = 'System Settings > Privacy & Security';",
       "// Settings → Nowhere",
+      "const h = 'reconnect in Dashboard -> Integrations';",
+      "const i = 'reconnect in Settings ▸ Channels ▸ Google';",
     ].join('\n'));
     const bad = badPaths(f);
     fs.rmSync(tmp, { recursive: true, force: true });
-    expect(bad.map((b) => b.split(':')[1].trim())).toEqual(['1', '2', '4', '5']);
+    expect(bad.map((b) => b.split(':')[1].trim())).toEqual(['1', '2', '4', '5', '8', '9']);
   });
 });
