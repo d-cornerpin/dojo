@@ -3,6 +3,7 @@
 // Quick tunnels (trycloudflare.com) and named tunnels (custom domain)
 // ════════════════════════════════════════
 
+import { sendAlert } from './imessage-bridge.js';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -491,8 +492,12 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         logger.info('Quick tunnel active', { url: tunnelUrl });
         broadcastStatus();
 
-        // OR-AUDIT-ANSWERS (d): a new dashboard address is no platform text (the owner's set: offline and back
-        // online, budget, broken agent, Mac critical). The Remote Access settings show the current address.
+        // Re-review 2 S8 (owner): the new remote dashboard address IS one of the Dojo's texts. An owner away from
+        // home is on the old link, which is now dead, so the phone is the only place he can learn the new one.
+        // 'notice': it reaches the phone without the "[CRITICAL]" prefix; a status line, not a card.
+        try {
+          void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { kind: 'remote-address', card: false });
+        } catch { /* iMessage bridge may not be running yet */ }
       }
     };
 

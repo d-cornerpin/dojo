@@ -2100,10 +2100,11 @@ const ownerNoticeLog = createLogger('owner-notice');
  */
 /**
  * OR-AUDIT-ANSWERS (d), owner ruling: the Dojo's own texts to the owner are exactly these. Offline and back online
- * (an update that failed included) are the watchdog's (watchdog/src/index.ts); the server's door carries the other
- * three, and every caller names which one, so a text outside the set does not type-check and is refused here.
+ * (an update that failed included) and a failed database integrity check are the watchdog's (watchdog/src/index.ts);
+ * the server's door carries the rest, and every caller names which one, so a text outside the set does not type-check
+ * and is refused here. Re-review 2 S8 (owner): the new remote dashboard address is allowed too.
  */
-export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical'] as const;
+export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical', 'remote-address'] as const;
 export type PlatformTextKind = typeof PLATFORM_TEXT_KINDS[number];
 
 export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string }): Promise<void> {

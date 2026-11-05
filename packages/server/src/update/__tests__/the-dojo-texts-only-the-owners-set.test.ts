@@ -12,13 +12,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const WATCHDOG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../watchdog/src/index.ts');
-type Kind = 'offline' | 'back-online' | 'update-failed' | 'mac-critical';
-const OWNERS_SET: readonly Kind[] = ['offline', 'back-online', 'update-failed', 'mac-critical'];
+type Kind = 'offline' | 'back-online' | 'update-failed' | 'mac-critical' | 'db-integrity';
+// Re-review 2 S8 (owner): the Dojo's database failing its integrity check is allowed too.
+const OWNERS_SET: readonly Kind[] = ['offline', 'back-online', 'update-failed', 'mac-critical', 'db-integrity'];
 
 /** Every alert key the watchdog claims before a text, and every key it resolves with a follow-up text. */
 const RAISED: Record<string, Kind> = {
   memory_low: 'mac-critical',
   disk_low: 'mac-critical',
+  db_integrity: 'db-integrity',
   auto_rollback_failed: 'update-failed',
   auto_rollback: 'update-failed',
   platform_missing: 'offline',
@@ -60,8 +62,10 @@ describe('the watchdog texts only the owner\'s set (OR-AUDIT-ANSWERS (d))', () =
     expect(raw.sort()).toEqual(['recipient, await composeSmartAlert(fixedText', 'to, interruptedUpdateText(marker', 'to, text'].sort());
   });
 
-  it('a failed database integrity check is logged, not texted (not in the owner\'s set)', () => {
-    expect(keysOf(src, 'claimAlertFor')).not.toContain('db_integrity');
-    expect(/async function alertDbIntegrity[\s\S]*?\n}/.exec(src)?.[0]).not.toMatch(/sendSmartAlert|sendIMessage/);
+  it('S8: a failed database integrity check is texted once (claimed), and recorded', () => {
+    const fn = /async function alertDbIntegrity[\s\S]*?\n}/.exec(src)?.[0] ?? '';
+    expect(fn).toMatch(/claimAlertFor\('db_integrity'/);
+    expect(fn).toMatch(/sendSmartAlert\(/);
+    expect(fn).toMatch(/recordAlert\(/);
   });
 });

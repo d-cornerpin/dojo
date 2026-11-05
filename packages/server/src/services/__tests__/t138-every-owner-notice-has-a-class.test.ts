@@ -5,9 +5,10 @@
 // only place the PLATFORM, rather than an agent, texts him. OR-AUDIT-ANSWERS (d), owner ruling
 // (supersedes the "platform-trouble" class this census once invented): the Dojo's own texts are
 // exactly offline and back online (an update that failed included), budget alerts, a broken
-// agent, and the Mac critical (disk and memory). Offline/online and disk are the watchdog's
+// agent, and the Mac critical (disk and memory); re-review 2 S8 adds the new remote address and a failed database
+// integrity check. Offline/online, disk and the integrity check are the watchdog's
 // (`update/__tests__/the-dojo-texts-only-the-owners-set.test.ts`); this door carries the other
-// three, and each call names its kind (`opts.kind`), so there are three classes and no fourth. This census names every call site's class and
+// four, and each call names its kind (`opts.kind`), so there are four classes and no fifth. This census names every call site's class and
 // severity. A NEW caller anywhere in the server fails here until someone classifies it (and a
 // class outside the three needs the owner first); a REMOVED caller fails as a stale entry; a
 // caller that quietly changes severity fails too. The table is the record; the reasons are
@@ -29,14 +30,14 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '..', '..');
 
-type NoticeClass = 'budget' | 'broken-agent' | 'mac-critical';
+type NoticeClass = 'budget' | 'broken-agent' | 'mac-critical' | 'remote-address';
 type Severity = 'critical' | 'notice' | 'warning' | 'info';
 /** The dashboard side of a phone-bound site (t138 round 3): it raises a card (default), raises
  *  none (`none`, a status line), or removes the trouble card it answers (`clears`, an all-clear). */
 type Card = 'card' | 'none' | 'clears';
 interface Site { cls: NoticeClass; severity: Severity; what: string; muted?: string; card?: Card }
 
-const CLASSES: readonly NoticeClass[] = ['budget', 'broken-agent', 'mac-critical'];
+const CLASSES: readonly NoticeClass[] = ['budget', 'broken-agent', 'mac-critical', 'remote-address'];
 
 /** Every caller, in source order within its file. */
 const CENSUS: Record<string, Site[]> = {
@@ -68,6 +69,9 @@ const CENSUS: Record<string, Site[]> = {
     { cls: 'broken-agent', severity: 'notice', what: 't143 BROKEN: a provider refused the agent in a way only the owner can fix (once per incident)' },
     { cls: 'broken-agent', severity: 'notice', what: 'auto-recovery gave up on a stuck agent (first entry into backoff)' },
     { cls: 'broken-agent', severity: 'critical', what: 'an agent is stuck and the Healer is missing' },
+  ],
+  'services/tunnel.ts': [
+    { cls: 'remote-address', severity: 'notice', what: 'the new remote dashboard address after the tunnel restarts (owner, re-review 2 S8: allowed); the old link no longer reaches the box', card: 'none' },
   ],
   'tracker/liveness.ts': [
     { cls: 'broken-agent', severity: 'notice', what: 't143 SILENT: no movement at all past the agent\'s silent window (once per incident)' },
@@ -206,14 +210,14 @@ describe('the owner-notice census', () => {
     expect(actual, 'a new or changed sendAlert caller: classify it in CENSUS (budget | broken-agent | mac-critical)').toEqual(declared);
   });
 
-  it('OR-AUDIT-ANSWERS (d): every call names the kind its census entry declares, one of the three', () => {
+  it('OR-AUDIT-ANSWERS (d): every call names the kind its census entry declares, one of the four', () => {
     const actual: Record<string, string[]> = {};
     for (const c of calls) (actual[c.rel] ??= []).push(c.kind);
     const declared: Record<string, string[]> = {};
     for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.cls);
     expect(actual).toEqual(declared);
     const door = fs.readFileSync(path.join(SRC, 'services/imessage-bridge.ts'), 'utf8');
-    expect(/export const PLATFORM_TEXT_KINDS = \[([^\]]*)\]/.exec(door)?.[1]).toBe("'budget', 'broken-agent', 'mac-critical'");
+    expect(/export const PLATFORM_TEXT_KINDS = \[([^\]]*)\]/.exec(door)?.[1]).toBe("'budget', 'broken-agent', 'mac-critical', 'remote-address'");
   });
 
   it('every caller raises, withholds or clears its dashboard card as declared (t138 round 3)', () => {
@@ -223,7 +227,7 @@ describe('the owner-notice census', () => {
     for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.card ?? 'card');
     expect(actual, 'an all-clear or status line must declare its card; a trouble notice raises one').toEqual(declared);
     const noCard = Object.values(CENSUS).flat().filter((s) => (s.card ?? 'card') !== 'card');
-    expect(noCard, 'OR-AUDIT-ANSWERS (d): no status line or all-clear text is left; every text is trouble with its card').toEqual([]);
+    expect(noCard.map((s) => s.cls), 'OR-AUDIT-ANSWERS (d) + S8: the one status line is the new remote address; every other text is trouble with its card').toEqual(['remote-address']);
   });
 
   it('every file that imports the door calls it, and every caller imports it; no alias, re-export or hand-off of the door', () => {
