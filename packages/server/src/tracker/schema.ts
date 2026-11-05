@@ -918,7 +918,7 @@ export interface TaskListFilter {
   assignedTo?: string;
   priority?: string;
   projectId?: string;
-  /** PHASE-6 T0C-W: restrict to the overdue set — `dueScope()`'s single declaration of
+  /** PHASE-6 T0C-W: restrict to the overdue set, `dueScope()`'s single declaration of
    *  what the word means. See its header for the two live meanings it reconciles. */
   overdue?: boolean;
 }
@@ -953,7 +953,7 @@ function taskListWhere(filter?: TaskListFilter): { conditions: string[]; params:
 }
 
 // t139 round 2: `priority` is TEXT ('high'|'normal'|'low'), so `priority DESC` sorted it
-// ALPHABETICALLY — normal, low, high — and listed high-priority work LAST. Ranked explicitly.
+// ALPHABETICALLY (normal, low, high) and listed high-priority work LAST. Ranked explicitly.
 const TASK_LIST_ORDER = " ORDER BY CASE work.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,"
   + ' work.step_number ASC, work.opened_at ASC';
 

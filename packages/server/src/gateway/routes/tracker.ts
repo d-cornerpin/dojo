@@ -185,7 +185,7 @@ trackerRouter.post('/projects', async (c) => {
 
 // ── Tasks ──
 
-// GET /tasks — list tasks with filters (hides internal sensei tasks). Re-review 2 (S4): the finished ones are
+// GET /tasks: list tasks with filters (hides internal sensei tasks). Re-review 2 (S4): the finished ones are
 // paged (`closedBefore` + `closedBeforeId` for the page before; `closedHasOlder` says one exists).
 trackerRouter.get('/tasks', (c) => {
   const status = c.req.query('status') ?? undefined;
