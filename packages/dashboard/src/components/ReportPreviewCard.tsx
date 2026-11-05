@@ -201,7 +201,7 @@ export const ReportPreviewCard = () => {
 
       <details className="mt-0.5">
         <summary className="text-[11px] text-ui/40 cursor-pointer hover:text-ui/60 select-none">
-          Technical attachment (built by the platform — no conversation content)
+          Technical attachment (built by the platform, no conversation content)
         </summary>
         <pre className="mt-1 text-[11px] text-ui/70 whitespace-pre-wrap break-all bg-ui/[0.04] rounded p-2 max-h-64 overflow-y-auto">
           {JSON.stringify(report.telemetry ?? {}, null, 2)}

@@ -178,9 +178,9 @@ export const RemoteAccessSettings = () => {
                       Cloudflare docs &rarr;
                     </a>
                   </p>
-                  <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 1 — Get the token</div>
+                  <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 1: Get the token</div>
                   <div className="text-[10px] text-ui/25 space-y-0.5">
-                    <p>1. Sign in at <a href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-cp-blue hover:underline">one.dash.cloudflare.com</a> (NOT dash.cloudflare.com — that's a different product). First time only: pick a Team name when prompted.</p>
+                    <p>1. Sign in at <a href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-cp-blue hover:underline">one.dash.cloudflare.com</a> (NOT dash.cloudflare.com, that's a different product). First time only: pick a Team name when prompted.</p>
                     <p>2. Sidebar: <span className="font-mono">Networks &rarr; Connectors &rarr; Cloudflare Tunnels</span> &rarr; <span className="font-mono">Create a tunnel</span></p>
                     <p>3. Connector type: <span className="font-mono">Cloudflared</span>. Name it (e.g. <span className="font-mono">dojo</span>) &rarr; Save.</p>
                     <p>4. Cloudflare shows an install command. The token is the long <span className="font-mono">eyJ…</span> string after <span className="font-mono">service install</span>. Copy just that token (no spaces) and paste below.</p>
@@ -192,7 +192,7 @@ export const RemoteAccessSettings = () => {
                     placeholder="Cloudflare tunnel token (eyJ...)"
                     className="finput"
                   />
-                  <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 2 — Bind a URL (after the tunnel connects)</div>
+                  <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 2: Bind a URL (after the tunnel connects)</div>
                   <div className="text-[10px] text-ui/25 space-y-0.5">
                     <p>5. In Cloudflare, click into your tunnel &rarr; <span className="font-mono">Published application routes</span> tab &rarr; <span className="font-mono">Add a route</span></p>
                     <p>6. Subdomain: <span className="font-mono">dojo</span> (or anything). Domain: pick from the dropdown (one of your Cloudflare-managed domains). Service type: <span className="font-mono">HTTP</span> (NOT HTTPS). URL: <span className="font-mono">localhost:3001</span></p>

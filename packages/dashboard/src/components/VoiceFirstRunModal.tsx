@@ -224,7 +224,7 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
         <div>
           <h2 className="text-base sm:text-lg font-semibold">Set up voice mode</h2>
           <p className="text-[11px] sm:text-xs text-ui/55 mt-1 leading-relaxed">
-            Voice mode runs entirely on this machine — no data leaves the box. We need to
+            Voice mode runs entirely on this machine, no data leaves the box. We need to
             download the speech recognition + text-to-speech models the first time you use it.
           </p>
         </div>

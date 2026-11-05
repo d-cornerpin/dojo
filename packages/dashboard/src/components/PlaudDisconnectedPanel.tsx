@@ -21,7 +21,7 @@ export const PlaudDisconnectedPanel = ({ status, onConnect }: { status: api.Plau
         {status.reauthRequired ? 'Reconnect Plaud' : 'Connect Plaud'}
       </button>
       <p className="text-xs text-ui/55">
-        Signing in happens <span className="font-medium">on the Mac that runs Dojo</span> — a
+        Signing in happens <span className="font-medium">on the Mac that runs Dojo</span> , a
         browser window opens there, and the sign-in has to be completed on that machine. If
         you&apos;re reading this from your phone or another computer, use the link that appears
         below once you click, or go over to the Mac.

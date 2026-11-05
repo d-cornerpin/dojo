@@ -29,7 +29,7 @@ const CHAPTERS: Chapter[] = [
     nav: 'The orb',
     title: 'The orb is your dojo',
     body: [
-      'Everything centers on the orb. Type or talk to your primary agent right here — it is the one you will work with most.',
+      'Everything centers on the orb. Type or talk to your primary agent right here, it is the one you will work with most.',
       'Click the orb any time to open the ring of controls: Agents, Vault, Techniques, Tracker, Ledger, Vitals, and Settings.',
     ],
     img: '/tutorial/orb.png',
@@ -51,7 +51,7 @@ const CHAPTERS: Chapter[] = [
     nav: 'Memory',
     title: 'The dojo remembers',
     body: [
-      'As you talk, the dojo saves what matters — facts, preferences, decisions, people — into a long-term memory vault. You never have to repeat yourself, and your agents pick up where you left off, even weeks later.',
+      'As you talk, the dojo saves what matters (facts, preferences, decisions, people) into a long-term memory vault. You never have to repeat yourself, and your agents pick up where you left off, even weeks later.',
       'Browse, search, and edit everything from the Vault.',
     ],
     img: '/tutorial/vault.png',
@@ -63,7 +63,7 @@ const CHAPTERS: Chapter[] = [
     title: 'Add an AI provider',
     body: [
       'Providers are the services that power your models. Open Settings → Providers and click Add Provider.',
-      'Pick your service — Anthropic, OpenAI, OpenRouter, DeepSeek, or a local Ollama — paste your API key, and the dojo validates it on the spot. Add as many as you like; "Sync Models & Pricing" pulls in each provider’s latest catalog.',
+      'Pick your service (Anthropic, OpenAI, OpenRouter, DeepSeek, or a local Ollama), paste your API key, and the dojo validates it on the spot. Add as many as you like; "Sync Models & Pricing" pulls in each provider’s latest catalog.',
     ],
     img: '/tutorial/providers.png',
     alt: 'Settings → Providers showing the configured providers',
@@ -84,8 +84,8 @@ const CHAPTERS: Chapter[] = [
     nav: 'The router',
     title: 'Let the dojo pick the model',
     body: [
-      'You do not have to choose a model for every task. Sort your models into tiers — a cheap Light tier for simple work, a powerful Heavy tier for hard problems — and the router automatically picks the cheapest capable model for each request.',
-      'It scores locally in under 2 ms with no extra LLM call, using signals like length, code, and reasoning markers — which you can weight right on this page.',
+      'You do not have to choose a model for every task. Sort your models into tiers: a cheap Light tier for simple work, a powerful Heavy tier for hard problems, and the router automatically picks the cheapest capable model for each request.',
+      'It scores locally in under 2 ms with no extra LLM call, using signals like length, code, and reasoning markers, which you can weight right on this page.',
     ],
     img: '/tutorial/router.png',
     alt: 'Settings → Router showing tiers and dimension weights',
@@ -106,7 +106,7 @@ const CHAPTERS: Chapter[] = [
     nav: 'Email & messaging',
     title: 'Connect accounts & channels',
     body: [
-      'Settings → Channels is where your agents reach the outside world. Under Agent’s Google Account, click Connect and sign in to grant Gmail, Calendar, Drive, Docs, and Sheets. The Microsoft Account section does the same for Outlook and OneDrive — toggle individual services on or off any time.',
+      'Settings → Channels is where your agents reach the outside world. Under Agent’s Google Account, click Connect and sign in to grant Gmail, Calendar, Drive, Docs, and Sheets. The Microsoft Account section does the same for Outlook and OneDrive, toggle individual services on or off any time.',
       'The same page approves iMessage senders so you can text your dojo from your phone, or connects a Twilio number for SMS.',
     ],
     img: '/tutorial/channels.png',
@@ -117,7 +117,7 @@ const CHAPTERS: Chapter[] = [
     nav: 'Voice',
     title: 'Talk to your agents',
     body: [
-      'Settings → Voice lets you pick a voice, run it locally (Kokoro) or in the cloud (Hume), and tune turn-taking — how patient the dojo is before it responds.',
+      'Settings → Voice lets you pick a voice, run it locally (Kokoro) or in the cloud (Hume), and tune turn-taking, how patient the dojo is before it responds.',
       'Everything runs on your machine unless you choose a cloud voice.',
     ],
     img: '/tutorial/voice.png',

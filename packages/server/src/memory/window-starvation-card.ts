@@ -69,7 +69,7 @@ export function starvedWindowCardText(policy: ContextWindowPolicy): string {
   const lead = reserveIsTheProblem
     ? 'the tools it has been given take up more of that window than its own instructions can fit beside'
     : 'its own instructions do not fit in that window at all';
-  return `This agent cannot hold a conversation: its model's memory window is too small — ${lead}. `
+  return `This agent cannot hold a conversation: its model's memory window is too small, ${lead}. `
     + 'Nothing has been lost, and nothing here needs deleting. '
     + 'Two things fix it: give this agent a shorter tool list, or point it at a model with a '
     + 'bigger context window. It will not start working on its own until one of those changes.';

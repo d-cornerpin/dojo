@@ -38,7 +38,7 @@ interface Preflight {
 }
 
 const fmtBytes = (n: number | null | undefined): string => {
-  if (!n && n !== 0) return '—';
+  if (!n && n !== 0) return '-';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let v = n, i = 0;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
@@ -388,7 +388,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
         {scanning && <StatusRow ok="pending" label="Verifying archive integrity and password…" />}
         {preflight && (
           <div className="glass-nested rounded-lg p-3">
-            <StatusRow ok={preflight.integrityOk} label="Archive integrity" sub={preflight.integrityOk ? 'Checksum verified' : 'Checksum mismatch — the file may be corrupted'} />
+            <StatusRow ok={preflight.integrityOk} label="Archive integrity" sub={preflight.integrityOk ? 'Checksum verified' : 'Checksum mismatch, the file may be corrupted'} />
             <StatusRow ok={preflight.passwordOk} label="Password" sub={preflight.passwordOk ? 'Correct' : 'Wrong password for this archive'} />
             <StatusRow ok={preflight.diskOk} label="Disk space" sub={`${fmtBytes(preflight.freeBytes)} free · needs ~${fmtBytes(preflight.manifest.contents.database_size_bytes * 2)}`} />
           </div>
@@ -407,7 +407,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
             <p className="text-red-300 font-medium">⚠ Turn off the Cloudflare tunnel on your OLD dojo first</p>
             <p className="text-ui/70 text-xs">
               This export uses a <strong>named Cloudflare tunnel</strong>. A named tunnel can only run on one
-              machine at a time — if the old dojo keeps tunneling with the same name and key, neither dojo will
+              machine at a time, if the old dojo keeps tunneling with the same name and key, neither dojo will
               connect. On the old machine, go to <strong>Settings → Dojo → Remote Access</strong> and turn the tunnel
               off before continuing here.
             </p>
@@ -428,7 +428,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   } else if (step === 'restore') {
     body = (
       <div className="space-y-4">
-        <p className="text-sm text-ui/55">Restoring your dojo — database, files, credentials &amp; keys.</p>
+        <p className="text-sm text-ui/55">Restoring your dojo, database, files, credentials &amp; keys.</p>
         <div className="relative h-2 bg-ui/[0.12] rounded-full overflow-hidden">
           <div className="absolute inset-y-0 left-0 bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${Math.max(2, restoreProgress.progress)}%` }} />
         </div>
@@ -444,7 +444,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   } else if (step === 'deps') {
     body = (
       <div className="space-y-4">
-        <p className="text-sm text-ui/55">Installing everything your dojo needs — core tools (Ollama, cloudflared) and every technique's dependencies (brew, pip, npm, git). This can take a few minutes.</p>
+        <p className="text-sm text-ui/55">Installing everything your dojo needs, core tools (Ollama, cloudflared) and every technique's dependencies (brew, pip, npm, git). This can take a few minutes.</p>
         <div className="flex items-center gap-3">
           <span className={`w-5 text-center ${depDone ? 'text-green-500' : 'text-blue-400 animate-pulse'}`}>{depDone ? '✓' : '⏳'}</span>
           <span className="text-sm text-ui/70">{depDone ? 'Dependencies installed.' : 'Installing dependencies…'}</span>

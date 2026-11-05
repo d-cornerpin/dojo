@@ -458,7 +458,7 @@ export async function executeVaultSearch(
     // record of that" and "I did not read that far".
     const window = lastSemanticSearchWindow();
     const windowNotice = window.truncated
-      ? `\n\n[searched the newest ${window.cap.toLocaleString('en-US')} vault entries only —`
+      ? `\n\n[searched the newest ${window.cap.toLocaleString('en-US')} vault entries only, `
         + ` nothing older than entry #${window.oldestRidConsidered} was scored. Retry with`
         + ` mode: "exact" for a literal string, or narrow the query.]`
       : '';

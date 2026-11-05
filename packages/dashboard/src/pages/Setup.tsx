@@ -906,7 +906,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
         Your <strong className="text-ui/90">primary agent</strong> is the main AI you'll interact with.
-        It orchestrates everything — managing sub-agents, executing tasks, searching the web, controlling your Mac, and communicating with you via the dashboard and iMessage.
+        It orchestrates everything, managing sub-agents, executing tasks, searching the web, controlling your Mac, and communicating with you via the dashboard and iMessage.
       </p>
 
       <div>
@@ -943,7 +943,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
           Personality & Instructions <span className="text-ui/25 font-normal">(optional)</span>
         </label>
         <p className="text-xs text-ui/40 mb-2">
-          Describe how this agent should behave — its tone, areas of expertise, things to avoid, or any special instructions.
+          Describe how this agent should behave, its tone, areas of expertise, things to avoid, or any special instructions.
           You can edit this later from the agent's Config tab.
         </p>
         <textarea value={personality} onChange={(e) => { setPersonality(e.target.value); setRestyled(true); setSaved(false); }} rows={4}
@@ -1045,7 +1045,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
             className="glass-select w-full">
             {models.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' — free' : ''}
+                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ', free' : ''}
               </option>
             ))}
           </select>
@@ -1145,7 +1145,7 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             className="glass-select w-full">
             {models.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' — free' : ''}
+                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ', free' : ''}
               </option>
             ))}
           </select>
@@ -1525,7 +1525,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
         The iMessage bridge lets you communicate with your agent via text message. It can send you alerts,
-        respond to your questions, and receive commands — all through iMessage. Requires Full Disk Access (granted in a previous step).
+        respond to your questions, and receive commands, all through iMessage. Requires Full Disk Access (granted in a previous step).
       </p>
 
       <div className="flex items-center justify-between py-3 px-4 glass-nested rounded-xl">
@@ -1890,7 +1890,7 @@ const CompleteStep = () => {
     <div className="text-center space-y-4">
       <h3 className="text-xl font-semibold text-ui">You're all set!</h3>
       <p className="text-sm text-ui/55">
-        New to the dojo? Take a quick tour of how it all fits together — the orb, your team of agents,
+        New to the dojo? Take a quick tour of how it all fits together, the orb, your team of agents,
         memory, and more.
       </p>
       <div>

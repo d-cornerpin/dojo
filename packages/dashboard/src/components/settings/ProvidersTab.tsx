@@ -245,7 +245,7 @@ const MeasuredReadingSpeed = ({ provider }: { provider: Provider }) => {
   return (
     <p className="text-[11px] text-cp-teal/70 mt-1">
       Measured reading speed: ~{Math.floor(measured)} tokens/sec.
-      Worked out from this machine's own recent calls — you do not need to fill anything in.
+      Worked out from this machine's own recent calls, you do not need to fill anything in.
     </p>
   );
 };
@@ -271,7 +271,7 @@ const PatienceFields = ({
         />
         <p className="text-[11px] text-ui/40 mt-1">
           Seconds. A model running on your own machine reads the whole prompt before it can say
-          anything, and on a long one that can take several minutes — far past the{' '}
+          anything, and on a long one that can take several minutes, far past the{' '}
           {STANDARD_FIRST_CHUNK_SEC}-second standard, which was set for services on the
           internet. Raise this if long messages fail but short ones work.
         </p>
@@ -439,7 +439,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
             disabled={busy} className="finput disabled:opacity-60"
           />
           <p className="text-[11px] text-ui/40 mt-1">
-            What you call it. Nothing else uses it — models, keys and assignments all follow the
+            What you call it. Nothing else uses it, models, keys and assignments all follow the
             provider itself, so renaming is safe.
           </p>
         </div>
@@ -447,7 +447,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
           <label className="flabel">Type</label>
           <input type="text" value={provider.type} disabled readOnly className="finput opacity-60" />
           <p className="text-[11px] text-ui/40 mt-1">
-            Can't be changed — a different type is a different provider. Delete this one and add
+            Can't be changed, a different type is a different provider. Delete this one and add
             it again.
           </p>
         </div>
@@ -481,7 +481,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
           </select>
           <p className="text-[11px] text-ui/40 mt-1">
             {BEHAVES_LIKE_CHOICES.find(ch => ch.value === behavesLike)?.hint
-              ?? 'Reads the dialect off the address, which is right for every hosted service. Declare one when the address cannot say — a local server.'}
+              ?? 'Reads the dialect off the address, which is right for every hosted service. Declare one when the address cannot say, a local server.'}
           </p>
         </div>
       )}
@@ -541,7 +541,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
                 <p className="text-[11px] text-ui/40 mt-1">
                   Tokens per second. You should not need this: the engine watches how fast this
                   machine actually gets through a prompt and works the number out on its own. Fill
-                  it in only to overrule that — a figure you type here always wins. Be careful
+                  it in only to overrule that, a figure you type here always wins. Be careful
                   with a low one: it tells the engine to turn away long messages before it even
                   tries them. Clear the box to undo that.
                 </p>
@@ -728,7 +728,7 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
               className="finput"
             />
             <p className="text-[11px] text-ui/40 mt-1">
-              Any server that speaks the OpenAI API — a local DeepSeek, vLLM, LM Studio, or a
+              Any server that speaks the OpenAI API, a local DeepSeek, vLLM, LM Studio, or a
               gateway on your network. Paste the URL the server prints; with or without the
               trailing <span className="font-mono">/v1</span> both work.
             </p>
@@ -760,7 +760,7 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
               className="finput"
             />
             <p className="text-[11px] text-ui/40 mt-1">
-              Most local servers accept anything here — leave it blank. A key you do type is
+              Most local servers accept anything here, leave it blank. A key you do type is
               stored the same way every other provider's key is.
             </p>
           </div>

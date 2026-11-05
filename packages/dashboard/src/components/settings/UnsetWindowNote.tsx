@@ -23,7 +23,7 @@ export const UnsetWindowNote = ({ model }: { model: Model }) => {
         className="underline text-cp-amber hover:text-cp-amber/80"
         onClick={() => document.getElementById(contextInputId(model.id))?.focus()}
       >
-        context not reported by the provider — set it
+        context not reported by the provider, set it
       </button>
       {model.assumedContextWindow
         ? ` (using ${Math.round(model.assumedContextWindow / 1000)}k until you set it)`

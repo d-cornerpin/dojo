@@ -70,13 +70,13 @@ export function automationInstructions(execPath?: string | null): string {
     : 'the Node binary that runs the Dojo server (it reports its exact path on this screen once it is running)';
   return (
     'This one is granted by USING it, not by adding it. macOS only lists an app under '
-    + `${AUTOMATION_PANE} once that app has actually asked, and this pane has no "+" button — so `
+    + `${AUTOMATION_PANE} once that app has actually asked, and this pane has no "+" button, so `
     + 'opening it before anything has tried shows nothing, which is normal rather than broken. '
     + `Checking this row is itself the asking: Dojo puts one harmless question to ${AUTOMATION_TARGET_APP}, `
     + `so expect a macOS popup the first time asking whether to let Dojo control `
-    + `${AUTOMATION_TARGET_APP} — click OK. After that the row appears in ${AUTOMATION_PANE}, filed `
+    + `${AUTOMATION_TARGET_APP}, click OK. After that the row appears in ${AUTOMATION_PANE}, filed `
     + `under ${asker}, and the switch to leave ON is the one named ${AUTOMATION_TARGET_APP}. If you `
-    + `clicked "Don't Allow" the first time, the popup will not come back — turn `
+    + `clicked "Don't Allow" the first time, the popup will not come back, turn `
     + `${AUTOMATION_TARGET_APP} back on there instead.`
   );
 }
@@ -85,7 +85,7 @@ export function automationInstructions(execPath?: string | null): string {
 export function automationWhy(): string {
   return (
     `Sending an iMessage means driving ${AUTOMATION_TARGET_APP}, which macOS treats as automation. `
-    + 'The request comes from the helper the Dojo server runs to do the sending — not from this '
+    + 'The request comes from the helper the Dojo server runs to do the sending, not from this '
     + 'dashboard, and not from Terminal.'
   );
 }

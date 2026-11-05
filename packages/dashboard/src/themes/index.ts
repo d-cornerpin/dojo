@@ -22,7 +22,7 @@ export const THEMES: ThemeMeta[] = [
   {
     id: 'sumi',
     name: 'Sumi',
-    description: 'Dark ink on washi paper — the readable v3 light look',
+    description: 'Dark ink on washi paper, the readable v3 light look',
     cssPath: '/themes/sumi/theme.css',
   },
 ];

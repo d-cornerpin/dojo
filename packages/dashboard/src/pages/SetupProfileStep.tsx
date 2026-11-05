@@ -79,7 +79,7 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
       <div>
         <label className="block text-sm font-medium text-ui/70 mb-1">About You</label>
         <p className="text-xs text-ui/40 mb-2">
-          Your work, preferences, projects, communication style — anything you want your agents to know about you.
+          Your work, preferences, projects, communication style, anything you want your agents to know about you.
         </p>
         <textarea value={aboutYou} onChange={(e) => { setAboutYou(e.target.value); setSaved(false); }} rows={5}
           placeholder="I run a small tech company in Seattle. I prefer concise, direct communication..."

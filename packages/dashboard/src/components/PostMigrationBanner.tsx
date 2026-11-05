@@ -90,7 +90,7 @@ export const PostMigrationBanner = () => {
       <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3 mx-6 mt-4 flex items-center gap-3">
         <span className="text-blue-400 shrink-0">{'✨'}</span>
         <p className="text-sm text-ui/80 flex-1">
-          Finish setting up your imported dojo — <strong className="text-ui">{remaining}</strong> item{remaining === 1 ? '' : 's'} need your attention.
+          Finish setting up your imported dojo, <strong className="text-ui">{remaining}</strong> item{remaining === 1 ? '' : 's'} need your attention.
         </p>
         <button onClick={() => setResume(true)} className="btn btn--primary text-xs shrink-0">Resume setup</button>
         <button onClick={handleDismiss} className="text-ui/25 hover:text-ui/55 text-xs shrink-0">Dismiss</button>

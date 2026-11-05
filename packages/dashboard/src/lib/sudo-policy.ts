@@ -29,9 +29,9 @@ export const SUDO_POLICY_KEY = 'sudo_policy';
 export const SUDO_POLICY_ORDER: readonly SudoPolicy[] = ['blocked', 'gated', 'free'];
 
 export const SUDO_POLICY_LABELS: Record<SudoPolicy, string> = {
-  blocked: 'Blocked — admin commands are refused',
-  gated: 'Gated — admin commands need your approval (default)',
-  free: 'Free — admin commands run without asking',
+  blocked: 'Blocked, admin commands are refused',
+  gated: 'Gated, admin commands need your approval (default)',
+  free: 'Free, admin commands run without asking',
 };
 
 export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
@@ -39,7 +39,7 @@ export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
     'Your MAIN AGENT’s ADMIN commands (sudo, and the macOS administrator-privileges prompt) are refused '
     + 'existed. Pick this if you would rather nothing here touch anything needing administrator rights.',
   gated:
-    'Your MAIN AGENT’s ADMIN command is held and you get a card to approve or decline — one approval, '
+    'Your MAIN AGENT’s ADMIN command is held and you get a card to approve or decline, one approval, '
     + 'one run, and nothing runs while it waits. This is the shipped default.',
   free:
     'Your MAIN AGENT’s ADMIN commands run like any other command. The safety floor still applies (see '
@@ -55,7 +55,7 @@ export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
 export const SUDO_FLOOR_NOTE =
   'ONE POLICY, EVERY ADMIN DOOR: this covers sudo AND the AppleScript / osascript “with administrator '
   + 'privileges” prompt, which reaches the same power under a different name. It governs your MAIN '
-  + 'AGENT ONLY — every other agent is refused admin rights outright under all three settings, a role '
+  + 'AGENT ONLY, every other agent is refused admin rights outright under all three settings, a role '
   + 'boundary that no setting changes. And under every setting the platform’s hard floor still applies '
   + 'inside an admin command: '
   + 'sudo rm -rf /, sudo rm -rf ~, sudo chmod 777 and anything touching the credentials file are '

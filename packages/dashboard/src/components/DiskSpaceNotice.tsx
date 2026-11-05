@@ -35,7 +35,7 @@ export const DiskSpaceNotice = ({ disk }: { disk: api.UpdateDiskNeed | null | un
   return (
     <div className="alert-banner alert-warning text-sm">
       <strong>Not enough free disk space for this update.</strong> It needs about{' '}
-      {gb(disk.totalNeedBytes)} free while it works and this disk has {gb(disk.freeBytes)} —
+      {gb(disk.totalNeedBytes)} free while it works and this disk has {gb(disk.freeBytes)} , 
       about <strong>{gb(disk.shortfallBytes)} short</strong>.
       <div className="text-xs text-ui/55 mt-1">
         That is {gb(disk.artifactBytes)} to download, {gb(disk.platformBytes * 2)} to unpack it

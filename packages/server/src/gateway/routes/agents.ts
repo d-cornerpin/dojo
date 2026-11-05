@@ -186,7 +186,7 @@ agentsRouter.post('/', async (c) => {
       // A REFUSAL, NOT A DOWNGRADE. 400 rather than 500: the caller sent
       // something the platform will not store, and the message names the field.
       logger.warn('Dashboard agent creation refused an invalid manifest', { reason: scope.reason });
-      return c.json({ ok: false, error: `Agent not created — ${scope.reason}` }, 400);
+      return c.json({ ok: false, error: `Agent not created, ${scope.reason}` }, 400);
     }
 
     // ── THE ACCESS GRANTS, THROUGH THE SAME RESOLVER, FROM THIS DOOR'S DEFAULT ──
@@ -214,7 +214,7 @@ agentsRouter.post('/', async (c) => {
     );
     if (!grantScope.ok) {
       logger.warn('Dashboard agent creation refused invalid grants', { reason: grantScope.reason });
-      return c.json({ ok: false, error: `Agent not created — ${grantScope.reason}` }, 400);
+      return c.json({ ok: false, error: `Agent not created, ${grantScope.reason}` }, 400);
     }
 
     const resolvedModelId = body.modelId || null;
@@ -703,7 +703,7 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     .get(id) as { id: string; name: string; status: string } | undefined;
   if (!agent) return c.json({ ok: false, error: 'Agent not found' }, 404);
   if (agent.status === 'terminated') {
-    return c.json({ ok: false, error: 'Agent is terminated — no live session to reset' }, 400);
+    return c.json({ ok: false, error: 'Agent is terminated, no live session to reset' }, 400);
   }
 
   try {

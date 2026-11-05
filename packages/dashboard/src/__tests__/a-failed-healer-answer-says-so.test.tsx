@@ -86,7 +86,7 @@ describe('the Healer card when the answer comes back failed', () => {
     render(<HealerVitals />);
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
 
-    expect(await screen.findByText('(approved — waiting on Healer)')).toBeTruthy();
+    expect(await screen.findByText('(approved, waiting on Healer)')).toBeTruthy();
     expect(screen.getByText('Restart the thing')).toBeTruthy();
   });
 });

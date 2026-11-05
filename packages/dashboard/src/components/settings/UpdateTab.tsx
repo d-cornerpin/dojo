@@ -123,7 +123,7 @@ export const UpdateTab = () => {
 
         {channel === 'preflight' && (
           <div className="alert-banner alert-warning text-xs">
-            Preflight installs bleeding-edge pre-release builds for testing — they may be unstable.
+            Preflight installs bleeding-edge pre-release builds for testing, they may be unstable.
             Switching back to Stable won't downgrade you automatically; it just points future updates at the stable channel.
           </div>
         )}
@@ -203,7 +203,7 @@ export const UpdateTab = () => {
               disabled={updating || updateInfo?.disk?.ok === false}
               className="btn btn--primary btn--sm"
               title={updateInfo?.disk?.ok === false
-                ? 'Not enough free disk space — see the warning above'
+                ? 'Not enough free disk space, see the warning above'
                 : undefined}
             >
               {updating ? 'Updating...' : 'Update Now'}

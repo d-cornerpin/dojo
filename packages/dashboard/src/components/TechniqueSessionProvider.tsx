@@ -49,7 +49,7 @@ Guide me through:
 4. Any supporting files needed?
 5. What tags should it have?
 
-Let's start — what kind of technique would you like to create?`;
+Let's start, what kind of technique would you like to create?`;
 
 function getEditContext(name: string, description: string, instructions: string): string {
   const lineCount = instructions ? instructions.split('\n').length : 0;
@@ -59,9 +59,9 @@ function getEditContext(name: string, description: string, instructions: string)
 Description (currently): ${description || '(none)'}
 
 Current TECHNIQUE.md is loaded on disk (${charCount.toLocaleString()} chars, ${lineCount} lines). Read it the moment you need it:
-  • technique_read(name="${name}", action="outline") — section list + line ranges, never truncates
-  • technique_read(name="${name}", action="section", section_name="…") — read one section
-  • technique_read(name="${name}", action="search", query="…") — grep across TECHNIQUE.md and supporting files
+  • technique_read(name="${name}", action="outline"), section list + line ranges, never truncates
+  • technique_read(name="${name}", action="section", section_name="…"), read one section
+  • technique_read(name="${name}", action="search", query="…"), grep across TECHNIQUE.md and supporting files
 
 I can see the technique mat on my screen with the current content. When we're done, use update_technique to save the changes. What I'd like changed is below.`;
 }
@@ -73,13 +73,13 @@ function getSetupContext(name: string, slug: string, directoryPath: string | nul
 Please help me finish setting it up:
 
 1. Read \`IMPORT_MANIFEST.json\` and \`README.md\` in the technique directory using file_read so you understand what came in the package and what setup steps the original author documented.
-2. Look at the manifest's \`placeholders\` list — each one is a {{NEEDS_FROM_USER:LABEL}} marker that the exporting Dojo redacted because it was a secret or per-install value. Ask me for each placeholder ONE AT A TIME, in plain language, using the hint from the manifest to explain what it is.
+2. Look at the manifest's \`placeholders\` list, each one is a {{NEEDS_FROM_USER:LABEL}} marker that the exporting Dojo redacted because it was a secret or per-install value. Ask me for each placeholder ONE AT A TIME, in plain language, using the hint from the manifest to explain what it is.
 3. As I give you each value, call technique_set_placeholder({technique: "${slug}", label: "...", value: "..."}) to write it into the technique files.
-4. After every placeholder is filled, call technique_finalize({technique: "${slug}"}) — that flips the technique out of needs_setup and into draft state so I can review it or publish it.
+4. After every placeholder is filled, call technique_finalize({technique: "${slug}"}), that flips the technique out of needs_setup and into draft state so I can review it or publish it.
 
 If the README mentions manual setup steps that AREN'T placeholders (e.g. granting an OAuth scope, installing a CLI), call them out so I know to handle them before finalizing.
 
-Ready when you are — start by reading the manifest and the README.`;
+Ready when you are, start by reading the manifest and the README.`;
 }
 
 // Unique sentinel separating injected build/edit context from the user's typed
@@ -398,7 +398,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     ) {
       const c = canvasRef.current;
       const refresh =
-        `[Technique state refresh — the technique has been edited since our last conversation. ` +
+        `[Technique state refresh, the technique has been edited since our last conversation. ` +
         `Treat THIS as the source of truth, not earlier messages in this thread.]\n\n` +
         getEditContext(c.displayName, c.description, c.instructions);
       outgoing = `${refresh}${USER_PROMPT_MARKER_OPEN}${typed}`;

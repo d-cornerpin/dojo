@@ -169,7 +169,7 @@ export const VoiceSetupStep = () => {
         <h3 className="text-lg font-semibold text-ui mb-1">Talk to your agents (optional)</h3>
         <p className="text-sm text-ui/55">
           Set up voice mode so you can have spoken conversations with your primary agent.
-          Everything runs locally — no audio leaves your machine. You can skip this and turn it on later
+          Everything runs locally, no audio leaves your machine. You can skip this and turn it on later
           from Settings → Voice.
         </p>
       </div>
@@ -277,7 +277,7 @@ export const VoiceSetupStep = () => {
       </div>
 
       <p className="text-xs text-ui/40 italic">
-        You can finish setup now — voice mode will appear as a mic button in the chat input once enabled.
+        You can finish setup now, voice mode will appear as a mic button in the chat input once enabled.
         If you skip, the Voice settings tab still has everything you need.
       </p>
     </div>

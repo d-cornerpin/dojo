@@ -187,7 +187,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
               <div>
                 <label className="text-xs text-ui/40 block mb-1">
                   Runs at
-                  <span className="ml-2 text-ui/30 font-normal">— wall-clock anchor; ignores how long each run takes</span>
+                  <span className="ml-2 text-ui/30 font-normal">, wall-clock anchor; ignores how long each run takes</span>
                 </label>
                 <input
                   type="time"

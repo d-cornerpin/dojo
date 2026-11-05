@@ -2,7 +2,7 @@ import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, inboundSenderName, outboundBadge, withoutFence } from '../lib/channel-display';
@@ -709,7 +709,7 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
               displayContent = (rawContent as Array<Record<string, unknown>>)
                 .map((block: Record<string, unknown>) => {
                   if (block.type === 'text') return block.text as string;
-                  if (block.type === 'image') return '[Image content — visible to model via vision]';
+                  if (block.type === 'image') return '[Image content, visible to model via vision]';
                   if (block.type === 'document') return `[PDF: ${(block.title as string) ?? 'document'}]`;
                   return '';
                 })
@@ -1626,7 +1626,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             content = (raw as Array<Record<string, unknown>>)
               .map((b) => {
                 if (b.type === 'text') return b.text as string;
-                if (b.type === 'image') return '[Image content — visible to model via vision]';
+                if (b.type === 'image') return '[Image content, visible to model via vision]';
                 if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
                 return '';
               })
@@ -1956,7 +1956,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // ended silently — there's no user-facing value in showing
             // "[Agent ended turn without replying — conversation closed]"
             // as a chat bubble. Hide in both wordy and non-wordy modes.
-            if (trimmedSys === '[Agent ended turn without replying — conversation closed]') {
+            if (trimmedSys === NO_REPLY_CLOSED_MARKER) {
               return null;
             }
             // Demoted working note: a plain note renders in BOTH modes (the narration

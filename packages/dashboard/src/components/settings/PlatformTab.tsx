@@ -158,7 +158,7 @@ const ServerControlSettings = () => {
           <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
             This exits the server process immediately. In production it auto-restarts via launchd
             within a few seconds. <strong>If you're running `npm run dev`</strong>, tsx watch will
-            NOT bring it back — you'll need to re-run the command in your terminal.
+            NOT bring it back, you'll need to re-run the command in your terminal.
           </div>
           <div className="srow">
             <button
