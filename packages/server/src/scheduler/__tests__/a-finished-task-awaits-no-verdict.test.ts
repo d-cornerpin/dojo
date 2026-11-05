@@ -150,12 +150,11 @@ describe('(a)+(c) the sweep over finished rows: nothing written, nothing broadca
     await sweepStaleRequests();
     await sweepStaleRequests();
 
-    // the live row: one drop, one audit row, one clear
-    expect(stateOf(live)).toBe('blocked');
-    expect(sweepRows(live)).toBe(1);
-    expect(cleared(live)).toHaveLength(1);
-    expect(awaiting(live)).toBe(0);
-    // the finished rows: zero audit rows and zero frames on BOTH runs, state untouched
+    // Field fix 3 audit round (#9): the 12-hour drop to blocked is gone. The live row is still
+    // asking, untouched; the finished rows still get nothing written and nothing broadcast.
+    expect(stateOf(live)).toBe('claimed');
+    expect(sweepRows(live)).toBe(0);
+    expect(awaiting(live)).toBe(1);
     for (const id of [done, gone]) {
       expect(sweepRows(id), `false "dropped to blocked" rows on ${id}`).toBe(0);
       expect(framesFor(id), `broadcasts for a row nothing happened to (${id})`).toBe(0);
@@ -164,30 +163,9 @@ describe('(a)+(c) the sweep over finished rows: nothing written, nothing broadca
     expect(stateOf(gone)).toBe('abandoned');
   });
 
-  it('a REFUSED drop clears the request with its reason and writes no "dropped to blocked" record', async () => {
-    const t = seedTask('refused drop');
-    oldRequest(t);
-    refuseDropFor.add(t);
-    await sweepStaleRequests();
-    await sweepStaleRequests();
-    expect(stateOf(t)).toBe('claimed');
-    expect(sweepRows(t)).toBe(0);
-    expect(framesFor(t)).toBe(0);
-    const c = cleared(t);
-    expect(c).toHaveLength(1);
-    expect(c[0].reason).toMatch(/refused/);
-    expect(awaiting(t), 'the refused row left the sweep\'s subject').toBe(0);
-  });
-
-  it('an ALREADY-BLOCKED row: the request clears, and no false move is recorded', async () => {
-    const t = seedTask('already blocked');
-    expect(transition(t, { to: 'blocked', by: 'owner', actorId: 'owner', claim: 'authoritative', reason: 'waiting on a reply' }).kind).toBe('applied');
-    oldRequest(t);
-    await sweepStaleRequests();
-    expect(stateOf(t)).toBe('blocked');
-    expect(sweepRows(t)).toBe(0);
-    expect(cleared(t)).toHaveLength(1);
-  });
+  // ⟨TOMBSTONE⟩ "a REFUSED drop clears the request" and "an ALREADY-BLOCKED row" asserted the
+  // 12-hour drop's two other outcomes. The drop is deleted (audit round #9), so neither path exists;
+  // `work-records-are-kept.test.ts` asserts the request now waits for its answer.
 });
 
 describe('(b) a move into a terminal state answers an open verdict request', () => {

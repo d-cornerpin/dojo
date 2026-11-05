@@ -93,6 +93,9 @@ export interface FloorGhostInput {
   /** ONE plain-language line for the owner, in the PLATFORM's voice. Never the agent's words,
    *  and never a first-person sentence — the platform says what the platform observed. */
   ownerLine: string;
+  /** The label the owner-visible row opens with; the heads-up prefix when absent. Field fix 3
+   *  audit round (#9): the validation alert passes the Dojo label (OR-ENGINE-LABELLED). */
+  label?: string;
   /** Machine detail for the event payload. */
   detail?: Record<string, unknown>;
 }
@@ -161,7 +164,7 @@ export function recordFloorGhost(input: FloorGhostInput, deps: FloorGhostDeps): 
   //     system note — a platform alert is not an answer and must never close an ask.
   //     OR2 is untouched: same sentence, same voice, same moment; only the wire is new.
   let noticeId: string | null = uuidv4();
-  const content = `${OWNER_ALERT_HEADS_UP_PREFIX} ${ownerLine}`;
+  const content = input.label ? `${input.label} ${ownerLine}` : `${OWNER_ALERT_HEADS_UP_PREFIX} ${ownerLine}`;
   let persisted: ReturnType<typeof insertMessageIfAbsent> = null;
   try {
     persisted = insertMessageIfAbsent({ id: noticeId, agentId, role: 'system', content, turnNumber });
