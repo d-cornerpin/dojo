@@ -71,16 +71,17 @@ export interface DenyRule {
   readonly since: DenyProvenance;
   /** What this row protects, in the words a removal would have to argue with. */
   readonly reason: string;
-  /** Field fix 3 (OR-MAC-BELONGS-TO-THE-AGENT): a row that protects ONE agent's discipline rather
-   *  than a resource. It binds only that agent; any other agent reads the path like any file. */
-  readonly onlyFor?: 'healer';
+  /** Field fix 3 re-review 2 (S12, OR-AUDIT-ANSWERS (b)): a row that protects a discipline, not a
+   *  secret. It binds every agent EXCEPT the main agent, who reads the path like any file; helper and
+   *  worker agents keep the limit. */
+  readonly exceptFor?: 'main';
   readonly test: (ctx: DenyMatchContext) => boolean;
 }
 
 /** Who is asking, as far as a scoped row cares. Omitted means unknown, and a scoped row then
  *  applies (the conservative reading for a caller that names no agent). A function is asked only
  *  when a scoped row's path matches, so the common path never looks the agent up. */
-export type DenyViewer = 'healer' | 'other';
+export type DenyViewer = 'main' | 'healer' | 'other';
 export type DenyViewerArg = DenyViewer | (() => DenyViewer);
 
 // ── The basenames the sensitive tier has always carried (verbatim from
@@ -186,14 +187,14 @@ export const DENY_RULES: readonly DenyRule[] = [
   },
   // ── the rest of GLOBAL_FILE_READ_DENY: Dreamer-style log discipline ──
   // FIELD FIX 3 (OR-MAC-BELONGS-TO-THE-AGENT, 2026-10-31: "the Mac belongs to the dojo agent"): these
-  // three rows fenced EVERY agent's file_read, the main agent's included, while their requirement is
-  // the HEALER's own log discipline. Scoped to the Healer (`onlyFor`); the main agent reads them like
-  // any file.
+  // three rows fenced EVERY agent's file_read, the main agent's included. Re-review 2 (S12, OR-AUDIT-
+  // ANSWERS (b), full-Mac access is the main agent's): they bind every agent but the main agent
+  // (`exceptFor`); the Mac-belongs round's Healer-only scope had opened them to every worker.
   {
     id: 'healer-log',
     tiers: ['global_read'],
     since: 'legacy',
-    onlyFor: 'healer',
+    exceptFor: 'main',
     reason:
       'the Healer may ASK ABOUT its history but not via raw file reads — those bypass the engine helpers ' +
       'that cap response size and would choke its prompt. Use healer_recent_actions / healer_action_detail.',
@@ -203,7 +204,7 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'healer-report-log',
     tiers: ['global_read'],
     since: 'legacy',
-    onlyFor: 'healer',
+    exceptFor: 'main',
     reason: 'same log discipline as healer.log.',
     test: ({ folded, home }) => folded === path.join(home, '.dojo', 'logs', 'healer-report.log'),
   },
@@ -211,7 +212,7 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'healer-archives',
     tiers: ['global_read'],
     since: 'legacy',
-    onlyFor: 'healer',
+    exceptFor: 'main',
     reason: 'same log discipline as healer.log, for the rotated archive tree.',
     test: ({ folded, home }) => folded.startsWith(path.join(home, '.dojo', 'logs', 'healer-archives') + path.sep),
   },
@@ -287,7 +288,7 @@ function contextFor(absPath: string): DenyMatchContext {
 
 /** Every tier on which `absPath` is denied, in table order. */
 const bindsViewer = (rule: DenyRule, viewer?: DenyViewerArg): boolean =>
-  !rule.onlyFor || viewer === undefined || (typeof viewer === 'function' ? viewer() : viewer) === rule.onlyFor;
+  !rule.exceptFor || viewer === undefined || (typeof viewer === 'function' ? viewer() : viewer) !== rule.exceptFor;
 
 export function deniedTiers(absPath: string, viewer?: DenyViewerArg): DenyTier[] {
   const ctx = contextFor(absPath);

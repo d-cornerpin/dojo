@@ -572,21 +572,28 @@ describe('§10 — ONE deny list: the merge is a SUPERSET of both twins, proven'
   // history but not via raw file reads"). They are now scoped to the Healer, so this clause no
   // longer says "every legacy pattern is still denied for everyone": secrets.yaml is, for every
   // agent; the Healer logs are, for the Healer; the main agent reads them like any file.
-  it('every legacy GLOBAL_FILE_READ_DENY pattern is still denied on the read tier for the agent it protects', () => {
+  // RE-REVIEW 2 (S12), OR-AUDIT-ANSWERS (b): full-Mac access is the MAIN agent's; helper and worker
+  // agents keep their limits. The Mac-belongs round had scoped these rows to the Healer alone, which
+  // opened the Healer's logs to every worker. They bind every agent except the main agent now.
+  it('every legacy GLOBAL_FILE_READ_DENY pattern is still denied on the read tier for the agents it protects', () => {
     for (const pattern of LEGACY_GLOBAL_FILE_READ_DENY) {
       const probe = pattern.replace('/**', '/anything.log').replace('~', fixtureHome);
-      expect(deniedTiers(probe, 'healer'), `${pattern} lost its read deny for the Healer`).toContain('global_read');
+      for (const viewer of ['healer', 'other'] as const) {
+        expect(deniedTiers(probe, viewer), `${pattern} lost its read deny for ${viewer}`).toContain('global_read');
+      }
     }
-    expect(deniedTiers(SECRETS, 'other'), 'secrets.yaml is denied for every agent').toContain('global_read');
+    expect(deniedTiers(SECRETS, 'main'), 'secrets.yaml is denied for every agent, the main agent included').toContain('global_read');
   });
 
-  it('the Healer-log rows bind the Healer only: any other agent reads them like any file', async () => {
+  it('THE RED: the Healer-log rows bind every agent but the main agent: a worker may not read them, the main agent may', async () => {
     for (const pattern of LEGACY_GLOBAL_FILE_READ_DENY.filter((p) => p.includes('healer'))) {
       const probe = pattern.replace('/**', '/anything.log').replace('~', fixtureHome);
-      expect(deniedTiers(probe, 'other'), `${pattern} still fences a non-Healer agent`).not.toContain('global_read');
+      expect(deniedTiers(probe, 'main'), `${pattern} still fences the main agent`).not.toContain('global_read');
     }
     const log = mustResolvePath(path.join(dojoDir, 'logs', 'healer.log'));
-    expect((await authorize(wildcard(), { kind: 'fs_read', resource: log })).allowed, 'the main agent reads healer.log').toBe(true);
+    const main = grantForManifest('agent-primary', JSON.parse(wildcardManifest));
+    expect((await authorize(main, { kind: 'fs_read', resource: log })).allowed, 'the main agent reads healer.log').toBe(true);
+    expect((await authorize(wildcard(), { kind: 'fs_read', resource: log })).allowed, 'a worker may not').toBe(false);
     const healer = grantForManifest('agent-healer', JSON.parse(wildcardManifest));
     expect((await authorize(healer, { kind: 'fs_read', resource: log })).allowed, 'the Healer still may not').toBe(false);
   });

@@ -25,6 +25,7 @@
 
 import { isTrainerAgent, isHealerAgent } from '../../config/platform.js';
 import { isProtectedIdentityPath } from '../path-resolve.js';
+import { ownsTheMac } from '../owns-the-mac.js';
 import { hasSquadWorkspaceAccess } from '../squad-workspace.js';
 import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier, type DenyViewerArg } from './deny.js';
 import { evaluateRules, matchPathPattern, type Grant, type GrantEffectKind } from './grants.js';
@@ -128,7 +129,7 @@ export function authorizeFs(
   }
 
   // Field fix 3: a row scoped to one agent (the Healer's log discipline) binds that agent only.
-  const globallyDenied = globalDeny(kind, resource, () => (isHealerAgent(grant.agentId) ? 'healer' : 'other'));
+  const globallyDenied = globalDeny(kind, resource, () => (ownsTheMac(grant.agentId) ? 'main' : isHealerAgent(grant.agentId) ? 'healer' : 'other'));
   if (globallyDenied) return globallyDenied;
 
   // FU-4: the technique trainer holds broad file_write ('*') for technique work,
