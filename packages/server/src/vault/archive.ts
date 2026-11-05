@@ -7,7 +7,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { rowToMessage, type MessageRow } from '../memory/store.js'; import { estimateTokens } from '../memory/budget.js';
 import { archiveConversation } from './store.js';
-import { isSystemServiceAgent, getSystemServiceAgentIds } from '../config/platform.js';
+import { isSystemServiceAgent, getSystemServiceAgentIds, getPrimaryAgentId } from '../config/platform.js';
 import { summaryPartyTag } from '../memory/party-label.js';
 import { clearCompactionBackoff } from '../memory/compaction-brakes.js';
 import type { Message } from '@dojo/shared';
@@ -82,6 +82,9 @@ export function purgeServiceAgentArchives(): number {
  */
 export function isDreamerIgnored(agentId: string): boolean {
   try {
+    // Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo"): the main agent always dreams; its
+    // own flag (or its group's, set before this) is not read.
+    if (agentId === getPrimaryAgentId()) return false;
     const db = getDb();
     const row = db.prepare(`
       SELECT a.dreamer_ignore AS agent_ignore, g.dreamer_ignore AS group_ignore

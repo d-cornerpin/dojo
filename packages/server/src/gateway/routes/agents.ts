@@ -41,6 +41,13 @@ import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-mo
 import { noteSmallMainModelOnce } from '../../agent/main-model-notice.js';
 
 const logger = createLogger('agents-routes');
+
+/** Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo and I don't believe it can run effectively
+ *  without dreaming."): the main agent's dreaming cannot be switched off. Null when the change is allowed. */
+export function dreamerIgnoreRefusal(agentId: string, ignore: boolean): string | null {
+  return ignore && agentId === getPrimaryAgentId() ? 'The main agent always dreams: the Dreamer reads its conversations, and that cannot be switched off.' : null;
+}
+
 const agentsRouter = new Hono();
 
 // GET / - list all agents with detail
@@ -523,6 +530,8 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   if (body.dreamerIgnore !== undefined) {
+    const refused = dreamerIgnoreRefusal(id, body.dreamerIgnore === true);
+    if (refused) return c.json({ ok: false, error: refused }, 400);
     // Boolean toggle. When true, the agent's conversations are skipped
     // by the vault archive layer entirely — Dreamer never sees them.
     updates.push('dreamer_ignore = ?');

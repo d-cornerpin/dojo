@@ -303,17 +303,14 @@ describe('the origin-intent vocabulary stays readable from module scope', () => 
  * All six resolve through `agent/tools/index.ts`, whose module-scope read of the provider
  * definition arrays is the actual offender. OWNED BY: the v3.3.1 provider tool-definition lane.
  */
-const KNOWN_FIRST_IMPORT_THROWERS: ReadonlyArray<readonly [string, string]> = [
-  ['agent/tools/provider/google.ts', 'googleReadToolDefinitions'],
-  ['agent/tools/provider/microsoft.ts', 'microsoftReadToolDefinitions'],
-  ['google/tools-read.ts', 'googleReadToolDefinitions'],
-  ['google/tools-write.ts', 'googleWriteToolDefinitions'],
-  ['microsoft/tools-read.ts', 'microsoftReadToolDefinitions'],
-  ['microsoft/tools-write.ts', 'microsoftWriteToolDefinitions'],
-];
+// v3.5 field fix 3 (OR-AUDIT-ANSWERS (d)): EMPTY. The six provider modules (google/microsoft tools-read, tools-write,
+// agent/tools/provider/google, microsoft) reached the cycle through `google/auth.ts` and `microsoft/auth.ts`, which
+// imported the iMessage bridge for their sign-in texts. Those texts are gone (not in the owner's set of Dojo texts),
+// the auth modules import the owner-card door instead, and all six now load first in a fresh process.
+const KNOWN_FIRST_IMPORT_THROWERS: ReadonlyArray<readonly [string, string]> = [];
 
 describe('the census of modules that cannot be a first import', () => {
-  it('is EXACTLY the six known provider tool-definition modules', async () => {
+  it('is EXACTLY the known set (empty since field fix 3)', async () => {
     const graph = assemblerGraph();
 
     // A broken enumerator must not make this arm vacuously true: the graph is large and

@@ -383,8 +383,9 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         )}
       </div>
 
-      {/* Memory */}
-      <MemoryCard agent={agent} onUpdated={onUpdated} />
+      {/* Memory. Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo"): the main agent always
+          dreams, so it has no Skip-in-Dreamer toggle. */}
+      {!isThisPrimary && <MemoryCard agent={agent} onUpdated={onUpdated} />}
       <QuietTimeCard agent={agent} onUpdated={onUpdated} />
     </div>
     </>

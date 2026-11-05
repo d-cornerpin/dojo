@@ -18,6 +18,7 @@
 import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
 import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
+import { silentWindowMs } from '../../tracker/silent-window.js';
 // t114 (census U2): the streaming, output-idle-bounded runner lives in its own leaf — see its
 // header for why. This door keeps the argument shapes, the per-stream caps and the failure
 // wording; the clock's mechanism is next door.
@@ -56,28 +57,25 @@ import { runWithIdleBound } from './process-idle-bound.js';
 //
 // The door moves to the STREAMING primitive (`spawnAuthorized`) to get that per-chunk signal.
 // Same capability, same program check, same no-shell argv — `proc.ts` makes that explicit.
-export const EXEC_TIMEOUT_MS = 30000;
-export const EXEC_TIMEOUT_MAX_MS = 120000;
-
-/**
- * The absolute ceiling, and the reason it has to exist: an output-idle bound alone can be held
- * open for ever by a process that dribbles a byte a minute, which is the unbounded-renewal trap
- * the stream watchdog's own header refuses. ONE HOUR — far above any legitimate interactive tool
- * call, far below "for ever", and reached only by a process that has been producing output
- * continuously for an hour, which is a runaway rather than a slow build.
- */
-export const EXEC_ABSOLUTE_CEILING_MS = 60 * 60 * 1000;
+// RULINGS AUDIT #14 (P1-l, M14, OR-LONG-JOBS). The owner: "I don't want to put hard limits on the dojo." and "the main
+// agent owns the Mac they live in and the dojo doesn't limit them." The 30 s default, the 120 s maximum and the one-hour
+// total cap are GONE. Requirement preserved: a command that is truly dead (no output for longer than the agent's silent
+// window, the owner's per-agent setting for "no movement") is still ended, with a reason that says silence ended it, so
+// a wedged command cannot hold a turn for ever. An agent that knows its command should answer fast passes its own
+// `timeout`, which is its choice and is honoured as asked.
+/** setTimeout's own largest delay (a larger one fires at once); a technical edge, not a policy. */
+const LARGEST_TIMER_MS = 2 ** 31 - 1;
 
 // t200 (D12): the output is returned WHOLE. It used to keep 16,000 characters of each stream and
 // drop the rest before anything was stored; a long output is now kept whole by the executor and the
 // agent reads any part of it (`memory/tool-result-view.ts`).
 
-/** Phase 3.5 fix, defensive coerce. DeepSeek emits numeric args as strings
- *  despite the schema; without coerce a string timeout silently falls back to
- *  the default instead of being honored. */
-export function processTimeout(raw: unknown): number {
+/** How long a command may stay quiet: the agent's own `timeout` when it asks for one, else its silent window.
+ *  Phase 3.5 fix, defensive coerce: DeepSeek emits numeric args as strings despite the schema. */
+export function processTimeout(raw: unknown, agentId: string): number {
   const coerced = coerceNumberArg(raw);
-  return Math.min(coerced !== null ? coerced : EXEC_TIMEOUT_MS, EXEC_TIMEOUT_MAX_MS);
+  const asked = coerced !== null && coerced > 0 ? coerced : silentWindowMs(agentId);
+  return Math.min(asked, LARGEST_TIMER_MS);
 }
 
 /**
@@ -180,8 +178,7 @@ export async function runProcess(input: {
     // the run streams so each chunk can re-arm it. A healthy long build talks the whole way
     // through and survives; a wedged command says nothing and is still killed.
     const { stdout, stderr } = await runWithIdleBound(file, argv, {
-      idleMs: timeout,
-      ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
+      idleMs: timeout,   // audit #14: no total-life cap on the agent's own command
       ...(cwd ? { cwd } : {}),
     });
     const out = (stdout ?? '').trim();

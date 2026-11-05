@@ -64,7 +64,7 @@ async function executeArgv(agentId: string, args: Record<string, unknown>): Prom
     return `Error: ${resolved.reason}. exec takes an argv ARRAY: exec({argv:["ls","-la","/tmp"]}). For pipes, redirection, globbing or loops use the shell tool instead: shell({script:"..."}).`;
   }
   const { cwd, note } = resolveProcessCwd(args.cwd);
-  const timeout = processTimeout(args.timeout);
+  const timeout = processTimeout(args.timeout, agentId);
   logger.info('Executing program', { argv: resolved.value.argv, timeout, cwd }, agentId);
   return runProcess({
     auditTarget: resolved.value.display,
@@ -89,7 +89,7 @@ async function executeShellScript(agentId: string, args: Record<string, unknown>
     return 'Error: shell requires a non-empty `script` string, e.g. shell({script:"ls -la | wc -l"}).';
   }
   const { cwd, note } = resolveProcessCwd(args.cwd);
-  const timeout = processTimeout(args.timeout);
+  const timeout = processTimeout(args.timeout, agentId);
   // The FULL script text, not a base command — auditing what the shell was
   // actually handed is the point of giving it its own door.
   logger.info('Executing shell script', { script, timeout, cwd }, agentId);

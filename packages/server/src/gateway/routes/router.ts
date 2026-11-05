@@ -5,6 +5,7 @@
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
+import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
 import { createLogger } from '../../logger.js';
 import { scoreQuery, clearDimensionCache } from '../../router/scorer.js';
 import type { RouterConfig, TierConfig } from '../../router/types.js';
@@ -122,7 +123,9 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
   // this box's memory. Models already in the tier are not re-judged (re-saving is never refused).
   const current = new Set((db.prepare('SELECT model_id FROM router_tier_models WHERE tier_id = ?').all(tierId) as Array<{ model_id: string }>).map((r) => r.model_id));
   for (const { modelId } of body.models as Array<{ modelId: string }>) {
-    const refused = current.has(modelId) ? null : await refuseUnfitLocalModel(modelId, null, 'agent');   // a tier runs agent turns
+    // Audit #14 (M5, owner: "anything under 32k simply wouldn't be selectable for an agent"): an agent tier runs agent
+    // turns, so a model added to one meets the main-model floor, with the same sentence every agent door gives.
+    const refused = current.has(modelId) ? null : refuseSmallMainModel(modelId, null) ?? await refuseUnfitLocalModel(modelId, null, 'agent');
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 

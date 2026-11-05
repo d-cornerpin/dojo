@@ -32,13 +32,13 @@ export type { ChildRunFailure };
  * clean exit; rejects with an `execFile`-shaped error otherwise, so every caller and every
  * failure string in `process-run.ts` is untouched.
  *
- * `idleMs` re-arms on each chunk from either stream. `ceilingMs` does not re-arm — it is the one
- * bound on total life, and the two are distinguished in the rejection so the agent is told which
+ * `idleMs` re-arms on each chunk from either stream. `ceilingMs` (optional; the agent's own door passes none,
+ * rulings audit #14) does not re-arm — it is the one bound on total life, and the two are distinguished in the rejection so the agent is told which
  * one ended its command rather than a single ambiguous "timed out".
  */
 export async function runWithIdleBound(
   file: string, argv: readonly string[],
-  opts: { idleMs: number; ceilingMs: number; cwd?: string },
+  opts: { idleMs: number; ceilingMs?: number; cwd?: string },
 ): Promise<{ stdout: string; stderr: string }> {
   // The capability check lives INSIDE `spawnAuthorized`: a program this call was not authorized
   // for never becomes a child, so the clock below is only ever handed a process the gate allowed.
@@ -51,5 +51,5 @@ export async function runWithIdleBound(
     on: ((ev: string, cb: (...a: unknown[]) => void) => child.on(ev, cb)) as WatchableChild['on'],
     kill: (signal) => signalProcessTree(child, signal ?? 'SIGTERM'),
   };
-  return attachIdleBound(tree, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
+  return attachIdleBound(tree, { idleMs: opts.idleMs, ...(opts.ceilingMs !== undefined ? { ceilingMs: opts.ceilingMs } : {}) });
 }

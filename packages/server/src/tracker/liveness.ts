@@ -37,17 +37,12 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('liveness');
 
-/** OR-LONG-JOBS: "a couple hours", confirmed as a per-agent setting with this default. */
-export const DEFAULT_SILENT_WINDOW_MINUTES = 120;
+export { DEFAULT_SILENT_WINDOW_MINUTES, silentWindowMs } from './silent-window.js';   // a leaf now (audit #14: the exec door reads it)
+import { silentWindowMs } from './silent-window.js';
 
 const MIN_MS = 60_000;
 const textMs = (col: string): string => `CAST(strftime('%s', ${col}) AS INTEGER) * 1000`;
 
-/** This agent's silent window, in ms. NULL (or anything a door would refuse) is the default. */
-export function silentWindowMs(agentId: string): number {
-  const m = (getDb().prepare('SELECT silent_window_minutes AS m FROM agents WHERE id = ?').get(agentId) as { m: unknown } | undefined)?.m;
-  return (typeof m === 'number' && Number.isInteger(m) && m >= 1 ? m : DEFAULT_SILENT_WINDOW_MINUTES) * MIN_MS;
-}
 
 export interface Activity {
   /** The newest movement, epoch ms; `null` when the agent has never moved. */
