@@ -45,7 +45,7 @@ export interface LookedAt {
   /** The Measure line: the reading (null = could not be read), its start, and the remainder the worker named. */
   measure?: { remaining: number | null; initial: number | null; named: string | null };
   /** The Ledger line: items touched (mailbox items and files), commands run, and the paths and commands themselves. */
-  ledger?: { touched: number; commands: number; files?: string[]; commandsRun?: Array<{ command: string; status: string | null }>; notListed?: number };
+  ledger?: { touched: number; commands: number; files?: string[]; sends?: Array<{ tool: string; to: string | null }>; commandsRun?: Array<{ command: string; status: string | null }>; notListed?: number };
   /** The worker's evidence lines, as the request prints them. */
   evidence?: string[];
   /** The delivered answer the request pointed at (its delivery id). */

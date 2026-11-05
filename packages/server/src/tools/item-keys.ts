@@ -11,9 +11,26 @@
 // module stays a leaf. Only an `args.` effect names its resource; a `derived:` one cannot be read here.
 import type { ToolEffect } from '../agent/tools/types.js';
 
-/** The two non-mailbox prefixes. A `cmd:` entry is a record of work, never an item (see ledger-store). */
+/** The non-mailbox prefixes. A `cmd:` entry is a record of work, never an item (see ledger-store). A
+ *  `send:` entry is one delivery to a person, keyed by the call that made it (audit #5). */
 export const FILE_KEY = 'file:';
 export const COMMAND_KEY = 'cmd:';
+export const SEND_KEY = 'send:';
+
+/**
+ * Audit #5: the recipient(s) a successful SEND names, from the tool's declared `send` effect, or null
+ * when the declaration derives the recipient (a reply goes to the message's sender). `undefined` when
+ * the call is not a send to a person: no `send` effect, or one addressed to another agent or an agent
+ * group (`args.agent` / `args.group_id`), which is coordination and not delivered work.
+ */
+export function sendRecipientsOf(args: Record<string, unknown>, effects: readonly ToolEffect[]): string[] | null | undefined {
+  const sends = effects.filter((e) => e.kind === 'send');
+  if (sends.length === 0) return undefined;
+  if (sends.every((e) => e.from === 'args.agent' || e.from === 'args.group_id')) return undefined;
+  const named = sends.flatMap((e) => argValues(args, e.from)).flatMap((v) => (Array.isArray(v) ? v : [v]))
+    .filter((v): v is string => typeof v === 'string' && v.trim() !== '').map((v) => v.trim());
+  return named.length > 0 ? [...new Set(named)] : null;
+}
 
 const strs = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : typeof v === 'string' && v ? [v] : [];
 const uniq = (xs: string[]): string[] => [...new Set(xs)];

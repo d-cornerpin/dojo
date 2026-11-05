@@ -12,7 +12,7 @@
 // the work and never an item: a command is as often a read (`ls`, `cat`) as a change, so the
 // measured-job readers below (momentum, "touched", the stall check) count items only.
 import { getDb } from '../db/connection.js';
-import { itemKeysOf, COMMAND_KEY } from '../tools/item-keys.js';
+import { itemKeysOf, sendRecipientsOf, COMMAND_KEY, SEND_KEY } from '../tools/item-keys.js';
 import { IS_ITEM } from './ledger-read.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 // The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
@@ -91,6 +91,10 @@ export function recordCallsTouched(
         const r = roundResults.find((x) => x.toolCallId === tc.id);
         recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(r?.keptWhole ?? r?.content ?? '')));
       }
+      // Audit #5: a successful send to a person is one delivery on the ledger, keyed by its call,
+      // with the recipient(s) its arguments name (redacted like every other entry).
+      const to = sendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []);
+      if (to !== undefined) recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), to ? safe(to.join(', ')) : null);
       continue;
     }
     const r = roundResults.find((x) => x.toolCallId === tc.id);

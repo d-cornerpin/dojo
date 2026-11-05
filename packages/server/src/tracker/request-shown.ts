@@ -11,6 +11,8 @@
 
 export interface LedgerShown {
   files: string[];
+  /** Audit #5: the sends the page listed (the recipient, or null when the tool derives it). */
+  sends?: Array<{ tool: string; to: string | null }>;
   commandsRun: Array<{ command: string; status: string | null }>;
   /** Entries the room could not list. */
   notListed: number;

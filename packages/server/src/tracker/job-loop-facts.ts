@@ -100,9 +100,11 @@ export function validationMeasureLines(taskId: string, roomTokens?: number): str
   const head = `\n  Measure: ${measureText(taskId, touched, commands, byTool)}`
     + `\n  Ledger: ${fmt(touched)} items touched (${byTool.map((b) => `${b.tool} ${fmt(b.n)}`).join(', ') || 'none'})`
     + `${commands > 0 ? `, ${commandsRun(commands)}` : ''}`;
-  const lineOf = (e: LedgerWorkEntry): string => (e.kind === 'file'
-    ? `\n    file written: ${e.what} (${e.tool})`
-    : `\n    command run: ${commandShown(e.what)} (${e.tool}, ${e.status ?? 'exit unknown'})`);
+  const lineOf = (e: LedgerWorkEntry): string => {
+    if (e.kind === 'file') return `\n    file written: ${e.what} (${e.tool})`;
+    if (e.kind === 'send') return `\n    sent: ${e.what ? `to ${e.what} ` : ''}(${e.tool})`;
+    return `\n    command run: ${commandShown(e.what)} (${e.tool}, ${e.status ?? 'exit unknown'})`;
+  };
   let listed = entries.length;
   const out = layOutInRoom(entries.length, roomTokens, (n) => {
     listed = n;
@@ -111,6 +113,7 @@ export function validationMeasureLines(taskId: string, roomTokens?: number): str
   const page = entries.slice(0, listed);
   noteLedgerShown(taskId, {
     files: page.filter((e) => e.kind === 'file').map((e) => e.what),
+    sends: page.filter((e) => e.kind === 'send').map((e) => ({ tool: e.tool, to: e.what || null })),
     commandsRun: page.filter((e) => e.kind === 'command').map((e) => ({ command: commandShown(e.what), status: e.status })),
     notListed: entries.length - listed,
   });
@@ -132,9 +135,11 @@ function notListedLine(rest: readonly LedgerWorkEntry[]): string {
   if (rest.length === 0) return '';
   const files = rest.filter((e) => e.kind === 'file').length;
   const failed = rest.filter((e) => e.kind === 'command' && e.status !== 'exit 0').length;
-  const clean = rest.length - files - failed;
+  const clean = rest.length - files - failed - rest.filter((e) => e.kind === 'send').length;
+  const sends = rest.filter((e) => e.kind === 'send').length;
   const parts = [
     failed ? `${fmt(failed)} more ${failed === 1 ? 'command' : 'commands'} that failed` : '',
+    sends ? `${fmt(sends)} more ${sends === 1 ? 'send' : 'sends'}` : '',
     files ? `${fmt(files)} more ${files === 1 ? 'file' : 'files'}` : '',
     clean ? `${fmt(clean)} more ${clean === 1 ? 'command' : 'commands'} that exited 0` : '',
   ].filter(Boolean);

@@ -4,7 +4,7 @@
 // first-import census, `memory/__tests__/the-assembler-initializes-when-it-is-imported-first.test.ts`).
 // `ledger-store.ts` re-exports them for every other caller.
 import { getDb } from '../db/connection.js';
-import { COMMAND_KEY, FILE_KEY } from '../tools/item-keys.js';
+import { COMMAND_KEY, FILE_KEY, SEND_KEY } from '../tools/item-keys.js';
 
 /** SQL: this ledger row is an item (anything but a command record). */
 export const IS_ITEM = `substr(item_key, 1, ${COMMAND_KEY.length}) <> '${COMMAND_KEY}'`;
@@ -19,37 +19,43 @@ export function ledgerTotals(workId: string): { touched: number; commands: numbe
   return { touched: t.n, commands: t.all_n - t.n, lastAt: t.last, byTool };
 }
 
+function entryOf(r: { k: string; tool: string; detail: string | null }): LedgerWorkEntry {
+  if (r.k.startsWith(FILE_KEY)) return { kind: 'file', what: r.k.slice(FILE_KEY.length), tool: r.tool, status: null };
+  if (r.k.startsWith(SEND_KEY)) return { kind: 'send', what: r.detail ?? '', tool: r.tool, status: null };
+  return { kind: 'command', what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail };
+}
+
 /** One file or command entry on a task's ledger, as the validation request and the verdict record show it. */
-export interface LedgerWorkEntry { kind: 'file' | 'command'; what: string; tool: string; status: string | null }
+/** `what`: a file's path, a command's text, or a send's recipient(s) (empty when the tool derives them). */
+export interface LedgerWorkEntry { kind: 'file' | 'command' | 'send'; what: string; tool: string; status: string | null }
 
 /** The task's file and command entries, oldest first. Mailbox items are counted (`ledgerTotals`), not
- *  listed: a sweep touches thousands of ids and a path or a command is what a reviewer can open. */
+ *  listed: a sweep touches thousands of ids, and a path, a command or a send is what a reviewer can check. */
 export function ledgerWorkEntries(workId: string): LedgerWorkEntry[] {
   const rows = getDb().prepare(
     `SELECT item_key AS k, tool, detail FROM work_ledger WHERE work_id = ?
-       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}')
+       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}'
+         OR substr(item_key, 1, ${SEND_KEY.length}) = '${SEND_KEY}')
      ORDER BY first_at, rowid`,
   ).all(workId) as Array<{ k: string; tool: string; detail: string | null }>;
-  return rows.map((r) => r.k.startsWith(FILE_KEY)
-    ? { kind: 'file' as const, what: r.k.slice(FILE_KEY.length), tool: r.tool, status: null }
-    : { kind: 'command' as const, what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail });
+  return rows.map(entryOf);
 }
 
 
-/** The task's file and command entries in the order a review SHOWS them (review M1): the commands
- *  that failed first (newest first), then the files the work wrote (newest first), then the commands
- *  that exited 0 (newest first). The ledger keeps everything; a reader lays this out in its own room. */
+/** The task's file, send and command entries in the order a review SHOWS them (review M1): the commands
+ *  that failed first, then the sends (audit #5), then the files the work wrote, then the commands that
+ *  exited 0, each newest first. The ledger keeps everything; a reader lays this out in its own room. */
 export function ledgerListing(workId: string): LedgerWorkEntry[] {
   const rows = getDb().prepare(
     `SELECT item_key AS k, tool, detail FROM work_ledger WHERE work_id = ?
-       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}')
+       AND (substr(item_key, 1, ${FILE_KEY.length}) = '${FILE_KEY}' OR substr(item_key, 1, ${COMMAND_KEY.length}) = '${COMMAND_KEY}'
+         OR substr(item_key, 1, ${SEND_KEY.length}) = '${SEND_KEY}')
      ORDER BY last_at DESC, rowid DESC`,
   ).all(workId) as Array<{ k: string; tool: string; detail: string | null }>;
-  const entries = rows.map((r): LedgerWorkEntry => (r.k.startsWith(FILE_KEY)
-    ? { kind: 'file', what: r.k.slice(FILE_KEY.length), tool: r.tool, status: null }
-    : { kind: 'command', what: r.k.slice(COMMAND_KEY.length), tool: r.tool, status: r.detail }));
+  const entries = rows.map(entryOf);
   const failed = entries.filter((e) => e.kind === 'command' && e.status !== 'exit 0');
+  const sends = entries.filter((e) => e.kind === 'send');
   const files = entries.filter((e) => e.kind === 'file');
   const clean = entries.filter((e) => e.kind === 'command' && e.status === 'exit 0');
-  return [...failed, ...files, ...clean];
+  return [...failed, ...sends, ...files, ...clean];
 }

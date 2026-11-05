@@ -189,3 +189,36 @@ describe('v3.5 field fix 3 (#6a): the ledger learns the worker\'s file and comma
     expect(detailOf('only', 'cmd:make report')).toBe('exit 0');
   });
 });
+
+// v3.5 field fix 3, audit #5: the ledger records SENDS too (email, iMessage, SMS, phone, Teams), one
+// entry per successful send call, from the tool's own declared `send` effect, with the recipient the
+// arguments name. A send to another agent (send_to_agent, a group broadcast) is coordination, not
+// delivered work, and is not recorded.
+describe('audit #5: the ledger learns the worker\'s sends', () => {
+  const sendRows = (taskId: string): Array<{ item_key: string; tool: string; detail: string | null }> =>
+    mockDb.current!.prepare("SELECT item_key, tool, detail FROM work_ledger WHERE work_id = ? AND item_key LIKE 'send:%' ORDER BY item_key").all(taskId) as never;
+  const SENDS: Call[] = [
+    { id: 's1', name: 'gmail_send', arguments: { to: 'client@example.com', subject: 'Report', body: 'x' } },
+    { id: 's2', name: 'user_outlook_send', arguments: { to: 'boss@example.com', subject: 'y', body: 'z' } },
+    { id: 's3', name: 'gmail_reply', arguments: { message_id: 'm-9', body: 'thanks' } },
+    { id: 's4', name: 'imessage_send', arguments: { recipient: '+15550100', message: 'on my way' } },
+    { id: 's5', name: 'send_to_agent', arguments: { agent: 'pm', message: 'done' } },
+  ];
+
+  it('each successful send is one entry, with its recipient; a send to an agent is not delivered work', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(SENDS), ctxFor(SENDS), roundOf(SENDS), effectsFor);
+    expect(sendRows('only')).toEqual([
+      { item_key: 'send:s1', tool: 'gmail_send', detail: 'client@example.com' },
+      { item_key: 'send:s2', tool: 'user_outlook_send', detail: 'boss@example.com' },
+      { item_key: 'send:s3', tool: 'gmail_reply', detail: null },
+      { item_key: 'send:s4', tool: 'imessage_send', detail: '+15550100' },
+    ]);
+  });
+
+  it('a refused or failed send is not recorded', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(SENDS), ctxFor(SENDS), roundOf(SENDS, ['s1', 's2', 's3', 's4']), effectsFor);
+    expect(sendRows('only')).toEqual([]);
+  });
+});

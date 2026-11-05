@@ -142,6 +142,19 @@ describe('field fix 3 review M1: the review SHOWS a bounded ledger; the ledger r
   });
 });
 
+describe('audit #5: the Ledger names what the task sent', () => {
+  it('a send entry reads as what was sent and to whom, ahead of the files and clean commands', async () => {
+    recordTouched(TASK, 'gmail_send', ['send:c1'], T0, 'client@example.com');
+    recordTouched(TASK, 'gmail_reply', ['send:c2'], T0 + 1, null);
+    recordTouched(TASK, 'file_write', ['file:/tmp/out/r.pdf'], T0 + 2);
+    const out = validationMeasureLines(TASK, 4000);
+    expect(out).toContain('\n  Ledger: 3 items touched (');
+    expect(out).toContain('\n    sent: to client@example.com (gmail_send)');
+    expect(out).toContain('\n    sent: (gmail_reply)');
+    expect(out.indexOf('sent: to client')).toBeLessThan(out.indexOf('file written:'));
+  });
+});
+
 describe('E1: an unparsable measure is never "none set"', () => {
   it('a stored measure the engine cannot read renders as could not be read', async () => {
     db().prepare('UPDATE work SET measure_json = ?, measure_initial = 5, measure_remaining = 5 WHERE id = ?').run('{"tool":"nope"}', TASK);

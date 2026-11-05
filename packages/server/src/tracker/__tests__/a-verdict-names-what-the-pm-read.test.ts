@@ -319,7 +319,7 @@ describe('#5: the verdict records what the close request itself carried', () => 
     upholdClaim(t, 'done', 'pm', PM, 'x');
     const ref = JSON.parse(adj(t, 'upheld').evidence_ref!);
     expect(ref.measure).toEqual({ remaining: 0, initial: 12, named: null });
-    expect(ref.ledger).toEqual({ touched: 1, commands: 1, files: ['/work/summary.md'], commandsRun: [{ command: 'mkdir -p /work', status: 'exit 0' }], notListed: 0 });
+    expect(ref.ledger).toEqual({ touched: 1, commands: 1, files: ['/work/summary.md'], sends: [], commandsRun: [{ command: 'mkdir -p /work', status: 'exit 0' }], notListed: 0 });
     expect(ref.evidence).toEqual(['[file] summary written @ /work/summary.md', '[note] checked the totals']);
     expect(ref.deliveredAnswer).toBe('deliv-abcdef12');
     expect(ref.ownerWords).toEqual(['owner-msg-1']);
