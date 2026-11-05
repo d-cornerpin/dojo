@@ -555,6 +555,17 @@ export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null;
  *
  * Returns a result indicating whether the message was delivered or dropped.
  */
+/**
+ * The note on a deliverable a helper returned to the main agent. Field fix 3 audit round (#2): it
+ * hard-named the OWNER as the recipient and pushed an iMessage ("send <owner> an iMessage with the
+ * gist"), whoever the work was for and wherever it was asked. Channel identity: reply on the channel
+ * the message came from. So it states the fact, and the recipient is whoever asked, on their channel.
+ */
+export function deliverableArrivedNote(senderName: string): string {
+  return `\n\n[Engine note: ${senderName} returned a deliverable on this thread. Whoever asked for this work is owed it, `
+    + 'on the channel they asked on, unless a task, project, technique or live message names a channel.]';
+}
+
 export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A2ADeliveryResult> {
   const db = getDb();
 
@@ -887,31 +898,14 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // read HERE, before the piece lands, because landing it settles the child.
   const joinChild = findJoinChildByThread(target.id, threadId), joinHandlesDelivery = !!joinChild;
   try {
-    const { isPrimaryAgent, isPMAgent, isHealerAgent, getOwnerName } = await import('../config/platform.js');
+    const { isPrimaryAgent, isPMAgent, isHealerAgent } = await import('../config/platform.js');
     const targetIsPrimary = isPrimaryAgent(target.id);
     const senderIsOps = isPMAgent(envelope.fromAgent) || isHealerAgent(envelope.fromAgent) || envelope.fromAgent === 'system';
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
     if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinHandlesDelivery) {
-      const ownerName = getOwnerName();
-      // v2.9.21, Engine hint, not Engine order. The previous wording
-      // ("[Engine: Send ... unless they're already actively in this
-      // conversation]") was read by the model as a system-level
-      // override of explicit user instructions (task/technique/vault
-      // saying "always deliver via iMessage" got ignored because the
-      // bracketed Engine string felt more authoritative). The
-      // "actively in this conversation" carve-out was intended to
-      // mean "this very deliverable's topic is already live in
-      // dashboard chat" - i.e., don't yank a real conversation onto
-      // another channel - but the agent read it as "any dashboard
-      // chatting at all wins over the iMessage rule." Reworded to
-      // make the precedence explicit and the carve-out specific.
-      primaryDeliverableHint =
-        `\n\n[Engine hint: ${senderName} just shipped a deliverable for ${ownerName}. ` +
-        `If a task, project, technique, vault entry, or live user message specifies a delivery channel, follow that. ` +
-        `Otherwise the engine's default suggestion is: send ${ownerName} an iMessage with the gist (title + link if present) so it doesn't get lost in dashboard scroll. ` +
-        `Skip the iMessage only if you and ${ownerName} are actively going back and forth in dashboard chat about THIS specific deliverable right now (in which case dashboard is the natural place to surface it).]`;
+      primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
   } catch { /* best effort */ }
 
