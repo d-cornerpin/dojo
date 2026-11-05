@@ -12,6 +12,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { commandReadsSensitiveFile, globalExecDenyPublic } from '../proc.js';
+import { SENSITIVE_LOCATIONS, isSensitivePath } from '../deny.js';
+import path from 'node:path';
+import { homeDir } from '../../../home.js';
 
 const refused = (line: string): boolean => globalExecDenyPublic(line) !== null || commandReadsSensitiveFile(line).blocked;
 
@@ -49,6 +52,33 @@ const ROWS: Array<{ line: string; want: boolean; why: string }> = [
   { line: 'sed -n 1p ~/.ssh/id_rsa', want: true, why: 'the sed file operand' },
   { line: 'awk 1 ~/.ssh/id_rsa', want: true, why: 'the awk file operand' },
   { line: 'cat ~/.ssh/id_rsa | grep foo', want: true, why: 'cat still reads the key file' },
+  // ── re-review 6 Q1: an option the scan does not know exactly (a long-name prefix) means every word is scanned ──
+  { line: 'grep --regex=. ~/.ssh/id_rsa', want: true, why: 'a prefix of --regexp is not a known option, so the key file is scanned' },
+  { line: 'grep --reg=. ~/.ssh/id_rsa', want: true, why: 'a shorter prefix' },
+  { line: 'grep --rege=. ~/project/.env', want: true, why: 'a prefix, and a dotenv file' },
+  { line: 'egrep --regex=. ~/.ssh/id_ed25519', want: true, why: 'egrep, the same' },
+  { line: 'grep --regex . ~/.ssh/id_rsa', want: true, why: 'a prefix with its value as the next word' },
+  { line: 'sed -i p ~/.ssh/id_rsa', want: true, why: 'sed -i takes a value on one system and not on another, so every word is scanned' },
+  { line: 'awk --source=1 ~/.ssh/id_rsa', want: true, why: 'an awk long option the scan does not know' },
+  // ── re-review 6: a recursive read of a sensitive folder, or of a folder that contains one ──
+  { line: 'grep -r . ~/.ssh', want: true, why: 'a recursive grep of the key folder' },
+  { line: 'grep -rn x ~/.ssh/', want: true, why: 'the folder with a trailing slash' },
+  { line: 'rg -e . ~/.ssh', want: true, why: 'rg reads folders recursively' },
+  { line: 'rg --files ~/.ssh', want: true, why: 'rg over the key folder' },
+  { line: 'grep -R token ~/.dojo', want: true, why: 'the Dojo folder holds the secrets file' },
+  { line: 'grep -r token ~', want: true, why: 'the home folder holds the key folder' },
+  { line: 'rg token ~/.config', want: true, why: 'a folder that holds the cloud credentials folder' },
+  { line: 'cp -r ~/.ssh /tmp/k', want: true, why: 'a recursive copy of the key folder' },
+  { line: 'grep --recur x ~/.ssh', want: true, why: 'an option prefix counts as recursive' },
+  // ── controls ──
+  { line: 'ls ~/.ssh', want: false, why: 'a listing of the folder, not its contents' },
+  { line: 'ls -la ~/.ssh', want: false, why: 'the same' },
+  { line: 'cat ~/.ssh/id_rsa.pub', want: false, why: 'the public half of a key' },
+  { line: 'grep -rn TODO ~/projects/site', want: false, why: 'a recursive grep elsewhere' },
+  { line: 'grep -r error ~/.dojo/logs', want: false, why: 'a folder that holds no sensitive location' },
+  { line: 'grep x ~/notes.txt', want: false, why: 'a plain grep' },
+  { line: 'cp notes.txt ~/', want: false, why: 'the home folder as a copy destination is written, not read' },
+  { line: 'grep --ignore-case --line-number "id_rsa" ~/notes.txt', want: false, why: 'exact known long options still let the pattern be text' },
   // ── nothing else changes ──
   { line: 'cat ~/notes.txt', want: false, why: 'an ordinary file' },
   { line: "grep 'error' ~/.dojo/logs/dojo.log", want: false, why: 'a quoted pattern on the platform log' },
@@ -58,5 +88,12 @@ const ROWS: Array<{ line: string; want: boolean; why: string }> = [
 describe('the broker\'s secrets block reads the line as the shell will unquote it', () => {
   it.each(ROWS)('$line', ({ line, want, why }) => {
     expect(refused(line), why).toBe(want);
+  });
+});
+
+describe('every fixed sensitive location is on the sensitive list, itself or its contents', () => {
+  it.each(SENSITIVE_LOCATIONS)('%s', (rel) => {
+    const abs = path.join(homeDir(), rel);
+    expect(isSensitivePath(abs) || isSensitivePath(path.join(abs, 'x'))).toBe(true);
   });
 });

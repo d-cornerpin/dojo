@@ -322,6 +322,26 @@ export function isSensitivePath(absPath: string): boolean {
 }
 
 /**
+ * The FIXED places under home that hold credentials, relative to home (re-review 6). The rows above
+ * deny a file by its name or by being INSIDE one of these, which says nothing about a FOLDER that
+ * holds one: `grep -r . ~/.ssh` names the folder, not a key. A recursive read of any folder that is,
+ * or contains, one of these reads it, so the broker's reader scan refuses it
+ * (`containsSensitiveLocation`). Each entry is on the sensitive list itself or by its contents, which
+ * a test asserts, so this list cannot name a place the rows do not protect.
+ */
+export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config'];
+
+/** Is this path one of the fixed sensitive locations, or a folder that contains one? */
+export function containsSensitiveLocation(absPath: string): boolean {
+  const here = foldPath(path.resolve(absPath));
+  const prefix = here.endsWith(path.sep) ? here : here + path.sep;
+  return SENSITIVE_LOCATIONS.some((rel) => {
+    const loc = foldPath(path.join(homeDir(), rel));
+    return loc === here || loc.startsWith(prefix);
+  });
+}
+
+/**
  * The broker-facing question: is this resource denied for this effect kind,
  * on ANY tier the kind consults? `fs_read` consults the read tier AND the
  * sensitive tier, because both doors existed on the read path before the merge

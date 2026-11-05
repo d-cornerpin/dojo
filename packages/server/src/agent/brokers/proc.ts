@@ -35,7 +35,7 @@
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
-import { GLOBAL_EXEC_DENY_SUBSTRINGS, isSensitivePath } from './deny.js';
+import { GLOBAL_EXEC_DENY_SUBSTRINGS, containsSensitiveLocation, isSensitivePath } from './deny.js';
 import { lexShellLine, shellUnquoted } from './shell-words.js';
 import {
   authorizeSudoLine, isSudoLine, mentionsPrivilegeToken, privilegeTokenIsQuotedData,
@@ -65,53 +65,148 @@ const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
   'xxd', 'od', 'hexdump',
 ]);
 
-/** Readers whose first operand is a search PATTERN, unless one is given with an option. */
-const PATTERN_FIRST: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
-/** Readers whose first operand is a SCRIPT (sed) or PROGRAM (awk), unless given with an option. */
-const SCRIPT_FIRST: ReadonlySet<string> = new Set(['sed', 'awk']);
-/** Short options that take a value (a count, a glob, a variable), per program, so the word after
- *  one is not mistaken for the pattern. The value is still scanned. */
-const VALUE_LETTERS: Readonly<Record<string, string>> = {
-  grep: 'ABCmdD', egrep: 'ABCmdD', fgrep: 'ABCmdD', rg: 'ABCmgtTjM', ag: 'ABCmGg', ack: 'ABCm', sed: 'l', awk: 'vF',
+/**
+ * THE OPTIONS OF THE READERS WHOSE FIRST OPERAND IS TEXT (re-review 5 P2, tightened in re-review 6
+ * Q1). A grep-family PATTERN and a sed/awk SCRIPT are text, not a file: `grep ".env" src` searches
+ * for the text `.env`. Which word is the pattern depends on every option before it, and these
+ * programs accept forms a table cannot list (macOS grep takes any unique prefix of a long name, so
+ * `--reg=` is `--regexp=`; sed's `-i` takes a value on one system and not on another). So the
+ * pattern is skipped ONLY when every option word is known here EXACTLY; one unknown option, a
+ * prefix included, and every word is scanned as a possible path. A misread can only scan more.
+ *
+ * Per program: `flags` short letters with no value, `values` short letters whose value is the rest
+ * of the word or the next word, `text`/`file` the letters that give the pattern or script itself /
+ * a FILE of it (read, so scanned), the long names of each kind, and `longNoText`: the long flags
+ * that mean there is no pattern at all (`rg --files`), so every operand is a path. Every option
+ * value but the text itself is scanned.
+ */
+interface ReaderOptions {
+  flags: string; values: string; text: string; file: string;
+  longFlags: readonly string[]; longValues: readonly string[]; longText: readonly string[]; longFile: readonly string[];
+  longNoText?: readonly string[];
+}
+const GREP_OPTIONS: ReaderOptions = {
+  flags: 'abcEFGHhIiJLlnoOpqRrSsUuVvwxZz', values: 'ABCmdD', text: 'e', file: 'f',
+  longFlags: ['ignore-case', 'no-ignore-case', 'invert-match', 'word-regexp', 'line-regexp', 'count', 'files-with-matches', 'files-without-match',
+    'line-number', 'no-filename', 'with-filename', 'only-matching', 'quiet', 'silent', 'extended-regexp', 'fixed-strings', 'basic-regexp',
+    'perl-regexp', 'recursive', 'dereference-recursive', 'null', 'text', 'byte-offset', 'initial-tab', 'null-data', 'no-messages'],
+  longValues: ['include', 'exclude', 'exclude-dir', 'context', 'after-context', 'before-context', 'max-count', 'binary-files', 'label', 'color', 'colour', 'directories', 'devices'],
+  longText: ['regexp'], longFile: ['file'],
+};
+const READER_OPTIONS: Readonly<Record<string, ReaderOptions>> = {
+  grep: GREP_OPTIONS, egrep: GREP_OPTIONS, fgrep: GREP_OPTIONS,
+  rg: {
+    flags: 'abcFHhiIlLnNopqsSuUvwxz0', values: 'ABCmgtTjMrE', text: 'e', file: 'f',
+    longFlags: ['files', 'hidden', 'no-ignore', 'ignore-case', 'smart-case', 'case-sensitive', 'fixed-strings', 'word-regexp', 'line-regexp',
+      'line-number', 'no-line-number', 'count', 'files-with-matches', 'files-without-match', 'json', 'no-heading', 'heading', 'follow',
+      'multiline', 'only-matching', 'invert-match', 'no-messages', 'null', 'text', 'vimgrep', 'with-filename', 'no-filename'],
+    longValues: ['glob', 'iglob', 'type', 'type-not', 'threads', 'context', 'after-context', 'before-context', 'max-count', 'color', 'colors',
+      'encoding', 'replace', 'max-depth', 'max-filesize', 'sort', 'sortr'],
+    longText: ['regexp'], longFile: ['file'], longNoText: ['files', 'type-list'],
+  },
+  ag: { flags: 'ailLnoQsSUvwz', values: 'ABCmGg', text: '', file: '', longFlags: [], longValues: [], longText: [], longFile: [] },
+  ack: { flags: 'hiIlLnovwx', values: 'ABCm', text: '', file: '', longFlags: [], longValues: [], longText: [], longFile: [] },
+  sed: {
+    flags: 'nrEsuz', values: 'l', text: 'e', file: 'f',
+    longFlags: ['quiet', 'silent', 'regexp-extended', 'separate', 'unbuffered', 'null-data', 'debug', 'sandbox', 'posix'],
+    longValues: ['line-length'], longText: ['expression'], longFile: ['file'],
+  },
+  awk: { flags: '', values: 'vF', text: '', file: 'f', longFlags: [], longValues: [], longText: [], longFile: [] },
 };
 
-/**
- * The arguments of one reader that name a FILE it reads, for the sensitive-path scan (re-review 5
- * P2). A grep-family PATTERN and a sed/awk SCRIPT are text, not a path: `grep ".env" src` searches
- * for the text `.env`, so it is not scanned as a file. The pattern is the first operand, or the
- * value of `-e`/`--regexp` (grep family) or `-e`/`--expression` (sed); once a pattern or script is
- * given by option, every operand is a file. A pattern or program FILE (`-f FILE`, `--file=FILE`) is
- * read, so it IS scanned. Any other option's value is scanned too: a misread can only scan more.
- */
+/** The words of one reader that name a FILE it reads, for the sensitive-path scan. */
 function fileOperands(cmd: string, words: readonly string[]): string[] {
-  const textFirst = PATTERN_FIRST.has(cmd) || SCRIPT_FIRST.has(cmd);
-  if (!textFirst) return words.filter((a) => !a.startsWith('-'));
-  const textOpt = PATTERN_FIRST.has(cmd) ? ['--regexp'] : cmd === 'sed' ? ['--expression'] : [];
-  const textShort = cmd === 'awk' ? '' : 'e';   // awk has no -e program option
-  const out: string[] = [];
-  let textGiven = false;
-  let operandsOnly = false;
+  const spec = READER_OPTIONS[cmd];
+  if (!spec) return words.filter((w) => !w.startsWith('-'));
+  const values: string[] = [];
   const operands: string[] = [];
+  let textGiven = false;
+  let unknown = false;
+  let operandsOnly = false;
   for (let k = 0; k < words.length; k++) {
-    const a = words[k];
-    if (operandsOnly || !a.startsWith('-') || a === '-') { operands.push(a); continue; }
-    if (a === '--') { operandsOnly = true; continue; }
-    if (a.startsWith('--')) {
-      const [name, ...val] = a.split('=');
-      if (textOpt.includes(name)) { textGiven = true; if (val.length === 0) k++; continue; }   // the text itself: not a file
-      if (name === '--file') { textGiven = true; if (val.length > 0) out.push(val.join('=')); else if (k + 1 < words.length) out.push(words[++k]); continue; }
-      if (val.length > 0) out.push(val.join('='));
-      continue;
+    const w = words[k];
+    if (operandsOnly || !w.startsWith('-') || w === '-') { operands.push(w); continue; }
+    if (w === '--') { operandsOnly = true; continue; }
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=');
+      const name = eq < 0 ? w.slice(2) : w.slice(2, eq);
+      const value = eq < 0 ? undefined : w.slice(eq + 1);
+      if (spec.longText.includes(name)) { textGiven = true; if (value === undefined) k++; continue; }   // the text itself
+      if (spec.longFile.includes(name)) { textGiven = true; const v = value ?? words[++k]; if (v !== undefined) values.push(v); continue; }
+      if (spec.longValues.includes(name)) { const v = value ?? words[++k]; if (v !== undefined) values.push(v); continue; }
+      if (value === undefined && spec.longNoText?.includes(name)) { textGiven = true; continue; }
+      if (value === undefined && spec.longFlags.includes(name)) continue;
+      unknown = true; continue;
     }
     // A short cluster: the first letter that takes a value ends it.
-    for (let c = 1; c < a.length; c++) {
-      const letter = a[c];
-      if (letter === textShort) { textGiven = true; if (c === a.length - 1) k++; break; }   // -e TEXT / -eTEXT
-      if (letter === 'f') { textGiven = true; const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < words.length) out.push(words[++k]); break; }
-      if ((VALUE_LETTERS[cmd] ?? '').includes(letter)) { const v = a.slice(c + 1); if (v) out.push(v); else if (k + 1 < words.length) out.push(words[++k]); break; }
+    for (let c = 1; c < w.length; c++) {
+      const letter = w[c];
+      const rest = (): string | undefined => (c < w.length - 1 ? w.slice(c + 1) : words[++k]);
+      if (letter === spec.text) { textGiven = true; if (c === w.length - 1) k++; break; }   // -e TEXT / -eTEXT
+      if (letter === spec.file) { textGiven = true; const v = rest(); if (v !== undefined) values.push(v); break; }
+      if (spec.values.includes(letter)) { const v = rest(); if (v !== undefined) values.push(v); break; }
+      if (!spec.flags.includes(letter)) { unknown = true; break; }
     }
   }
-  return [...out, ...(textGiven ? operands : operands.slice(1))];
+  if (unknown) return [...words];   // an option not known exactly: every word may be a path
+  return [...values, ...(textGiven ? operands : operands.slice(1))];
+}
+
+/** Readers that always walk a folder, and the option forms that make the others walk one. */
+const ALWAYS_RECURSIVE: ReadonlySet<string> = new Set(['rg', 'ag', 'ack', 'mv']);
+const RECURSIVE_SHORT: Readonly<Record<string, string>> = { grep: 'rR', egrep: 'rR', fgrep: 'rR', cp: 'rRa', scp: 'r', rsync: 'ra' };
+const RECURSIVE_LONG: ReadonlySet<string> = new Set(['recursive', 'dereference-recursive', 'archive']);
+
+/**
+ * Does this reader walk the folders it is given (re-review 6)? A recursive read of a folder reads
+ * every file under it, so a folder that holds a sensitive location is refused for it. A long option
+ * the scan does not know, a prefix like `--recur` included, counts as recursive.
+ */
+function readsRecursively(cmd: string, words: readonly string[]): boolean {
+  if (ALWAYS_RECURSIVE.has(cmd)) return true;
+  const letters = RECURSIVE_SHORT[cmd];
+  if (letters === undefined) return false;
+  const spec = READER_OPTIONS[cmd];
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    if (w === '--') break;
+    if (!w.startsWith('-') || w === '-') continue;
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=');
+      const name = eq < 0 ? w.slice(2) : w.slice(2, eq);
+      if (RECURSIVE_LONG.has(name)) return true;
+      if (name === 'directories' && (eq < 0 ? words[k + 1] : w.slice(eq + 1)) === 'recurse') return true;
+      if (!spec || ![...spec.longFlags, ...spec.longValues, ...spec.longText, ...spec.longFile].includes(name)) return true;
+      continue;
+    }
+    for (let c = 1; c < w.length; c++) {
+      if (letters.includes(w[c])) return true;
+      if (spec && spec.values.includes(w[c]) && w[c] === 'd' && (c < w.length - 1 ? w.slice(c + 1) : words[k + 1]) === 'recurse') return true;
+      if (spec && (spec.values.includes(w[c]) || w[c] === spec.text || w[c] === spec.file)) break;
+    }
+  }
+  return false;
+}
+
+/** Copy-style readers whose LAST operand is the destination: written, not read. */
+const WRITES_TO_LAST: ReadonlySet<string> = new Set(['cp', 'mv', 'rsync', 'scp']);
+
+/** The sensitive read one reader's words make, or null: a file on the sensitive list, or, for a
+ *  recursive reader, a folder that is or holds a fixed sensitive location (not a copy's destination). */
+function readerReadsSensitive(cmd: string, words: readonly string[]): { blocked: true; reason: string } | null {
+  const files = fileOperands(cmd, words);
+  const recursive = readsRecursively(cmd, words);
+  const destination = WRITES_TO_LAST.has(cmd) && files.length > 1 ? files.length - 1 : -1;
+  for (let k = 0; k < files.length; k++) {
+    const word = files[k];
+    const expanded = resolvePath(word);
+    const abs = path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
+    if (isSensitivePath(abs)) return { blocked: true, reason: `path "${word}" is on the sensitive-files block list` };
+    if (recursive && k !== destination && containsSensitiveLocation(abs)) {
+      return { blocked: true, reason: `path "${word}" is, or holds, a folder on the sensitive-files block list` };
+    }
+  }
+  return null;
 }
 
 /**
@@ -248,12 +343,8 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
       if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
       operands.push(arg);
     }
-    for (const arg of fileOperands(cmd, operands)) {
-      const expanded = resolvePath(arg);
-      if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
-        return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
-      }
-    }
+    const found = readerReadsSensitive(cmd, operands);
+    if (found) return found;
   }
   return { blocked: false };
 }
@@ -406,12 +497,8 @@ export function argvReadsSensitiveFile(argv: readonly string[]): { blocked: true
   for (let i = 0; i < argv.length; i++) {
     const cmd = path.basename(argv[i]);
     if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
-    for (const arg of fileOperands(cmd, argv.slice(i + 1))) {
-      const expanded = resolvePath(arg);
-      if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
-        return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
-      }
-    }
+    const found = readerReadsSensitive(cmd, argv.slice(i + 1));
+    if (found) return found;
   }
   return { blocked: false };
 }
