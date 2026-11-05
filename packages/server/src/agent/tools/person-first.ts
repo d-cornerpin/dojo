@@ -29,6 +29,8 @@ import { recordHandOff, endHandOff } from '../background-commands.js';
 import { getTurnScopedImRecipient } from '../../services/imessage-bridge.js';
 import { tellAgentAndWake, requesterReachSentence } from '../wake-with-notice.js';
 import type { PersonFirst } from './process-run.js';
+import { getCurrentToolCallId } from '../turn-state.js';
+import { noteHandedBack } from '../../work/handed-back-calls.js';
 
 /** The newest message row of the whole store: what "after the command started" is measured against. */
 export function newestMessageSeq(): number {
@@ -59,6 +61,10 @@ export function personFirstFor(agentId: string, what: string): PersonFirst {
       // Re-review 4 (LOW): all of this happens BEFORE anything is awaited, so no teardown can reach the
       // child between the hand-back and its move to the background, and the asker is the live turn's.
       const askedOnIMessage = getTurnScopedImRecipient(agentId);
+      // Re-review 4 (N4): mark the CALL as handed back, with its final outcome, so the task ledger writes
+      // "still running" now and the real exit status when the command ends (`work/handed-back-calls.ts`).
+      const callId = getCurrentToolCallId(agentId);
+      if (callId) noteHandedBack(callId, outcome);
       const recordId = pid !== undefined && handToBackground(agentId, pid, what)
         ? recordHandOff({ agentId, pid, what, startedAt: Date.now() })
         : null;

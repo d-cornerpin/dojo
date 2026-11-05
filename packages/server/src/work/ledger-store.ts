@@ -21,6 +21,7 @@ export { ledgerTotals, ledgerWorkEntries, type LedgerWorkEntry } from './ledger-
 import type { ToolEffect } from '../agent/tools/types.js';
 import { appliedKeysOf } from '../google/gmail-label.js';
 import { appendWorkEvent } from './store.js';
+import { takeHandedBack } from './handed-back-calls.js';
 import type { WorkEventKind } from './event-kinds.js';
 import type { Measure, MeasureCount } from './measure.js';
 
@@ -46,6 +47,18 @@ export function recordTouched(workId: string, tool: string, keys: string[], at: 
 function exitStatusOf(content: string): string {
   const m = /^command_failed: ([^\n]+)/.exec(content);
   return m ? m[1].trim() : 'exit 0';
+}
+
+/** A command's ledger status while it runs in the background (re-review 4, N4). */
+export const STILL_RUNNING = 'still running';
+
+/** A backgrounded command ended: its rows, written "still running" at `at`, take the real status. A row
+ *  re-touched since (the same command run again) keeps its newer status. */
+function settleBackgroundCommand(workId: string, keys: string[], at: number, status: string): void {
+  try {
+    const stmt = getDb().prepare('UPDATE work_ledger SET detail = ? WHERE work_id = ? AND item_key = ? AND detail = ? AND last_at = ?');
+    for (const k of keys) stmt.run(status, workId, k, STILL_RUNNING, at);
+  } catch { /* the store is gone (shutdown): the row stays "still running", which is honest */ }
 }
 
 /** One of THIS round's tool results, as the executor hands them to the count (`turnToolResults`). */
@@ -89,7 +102,16 @@ export function recordCallsTouched(
       if (items.length > 0) recordTouched(workId, tc.name, items);
       if (commands.length > 0) {
         const r = roundResults.find((x) => x.toolCallId === tc.id);
-        recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(r?.keptWhole ?? r?.content ?? '')));
+        const bg = takeHandedBack(tc.id);
+        if (bg && bg.final === null) {
+          // Re-review 4 (N4): handed to the background. Its result is not in this round, so the row says
+          // so, and is updated with the real exit status when the command ends.
+          const at = Date.now();
+          recordTouched(workId, tc.name, commands, at, STILL_RUNNING);
+          void bg.outcome.then((text) => settleBackgroundCommand(workId, commands, at, safe(exitStatusOf(text))), () => {});
+        } else {
+          recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(bg ? bg.final ?? '' : (r?.keptWhole ?? r?.content ?? ''))));
+        }
       }
       // Audit #5: a successful send to a person is one delivery on the ledger, keyed by its call,
       // with the recipient(s) its arguments name (redacted like every other entry).
