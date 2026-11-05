@@ -159,7 +159,9 @@ describe('a failed import restarts what it stopped', () => {
     expect(fs.existsSync(path.join(LIVE_DIR, 'live.txt'))).toBe(false); // the imported tree stays
   });
 
-  it('the put-back fails: nothing is restarted, the backup stays put, the error names its exact path', async () => {
+  // Final round (owner rule: the Dojo does the work). A put-back whose rename is refused is done by COPY instead, and
+  // the Dojo restarts; only when both are refused does the backup stay put (and nothing restarts onto the wrong tree).
+  it('the put-back rename is refused: the Dojo copies the data back, restarts, and leaves no stray backup', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
     migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
     const real = fs.renameSync;
@@ -168,23 +170,60 @@ describe('a failed import restarts what it stopped', () => {
       return real(from, to);
     }) as typeof fs.renameSync);
     const restart = vi.fn(async () => {});
+    const resumed = vi.fn();
+    await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart, undefined, resumed)).rejects.toThrow('migrate boom');
+    spy.mockRestore();
+    expect(fs.readFileSync(path.join(LIVE_DIR, 'live.txt'), 'utf-8')).toBe('live');
+    expect(restart).toHaveBeenCalledTimes(1);
+    expect(resumed, 'the agents it stopped are brought back').toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(PARENT).filter((f) => f.startsWith('.dojo-backup-'))).toEqual([]);
+    expect(importOwnerCards()).toEqual([]);
+  });
+
+  it('rename and copy both refused: nothing is restarted, the backup stays put, the error names its exact path', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+    const real = fs.renameSync;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === LIVE_DIR && String(from).includes('.dojo-backup-')) throw new Error('rename denied');
+      return real(from, to);
+    }) as typeof fs.renameSync);
+    const cp = vi.spyOn(fs, 'cpSync').mockImplementation((() => { throw new Error('copy denied'); }) as typeof fs.cpSync);
+    const restart = vi.fn(async () => {});
+    const resumed = vi.fn();
     let caught: Error | null = null;
-    try { await performImport(ZIP_PATH, 'pw', async () => {}, restart); } catch (e) { caught = e as Error; } finally { spy.mockRestore(); }
+    try { await performImport(ZIP_PATH, 'pw', async () => {}, restart, undefined, resumed); } catch (e) { caught = e as Error; } finally { spy.mockRestore(); cp.mockRestore(); }
     expect(caught?.message).toContain('migrate boom');
     const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
     expect(backup).toBeTruthy();
     expect(caught?.message).toContain(path.join(PARENT, backup));
     expect(fs.readFileSync(path.join(PARENT, backup, 'live.txt'), 'utf-8')).toBe('live');
     expect(restart).not.toHaveBeenCalled();
+    expect(resumed).not.toHaveBeenCalled();
     expect(fs.existsSync(LIVE_DIR)).toBe(true); // ~/.dojo never vanishes
+  });
+
+  it('the cards state the fact only: no move, no restart, no menu bar', async () => {
+    const { backupStuckWords } = await import('../import-recovery.js');
+    const restartWords = await (async () => {
+      await buildZip(...(await encryptPayloadForTest('pw')));
+      migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+      try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => { throw new Error('restart boom'); }); } catch { /* expected */ }
+      return importOwnerCards()[0]?.words ?? '';
+    })();
+    for (const words of [backupStuckWords('/tmp/example-backup'), restartWords]) {
+      expect(words.length).toBeGreaterThan(0);
+      expect(words).not.toMatch(/\bmove\b|\brestart Dojo\b|menu bar|\bthen\b/i);
+      expect(words).not.toContain('\u2014');
+    }
   });
 
   it('a restart that fails raises an owner card, which stands and is named in the error', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
     migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
     const restart = vi.fn(async () => { throw new Error('restart boom'); });
-    await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow(/migrate boom.*could not restart itself/);
-    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining('could not restart itself'), 'error', 'import-failed-not-running', 'action');
+    await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow(/migrate boom.*could not start its services again/);
+    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining('could not start its services again'), 'error', 'import-failed-not-running', 'action');
     expect(importOwnerCards()).toHaveLength(1);
   });
 
@@ -196,7 +235,8 @@ describe('a failed import restarts what it stopped', () => {
       if (String(to) === LIVE_DIR && String(from).includes('.dojo-backup-')) throw new Error('rename denied');
       return real(from, to);
     }) as typeof fs.renameSync);
-    try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); }
+    const cp = vi.spyOn(fs, 'cpSync').mockImplementation((() => { throw new Error('copy denied'); }) as typeof fs.cpSync);
+    try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); cp.mockRestore(); }
     const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
     expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining(path.join(PARENT, backup)), 'error', 'import-failed-not-running', 'action');
     expect(importOwnerCards()[0].words).toContain(path.join(PARENT, backup));
@@ -222,7 +262,8 @@ describe('a failed import restarts what it stopped', () => {
       if (String(to) === LIVE_DIR && String(from).includes('.dojo-backup-')) throw new Error('rename denied');
       return real(from, to);
     }) as typeof fs.renameSync);
-    try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); }
+    const cp = vi.spyOn(fs, 'cpSync').mockImplementation((() => { throw new Error('copy denied'); }) as typeof fs.cpSync);
+    try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); cp.mockRestore(); }
     expect(fs.existsSync(MARKER)).toBe(true);
     const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
     // a restart forgets memory: ask the card source with a cleared memory by dismissing only the live copy

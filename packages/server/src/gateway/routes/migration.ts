@@ -16,8 +16,8 @@ import { ImportAlreadyRunningError } from '../../migration/import-safety.js';
 import { bindImportCardMarker } from '../../migration/import-recovery.js';
 import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
-import { terminateAgent } from '../../agent/spawner.js';
-import { getDb, closeDb } from '../../db/connection.js';
+import { stopAgentRunsForImport, resumeAgentsAfterFailedImport } from '../../migration/import-agents.js';
+import { closeDb } from '../../db/connection.js';
 import { reopenDatabaseAfterImport } from '../../migration/after-import.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
 import { broadcast } from '../ws.js';
@@ -190,15 +190,11 @@ migrationRouter.post('/import', async (c) => {
       jwtSecret: getJwtSecret(),
     };
 
+    // Final round: the runs in flight are STOPPED (the database closes for the swap), never terminated, and a failed
+    // import brings them back (`migration/import-agents.ts`).
+    let stoppedForImport: string[] = [];
     const stopServices = async () => {
-      // Terminate all running agents
-      try {
-        const db = getDb();
-        const running = db.prepare("SELECT id FROM agents WHERE status IN ('idle', 'working')").all() as Array<{ id: string }>;
-        for (const agent of running) {
-          try { terminateAgent(agent.id, 'migration-import'); } catch { /* ignore */ }
-        }
-      } catch { /* DB may be fresh/empty during OOBE */ }
+      stoppedForImport = stopAgentRunsForImport();
     };
 
     const restartServices = async () => {
@@ -206,7 +202,7 @@ migrationRouter.post('/import', async (c) => {
       await reopenDatabaseAfterImport();
     };
 
-    const { manifest, checks } = await performImport(tmpPath, password, stopServices, restartServices, currentAuth);
+    const { manifest, checks } = await performImport(tmpPath, password, stopServices, restartServices, currentAuth, () => resumeAgentsAfterFailedImport(stoppedForImport));
 
     return c.json({ ok: true, data: { manifest, checks } });
   } catch (err) {

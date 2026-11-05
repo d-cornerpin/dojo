@@ -37,7 +37,9 @@ function stuckFromMarker(): { words: string; backupPath: string } | null {
 
 function raiseImportCard(words: string): void {
   standing = words;
-  ownerCardFrame(words, 'error', CARD_KEY, 'action');   // he restarts the Dojo from the menu bar
+  // Final round: the card states the fact only (owner rule: the Dojo does the work). It stays until a good import or
+  // restart ends it, because the Dojo is not running on his data while it stands.
+  ownerCardFrame(words, 'error', CARD_KEY, 'action');
 }
 
 /** An import (or a restart) succeeded: the card leaves every open dashboard. */
@@ -56,12 +58,13 @@ export function importOwnerCards(): Array<{ words: string; severity: 'critical';
   return words === null ? [] : [{ words, severity: 'critical', cardKey: CARD_KEY, dismiss: () => { standing = null; dropMarker(); } }];
 }
 
-/** The owner-facing sentence when the old data could not be put back. The path is exact. */
+/** The owner-facing sentence when the old data could not be put back (rename and copy both refused). The path is
+ *  exact. Final round: a fact, no chore. */
 export function backupStuckWords(backupPath: string): string {
-  return `The import did not finish and your previous data could not be put back automatically, so Dojo was not restarted. Your data is safe at ${backupPath}. Move it back to .dojo, then restart Dojo from the menu bar.`;
+  return `The import did not finish, and Dojo could not put your previous data back by itself, so it did not start again on the imported data. Your data is safe at ${backupPath}.`;
 }
 
-const RESTART_FAILED_WORDS = 'The import did not finish and Dojo could not restart itself. Your data is safe. Restart Dojo from the menu bar.';
+const RESTART_FAILED_WORDS = 'The import did not finish, and Dojo could not start its services again by itself. Your data is safe.';
 
 /** The data could not be put back: say so on the dashboard. */
 export function noteBackupStuck(backupPath: string): string {

@@ -42,6 +42,13 @@ restart_services() {
   local svc down=""
   for svc in platform watchdog; do
     launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null
+  done
+  # Final round (owner rule: the Dojo does the work): a service that did not load is started with Dojo's own start
+  # script before anything is said; only what is still down after that is reported, as a fact.
+  if { ! service_loaded platform || ! service_loaded watchdog; } && [ -f "$DOJO_DIR/scripts/start.sh" ]; then
+    bash "$DOJO_DIR/scripts/start.sh" >/dev/null 2>&1 || true
+  fi
+  for svc in platform watchdog; do
     service_loaded "$svc" || down="${down:+$down and }the $svc"
   done
   if [ -n "$down" ]; then

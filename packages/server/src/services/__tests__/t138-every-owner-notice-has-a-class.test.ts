@@ -308,7 +308,7 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
     { cls: 'action', what: 'a Microsoft account connection expired', why: 'he signs in again (OR-AUDIT-ANSWERS (d): a card, no longer a text)' },
   ],
   'migration/import-recovery.ts': [
-    { cls: 'action', what: 'an import failed and stopped what it stopped', why: 'he restarts the Dojo from the menu bar' },
+    { cls: 'action', what: 'an import failed and the Dojo could not put his data back or start again by itself', why: 'final round: a fact, no chore; it stands while the Dojo is not running on his data (a good import or restart ends it)' },
   ],
   'services/imessage-bridge.ts': [
     { cls: 'action', what: 'every critical or notice text the platform sends him (the sendAlert census above)', why: 'by ruling, the phone door carries true blockers only' },
