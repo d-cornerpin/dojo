@@ -35,6 +35,7 @@ import { decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer
 import { askReplyClaims, commitmentClaimFor, replyClaim, SAVE_CLAIM_RE } from '../../reply-claims.js';   // v3.5 C1: one decision call per reply
 import { tsToMs } from '../../../../work/tracker-view.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
+import { holdAndSteer } from './closeout-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
 
@@ -363,11 +364,20 @@ export async function runReplyFloors(
           "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND content NOT LIKE '[{%' ORDER BY rowid DESC LIMIT 5",
         )
         .all(agentId) as Array<{ content: string }>;
-      if (recentReplies.some(r => isNearDuplicateText(r.content, persistedContent!))) {
-        logger.info('v2: suppressed cross-turn near-duplicate reply (respond-once)', {
-          turnNumber,
-        }, agentId);
-        persistedContent = null;
+      const match = recentReplies.find(r => isNearDuplicateText(r.content, persistedContent!));
+      if (match) {
+        // Field fix 3 audit round (#11): was a silent null. The agent is told which sent reply this
+        // matches, and decides; written again, it goes out.
+        const prev = match.content.replace(/\s+/g, ' ').trim();
+        const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc }, {
+          floor: 'near-duplicate-reply', text: persistedContent,
+          steer: `[Engine record: your reply matches one you already sent: "${prev.length > 120 ? `${prev.slice(0, 120)}…` : prev}". `
+            + 'It has not been sent; written as your final reply again, it is sent again. A final reply of [no-reply] sends nothing.]',
+        });
+        if (held) {
+          logger.info('v2: held a cross-turn near-duplicate reply and told the agent (field fix 3 #11)', { turnNumber }, agentId);
+          return held;
+        }
       }
     } catch {
       // best-effort; never block a reply on a dedup read failure

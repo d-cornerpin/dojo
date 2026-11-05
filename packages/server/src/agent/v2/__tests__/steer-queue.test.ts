@@ -170,7 +170,12 @@ describe('the declared precedence table', () => {
     // proof-fix-f ADDS the 30th, NEW BEHAVIOUR (review B1/M1): `handed-back-ask` gives the turn that
     // serves a message a dead run handed back what that run already did and may already have sent,
     // whole and in that conversation only — it used to be a 400-char events-lane gist every turn saw.
-    expect(STEER_PRECEDENCE.length).toBe(30);
+    // FIELD FIX 3 AUDIT ROUND (#11) ADDS 31-33: `redundant-closeout`, `near-duplicate-reply` and
+    // `prose-decline`, the three floors that used to NULL the agent's reply and now steer it once.
+    expect(STEER_PRECEDENCE.length).toBe(33);
+    for (const id of ['redundant-closeout', 'near-duplicate-reply', 'prose-decline']) {
+      expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
+    }
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'handed-back-ask').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'output-grind').length).toBe(1);
     // THE ARM C FLOOR (2026-09-26): an agent asserted "submitted!" in the same turn its report
