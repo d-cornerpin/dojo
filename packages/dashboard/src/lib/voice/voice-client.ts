@@ -345,7 +345,7 @@ export class VoiceClient {
     // with an opaque NotAllowedError. iOS Safari + Chrome both require HTTPS
     // (or localhost) for mic access.
     if (typeof window !== 'undefined' && !window.isSecureContext) {
-      this.fail('insecure_context', new Error('Voice mode needs HTTPS — open this site via the tunnel URL.'));
+      this.fail('insecure_context', new Error('Voice mode needs HTTPS, open this site via the tunnel URL.'));
       return;
     }
 

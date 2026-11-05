@@ -104,7 +104,7 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   // (t167): when THIS text said it, the honest stop that parks an agent in the same window has
   // nothing to add (agent/v2/honest-stop.ts shares the record; this card is already the card).
   if (currentSpend >= limitUsd) tellLimitReachedWithoutCard(budgetStopKey(b.budgetId), windowOf(b.period).seconds * 1000);
-  void sendAlert(words, 'notice');
+  void sendAlert(words, 'notice', { kind: 'budget' });
 }
 
 // ── Post-Cost Alert Check ──

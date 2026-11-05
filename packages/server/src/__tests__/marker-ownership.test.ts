@@ -65,13 +65,8 @@ const MARKERS: Marker[] = [
     exports: ['NO_REPLY_CLOSED_MARKER', 'isNoReplyClosedMarker'],
     // Both spellings. The comma form is the defect T8 closed; it must never come back either.
     pattern: /Agent ended turn without replying\s*[,—]/,
-    allow: {
-      'dashboard/src/pages/Chat.tsx':
-        'the render chain still compares the literal inline (:1811 comment, :1813 test). ' +
-        'SWEEP-E owns the client half of the marker leak (17 §C4/§C5) and re-points it to ' +
-        'NO_REPLY_CLOSED_MARKER; T8 owns the write half and is not permitted to change what ' +
-        'the owner sees.',
-    },
+    // v3.5 field fix 3: the dashboard's inline copy is re-pointed to NO_REPLY_CLOSED_MARKER (the em-dash sweep found it).
+    allow: {},
   },
   {
     name: 'the [no-reply] sentinel regex',

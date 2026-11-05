@@ -80,6 +80,6 @@ export async function tellOwnerNoPickHolds(args: {
       message: { id, agentId, role: 'system', content: said, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
     });
   } catch { /* the notice below still reaches the owner */ }
-  broadcast({ type: 'chat:error', agentId, error: said, code: 'NO_MODEL', severity: stopOnly ? 'warning' : 'error', retryable: stopOnly });
+  broadcast({ type: 'chat:error', agentId, error: said, code: 'NO_MODEL', severity: stopOnly ? 'warning' : 'error', cardClass: stopOnly ? 'informational' : 'action', retryable: stopOnly });
   return said;
 }

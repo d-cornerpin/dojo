@@ -628,10 +628,16 @@ export function contextWindowPolicy(
 ): ContextWindowPolicy {
   const cw = clampWindow(contextWindow);
   const reserve = Math.max(0, toolAndOutputReserve(measured));
+  // v3.5 field fix 3 (#11, review round L3): two bounds, each with ITS OWN reserve. The WINDOW holds the tools, the
+  // output and the assembly, so the whole reserve comes off it. The prefill CEILING bounds what the box must prefill:
+  // the tools are prefilled (they sit inside it, and the old code let them overflow it), the output is not (it never
+  // passes through prefill), so only the tool payload comes off the ceiling's planned half. On a 200K window with a
+  // 17,502-token tool payload and a 102,600 ceiling: 51,300 - 17,502 = 33,798 (it was 51,300, the tools unbudgeted).
   const windowBudget = Math.max(0, Math.floor(CONTEXT_THRESHOLD * cw) - reserve);
   const { providerCeilingTokens } = measured;
+  const inputReserve = Math.max(0, Math.ceil(measured.toolPayloadTokens || 0));
   const assemblyBudgetTokens = providerCeilingTokens != null
-    ? Math.max(0, providerAwareBudgetTokens(windowBudget, providerCeilingTokens))
+    ? Math.max(0, Math.min(windowBudget, providerAwareBudgetTokens(Number.POSITIVE_INFINITY, providerCeilingTokens) - inputReserve))
     : windowBudget;
   return {
     contextWindow: cw,

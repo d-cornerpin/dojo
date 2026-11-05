@@ -23,7 +23,7 @@ vi.mock('../../db/connection.js', () => ({
   },
   getDbPath: () => ':memory:',
 }));
-const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; error?: string; severity?: string }> }));
+const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; error?: string; severity?: string; cardClass?: string }> }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { type?: string }) => { frames.list.push(f); }, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -127,14 +127,14 @@ describe('the arithmetic (figures for the owner)', () => {
     expect(await refuseUnfitLocalModel('m-9b')).toBe(v!.message);
   });
 
-  it('32 GB: each agent\'s own model writing summaries, the 9B fits at 32K; with the writer as the Summarization pick only the 2B does', async () => {
+  it('32 GB: each agent\'s own model writing summaries, the 9B fits at 32K; with an agent whose own model is the writer only the 2B does', async () => {
     totalRam = 32 * GIB;
     const open = await openOn(32 * GIB);
     const v9 = await localModelFit('m-9b');
     const v2 = await localModelFit('m-2b');
     expect(v9!.openBytes).toBe(open);
     expect(v9!.fits).toBe(true);   // t268 fix round 1 (I-2, edited: it was refused while the summary room was always reserved)
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+    db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-writer', 'Writer', 'm-writer', 'idle', '{}')").run();   // v3.5 field fix 3: no Settings pick; an agent whose own model is the writer assigns its summaries to it
     expect((await localModelFit('m-9b'))!.fits).toBe(false);
     expect(v2!.fits).toBe(true);
     expect(v2!.needBytes).toBe(2_700_000_000 + kvPerToken(28) * AT_32K);
@@ -209,19 +209,23 @@ describe('RULING: what Ollama cannot size now is allowed, told, and judged at it
     + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
   const inUse = (modelId: string): void => { db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_model', ?)").run(modelId); };
 
-  it('Ollama down: allowed, and the owner is told once on the persistent owner card', async () => {
+  // v3.5 field fix 3 (#9, OR-FIELD3 (c)): the fit is checked at the first load by itself, so the owner is told once on an
+  // INFORMATIONAL card (a toast that leaves by itself, never red), and a reload does not re-derive it (it was N2's lasting card).
+  it('Ollama down: allowed, and the owner is told once on an informational card', async () => {
     ollama.up = false;
     expect(await refuseUnfitLocalModel('m-9b')).toBeNull();
     expect(await refuseUnfitLocalModel('m-9b')).toBeNull();
     expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('qwen3.5:9b')]);
+    expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
     inUse('m-9b');
-    expect(healerOwnerCards().map((c) => c.words)).toContain(WORDS('qwen3.5:9b'));   // N2: survives a reload
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
   });
 
   it('not downloaded yet: allowed the same way', async () => {
     expect(await refuseUnfitLocalModel('m-unlisted')).toBeNull();
     inUse('m-unlisted');
-    expect(healerOwnerCards().map((c) => c.words)).toContain(WORDS('not-pulled:3b'));
+    expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('not-pulled:3b')]);
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('not-pulled:3b'));
   });
 
   it('N7: a pick the door then refuses (the 32K floor) is neither marked nor told', async () => {
@@ -281,12 +285,12 @@ describe('the doors answer with the sentence (no new UX: the 400 message is the 
     expect((await put('/router/tiers/light/models', { models: [{ modelId: 'm-9b', priority: 0 }, { modelId: 'm-cloud', priority: 1 }] })).status).toBe(200);
   });
 
-  it('service-agent, summary-writer, voice-opener and vision-fallback settings refuse it too', async () => {
-    for (const key of ['healer_model_id', 'compaction_model_id', 'voice.opener_model', 'dojo_fallback_vision_model_id']) {
+  // v3.5 field fix 3 (owner ruling): there is no summary-writer setting, so it is no longer one of these doors.
+  it('service-agent, voice-opener and vision-fallback settings refuse it too', async () => {
+    for (const key of ['healer_model_id', 'voice.opener_model', 'dojo_fallback_vision_model_id']) {
       expect((await put(`/config/settings/${key}`, { value: 'm-9b' })).status, key).toBe(400);
     }
     expect((await put('/config/settings/voice.opener_model', { value: 'off' })).status).toBe(200);
-    expect((await put('/config/settings/compaction_model_id', { value: 'm-cloud' })).status).toBe(200);
   });
 
   it('the router\'s model list offers no decision model', async () => {
@@ -368,10 +372,9 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
     db().prepare("UPDATE agents SET model_id = 'm-writer' WHERE id = 'ag-auto'").run();
     expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
-    // An explicit pick of another model takes every agent's summaries off the writer.
-    db().prepare("UPDATE agents SET model_id = 'auto' WHERE id = 'ag-auto'").run();
+    // v3.5 field fix 3: an old Summarization pick row is read by nothing; the agent on the writer still assigns it.
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-cloud')").run();
-    expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
+    expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
   });
 
   // Fix round 4 (N-E): an auto-routed agent's summaries walk its router's standard-tier chain, so the writer placed in
@@ -387,8 +390,8 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     expect(await writerReservedWindowTokens(null), 'the system tier (titles, openers) is not a tier a summary walks').toBe(MIN_UTILITY_NUM_CTX);
   });
 
-  it('the explicit Summarization pick: its summary job\'s window', async () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+  it('an agent whose own model is the writer: its summary job\'s window', async () => {
+    db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-writer', 'Writer', 'm-writer', 'idle', '{}')").run();   // v3.5 field fix 3: no Settings pick; an agent whose own model is the writer assigns its summaries to it
     expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
   });
 
@@ -396,7 +399,7 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     totalRam = 32 * GIB;
     const open = await openOn(32 * GIB);
     expect((await localModelFit('m-2b'))!.openBytes).toBe(open);
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+    db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-writer', 'Writer', 'm-writer', 'idle', '{}')").run();   // v3.5 field fix 3: no Settings pick; an agent whose own model is the writer assigns its summaries to it
     expect(open - (await localModelFit('m-2b'))!.openBytes).toBe(kvPerToken(36) * (await writerJobWindowTokens(null) - MIN_UTILITY_NUM_CTX));
   });
 });

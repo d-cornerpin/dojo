@@ -2098,8 +2098,21 @@ const ownerNoticeLog = createLogger('owner-notice');
  * escalation ladder does not raise the same row with him again. The id is data the caller holds,
  * never read from the words.
  */
-export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string } = {}): Promise<void> {
+/**
+ * OR-AUDIT-ANSWERS (d), owner ruling: the Dojo's own texts to the owner are exactly these. Offline and back online
+ * (an update that failed included) and a failed database integrity check are the watchdog's (watchdog/src/index.ts);
+ * the server's door carries the rest, and every caller names which one, so a text outside the set does not type-check
+ * and is refused here. Re-review 2 S8 (owner): the new remote dashboard address is allowed too.
+ */
+export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical', 'remote-address'] as const;
+export type PlatformTextKind = typeof PLATFORM_TEXT_KINDS[number];
+
+export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string }): Promise<void> {
   try {
+    if (!(PLATFORM_TEXT_KINDS as readonly string[]).includes(opts.kind)) {
+      logger.warn('Alert refused: not one of the owner\'s platform texts', { kind: opts.kind });
+      return;
+    }
     const scrubbed = scrubTechnicalDetail(message);
 
     if (urgency !== 'critical' && urgency !== 'notice') {
@@ -2117,7 +2130,7 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
     // A status line and an all-clear raise none BY DESIGN (R-V333-13); the record below says which.
     const card = opts.clears !== undefined || opts.card === false ? 'none_by_design' : 'raised';
     if (opts.clears !== undefined) ownerCardEnded(opts.clears);
-    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning', opts.cardKey);
+    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning', opts.cardKey, 'action');   // by ruling, true blockers only
 
     const recipient = getDefaultSender();
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a

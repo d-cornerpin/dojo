@@ -82,8 +82,8 @@ export interface ChildRunFailure {
 export interface IdleBoundOptions {
   /** Milliseconds of SILENCE tolerated. Re-arms on every chunk from either stream. */
   idleMs: number;
-  /** The one bound on TOTAL life. Does not re-arm. */
-  ceilingMs: number;
+  /** The one bound on TOTAL life. Does not re-arm. Absent: no total bound (an agent's own command, audit #14). */
+  ceilingMs?: number;
   /** Combined stdout+stderr characters HELD; defaults to `CHILD_KEEP_CEILING_CHARS`. Never a kill. */
   keepCeilingChars?: number;
 }
@@ -120,7 +120,7 @@ export async function attachIdleBound(
       if (settled) return;
       settled = true;
       if (idleTimer) clearTimeout(idleTimer);
-      clearTimeout(ceilingTimer);
+      if (ceilingTimer) clearTimeout(ceilingTimer);
       fn();
     };
 
@@ -141,8 +141,8 @@ export async function attachIdleBound(
       idleTimer.unref?.();
     };
 
-    const ceilingTimer = setTimeout(() => kill('ceiling'), opts.ceilingMs);
-    ceilingTimer.unref?.();
+    const ceilingTimer = opts.ceilingMs !== undefined ? setTimeout(() => kill('ceiling'), opts.ceilingMs) : null;
+    ceilingTimer?.unref?.();
 
     const take = (which: 'out' | 'err') => (chunk: Buffer | string): void => {
       const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
@@ -174,7 +174,7 @@ export async function attachIdleBound(
             code: code ?? undefined,
             message: killedBy === 'idle'
               ? `no output for ${Math.round(opts.idleMs / 1000)}s`
-              : `ran past the ${Math.round(opts.ceilingMs / 60000)}-minute ceiling`,
+              : `ran past the ${Math.round((opts.ceilingMs ?? 0) / 60000)}-minute ceiling`,
           } satisfies ChildRunFailure);
           return;
         }

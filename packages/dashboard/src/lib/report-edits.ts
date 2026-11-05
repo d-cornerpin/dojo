@@ -45,7 +45,7 @@ export function briefEditsFor(original: BriefFields, edited: BriefFields): Brief
  */
 export function briefIsPostable(b: BriefFields): { ok: true } | { ok: false; reason: string } {
   for (const key of BRIEF_KEYS) {
-    if (b[key].trim() === '') return { ok: false, reason: `\`${key}\` is empty — fill it in or cancel.` };
+    if (b[key].trim() === '') return { ok: false, reason: `\`${key}\` is empty, fill it in or cancel.` };
   }
   return { ok: true };
 }
@@ -65,7 +65,7 @@ export interface DuplicateMatch { number: number; url: string; title: string }
 export function duplicateQuestion(match: DuplicateMatch): string {
   const title = match.title.trim();
   const named = title === '' ? `issue #${match.number}` : `#${match.number} “${title}”`;
-  return `Someone has already reported this — ${named}. Add your details to that issue instead, `
+  return `Someone has already reported this, ${named}. Add your details to that issue instead, `
     + 'or post a separate one?';
 }
 

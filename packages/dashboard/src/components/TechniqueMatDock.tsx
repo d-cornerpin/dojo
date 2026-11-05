@@ -54,7 +54,7 @@ export function TechniqueMatDock() {
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-ui/70">Technique Mat</h2>
           <div className="flex items-center gap-2">
-            <span className="glass-badge glass-badge-amber text-[10px]">Draft — not yet published</span>
+            <span className="glass-badge glass-badge-amber text-[10px]">Draft, not yet published</span>
             <button
               type="button"
               onClick={closeMat}

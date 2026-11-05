@@ -138,10 +138,11 @@ const door = (window: number): Promise<unknown> =>
   assembleWithNothingOutOfViewUnsummarised(AGENT, window, () => assembleContext(AGENT, ROOMY));
 
 describe('t149 F4 — a writer that cannot hold the input is never dialled', () => {
-  // t268 round 5 (edited: TINY was "the cheapest text model", a writer the round removed): TINY is the owner's pick.
-  it('the Settings writer has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
-    db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(DEAD, SMALL);   // the writers are TINY (the pick) and ROOMY
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(TINY);
+  // t268 round 5 (edited: TINY was "the cheapest text model", a writer the round removed). v3.5 field fix 3 (edited: TINY
+  // was the owner's Settings pick, a setting the owner ruled must not exist): TINY is the agent's own model.
+  it('the agent\'s own model has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(DEAD, SMALL);   // the writers are TINY (its own) and ROOMY
+    db().prepare('UPDATE agents SET model_id = ? WHERE id = ?').run(TINY, AGENT);
     seedACutTheTurnFolds();
     await door(32_000);
     expect(writers.calls.map((c) => c.modelId), 'the writer that can hold nothing was never asked').not.toContain(TINY);
@@ -149,13 +150,14 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
     expect(placeholders(), 'no note was left behind').toBe(0);
   });
 
-  it('a 16K Settings writer is handed only what it can hold: every dial fits its own budget, and every row is still summarised', async () => {
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(SMALL);
+  // v3.5 field fix 3 (edited: SMALL was the Settings pick): SMALL is the agent's own model (the enabled standard-tier pick).
+  it('a 16K own-model writer is handed only what it can hold: every dial fits its own budget, and every row is still summarised', async () => {
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run(DEAD);
     seedACutTheTurnFolds();
     await door(16_000);
     expect(writers.calls.length).toBeGreaterThan(0);
     for (const c of writers.calls) {
-      expect(c.modelId, 'the owner\'s Settings writer wrote').toBe(SMALL);
+      expect(c.modelId, 'the agent\'s own model wrote').toBe(SMALL);
       expect(estimateTokens(c.content), `a dial of ${estimateTokens(c.content)} tokens against a budget of ${budgetFor(c.modelId, c.systemPrompt)}`)
         .toBeLessThanOrEqual(budgetFor(c.modelId, c.systemPrompt));
     }
@@ -163,11 +165,11 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
   });
 });
 
-// Field fix Y round 3 (review F6): the large cut a 16K Settings writer must split is a catch-up now, so the
+// Field fix Y round 3 (review F6): the large cut a 16K writer must split is a catch-up now, so the
 // background folder must keep the same promise — every dial fits its own budget, and every row is summarised.
 describe('field fix Y — the background folder is held to the same writer capacity on a large cut', () => {
   it('the 24-turn cut at 16K: the turn dials nothing; the folder\'s every dial fits its writer\'s budget, and no note is left', async () => {
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(SMALL);
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run(DEAD);   // v3.5 field fix 3: SMALL is the agent's own model, not a pick
     seedALongCut();
     await door(16_000);
     expect(writers.calls, 'a catch-up: the turn dials no writer').toEqual([]);

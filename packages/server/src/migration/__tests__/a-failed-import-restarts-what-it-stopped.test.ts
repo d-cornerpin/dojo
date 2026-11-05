@@ -184,7 +184,7 @@ describe('a failed import restarts what it stopped', () => {
     migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
     const restart = vi.fn(async () => { throw new Error('restart boom'); });
     await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow(/migrate boom.*could not restart itself/);
-    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining('could not restart itself'), 'error', 'import-failed-not-running');
+    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining('could not restart itself'), 'error', 'import-failed-not-running', 'action');
     expect(importOwnerCards()).toHaveLength(1);
   });
 
@@ -198,7 +198,7 @@ describe('a failed import restarts what it stopped', () => {
     }) as typeof fs.renameSync);
     try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); }
     const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
-    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining(path.join(PARENT, backup)), 'error', 'import-failed-not-running');
+    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining(path.join(PARENT, backup)), 'error', 'import-failed-not-running', 'action');
     expect(importOwnerCards()[0].words).toContain(path.join(PARENT, backup));
   });
 

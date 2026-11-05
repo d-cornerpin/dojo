@@ -762,7 +762,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
             ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
           return c.json({
             ok: false,
-            error: `status change to "${statusUpdate}" was refused — ${detail}`,
+            error: `status change to "${statusUpdate}" was refused, ${detail}`,
             data: { taskId: id, refusedStatus: statusUpdate, otherUpdatesApplied: Object.keys(columnUpdates) },
           }, 409);
         }

@@ -413,7 +413,7 @@ export function Dojo3Composer({
       const result = await api.uploadFiles(agentId, pendingFiles.map((pf) => pf.file));
       setUploading(false);
       if (!result.ok) {
-        toastWarning(result.error || 'Upload failed — your files were not attached. Try again.');
+        toastWarning(result.error || 'Upload failed, your files were not attached. Try again.');
         return;
       }
       attachments = [...(attachments ?? []), ...result.data];
@@ -496,7 +496,7 @@ export function Dojo3Composer({
       // flow): mic access needs HTTPS or localhost, so on a plain http:// LAN
       // address it's blocked. A friendly notification beats a console error.
       if (typeof window !== 'undefined' && !window.isSecureContext) {
-        toastWarning('Voice needs a secure connection. Open the dojo over HTTPS or on localhost — the mic is blocked on this http:// address.');
+        toastWarning('Voice needs a secure connection. Open the dojo over HTTPS or on localhost, the mic is blocked on this http:// address.');
         return;
       }
       void voice.toggle();

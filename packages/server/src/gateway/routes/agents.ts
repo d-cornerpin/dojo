@@ -41,6 +41,13 @@ import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-mo
 import { noteSmallMainModelOnce } from '../../agent/main-model-notice.js';
 
 const logger = createLogger('agents-routes');
+
+/** Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo and I don't believe it can run effectively
+ *  without dreaming."): the main agent's dreaming cannot be switched off. Null when the change is allowed. */
+export function dreamerIgnoreRefusal(agentId: string, ignore: boolean): string | null {
+  return ignore && agentId === getPrimaryAgentId() ? 'The main agent always dreams: the Dreamer reads its conversations, and that cannot be switched off.' : null;
+}
+
 const agentsRouter = new Hono();
 
 // GET / - list all agents with detail
@@ -186,7 +193,7 @@ agentsRouter.post('/', async (c) => {
       // A REFUSAL, NOT A DOWNGRADE. 400 rather than 500: the caller sent
       // something the platform will not store, and the message names the field.
       logger.warn('Dashboard agent creation refused an invalid manifest', { reason: scope.reason });
-      return c.json({ ok: false, error: `Agent not created — ${scope.reason}` }, 400);
+      return c.json({ ok: false, error: `Agent not created, ${scope.reason}` }, 400);
     }
 
     // ── THE ACCESS GRANTS, THROUGH THE SAME RESOLVER, FROM THIS DOOR'S DEFAULT ──
@@ -214,7 +221,7 @@ agentsRouter.post('/', async (c) => {
     );
     if (!grantScope.ok) {
       logger.warn('Dashboard agent creation refused invalid grants', { reason: grantScope.reason });
-      return c.json({ ok: false, error: `Agent not created — ${grantScope.reason}` }, 400);
+      return c.json({ ok: false, error: `Agent not created, ${grantScope.reason}` }, 400);
     }
 
     const resolvedModelId = body.modelId || null;
@@ -523,6 +530,8 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   if (body.dreamerIgnore !== undefined) {
+    const refused = dreamerIgnoreRefusal(id, body.dreamerIgnore === true);
+    if (refused) return c.json({ ok: false, error: refused }, 400);
     // Boolean toggle. When true, the agent's conversations are skipped
     // by the vault archive layer entirely — Dreamer never sees them.
     updates.push('dreamer_ignore = ?');
@@ -703,7 +712,7 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     .get(id) as { id: string; name: string; status: string } | undefined;
   if (!agent) return c.json({ ok: false, error: 'Agent not found' }, 404);
   if (agent.status === 'terminated') {
-    return c.json({ ok: false, error: 'Agent is terminated — no live session to reset' }, 400);
+    return c.json({ ok: false, error: 'Agent is terminated, no live session to reset' }, 400);
   }
 
   try {

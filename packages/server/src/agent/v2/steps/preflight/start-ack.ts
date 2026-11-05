@@ -25,6 +25,7 @@ import { createLogger } from '../../../../logger.js';
 import type { TurnCounterparty, WaitingConversation } from '../../counterparty.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext } from './index.js';
+import { personShownALineThisTurn } from '../../person-shown-this-turn.js';
 
 const logger = createLogger('v2-loop');
 
@@ -143,6 +144,8 @@ export function runStartAck(
     try {
       if (!startAckArmed) return;
       if (turnCtx.engineStartAckDeliveredThisTurn || turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn || startAckRepliedNow()) return;
+      // Owner test 2, rank 4: a working note he was shown, or the delivered start line, is something heard.
+      if (personShownALineThisTurn(agentId, turnNumber)) return;
       // The captured-narration branch (F10, 2026-07-16) that lived here is
       // GONE (owner production report 2026-07-23: "not a single ack"). It
       // delivered whatever mid-work narration was captured ("Let me look at

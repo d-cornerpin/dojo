@@ -32,7 +32,7 @@ import {
 } from './accounts.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { sendAlert } from '../services/imessage-bridge.js';
+import { ownerCardFrame } from '../services/owner-card-frames.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 
 const logger = createLogger('google-auth');
@@ -408,7 +408,10 @@ function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void 
   updateGoogleAccount(accountId, { connected: false });
   if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
   broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-  try { void sendAlert(noteGoogleSignInExpired(accountId, expiredWords(acc)), 'critical'); } catch { /* alert best effort */ }
+  // OR-AUDIT-ANSWERS (d): a sign-in that expired is no platform text (the owner's set: offline and back online, budget,
+  // broken agent, Mac critical). The dashboard card stays; the agent sees the disconnected integration in its prompt and
+  // tells him (OR-ENGINE-LABELLED: the agent's job).
+  try { ownerCardFrame(noteGoogleSignInExpired(accountId, expiredWords(acc)), 'error', undefined, 'action'); } catch { /* the card is re-derived on the next load */ }
 }
 
 const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Google cards).`; // the owner's card carries these words (t138 r3-4)
@@ -505,11 +508,7 @@ export async function attemptGoogleReconnect(accountId: string): Promise<'reconn
   updateGoogleAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
   broadcast({ type: 'google:connected', data: { email: acc.email ?? '', slot: acc.kind } });
   logger.info('Google account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
-  // Same loop-closing notice as the Microsoft twin: the bench told the owner to
-  // re-authenticate, so the self-heal must cancel that instruction.
-  try {
-    void sendAlert(`Google account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice', { card: false }); // its card left when the sign-in was restored (t138 r4)
-  } catch { /* alert best effort */ }
+  // Its card left when the sign-in was restored (t138 r4). OR-AUDIT-ANSWERS (d): no all-clear text (the bench sent none).
   return 'reconnected';
 }
 

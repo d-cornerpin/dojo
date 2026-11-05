@@ -346,7 +346,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           <DepItem
             label="Ollama"
             status={deps.ollama}
-            detail={deps.ollamaRunning ? 'Running' : deps.ollama === 'installed' ? 'Installed — starting...' : 'Local model runtime'}
+            detail={deps.ollamaRunning ? 'Running' : deps.ollama === 'installed' ? 'Installed, starting...' : 'Local model runtime'}
             error={depErrors.ollama}
             onRetry={() => installDep('ollama')}
           />
@@ -484,7 +484,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                 <div className="flex items-center justify-between text-[10px] text-yellow-400/50">
                   <span>
                     {pct !== null ? `${pct}%` : 'Starting...'}{' '}
-                    {totalMb ? `— ${downloadedMb}MB / ${totalMb > 1024 ? `${(totalMb / 1024).toFixed(1)}GB` : `${totalMb}MB`}` : ''}
+                    {totalMb ? `, ${downloadedMb}MB / ${totalMb > 1024 ? `${(totalMb / 1024).toFixed(1)}GB` : `${totalMb}MB`}` : ''}
                   </span>
                   <span>
                     {speed ? `${speed} MB/s` : ''}
@@ -492,7 +492,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                 </div>
 
                 <p className="mt-1.5 text-[10px] text-yellow-400/40">
-                  Do not navigate away — the download will stop.
+                  Do not navigate away, the download will stop.
                 </p>
               </div>
             );
@@ -563,14 +563,14 @@ export const SetupPermissions = () => {
       apiKey: 'screen',
       label: 'Screen Recording',
       description: 'Allows agents to see your screen and take screenshots',
-      hint: 'Click "Open Settings" first — this triggers macOS to add the process to the Screen Recording list. Look for "node" or "screencapture" and toggle it ON. If not listed, click "+", press Cmd+Shift+G, and type the path from running "which node" in Terminal.',
+      hint: 'Click "Open Settings" first, this triggers macOS to add the process to the Screen Recording list. Look for "node" or "screencapture" and toggle it ON. If not listed, click "+", press Cmd+Shift+G, and type the path from running "which node" in Terminal.',
     },
     {
       key: 'accessibility',
       apiKey: 'accessibility',
       label: 'Accessibility',
       description: 'Allows agents to control mouse and keyboard',
-      hint: 'System Settings → Privacy & Security → Accessibility. Click "+" and add /opt/homebrew/bin/cliclick (Apple Silicon) or /usr/local/bin/cliclick (Intel). If you can\'t find it, open Terminal and type: which cliclick — then add the path shown.',
+      hint: 'System Settings → Privacy & Security → Accessibility. Click "+" and add /opt/homebrew/bin/cliclick (Apple Silicon) or /usr/local/bin/cliclick (Intel). If you can\'t find it, open Terminal and type: which cliclick, then add the path shown.',
     },
     {
       key: 'full_disk',
@@ -602,7 +602,7 @@ export const SetupPermissions = () => {
   return (
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
-        These macOS permissions allow your agents to interact with your system. They're optional — you can grant them now or later in System Settings.
+        These macOS permissions allow your agents to interact with your system. They're optional, you can grant them now or later in System Settings.
       </p>
 
       <p className="text-[10px] text-ui/25">
@@ -669,7 +669,7 @@ export const SetupPermissions = () => {
         )}
         {!allGranted && !anyDenied && unprobeable > 0 && (
           <span className="text-xs text-ui/40">
-            Nothing is blocked. {unprobeable === 1 ? 'One row' : `${unprobeable} rows`} Dojo cannot check from here — see Help.
+            Nothing is blocked. {unprobeable === 1 ? 'One row' : `${unprobeable} rows`} Dojo cannot check from here, see Help.
           </span>
         )}
       </div>

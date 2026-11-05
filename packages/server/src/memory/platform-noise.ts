@@ -98,7 +98,8 @@ export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   // keep — only these two exact templates are transient status noise. A human typing a message
   // that happens to start "Heads up:" is likewise untouched by these two patterns (see the
   // control in `memory/__tests__/platform-noise.test.ts`).
-  /^(?:Heads up: I hit my model's size limit — trimming my context|Dojo: the agent hit its model's size limit — trimming its context) and retrying now\.$/,
+  // (v3.5 field fix 3: the Dojo line lost its em-dash; the two older spellings stay, rows already written carry them.)
+  /^(?:Heads up: I hit my model's size limit — trimming my context|Dojo: the agent hit its model's size limit — trimming its context|Dojo: the agent hit its model's size limit, so it is trimming its context) and retrying now\.$/,
   // T82 FIX WAVE, I2 — `declaredPatienceHonestFailNote` now forks its trim clause on whether a
   // compaction genuinely completed for the doomed chain (see that function's own doc): the
   // ORIGINAL "even after I trimmed it once and tried again" wording when it did, and an honest

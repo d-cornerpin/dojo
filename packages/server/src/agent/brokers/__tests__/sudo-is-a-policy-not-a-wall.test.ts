@@ -407,6 +407,19 @@ describe('§6 `gated` holds the PRIMARY, and the hold goes to the OWNER', () => 
     expect(isSudoHoldRequired('shell', call)).toBe(false);
   });
 
+  // v3.5 field fix 3 (rulings audit #10, P3: one policy for every admin door): `applescript_run`'s argument is `script`,
+  // and the door read `script` only for `shell`, so "with administrator privileges" ran with the macOS dialog alone.
+  it('gated HOLDS an applescript_run that asks for administrator privileges; a plain script and the other policies do not', () => {
+    const admin = { script: 'do shell script "launchctl kickstart -k system/com.example.helper" with administrator privileges' };
+    policyRow.current = 'gated';
+    expect(isSudoHoldRequired('applescript_run', admin), 'the admin AppleScript gets the owner card').toBe(true);
+    expect(isSudoHoldRequired('applescript_run', { script: 'tell application "Finder" to activate' })).toBe(false);
+    policyRow.current = 'free';
+    expect(isSudoHoldRequired('applescript_run', admin)).toBe(false);
+    policyRow.current = 'blocked';
+    expect(isSudoHoldRequired('applescript_run', admin)).toBe(false);
+  });
+
   it('AN UNREADABLE POLICY HOLDS RATHER THAN RUNS', () => {
     // MUTATION GAP (MS16): the catch's direction was untested, because nothing in the file made the
     // config read throw. A failed read must never be the reason an administrator command executed

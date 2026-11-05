@@ -219,7 +219,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
         <Item
           key={kind}
           name={`${kind === 'user' ? 'Your' : 'The dojo’s'} ${PROVIDER_LABEL[provider]} account`}
-          help="Nothing is connected yet — this applies once one is."
+          help="Nothing is connected yet, this applies once one is."
           control={(
             <select
               className="finput field--select acx-level"
@@ -271,7 +271,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
         <div className="fhelp">
           {mode === 'full'
             ? 'Every tool group, including ones added by future updates.'
-            : 'Only the groups ticked below — untick what this agent should not have.'}
+            : 'Only the groups ticked below, untick what this agent should not have.'}
         </div>
         {toolMode(draft) === 'individual' && (
           <div className="acx-grid">
@@ -302,8 +302,8 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
         {accountRows('microsoft', microsoft, microsoftLoad)}
         {mailWriteWithoutSend(draft).map((w) => (
           <div className="note--warn" key={w.provider} style={{ marginTop: 10, marginBottom: 0 }}>
-            {PROVIDER_LABEL[w.provider]} is granted read &amp; write, but the agent cannot send mail from it
-            — {w.missing === 'master' ? '“Can talk to people” is off' : 'Email is off under “Can talk to people”'}.
+            {PROVIDER_LABEL[w.provider]} is granted read &amp; write, but the agent cannot send mail from it:
+ {w.missing === 'master' ? '“Can talk to people” is off' : 'Email is off under “Can talk to people”'}.
             Reading and drafts still work: it can leave a finished message in your Drafts folder for you
             to send. To let it send for itself, turn on{' '}
             {w.missing === 'master' ? '“Can talk to people” → Email' : 'Email'} below.
@@ -363,7 +363,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
             {on && inert.map((r) => (
               <div className="note--warn" key={r.channel} style={{ marginTop: 10, marginBottom: 0 }}>
                 {CHANNEL_LABEL[r.channel]} is granted, but the “{splitLabel(r.groups[0]).name}” tool group is
-                not — the agent would be refused when it tried. Tick that group above.
+                not, the agent would be refused when it tried. Tick that group above.
               </div>
             ))}
           </>

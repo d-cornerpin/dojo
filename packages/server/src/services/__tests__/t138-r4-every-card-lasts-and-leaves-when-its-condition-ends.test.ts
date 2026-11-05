@@ -234,7 +234,8 @@ describe('ruling 1: the remaining cards last too', () => {
     m = await boot(); // reload after a restart
     let shown = await m.cards();
     expect(shown).toHaveLength(1);
-    expect(texts()[0]).toContain(shown[0].words);
+    expect(shown[0].words).toContain('connection expired');
+    expect(texts(), 'OR-AUDIT-ANSWERS (d): a sign-in is not one of the Dojo\'s texts').toEqual([]);
     // The owner reconnects in Settings: the connect flow's writer marks it connected.
     m.googleAccounts.updateGoogleAccount(acc.id, { connected: true, accessToken: 'at-new' });
     expect(ended(), 'the card leaves open dashboards at once').toEqual([shown[0].words]);
@@ -250,7 +251,7 @@ describe('ruling 1: the remaining cards last too', () => {
     expect(await m.cards()).toEqual([]);
   });
 
-  it('a watcher failing: a card on load; a restart mid-failure does not text again; recovery ends it', async () => {
+  it('a watcher failing: a card on load; a restart mid-failure raises nothing again; recovery ends it', async () => {
     let m = await boot();
     m.googleAccounts.insertGoogleAccount({ id: 'acct-a', kind: 'agent', email: 'one@example.test', connected: true, watchEmail: true });
     const failing = (): boolean => m.watcher.maybeAlertOnFailure({
@@ -260,12 +261,12 @@ describe('ruling 1: the remaining cards last too', () => {
     expect(failing()).toBe(true);
     m = await boot(); // restart (round 5, owner-correct again): the watcher's memory of "already alerted" is gone, the failure is not
     expect(failing()).toBe(true);
-    expect(texts(), 'one text for one failure').toHaveLength(1);
+    expect(texts(), 'OR-AUDIT-ANSWERS (d): a watcher is not one of the Dojo\'s texts').toEqual([]);
     const shown = await m.cards();
     expect(shown).toHaveLength(1);
-    expect(texts()[0]).toContain(shown[0].words);
+    expect(shown[0].words).toContain('has been failing');
     m.watcher.maybeAlertOnRecovery({ name: 'gmail', accountId: 'acct-a', alreadyAlerted: false, totalNotificationsSinceFailure: 0 });
-    expect(texts(), 'the all-clear still reaches him after the restart').toHaveLength(2);
+    expect(texts()).toEqual([]);
     expect(await m.cards()).toEqual([]);
   });
 

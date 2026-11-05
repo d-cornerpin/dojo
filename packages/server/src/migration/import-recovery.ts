@@ -37,7 +37,7 @@ function stuckFromMarker(): { words: string; backupPath: string } | null {
 
 function raiseImportCard(words: string): void {
   standing = words;
-  ownerCardFrame(words, 'error', CARD_KEY);
+  ownerCardFrame(words, 'error', CARD_KEY, 'action');   // he restarts the Dojo from the menu bar
 }
 
 /** An import (or a restart) succeeded: the card leaves every open dashboard. */

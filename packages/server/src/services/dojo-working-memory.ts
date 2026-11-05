@@ -48,7 +48,7 @@ export async function decisionWindowTokens(): Promise<number> {
 
 /**
  * Are summaries ASSIGNED to the Dojo's writer on this box's configuration (t268 fix round 2, ruling; owner
- * 2026-10-24, "The agents model.")? Yes when it is the explicit Summarization pick; with no pick, when it is an
+ * 2026-10-24, "The agents model."; v3.5 field fix 3: there is no Summarization setting)? Yes when it is an
  * agent's FIXED model, or (fix round 4, N-E) it is placed in a router tier a standard-tier request walks and some
  * agent is auto-routed (fix round 3: an auto-routed agent writes with its router's standard-tier pick,
  * `summaryWriterCandidates`). A FALLBACK (an agent's model not answering) is not an assignment: it is sized to the
@@ -58,8 +58,6 @@ export function writerAssignedSummaries(): boolean {
   const writerId = standardModelRowId('writer');
   if (!writerId) return false;
   const db = getDb();
-  const pick = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
-  if (pick) return pick === writerId;
   if (db.prepare('SELECT 1 FROM agents WHERE model_id = ? LIMIT 1').get(writerId)) return true;
   return standardTierModels().includes(writerId)
     && !!db.prepare("SELECT 1 FROM agents WHERE model_id IS NULL OR model_id IN ('', 'auto', '__auto__') LIMIT 1").get();

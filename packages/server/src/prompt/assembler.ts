@@ -11,7 +11,7 @@ import { getAgentPermissions } from '../agent/manifest.js';
 import { SOUL_ADMIN_COMMANDS_CLAIM } from '../agent/brokers/sudo-claim.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
-import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, type Channel } from '@dojo/shared';
+import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, settingsPath, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
@@ -1683,7 +1683,7 @@ export function renderIntegrationReconnect(agentId: string): string[] {
       for (const s of integrationStatuses) {
         if (!s.configured || s.connected) continue;
         out.push(
-          `## ${displayName[s.name]} (disconnected)\n\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in Dashboard -> Integrations. Do not say the capability is unsupported; it only needs a reconnect.${localCarveOut[s.name] ?? ''}`,
+          `## ${displayName[s.name]} (disconnected)\n\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in ${settingsPath('channels')}. Do not say the capability is unsupported; it only needs a reconnect.${localCarveOut[s.name] ?? ''}`,
         );
       }
     }

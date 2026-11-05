@@ -1,9 +1,9 @@
 // Settings > Voice: the listening-sensitivity options, speech-model labels and the byte formatter (moved out of VoiceTab unchanged).
 
 export const VAD_OPTIONS: Array<{ id: 'quick' | 'normal' | 'patient'; label: string; hint: string }> = [
-  { id: 'quick',   label: 'Quick',   hint: 'Jumps in fast — best for quick back-and-forth' },
-  { id: 'normal',  label: 'Normal',  hint: 'Balanced — waits a beat for you to finish a thought' },
-  { id: 'patient', label: 'Patient', hint: 'Waits longest — best for slow, thoughtful speech' },
+  { id: 'quick',   label: 'Quick',   hint: 'Jumps in fast, best for quick back-and-forth' },
+  { id: 'normal',  label: 'Normal',  hint: 'Balanced, waits a beat for you to finish a thought' },
+  { id: 'patient', label: 'Patient', hint: 'Waits longest, best for slow, thoughtful speech' },
 ];
 
 export const STT_LABELS: Record<string, string> = {

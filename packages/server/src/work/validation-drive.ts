@@ -1276,7 +1276,7 @@ export function resetValidatorSilenceEpisode(): void {
 }
 
 export const VALIDATOR_STALLED_TOAST =
-  'Task validation is stalled — closed work is waiting on the project manager and it has not '
+  'Task validation is stalled: closed work is waiting on the project manager and it has not '
   + 'ruled. Nothing is lost; the tasks stay open until it does.';
 
 /**

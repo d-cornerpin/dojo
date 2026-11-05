@@ -42,6 +42,8 @@ interface EngineItem {
   kind: EngineKind;
   label: string;
   startedAtMs: number;
+  /** Whose memory work it is (null or absent: the box's own). */
+  agentId?: string | null;
 }
 
 const KIND_LABEL: Record<Kind, string> = {
@@ -151,7 +153,10 @@ function KindGlyph({ kind }: { kind: Kind | EngineKind | 'mixed' }) {
 export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
   const { subscribe, reconnectCount } = useWebSocket();
   const [jobs, setJobs] = useState<GenJobDto[]>([]);
-  const [engineItems, setEngineItems] = useState<EngineItem[]>([]);
+  const [allEngineItems, setEngineItems] = useState<EngineItem[]>([]);
+  // v3.5 field fix 3 (#10): an agent's memory work shows beside that agent only, so a service agent's
+  // housekeeping does not read as this agent compacting; the box's own work (no agentId) shows everywhere.
+  const engineItems = allEngineItems.filter((it) => it.kind !== 'compaction' || !it.agentId || it.agentId === agentId);
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState<Set<string>>(new Set());
   // Drives the elapsed-time re-render once a second while the popover is open.
@@ -181,9 +186,9 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
       if (event.data.agentId !== agentId) return;
       void refetch();
     });
-    // Engine sequences are platform-wide, shown regardless of the selected
-    // agent. Dreamer + Healer are agents, so their `working` status IS the
-    // in-flight signal; compaction (not an agent) emits engine:activity.
+    // The Dreamer and the Healer are platform-wide, shown regardless of the selected
+    // agent; their `working` status IS the in-flight signal. Compaction (not an agent)
+    // emits engine:activity, and an agent's own shows beside that agent (field fix 3 #10).
     const unsubStatus = subscribe('agent:status', (event) => {
       if (event.type !== 'agent:status') return;
       const kind: EngineKind | null = engineRoleOf(event.agentId);
@@ -206,7 +211,7 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
       setEngineItems((prev) => {
         if (d.phase === 'start') {
           if (prev.some((it) => it.id === d.id)) return prev;
-          return [...prev, { id: d.id, kind: d.kind, label: d.label, startedAtMs: Date.now() }];
+          return [...prev, { id: d.id, kind: d.kind, label: d.label, startedAtMs: Date.now(), agentId: d.agentId }];
         }
         return prev.filter((it) => it.id !== d.id);
       });

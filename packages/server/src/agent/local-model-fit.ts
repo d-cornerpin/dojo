@@ -166,7 +166,7 @@ function markUnchecked(modelId: string, use: ModelUse): void {
   try {
     getDb().prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms`)
       .run(UNCHECKED_SCOPE, `${use}:${modelId}`, Date.now());
-    if (tellOwnerOnce(fitUncheckedKey(modelId))) ownerCardFrame(wordsOf(fitUncheckedKey(modelId)), 'warning');
+    if (tellOwnerOnce(fitUncheckedKey(modelId))) ownerCardFrame(wordsOf(fitUncheckedKey(modelId)), 'warning', undefined, 'informational');   // checked at first load by itself
   } catch { /* best-effort: the first-load check still runs whenever the mark was written */ }
 }
 

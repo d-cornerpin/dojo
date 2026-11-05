@@ -9,7 +9,7 @@
 //
 // The ruling: the turn assembles the newest rows that fit beside the summaries; the older rows are labelled and
 // kept (placeholder notes), and a background folder replaces them a span at a time, the next when the one before
-// lands, yielding to the agent's live turn; one plain dashboard card says so and leaves when it is done.
+// lands, yielding to the agent's live turn; the orb's task glyph for the agent says so (field fix 3 #9: no card) and leaves when it is done.
 //
 // THE DOOR: the driver's own two steps for one iteration (`runAssemble`, `runCallLLM`) on the real migration
 // chain, with the real assembler, router, out-of-view door and placeholder machinery. Scripted: the tier
@@ -55,7 +55,7 @@ vi.mock('../../model.js', async (importOriginal) => ({
   },
 }));
 
-const frames = vi.hoisted(() => [] as Array<{ type?: string; severity?: string; cardKey?: string; error?: string }>);
+const frames = vi.hoisted(() => [] as Array<{ type?: string; severity?: string; cardKey?: string; error?: string; data?: { id?: string; phase?: string; agentId?: string | null; kind?: string } }>);
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: (e: { type?: string }) => { frames.push(e); }, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../../memory/embeddings.js', () => ({
   generateEmbedding: async () => new Float32Array([1, 0, 0, 0]),
@@ -100,7 +100,6 @@ import type { AssembleContext } from '../steps/assemble/index.js';
 import { getContextWindow } from '../../model.js';
 import { activeRuns, backgroundDrains } from '../../shared-state.js';
 import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../memory/catch-up-folder.js';
-import { catchUpOwnerCards } from '../../../memory/catch-up-state.js';
 import { __resetCompactionFailuresForTests, compactionFailureReason } from '../../../memory/compaction-defect.js';
 import { noteAPersonSpoke, noteSummaryWriterOutcome } from '../../../memory/summary-writer-health.js';
 import { scheduleLegacyRebuildAtBoot, BOOT_SETTLE_MS } from '../../../memory/legacy-rebuild-boot.js';
@@ -189,7 +188,12 @@ const placeholders = (): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind = 'uncondensed'").get(AGENT) as { n: number }).n;
 const realSummaries = (): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind != 'uncondensed'").get(AGENT) as { n: number }).n;
-const cardFrames = (severity: string) => frames.filter((f) => f.type === 'chat:error' && f.cardKey === CARD_KEY && f.severity === severity);
+// v3.5 field fix 3 (#9, OR-FIELD3 (c)): the catch-up needs nothing from the owner, so it is no card: it is the orb's
+// task glyph for this agent (`engine:activity`, keyed `CARD_KEY`), ended when the last note lands.
+const progress = (phase: 'start' | 'end') => frames.filter((f) => f.type === 'engine:activity' && f.data?.id === CARD_KEY && f.data?.phase === phase);
+/** Is the glyph up now (its newest frame a start)? */
+const showing = (): boolean => { const mine = frames.filter((f) => f.type === 'engine:activity' && f.data?.id === CARD_KEY); return mine.at(-1)?.data?.phase === 'start'; };
+const anyCard = () => frames.filter((f) => f.type === 'chat:error' && f.cardKey === CARD_KEY);
 
 /** Rows neither in the dialled view nor covered by a summary or note that is itself in the dialled view. */
 function lostRows(view: string): string[] {
@@ -229,7 +233,6 @@ function askAgain(): void {
   asks++;
   insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${asks}] And the one after?`, turnNumber: asks });
 }
-const WORDS = 'Dojo: Dock Desk is tidying its older memory to fit the Router\'s memory size. Replies are not held up; this finishes on its own.';
 
 describe('field fix Y: a grown auto-routed agent whose window shrinks catches up in the background', () => {
   beforeEach(() => { asks = 91; });
@@ -242,21 +245,22 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(lostRows(view), 'a row out of view with nothing in view standing for it').toEqual([]);
   });
 
-  it('round 3 (F3): the card is raised when the owner\'s NEXT turn starts on notes — once, plain, lasting across a reload', async () => {
+  it('round 3 (F3), field fix 3 (#9): the glyph shows when the owner\'s NEXT turn starts on notes: the agent\'s own, no card, never red', async () => {
     seed('auto');
     await oneTurn('auto');
-    expect(cardFrames('warning'), 'the turn that began the catch-up raises no card').toHaveLength(0);
-    expect(catchUpOwnerCards()).toEqual([]);
+    expect(progress('start'), 'the turn that began the catch-up shows nothing').toHaveLength(0);
+    expect(showing()).toBe(false);
     askAgain();
     await oneTurn('auto');   // the owner is talking to an agent still running on notes
     expect(calls.log.filter((c) => c === 'summary'), 'a turn never folds while the catch-up stands').toEqual([]);
-    const shown = cardFrames('warning');
-    expect(shown, 'one card for the catch-up').toHaveLength(1);
-    expect(shown[0].error).toBe(WORDS);
-    expect(catchUpOwnerCards().map((c) => c.cardKey), 'the owner-notices list re-derives it').toEqual([CARD_KEY]);
+    const shown = progress('start');
+    expect(shown, 'one glyph for the catch-up').toHaveLength(1);
+    expect(shown[0].data).toMatchObject({ kind: 'compaction', agentId: AGENT });
+    expect(anyCard(), 'no owner card at all: it needs nothing from him').toEqual([]);
     askAgain();
     await oneTurn('auto');
-    expect(cardFrames('warning'), 'never twice').toHaveLength(1);
+    expect(new Set(progress('start').map((f) => f.data?.id)), 'shown again at the next turn, as the SAME glyph (a tab opened since picks it up)').toEqual(new Set([CARD_KEY]));
+    expect(showing()).toBe(true);
   });
 
   it('the background folder works through the backlog a span at a time, yields to a live turn, then the card leaves', async () => {
@@ -278,7 +282,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     await folderDone();
     expect(calls.log.filter((c) => c === 'summary'), 'one span, then it yielded to the live turn').toHaveLength(1);
     expect(placeholders()).toBe(owed - 1);
-    expect(cardFrames('info'), 'not done: the card stays').toHaveLength(0);
+    expect(progress('end'), 'not done: the glyph stays').toHaveLength(0);
 
     // That turn ends (`agent/runtime.ts` starts the folder again): the rest, one at a time, each after the last landed.
     activeRuns.delete(AGENT);
@@ -288,8 +292,8 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(realSummaries()).toBeGreaterThanOrEqual(owed);
     expect(calls.log.filter((c) => c === 'summary').length, 'successive steps, one per span').toBeGreaterThanOrEqual(owed);
     expect(calls.maxInFlight, 'never two spans at once').toBe(1);
-    expect(cardFrames('info'), 'the card leaves when the backlog is empty').toHaveLength(1);
-    expect(catchUpOwnerCards()).toEqual([]);
+    expect(progress('end'), 'the glyph leaves when the backlog is empty').toHaveLength(1);
+    expect(showing()).toBe(false);
   });
 
   it('round 3 (F1, review R1): the routine condense holds the shared slot at turn end; its release hands the slot on and the catch-up finishes', async () => {
@@ -304,7 +308,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     releaseBackgroundSlot(AGENT);   // the condense finishes: its release (context-gates.ts `.finally`)
     await folderDone();
     expect(placeholders(), 'not stranded: the backlog folded with no other signal').toBe(0);
-    expect(cardFrames('info'), 'and the card cleared').toHaveLength(1);
+    expect(progress('end'), 'and the glyph cleared').toHaveLength(1);
   });
 
   it('round 3 (F2, review R2): every writer down — the failure notice speaks and the "finishes on its own" card is withdrawn; it is not raised again while failing', async () => {
@@ -312,16 +316,16 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     await oneTurn('auto');
     askAgain();
     await oneTurn('auto');
-    expect(cardFrames('warning')).toHaveLength(1);
+    expect(progress('start')).toHaveLength(1);
     calls.fail = true;
     replacePlaceholdersInBackground(AGENT);
     await folderDone();
     expect(compactionFailureReason(AGENT), 'the failure is recorded').not.toBeNull();
-    expect(cardFrames('info'), 'the catch-up card left every dashboard').toHaveLength(1);
-    expect(catchUpOwnerCards(), 'and the lasting list does not re-derive it').toEqual([]);
+    expect(progress('end'), 'the catch-up glyph left every dashboard').toHaveLength(1);
+    expect(showing()).toBe(false);
     askAgain();
     await oneTurn('auto');
-    expect(cardFrames('warning'), 'not raised again while the failure speaks').toHaveLength(1);
+    expect(progress('start'), 'not shown again while the failure speaks').toHaveLength(1);
     expect(placeholders(), 'the notes stand; nothing is lost').toBeGreaterThan(0);
     // The writers come back: the person's turn re-arms them, the folder finishes, nothing is left standing.
     calls.fail = false;
@@ -330,7 +334,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     await folderDone();
     expect(placeholders()).toBe(0);
     expect(compactionFailureReason(AGENT)).toBeNull();
-    expect(catchUpOwnerCards()).toEqual([]);
+    expect(showing()).toBe(false);
   });
 
   it('round 3 (F2, review R4): one span every writer answers empty — the same: the failure notice, not the promise', async () => {
@@ -342,8 +346,8 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     for (let i = 0; i < 3; i++) { replacePlaceholdersInBackground(AGENT); await folderDone(); }
     expect(placeholders(), 'the refused span waits as a note').toBeGreaterThan(0);
     expect(compactionFailureReason(AGENT)).not.toBeNull();
-    expect(catchUpOwnerCards()).toEqual([]);
-    expect(cardFrames('info'), 'the catch-up card was withdrawn').toHaveLength(1);
+    expect(showing()).toBe(false);
+    expect(progress('end'), 'the catch-up glyph was withdrawn').toHaveLength(1);
   });
 
   it('round 3 (F2): no writer at all — the owner gets the existing failure notice, never the catch-up card', async () => {
@@ -355,8 +359,8 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(compactionFailureReason(AGENT), 'the failure notice speaks (its card, unless the breaker already told him)').not.toBeNull();
     askAgain();
     await oneTurn('auto');
-    expect(cardFrames('warning'), 'no "finishes on its own" promise').toHaveLength(0);
-    expect(catchUpOwnerCards()).toEqual([]);
+    expect(progress('start'), 'no glyph that says the work is moving').toHaveLength(0);
+    expect(anyCard()).toEqual([]);
   });
 
   it('round 3 (F3, review R6): a backlog that folds before the next turn raises no card — first catch-up or a later big turn', async () => {
@@ -375,7 +379,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(placeholders()).toBe(0);
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: '[ask 94] Thanks.', turnNumber: 94 });
     await oneTurn('auto');
-    expect(frames.filter((f) => f.cardKey === CARD_KEY), 'no card raised or ended at any point').toEqual([]);
+    expect(frames.filter((f) => f.cardKey === CARD_KEY || f.data?.id === CARD_KEY), 'nothing raised or ended at any point').toEqual([]);
   });
 
   it('round 2: a catch-up open at a restart resumes at boot with no turn — the backlog folds and the card clears', async () => {
@@ -385,7 +389,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     await oneTurn('auto');
     const owed = placeholders();
     expect(owed, 'precondition: the backlog waits as notes').toBeGreaterThan(1);
-    expect(catchUpOwnerCards().map((c) => c.cardKey), 'precondition: its card stands').toEqual([CARD_KEY]);
+    expect(showing(), 'precondition: its glyph is up').toBe(true);
     // The restart: every in-memory fact is gone; only the database (the notes and the record) remains. No turn follows.
     backgroundDrains.clear(); activeRuns.clear(); __resetSummaryWriterHealthForTests();
     calls.log.length = 0;
@@ -398,8 +402,8 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(calls.log, 'no turn ran; only the folder dialled').not.toContain('reply');
     expect(calls.log.filter((c) => c === 'summary').length).toBeGreaterThanOrEqual(owed);
     expect(placeholders(), 'the backlog folded on its own').toBe(0);
-    expect(cardFrames('info'), 'the card cleared').toHaveLength(1);
-    expect(catchUpOwnerCards()).toEqual([]);
+    expect(progress('end'), 'the glyph cleared').toHaveLength(1);
+    expect(showing()).toBe(false);
   });
 
   it('round 3 (F5, F1): the end of every turn and the routine condense\'s release both start the folder (source census)', async () => {

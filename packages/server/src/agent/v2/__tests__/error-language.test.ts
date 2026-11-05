@@ -133,7 +133,7 @@ describe('chat:error toast wording in recovery.ts (regression)', () => {
   // import them here, but the test asserts that the helper outputs match
   // the same standard.
   it('rate-limit fallback wording is plain English', () => {
-    const ratelimitFallback = 'Model is rate-limited. Retrying automatically — give it a moment.';
+    const ratelimitFallback = 'Model is rate-limited. Retrying automatically, give it a moment.';
     for (const pattern of FORBIDDEN_PATTERNS) {
       expect(ratelimitFallback).not.toMatch(pattern);
     }

@@ -194,7 +194,7 @@ export const ChannelSafeSenders = ({
 
       {senders.length === 0 ? (
         <p className="text-xs text-ui/40 italic py-2">
-          List is empty — the agent won&apos;t auto-reply to anyone on {channelLabel} until you add them here.
+          List is empty, the agent won&apos;t auto-reply to anyone on {channelLabel} until you add them here.
         </p>
       ) : (
         <ul className="space-y-1.5 mb-2">

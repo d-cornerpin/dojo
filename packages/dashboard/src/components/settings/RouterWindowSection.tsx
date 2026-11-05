@@ -67,7 +67,7 @@ export const RouterWindowSection = ({ routerWindow }: { routerWindow: RouterWind
             {saved && <span className="text-xs text-cp-teal">Saved!</span>}
           </div>
           {error && <p className="text-xs text-cp-coral">{error}</p>}
-          <p className="text-sm font-mono text-ui">{k(value)} — the smallest model on the router is {routerWindow.floorModelName} ({k(routerWindow.floorTokens)})</p>
+          <p className="text-sm font-mono text-ui">{k(value)}: the smallest model on the router is {routerWindow.floorModelName} ({k(routerWindow.floorTokens)})</p>
           {routerWindow.minAgentName && routerWindow.minTokens > routerWindow.floorTokens && (
             <p className="text-xs text-cp-coral">
               {routerWindow.minAgentName} needs more room than {routerWindow.floorModelName} has; it cannot run on automatic until that model is raised or taken off the router.

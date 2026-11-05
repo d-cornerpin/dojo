@@ -461,7 +461,7 @@ uploadRouter.get('/download/:fileId', async (c) => {
   // Check if the shared_files table exists
   const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
   if (!tableExists) {
-    return c.json({ ok: false, error: 'File sharing not available — server needs to be restarted to run migrations' }, 500);
+    return c.json({ ok: false, error: 'File sharing not available, server needs to be restarted to run migrations' }, 500);
   }
 
   const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {

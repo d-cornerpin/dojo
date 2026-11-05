@@ -311,7 +311,7 @@ export const GoogleWorkspaceSettings = () => {
                 ) : (
                   <button onClick={() => handleAdd(kind, true)} disabled={adding}
                     className="btn btn--sm">
-                    {adding ? 'Waiting for sign-in...' : 'Not connected — sign in'}
+                    {adding ? 'Waiting for sign-in...' : 'Not connected, sign in'}
                   </button>
                 )}
               </div>

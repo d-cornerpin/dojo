@@ -92,7 +92,7 @@ export async function ensureOllamaModelLimit(
 
 function failed(err: unknown): void {
   logger.warn('Could not raise Ollama\'s loaded-model limit (non-fatal)', { error: childFailureText(err) });
-  if (tellOwnerOnce('ollama-limit-failed')) ownerCardFrame(OLLAMA_LIMIT_FAILED_WORDS, 'warning');
+  if (tellOwnerOnce('ollama-limit-failed')) ownerCardFrame(OLLAMA_LIMIT_FAILED_WORDS, 'warning', undefined, 'informational');   // tried again at the next start
 }
 
 /** NB-1: deferred until nothing is in flight on the local Ollama; new calls wait while it runs. */

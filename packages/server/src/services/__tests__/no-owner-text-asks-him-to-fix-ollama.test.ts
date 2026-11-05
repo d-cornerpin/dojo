@@ -40,3 +40,13 @@ describe('no owner text asks him to fetch, quit or restart Ollama', () => {
     expect(hits).toEqual([]);
   });
 });
+
+// Rulings audit #7 (M18, OR-UPKEEP-AUTOMATIC): the Dojo repairs Ollama itself, and the Repair button is hidden while Ollama
+// is down, so no owner text asks him to press it.
+describe('no owner text asks him to press Repair', () => {
+  it('server and dashboard source: every hit is listed here (none)', () => {
+    const hits = ['server/src', 'dashboard/src'].flatMap((d) => sources(path.join(PACKAGES, d)))
+      .flatMap((f) => texts(f).filter((t) => /press Repair|pressing Repair/i.test(t)).map((t) => `${path.relative(PACKAGES, f)}: ${t.trim().slice(0, 120)}`));
+    expect(hits).toEqual([]);
+  });
+});

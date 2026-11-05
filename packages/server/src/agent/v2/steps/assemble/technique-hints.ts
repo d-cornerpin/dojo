@@ -21,6 +21,7 @@ import type { AgentTurnState } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { techniqueFitsRoom } from '../../../../memory/technique-room.js';
 import { createLogger } from '../../../../logger.js';
+import { techniqueFamilies, usableIntegrationFamilies } from '../../../../memory/integration-status-lane.js';
 
 const logger = createLogger('v2-loop');
 export interface TechniqueHintsInput {
@@ -80,7 +81,7 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
       // boilerplate so a photo-with-little-text message can still match a
       // photo technique.
       const matchQuery = buildTechniqueMatchQuery(lastUserMessageContent);
-      const matches = await semanticTechniqueMatches(matchQuery, techniques);
+      const matches = await fitsTheAgentsIntegrations(agentId, await semanticTechniqueMatches(matchQuery, techniques));
       if (matches.length > 0) {
         // Two modes:
         //   - STRONG MATCH (score >= 0.5): the engine loads TECHNIQUE.md
@@ -124,14 +125,16 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
               // So: keep adjacency by injecting a SEPARATE engine-marked
               // message right after the ask, framed at its true tier
               // (task/technique notes, below the live user message).
-              const header =
-                `[DOJO TECHNIQUE, engine-injected. This is technique guidance (precedence: task/technique notes); the user's live message above outranks it wherever they conflict.]`;
+              // v3.5 owner test 2, fix rank 5: a FACT, not an order. The old header named the mechanism ("engine-injected"),
+              // asserted a match ("This task matches") and handed the model a decision ("Follow ... unless"); the model
+              // narrated its decision to the owner. The note says what the engine knows, and nothing else.
+              const header = `[Engine note: a saved technique, "${strongMatch.technique.name}", may be relevant to this request.`;
               if (tooLarge) {
                 techniqueInjection =
-                  `${header}\nThis task matches the "${strongMatch.technique.name}" technique. The full instructions are too long to inline (${md.length} chars), load it via use_technique('${strongMatch.technique.id}') before doing the work, then follow its steps unless the user said otherwise.`;
+                  `${header} Its steps are too long to show here (${md.length} chars); use_technique('${strongMatch.technique.id}') loads them.]`;
               } else {
                 techniqueInjection =
-                  `${header}\nThis task matches the "${strongMatch.technique.name}" technique. Follow the procedure below unless the user's message says otherwise.\n\n` +
+                  `${header} Its steps follow.]\n\n` +
                   `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---`;
               }
               injectedTechniqueId = strongMatch.technique.id;
@@ -170,16 +173,12 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
           ? matches
           : weakMatches;
         if (hintMatches.length > 0) {
+          // v3.5 owner test 2, fix rank 5: facts, not orders (no "matched", no "load any", no match strength).
           const lines = hintMatches.map((m) => {
-            const reason = m.score >= 0.6 ? 'strong match' : 'possible match';
-            const desc = m.technique.description ? `, ${m.technique.description}` : '';
-            return `- \`${m.technique.name}\` (${reason})${desc}\n  Load with \`use_technique('${m.technique.id}')\` if applicable.`;
+            const desc = m.technique.description ? `: ${m.technique.description}` : '';
+            return `- "${m.technique.name}"${desc}. use_technique('${m.technique.id}') loads it.`;
           });
-          const hintHeader = injectedTechniqueId
-            ? `\n\n## Other Techniques That Might Also Apply\n\n`
-            : `\n\n## Possibly Relevant Techniques\n\n`;
-          const weakHint = hintHeader +
-            `Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\n\n` +
+          const weakHint = `[Engine note: ${injectedTechniqueId ? 'other saved techniques that' : 'saved techniques that'} may be relevant to this request.]\n` +
             lines.join('\n');
           // Inject as a post-tail engine message (NOT appended to the
           // system prompt). The match-strength wording changes per user
@@ -230,4 +229,28 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
       }
     } catch { /* advisory only, never block the turn */ }
   }
+}
+
+/**
+ * v3.5 owner test 2, fix rank 5: AN M365 TECHNIQUE NEVER RIDES A GMAIL ASK. The gate is structural: a technique whose
+ * procedure names an integration's tools (`techniqueFamilies`, from the tool-name table, never prose) is offered only when
+ * the agent can use that integration now (configured, granted, connected). A technique that names no integration is not
+ * gated. Never throws: an unreadable technique is offered as before.
+ */
+async function fitsTheAgentsIntegrations<M extends { technique: { id: string; tags?: string[] } }>(agentId: string, matches: M[]): Promise<M[]> {
+  if (matches.length === 0) return matches;
+  const usable = await usableIntegrationFamilies(agentId);
+  const { getTechniqueDetail } = await import('../../../../techniques/store.js');
+  return matches.filter((m) => {
+    try {
+      const families = techniqueFamilies(getTechniqueDetail(m.technique.id)?.instructions ?? null, m.technique.tags ?? []);
+      if (families.size === 0 || [...families].some((f) => usable.has(f))) return true;
+      logger.info('v2 technique: not offered, it works in an integration this agent cannot use now', {
+        agentId, techniqueId: m.technique.id, families: [...families], usable: [...usable],
+      }, agentId);
+      return false;
+    } catch {
+      return true;
+    }
+  });
 }

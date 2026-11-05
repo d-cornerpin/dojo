@@ -339,8 +339,10 @@ describe('an agent-trouble card outlives the page', () => {
   });
 });
 
-describe('all-clears keep their texts, raise no card, and take the trouble card away', () => {
-  it('a watcher recovering: the text is unchanged, no card, and a removal for the failure card', async () => {
+// OR-AUDIT-ANSWERS (d): a watcher and a sign-in are not in the owner's set of Dojo texts, so neither the trouble nor
+// its all-clear is texted any more; the trouble card stands, and the all-clear takes it away.
+describe('all-clears raise no card and take the trouble card away; neither end is texted', () => {
+  it('a watcher recovering: no text either way, no new card, and a removal for the failure card', async () => {
     const m = await boot();
     m.watcher.maybeAlertOnFailure({
       name: 'gmail', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
@@ -350,13 +352,12 @@ describe('all-clears keep their texts, raise no card, and take the trouble card 
     const failure = liveCards()[0].error;
     m.watcher.maybeAlertOnRecovery({ name: 'gmail', alreadyAlerted: true, totalNotificationsSinceFailure: 2 });
     await sendsSettle();
-    expect(texts()).toHaveLength(2);
-    expect(texts()[1]).toContain('Gmail watcher has recovered and is polling normally again. 2 new emails delivered since recovery.');
+    expect(texts()).toEqual([]);
     expect(liveCards(), 'the all-clear raises no card').toHaveLength(1);
     expect(frames().filter((f) => f.severity === 'info').map((f) => f.error)).toEqual([failure]);
   });
 
-  it('a Google account reconnecting on its own: the text is unchanged, no card, and the expired card is removed', async () => {
+  it('a Google account reconnecting on its own: no text either way, no new card, and the expired card is removed', async () => {
     const m = await boot();
     const acc = m.googleAccounts.insertGoogleAccount({
       kind: 'agent', email: 'helper@example.test', connected: true,
@@ -369,8 +370,7 @@ describe('all-clears keep their texts, raise no card, and take the trouble card 
     expect(expired).toContain('connection expired');
     account.googleToken = 'ok';
     expect(await m.google.attemptGoogleReconnect(acc.id)).toBe('reconnected');
-    expect(texts()).toHaveLength(2);
-    expect(texts()[1]).toContain('Google account (helper@example.test) reconnected on its own, no action needed.');
+    expect(texts()).toEqual([]);
     expect(liveCards()).toHaveLength(1);
     expect(frames().filter((f) => f.severity === 'info').map((f) => f.error)).toEqual([expired]);
   });

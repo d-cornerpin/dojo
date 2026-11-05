@@ -220,16 +220,17 @@ describe('ruling 1: a dismissal reaches every open tab', () => {
 });
 
 describe('ruling 2: a watcher\'s failing state survives a restart, per account', () => {
-  it('a still-failing account after a restart: no second text, and its card is still there', async () => {
+  // OR-AUDIT-ANSWERS (d): a watcher is not one of the Dojo's texts; the record still decides the card's one raising.
+  it('a still-failing account after a restart: nothing raised again, no text, and its card is still there', async () => {
     let m = await boot();
     expect(failing(m, 'acct-a')).toBe(true);
     m = await boot(); // restart: the watcher's in-memory flag is gone
     expect(failing(m, 'acct-a')).toBe(true);
-    expect(texts()).toHaveLength(1);
+    expect(texts()).toEqual([]);
     expect(await m.cards()).toHaveLength(1);
   });
 
-  it('an account that recovered while the server was down: its first good poll clears it, and the all-clear goes', async () => {
+  it('an account that recovered while the server was down: its first good poll clears it and ends the card', async () => {
     let m = await boot();
     failing(m, 'acct-a');
     const words = (await m.cards())[0].words;
@@ -237,8 +238,7 @@ describe('ruling 2: a watcher\'s failing state survives a restart, per account',
     // The watcher's first poll after the restart succeeds; its in-memory flag says "not alerted".
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-a')).toBe(true);
     m.watcher.maybeAlertOnRecovery({ name: 'gmail', accountId: 'acct-a', alreadyAlerted: false, totalNotificationsSinceFailure: 0 } as Parameters<typeof m.watcher.maybeAlertOnRecovery>[0]);
-    expect(texts()).toHaveLength(2);
-    expect(texts()[1]).toContain('Gmail watcher has recovered');
+    expect(texts()).toEqual([]);
     expect(ended()).toEqual([words]);
     expect(await m.cards()).toEqual([]);
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-a')).toBe(false);

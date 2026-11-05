@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { widestIntegrationLevel } from '../agent/access/read.js';
-import { sendAlert } from '../services/imessage-bridge.js';
+import { ownerCardFrame } from '../services/owner-card-frames.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 import {
   countMicrosoftAccounts,
@@ -304,7 +304,10 @@ function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string):
   updateMicrosoftAccount(accountId, { connected: false });
   if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
   broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-  try { void sendAlert(noteMicrosoftSignInExpired(accountId, expiredWords(acc)), 'critical'); } catch { /* alert best effort */ }
+  // OR-AUDIT-ANSWERS (d): a sign-in that expired is no platform text (the owner's set: offline and back online, budget,
+  // broken agent, Mac critical). The dashboard card stays; the agent sees the disconnected integration in its prompt and
+  // tells him (OR-ENGINE-LABELLED: the agent's job).
+  try { ownerCardFrame(noteMicrosoftSignInExpired(accountId, expiredWords(acc)), 'error', undefined, 'action'); } catch { /* the card is re-derived on the next load */ }
 }
 
 const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Microsoft cards).`; // the owner's card carries these words (t138 r3-4)
@@ -395,12 +398,7 @@ export async function attemptMicrosoftReconnect(accountId: string): Promise<'rec
   updateMicrosoftAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
   broadcast({ type: 'microsoft:connected', data: { email: acc.email ?? '', slot: acc.kind } });
   logger.info('Microsoft account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
-  // The bench sent a critical "re-authenticate in Settings" alert; a silent
-  // self-heal would leave the owner planning a trip to Settings for nothing.
-  // One low-key line closes that loop. Not celebration, cancellation.
-  try {
-    void sendAlert(`Microsoft account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice', { card: false }); // its card left when the sign-in was restored (t138 r4)
-  } catch { /* alert best effort */ }
+  // Its card left when the sign-in was restored (t138 r4). OR-AUDIT-ANSWERS (d): no all-clear text (the bench sent none).
   return 'reconnected';
 }
 

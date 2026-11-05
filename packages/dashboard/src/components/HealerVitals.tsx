@@ -240,7 +240,7 @@ export const HealerVitals = () => {
                   : '○';
                 const label = isApplied ? 'applied'
                   : isAutoResolved ? 'resolved on its own'
-                  : isApprovedPending ? 'approved — waiting on Healer'
+                  : isApprovedPending ? 'approved, waiting on Healer'
                   : p.status;
                 // Show resolved-at if we have one, otherwise created-at.
                 const stamp = p.resolved_at ?? p.created_at;

@@ -75,8 +75,8 @@ function seedTwoModelTier(db: Database.Database, opts: { slowDeclaresBoth: boole
   `).run(CLOUD_MODEL, CLOUD_MODEL, CONTEXT_WINDOW);
 
   db.prepare(`
-    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
-    VALUES ('slow-local', 'Slow Local', 'openai', 'api_key', ?, ?)
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
+    VALUES ('slow-local', 'Slow Local', 'openai', 'http://localhost:8080/v1', 'api_key', ?, ?)
   `).run(opts.slowDeclaresBoth ? 600_000 : null, opts.slowDeclaresBoth ? 180 : null);
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, is_enabled, capabilities, context_window, output_cost_per_m, input_cost_per_m)

@@ -186,7 +186,7 @@ reportsRouter.post('/:id/approve', async (c) => {
   const approved = approveOnce(id);
   // C4: the row exists. It is simply no longer awaiting a decision.
   if (!approved) {
-    return c.json({ ok: false, error: 'This report was already decided — it is '
+    return c.json({ ok: false, error: 'This report was already decided, it is '
       + `${existing.status}. One approval, one delivery.` }, 409);
   }
 

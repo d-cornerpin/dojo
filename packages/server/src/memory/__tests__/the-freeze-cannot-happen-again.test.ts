@@ -401,9 +401,11 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
     expect(frames.filter(f => f.type === 'chat:error'), 'no card for a stage the owner cannot act on').toEqual([]);
     expect(compactionFailureReason(AGENT), 'but the platform knows it is failing').toBe('no_yield');
     // And the one card that IS left names a repairable reason and promises nothing destructive.
+    // v3.5 field fix 3 (owner ruling: no summarization setting; the agent's own model writes): a fact, and it retries by itself.
     const failing = compactionFailingCardText('summary_writer_unavailable');
-    expect(failing).toContain('memory compaction is failing');
-    expect(failing).toContain('compaction resumes by itself');
+    expect(failing).toContain("own model is not answering for a memory summary");
+    expect(failing).toContain('it retries by itself');
+    expect(failing).not.toMatch(/Settings|provider|\u2014/);
     expect(failing).not.toMatch(/archiv/i);
     expect(failing).not.toMatch(/reset/i);
     expect(failing).not.toMatch(/cannot compress/i);

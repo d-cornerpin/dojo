@@ -1,7 +1,10 @@
-// v3.5 B4 — OWNER RULING 2026-10-20: "Check each summary against the decision model. If there are
-// significant summarization failures on a dojo, the user is encouraged to change the summarization
-// model to another larger model." Whoever writes a summary, the decision model reads it against the
-// rows it summarizes before the engine replaces those rows with it. The writer is scripted; every
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
+// v3.5 B4, OWNER RULING 2026-10-20: "Check each summary against the decision model." Whoever writes a summary, the
+// decision model reads it against the rows it summarizes before the engine replaces those rows with it.
+// OR-AUDIT-ANSWERS (c) (owner, rulings audit #12): a failing summary is rewritten by the agent's own model before it is
+// kept, the check acts without waiting for measured accuracy, and no card is sent (the old "change the summarization
+// model" encouragement is gone with that setting). The writer is scripted; every
 // /v1/systemone call is a scripted fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -32,15 +35,14 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { SUMMARY_CHECK_NOTICE_CODE, passMark, checkSummary, summaryChecksSettled } from '../summary-check.js';
+import { passMark, checkSummary } from '../summary-check.js';
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { CHARS_PER_TOKEN } from '../budget.js';
 import { unfenceExternal } from '../../tools/external-content.js';
-import { summaryCheckLine, summaryWriterStatus } from '../summary-check-ledger.js';
+import { summaryCheckLine } from '../summary-check-ledger.js';
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
-import { proveSummaryCheck } from './summary-check-proven.js';
 
 const AGENT = 'agent-summary-check';
 const SOURCE = '[USER · the owner · Oct 1, 2026] please draft the offsite budget\n---\n[ASSISTANT · the agent] drafting it now';
@@ -61,33 +63,30 @@ beforeEach(() => {
   for (const id of ['writer-small', 'writer-large']) {
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES (?, 'ollama-local', ?, ?, '["chat"]', 32000, 1)`).run(id, id, id);
   }
-  // The decision model: a summary carrying INVENTED states what the source does not say.
+  // The decision model: a summary carrying PENDING describes work as still owed (the one question that acts).
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
     if (url.endsWith('/api/ps')) return Response.json({ models: [] });   // t268: decide() sizes its timeout; not a decision
     decisions.asked++;
     if (!decisions.up) throw new Error('fetch failed: ECONNREFUSED');
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
-    const invented = state.summary.includes('INVENTED') ? 0.93 : 0.04;
-    return Response.json({ answers: { invented: { noul: invented }, dropped: { noul: 0.06 }, stated_current: { noul: 0.05 } } });
+    const pending = state.summary.includes('PENDING') ? 0.93 : 0.04;
+    return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: 0.06 }, stated_current: { noul: pending } } });
   }));
 });
-afterEach(async () => { await summaryChecksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });   // t268 fix round 2: late checks are queued; none outlives its case
+afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });  
 
 let span = 0;   // each write is its own span (fix round 2: a span that failed is not tried again by anyone)
 const write = (modelId = 'writer-small') => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId });
-const checks = (): Array<{ outcome: string; invented: number | null }> =>
-  db().prepare('SELECT outcome, invented FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; invented: number | null }>;
+const checks = (): Array<{ outcome: string; stated_current: number | null }> =>
+  db().prepare('SELECT outcome, stated_current FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; stated_current: number | null }>;
 
 describe('a summary is checked against its source before it is kept', () => {
-  // t268 ruling 1: a verdict acts only once B3's policy has flipped its question to `model` on measured
-  // accuracy (shadow is `the-summary-check-is-shadow-until-it-proves-itself.test.ts`); these clauses are that state.
-  beforeEach(() => proveSummaryCheck());
   it('a summary that invents a closed task fails and is rewritten once; the rewrite that passes is kept', async () => {
-    writer.outputs = ['The owner asked for the budget; INVENTED: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent began drafting it.'];
+    writer.outputs = ['The owner asked for the budget; PENDING: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent began drafting it.'];
     const r = await write();
     expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget; the agent began drafting it.' });
     expect(writer.prompts).toHaveLength(2);
-    expect(writer.prompts[1]).toContain('it stated something the input does not say');
+    expect(writer.prompts[1]).toContain('it described something as currently pending or owed');
     expect(writer.prompts[0]).not.toContain('accuracy check');
     expect(checks().map((c) => c.outcome)).toEqual(['rewritten_ok']);
   });
@@ -100,82 +99,35 @@ describe('a summary is checked against its source before it is kept', () => {
   });
 
   it('two failures keep the rows whole: nothing is kept, the failure is logged with its numbers, and the writer is not blamed as unreachable', async () => {
-    writer.outputs = ['INVENTED one.', 'INVENTED two.'];
+    writer.outputs = ['PENDING one.', 'PENDING two.'];
     const r = await write();
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.tooBig).toBeFalsy();
-    expect(checks()).toEqual([{ outcome: 'not_kept', invented: 0.93 }]);
+    expect(checks()).toEqual([{ outcome: 'not_kept', stated_current: 0.93 }]);
     expect(writerPassedOver('writer-small', AGENT)).toBe(false);
   });
 
   it('decide() unavailable → the summary is kept and the check is logged unavailable', async () => {
     decisions.up = false;
-    writer.outputs = ['INVENTED but nobody can tell.'];
+    writer.outputs = ['PENDING but nobody can tell.'];
     expect(await write()).toMatchObject({ ok: true });
     expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
   });
 
-  it('fix round 4: ONE isolated failure among passes is not "keep failing" — no notice', async () => {
-    writer.outputs = ['fine', 'INVENTED a.', 'INVENTED b.', 'fine', 'fine'];
-    await write(); await write(); await write(); await write();
-    expect(cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE)).toEqual([]);
-  });
-
-  it('the notice fires once with the numbers when a failure REPEATS, and re-arms only when the writer changes', async () => {
-    writer.outputs = ['INVENTED a.', 'INVENTED b.', 'INVENTED c.', 'INVENTED d.', 'INVENTED e.', 'INVENTED f.'];
-    await write();
-    const notices = () => cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE);
-    expect(notices()).toHaveLength(0);   // one failure: not yet "keep failing"
-    await write();
-    await write();
-    expect(notices()).toHaveLength(1);
-    expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: AGENT });
-    expect(notices()[0].error).toBe(
-      "This box's memory summaries keep failing the accuracy check (2 of the last 2). This box's summary writer may be too small for its conversations; pick a larger model under Settings → Models → Summarization Model.",   // t268 fix round 2 (edited): no single 'small writer' writes them now
-    );
-    writer.outputs = ['INVENTED g.', 'INVENTED h.', 'INVENTED i.', 'INVENTED j.'];
-    await write('writer-large'); await write('writer-large');
-    expect(notices()).toHaveLength(2);
-  });
-
-  it('I-B4-2: the latch is per writer — two writers that fail in turn do not trade cards back and forth', async () => {
-    const notices = () => cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE);
-    const twice = async (w: string): Promise<void> => { writer.outputs = ['INVENTED 1.', 'INVENTED 2.', 'INVENTED 3.', 'INVENTED 4.']; await write(w); await write(w); };
-    await twice('writer-small');
-    await twice('writer-large');
-    await twice('writer-small');
-    expect(notices()).toHaveLength(2);
+  it('OR-AUDIT-ANSWERS (c): failures, isolated or repeating, on one writer or two, send no card', async () => {
+    writer.outputs = ['fine', 'PENDING a.', 'PENDING b.', 'PENDING c.', 'PENDING d.', 'PENDING e.', 'PENDING f.'];
+    await write(); await write(); await write(); await write('writer-large');
+    expect(cards.list).toEqual([]);
   });
 
   it('I-B4-1: a summary that failed twice says so on its result, so no caller walks it to another writer', async () => {
-    writer.outputs = ['INVENTED one.', 'INVENTED two.'];
+    writer.outputs = ['PENDING one.', 'PENDING two.'];
     const r = await write();
     expect(r.ok === false && r.checkFailed).toBe(true);
   });
 
-  it('t268 fix round 2: with no Settings pick, the card follows the writer this box\'s checks were last made for', async () => {
-    expect(summaryWriterStatus()).toEqual({ writer: null, failed: 0, total: 0, failing: false });
-    writer.outputs = ['INVENTED x.', 'INVENTED y.', 'INVENTED z.', 'INVENTED w.'];
-    await write('writer-large'); await write('writer-large');
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-large', failed: 2, total: 2, failing: true });
-  });
-
-  it('(iv) the Summarization card is told when the current summary writer is failing', async () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'writer-small')").run();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 0, total: 0, failing: false });
-    writer.outputs = ['fine', 'INVENTED x.', 'INVENTED y.'];
-    await write(); await write();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 1, total: 2, failing: false });   // one isolated failure
-    writer.outputs = ['INVENTED z.', 'INVENTED w.'];
-    await write();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 2, total: 3, failing: true });   // it failed again
-    writer.outputs = ['fine'];
-    await write();
-    expect(summaryWriterStatus()).toMatchObject({ failing: false });   // the latest passed: it is not failing now
-  });
-
   it('the Healer section carries the running numbers', async () => {
-    writer.outputs = ['fine', 'INVENTED x.', 'better', 'INVENTED y.', 'INVENTED z.'];
+    writer.outputs = ['fine', 'PENDING x.', 'better', 'PENDING y.', 'PENDING z.'];
     await write(); await write(); await write();
     expect(summaryCheckLine()).toBe('Summary check (kept window): 3 checked, 1 kept as written, 1 kept after one rewrite, 1 left the rows whole, 0 unchecked (decision model unavailable).');
     expect(getDecisionScoreItems()[0].detail).toContain('Summary check (kept window): 3 checked');
@@ -257,7 +209,6 @@ describe('I-B4-3: the pass mark', () => {
   it('every check is recorded in the shadow log, so the record can grow', async () => {
     writer.outputs = ['The owner asked for the offsite budget.'];
     await write();
-    await summaryChecksSettled();   // fix round 1 (M-2): in shadow the check runs after the summary is kept
     expect(db().prepare("SELECT COUNT(*) AS n FROM decision_shadow WHERE purpose = 'summary_check'").get()).toEqual({ n: 3 });
   });
 });

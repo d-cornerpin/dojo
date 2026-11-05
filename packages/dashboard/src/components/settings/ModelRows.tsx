@@ -165,7 +165,7 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
         className="glass-input w-20 font-mono text-right disabled:opacity-60"
       />
       <span className="text-[10px] text-ui/25">GB</span>
-      {saved && <span className="text-xs text-cp-teal">Saved — recomputing…</span>}
+      {saved && <span className="text-xs text-cp-teal">Saved, recomputing…</span>}
       {error && <span className="text-xs text-cp-coral">{error}</span>}
       {!saved && !error && (
         <span className="text-[10px] text-ui/25 italic">
@@ -217,7 +217,7 @@ const CAPABILITY_LABELS: Record<string, { label: string; className: string; titl
   music_generation: {
     label: 'Music Gen',
     className: 'bg-cp-purple/15 text-cp-purple border-cp-purple/30',
-    title: 'Composes music or sound effects from a creative prompt. Different from TTS — does NOT read text aloud.',
+    title: 'Composes music or sound effects from a creative prompt. Different from TTS, does NOT read text aloud.',
   },
   transcription: {
     label: 'Transcription',
@@ -781,7 +781,7 @@ export const ModelRow = ({
           {ctxError && <span className="text-xs text-cp-coral">{ctxError}</span>}
           <span className="text-[10px] text-ui/25 italic">
             {model.numCtxOverride !== null
-              ? 'override set — reset for auto-sized default'
+              ? 'override set, reset for auto-sized default'
               : model.numCtxRecommended !== null
               ? `auto-sized for your RAM (~${Math.round(model.numCtxRecommended / 1024)}k tokens)`
               : 'higher = more RAM'}
@@ -880,7 +880,7 @@ const ModelLimitsEditor = ({ model, onSaved }: { model: Model; onSaved: () => vo
         <label
           htmlFor={contextInputId(model.id)}
           className="text-xs text-ui/40"
-          title="How much this model can read in one call, prompt and reply together. Set it to what your server is actually configured for — a wrong value here shrinks the room left for the reply."
+          title="How much this model can read in one call, prompt and reply together. Set it to what your server is actually configured for, a wrong value here shrinks the room left for the reply."
         >
           Context
         </label>
@@ -962,7 +962,7 @@ export const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSav
   if (!spec) {
     return (
       <div className="mt-3 text-[10px] text-ui/25 italic">
-        Generation params not seeded yet — restart the server to backfill, then edit here.
+        Generation params not seeded yet, restart the server to backfill, then edit here.
       </div>
     );
   }
@@ -1154,7 +1154,7 @@ export const VoiceCatalogEditor = ({ model, onSaved }: { model: Model; onSaved: 
   if (!catalog) {
     return (
       <div className="mt-3 text-[10px] text-ui/25 italic">
-        Voice catalog not seeded yet — restart the server to backfill, then edit here.
+        Voice catalog not seeded yet, restart the server to backfill, then edit here.
       </div>
     );
   }

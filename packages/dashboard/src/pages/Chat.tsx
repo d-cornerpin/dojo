@@ -2,7 +2,7 @@ import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, inboundSenderName, outboundBadge, withoutFence } from '../lib/channel-display';
@@ -709,7 +709,7 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
               displayContent = (rawContent as Array<Record<string, unknown>>)
                 .map((block: Record<string, unknown>) => {
                   if (block.type === 'text') return block.text as string;
-                  if (block.type === 'image') return '[Image content — visible to model via vision]';
+                  if (block.type === 'image') return '[Image content, visible to model via vision]';
                   if (block.type === 'document') return `[PDF: ${(block.title as string) ?? 'document'}]`;
                   return '';
                 })
@@ -1292,7 +1292,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // recovered agents and the engine's info-level events (HEALER_DISPATCHED,
       // AGENT_RECOVERED, SEMANTIC_DUPLICATE dedup) showing as red errors.
       const isRateLimit = e.code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
-      const sev: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
+      const declared: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
+      // Rulings audit #7 (owner, M11): "It shouldn't be a persistent notification if it doesn't require the
+      // intervention of the user. It also shouldn't be red." A sticky red card is for a frame that declares the owner
+      // must act (`cardClass: 'action'`); any other error reads as a warning that leaves by itself.
+      const sev: 'info' | 'warning' | 'error' = declared === 'error' && e.cardClass !== 'action' ? 'warning' : declared;
       if (sev === 'info') {
         toast.success(e.error);
         // Recovered → clear isWorking lock so UI re-enables input.
@@ -1302,6 +1306,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         }
       } else if (sev === 'warning') {
         toast.warning(e.error);
+        if (declared === 'error') { setIsWorking(false); reconcileStreamingBubbles(); }   // the turn ended either way
       } else {
         toast.error(e.error); // stays until dismissed
         setIsWorking(false);
@@ -1626,7 +1631,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             content = (raw as Array<Record<string, unknown>>)
               .map((b) => {
                 if (b.type === 'text') return b.text as string;
-                if (b.type === 'image') return '[Image content — visible to model via vision]';
+                if (b.type === 'image') return '[Image content, visible to model via vision]';
                 if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
                 return '';
               })
@@ -1956,7 +1961,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // ended silently — there's no user-facing value in showing
             // "[Agent ended turn without replying — conversation closed]"
             // as a chat bubble. Hide in both wordy and non-wordy modes.
-            if (trimmedSys === '[Agent ended turn without replying — conversation closed]') {
+            if (trimmedSys === NO_REPLY_CLOSED_MARKER) {
               return null;
             }
             // Demoted working note: a plain note renders in BOTH modes (the narration

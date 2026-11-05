@@ -66,7 +66,7 @@ export const budgetStopWords = (budgetId: string): string => budgetId.startsWith
     + `Raise the limit on the Ledger page to let them go on now, or they go on by themselves when the window turns over. `
     + `Their messages are kept and answered then.`;
 export const healerMissingWords = (name: string): string =>
-  `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
+  `${name} is stuck and the Healer agent is missing, so nothing is unsticking it. A message to ${name} may get it going again.`;   // audit #13 (V13): no "Restore the Healer" control exists in Settings → Sensei
 
 /**
  * True exactly when the owner has NOT yet been told about this condition — its own `key`, or,
@@ -206,7 +206,16 @@ export function ownerConditionsOnAgentGone(agentId: string): void {
   ownerConditionCleared(`nofit:${agentId}`);
 }
 
-/** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed. */
+/** v3.5 field fix 3 (#9, OR-FIELD3 (c)): the conditions whose card is INFORMATIONAL (the Dojo retries or checks by
+ *  itself; nothing for the owner to do). Their frame is a toast that leaves by itself, so a reload never re-derives
+ *  them; the told-record stays (it is still told once per condition). Their callers declare the same class
+ *  (`local-standard.ts`, `ollama-model-limit.ts`, `local-model-fit.ts`, `embedding-switch.ts`; pinned by the t138 census). */
+export function isInformationalCondition(key: string): boolean {
+  return key === 'standard-models' || key === 'ollama-limit-failed' || key.startsWith('fitunchecked:') || key === 'embedding-switch'   // review round L1
+    || key === 'ollama-down';   // audit #7: the Dojo retries; the card asks nothing of him
+}
+
+/** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed, and ACTION cards only. */
 export function healerOwnerCards(): Array<{ words: string; severity: 'critical' | 'notice'; dismiss: () => void; cardKey?: string }> {
   const db = getDb();
   const rows = db.prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ?
@@ -216,18 +225,14 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
       AND (? = 0 OR (status = 'paused' AND instr(COALESCE(last_error, ''), '[no_model_fits]') = 1))`).get(id, parked ? 1 : 0);
   // A window's "limit reached" card stands while an agent is still parked for the limit (t167).
   const budgetParked = (): boolean => !!db.prepare(`SELECT 1 FROM agents WHERE status = 'paused' AND instr(COALESCE(last_error, ''), '[budget_stop]') = 1`).get();
-  // A "fit not checked" card stands while its model is still marked AND still in use somewhere (an agent, a
-  // tier, a setting): a pick that a door then refused, or that was changed since, says nothing (N7).
-  const fitStillOwed = (modelId: string): boolean => !!db.prepare(`SELECT 1 FROM healer_state WHERE scope = 'local_fit_unchecked' AND key IN (?, ?)`).get(`agent:${modelId}`, `job:${modelId}`)
-    && !!db.prepare('SELECT 1 FROM agents WHERE model_id = ? UNION SELECT 1 FROM router_tier_models WHERE model_id = ? UNION SELECT 1 FROM config WHERE value = ?').get(modelId, modelId, modelId);
-  return rows.filter(({ key }) => wordsOf(key) !== '').filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
-    : key.startsWith('fitunchecked:') ? fitStillOwed(key.slice('fitunchecked:'.length))
-    : key === 'embedding-switch' ? countMemoriesOnOtherModels() > 0   // stands until no memory is left on the old model
+  // v3.5 field fix 3 (#9): STRIP the "fit not checked" standing rule (N7): that card is informational now, a toast
+  // that leaves by itself, and is not re-derived on a reload.
+  return rows.filter(({ key }) => wordsOf(key) !== '' && !isInformationalCondition(key)).filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key === 'ollama-too-old' || key === 'ollama-down' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') || key === 'embedding-switch' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama-too-old' || key === 'ollama-down' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

@@ -138,6 +138,7 @@ export function notePlaudReauthRequired(agentId?: string | null): boolean {
         error: plaudExpiredText(),
         code: 'AUTH_INVALID',
         severity: 'error',
+        cardClass: 'action',   // he signs in again
         retryable: false,
       });
       void import('../agent/dojo-voice.js').then(({ tellAgentWhatDojoSent }) => tellAgentWhatDojoSent({

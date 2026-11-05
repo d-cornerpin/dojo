@@ -42,7 +42,7 @@ vi.mock('../../effects/capability.js', async (orig) => ({
 }));
 
 import {
-  runProcess, processTimeout, EXEC_TIMEOUT_MAX_MS, EXEC_ABSOLUTE_CEILING_MS,
+  runProcess,
 } from '../process-run.js';
 import { attachIdleBound, type WatchableChild } from '../../../child-idle-bound.js';
 
@@ -248,19 +248,6 @@ describe('§3 controls — the bounds still exist and still bite', () => {
     expect(out).not.toMatch(/SIGTERM|exit [1-9]/);
   }, 20_000);
 
-  it('CONTROL: the absolute ceiling exists, so the idle bound is not an unbounded renewal', () => {
-    // A process dribbling one byte a minute would otherwise hold the door open for ever. The
-    // ceiling does not re-arm; it is the one bound on total life.
-    expect(EXEC_ABSOLUTE_CEILING_MS, 'there is a bound on total life').toBeGreaterThan(0);
-    expect(EXEC_ABSOLUTE_CEILING_MS, 'and it is far above any legitimate tool call')
-      .toBeGreaterThan(EXEC_TIMEOUT_MAX_MS);
-  });
-
-  it('CONTROL: the cap still clamps — what it bounds is tolerated SILENCE, not work', () => {
-    // The cap is kept deliberately. Once the number bounds silence rather than runtime it can no
-    // longer kill healthy work, so "the agent cannot ask for more than two minutes of silence
-    // tolerance" is a defensible bound rather than the defect.
-    expect(processTimeout(999_999_999), 'an over-large ask is still clamped').toBe(EXEC_TIMEOUT_MAX_MS);
-    expect(processTimeout(5_000), 'a reasonable ask is honoured').toBe(5_000);
-  });
+  // Rulings audit #14 (P1-l, M14) removed the two CONTROL clauses that pinned the one-hour total cap and the 120 s clamp
+  // on the agent's door; what replaces them: a-quiet-command-runs-for-the-agents-silent-window.test.ts.
 });

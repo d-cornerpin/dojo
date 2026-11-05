@@ -557,17 +557,9 @@ describe('t140 round 4 — card noise: one card per incident', () => {
 });
 
 describe('t140 round 4 — R-V333-12: the fallback never widens who sees the conversation', () => {
-  // t268 round 5 (edited): the order is the Settings writer, the agent's own model, then the Dojo's small LOCAL writer
+  // t268 round 5 (edited; v3.5 field fix 3: no Settings writer): the order is the agent's own model, then the Dojo's small LOCAL writer
   // (CHEAP here) — and nothing after it: no model on a provider nobody chose for summaries, however cheap.
-  it('with a Settings writer: Settings writer, the agent\'s own model, the small local writer — never another provider', async () => {
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(NEXT);
-    writers.mode = { [NEXT]: 'empty', [OWN]: 'empty', [CHEAP]: 'empty' };
-    seedACut();
-    const ctx = await door();
-    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect([...new Set(writers.calls)]).toEqual([NEXT, OWN, CHEAP]);
-    expect(placeholders().length, 'placeholders, not a wider audience').toBeGreaterThan(0);
-  }, 5_000);
+  // v3.5 field fix 3: the 'with a Settings writer' clause is deleted with the setting (owner ruling: there is none).
 
   it('with NO Settings writer: the agent\'s own model, then the small local writer — never the cheapest cloud model', async () => {
     writers.mode = { [OWN]: 'empty' };

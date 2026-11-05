@@ -26,7 +26,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { listGoogleAccounts } from './accounts.js';
 import { createLogger } from '../logger.js';
-import { formatDivider } from '@dojo/shared';
+import { formatDivider, settingsPath } from '@dojo/shared';
 
 const logger = createLogger('google-reauth-notice');
 const FLAG_KEY = 'google_broker_reauth_notified';
@@ -38,7 +38,7 @@ const FLAG_KEY = 'google_broker_reauth_notified';
 const TOAST_PENDING_KEY = 'google_broker_reauth_toast_pending';
 
 const TOAST_MESSAGE =
-  'Action needed: reconnect your Google account(s) in Settings ▸ Channels ▸ Google. ' +
+  `Action needed: reconnect your Google account(s) in ${settingsPath('agentGoogle')} and ${settingsPath('userGoogle')}. ` +
   'Do this on the computer running DOJO itself (not a phone or a remote browser), or ' +
   'the Google sign-in will fail. A security update changed how Google connects; nothing else is affected.';
 
@@ -65,7 +65,7 @@ export function notifyGoogleReauthOnce(): void {
       // 1. User-visible divider in the dojo chat (── label ── renders as a
       //    centered system notice in regular mode).
       const dividerId = uuidv4();
-      const divider = formatDivider('Google reconnect needed (do it on the DOJO computer): Settings ▸ Channels ▸ Google');
+      const divider = formatDivider(`Google reconnect needed (do it on the DOJO computer): ${settingsPath('channels')}`);
       insertMessage({ id: dividerId, agentId: primaryId, role: 'system', content: divider });
       broadcast({
         type: 'chat:message',
@@ -172,6 +172,7 @@ export function flushPendingGoogleReauthToast(): void {
       error: TOAST_MESSAGE,
       code: 'AUTH_INVALID',
       severity: 'error',
+      cardClass: 'action',   // he reconnects the account
     });
 
     db.prepare(

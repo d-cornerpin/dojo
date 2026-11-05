@@ -3,22 +3,22 @@
 //
 // OWNER RULING 2026-10-20: "Check each summary against the decision model. If there are significant
 // summarization failures on a dojo, the user is encouraged to change the summarization model to
-// another larger model." Whoever writes it, the decision model reads the summary against the rows it
+// another larger model." (v3.5 field fix 3, owner ruling: there is no summarization model setting; each agent's
+// own model writes, so the notice states the fact and points at no setting.) Whoever writes it, the decision model reads the summary against the rows it
 // summarizes (`generateSummary`, the one door every summary comes through), and:
 //   pass                → kept as written;
 //   fail                → rewritten ONCE with the failed questions named, then checked again;
 //   fail again          → NOT kept: the caller leaves the rows whole and a later pass tries again
 //                         (every caller already treats a refusal that way); logged with its numbers;
 //   no answer           → kept, logged `unavailable` — the check never blocks compaction.
-// t268 (orchestrator ruling 1, after B5 measured the check): a failing verdict ACTS only on the questions
-// B3's policy has flipped to `model` on measured accuracy (`actingQuestions`). Until then every summary is
-// checked and its verdict recorded in `decision_shadow`, and the summary is kept as it was before v3.5.
+// OR-AUDIT-ANSWERS (c), owner ruling "Redo bad summaries" (supersedes t268 ruling 1's shadow for this check): a
+// failing verdict ACTS on every asked question (`actingQuestions`), whatever the policy's mode; each verdict is still
+// recorded in `decision_shadow`. No owner card is sent on any outcome.
 // A failed check is not the writer being unreachable: nothing here marks the writer passed over.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { measuredDecideTimeoutMs, type Answer, type DecideOpts, type FailureClass, type Question } from '../agent/decide.js';
 import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
 import type { SummaryResult } from './summarize.js';
@@ -37,15 +37,18 @@ const logger = createLogger('summary-check');
 export interface SummaryCheck { ok: boolean; invented: number; dropped: number; statedCurrent: number; answers: Record<string, Answer> | null }
 
 const PURPOSE = SUMMARY_CHECK_PURPOSE;
+// Summary-check round (owner ruling 2, his insight verbatim: "if the question is 'does the summary state something the
+// messages never did' then the answer will almost always be yes because the point of a summary is to reword ... maybe
+// the question needs more specificity"). `invented` and `dropped` are reworded for that; `stated_current` is unchanged.
 const QUESTIONS: Record<SummaryCheckQuestion, Question> = {
-  invented: { type: 'noul', instructions: 'Does `summary` state anything that `source_rows` does not say?' },
-  dropped: { type: 'noul', instructions: 'Does `summary` leave out a request, decision, instruction or name that `source_rows` contains?' },
+  invented: { type: 'noul', instructions: 'Does `summary` introduce a fact, concept or meaning that `source_rows` never included? Rewording or shortening what `source_rows` says is not a new fact.' },
+  dropped: { type: 'noul', instructions: 'Does `source_rows` contain a decision, a promise, a name, a date, a number or an unfinished task that `summary` does not mention?' },
   stated_current: { type: 'noul', instructions: 'Does `summary` describe anything as currently pending or owed?' },
 };
 /** What the rewrite is told, per failed question (the writer's own words for the input: "the input"). */
 const FEEDBACK: Record<keyof typeof QUESTIONS, string> = {
-  invented: 'it stated something the input does not say',
-  dropped: 'it left out a request, decision, instruction or name the input contains',
+  invented: 'it introduced a fact, concept or meaning the input never included',
+  dropped: 'it left out a decision, promise, name, date, number or unfinished task the input contains',
   stated_current: 'it described something as currently pending or owed',
 };
 
@@ -111,46 +114,6 @@ function record(agentId: string, writer: string, outcome: Outcome, c: SummaryChe
   }
 }
 
-export const SUMMARY_CHECK_NOTICE_CODE = 'SUMMARY_CHECK_FAILING';
-/** One latch PER WRITER MODEL (fix round 1, I-B4-2): `summary_check_noticed.<writer id>`. */
-const noticedKey = (writer: string): string => `summary_check_noticed.${writer}`;
-
-/**
- * The owner is told once per writer model, by the existing `chat:error` card, when this writer KEEPS failing
- * its check (`writerFailing`, fix round 4: a failure that repeats; one isolated failure is not it). The mark
- * re-arms when the writer changes, or when this writer's failures have aged out of the kept window (they stopped).
- */
-function noticeIfFailing(agentId: string, writer: string): void {
-  if (!summaryCheckActs()) return;   // t268: a verdict in shadow tells no one
-  try {
-    const db = getDb();
-    const row = writerFailing(writer);
-    const failed = row.failed;
-    const noticed = !!db.prepare('SELECT 1 FROM config WHERE key = ?').get(noticedKey(writer));
-    if (failed === 0) {
-      if (noticed) db.prepare('DELETE FROM config WHERE key = ?').run(noticedKey(writer));
-      return;
-    }
-    if (noticed || !row.failing) return;
-    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(noticedKey(writer), writer);
-    broadcast({
-      type: 'chat:error',
-      agentId,
-      error: `This box's memory summaries keep failing the accuracy check (${failed} of the last ${row.total}). `
-        + "This box's summary writer may be too small for its conversations; pick a larger model under Settings → Models → Summarization Model.",
-      code: SUMMARY_CHECK_NOTICE_CODE,
-      severity: 'warning',
-      retryable: false,
-    });
-  } catch { /* a notice is a courtesy; never break the summary it rides on */ }
-}
-
-/** The shadow checks still running after their summaries were kept. */
-const lateChecks = new Set<Promise<void>>();
-/** Resolves when every shadow check started so far has recorded its verdict. Starts nothing. */
-export async function summaryChecksSettled(): Promise<void> { while (lateChecks.size > 0) await Promise.all([...lateChecks]); }
-
 /**
  * The flow between "written" and "kept". `written` is an ok result; `rewrite(feedback)` writes the same
  * input again with the failed questions named. The check's time is `decide()`'s own measured formula for its
@@ -161,56 +124,47 @@ export async function keepOnlyIfChecked(
   source: string, written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
   rewrite: (feedback: string) => Promise<SummaryResult>, newCheckId: () => string | undefined = () => undefined,
 ): Promise<SummaryResult> {
-  // t268: only a failure on a question the policy flipped to `model` acts; a shadow verdict is recorded
-  // (`decision_shadow`, and this row's numbers) and the summary is kept as written.
+  // OR-AUDIT-ANSWERS (c): every asked question acts (`actingQuestions`); the shadow rows are still recorded.
   const asked = askedQuestions();
   const acting = actingQuestions();
   if (asked.length === 0) return written;   // M-3: every question held to the rule (or no decision model): the model is not asked
   const checkId = newCheckId();   // N-D: each text checked is its own version
-  if (acting.length === 0) {   // M-2: a verdict that cannot act never holds the summary up: kept now, checked after
-    noteSummaryKept(checkId);
-    const late = checkSummary(source, written.text, agentId, { asked, background: true, checkId }).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
-      .catch(() => undefined).finally(() => { lateChecks.delete(late); });
-    lateChecks.add(late);
-    return written;
-  }
   const first = await checkSummary(source, written.text, agentId, { asked, checkId });
   if (!first.answers) { record(agentId, writer, 'unavailable', null); noteSummaryKept(checkId); return written; }
   const failed = actedFailures(first, acting);
-  if (failed.length === 0) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); noteSummaryKept(checkId); return written; }
+  if (failed.length === 0) { record(agentId, writer, 'ok', first); noteSummaryKept(checkId); return written; }
 
   const again = await rewrite(failed.map((q) => FEEDBACK[q]).join('; '));
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
   const againId = newCheckId();
   const second = await checkSummary(source, again.text, agentId, { asked, checkId: againId });
   if (!second.answers) { record(agentId, writer, 'unavailable', null); noteSummaryKept(againId); return again; }
-  if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); noteSummaryKept(againId); return again; }
+  if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noteSummaryKept(againId); return again; }
 
   record(agentId, writer, 'not_kept', second);
   logger.warn('summary_check_failed the summary was not kept; the rows stay whole for a later pass', {
     writer, invented: second.invented, dropped: second.dropped, statedCurrent: second.statedCurrent,
   }, agentId);
-  noticeIfFailing(agentId, writer);
-  // `checkFailed`: a verdict on this span, not a writer that stopped answering — no caller walks it on to
-  // another writer (never the agent's own paid model); the span is left as it is this time (I-B4-1).
+  // `checkFailed`: a verdict on this span, not a writer that stopped answering, so no caller walks it on to another
+  // writer; the rows stay whole behind the placeholder path, and the span is held (`recordRefusedSpan`) until a real
+  // signal (new rows join it, or its writer changes). No card (owner ruling), no timer, no count (I-B4-1).
   return { ok: false, reason: 'the summary failed the accuracy check twice; the rows stay whole', checkFailed: true };
 }
 
 /** Did a summary of this agent's fail its check (and stay unwritten) since `sinceMs`? The fold's writer walk asks. */
 export function summaryCheckRefusedSince(agentId: string, sinceMs: number): boolean {
-  if (!summaryCheckActs()) return false;   // t268: no verdict holds anything while the check is in shadow
   try {
     return !!getDb().prepare("SELECT 1 FROM summary_checks WHERE agent_id = ? AND outcome = 'not_kept' AND created_at >= ?").get(agentId, sinceMs);
   } catch { return false; }
 }
 
-import { spanKeys, spanRefused, recordRefusedSpan, clearRefusedSpan, writerFailing, type SummaryParams } from './summary-check-ledger.js';
+import { spanKeys, spanHeld, recordRefusedSpan, clearRefusedSpan, type SummaryParams } from './summary-check-ledger.js';
 
 /** `generateSummary`'s body: write (settled), then keep only what passes. `write` is the settled writer call. */
 export async function writeThenCheck<P extends SummaryParams>(params: P, write: (p: P) => Promise<SummaryResult>): Promise<SummaryResult> {
   const keys = params.modelId ? spanKeys(params) : [];
-  if (keys.length > 0 && summaryCheckActs() && spanRefused(keys)) {   // t268: the hold acts only in `model` mode
-    return { ok: false, checkFailed: true, reason: 'this span failed its accuracy check; it is left as it is until the summary writer changes or new rows join it' };
+  if (keys.length > 0 && summaryCheckActs() && spanHeld(keys, params.spanOpen === true)) {   // S6: handled; it waits for a real signal
+    return { ok: false, checkFailed: true, reason: 'this span failed its accuracy check; it is left as it is until its writer changes or it closes with new rows' };
   }
   const written = await write(params);
   if (!written.ok || !params.modelId) return written;

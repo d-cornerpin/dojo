@@ -975,7 +975,7 @@ export const Tracker = () => {
               type="button"
               className="btn btn--sm"
               onClick={() => setCloseProjectModalOpen(true)}
-              title="Mark the project and every open task as resolved in one call — leaves an audit note on each task. Use when the project was abandoned, duplicated, or finished but never closed out."
+              title="Mark the project and every open task as resolved in one call, leaves an audit note on each task. Use when the project was abandoned, duplicated, or finished but never closed out."
             >
               Close + Resolve Open Tasks
             </button>
@@ -1134,8 +1134,8 @@ const CloseProjectModal = ({
               onChange={e => setStatus(e.target.value as 'complete' | 'cancelled')}
               className="glass-select w-full"
             >
-              <option value="cancelled">Cancelled — abandoned, duplicated, or scope changed</option>
-              <option value="complete">Complete — all work was actually done</option>
+              <option value="cancelled">Cancelled, abandoned, duplicated, or scope changed</option>
+              <option value="complete">Complete, all work was actually done</option>
             </select>
           </div>
 

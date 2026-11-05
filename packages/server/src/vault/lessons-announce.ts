@@ -20,7 +20,7 @@ export function lessonReportLines(cycleStartedAtMs: number): string[] {
 export function announceLessons(cycleStartedAtMs: number): number {
   try {
     const n = lessonsTouchedSince(cycleStartedAtMs).length;
-    if (n > 0) ownerCardFrame(words(n), 'warning');
+    if (n > 0) ownerCardFrame(words(n), 'warning', undefined, 'informational');   // a report to read, nothing to do
     return n;
   } catch {
     return 0;

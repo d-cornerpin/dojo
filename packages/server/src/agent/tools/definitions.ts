@@ -200,7 +200,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         timeout: {
           type: 'number',
-          description: 'Milliseconds of SILENCE to tolerate before the command is stopped (default: 30000, max: 120000). This bounds the gap between writes to stdout/stderr, NOT total runtime — a command that keeps producing output is never killed for taking long. Raise it only if the command is legitimately quiet for a while.',
+          description: 'Milliseconds of SILENCE to tolerate before the command is stopped. Optional: without it the command may stay quiet for as long as your silent window (two hours unless the owner set yours longer). This bounds the gap between writes to stdout/stderr, NOT total runtime; a command that keeps producing output is never killed for taking long. Pass a short value only when you know the command should answer fast.',
         },
       },
       required: ['argv'],
@@ -224,7 +224,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         timeout: {
           type: 'number',
-          description: 'Milliseconds of SILENCE to tolerate before the command is stopped (default: 30000, max: 120000). This bounds the gap between writes to stdout/stderr, NOT total runtime — a command that keeps producing output is never killed for taking long. Raise it only if the command is legitimately quiet for a while.',
+          description: 'Milliseconds of SILENCE to tolerate before the command is stopped. Optional: without it the command may stay quiet for as long as your silent window (two hours unless the owner set yours longer). This bounds the gap between writes to stdout/stderr, NOT total runtime; a command that keeps producing output is never killed for taking long. Pass a short value only when you know the command should answer fast.',
         },
       },
       required: ['script'],

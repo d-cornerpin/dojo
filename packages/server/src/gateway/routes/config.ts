@@ -26,8 +26,7 @@ import { accountOwnerCards } from '../../services/account-owner-cards.js';
 import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { importOwnerCards } from '../../migration/import-recovery.js';
-import { builtInToolsOwnerCards } from '../../services/built-in-tools-card.js';
-import { catchUpOwnerCards } from '../../memory/catch-up-state.js';
+import { builtInToolsOwnerCards, markBuiltInToolsCardShown } from '../../services/built-in-tools-card.js';
 import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
@@ -1548,7 +1547,7 @@ configRouter.patch('/providers/:id', async (c) => {
   if (identity.length > 0) {
     return c.json({
       ok: false,
-      error: `A provider's ${identity.join(', ')} cannot be edited — a provider that speaks a different API, or authenticates a different way, is a different provider. Delete this one and add it again. This door edits name, baseUrl, behavesLike and credential.`,
+      error: `A provider's ${identity.join(', ')} cannot be edited, a provider that speaks a different API, or authenticates a different way, is a different provider. Delete this one and add it again. This door edits name, baseUrl, behavesLike and credential.`,
     }, 400);
   }
 
@@ -1820,7 +1819,7 @@ configRouter.delete('/models/:id', async (c) => {
     const names = agents.map(a => a.name).join(', ');
     return c.json({
       ok: false,
-      error: `Cannot delete — model is in use by: ${names}. Change their model first.`,
+      error: `Cannot delete, model is in use by: ${names}. Change their model first.`,
     }, 409);
   }
 
@@ -2342,9 +2341,6 @@ configRouter.post('/models/disable', async (c) => {
 
 // ── Platform Settings (key-value config) ──
 
-// GET /summary-check — v3.5: is the current summary writer failing its accuracy check? (the Summarization card)
-configRouter.get('/summary-check', async (c) => c.json({ ok: true, data: (await import('../../memory/summary-check-ledger.js')).summaryWriterStatus() }));
-
 // GET /settings/:key
 configRouter.get('/settings/:key', (c) => {
   const db = getDb();
@@ -2446,7 +2442,7 @@ configRouter.put('/settings/:key', async (c) => {
     });
   }
 
-  if (key === 'router.context_window' || key === 'compaction_model_id') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // N42: the router window changed; no-fit locks get another look (t268: the Summarization pick: a waiting summary span)
+  if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // N42: the router window changed; no-fit locks get another look
 
   // Clear platform config cache when platform keys are updated
   const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed', 'sudo_policy'];
@@ -2905,8 +2901,8 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 // dismissed across reloads and restarts, and a NEW incident is a new card.
 const ownerCards = () => [
   ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
-  ...accountOwnerCards(), ...watcherOwnerCards(), ...importOwnerCards(), ...builtInToolsOwnerCards(), ...catchUpOwnerCards(),
-].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey }));
+  ...accountOwnerCards(), ...watcherOwnerCards(), ...importOwnerCards(), ...builtInToolsOwnerCards(),
+].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey, cardClass: (card as { cardClass?: 'action' | 'informational' }).cardClass }));
 
 // The owner-notice door asks this list whether a card LASTS (t146): a card it would not re-derive
 // is a live frame only, and is not the owner told about a work row.
@@ -2914,7 +2910,10 @@ registerStandingOwnerCards(ownerCards);
 
 // GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
 configRouter.get('/owner-notices', (c) => {
-  const seen = new Map(ownerCards().map(({ words, severity, cardKey }) => [cardKey ?? words, { words, severity, ...(cardKey ? { cardKey } : {}) }] as const));
+  const cards = ownerCards();
+  const seen = new Map(cards.map(({ words, severity, cardKey, cardClass }) => [cardKey ?? words, { words, severity, ...(cardKey ? { cardKey } : {}), ...(cardClass ? { cardClass } : {}) }] as const));
+  // Audit #7: a card named once (the built-in tools card) is marked shown as it is served.
+  for (const card of cards) if (card.cardKey) markBuiltInToolsCardShown(card.cardKey);
   return c.json({ ok: true, data: [...seen.values()] });
 });
 

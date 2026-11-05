@@ -1,5 +1,8 @@
-// t268 fix round 1 (M-2, M-3, I-4, M-1) — A CHECK THAT CANNOT ACT NEVER HOLDS A SUMMARY UP.
-// · M-2: in shadow the summary is kept at once and the check runs after it, off the compaction's path;
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
+// t268 fix round 1 (M-3, I-4, M-1): the summary check's questions, ids and part splitter, and its turn on Ollama.
+// (M-2, "in shadow the summary is kept first, checked after", is gone: OR-AUDIT-ANSWERS (c) makes the check act,
+// so it runs before the summary is kept; see a-failing-summary-is-rewritten-before-it-is-kept.test.ts.)
 // · M-3: a question held to the rule (or a box with no decision model) never asks the model at all;
 // · I-4: the shadow rows carry the check's id, derived from the kept summary's own text (`summaryCheckId`), so a
 //   future truth source can join them to the summary row (none exists yet);
@@ -28,15 +31,13 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
-import { summaryChecksSettled, checkSummary } from '../summary-check.js';
+import { checkSummary } from '../summary-check.js';
 import { summaryCheckId, summaryCheckIdOfRow, recordSummaryTruth } from '../summary-check-ledger.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { sourceParts } from '../summary-check-parts.js';
 import { decideCountedBytes } from '../../agent/decide-sizing.js';
-import { getOllamaLock } from '../../services/ollama-lock.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
-import { proveSummaryCheck } from './summary-check-proven.js';
 
 const AGENT = 'agent-shadow-first';
 const SOURCE = '[USER · the owner] please draft the offsite budget\n---\n[ASSISTANT · the agent] drafting it now';
@@ -68,7 +69,7 @@ beforeEach(() => {
     } });
   }));
 });
-afterEach(async () => { await summaryChecksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });   // t268 fix round 2: late checks are queued; none outlives its case
+afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });  
 
 
 let span = 0;
@@ -76,26 +77,11 @@ const write = () => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, 
 const shadowRows = (): Array<{ question: string; turn_id: string }> =>
   db().prepare("SELECT question, turn_id FROM decision_shadow WHERE purpose = 'summary_check' ORDER BY question").all() as Array<{ question: string; turn_id: string }>;
 
-describe('M-2: in shadow the summary is kept first; the check runs after it', () => {
-  it('the summary comes back while the decision model has not answered yet; the verdict is recorded once it does', async () => {
-    gate.open = false;
-    writer.outputs = ['INVENTED: the budget was sent.'];
-    const r = await write();   // would hang here if the summary waited on the check
-    expect(r).toMatchObject({ ok: true, text: 'INVENTED: the budget was sent.' });
-    expect(shadowRows()).toEqual([]);
-    gate.open = true; for (const go of gate.waiting.splice(0)) go();
-    await summaryChecksSettled();
-    expect(shadowRows().map((s) => s.question)).toEqual(['dropped', 'invented', 'stated_current']);
-    expect(db().prepare('SELECT outcome FROM summary_checks').all()).toEqual([{ outcome: 'ok' }]);
-  });
-});
-
 describe('M-3: a question held to the rule never asks the model', () => {
   it('all three held: no decision call at all, nothing recorded', async () => {
     for (const q of ['invented', 'dropped', 'stated_current']) db().prepare('INSERT INTO config (key, value) VALUES (?, ?)').run(`decision_mode.summary_check.${q}`, 'rule');
     writer.outputs = ['The owner asked for the budget.'];
     expect(await write()).toMatchObject({ ok: true });
-    await summaryChecksSettled();
     expect(asked).toEqual([]);
     expect(shadowRows()).toEqual([]);
   });
@@ -104,7 +90,6 @@ describe('M-3: a question held to the rule never asks the model', () => {
     db().prepare("INSERT INTO config (key, value) VALUES ('decision_mode.summary_check.dropped', 'rule')").run();
     writer.outputs = ['The owner asked for the budget.'];
     await write();
-    await summaryChecksSettled();
     expect(asked).toEqual([['invented', 'stated_current']]);
     expect(shadowRows().map((s) => s.question)).toEqual(['invented', 'stated_current']);
   });
@@ -116,7 +101,6 @@ describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + l
   const keep = async (ids: string[], text: string): Promise<string> => {
     writer.outputs.push(text);
     const r = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
-    await summaryChecksSettled();
     return createLeafSummary(AGENT, r.ok ? r.text : '', 10, ids, new Date().toISOString(), new Date().toISOString()).id;
   };
 
@@ -148,7 +132,6 @@ describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + l
     const firstId = summaryCheckIdOfRow(summaryId);
     writer.outputs.push('The owner asked for the offsite budget, due Friday.');
     const again = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
-    await summaryChecksSettled();
     updateSummaryContent(summaryId, again.ok ? again.text : '', 12);   // the rebuild rewrites the same row in place
     const secondId = summaryCheckIdOfRow(summaryId);
     expect(secondId).not.toBe(firstId);
@@ -157,10 +140,9 @@ describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + l
     expect(truths).toEqual([{ turn_id: firstId, truth: null }, { turn_id: secondId, truth: 'false' }]);
   });
 
-  it('the one rewrite in model mode: the failed text and the kept rewrite have distinct ids; the row carries the rewrite\'s', async () => {
-    proveSummaryCheck();
+  it('the one rewrite: the failed text and the kept rewrite have distinct ids; the row carries the rewrite\'s', async () => {
     const ids = rowsFor(3, 'e');
-    writer.outputs.push('INVENTED: the owner approved a venue.', 'The owner asked for the offsite budget.');
+    writer.outputs.push('PENDING: the owner approved a venue.', 'The owner asked for the offsite budget.');
     const r = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
     expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget.' });
     const summaryId = createLeafSummary(AGENT, r.ok ? r.text : '', 10, ids, new Date().toISOString(), new Date().toISOString()).id;
@@ -183,7 +165,9 @@ describe('M-1: the part splitter always ends', () => {
   });
 });
 
-describe('fix round 2 (3): shadow checks wait their turn, one at a time, each with its own clock', () => {
+// (Its second clause, "a shadow check waits behind an agent's own turn", went with the shadow: the check is part of
+// the fold now, OR-AUDIT-ANSWERS (c), so it is no background ask.)
+describe('fix round 2 (3): checks wait their turn, one at a time, each with its own clock', () => {
   it('10 summaries in one fold on a slow Ollama that answers one request at a time: 10 verdicts recorded', async () => {
     let busyUntil = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string; signal?: AbortSignal }) => {
@@ -199,20 +183,7 @@ describe('fix round 2 (3): shadow checks wait their turn, one at a time, each wi
       return Response.json({ answers: Object.fromEntries(Object.keys(questions).map((q) => [q, { noul: 0.05 }])) });
     }));
     for (let i = 0; i < 10; i++) { writer.outputs.push(`The owner asked for the budget, part ${i}.`); await write(); }
-    await summaryChecksSettled();
     const outcomes = db().prepare('SELECT outcome FROM summary_checks').all() as Array<{ outcome: string }>;
     expect(outcomes.map((o) => o.outcome)).toEqual(Array(10).fill('ok'));
   }, 60_000);
-
-  it('a shadow check waits behind an agent\'s own turn on the local Ollama, and goes when the turn lets go', async () => {
-    const lock = getOllamaLock();
-    await lock.acquire('ollama-local', 'agent-local:8b');
-    writer.outputs.push('The owner asked for the budget.');
-    await write();
-    await new Promise((r) => setTimeout(r, 50));
-    expect(asked).toEqual([]);   // still waiting behind the agent's turn
-    lock.release('ollama-local', 'agent-local:8b');
-    await summaryChecksSettled();
-    expect(asked).toHaveLength(1);
-  });
 });

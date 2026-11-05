@@ -1,3 +1,5 @@
+// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
+// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // v3.5 fix round 1 (B4, I-B4-1) — A SUMMARY THAT FAILS ITS CHECK AFTER THE ONE REWRITE IS NOT SENT TO ANY
 // OTHER WRITER. A failed check is a verdict on this span, not a writer that stopped answering, so the
 // placeholder replacer must not walk on to the next writer (it ended on the agent's own paid model).
@@ -24,7 +26,7 @@ vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string }) => {
     writers.calls.push(p.modelId);
     const fine = [...writers.fine].some((marker) => (p as unknown as { messages: Array<{ content: string }> }).messages[0].content.includes(marker));
-    return { content: fine ? 'The owner asked which bay; the agent answered.' : 'INVENTED: the crate was shipped and the task is closed.', toolCalls: [], usage: {} };
+    return { content: fine ? 'The owner asked which bay; the agent answered.' : 'PENDING: the agent still owes the crate.', toolCalls: [], usage: {} };
   },
   getContextWindow: () => 32_000, getModelOutputCap: () => 4096, getProviderCeilingTokens: () => null,
   effectiveContextWindow: (d: number) => d, resolveNumCtx: () => ({ effective: null }),
@@ -35,7 +37,6 @@ import { insertMessage } from '../message-store.js';
 import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, hasUncondensedPlaceholders } from '../uncondensed-placeholder.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
-import { proveSummaryCheck } from './summary-check-proven.js';
 import { generateSummary } from '../summarize.js';
 
 const AGENT = 'agent-check-walk';
@@ -51,30 +52,30 @@ beforeEach(() => {
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('m-decision', 'ollama-local', ?, ?, '["decision"]', 1)`).run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
   db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('writer-small', 'ollama-local', 'w', 'w', '[\"chat\"]', 32000, 0, 1)").run();
   db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('paid-own', 'paid', 'p', 'p', '[\"chat\"]', 200000, 3, 1)").run();
-  db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'writer-small')").run();
   db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES (?, 'A', 'paid-own', 'idle', '{}')").run(AGENT);
   for (let t = 1; t <= 6; t++) {
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[u${t}] Which bay is the next crate for?`, turnNumber: t });
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: t, content: `[a${t}] Bay ${t}, after inspection.` });
   }
   writers.fine.clear();
-  proveSummaryCheck();   // t268 ruling 1: a failed check acts only once the policy flips it to `model`; this file is that state
   vi.stubGlobal('fetch', vi.fn(async (_u: string, init?: { body?: string }) => {
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
-    const bad = state.summary.includes('INVENTED') ? 0.93 : 0.04;
-    return Response.json({ answers: { invented: { noul: bad }, dropped: { noul: 0.05 }, stated_current: { noul: 0.05 } } });
+    const bad = state.summary.includes('PENDING') ? 0.93 : 0.04;
+    return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: 0.05 }, stated_current: { noul: bad } } });
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('the placeholder replacer and a failed check', () => {
-  it('stops at the writer whose summary failed twice; the agent\'s own paid model is never asked', async () => {
+  // v3.5 field fix 3 (edited: the writer was the Settings pick 'writer-small', and the walk was not to reach the agent's
+  // own model): there is no pick, so the agent's own model writes first; the walk must not reach the next writer.
+  it('stops at the writer whose summary failed twice; the next writer is never asked', async () => {
     const maxSeq = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
     expect(writeUncondensedPlaceholders(AGENT, maxSeq)).toBeGreaterThan(0);
     await replaceUncondensedPlaceholders(AGENT);
-    expect(writers.calls).toEqual(['writer-small', 'writer-small']);   // the write and the one rewrite
-    expect(hasUncondensedPlaceholders(AGENT)).toBe(true);              // the span is left as it is
-    expect(db().prepare("SELECT writer_model_id, outcome FROM summary_checks").all()).toEqual([{ writer_model_id: 'writer-small', outcome: 'not_kept' }]);
+    expect(writers.calls).toEqual(['paid-own', 'paid-own']);   // the write and the one rewrite
+    expect(hasUncondensedPlaceholders(AGENT)).toBe(true);      // the span is left as it is
+    expect(db().prepare("SELECT writer_model_id, outcome FROM summary_checks").all()).toEqual([{ writer_model_id: 'paid-own', outcome: 'not_kept' }]);
   });
 });
 
@@ -94,27 +95,26 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
     expect(writers.calls).toEqual([]);   // nobody was dialled
   });
 
-  it('(ii) a new row joining the span, or the owner changing the summary writer, lets it be tried again', async () => {
+  // v3.5 field fix 3 (edited: "or the owner changing the summary writer", a setting the owner ruled must not exist).
+  it('(ii) a new row joining the span lets it be tried again', async () => {
     await generateSummary({ ...span, modelId: 'writer-small' });
     writers.calls.length = 0;
     await generateSummary({ ...span, spanIds: ['msg-1', 'msg-2', 'msg-3'], modelId: 'writer-small' });
-    expect(writers.calls.length).toBeGreaterThan(0);
-    writers.calls.length = 0;
-    db().prepare("UPDATE config SET value = 'paid-own' WHERE key = 'compaction_model_id'").run();
-    await generateSummary({ ...span, modelId: 'paid-own' });
     expect(writers.calls.length).toBeGreaterThan(0);
   });
 
   it('fix round 4 (NB-9): refusals under an earlier writer setting are pruned; a span summarized after all leaves none', async () => {
     const refused = (): string[] => (db().prepare("SELECT key FROM healer_state WHERE scope = 'summary_span_refused' ORDER BY key").all() as Array<{ key: string }>).map((r) => r.key);
+    // Re-review 2 S6: the key's middle part is the agent's OWN model (the owner's pick, what writes its summaries); a
+    // row recorded under an earlier own model is pruned by the next refusal, for this agent only.
+    db().prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('summary_span_refused', ?, 1)").run(`${AGENT}|writer-small|msg-7`);
     await generateSummary({ ...span, modelId: 'writer-small' });
-    expect(refused()).toEqual([`${AGENT}|writer-small|msg-1`, `${AGENT}|writer-small|msg-2`]);
-    db().prepare("UPDATE config SET value = 'paid-own' WHERE key = 'compaction_model_id'").run();
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);   // the old own model's row is gone
     await generateSummary({ ...span, spanIds: ['msg-9'], modelId: 'paid-own' });
-    expect(refused()).toEqual([`${AGENT}|paid-own|msg-9`]);   // the old setting's rows are gone
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`, `${AGENT}|paid-own|msg-9`]);
     writers.fine.add('SPAN-B');
     await generateSummary({ ...span, content: rows('SPAN-B'), spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
-    expect(refused()).toEqual([]);   // summarized with a new row: no refusal left behind
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);   // summarized with a new row: none left for its own rows
   });
 
   it('(iii) never blocks the newer placeholders of the agent: each span is its own', async () => {

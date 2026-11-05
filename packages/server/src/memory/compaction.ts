@@ -383,7 +383,10 @@ export interface CheckAndCompactOptions {
   inTheBackground?: boolean;
 }
 
-export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean };
+/** `cannotHelp` (v3.5 field fix 3 #12): the condensation pass's own measure says it cannot help this summary set
+ *  (every summary already fits, or fewer than two notes of one depth can merge). The routine check holds off until
+ *  the set changes (`context-gates.ts`). */
+export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean; cannotHelp?: true };
 
 const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 
@@ -708,10 +711,10 @@ async function condenseOnlyPass(
     logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {
       assembledTokens: est.total, budgetTokens: budget, uncompactedOutsideTail: compactableRows,
     }, agentId);
-    return NO_COMPACTION;
+    return { ...NO_COMPACTION, cannotHelp: true };
   }
   // t269: only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
-  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return NO_COMPACTION;
+  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return { ...NO_COMPACTION, cannotHelp: true };
   const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
   // ⚠ RECLAIMED IN SUMMARY TOKENS, NOT IN THE GATE'S TOTAL, and the module header says why:
   // the gate's total already reports the CAPPED figure, so condensation cannot move it. What
@@ -776,6 +779,13 @@ export async function leavingViewPass(
   const floorRows = 1;
   const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
+  // v3.5 field fix 3 (#10): an empty span is no work. Nothing is archived, written or shown: the orb's compaction
+  // glyph went up and down around this pass on every tool round (field report 3, Problem 5), and no brake is armed
+  // by it either (an empty span says nothing about the writer).
+  if (span.length === 0) {
+    logger.info('Leaving-view condense skipped: every row through the boundary already has its summary', { cause: leaving.cause, throughSeq: leaving.throughSeq }, agentId);
+    return NO_COMPACTION;
+  }
   if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;
 
   const pass = (writer: string, left?: LeftBehind): Promise<number> => runLeafCompaction(agentId, writer, contextWindow,
@@ -1128,7 +1138,7 @@ export async function runLeafCompaction(
         targetTokens: Math.min(summaryTargetTokens(content, modelCharsPerToken(modelId)), leafKeepCap(viewBudget, conversationLabels(chunk).labelOf.get(chunk[0].id), modelCharsPerToken(modelId))),
         agentId,
         modelId,
-        abortSignal: opts?.abortSignal, spanIds: messageIds,   // v3.5: a span whose check failed is known by its rows
+        abortSignal: opts?.abortSignal, spanIds: messageIds, spanOpen: chunks.length === 0,   // v3.5: known by its rows; S6: the last chunk is open
       });
 
       // PHASE-3 T5 Step 2: a REFUSAL leaves the chunk exactly where it is. `createLeafSummary`

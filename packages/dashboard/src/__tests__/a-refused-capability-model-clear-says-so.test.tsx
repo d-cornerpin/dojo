@@ -22,21 +22,21 @@ vi.mock('../hooks/useToast', () => {
 });
 
 import * as api from '../lib/api';
-import { CompactionModelCard } from '../components/settings/CapabilityModelCards';
+import { FallbackVisionModelCard } from '../components/settings/CapabilityModelCards';
 
-const models = [{ id: 'm-chat', name: 'A chat model', isEnabled: true, capabilities: ['chat'] }] as never;
+const models = [{ id: 'm-chat', name: 'A vision model', isEnabled: true, capabilities: ['vision'] }] as never;
 const select = () => screen.getByRole('combobox') as HTMLSelectElement;
 
 beforeEach(() => {
   toast.calls.length = 0;
-  vi.mocked(api.getSetting).mockResolvedValue({ ok: true, data: { key: 'compaction_model_id', value: 'm-chat' } } as never);
+  vi.mocked(api.getSetting).mockResolvedValue({ ok: true, data: { key: 'dojo_fallback_vision_model_id', value: 'm-chat' } } as never);
 });
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('the capability model Clear button', () => {
   it('a refused clear is told, keeps the stored choice and does not say Saved', async () => {
     vi.mocked(api.setSetting).mockResolvedValue({ ok: false, error: 'nope' } as never);
-    render(<CompactionModelCard models={models} />);
+    render(<FallbackVisionModelCard models={models} />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Clear' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     await waitFor(() => expect(toast.calls).toContainEqual({ level: 'error', message: 'nope' }));
@@ -46,7 +46,7 @@ describe('the capability model Clear button', () => {
 
   it('a cleared model empties the selection and says Saved', async () => {
     vi.mocked(api.setSetting).mockResolvedValue({ ok: true, data: {} } as never);
-    render(<CompactionModelCard models={models} />);
+    render(<FallbackVisionModelCard models={models} />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Clear' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     await waitFor(() => expect(screen.getByText('Saved!')).toBeTruthy());

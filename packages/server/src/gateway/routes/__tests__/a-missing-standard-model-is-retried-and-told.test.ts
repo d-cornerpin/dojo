@@ -9,7 +9,7 @@ vi.mock('../../../db/connection.js', () => ({
   getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
   getDbPath: () => ':memory:',
 }));
-const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; agentId?: string; error?: string; severity?: string }> }));
+const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; agentId?: string; error?: string; severity?: string; cardClass?: string }> }));
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: (f: { type?: string }) => { frames.list.push(f); }, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../../db/migrations.js';
@@ -66,7 +66,10 @@ describe('a pair that failed to install', () => {
     await checkOllamaHealth('http://localhost:11434');
     await standardInstallSettled();
     expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
-    expect(healerOwnerCards().map((c) => c.words)).toContain(STANDARD_MODELS_MISSING_WORDS);
+    // v3.5 field fix 3 (#9, OR-FIELD3 (c)): the Dojo keeps trying by itself, so it is an INFORMATIONAL card: a toast that
+    // leaves by itself, never re-derived on a reload (it was a lasting card).
+    expect(frames.list.filter((f) => f.error === STANDARD_MODELS_MISSING_WORDS && f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
     ollama.registryDown = false;
     await checkOllamaHealth('http://localhost:11434');
     await standardInstallSettled();

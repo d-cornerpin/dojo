@@ -275,11 +275,15 @@ async function condenseLevel(
       const args = { content, depth: shape.depth, agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
       // A batch the writer cannot hold is halved first; a pair goes to each writer left until one holds it.
       let summary: Awaited<ReturnType<typeof generateSummary>> = { ok: false, reason: 'no writer left' };
+      // v3.5 field fix 3 (owner box): every writer's own answer, so a refusal names what EACH writer said. The record
+      // kept only the last one, and a small writer's "no memory free" stood for a cloud writer's verdict.
+      const answers: string[] = [];
       for (const writer of batch.length > 2 ? writers.slice(0, 1) : writers) {
         summary = await generateSummary({ ...args, modelId: writer, targetTokens: mergeTargetTokens(content, batch.length, modelCharsPerToken(writer)) });
         calls += 1;
+        if (!summary.ok) answers.push(`${writer}: ${summary.reason}`);
         if (summary.ok || !summary.tooBig) break;
-        if (summary.noRoom) continue;   // t268: that writer cannot run now (no memory free) — not its verdict on this span
+        if (summary.noRoom) continue;   // t268: that writer cannot run now (no memory free), not its verdict on this span
         recordRefusal(agentId, writer, span);
       }
       if (!summary.ok && summary.stopped) { stage ??= 'bounded_without_progress'; detail ??= 'stopped by the owner'; break; }   // a Stop is a stop
@@ -291,7 +295,7 @@ async function condenseLevel(
         logger.warn('SUMMARY_REFUSED condensation batch left uncondensed', {
           depth: shape.depth, parentCount: batch.length, reason: summary.reason,
         }, agentId);
-        stage ??= 'summariser_refused'; detail ??= summary.reason;
+        stage ??= 'summariser_refused'; detail ??= answers.length > 1 ? answers.join('; ') : summary.reason;
         continue;
       }
       createCondensedSummary(

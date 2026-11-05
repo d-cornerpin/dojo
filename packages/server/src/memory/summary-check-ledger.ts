@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // v3.5 — WHAT THE SUMMARY CHECK HAS RECORDED (split from `summary-check.ts`, fix round 2): the spans that
 // failed their check (so no writer is handed them again until something changes), and the running numbers
-// the Healer report and the owner's Summarization Model card read.
+// the Healer report reads.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createHash } from 'node:crypto';
@@ -9,18 +9,27 @@ import { getDb } from '../db/connection.js';
 import { modeFor } from '../agent/decision-policy.js';
 import type { Answer } from '../agent/decide.js';
 import { recordTruth, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
-import { pruneRefusalsOtherThan } from './refusal-prune.js';
 
 /** The check's purpose and its three questions, as the decision shadow and B3's policy name them. */
 export const SUMMARY_CHECK_PURPOSE = 'summary_check';
 export const SUMMARY_CHECK_QUESTIONS = ['invented', 'dropped', 'stated_current'] as const;
 export type SummaryCheckQuestion = typeof SUMMARY_CHECK_QUESTIONS[number];
 /**
- * t268 (orchestrator ruling 1): the check runs in SHADOW under B3's policy, like every other decide() question.
- * A question's failing verdict ACTS (refusal, the one rewrite, the span hold, the owner's notice) only once the
- * policy has flipped it to `model` on measured accuracy; in `rule`/`shadow` the summary is kept as before v3.5.
+ * OR-AUDIT-ANSWERS (c), owner ruling (supersedes t268 ruling 1's shadow for this check): "Redo bad summaries". A
+ * summary that fails the accuracy check is rewritten by the agent's own model before it is kept. A LIVE question
+ * (below) acts on its verdict whatever mode the decision policy reads; every asked question's verdict is recorded in
+ * the shadow log. A question held to the rule is not asked and so cannot act.
  */
-export const actingQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) === 'model');
+export const actingQuestions = (): SummaryCheckQuestion[] => askedQuestions().filter((q) => LIVE_QUESTIONS.has(q));
+/**
+ * Summary-check round (owner ruling 1): only a question MEASURED reliable acts. A question joins this set only at
+ * about 9 in 10 agreement with two independent judges, on the pairs where they agree with each other (80 pairs,
+ * overhaul-plans/v35-field-3/summary-check-80, the decision model at the 0.5 mark):
+ *   - stated_current: 62 of 70 (89%), false-fail 2 of 59 (3%), miss 6 of 11. LIVE.
+ *   - invented: 50 of 69 old wording, 38 of 69 new (the new wording almost never says yes: miss 29 of 32). Shadow.
+ *   - dropped: 28 of 65 old, 25 of 65 new (misses nearly every real omission). Shadow.
+ */
+const LIVE_QUESTIONS: ReadonlySet<SummaryCheckQuestion> = new Set(['stated_current']);
 export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
 /** Fix round 1 (M-3): the questions the model is asked at all — every one not held to the rule. */
 export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) !== 'rule');
@@ -32,7 +41,8 @@ export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTI
  * `summaryCheckIdOfRow`.
  * NO PRODUCTION TRUTH SOURCE, BY RULING (2026-10-31): whether a summary invents, drops or states-current is a reading
  * of two texts that no later engine event records, so nothing in production calls `recordSummaryTruth`, no question
- * here is promoted to `model`, and the check stays in shadow. The ruling: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
+ * here is promoted to `model` by measurement (the ruling: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts).
+ * The check acts anyway, by the owner's ruling (`actingQuestions`, OR-AUDIT-ANSWERS (c)).
  */
 export const summaryCheckId = (agentId: string, spanIds: readonly string[]): string =>
   `summary-check:${createHash('sha256').update(`${agentId}|${[...spanIds].sort().join('|')}`).digest('hex').slice(0, 32)}`;
@@ -82,39 +92,62 @@ export const recordSummaryTruth = (summaryId: string, question: SummaryCheckQues
   recordTruth(summaryCheckIdOfRow(summaryId), question, truth, src);
 
 
-export type SummaryParams = { content: string; agentId: string; modelId?: string; checkFeedback?: string; spanIds?: readonly string[] };
+export type SummaryParams = { content: string; agentId: string; modelId?: string; checkFeedback?: string; spanIds?: readonly string[]; spanOpen?: boolean };
 
-// ── A SPAN THAT FAILED ITS CHECK (orchestrator ruling, fix round 2) ──
-// It is handed to no other writer by any path, and not retried by the same one, until something changes:
-// the owner's summary writer setting, or new rows joining the span. Recorded per row (`healer_state` scope
-// `summary_span_refused`, key agent|setting|row id): a span is refused when every one of its rows is.
+// ── A SPAN THAT FAILED ITS CHECK (orchestrator ruling, fix round 2; re-review 2 S6) ──
+// It is handed to no other writer by any path, and not retried by the same one, until a REAL signal: the agent's own
+// model changes (the owner's pick, which is what writes its summaries), or the span closes with new rows in it.
+// Recorded per row (`healer_state` scope `summary_span_refused`, key agent|own model|row id). S6: a span holding a
+// refused row is HANDLED (`spanHeld`) while it is the same rows, or while it is still OPEN (the last chunk of a fold,
+// which gains a row on every busy pass); it is tried once more when it closes (a later chunk exists, so its boundary
+// is final). No timer and no count: each is a fact about the rows.
 const REFUSED_SCOPE = 'summary_span_refused';
+const ownModelOf = (agentId: string): string => {
+  try { return (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? ''; } catch { return ''; }
+};
 export const spanKeys = (p: SummaryParams): string[] => {
-  const setting = (getDb().prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value ?? '';
+  const own = ownModelOf(p.agentId);
   const ids = p.spanIds && p.spanIds.length > 0 ? p.spanIds : [`content:${createHash('sha256').update(p.content).digest('hex').slice(0, 32)}`];
-  return ids.map((id) => `${p.agentId}|${setting}|${id}`);
+  return ids.map((id) => `${p.agentId}|${own}|${id}`);
 };
 export function spanRefused(keys: string[]): boolean {
+  return refusedIn(keys) === keys.length;
+}
+const refusedIn = (keys: string[]): number => {
   try {
-    const n = (getDb().prepare(`SELECT COUNT(*) AS n FROM healer_state WHERE scope = ? AND key IN (${keys.map(() => '?').join(',')})`).get(REFUSED_SCOPE, ...keys) as { n: number }).n;
-    return n === keys.length;
-  } catch { return false; }
+    return (getDb().prepare(`SELECT COUNT(*) AS n FROM healer_state WHERE scope = ? AND key IN (${keys.map(() => '?').join(',')})`).get(REFUSED_SCOPE, ...keys) as { n: number }).n;
+  } catch { return 0; }
+};
+/** S6: is this span handled already? Every row refused by this writer, or an open span holding one that was. */
+export function spanHeld(keys: string[], open: boolean): boolean {
+  const n = refusedIn(keys);
+  return n === keys.length || (open && n > 0);
 }
 export function recordRefusedSpan(keys: string[]): void {
   try {
     const db = getDb();
-    // NB-9: refusals recorded under an earlier summary-writer setting are over (the setting changed): pruned.
-    const setting = keys[0]?.split('|')[1];
-    if (setting !== undefined) pruneRefusalsOtherThan(db, REFUSED_SCOPE, setting);
+    // NB-9: this agent's refusals recorded under an earlier own model are over (the owner changed it): pruned. Per
+    // agent, so one agent's refusal never re-arms another's.
+    const [agent, own] = keys[0]?.split('|') ?? [];
+    if (agent !== undefined && own !== undefined) {
+      const rows = db.prepare('SELECT key FROM healer_state WHERE scope = ?').all(REFUSED_SCOPE) as Array<{ key: string }>;
+      const del = db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?');
+      for (const { key } of rows) { const [a, m] = key.split('|'); if (a === agent && m !== own) del.run(REFUSED_SCOPE, key); }
+    }
     const ins = db.prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms');
     for (const k of keys) ins.run(REFUSED_SCOPE, k, Date.now());
   } catch { /* best-effort: the worst case is one more try */ }
 }
-/** NB-9: the span was summarized after all (new rows joined it): its rows' refusals go. */
+/** NB-9: the span was summarized after all: its rows' refusals go, whichever writer recorded them. */
 export function clearRefusedSpan(keys: string[]): void {
   if (keys.length === 0) return;
   try {
-    getDb().prepare(`DELETE FROM healer_state WHERE scope = ? AND key IN (${keys.map(() => '?').join(',')})`).run(REFUSED_SCOPE, ...keys);
+    const del = getDb().prepare("DELETE FROM healer_state WHERE scope = ? AND key LIKE ? ESCAPE '\\'");
+    for (const k of keys) {
+      const [agent, , ...rest] = k.split('|');
+      const esc = (x: string): string => x.replace(/[\\%_]/g, (c) => `\\${c}`);
+      del.run(REFUSED_SCOPE, `${esc(agent)}|%|${esc(rest.join('|'))}`);
+    }
   } catch { /* best-effort */ }
 }
 
@@ -128,38 +161,6 @@ export function summaryCheckLine(): string | null {
     return `Summary check (kept window): ${r.n} checked, ${r.ok ?? 0} kept as written, ${r.rw ?? 0} kept after one rewrite, `
       + `${r.failed ?? 0} left the rows whole, ${r.un ?? 0} unchecked (decision model unavailable).`;
   } catch { return null; }
-}
-
-/**
- * (iv, fix round 2) What the owner's Summarization Model card says: is THIS BOX'S SUMMARY WRITER failing the check
- * in the kept window? It is his pick; with none (t268, owner 2026-10-24: each agent's own model writes), the writer
- * this box's checks were last made for. Owner 2026-10-20: "the user is encouraged to
- * change the summarization model to another larger model" — the card says so while this is true.
- */
-export function summaryWriterStatus(): { writer: string | null; failed: number; total: number; failing: boolean } {
-  try {
-    const db = getDb();
-    const writer = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value
-      || (db.prepare("SELECT writer_model_id AS w FROM summary_checks WHERE outcome != 'unavailable' ORDER BY id DESC LIMIT 1").get() as { w: string } | undefined)?.w;
-    if (!writer) return { writer: null, failed: 0, total: 0, failing: false };
-    const status = writerFailing(writer);
-    return { writer, ...status, failing: status.failing && summaryCheckActs() };   // t268: a shadow verdict tells no one
-  } catch { return { writer: null, failed: 0, total: 0, failing: false }; }
-}
-
-/**
- * Is this writer "keep failing" the check (fix round 4)? Owner 2026-10-20: "significant summarization failures";
- * plan B4: "the real signal, not a count", in the words "keep failing". So: its failure REPEATS — its latest
- * checked summary failed AND so did the one before it, with no pass between. One isolated failure among passes
- * is not it, and the next pass ends it. `failed`/`total` are the kept window's numbers the words quote.
- */
-export function writerFailing(writer: string): { failed: number; total: number; failing: boolean } {
-  const db = getDb();
-  const r = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
-    .get(writer) as { failed: number | null; total: number };
-  const latest = db.prepare("SELECT outcome FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable' ORDER BY id DESC LIMIT 2")
-    .all(writer) as Array<{ outcome: string }>;
-  return { failed: r.failed ?? 0, total: r.total, failing: latest.length === 2 && latest.every((x) => x.outcome === 'not_kept') };
 }
 
 /**

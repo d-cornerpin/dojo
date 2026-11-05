@@ -37,17 +37,12 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('liveness');
 
-/** OR-LONG-JOBS: "a couple hours", confirmed as a per-agent setting with this default. */
-export const DEFAULT_SILENT_WINDOW_MINUTES = 120;
+export { DEFAULT_SILENT_WINDOW_MINUTES, silentWindowMs } from './silent-window.js';   // a leaf now (audit #14: the exec door reads it)
+import { silentWindowMs } from './silent-window.js';
 
 const MIN_MS = 60_000;
 const textMs = (col: string): string => `CAST(strftime('%s', ${col}) AS INTEGER) * 1000`;
 
-/** This agent's silent window, in ms. NULL (or anything a door would refuse) is the default. */
-export function silentWindowMs(agentId: string): number {
-  const m = (getDb().prepare('SELECT silent_window_minutes AS m FROM agents WHERE id = ?').get(agentId) as { m: unknown } | undefined)?.m;
-  return (typeof m === 'number' && Number.isInteger(m) && m >= 1 ? m : DEFAULT_SILENT_WINDOW_MINUTES) * MIN_MS;
-}
 
 export interface Activity {
   /** The newest movement, epoch ms; `null` when the agent has never moved. */
@@ -256,7 +251,7 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
     // t146: the notice names a task, so it is ABOUT that work row (the id is data held here, not read
     // from the words); its card stands in the owner-notices list in these exact words (`silent_notice`).
-    void sendAlert(words, 'notice', { aboutWorkId: newestOf(work)?.id, agentId: a.id });
+    void sendAlert(words, 'notice', { kind: 'broken-agent', aboutWorkId: newestOf(work)?.id, agentId: a.id });
   }
 }
 

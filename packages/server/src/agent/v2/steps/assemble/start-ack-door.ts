@@ -48,6 +48,7 @@ import { steerFiredAtLoop } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { deliveryLabel } from '../../turn-address.js';
 import { liveAddress } from '../../turn-address-live.js';
+import { personShownALineThisTurn } from '../../person-shown-this-turn.js';
 
 const logger = createLogger('v2-loop');
 
@@ -140,9 +141,11 @@ export function runStartAckLadder(
   input: StartAckDoorInput & { readonly startAckRepliedNow: () => boolean },
 ): AgentTurnState {
   const { agentId, turnNumber, turnCtx, engineStartAckDeliveredThisTurn, startAckRepliedNow } = input;
+  // Owner test 2, rank 4: "heard" also counts a working note he was shown and the delivered start line.
+  const shownALine = (): boolean => personShownALineThisTurn(agentId, turnNumber);
 
   if (turnCtx.startAckSteerRequested && startAckDoorOpen(turnCtx, engineStartAckDeliveredThisTurn)
-      && !startAckRepliedNow()) {
+      && !shownALine() && !startAckRepliedNow()) {
     state = armStartAck(state, input);
     logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
       agentId, turnNumber,
@@ -156,6 +159,7 @@ export function runStartAckLadder(
     // The loop the first steer rode is read off the QUEUE ENTRY that recorded it (falling
     // back to the turn bag for the pre-assemble arming path).
     state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? turnCtx.startAckSteerInjectedAtLoop) &&
+    !shownALine() &&
     !startAckRepliedNow()
   ) {
     turnCtx.startAckSteersInjected = 2;

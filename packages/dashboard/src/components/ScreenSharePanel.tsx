@@ -56,7 +56,7 @@ export const ScreenShareSettings = () => {
         <div className="scard__desc">
           Let the agent show this Mac's screen in the canvas, and optionally take control, so it
           can ask you to click or approve something here while you're remote. When connecting,
-          you enter the screen-sharing (VNC) password you set on this Mac — the dojo never stores it.
+          you enter the screen-sharing (VNC) password you set on this Mac, the dojo never stores it.
           Set that password in System Settings &gt; General &gt; Sharing &gt; Screen Sharing (i) &gt;
           Computer Settings &gt; "VNC viewers may control screen with password".
         </div>
@@ -85,7 +85,7 @@ export const ScreenShareSettings = () => {
           <p className="text-xs text-ui/55">
             Enabling turns on macOS Screen Sharing. You'll need to be at this Mac to approve a
             one-time admin prompt (and possibly a Privacy approval in System Settings). Also set a
-            VNC password (see above) — that's what you'll type to connect. After that, the agent can
+            VNC password (see above), that's what you'll type to connect. After that, the agent can
             open the screen for you from anywhere.
           </p>
           <button type="button" onClick={onEnable} disabled={busy} className="btn btn--primary btn--sm">

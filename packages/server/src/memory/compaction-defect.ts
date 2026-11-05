@@ -30,7 +30,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
 import { providerBreaker, type OpenBreaker } from '../providers/billing-breaker.js';
-import { catchUpFailureOver, withdrawCatchUpCard } from './catch-up-state.js';
+import { catchUpFailureOver, withdrawCatchUpProgress } from './catch-up-state.js';
 
 const logger = createLogger('compaction-defect');
 
@@ -89,18 +89,22 @@ export function writerBreaker(modelId: string | null | undefined): OpenBreaker |
   }
 }
 
-/** The card the owner gets, and the only compaction card that is left. It names the
- *  repairable reason, promises the recovery is automatic, and instructs nothing
- *  destructive — no archiving, no resetting, no "your memory is full". */
-export function compactionFailingCardText(stage: string): string {
-  const why = stage === 'summary_writer_unresolvable'
-    ? 'no enabled model can write its summaries'
+/** The card the owner gets, and the only compaction card that is left. v3.5 field fix 3 (owner ruling: there is no
+ *  summarization model setting; each agent's own model writes its summaries): a FACT, short, naming the agent and
+ *  its own model, sending the owner to no setting and telling him to change nothing, because there is nothing for him
+ *  to do: it retries by itself. Nothing destructive either (no archiving, no resetting, no "your memory is full").
+ *  No em-dash (owner, standing). Informational: the frame is a warning (a toast that leaves by itself), never red. */
+export function compactionFailingCardText(stage: string, agentId?: string): string {
+  let name = 'This agent';
+  try {
+    if (agentId) name = (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string | null } | undefined)?.name || name;
+  } catch { /* the generic name */ }
+  const what = stage === 'summary_writer_unresolvable'
+    ? `${name} has no model that can write a memory summary right now`
     : stage === 'summary_writer_unavailable'
-      ? 'the model that writes its summaries is not answering'
-      : 'the model that writes its summaries returned nothing usable';
-  return `This agent's memory compaction is failing — ${why}. `
-    + 'It keeps answering, and compaction resumes by itself as soon as a model can write them. '
-    + 'Check the compaction model in Settings → Models, or point this agent at a provider that is answering.';
+      ? `${name}'s own model is not answering for a memory summary`
+      : `${name}'s own model returned nothing usable for a memory summary`;
+  return `${what}; it retries by itself. Older messages are kept whole until then.`;
 }
 
 /**
@@ -147,8 +151,10 @@ export function reportCompactionDefect(
   if (failures.has(agentId)) return null;   // one note, one card, per outage
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
+  // field fix Y r3 (F2); field fix 3 review L2: the work is not moving, whatever the stage, so the catch-up glyph ends
+  // (it comes back at a turn on notes once the failure is over, `catchUpFailureOver`).
+  withdrawCatchUpProgress(agentId);
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
-  withdrawCatchUpCard(agentId);   // field fix Y r3 (F2): one honest card at a time; this notice speaks now
   if (breaker) {
     logger.info('Compaction failure card suppressed: the provider breaker already told the owner', {
       stage, providerId: breaker.providerId, reason: breaker.reason,
@@ -167,9 +173,9 @@ export function reportCompactionDefect(
     broadcast({
       type: 'chat:error',
       agentId,
-      error: compactionFailingCardText(stage),
+      error: compactionFailingCardText(stage, agentId),
       code: 'COMPACTION_FAILING',
-      severity: 'error',
+      severity: 'warning',   // v3.5 field fix 3: informational (the owner has nothing to do), never sticky or red
       // TRUE, and the difference between this card and the one it replaces: fix the model
       // and compaction resumes on its own. Nothing here asks the owner to destroy memory.
       retryable: true,

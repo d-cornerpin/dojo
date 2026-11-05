@@ -209,7 +209,9 @@ describe('the technique allowance is pinned to the injector it accounts for', ()
     // Each expression runs to its closing "`;" (the header's own text contains a ';').
     const header = literal(/const header =([\s\S]*?`);\n/.exec(src)![1]);
     const forms = [...src.matchAll(/techniqueInjection =([\s\S]*?`);\n/g)].map((x) => literal(x[1]));
-    expect(header, 'the header was read').toBeGreaterThan(100);
+    // v3.5 owner test 2 (rank 5): the header became a short fact (it was a 160-character order), so the parse check
+    // reads 'present', not 'long'.
+    expect(header, 'the header was read').toBeGreaterThan(40);
     expect(forms.length, 'both forms found (inline and too-large)').toBe(2);
     for (const f of forms) expect(header + f + 10).toBeLessThanOrEqual(TECHNIQUE_FRAME_CHARS);
   });

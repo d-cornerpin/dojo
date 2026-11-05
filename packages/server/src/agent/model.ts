@@ -10,7 +10,7 @@ import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, classifyProviderErrorText, isRetryableProviderClass } from './provider-error.js';
 import {
-  resolveStreamPatience, resolveTransportTimeouts, resolveDoomCeiling, resolvePrefillThroughput,
+  resolveStreamPatience, resolveTransportTimeouts, resolveDoomCeiling, resolvePrefillThroughput, doomGuardApplies, LOCAL_PROVIDER_TYPES,
   STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, TRANSPORT_DEFAULT_TIMEOUT_MS,
   DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
   type StreamPatience,
@@ -315,9 +315,11 @@ function refuseIfDoomed(
   agentId: string,
   estimatedInputTokens: number,
   patience: StreamPatience,
-  prefillTokensPerSec: number | null,
-  measuredPrefillTokensPerSec?: number | null,
+  provider: { providerType: string; providerBaseUrl: string | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec?: number | null },
 ): void {
+  // v3.5 field fix 3 (#11, OR-FIELD3 (a)): a cloud provider gets its full window; the backstop guards a local box only.
+  if (!doomGuardApplies(provider)) return;
+  const { prefillTokensPerSec, measuredPrefillTokensPerSec } = provider;
   // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22). Declared still wins outright; the
   // measured reading off the cost ledger is consulted only where the declaration is absent,
   // i.e. only where this gate was previously a no-op. `throughput` carries the SOURCE as well
@@ -1352,7 +1354,7 @@ async function callOllamaModel(
     },
     nativeDivisors,
   ).tokens;
-  refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
+  refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo);
 
   // ════════════════════════════════════════════════════════════════════════════════════════
   // T83b — THE BOUNDS THIS TRANSPORT ARMS, AND WHY THEY ARE NOT `patience`'s TWO NUMBERS.
@@ -2236,7 +2238,7 @@ async function callOpenAIModel(
   // strictly before anything below builds a client or touches a socket (`patience` above is
   // the same resolved bound the watchdog and the transport clock are armed with, a few lines
   // up). Byte-preserving no-op when this provider has not declared a prefill throughput.
-  refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
+  refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo);
 
   // t195: the engine's ask for extra room is honoured up to the contract's ceiling; the result reports
   // what was sent and the most a retry could be given, so escalation is sized from this call's own facts.
@@ -2944,7 +2946,7 @@ async function callAnthropicSdkModel(
     },
     sdkDivisors,
   ).tokens;
-  refuseIfDoomed(agentId, sdkInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
+  refuseIfDoomed(agentId, sdkInputEstimate, patience, modelInfo);
 
   const startTime = Date.now();
   const streamedChunks: string[] = [];
@@ -3145,8 +3147,8 @@ async function callAnthropicSdkModel(
 // FA-PC5 (D-I): provider types whose inference is genuinely free + local. They
 // are exempt from the daily paid-spend wall BY TYPE, not by where they sit in
 // the transport dispatch ladder, so a local model never trips a spend cap.
-// Ollama is the only local type today; a future local type goes here.
-const FREE_LOCAL_PROVIDER_TYPES = new Set(['ollama', 'local']);
+// The set lives beside the doom guard that also reads it (`stream-patience.ts`); a future local type goes there.
+const FREE_LOCAL_PROVIDER_TYPES = LOCAL_PROVIDER_TYPES;
 
 // ════════════════════════════════════════
 // T83 — EVERY PROVIDER CALL AN AGENT MAKES IS ABORTABLE BY THAT AGENT'S STOP.
@@ -3409,7 +3411,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   // dial (`client.messages.stream`, well below, is), so this still runs strictly before
   // anything reaches a socket. Byte-preserving no-op when this provider has not declared a
   // prefill throughput.
-  refuseIfDoomed(agentId, inputEstimate, anthPatience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
+  refuseIfDoomed(agentId, inputEstimate, anthPatience, modelInfo);
 
   // KEPT with the trimmer gone, deliberately (T4 Step 2b pinned it as a SEPARATE guard).
   // Its old comment said "post-trim … in case budget trimming created new orphans", and that
@@ -3888,6 +3890,7 @@ export function getModelOutputCap(modelId: string): number | undefined {
 export function getProviderCeilingTokens(modelId: string): number | null {
   try {
     const info = getModelInfo(modelId);
+    if (!doomGuardApplies(info)) return null;   // v3.5 field fix 3 (#11): a cloud model gets its full window
     const patience = resolveStreamPatience(info);
     if (!patience.firstChunkDeclared) return null;
     return resolveDoomCeiling(patience.firstChunkMs, info.prefillTokensPerSec, info.measuredPrefillTokensPerSec);

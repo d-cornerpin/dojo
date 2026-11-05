@@ -97,7 +97,7 @@ export const CREDENTIAL_CHIP_LABEL = 'credential hidden';
  * query-param deep link; inventing one is a separate change, not part of
  * replacing a broken string.
  */
-export const CREDENTIAL_CHIP_HINT = 'Stored safely — see Memory → Credentials';
+export const CREDENTIAL_CHIP_HINT = 'Stored safely, see Memory → Credentials';
 
 /** The tooltip: the hint, plus which handle this span named when it had one. */
 export function credentialChipTitle(tag: string | null): string {

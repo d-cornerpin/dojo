@@ -189,7 +189,7 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
   // Ollama must answer before anything is written: a box without it gets no provider row from here.
   const tags = await ollamaJson<{ models?: Array<{ name: string }> }>(localOllamaProvider()?.baseUrl ?? 'http://localhost:11434', '/api/tags');
   if (!tags) {   // a box set up for Ollama whose Ollama does not answer: the pair cannot arrive, so he is told
-    if (localOllamaProvider() && !pairHeld() && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');   // held: the upkeep told its one card
+    if (localOllamaProvider() && !pairHeld() && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning', undefined, 'informational');   // held: the upkeep told its one card
     return standardState();
   }
   const provider = ensureLocalOllamaProvider();
@@ -226,7 +226,7 @@ async function install(onProgress: ((line: string) => void) | undefined, ollamaR
   if (ids.decision) await (await import('./decision-window.js')).ensureDecisionWindowTag(provider.baseUrl);   // t268: its real window (dynamic: the import graph's order)
   // Fix round 1 (I-2): an attempt that left a model missing is told once (the owner-card system); it ends when both are in.
   if (ids.writer && ids.decision) ownerConditionCleared(MISSING_CONDITION);
-  else if (!pairHeld() && !refusedBy && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
+  else if (!pairHeld() && !refusedBy && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning', undefined, 'informational');
   return standardState();
 }
 

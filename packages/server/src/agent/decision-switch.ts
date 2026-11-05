@@ -77,7 +77,7 @@ export function reviewSwitch(purpose: string, question: string): SwitchState | n
     logger.info(`decision question ${now === 'model' ? 'switched to the model' : 'went back to shadow'}`, { purpose, question, n: record.n, ruleAcc: record.ruleAcc, modelAcc: record.modelAcc });
     // Pinned to the rule / no model: nothing changed for the owner. A shipped default (`decided`) is no evidence: recorded, never told.
     if (!decided && modeFor(purpose, question) === (now === 'model' ? 'model' : 'shadow')) {
-      if (now === 'model') ownerCardFrame(words(purpose, question, s, now), 'warning', cardKeyOf(purpose, question));
+      if (now === 'model') ownerCardFrame(words(purpose, question, s, now), 'warning', cardKeyOf(purpose, question), 'informational');   // it goes back by itself
       else { ownerCardEnded(words(purpose, question, s, 'shadow'), cardKeyOf(purpose, question)); }
     }
     return now;

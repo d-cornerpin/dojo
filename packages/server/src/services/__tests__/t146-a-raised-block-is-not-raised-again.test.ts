@@ -111,7 +111,7 @@ const db = (): Database.Database => mockDb.current!;
  *  where the door has no such option: the RED is the ladder's behaviour, not a missing type. */
 // v3.5 E19b: the door is async now (its send is); the clauses await it before reading the ledger.
 const noticeAbout = (words: string, workId: string): Promise<void> =>
-  (sendAlert as unknown as (m: string, u: 'notice', o: { aboutWorkId: string }) => Promise<void>)(words, 'notice', { aboutWorkId: workId });
+  (sendAlert as unknown as (m: string, u: 'notice', o: { aboutWorkId: string }) => Promise<void>)(words, 'notice', { kind: 'broken-agent', aboutWorkId: workId });
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {
   const row: Record<string, unknown> = {
@@ -222,7 +222,7 @@ describe('§1 the owner-notice door records that the owner was told about the ro
 
   it('control: the same notice WITHOUT a work id records nothing, and the ladder still runs', async () => {
     seedBlocked('t-door-untold');
-    await sendAlert('A budget line was crossed.', 'notice');
+    await sendAlert('A budget line was crossed.', 'notice', { kind: 'broken-agent' });
     expect(toldEvents('t-door-untold')).toHaveLength(0);
     await driveLadderToTheEnd();
     expect(steersOn('t-door-untold')).toBeGreaterThanOrEqual(1);
@@ -347,9 +347,9 @@ describe('§4 the owner-notice record says whether a dashboard card was raised',
   it('no phone: a notice that raises a card says so; a status line and an all-clear say "none by design"', async () => {
     stopIMBridge();
     noPhone();
-    const raised = await ownerNoticeEntries(() => sendAlert('The greenhouse agent is paused after repeated errors.', 'notice'));
-    const status = await ownerNoticeEntries(() => sendAlert('Dojo is online at a fictional address.', 'notice', { card: false }));
-    const allClear = await ownerNoticeEntries(() => sendAlert('The greenhouse agent recovered.', 'notice', { clears: 'The greenhouse agent is paused after repeated errors.' }));
+    const raised = await ownerNoticeEntries(() => sendAlert('The greenhouse agent is paused after repeated errors.', 'notice', { kind: 'broken-agent' }));
+    const status = await ownerNoticeEntries(() => sendAlert('Dojo is online at a fictional address.', 'notice', { kind: 'broken-agent', card: false }));
+    const allClear = await ownerNoticeEntries(() => sendAlert('The greenhouse agent recovered.', 'notice', { kind: 'broken-agent', clears: 'The greenhouse agent is paused after repeated errors.' }));
     expect(raised.map((m) => m?.card)).toEqual(['raised']);
     expect(status.map((m) => m?.card)).toEqual(['none_by_design']);
     expect(allClear.map((m) => m?.card)).toEqual(['none_by_design']);
@@ -409,8 +409,8 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
   it('a status line or an all-clear about the row raises no card and records nothing', async () => {
     seedBlocked('t-nocard');
     noPhone();
-    await (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => Promise<void>)('A status line.', 'notice', { card: false, aboutWorkId: 't-nocard' });
-    await (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => Promise<void>)('It cleared.', 'notice', { clears: 'A status line.', aboutWorkId: 't-nocard' });
+    await (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => Promise<void>)('A status line.', 'notice', { kind: 'broken-agent', card: false, aboutWorkId: 't-nocard' });
+    await (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => Promise<void>)('It cleared.', 'notice', { kind: 'broken-agent', clears: 'A status line.', aboutWorkId: 't-nocard' });
     expect(toldEvents('t-nocard')).toEqual([]);
   });
 

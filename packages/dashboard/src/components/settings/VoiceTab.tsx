@@ -587,7 +587,7 @@ export const VoiceTab = () => {
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-ui/60">
-            <span>Voice id <span className="text-ui/40">(optional — auto-derived from name)</span></span>
+            <span>Voice id <span className="text-ui/40">(optional, auto-derived from name)</span></span>
             <input
               type="text"
               value={importId}
@@ -758,7 +758,7 @@ export const VoiceTab = () => {
               }}
               className="glass-select flex-1"
             >
-              <option value="">— pick a voice —</option>
+              <option value="">, pick a voice, </option>
               {humeVoices.map((v) => (
                 <option key={`${v.provider}:${v.id}`} value={v.id}>
                   {v.name} {v.provider === 'CUSTOM_VOICE' ? '· custom' : ''}
@@ -1187,7 +1187,7 @@ export const VoiceTab = () => {
                 <div className="text-xs text-ui/40">
                   {models.kokoro.installed
                     ? `${formatBytes(models.kokoro.bytes)} on disk${models.kokoroLoaded ? ' · loaded in memory' : ''}`
-                    : 'Not installed — will download on first voice session'}
+                    : 'Not installed, will download on first voice session'}
                 </div>
               </div>
               <div className="flex gap-2">

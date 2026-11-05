@@ -193,7 +193,7 @@ export const PlaudSettings = () => {
                   {authUrl}
                 </a>
                 <p className="mt-2 text-ui/55">
-                  A browser may already have opened on the Mac that runs Dojo — finishing the
+                  A browser may already have opened on the Mac that runs Dojo, finishing the
                   sign-in there works too. The dashboard will update automatically once you
                   complete it.
                 </p>

@@ -137,7 +137,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
             onChange={(e) => setQuery(e.target.value)}
             placeholder={
               mode === 'semantic'
-                ? 'Semantic search — describe what you recall...'
+                ? 'Semantic search, describe what you recall...'
                 : 'Search memory...'
             }
             className="glass-input w-full pl-9 pr-3"
@@ -172,7 +172,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
               title={
                 embeddingsAvailable
                   ? 'Search by meaning using vector embeddings'
-                  : 'No embeddings available — run backfill first'
+                  : 'No embeddings available, run backfill first'
               }
               className={`px-2.5 py-1 text-xs rounded transition-colors ${
                 mode === 'semantic'
@@ -213,7 +213,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
         {!searched && !loading && (
           <div className="p-4 text-center text-ui/40 text-sm">
             {mode === 'semantic'
-              ? 'Describe what you remember — finds similar content even without exact keywords'
+              ? 'Describe what you remember, finds similar content even without exact keywords'
               : 'Type to search messages and summaries'}
           </div>
         )}

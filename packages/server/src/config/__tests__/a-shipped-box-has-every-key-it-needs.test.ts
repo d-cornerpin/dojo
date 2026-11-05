@@ -259,7 +259,6 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
   sudo_policy: 'OPTIONAL — an absent row reads as the shipped default policy, which is the cautious one',
 
   // ── model choices: every one falls back to the box's configured model ──
-  compaction_model_id: 'OPTIONAL — `memory/compaction.ts` uses it only `if (explicit && isUsableTextModel)`, else resolves a model itself',
   healer_model_id: 'OPTIONAL — falls back to the box\'s configured model',
   healer_mode: 'OPTIONAL — an absent row reads as the shipped healer cadence',
   healer_time: 'OPTIONAL — an absent row reads as the shipped healer schedule',

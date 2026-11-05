@@ -14,7 +14,7 @@ import { VoiceOpenerModelConfig } from '../RouterConfig';
 import { ProviderModelGroup } from './ModelRows';
 import {
   FallbackVisionModelCard, ImageGenModelCard, VideoGenModelCard, AudioGenModelCard,
-  MusicGenModelCard, TranscriptionModelCard, CompactionModelCard,
+  MusicGenModelCard, TranscriptionModelCard,
 } from './CapabilityModelCards';
 import { ModalShell } from '../ModalShell';
 
@@ -466,7 +466,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
             type="text"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Display name (optional — defaults to model ID)"
+            placeholder="Display name (optional, defaults to model ID)"
             className="glass-input w-full"
           />
 
@@ -521,7 +521,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                     min="0"
                     value={inputPrice}
                     onChange={(e) => setInputPrice(e.target.value)}
-                    placeholder="Input $/M — blank if unknown"
+                    placeholder="Input $/M, blank if unknown"
                     className="glass-input w-full"
                   />
                   <input
@@ -530,7 +530,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                     min="0"
                     value={outputPrice}
                     onChange={(e) => setOutputPrice(e.target.value)}
-                    placeholder="Output $/M — blank if unknown"
+                    placeholder="Output $/M, blank if unknown"
                     className="glass-input w-full"
                   />
                 </div>
@@ -544,7 +544,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                   min="0"
                   value={unitPrice}
                   onChange={(e) => setUnitPrice(e.target.value)}
-                  placeholder={`$ per ${pricingUnit} — blank if unknown`}
+                  placeholder={`$ per ${pricingUnit}, blank if unknown`}
                   className="glass-input w-full"
                 />
                 <p className="text-[10px] text-ui/25 mt-1">{UNIT_HINT[pricingUnit]}</p>
@@ -716,7 +716,6 @@ export const ModelsTab = () => {
         <AudioGenModelCard models={models} />
         <MusicGenModelCard models={models} />
         <TranscriptionModelCard models={models} />
-        <CompactionModelCard models={models} />
         <VoiceOpenerModelConfig />
       </div>
     </div>

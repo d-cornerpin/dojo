@@ -320,7 +320,7 @@ voiceRouter.delete('/hume/key', (c) => {
 /** Proxy the Hume voice list (Voice Library + user's custom voices). */
 voiceRouter.get('/hume/voices', async (c) => {
   if (!isHumeConfigured()) {
-    return c.json({ ok: false, error: 'Hume not configured — set an API key first.' }, 400);
+    return c.json({ ok: false, error: 'Hume not configured, set an API key first.' }, 400);
   }
   try {
     const voices = await listHumeVoices();
@@ -351,7 +351,7 @@ voiceRouter.post('/preview', async (c) => {
   try {
     if (engine === 'cloud') {
       if (!isHumeConfigured()) {
-        return c.json({ ok: false, error: 'Hume not configured — set an API key first.' }, 400);
+        return c.json({ ok: false, error: 'Hume not configured, set an API key first.' }, 400);
       }
       const voiceId = typeof body.voice === 'string' && body.voice.length > 0 ? body.voice : '';
       if (!voiceId) {

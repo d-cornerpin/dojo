@@ -43,7 +43,7 @@ beforeEach(async () => {
   db.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('p-own', 'Own', 'openai-compatible', 'api_key')`).run();
   const model = db.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
                             VALUES (?, ?, ?, ?, '["text","tools"]', 200000, 4096, 1, ?, 1)`);
-  model.run(FREE, 'p-free', FREE, FREE, 0);          // the cheapest: first in line when no Settings writer is set
+  model.run(FREE, 'p-free', FREE, FREE, 0);          // the cheapest: never a writer here (nothing after the small writer)
   model.run(OWN, 'p-own', OWN, OWN, 2);
   model.run(OWN_SIBLING, 'p-own', OWN_SIBLING, OWN_SIBLING, 3);
 });
@@ -52,17 +52,14 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 describe('t207 D9 — the mark survives a restart', () => {
   it('a writer that failed before the restart is still passed over after it, and the resolver skips it', async () => {
     const before = await restart();
-    // t268 round 5 (edited: FREE was first as "the cheapest", a writer the round removed): FREE is the Settings writer,
-    // and the agent's own model OWN is next.
-    mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(FREE);
-    expect(before.eligibleSummaryWriters(OWN, AGENT)[0], 'precondition: the Settings writer is first').toBe(FREE);
-    before.noteSummaryWriterOutcome(FREE, false);
-    expect(before.writerPassedOver(FREE, AGENT)).toBe(true);
+    // v3.5 field fix 3 (no Settings writer): the agent's own model OWN is first, the only writer here.
+    expect(before.eligibleSummaryWriters(OWN, AGENT)[0], 'precondition: the agent\'s own model is first').toBe(OWN);
+    before.noteSummaryWriterOutcome(OWN, false);
+    expect(before.writerPassedOver(OWN, AGENT)).toBe(true);
 
     const after = await restart();                       // the process restarts; the database stays
-    expect(after.writerPassedOver(FREE, AGENT), 'the first fold after a restart does not dial it again').toBe(true);
-    expect(after.eligibleSummaryWriters(OWN, AGENT)).not.toContain(FREE);
-    expect(after.eligibleSummaryWriters(OWN, AGENT)[0]).toBe(OWN);
+    expect(after.writerPassedOver(OWN, AGENT), 'the first fold after a restart does not dial it again').toBe(true);
+    expect(after.eligibleSummaryWriters(OWN, AGENT)).not.toContain(OWN);
   });
 
   it('the mark is per provider: a sibling model on the failed provider is passed over too', async () => {
@@ -81,14 +78,7 @@ describe('t207 D9 — the mark survives a restart', () => {
     expect(after.writerPassedOver(FREE, AGENT)).toBe(false);
   });
 
-  it('the owner changing the Settings writer re-arms it, across a restart too', async () => {
-    const before = await restart();
-    before.noteSummaryWriterOutcome(FREE, false);
-    const after = await restart();
-    expect(after.writerPassedOver(FREE, AGENT), 'precondition').toBe(true);
-    mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWN);
-    expect(after.writerPassedOver(FREE, AGENT)).toBe(false);
-  });
+  // v3.5 field fix 3: 'the owner changing the Settings writer re-arms it' is deleted with the setting (owner ruling).
 
   it('a person writing to the agent after the restart re-arms it for that agent only', async () => {
     const before = await restart();

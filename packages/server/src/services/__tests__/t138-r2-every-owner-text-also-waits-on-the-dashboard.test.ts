@@ -274,7 +274,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
 
   it('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
     const { bridge } = await boot();
-    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
+    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical', { kind: 'broken-agent' });
     await sendsSettle();
     expectPaired(1);
     expect(texts()[0]).toContain('Dojo: [CRITICAL] The box is nearly out of memory.');   // the label stays first
@@ -304,7 +304,7 @@ describe('OR-ENGINE-LABELLED at the owner-notice door: the text is the Dojo, and
 
   it('a critical text about an agent keeps the label first and still tells that agent', async () => {
     const { bridge } = await boot();
-    await bridge.sendAlert('Helper is stopped: out of credit.', 'critical', { agentId: 'ag' });
+    await bridge.sendAlert('Helper is stopped: out of credit.', 'critical', { kind: 'broken-agent', agentId: 'ag' });
     await sendsSettle();
     expect(texts()[0]).toContain('Dojo: [CRITICAL] Helper is stopped: out of credit.');
     expect(noticesTo('ag')[0]).toContain('"Dojo: [CRITICAL] Helper is stopped: out of credit."');
@@ -313,7 +313,7 @@ describe('OR-ENGINE-LABELLED at the owner-notice door: the text is the Dojo, and
   it('a platform alert about no agent tells the primary agent', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', 'ag')").run();
     const { bridge } = await boot();
-    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
+    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical', { kind: 'broken-agent' });
     await sendsSettle();
     expect(noticesTo('ag')[0]).toContain('"Dojo: [CRITICAL] The box is nearly out of memory. Close something."');
   });
@@ -321,12 +321,12 @@ describe('OR-ENGINE-LABELLED at the owner-notice door: the text is the Dojo, and
   it('a send that failed is told as failed; with no phone channel nothing was sent and nobody is told', async () => {
     const { bridge } = await boot();
     transportFails.on = true;
-    await bridge.sendAlert('Helper is stuck.', 'notice', { agentId: 'ag' });
+    await bridge.sendAlert('Helper is stuck.', 'notice', { kind: 'broken-agent', agentId: 'ag' });
     await sendsSettle();
     expect(noticesTo('ag')[0]).toContain('send FAILED');
     broadcasts.length = 0;
     setPhone(null);
-    await bridge.sendAlert('Helper is stuck again.', 'notice', { agentId: 'ag' });
+    await bridge.sendAlert('Helper is stuck again.', 'notice', { kind: 'broken-agent', agentId: 'ag' });
     await sendsSettle();
     expect(noticesTo('ag')).toHaveLength(0);
   });
@@ -411,7 +411,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
   it('what never reaches the phone makes no card either (the "will retry" rate-limit notice)', async () => {
     const { errors, bridge } = await boot();
     errors.notifyRateLimitHit('ag', 'rate_limit');
-    await bridge.sendAlert('An informational line.', 'info');
+    await bridge.sendAlert('An informational line.', 'info', { kind: 'broken-agent' });
     expect(texts()).toHaveLength(0);
     expect(cards()).toHaveLength(0);
   });

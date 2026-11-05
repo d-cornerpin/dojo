@@ -826,7 +826,9 @@ class AgentRuntime {
           agentId,
           error: toastError,
           code: toastCode,
-          severity: 'error',
+          // Audit #7 (M11): only a model he must pick is sticky and red; a deleted agent or an unhandled error is not his to act on.
+          severity: toastCode === 'NO_MODEL' ? 'error' : 'warning',
+          cardClass: toastCode === 'NO_MODEL' ? 'action' : 'informational',
           retryable: false,
         });
       } catch { /* best effort */ }

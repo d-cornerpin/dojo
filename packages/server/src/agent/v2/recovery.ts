@@ -94,7 +94,7 @@ const RATE_LIMIT_RETRY_NOTE =
 // `memory/__tests__/platform-noise.test.ts` (so that suite's fixtures are the ACTUAL generated
 // text, never a hand-typed copy that could quietly drift from what this file really produces).
 export function declaredPatienceStatusLine(): string {
-  return `${OWNER_ALERT_DOJO_PREFIX} the agent hit its model's size limit — trimming its context and retrying now.`;
+  return `${OWNER_ALERT_DOJO_PREFIX} the agent hit its model's size limit, so it is trimming its context and retrying now.`;
 }
 
 // CASE 3 — the honest failure. Names what was asked (briefly — this is a status line, not a
@@ -137,7 +137,7 @@ export function declaredPatienceHonestFailNote(triggerContent: string | null, di
     ? 'even after it was trimmed once and tried again'
     : "and it couldn't be trimmed down enough to try again";
   return (
-    `${OWNER_ALERT_DOJO_PREFIX} the agent couldn't finish answering${askClause} — its model couldn't process ` +
+    `${OWNER_ALERT_DOJO_PREFIX} the agent couldn't finish answering${askClause}: its model couldn't process ` +
     `this much context in time, ${trimClause}. The Healer is looking into it.`
   );
 }
@@ -728,6 +728,7 @@ async function tryPlatformErrorRecovery(
     error: humanText,
     code,
     severity: 'error',
+    cardClass: 'action',   // a platform lock: the engine cannot proceed until he fixes the account, the quota or the network
     retryable: false,
   });
 
@@ -871,7 +872,7 @@ async function recordInjury(
   // system note (above) is the durable record; the toast is the
   // ephemeral signal.
   const userMsg = isRateLimit
-    ? 'Model is rate-limited. Retrying automatically — give it a moment.'
+    ? 'Model is rate-limited. Retrying automatically, give it a moment.'
     : paused
       ? pausedWords(agentId) // the owner card's words: on this chat the two fold into one (t138 r6)
       : 'Agent hit an error and the Healer is looking into it. Send a new message to retry, or check the Vitals page if it keeps failing.';
@@ -880,7 +881,10 @@ async function recordInjury(
     agentId,
     error: userMsg,
     code: isRateLimit ? 'RATE_LIMITED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
-    severity: isRateLimit ? 'warning' : 'error',
+    // Audit #7 (M11, owner: "It shouldn't be a persistent notification if it doesn't require the intervention of the
+    // user. It also shouldn't be red."): "the Healer is looking into it" asks nothing of him. Only a paused agent is his.
+    severity: paused ? 'error' : 'warning',
+    cardClass: paused ? 'action' : 'informational',
     retryable: isRateLimit,
   });
 }

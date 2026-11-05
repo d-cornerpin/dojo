@@ -495,16 +495,14 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
 // this proves it is no longer inert.
 // ════════════════════════════════════════════════════════════════════════════════════
 describe('T81d §C — the pre-dial doomed-request gate now covers the agent-sdk transport too', () => {
-  it('RED: a declared throughput this small refuses a prompt that cannot finish — zero dials attempted', async () => {
+  // v3.5 field fix 3 (#11, owner ruling OR-FIELD3 (a)): "Cloud models get their FULL context window; the provider-
+  // ceiling (prefill doom) cap applies to local models only." The Agent SDK is Anthropic's cloud, so its row never arms
+  // the doom ceiling: the prompt this clause once refused now dials (it was RED for the T81d wiring; the ruling retired it).
+  it('a cloud row: a declared throughput no longer refuses the oversized prompt; the SDK is queried once', async () => {
     seedAgentSdk(SCALED_PATIENCE_MS, null, SCALED_THROUGHPUT_TOK_PER_SEC);
-    const err = await callAgentSdk(LONG_MESSAGE).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(AgentError);
-    expect((err as AgentError).message).toContain(PRE_DIAL_REFUSAL_PHRASE);
-    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
-    expect((err as AgentError).preDialRefusal).toBe(true);
-    expect((err as AgentError).retryable).toBe(false);
-    // The whole point: the SDK never saw a request at all.
-    expect(agentSdk.queryCalls).toHaveLength(0);
+    const result = await callAgentSdk(LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(agentSdk.queryCalls).toHaveLength(1);
   });
 
   it('GREEN: the same declared throughput dials a prompt that fits the ceiling', async () => {
@@ -559,14 +557,12 @@ const seedAgentSdkMeasured = (
 };
 
 describe('fix round 1 §E — the agent-sdk dial site reads the measurement, under C1\'s rule', () => {
-  it('I1 RED: patience declared + a measured rate refuses — the SDK is never queried', async () => {
+  // v3.5 field fix 3 (#11, OR-FIELD3 (a)): the measured rate is a lower bound off cached cloud calls; on this cloud row it
+  // arms nothing (it was the field box's 13% cap). The oversized prompt dials.
+  it('a cloud row: patience declared + a measured rate dials the oversized prompt', async () => {
     seedAgentSdkMeasured(SCALED_PATIENCE_MS, SCALED_THROUGHPUT_TOK_PER_SEC);
-    const err = await callAgentSdk(LONG_MESSAGE).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(AgentError);
-    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
-    expect((err as AgentError).preDialRefusal).toBe(true);
-    expect((err as AgentError).message).toContain(`this provider's measured ${SCALED_THROUGHPUT_TOK_PER_SEC} tok/s`);
-    expect(agentSdk.queryCalls).toHaveLength(0);
+    await callAgentSdk(LONG_MESSAGE);
+    expect(agentSdk.queryCalls).toHaveLength(1);
   });
 
   it('⚠ C1: with patience UNDECLARED — which is every agent-sdk row the UI can make — it dials', async () => {

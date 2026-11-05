@@ -3,6 +3,7 @@
 // Quick tunnels (trycloudflare.com) and named tunnels (custom domain)
 // ════════════════════════════════════════
 
+import { sendAlert } from './imessage-bridge.js';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +11,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential, setProviderCredential } from '../config/loader.js';
 import { broadcast } from '../gateway/ws.js';
-import { sendAlert } from './imessage-bridge.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('tunnel');
@@ -492,12 +492,11 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         logger.info('Quick tunnel active', { url: tunnelUrl });
         broadcastStatus();
 
-        // Send the new URL via iMessage so the owner always has it.
-        // 'notice' severity — routes to iMessage like critical does, but
-        // without the "[CRITICAL]" prefix. This is a friendly status
-        // announcement, not an incident, so it shouldn't shout.
+        // Re-review 2 S8 (owner): the new remote dashboard address IS one of the Dojo's texts. An owner away from
+        // home is on the old link, which is now dead, so the phone is the only place he can learn the new one.
+        // 'notice': it reaches the phone without the "[CRITICAL]" prefix; a status line, not a card.
         try {
-          void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { card: false }); // a status line, not a card
+          void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { kind: 'remote-address', card: false });
         } catch { /* iMessage bridge may not be running yet */ }
       }
     };

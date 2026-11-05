@@ -385,13 +385,14 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
     expect(new Set(writers)).toEqual(new Set([CHEAP]));
   });
 
-  it('I3: with a compaction model set in Settings, that model writes the summary', async () => {
+  // v3.5 field fix 3, owner ruling: there is no compaction model setting. An old row (an earlier build's) is not read.
+  it('I3: an old compaction model row changes nothing: the agent\'s standard-tier pick still writes', async () => {
     seedRoutedLoop();
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWNER_PICK);
     await gateLocked();
     const writers = generateSummarySpy.mock.calls.map((c) => (c[0] as { modelId?: string }).modelId);
     expect(writers.length).toBeGreaterThan(0);
-    expect(new Set(writers)).toEqual(new Set([OWNER_PICK]));
+    expect(new Set(writers)).toEqual(new Set([CHEAP]));
   });
 });
 

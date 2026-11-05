@@ -8,13 +8,12 @@
 // bytes are this header, the imports below and the `export` keyword(s).
 
 import { useGuardedLoad } from '../../lib/load-guard';
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { engineRoleId, loadEngineRoleIds } from '../../lib/engine-role-ids';
 import { formatDate } from '../../lib/dates';
-import { SummaryCheckNotice } from './SummaryCheckNotice';
 
 
 // ── Fallback Vision Model Card ──
@@ -130,7 +129,6 @@ export const CapabilityModelCard = ({
   noSelectionMessage,
   models,
   extraOptions = [],
-  notice,
 }: {
   title: string;
   description: string;
@@ -144,7 +142,6 @@ export const CapabilityModelCard = ({
   noSelectionMessage: string;
   models: Model[];
   extraOptions?: ExtraOption[];
-  notice?: ReactNode;   // v3.5: a standing note under the description (the Summarization card's)
 }) => {
   const [selectedId, setSelectedId] = useState('');
   const [saving, setSaving] = useState(false);
@@ -194,7 +191,6 @@ export const CapabilityModelCard = ({
         <div className="scard__title">{title}</div>
         <p className="text-xs text-ui/40 mt-1">{description}</p>
       </div>
-      {notice}
 
       {!hasAnyOption ? (
         <div className="alert-banner alert-warning">{noModelsMessage}</div>
@@ -358,24 +354,6 @@ export const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
   />
 );
 
-// The model that writes memory summaries when an agent compacts. Any text model works (image/video/
-// music/embedding models and the Dojo's decision model write no text). v3.5, owner ruling 2026-10-24 ("The
-// agents model."): with nothing chosen here each agent's own model writes its summaries; the small writer is the fallback.
-export const CompactionModelCard = ({ models }: { models: Model[] }) => (
-  <CapabilityModelCard
-    title="Summarization Model"
-    description="Writes memory summaries when an agent compacts its history. Unless one model is chosen here, each agent's own model writes its summaries, and the Dojo's small local writer steps in only when that model cannot be reached."
-    settingKey="compaction_model_id"
-    matchFn={(m) => !m.capabilities.some((c) => c.includes('generation') || c === 'embedding' || c === 'decision')}
-    selectorLabel="Summarization model"
-    noModelsMessage="No text-capable models are enabled. Enable a chat model above and come back here to pick it."
-    noSelectionMessage="No model chosen here: each agent's own model writes its own summaries."
-    notice={<SummaryCheckNotice />}
-    models={models}
-  />
-);
-
-
 type HealerCfg = Awaited<ReturnType<typeof api.getHealerConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
 
 export const HealerCard = ({ models }: { models: Model[] }) => {
@@ -500,7 +478,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
             in when the main provider goes down. Same provider = no backup. */}
         {providerSharedWithPrimary && primaryProviderName && (
           <div className="mt-3 rounded-md border border-cp-amber/40 bg-cp-amber/10 px-3 py-2.5 text-xs text-cp-amber-light/90 leading-relaxed">
-            <div className="font-medium mb-1 text-cp-amber-light">Heads up — both agents are using the same service</div>
+            <div className="font-medium mb-1 text-cp-amber-light">Heads up, both agents are using the same service</div>
             <div>
               Your main agent and your Healer agent are both using {primaryProviderName}. If {primaryProviderName} has a problem, both will stop working at the same time and there's nothing to step in and fix it. Pick a different model from a different service for one of them.
             </div>
@@ -585,7 +563,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
         <div className="pt-2 border-t border-ui/[0.06]">
           <p className="text-[10px] text-ui/25 mb-1">
             Last cycle: {formatDate(lastDiagnostic.created_at)}
-            {' — '}
+            {'-'}
             {lastDiagnostic.critical_count > 0 && <span className="text-cp-coral">{lastDiagnostic.critical_count} critical</span>}
             {lastDiagnostic.critical_count > 0 && lastDiagnostic.warning_count > 0 && ', '}
             {lastDiagnostic.warning_count > 0 && <span className="text-cp-amber">{lastDiagnostic.warning_count} warnings</span>}
