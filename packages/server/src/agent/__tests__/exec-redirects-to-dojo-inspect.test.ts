@@ -141,8 +141,8 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
       'sqlite3 ~/.dojo/data/*.db "select 1"']) {
       expect(refusal(PRIMARY, 'shell', script), script).toMatch(SHAPE);
     }
-    // Re-review 4: .schema prints whole definitions, credential tables included, so it is refused with what to use instead.
-    expect(refusal(PRIMARY, 'shell', `sqlite3 ~/.dojo/data/dojo.db '.schema work'`)).toMatch(/^Refused: \.schema prints whole table definitions/);
+    // Re-review 4, coordinator's call: .schema prints table definitions, which are not secrets.
+    expect(verdict(PRIMARY, 'shell', `sqlite3 ~/.dojo/data/dojo.db '.schema work'`).allowed).toBe(true);
   });
 
   it('audit round: a WORKER\'s shell read of the live database stays refused, as a plain fact (its log read is unchanged)', () => {

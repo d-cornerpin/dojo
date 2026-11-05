@@ -17,7 +17,7 @@
 //     relative path or other spelling;
 //   • the flags come from OUTPUT_FLAGS below, and nothing else (no flag that carries SQL or a file);
 //   • then exactly ONE quoted SQL argument, which the shell does not expand, and nothing after it
-//     (or the bare dot-command `.tables`, which prints names only; `.schema` stays refused);
+//     (or `.tables`, or `.schema` with at most one table name: names and table definitions only);
 //   • every statement in it (split by a quote-aware splitter) is SELECT, WITH ... SELECT, or a pragma
 //     from READ_PRAGMAS, and passes `refuseDeniedSql` (inspect/redact.ts), the one credential list
 //     dojo_inspect uses too;
@@ -63,7 +63,6 @@ export type DoorOutcome = 'untouched' | 'allowed' | 'refused' | 'credential';
 export interface DoorVerdict { outcome: DoorOutcome; message?: string }
 
 export const FACT_REFUSAL = 'Refused: dojo_inspect answers questions about the Dojo\'s database, and the shell allows only a plain read-only sqlite3 SELECT of it, written as sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT ...".';
-export const SCHEMA_REFUSAL = "Refused: .schema prints whole table definitions, the credential tables' included; pragma table_info(<table>) in a sqlite3 read, or dojo_inspect's schema view, shows a table's columns.";
 export const WORKER_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
 const SQLITE = new Set(['sqlite3', '/usr/bin/sqlite3']);
@@ -250,13 +249,12 @@ function isMetadataLook(words: readonly Word[]): boolean {
 // ── the verdict ──
 /** The verdict on one sqlite3 command's words, already known to be the exact shape. */
 function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
-  // Re-review 4: `.tables` alone prints table and view names only, which dojo_inspect's schema view
-  // lists too. `.schema` prints whole definitions (defaults, constraints, trigger and view text) of
-  // the credential tables as well, which is more than that view shows and cannot be bounded here,
-  // so it stays refused, with what to use instead.
+  // Re-review 4, coordinator's call: `.tables` prints names and `.schema` prints table definitions
+  // (column names and types). Neither is a secret, and `select sql from sqlite_master` already
+  // returns the same definitions on both read paths. Each runs alone, `.schema` with at most one
+  // plain table name.
   const dot = sql.trim();
-  if (dot === '.tables') return { outcome: 'allowed' };
-  if (/^\.schema\b/i.test(dot)) return { outcome: 'refused', message: SCHEMA_REFUSAL };
+  if (dot === '.tables' || /^\.schema(?:\s+[A-Za-z_]\w*)?$/.test(dot)) return { outcome: 'allowed' };
   const statements = splitStatements(sql);
   if (statements.length === 0) return { outcome: 'refused', message: FACT_REFUSAL };
   const db = openDb();
@@ -291,7 +289,7 @@ function shapeSql(words: readonly Word[]): string | null {
   while (i < words.length && words[i].plain && OUTPUT_FLAGS.has(words[i].value)) i++;
   const sql = words[i];
   if (!sql || i + 1 !== words.length || sql.expands) return null;
-  if (!sql.quotedWhole && !(sql.plain && sql.value === '.tables')) return null;   // `.tables` is one plain word
+  if (!sql.quotedWhole && !(sql.plain && (sql.value === '.tables' || sql.value === '.schema'))) return null;   // one plain dot-command word
   return sql.value;
 }
 

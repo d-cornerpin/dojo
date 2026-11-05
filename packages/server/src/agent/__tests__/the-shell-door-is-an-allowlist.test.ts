@@ -92,6 +92,8 @@ const ALLOWED: Row[] = [
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select a.id, j.key from agents a, json_each(a.config) j"`, want: 'allow', why: 'a table alias column named config is not the config table' },
   { who: MAIN, line: `sqlite3 -readonly ${DB} .tables`, want: 'allow', why: '.tables lists names only, as dojo_inspect\'s schema view does' },
   { who: HEALER, line: `sqlite3 -readonly ${DB} ".tables"`, want: 'allow', why: '.tables, quoted' },
+  { who: MAIN, line: `sqlite3 -readonly ${DB} ".schema"`, want: 'allow', why: '.schema prints table definitions (column names and types), which are not secrets' },
+  { who: MAIN, line: `sqlite3 -readonly ${DB} ".schema agents"`, want: 'allow', why: '.schema with one table name' },
   // ── re-review 3 M1: table-valued functions on the known-safe list still run ──
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select key, value from json_each('[1,2]')"`, want: 'allow', why: 'json_each is on the known-safe table-valued list' },
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select name from pragma_table_info('messages')"`, want: 'allow', why: 'a schema pragma function is on the known-safe list' },
@@ -134,8 +136,7 @@ const REFUSED: Row[] = [
   { who: MAIN, line: `sqlite3 -readonly ~/.do''jo/data/dojo''.db "select 1"`, want: 'refuse', why: 'the path is not given literally' },
   { who: MAIN, line: "cp -r ~/.do''jo/da''ta /tmp/d", want: 'refuse', why: 'a whole-folder copy, the path spelled apart' },
   // ── re-review 4: still refused ──
-  { who: MAIN, line: `sqlite3 ${DB} ".schema"`, want: 'refuse', why: '.schema prints whole table definitions, credential tables included' },
-  { who: MAIN, line: `sqlite3 ${DB} ".schema agents"`, want: 'refuse', why: '.schema with a table' },
+  { who: MAIN, line: `sqlite3 ${DB} ".schema agents; select 1"`, want: 'refuse', why: '.schema takes one plain table name and nothing else' },
   { who: MAIN, line: `sqlite3 ${DB} ".tables x"`, want: 'refuse', why: '.tables with an argument is not the bare form' },
   { who: MAIN, line: `sqlite3 ${DB} -cmd "select 1" "select 1"`, want: 'refuse', why: 'a flag carrying SQL after the path' },
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select value from main.config"`, want: 'refuse', why: 'a schema-qualified config is still refused' },
