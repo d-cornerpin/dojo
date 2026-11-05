@@ -163,14 +163,11 @@ export async function runProcess(input: {
   cwd: string | undefined;
   note: string | null;
   audit: ProcessAudit;
-  /** OWNER RULING "Your messages come first" (field fix 3, re-review 2): is a person's message
-   *  waiting for this agent right now? While one is, the call hands the turn back and the command
-   *  keeps running in the background. Absent: the call waits for the command, as before. */
-  personWaiting?: () => boolean;
-  /** Where a command's result goes when it ends after the call was handed back. */
-  whenDoneLater?: (text: string) => void;
+  /** OWNER RULING "Your messages come first" (field fix 3, re-review 2 and 3). Absent: the call
+   *  waits for the command, as before. */
+  personFirst?: PersonFirst;
 }): Promise<string> {
-  const { auditTarget, file, argv, timeout, cwd, note, audit, personWaiting, whenDoneLater } = input;
+  const { auditTarget, file, argv, timeout, cwd, note, audit, personFirst } = input;
   // ── HONEST FAILURE FOR SUDO (owner ruling 2026-09-26, v3.2.2) ──
   // A sudo line on a box with no NOPASSWD rule does not fail — it BLOCKS on a password prompt nobody
   // can type into, and the turn dies on the timeout with nothing to read. `sudoWouldHang` probes it
@@ -183,32 +180,44 @@ export async function runProcess(input: {
   }
   // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and the run
   // streams so each chunk can re-arm it. A healthy long build talks the whole way through and
-  // survives; a wedged command says nothing and is still killed. The idle bound, the ceiling and the
-  // Stop button reach the child the same way whether or not the call has been handed back.
+  // survives; a wedged command says nothing and is still killed. Its bounds and the Stop button
+  // reach the child the same way whether or not the call has been handed back.
+  let pid: number | undefined;
+  const startedAt = Date.now();
+  // The person-first watch starts BEFORE the child: only a message that arrives after this instant
+  // hands the call back (re-review 3, T1). The asks the turn already knew of when it chose to run the
+  // command never interrupt it.
+  const watch = personFirst?.watchFrom(startedAt);
   const running = runWithIdleBound(file, argv, {
     idleMs: timeout,
     ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
     ...(cwd ? { cwd } : {}),
+    onSpawn: (p) => { pid = p; },
   });
   const settle = (p: Promise<{ stdout: string; stderr: string }>): Promise<string> => settleProcess(p, input);
-  if (personWaiting && whenDoneLater) {
-    // "Your messages come first": the call races the command against a person's message arriving.
-    // The check is the record (a waiting message), read on a short poll; no clock decides anything.
-    let poll: ReturnType<typeof setInterval> | undefined;
-    const handedBack = new Promise<'person'>((resolve) => {
-      const check = (): void => { try { if (personWaiting()) resolve('person'); } catch { /* keep waiting on the command */ } };
-      check();
-      poll = setInterval(check, 250);
-    });
-    const outcome = settle(running);
-    const first = await Promise.race([outcome, handedBack]);
-    clearInterval(poll);
-    if (first !== 'person') return first;
-    void outcome.then((text) => { try { whenDoneLater(text); } catch { /* the hand-over is best effort */ } });
-    return '[The command is still running in the background: a message from a person is waiting, and it comes first. '
-      + 'The command keeps running; when it ends, the Dojo hands you its full result and wakes you.]';
-  }
-  return settle(running);
+  if (!personFirst || !watch) return settle(running);
+  const outcome = settle(running);
+  const first = await Promise.race([outcome, watch.arrived.then(() => 'person' as const)]);
+  watch.cancel();
+  if (first !== 'person') return first;
+  personFirst.handedBack(pid, outcome);
+  return handBackText(pid);
+}
+
+/** One background hand-off, as the exec door wires it (`tools/person-first.ts`). */
+export interface PersonFirst {
+  /** Resolves when a person's message ARRIVES after `startedAt`. Never for one already open. */
+  watchFrom(startedAt: number): { arrived: Promise<void>; cancel(): void };
+  /** The call was handed back: own the still-running command, and hand its result over when it ends. */
+  handedBack(pid: number | undefined, outcome: Promise<string>): void;
+}
+
+/** What the agent reads when the call is handed back: the fact, the consequence, and the handle. */
+export function handBackText(pid: number | undefined): string {
+  return '[A message from a person arrived while this command was running, and it comes first, so the command was moved to the background'
+    + `${pid !== undefined ? ` (pid ${pid})` : ''}. Its result is NOT available yet. Nothing that depends on this command's result can run now: `
+    + 'wait for the Dojo to hand you the result, which it does when the command ends, and wake you. '
+    + `${pid !== undefined ? `It is still running as pid ${pid}; \`kill ${pid}\` through the shell ends it.` : ''}]`;
 }
 
 /** The command's result as the agent reads it, and its audit row. */

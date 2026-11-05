@@ -41,6 +41,7 @@ import { queueLinkArtifact } from '../../pending-attachments.js';
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
 import { resolveArgvArg } from '../../brokers/resolve.js';
 import { runProcess, resolveProcessCwd, processTimeout, type ProcessAudit } from '../process-run.js';
+import { personFirstFor } from '../person-first.js';
 import { auditLog, registerSharedFile, syncCanvasAfterWrite, toolsLogger as logger } from '../util.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
@@ -58,24 +59,6 @@ function processAuditFor(agentId: string): ProcessAudit {
  * shell-interpreter refusal and the tokenized sensitive-read scan. What is left
  * here is running it, which is the shape a handler should have.
  */
-/** OWNER RULING "Your messages come first" (field fix 3, re-review 2): while a person's message waits
- *  for this agent (the one definition, `getWaitingHumanConversations`), a running command is handed
- *  to the background and the turn goes on; its result reaches the agent through the engine's existing
- *  wake (`tellAgentAndWake`) when it ends. Loaded lazily: the tool layer takes no static edge onto
- *  the turn engine. */
-async function personFirst(agentId: string, what: string): Promise<{ personWaiting: () => boolean; whenDoneLater: (text: string) => void }> {
-  const { getWaitingHumanConversations } = await import('../../v2/counterparty.js');
-  return {
-    personWaiting: () => getWaitingHumanConversations(agentId).length > 0,
-    whenDoneLater: (text) => {
-      void import('../../wake-with-notice.js').then(({ tellAgentAndWake }) => tellAgentAndWake({
-        agentId, from: 'Dojo: background command',
-        brief: `The command you started, ${what.length > 200 ? `${what.slice(0, 200)}…` : what}, kept running in the background while a person's message came first. It has now ended. Its result:\n${text}`,
-      }));
-    },
-  };
-}
-
 async function executeArgv(agentId: string, args: Record<string, unknown>): Promise<string> {
   const resolved = resolveArgvArg(args.argv);
   if (!resolved.ok) {
@@ -90,7 +73,7 @@ async function executeArgv(agentId: string, args: Record<string, unknown>): Prom
     argv: [...resolved.value.argv.slice(1)],
     timeout, cwd, note,
     audit: processAuditFor(agentId),
-    ...(await personFirst(agentId, resolved.value.display)),
+    personFirst: personFirstFor(agentId, resolved.value.display),   // "your messages come first" (tools/person-first.ts)
   });
 }
 
@@ -118,7 +101,7 @@ async function executeShellScript(agentId: string, args: Record<string, unknown>
     argv: ['-c', script],
     timeout, cwd, note,
     audit: processAuditFor(agentId),
-    ...(await personFirst(agentId, `shell script "${script}"`)),
+    personFirst: personFirstFor(agentId, `shell script "${script.length > 200 ? `${script.slice(0, 200)}...` : script}"`),
   });
 }
 

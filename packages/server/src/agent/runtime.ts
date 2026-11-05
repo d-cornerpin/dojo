@@ -410,6 +410,7 @@ import {
   // T81c FIX ROUND 1 (NO-DOOMED-DIALS): the turn-scoped marker that replaced the first cut's
   // unscoped `agents.last_error` read (see the marker's own doc for the reproduced defect).
   declaredPatienceHonestFailTurn,
+  noteArrivalWhileBusy,
 } from './shared-state.js';
 import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
@@ -731,6 +732,7 @@ class AgentRuntime {
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
+      noteArrivalWhileBusy(agentId);   // field fix 3 re-review 3: a command waiting on "your messages come first" is told
       return;
     }
 

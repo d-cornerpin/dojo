@@ -16,6 +16,7 @@ import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { homeDir } from '../home.js';
 import { TOOLBOX_LEDGER_FILE } from '../agent/effects/toolbox-ledger.js';
+import { BACKGROUND_COMMANDS_FILE } from '../agent/background-commands.js';
 
 const logger = createLogger('migration-export');
 
@@ -54,7 +55,7 @@ const VOICE_KEEP_SUBDIR = 'custom';
 // (a raw copy of an open WAL database would be inconsistent). dojo.sqlite is an
 // empty legacy artifact. The toolbox ledger names process groups of this machine's current boot, so it
 // never travels (a restore on the same machine would swap the live ledger for an old one).
-const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE]);
+const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE, BACKGROUND_COMMANDS_FILE]);
 const JUNK = new Set(['.DS_Store']);
 
 export interface ExportProgress {

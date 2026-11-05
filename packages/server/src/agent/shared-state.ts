@@ -451,3 +451,32 @@ export const doomedPrefillCompactionSpent = new Map<string, number>();
 // makes an old entry's turn number mismatch — the clear-on-start is belt-and-suspenders on top
 // of an identity check, not the whole safety net by itself.
 export const declaredPatienceHonestFailTurn = new Map<string, number>();
+
+// ════════════════════════════════════════
+// FIELD FIX 3 RE-REVIEW 3 (L2): SOMETHING ARRIVED WHILE THE AGENT WAS BUSY.
+//
+// `handleMessage`'s busy path is where a message, a peer or an event that ARRIVES during a run is
+// parked (`pendingWakeups`). The exec door's "your messages come first" hand-off listens here instead
+// of polling the waiting set: it is told each arrival, and reads the record once to see whether a
+// person's message is what arrived. Listeners are per agent and remove themselves.
+// ════════════════════════════════════════
+const arrivalListeners = new Map<string, Set<() => void>>();
+
+/** Be told each time something arrives for `agentId` while it is busy. Returns the unsubscribe. */
+export function onArrivalWhileBusy(agentId: string, listener: () => void): () => void {
+  let set = arrivalListeners.get(agentId);
+  if (!set) { set = new Set(); arrivalListeners.set(agentId, set); }
+  set.add(listener);
+  return () => {
+    const cur = arrivalListeners.get(agentId);
+    cur?.delete(listener);
+    if (cur && cur.size === 0) arrivalListeners.delete(agentId);
+  };
+}
+
+/** Something arrived for `agentId` while it was busy (the busy path calls this beside its park). */
+export function noteArrivalWhileBusy(agentId: string): void {
+  for (const l of [...(arrivalListeners.get(agentId) ?? [])]) {
+    try { l(); } catch { /* a listener's failure never touches the park */ }
+  }
+}

@@ -17,7 +17,7 @@ import { postAgentNotice } from './agent-notice.js';
 const logger = createLogger('wake-with-notice');
 
 /** Persist the notice as a deliverable engine event for `agentId` and start (or queue) its turn. Never throws. */
-export async function tellAgentAndWake(opts: { agentId: string; from: string; brief: string; inFailureTurn?: boolean }): Promise<void> {
+export async function tellAgentAndWake(opts: { agentId: string; from: string; brief: string; inFailureTurn?: boolean; intent?: 'delivery_failure_owed' | 'background_command_done' }): Promise<void> {
   try {
     // NO WAKE LOOP (real signal, no counter or timer): a failure that happens inside a turn which a failure notice
     // itself woke is told to the agent as a rider; it is already on this request and will see it.
@@ -25,11 +25,13 @@ export async function tellAgentAndWake(opts: { agentId: string; from: string; br
       postAgentNotice({ toAgentId: opts.agentId, fromName: opts.from, brief: opts.brief, selfIntro: false });
       return;
     }
-    insertEngineEventIfAbsent({
-      id: uuidv4(), agentId: opts.agentId,
-      content: `[SOURCE: AGENT NOTICE from ${opts.from}] ${opts.brief.replace(/\s+/g, ' ').trim()}`,
-      sourceAgentId: null, originIntent: 'delivery_failure_owed', work: null,
-    });
+    const content = `[SOURCE: AGENT NOTICE from ${opts.from}] ${opts.brief.replace(/\s+/g, ' ').trim()}`;
+    // Field fix 3 re-review 3 (L1): a background command's finished result names itself; it is not a failure.
+    if (opts.intent === 'background_command_done') {
+      insertEngineEventIfAbsent({ id: uuidv4(), agentId: opts.agentId, content, sourceAgentId: null, originIntent: 'background_command_done', work: null });
+    } else {
+      insertEngineEventIfAbsent({ id: uuidv4(), agentId: opts.agentId, content, sourceAgentId: null, originIntent: 'delivery_failure_owed', work: null });
+    }
     const { getAgentRuntime } = await import('./runtime.js');
     getAgentRuntime().handleMessage(opts.agentId, '').catch((err) => {
       logger.warn('wake after a failure notice failed (the notice stays queued)', { error: err instanceof Error ? err.message : String(err) }, opts.agentId);

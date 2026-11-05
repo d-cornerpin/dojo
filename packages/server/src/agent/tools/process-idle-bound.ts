@@ -38,11 +38,12 @@ export type { ChildRunFailure };
  */
 export async function runWithIdleBound(
   file: string, argv: readonly string[],
-  opts: { idleMs: number; ceilingMs: number; cwd?: string },
+  opts: { idleMs: number; ceilingMs: number; cwd?: string; onSpawn?: (pid: number) => void },
 ): Promise<{ stdout: string; stderr: string }> {
   // The capability check lives INSIDE `spawnAuthorized`: a program this call was not authorized
   // for never becomes a child, so the clock below is only ever handed a process the gate allowed.
   const child = spawnAuthorized(file, argv, opts.cwd ? { cwd: opts.cwd } : undefined);
+  if (child.pid !== undefined) opts.onSpawn?.(child.pid);   // field fix 3 re-review 3: the hand-off's handle
   // t203: the clock's kill reaches the whole tree. Signalling only the shell left a script's
   // background job running, and holding the pipe, so this run did not even come back.
   const tree: WatchableChild = {
