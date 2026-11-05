@@ -307,13 +307,13 @@ export const GlobalAlerts = () => {
   useEffect(() => {
     if (connectionStatus !== 'connected') return;
     let current = true;
-    void api.request<Array<{ words: string; severity: string; cardKey?: string }>>('/config/owner-notices').then((r) => {
+    void api.request<Array<{ words: string; severity: string; cardKey?: string; cardClass?: 'action' | 'informational' }>>('/config/owner-notices').then((r) => {
       if (!current || !r.ok || !Array.isArray(r.data)) return;
       const standing = new Set(r.data.map((c) => `owner-alert:${c.cardKey ?? c.words}`));
       for (const t of onScreen.current) {
         if (t.dedupeKey?.startsWith('owner-alert:') && !standing.has(t.dedupeKey)) removeToastByKey(t.dedupeKey);
       }
-      for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical', c.cardKey);
+      for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical', c.cardKey, c.cardClass);
     });
     return () => { current = false; };
   }, [connectionStatus, showOwnerCard, removeToastByKey]);

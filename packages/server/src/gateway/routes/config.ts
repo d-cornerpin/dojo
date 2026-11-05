@@ -26,7 +26,7 @@ import { accountOwnerCards } from '../../services/account-owner-cards.js';
 import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { importOwnerCards } from '../../migration/import-recovery.js';
-import { builtInToolsOwnerCards } from '../../services/built-in-tools-card.js';
+import { builtInToolsOwnerCards, markBuiltInToolsCardShown } from '../../services/built-in-tools-card.js';
 import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
@@ -2902,7 +2902,7 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 const ownerCards = () => [
   ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
   ...accountOwnerCards(), ...watcherOwnerCards(), ...importOwnerCards(), ...builtInToolsOwnerCards(),
-].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey }));
+].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey, cardClass: (card as { cardClass?: 'action' | 'informational' }).cardClass }));
 
 // The owner-notice door asks this list whether a card LASTS (t146): a card it would not re-derive
 // is a live frame only, and is not the owner told about a work row.
@@ -2910,7 +2910,10 @@ registerStandingOwnerCards(ownerCards);
 
 // GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
 configRouter.get('/owner-notices', (c) => {
-  const seen = new Map(ownerCards().map(({ words, severity, cardKey }) => [cardKey ?? words, { words, severity, ...(cardKey ? { cardKey } : {}) }] as const));
+  const cards = ownerCards();
+  const seen = new Map(cards.map(({ words, severity, cardKey, cardClass }) => [cardKey ?? words, { words, severity, ...(cardKey ? { cardKey } : {}), ...(cardClass ? { cardClass } : {}) }] as const));
+  // Audit #7: a card named once (the built-in tools card) is marked shown as it is served.
+  for (const card of cards) if (card.cardKey) markBuiltInToolsCardShown(card.cardKey);
   return c.json({ ok: true, data: [...seen.values()] });
 });
 

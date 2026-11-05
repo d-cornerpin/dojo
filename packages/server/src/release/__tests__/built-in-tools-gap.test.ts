@@ -19,7 +19,7 @@ vi.mock('../../agent/agent-notice.js', () => ({
 }));
 
 import { raiseBuiltInToolsGap } from '../built-in-tools-gap.js';
-import { builtInToolsOwnerCards } from '../../services/built-in-tools-card.js';
+import { builtInToolsOwnerCards, markBuiltInToolsCardShown } from '../../services/built-in-tools-card.js';
 import { RELEASE_STEPS } from '../release-steps.js';
 import { DREAMER_TOOLS_POLICY } from '../../vault/maintenance.js';
 import { PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
@@ -60,6 +60,17 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     expect(card.words).not.toMatch(/Access settings|add them back/);   // the panel is locked for built-ins; "back" assumes a removal
     expect(card.words).not.toContain('tracker_get');                  // held (as its replacement), so not offered
     expect(card.words).not.toContain('send_to_agent');
+  });
+
+  // Rulings audit #7 (release note 278 "names them once"; OR-FIELD3 (c): no persistent card when nothing is asked of
+  // him): an informational card, named once. Once the owner-notices list has served it, it never comes back.
+  it('the card is informational and named once: after it is served it is not derived again', () => {
+    addAgent('pm', 'Boss', JSON.stringify({ allow: PM_OLD }), JSON.stringify(grantsOf({ allow: PM_OLD, deny: [] })));
+    raiseBuiltInToolsGap();
+    const [card] = cards();
+    expect(card).toMatchObject({ cardClass: 'informational', cardKey: 'built-in-tools:pm' });
+    markBuiltInToolsCardShown(card.cardKey);   // what GET /config/owner-notices does as it serves the card
+    expect(cards(), 'the next load (and every reconnect) does not show it again').toEqual([]);
   });
 
   it('the main agent is told exactly what the card says, once', () => {
