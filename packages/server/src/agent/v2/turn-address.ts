@@ -97,6 +97,7 @@ export function resolveDeliveryChannel(
     ownerAffinityChannel: live.ownerAffinityChannel,
     inboundChannel: addr.boundChannel,
     presence: live.presence,
+    personAskedHere: addr.kind === 'person',
   });
   return resolveReplyDestination({
     state: { inboundChannel: addr.boundChannel },

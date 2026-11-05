@@ -52,8 +52,12 @@ describe('the turn address: who the written reply really goes to', () => {
     expect(addr({ counterparty: contact, inboundChannel: null }).deliveryChannel).toBe('dashboard');
   });
 
-  it('A4: an owner turn promoted by affinity or by being away is told the promoted channel', () => {
-    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('imessage');
+  it('A4: an owner turn promoted by being away is told the promoted channel; affinity never moves a dashboard ask', () => {
+    // Field fix 3 test-2 rank 2 (channel identity): the owner asking ON the dashboard is the
+    // opposite of RC-10's "invisible dashboard" premise, so affinity leaves that reply where he is.
+    // An ENGINE turn that defaults to the dashboard still follows affinity (RC-10's own case).
+    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
+    expect(addr({ counterparty: owner, isEngineTurn: true, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('imessage');
     expect(addr({ counterparty: owner, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('imessage');
     // Affinity alone with no inbound is refused (phantom-outreach rule).
     expect(addr({ counterparty: owner, inboundChannel: null, ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
