@@ -240,7 +240,7 @@ describe('B1 the reassign verb needs a cause the engine can check', () => {
     expect(rowOf().agent_id).toBe(GONE);
   });
 
-  it('RED: the status door no longer moves the assignee on the side — the whole call is refused (at the door since test-2 rank 3)', () => {
+  it('RED: the status door no longer moves the assignee on the side: the whole call is refused (at the door since test-2 rank 3)', () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER });
     const v = unknownArgsAgainstSchema('work_update', { action: 'status', task_id: TASK, status: 'in_progress', assigned_to: PEER });
     expect(v.unread).toEqual(['assigned_to']);
