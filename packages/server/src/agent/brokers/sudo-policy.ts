@@ -1291,7 +1291,9 @@ export function isSudoHoldRequired(toolName: string, args: Record<string, unknow
   // took the whole turn down, not just sudo. Found by the integration suite: 39 failures from one
   // undefined import. Parsing cannot throw, and it answers `false` for the overwhelming majority of
   // calls before any I/O happens.
-  const raw = toolName === 'shell' ? args.script
+  // v3.5 field fix 3 (rulings audit #10, P3): `applescript_run` carries its text in `script` too, so "with administrator
+  // privileges" gets the same owner card under `gated` (it ran with the macOS dialog alone).
+  const raw = toolName === 'shell' || toolName === 'applescript_run' ? args.script
     : Array.isArray(args.argv) ? (args.argv as unknown[]).join(' ')
       : args.command;
   if (!(typeof raw === 'string' && raw.length > 0)) return false;
