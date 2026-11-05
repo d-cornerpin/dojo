@@ -45,10 +45,13 @@ export interface ResolveReplyDestinationParams {
   // limit (null = no promotion this turn). The presence-away override stays stronger.
   counterpartyIsOwner?: boolean;
   ownerAffinityChannel?: 'imessage' | null;
+  /** v3.5 field fix 3: this turn is a PERSON's ask (the turn address's kind is 'person'), not an
+   *  engine, proactive or notification turn whose reply merely defaults to the dashboard. */
+  personAskedHere?: boolean;
 }
 
 export function resolveReplyDestination(params: ResolveReplyDestinationParams): ReplyDestination {
-  const { state, presence, imessageBridgeConfigured, counterpartyIsOwner, ownerAffinityChannel } = params;
+  const { state, presence, imessageBridgeConfigured, counterpartyIsOwner, ownerAffinityChannel, personAskedHere } = params;
 
   // Layer 1: bind to the inbound channel when one is set. The away override
   // never applies to these — if the user reached out via Teams, the reply
@@ -63,8 +66,16 @@ export function resolveReplyDestination(params: ResolveReplyDestinationParams): 
   // loud doesn't get a text on their phone instead. Returning 'voice' here
   // keeps the reply on the voice channel regardless of presence.
   if (state.inboundChannel === 'voice') return 'voice';
+  // OWNER RULING (2026-11-04, field fix 3 test-2 round), verbatim: "obviously if a user types a
+  // message on the dashboard, they get a response on the dashboard." A person's dashboard ask is
+  // bound like every other routed inbound, whatever the presence state; neither the away override
+  // nor affinity below ever applies to it. (Away still forwards everything else to the phone: the
+  // engine, proactive and notification turns that merely DEFAULT to the dashboard. The server also
+  // flips presence back to in-dojo when the owner types there: `gateway/routes/chat.ts`.)
+  if (state.inboundChannel === 'dashboard' && personAskedHere === true) return 'dashboard';
 
-  // Layer 2: dashboard inbound or proactive turn → default to dashboard,
+  // Layer 2: a dashboard-default turn that no person asked on the dashboard (engine, proactive,
+  // notification) → default to dashboard,
   // then apply the away override if applicable. (Away override only
   // promotes to iMessage — Teams/email require a specific recipient
   // context that proactive turns don't carry.)

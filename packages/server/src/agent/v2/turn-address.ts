@@ -105,6 +105,7 @@ export function resolveDeliveryChannel(
     imessageBridgeConfigured: live.imessageBridgeConfigured,
     counterpartyIsOwner: addr.isOwner,
     ownerAffinityChannel: affinityRefused ? null : live.ownerAffinityChannel,
+    personAskedHere: addr.kind === 'person',
   });
 }
 

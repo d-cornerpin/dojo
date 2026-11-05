@@ -9,10 +9,11 @@
 // is, so affinity must never move that reply to iMessage, and the address the model reads must
 // say the dashboard.
 //
-// NOT CHANGED HERE, PENDING THE OWNER: the "away" presence override. Its history (v1.4.1,
-// `set_user_presence`: "away = not at the computer, route messages via iMessage"; v2.7.23 and
-// 5604f6dd: "the send is owner-bound while the owner is away") is an owner-facing rule, so a
-// dashboard ask on an away box still routes to iMessage until he rules (see the report).
+// OWNER RULING (2026-11-04), verbatim: "obviously if a user types a message on the dashboard, they
+// get a response on the dashboard." So a person's dashboard ask is answered on the dashboard
+// whatever the presence state. "Away" keeps forwarding everything else to the phone: engine and
+// proactive turns. Typing on the dashboard while away also flips presence back to in-dojo
+// (`gateway/__tests__/a-dashboard-message-means-the-owner-is-here.test.ts`).
 
 import { describe, it, expect } from 'vitest';
 import type { TurnCounterparty } from '../counterparty.js';
@@ -46,6 +47,24 @@ describe('a dashboard ask with owner affinity on iMessage', () => {
     expect(affinityPromotionRefusedNoBasis({
       ownerAffinityChannel: 'imessage', inboundChannel: 'dashboard', presence: 'in_dojo', personAskedHere: true,
     })).toBe(true);
+  });
+});
+
+describe('the owner ruling: a dashboard ask while marked away', () => {
+  it('THE RED: presence away, a dashboard ask: the reply goes to the dashboard and the address says so', () => {
+    const a = addr({ counterparty: ownerOnDashboard, inboundChannel: 'dashboard', presence: 'away' });
+    expect(a.deliveryChannel).toBe('dashboard');
+    expect(a.routed).toBe(false);
+    expect(renderReplyGoesTo(a)).not.toMatch(/iMessage/);
+    expect(renderTailRestatement(a)).toBeNull();
+  });
+
+  it('away AND affinity together still leave a dashboard ask on the dashboard', () => {
+    expect(addr({ counterparty: ownerOnDashboard, inboundChannel: 'dashboard', presence: 'away', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
+  });
+
+  it('CONTROL: away still forwards an ENGINE turn that defaults to the dashboard', () => {
+    expect(addr({ counterparty: ownerOnDashboard, isEngineTurn: true, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('imessage');
   });
 });
 

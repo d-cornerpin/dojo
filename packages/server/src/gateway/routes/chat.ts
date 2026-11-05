@@ -179,6 +179,19 @@ export async function submitUserMessage(
 
   queueEmbedding('message', messageId, agentId, content);
 
+  // OWNER RULING (2026-11-04, field fix 3 test-2 round): "obviously if a user types a message on
+  // the dashboard, they get a response on the dashboard." The owner writing here is proof he is at
+  // the dashboard, so a message sent while presence says "away" flips it back to in-dojo, and the
+  // composer's pill is told. The reply itself is bound to the dashboard by the resolver either way.
+  try {
+    const { getPresence, setPresence } = await import('../../services/presence.js');
+    if (getPresence() === 'away') {
+      setPresence('in_dojo');
+      broadcast({ type: 'system:presence', data: { status: 'in_dojo' } });
+      logger.info('Presence flipped to in-dojo: the owner wrote on the dashboard', { agentId }, agentId);
+    }
+  } catch { /* best effort: the reply binding does not depend on it */ }
+
   // NOTE (duplicate-work root fix): we deliberately do NOT preempt the running
   // turn here. preemptAgentForUrgentMessage aborts the in-flight turn so the new
   // message can run sooner — but the abort lands AFTER the turn has already

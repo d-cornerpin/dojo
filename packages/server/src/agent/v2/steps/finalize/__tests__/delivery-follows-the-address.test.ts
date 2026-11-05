@@ -63,15 +63,25 @@ describe('delivery follows the turn address', () => {
 });
 
 describe('what the agent is told equals what is used, including after a presence flip', () => {
-  it('owner on the dashboard: told dashboard at preflight, the owner goes away mid-turn: the live address and delivery both say iMessage', async () => {
-    const address = addressFor(owner, 'dashboard', 'in_dojo');
+  // Owner ruling 2026-11-04 (field fix 3 test-2 round): a person's DASHBOARD ask is answered on the
+  // dashboard whatever the presence, so the presence-flip requirement this clause holds is shown on
+  // an owner turn that no dashboard message started (a proactive turn), which away still forwards.
+  it('owner turn with no inbound: told dashboard at preflight, the owner goes away mid-turn: the live address and delivery both say iMessage', async () => {
+    const address = addressFor(owner, null, 'in_dojo');
     expect(address.deliveryChannel).toBe('dashboard');
     expect(liveAddress(address)?.deliveryChannel).toBe('dashboard');
     presence.current = 'away';
     const told = liveAddress(address)!;
     expect(told.deliveryChannel).toBe('imessage');
     expect(told.routed).toBe(true);
-    expect(await destinationOf(owner, address, 'dashboard')).toBe(told.deliveryChannel);
+    expect(await destinationOf(owner, address, null)).toBe(told.deliveryChannel);
+  });
+
+  it('owner ruling: a DASHBOARD ask stays on the dashboard when the owner goes away mid-turn', async () => {
+    const address = addressFor(owner, 'dashboard', 'in_dojo');
+    presence.current = 'away';
+    expect(liveAddress(address)!.deliveryChannel).toBe('dashboard');
+    expect(await destinationOf(owner, address, 'dashboard')).toBe('dashboard');
   });
 
   it('and back again: the owner returns, both say dashboard', async () => {

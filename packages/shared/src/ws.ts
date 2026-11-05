@@ -682,6 +682,7 @@ export type WsEvent =
   | TaskRunCompleteEvent
   | TrackerTaskLogEvent
   | SystemTunnelStatusEvent
+  | SystemPresenceEvent
   | MigrationDepsetupEvent
   | SystemRestartEvent;
 
@@ -1138,6 +1139,15 @@ export interface MigrationDepsetupEvent {
 // device can show a "restarting" overlay and ride out the reconnect gap
 // instead of surfacing raw connection errors. Fields sit at the top level.
 
+// ── Owner presence (field fix 3, test-2 round) ──
+// Sent when the server changes the owner's presence on its own (a message typed on the dashboard
+// while marked away flips it back to in-dojo), so the composer's pill shows the stored truth.
+
+export interface SystemPresenceEvent {
+  type: 'system:presence';
+  data: { status: 'in_dojo' | 'away' };
+}
+
 export interface SystemRestartEvent {
   type: 'system:restart';
   initiatedAt: string;
@@ -1264,6 +1274,7 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'task:run_started': false,
   'task:run_complete': false,
   'system:tunnel_status': false,
+  'system:presence': false,
   'system:restart': false,
 };
 

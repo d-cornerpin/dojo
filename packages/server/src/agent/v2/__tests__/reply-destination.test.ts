@@ -56,7 +56,23 @@ describe('resolveReplyDestination', () => {
     ).toBe('dashboard');
   });
 
-  it('dashboard inbound while away + bridge configured routes to iMessage', () => {
+  // OWNER RULING (2026-11-04, field fix 3 test-2 round), verbatim: "obviously if a user types a
+  // message on the dashboard, they get a response on the dashboard." This clause (7420e75b, v2.7.23)
+  // pinned the OPPOSITE for a person's dashboard ask; it now pins the ruling, and the away override
+  // keeps every reply that is NOT a person's dashboard ask (an engine or notification turn whose
+  // reply merely defaults to the dashboard).
+  it('a PERSON\'s dashboard ask while away stays on the dashboard (owner ruling)', () => {
+    expect(
+      resolveReplyDestination({
+        state: { inboundChannel: 'dashboard' },
+        presence: 'away',
+        imessageBridgeConfigured: true,
+        personAskedHere: true,
+      }),
+    ).toBe('dashboard');
+  });
+
+  it('a dashboard-DEFAULT reply that no person asked for (engine turn) while away still routes to iMessage', () => {
     expect(
       resolveReplyDestination({
         state: { inboundChannel: 'dashboard' },

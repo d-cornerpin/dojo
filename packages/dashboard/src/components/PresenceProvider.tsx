@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import * as api from '../lib/api';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 /* Presence (in the dojo vs out / iMessage) is shown + toggled in the composer's
    bottom-left, but the orb (sleepy when away) and the stage `is-out` styling
@@ -36,6 +37,16 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  // The server can change presence on its own: a message typed on the dashboard while marked away
+  // flips it back to in-dojo (owner ruling 2026-11-04). Follow its frame, so the pill never says
+  // "away" after the owner has written here.
+  const { subscribe } = useWebSocket();
+  useEffect(() => subscribe('system:presence', (ev) => {
+    const status = (ev as { data?: { status?: PresenceStatus } }).data?.status;
+    if (status !== 'in_dojo' && status !== 'away') return;
+    setPresence((cur) => (cur ? { ...cur, status } : cur));
+  }), [subscribe]);
 
   const toggle = useCallback(async () => {
     const cur = presenceRef.current;
