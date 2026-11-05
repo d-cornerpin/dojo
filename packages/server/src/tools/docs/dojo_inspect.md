@@ -2,7 +2,7 @@
 
 Look at anything that happened in your own Dojo, read-only: what happened to a task, an agent, a turn or a time window; what any agent said; what the platform logged; how the Dojo is configured; what is in its database; and its own source code. It never changes anything. Passwords, keys and tokens are never shown: credential tables are refused and token-shaped text is blanked in every view.
 
-The main agent and the Healer can also read the Dojo's database and its platform log with the shell (`sqlite3 -readonly`, `grep`, `tail`). dojo_inspect is the read-only view that refuses credential tables and blanks secrets. A shell write to the live database is refused, because it would corrupt the running Dojo.
+The main agent and the Healer can also read the Dojo's database and its platform log with the shell (`sqlite3 -readonly`, `grep`, `tail`). dojo_inspect is the read-only view that refuses credential tables and blanks secrets. The shell refuses the same credential tables, and a whole-file copy or dump of the database. A shell write to the live database is refused, because it would corrupt the running Dojo.
 
 Who holds it: the main agent and the Healer. The owner, or the main agent, can give it to another agent by naming `dojo_inspect` in that agent's tools; an agent that was given it cannot pass it on.
 
