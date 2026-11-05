@@ -134,9 +134,9 @@ function claimedTask(id: string, atMs: number): void {
     opened_at: atMs, updated_at: atMs, origin_conv_key: 'c-1', priority: 'normal',
   } as never);
 }
-function modelCall(atMs: number, latencyMs = 4_000): void {
-  db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd, latency_ms, created_at)
-    VALUES (?, 'helper', 'm-a', 'prov-a', 900, 40, 0, ?, ?)`).run(`c-${atMs}-${latencyMs}`, latencyMs, sqlTime(atMs));
+function modelCall(atMs: number, latencyMs = 4_000, purpose = 'agent_turn'): void {
+  db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd, latency_ms, call_purpose, created_at)
+    VALUES (?, 'helper', 'm-a', 'prov-a', 900, 40, 0, ?, ?, ?)`).run(`c-${atMs}-${latencyMs}-${purpose}`, latencyMs, purpose, sqlTime(atMs));
 }
 
 // FIELD FIX 3 AUDIT ROUND (#8). OR-LONG-JOBS (owner, 2026-10-12, verbatim): "If the agent gives the PM a
@@ -144,7 +144,12 @@ function modelCall(atMs: number, latencyMs = 4_000): void {
 // we can't have the dojo panick every 15 minutes because an agent isn't responding." The ladder ran on
 // fixed clocks and a "still working" note re-armed nothing: nudge at 5 min, "Second check-in" at 15,
 // ESCALATION to the main agent at 30, whatever the agent said.
-describe('a "still working" answer or token movement re-arms the PM ladder', () => {
+// RE-REVIEW 2 (S3): "tokens moving" was too broad. Any model call by the assignee re-armed the ladder,
+// the call the check-in itself caused and background summaries included, so a task the agent dropped
+// was nudged at rung 1 forever and never escalated. Only a turn that WORKED ON THIS TASK re-arms it:
+// it served or claimed the task (the engine's `claim_turn`, which a notice-only wake never writes),
+// touched its ledger, or wrote on it (a `work_note` included).
+describe('a "still working" answer, or a turn that worked this task, re-arms the PM ladder', () => {
   it('THE RED: the assignee answers the first check-in "still working": no second check-in or escalation follows on the old clock', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
@@ -160,16 +165,40 @@ describe('a "still working" answer or token movement re-arms the PM ladder', () 
     expect(rungsSent('task-sw')[1]).toBe(1);
   });
 
-  it('token movement after the check-in re-arms it the same way (the agent is working, it just has not written to the task)', async () => {
+  it('THE RED (S3): tokens alone (the check-in turn\'s own call, chat about other things, a summary) re-arm nothing: the ladder still reaches the escalation and the re-drive', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-tok', now - 6 * MIN);
+    for (const m of [0, 16, 31, 61]) {
+      await sweepAt(now + m * MIN);
+      modelCall(now + (m + 1) * MIN);                          // the turn the check-in woke, answering it in chat
+      modelCall(now + (m + 2) * MIN, 4_000, 'memory_summarize');   // the agent's own compaction
+    }
+    expect(rungsSent('task-tok')).toEqual([1, 2, 3, 4]);
+    expect(remediations('task-tok')).toBe(0);
+  });
+
+  it('a turn that touched the task\'s ledger after the check-in re-arms it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    claimedTask('task-led', now - 6 * MIN);
     await sweepAt(now);
-    modelCall(now + 2 * MIN);
+    db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES ('task-led', 'msg-17', 'gmail_modify', ?, ?)`)
+      .run(now + 2 * MIN, now + 2 * MIN);
     await sweepAt(now + 16 * MIN);
-    await sweepAt(now + 31 * MIN);
-    expect(Math.max(...rungsSent('task-tok'))).toBeLessThan(3);
-    expect(rungsSent('task-tok')[1]).toBe(1);
+    expect(remediations('task-led')).toBe(1);
+    expect(rungsSent('task-led')).toEqual([1, 1]);
+  });
+
+  it('a turn that served the task after the check-in (the engine\'s claim_turn) re-arms it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    claimedTask('task-srv', now - 6 * MIN);
+    await sweepAt(now);
+    db().prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('task-srv', 'claim_turn', '{"turn_number":9}', 'engine', ?)`)
+      .run(now + 2 * MIN);
+    await sweepAt(now + 16 * MIN);
+    expect(remediations('task-srv')).toBe(1);
   });
 
   it('CONTROL: no answer and no tokens: the ladder climbs as before', async () => {

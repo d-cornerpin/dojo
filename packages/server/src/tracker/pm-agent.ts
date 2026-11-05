@@ -2598,7 +2598,7 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     else resumeLadder(task.id, getPMAgentId(), thresholds.first * 1000);
     if (assigneeStatus === 'working') continue;
     // Field fix 3 audit round (#8): the clock runs from the assignee's newest answer since the first
-    // check-in (its own entry on the task, a "still working" note included, or tokens moving), when that
+    // check-in (a turn that worked THIS task: a "still working" note, a served turn, a ledger touch; re-review 2 S3, never tokens alone), when that
     // is newer than the task's movement: an agent that said it is working is let work (OR-LONG-JOBS).
     const answeredAt = answeredSinceCheckIn(task.id, task.assignedTo, movedAt);
     const clockFrom = Math.max(movedAt, answeredAt ?? 0);
@@ -2609,7 +2609,7 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // the same, the store is the spine, and the previous cycle's pokes survive a remediation.
     // t143/t151: real work on the task since the last check-in (a status, an edit, a deliverable, a turn that
     // did something) closes the cycle. Field fix 3 audit round (#8): so does the assignee's answer (a
-    // "still working" note) or its tokens moving; the old "a plain note re-arms nothing" sent the second
+    // "still working" note) or a turn that worked this task; the old "a plain note re-arms nothing" sent the second
     // check-in at 15 minutes and the escalation at 30 to an agent that had said it was working.
     const answered = lastPokeOf(task.id);
     if (answered && clockFrom > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
