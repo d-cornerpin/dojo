@@ -139,11 +139,19 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
 }
 
 /** Did this turn DO something (an effectful tool call, counted on the turn's own row)? */
-function turnMadeEffectfulCall(db: ReturnType<typeof getDb>, agentId: string, turnNumber: number): boolean {
+function turnMadeEffectfulCall(db: ReturnType<typeof getDb>, agentId: string, turnNumber: number, taskId: string | null): boolean {
   try {
-    const r = db.prepare('SELECT effectful_calls AS n FROM turns WHERE agent_id = ? AND turn_number = ?')
-      .get(agentId, turnNumber) as { n: number | null } | undefined;
-    return (r?.n ?? 0) > 0;
+    const r = db.prepare(`SELECT effectful_calls AS n, CAST(strftime('%s', started_at) AS INTEGER) * 1000 AS started_ms
+        FROM turns WHERE agent_id = ? AND turn_number = ?`)
+      .get(agentId, turnNumber) as { n: number | null; started_ms: number | null } | undefined;
+    if ((r?.n ?? 0) === 0) return false;
+    // Field fix 3 re-review 3 (L7, the S3 residual): an effectful call counts as work on THIS task only
+    // when it reached the task's own items (its ledger) during the turn. Counted turn-wide, a turn the
+    // poke woke that did effectful work on something else re-armed the poked task's ladder.
+    if (!taskId) return true;
+    const touched = db.prepare('SELECT 1 FROM work_ledger WHERE work_id = ? AND last_at >= ? LIMIT 1')
+      .get(taskId, r?.started_ms ?? 0);
+    return !!touched;
   } catch { return false; /* no record of an effect: a turn that only talked, as before */ }
 }
 
@@ -171,7 +179,7 @@ export function stampTasksAtTurnFinalize(input: {
     // t151 (B): and the turn's reply to the notice is an ANSWER, not progress — a chat line the person read
     // ('via dashboard') is the answer itself. Only real work re-arms the ladder: a tangible deliverable, or an
     // effectful call the turn's own record counts (`turns.effectful_calls`, made durable at the effect).
-    const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber);
+    const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber, input.servedTaskId);
     const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
     const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
     // Which turns worked a task, on each task's own spine (`work/task-turns.ts`): the same served set, less a notice-only wake.

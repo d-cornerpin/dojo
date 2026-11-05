@@ -296,7 +296,7 @@ describe('A — the ladder starts at its first rung when the agent\'s own job en
 
 describe('B — a reply to a check-in is an answer, not progress; real work re-arms (walk item 17)', () => {
   /** The check-in is sent; the woken turn runs. `effectful` calls, and optionally a delivered file. */
-  async function wokenTurn(opts: { reply: boolean; effectful: number; file?: boolean }): Promise<{ now: number }> {
+  async function wokenTurn(opts: { reply: boolean; effectful: number; file?: boolean; touchedTheTask?: boolean }): Promise<{ now: number }> {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-c', 'the price check', now - 6 * MIN, 'c-1');
@@ -315,6 +315,9 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
                     VALUES ('reply-50', 'helper', 'assistant', 'still thinking', 50, ?)`).run(now + MIN);
       db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, message_id, created_at)
                     VALUES ('dl-50', 'helper', 50, 'dashboard', 'dashboard', 'delivered', 'reply-50', datetime('now'))`).run();
+    }
+    if (opts.touchedTheTask) {   // the effectful call reached one of the task's own items (its ledger)
+      db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES ('task-c', 'price-1', 'web_fetch', ?, ?)`).run(now + MIN / 2, now + MIN / 2);
     }
     if (opts.file) {
       db().prepare("INSERT INTO turn_artifacts (id, agent_id, turn_number, kind, path, delivered_at) VALUES ('art-50', 'helper', 50, 'file', '/tmp/prices.md', ?)").run(sqlTime(now + MIN));
@@ -335,8 +338,17 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
     expect(rungsSent('task-c')).toEqual([1, 2]);
   });
 
-  it('CONTROL: the same woken turn that made an effectful call is real work and re-arms the ladder', async () => {
+  // Re-review 3 (L7, the S3 residual): an effectful call counted turn-wide, so a poke-woken turn that did
+  // effectful work on something ELSE re-armed the poked task's ladder. It counts only when it touched
+  // the task's own items.
+  it('THE RED (L7): a woken turn whose effectful call was about something else does not re-arm', async () => {
     const { now } = await wokenTurn({ reply: true, effectful: 1 });
+    await sweepAt(now + 2 * MIN);
+    expect(remediations('task-c')).toBe(0);
+  });
+
+  it('CONTROL: the same woken turn whose effectful call touched the task\'s items is real work and re-arms the ladder', async () => {
+    const { now } = await wokenTurn({ reply: true, effectful: 1, touchedTheTask: true });
     await sweepAt(now + 2 * MIN);
     expect(remediations('task-c')).toBe(1);
   });
