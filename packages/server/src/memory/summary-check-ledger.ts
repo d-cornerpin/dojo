@@ -22,10 +22,12 @@ export type SummaryCheckQuestion = typeof SUMMARY_CHECK_QUESTIONS[number];
  */
 export const actingQuestions = (): SummaryCheckQuestion[] => askedQuestions().filter((q) => LIVE_QUESTIONS.has(q));
 /**
- * Summary-check round (owner ruling 1): only a question MEASURED reliable acts. `stated_current` agreed with a careful
- * reading on 34 of 40 (overhaul-plans/v35-writer-measure.md); `invented` (21 of 40) and `dropped` (22 of 40) did not,
- * so they are asked and recorded as shadow verdicts and decide nothing. A question joins this set only after it
- * reaches about 9 in 10 agreement with two independent judges, where they agree with each other.
+ * Summary-check round (owner ruling 1): only a question MEASURED reliable acts. A question joins this set only at
+ * about 9 in 10 agreement with two independent judges, on the pairs where they agree with each other (80 pairs,
+ * overhaul-plans/v35-field-3/summary-check-80, the decision model at the 0.5 mark):
+ *   - stated_current: 62 of 70 (89%), false-fail 2 of 59 (3%), miss 6 of 11. LIVE.
+ *   - invented: 50 of 69 old wording, 38 of 69 new (the new wording almost never says yes: miss 29 of 32). Shadow.
+ *   - dropped: 28 of 65 old, 25 of 65 new (misses nearly every real omission). Shadow.
  */
 const LIVE_QUESTIONS: ReadonlySet<SummaryCheckQuestion> = new Set(['stated_current']);
 export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
