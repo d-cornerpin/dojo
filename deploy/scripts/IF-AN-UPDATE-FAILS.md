@@ -147,7 +147,7 @@ stay on the older data, put the older app back too:
 bash ~/.dojo/scripts/rollback.sh
 ```
 
-If you go back to the older **3.3.3** app, the logs under `~/.dojo/logs/` may show one line at every start that says `MIGRATION DIVERGENCE 129b`. That line is expected after going back from a newer version, and it is harmless. Nothing needs doing — your information is fine. The line stops by itself once you are on the newer version again.
+If you go back to the older **3.3.3** app, the logs under `~/.dojo/logs/` may show one line at every start that says `MIGRATION DIVERGENCE 129b`. That line is expected after going back from a newer version, and it is harmless. Nothing needs doing: your information is fine. The line stops by itself once you are on the newer version again.
 
 ---
 

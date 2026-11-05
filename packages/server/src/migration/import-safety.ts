@@ -13,6 +13,7 @@ interface Fs {
   mkdtempSync(prefix: string): string;
   writeFileSync(p: string, data: string): void;
   readFileSync(p: string, enc: 'utf-8'): string;
+  cpSync(from: string, to: string, o: { recursive: boolean; verbatimSymlinks: boolean }): void;
 }
 import path from 'node:path';
 
@@ -27,7 +28,20 @@ export function putBackOwnBackup(fs: Fs, dojoDir: string, backup: string): { ok:
   let movedAside = false;
   try {
     if (fs.existsSync(dojoDir)) { fs.renameSync(dojoDir, aside); movedAside = true; }
-    fs.renameSync(backup, dojoDir);
+    try {
+      fs.renameSync(backup, dojoDir);
+    } catch (renameErr) {
+      // Final round (owner rule: the Dojo does the work): a refused rename (another volume, a permission on the
+      // parent) is done by COPY instead. The copy goes in whole or not at all: a partial one is removed. The backup
+      // is then no longer needed and goes too.
+      try {
+        fs.cpSync(backup, dojoDir, { recursive: true, verbatimSymlinks: true });
+      } catch (copyErr) {
+        try { fs.rmSync(dojoDir, { recursive: true, force: true }); } catch { /* nothing more can be done */ }
+        throw new Error(`${renameErr instanceof Error ? renameErr.message : String(renameErr)}; copying it back failed too: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}`);
+      }
+      try { fs.rmSync(backup, { recursive: true, force: true }); } catch { /* a leftover copy; the data is back */ }
+    }
   } catch (e) {
     // ~/.dojo must never vanish: put the live data we set aside back where it was.
     if (movedAside) { try { fs.renameSync(aside, dojoDir); } catch { /* nothing more can be done */ } }

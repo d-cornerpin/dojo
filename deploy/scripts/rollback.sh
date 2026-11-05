@@ -375,5 +375,5 @@ fi
 
 echo "✅ Rolled back to $target_ver. The server is restarting."
 if [ -n "${failed_dir:-}" ]; then
-    echo "   The failed build was kept at $(basename "$failed_dir") for diagnosis; delete it once you no longer need it."
+    echo "   The failed build was kept at $(basename "$failed_dir") for diagnosis. Dojo removes it by itself once newer ones replace it."
 fi

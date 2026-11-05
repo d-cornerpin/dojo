@@ -126,6 +126,8 @@ async function runImport(
   restartServices: () => Promise<void>,
   /** Current password hash and JWT secret to preserve after import */
   currentAuth?: { passwordHash: string | null; jwtSecret: string },
+  /** Final round: a failed import whose data is back and whose services restarted brings back what it stopped. */
+  resumeAfterFailure?: () => void,
 ): Promise<{ manifest: ExportManifest; checks: PostMigrationCheck[]; newToken?: string }> {
   // The whole pipeline streams: a multi-GB export must never be held in a
   // single Buffer. We use unzipper (seek-based, streams entries) and streaming
@@ -378,6 +380,7 @@ async function runImport(
     const back = ownBackup && fs.existsSync(ownBackup) ? putBackOwnBackup(fs, DOJO_DIR, ownBackup) : null;
     if (back && !back.ok) { logger.error('Failed to restore backup', { error: back.reason }); stuck = noteBackupStuck(back.backup); }
     stuck ??= await restartAfterFailedImport({ servicesStopped, restartServices });
+    if (stuck === null && servicesStopped) { try { resumeAfterFailure?.(); } catch (e) { logger.error('Could not resume the agents a failed import stopped', { error: String(e) }); } }
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (stuck !== null) throw new Error(`${err instanceof Error ? err.message : String(err)} ${stuck}`, { cause: err });
     throw err;
