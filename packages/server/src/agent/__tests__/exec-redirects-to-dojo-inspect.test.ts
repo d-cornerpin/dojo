@@ -1,3 +1,13 @@
+// v3.5 inspect C2, REVISED by field fix 3 (Mac-belongs round). OWNER RULING OR-MAC-BELONGS-TO-THE-AGENT
+// (2026-10-31, verbatim): "The dojo should be able to save wherever it needs to save and create whatever
+// folders it needs to create anywhere on the Mac. Remember, the Mac belongs to the dojo agent. That's the
+// point." On his box the main agent was REFUSED a read-only grep of dojo.log and a `sqlite3 -readonly`
+// select he asked for. Now a shell READ of the live database or the platform log runs for every agent;
+// a WRITE to the live database stays refused (it corrupts the running Dojo), with the Healer's repair
+// statements exempt exactly as before. The clauses below that pinned the old refusals are rewritten to
+// the ruling; the write and Healer clauses are unchanged apart from the refusal's wording.
+//
+// (original header follows)
 // v3.5 inspect C2 — THE SHELL SENDS DOJO QUESTIONS TO dojo_inspect.
 //
 // The owner: "often my main agent reaches for exec shell scripts to try to look at history of
@@ -87,41 +97,25 @@ function refusal(agent: string, door: 'proc' | 'shell', raw: unknown): string {
   return v.allowed ? '' : (v.blockedMessage ?? '');
 }
 
-describe('a Dojo question asked of the shell is refused with the dojo_inspect call that answers it', () => {
-  it('a query on the database names the sql view', () => {
-    for (const script of [`sqlite3 ~/.dojo/data/dojo.db "select id, title, state from work order by opened_at desc limit 5"`,
-      `sqlite3 ${DB} "SELECT content FROM messages WHERE seq=42"`, `strings ~/.dojo/data/dojo.db | grep -i garden`]) {
-      const msg = refusal(PRIMARY, 'shell', script);
-      expect(msg).toMatch(/^Refused: the Dojo's database and logs are read through dojo_inspect, not the shell\./);
-      expect(msg).toContain('dojo_inspect(what="sql", query="…")');
-      expect(msg).toContain('Call load_tool_docs("dojo_inspect") for the arguments.');
-    }
-    // The argv door too, and the Healer as well as the main agent.
-    expect(refusal(HEALER, 'proc', ['sqlite3', DB, 'select count(*) from deliveries'])).toContain('what="sql"');
-    // The plan's `~/.dojo/data/*.db` form (t267 review, Minor), and a copy of the contents out.
-    expect(refusal(PRIMARY, 'shell', 'sqlite3 ~/.dojo/data/*.db "select 1"')).toContain('what="sql"');
-    expect(refusal(PRIMARY, 'shell', 'xxd ~/.dojo/data/dojo.db-wal | head')).toContain('what="sql"');
+describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database or log runs, for every agent', () => {
+  const OWNER_COMMAND = (): string => `grep -n "error" ~/.dojo/logs/dojo.log | tail -100; sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT value, updated_at FROM config WHERE key='user_presence';"`;
+
+  it('THE RED: the owner\'s exact command (grep on dojo.log, then sqlite3 -readonly select) runs for the main agent', () => {
+    const v = verdict(PRIMARY, 'shell', OWNER_COMMAND());
+    expect(v.allowed, JSON.stringify(v)).toBe(true);
   });
 
-  it('a look at the schema names the schema view', () => {
-    for (const script of [`sqlite3 ~/.dojo/data/dojo.db "pragma table_info(messages)"`, `sqlite3 ~/.dojo/data/dojo.db '.schema work'`,
-      `sqlite3 $HOME/.dojo/data/dojo.db .tables`, `sqlite3 ${DB} "select name from pragma_table_info('turns')"`]) {
-      expect(refusal(PRIMARY, 'shell', script), script).toContain('dojo_inspect(what="schema", table="…")');
+  it('every read shape runs: queries, schema looks, log tails, a copy out, both doors, every agent', () => {
+    const reads = [`sqlite3 ~/.dojo/data/dojo.db "select id, title, state from work order by opened_at desc limit 5"`,
+      `sqlite3 ${DB} "SELECT content FROM messages WHERE seq=42"`, `strings ~/.dojo/data/dojo.db | grep -i garden`,
+      `sqlite3 ~/.dojo/data/dojo.db "pragma table_info(messages)"`, `sqlite3 ~/.dojo/data/dojo.db '.schema work'`,
+      'tail -200 ~/.dojo/logs/dojo.log', "grep -i 'error' ~/.dojo/logs/dojo.log | tail -50", `grep -c WATCHDOG ${HOME}/.dojo/logs/dojo.log.1`,
+      'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', 'sqlite3 ~/.dojo/data/*.db "select 1"'];
+    for (const agent of [PRIMARY, HEALER, WORKER]) {
+      for (const script of reads) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
     }
-  });
-
-  it('a read of the platform log names the logs view', () => {
-    for (const script of ['tail -200 ~/.dojo/logs/dojo.log', "grep -i 'error' ~/.dojo/logs/dojo.log | tail -50", `grep -c WATCHDOG ${HOME}/.dojo/logs/dojo.log.1`]) {
-      expect(refusal(PRIMARY, 'shell', script), script).toContain('dojo_inspect(what="logs", pattern="…")');
-    }
-    expect(refusal(PRIMARY, 'proc', ['tail', '-n', '50', `${HOME}/.dojo/logs/dojo.log`])).toContain('what="logs"');
-  });
-
-  it('through the real tool door: refused before anything runs, as a permission refusal', async () => {
-    const r = mod.outcome.toolResultOf(await mod.tools.executeTool(PRIMARY, { id: 'call-redirect-1', name: 'shell', arguments: { script: `sqlite3 ${DB} "pragma table_info(messages)"` } }));
-    expect(r.isError).toBe(true);
-    expect(r.errorCode).toBe('PERMISSION_DENIED');
-    expect(r.content).toMatch(/^Refused: the Dojo's database and logs are read through dojo_inspect/);
+    expect(verdict(PRIMARY, 'proc', ['sqlite3', '-readonly', DB, 'select count(*) from deliveries']).allowed).toBe(true);
+    expect(verdict(WORKER, 'proc', ['tail', '-n', '50', `${HOME}/.dojo/logs/dojo.log`]).allowed).toBe(true);
   });
 });
 
@@ -156,7 +150,7 @@ describe('what the redirect leaves exactly as it was', () => {
 
 // ORCHESTRATOR RULING (2026-10-24), concerns 1-2 of the first report.
 describe('the shell does not write the Dojo\'s own database — except the Healer, the repair agent', () => {
-  const WRITE = /^Refused: the shell does not change the Dojo's own database \(dojo\.db and its -wal and -shm files\)\./;
+  const WRITE = /^Refused: dojo\.db and its -wal and -shm files are the running Dojo's live database, and a write to them from the shell corrupts it\./;
   const REPAIRS = (): string[] => [`sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'"`, `sqlite3 ${DB} "UPDATE agents SET status = 'terminated' WHERE id = 'x'"`,
     `sqlite3 ${DB} "UPDATE work SET state = 'on_deck', next_run_at = 1725810300000 WHERE id = 'w1'"`, `sqlite3 ${DB} "pragma wal_checkpoint(TRUNCATE)"`];
 
@@ -191,24 +185,13 @@ describe('the shell does not write the Dojo\'s own database — except the Heale
   });
 });
 
-describe('a shell read of the database by an agent that does not hold dojo_inspect is refused', () => {
-  it('names why, plainly, and points at the main agent', () => {
-    for (const script of [`sqlite3 ${DB} "select * from google_accounts"`, 'strings ~/.dojo/data/dojo.db | grep token', 'cp ~/.dojo/data/dojo.db /tmp/copy.db']) {
-      expect(refusal(WORKER, 'shell', script), script)
-        .toBe('Refused: the Dojo\'s own database is not read through the shell: it holds the platform\'s internals and its credentials. Ask the main agent if you need something looked up in it.');
-    }
-  });
-
-  it('a holder\'s read is still redirected to dojo_inspect, not refused flatly', () => {
-    expect(refusal(PRIMARY, 'shell', 'cp ~/.dojo/data/dojo.db /tmp/copy.db')).toContain('dojo_inspect(what="sql"');
-  });
-});
-
 describe('the standing line', () => {
-  const LINE = 'To learn what happened in your Dojo — a task, an agent, a turn, the log, the configuration, your own code — use dojo_inspect first; the shell is for the outside world.';
+  // Mac-belongs round: a fact that the tool exists and is read-only and safe, never a ban on the shell.
+  const LINE = 'dojo_inspect answers questions about your Dojo (a task, an agent, a turn, the log, the configuration, your own code). It is read-only and safe: it refuses the credential tables and blanks secrets. The shell can read the same database and log.';
   it('is in the Tools guidance of an agent that holds the tool, and absent otherwise', () => {
     expect(mod.assembler.generateToolsGuidance_v2(PRIMARY)).toContain(LINE);
     expect(mod.assembler.generateToolsGuidance_v2(HEALER)).toContain(LINE);
     expect(mod.assembler.generateToolsGuidance_v2(WORKER)).not.toContain('dojo_inspect');
+    expect(mod.assembler.generateToolsGuidance_v2(PRIMARY)).not.toMatch(/the shell is for the outside world/);
   });
 });
