@@ -3946,7 +3946,7 @@ export async function trackerRetask(
       `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-      `Do the work the directive describes; when it is done, close it (work_update(action="status") with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
+      `Do the work the directive describes. Don't just acknowledge; do the thing.`;
     // t143 round 3 (I2): a directive, not a question — it wakes the agent and owes the PM no reply.
     redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {

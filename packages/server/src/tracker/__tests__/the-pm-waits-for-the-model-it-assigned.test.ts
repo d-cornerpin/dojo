@@ -386,8 +386,11 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
     expect(body, 'it says the work is not moving').toContain('will not move the work');
     expect(body, 'and names the reaper as the owner of a genuinely dead process')
       .toContain('reaper');
-    expect(body, 'the close-out repair stays — that is not a transfer')
-      .toContain('that records the delivery; it is not a takeover');
+    // v3.5 field fix 3, audit #5 (W7): the "already delivered? call status=complete" line is gone. It told
+    // the main agent to close another agent's work, which is close-coaching; the escalation now states the
+    // facts and that the work is the agent's to finish.
+    expect(body, 'the escalation coaches no close (W7)').not.toContain('status="complete"');
+    expect(body).toContain('Do not close it for the agent.');
   });
 
   it('the ladder tops out: rung 4 is recorded, so it does not re-ask every minute', async () => {
