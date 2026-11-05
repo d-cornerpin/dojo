@@ -10,13 +10,14 @@
 // closed. A command line that REFERS to the live database file (dojo.db and its -wal, -shm and
 // -journal siblings) or to the Dojo data folder runs only in this one exact shape:
 //
-//     sqlite3 [-readonly] [output flags] <the literal database path> '<SQL>'
+//     sqlite3 [-readonly] [output flags] <the literal database path> [output flags] '<SQL>'
 //
 //   • the program is `sqlite3` (or /usr/bin/sqlite3), not behind a launcher;
 //   • the path is given literally, `~/.dojo/data/dojo.db` or its absolute form: no variable, glob,
 //     relative path or other spelling;
 //   • the flags come from OUTPUT_FLAGS below, and nothing else (no flag that carries SQL or a file);
-//   • then exactly ONE quoted SQL argument, which the shell does not expand, and nothing after it;
+//   • then exactly ONE quoted SQL argument, which the shell does not expand, and nothing after it
+//     (or the bare dot-command `.tables`, which prints names only; `.schema` stays refused);
 //   • every statement in it (split by a quote-aware splitter) is SELECT, WITH ... SELECT, or a pragma
 //     from READ_PRAGMAS, and passes `refuseDeniedSql` (inspect/redact.ts), the one credential list
 //     dojo_inspect uses too;
@@ -53,6 +54,7 @@ import { getDb } from '../../db/connection.js';
 import { firstKeyword } from '../../db/read-only-door.js';
 import { homeDir } from '../../home.js';
 import { refuseDeniedSql } from '../../inspect/redact.js';
+import { lexShellLine, type Word } from './shell-words.js';
 import { deny, type Verdict } from './types.js';
 
 export type DoorRole = 'main' | 'healer' | 'worker';
@@ -61,6 +63,7 @@ export type DoorOutcome = 'untouched' | 'allowed' | 'refused' | 'credential';
 export interface DoorVerdict { outcome: DoorOutcome; message?: string }
 
 export const FACT_REFUSAL = 'Refused: dojo_inspect answers questions about the Dojo\'s database, and the shell allows only a plain read-only sqlite3 SELECT of it, written as sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT ...".';
+export const SCHEMA_REFUSAL = "Refused: .schema prints whole table definitions, the credential tables' included; pragma table_info(<table>) in a sqlite3 read, or dojo_inspect's schema view, shows a table's columns.";
 export const WORKER_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
 const SQLITE = new Set(['sqlite3', '/usr/bin/sqlite3']);
@@ -116,90 +119,6 @@ function absolutePath(): string | null {
   try { return path.join(homeDir(), '.dojo', 'data', 'dojo.db'); } catch { return null; }
 }
 
-// ── a quote-aware lexer for one shell line ──
-interface Word {
-  value: string;
-  /** No quotes, escapes or expansions: the word is exactly its characters. */
-  plain: boolean;
-  /** The whole word is one quoted span. */
-  quotedWhole: boolean;
-  /** Contains something the shell expands or substitutes ($name, glob, brace, backtick). */
-  expands: boolean;
-  /** Starts with an unquoted `~/` (the shell's home expansion); otherwise plain. */
-  tilde: boolean;
-}
-interface Segment { words: Word[]; text: string; pipedIn: boolean }
-interface Lexed { segments: Segment[]; special: boolean }
-
-/** Split a line into simple commands joined by ; && || | and newlines, or null when a quote is
- *  left open. `special` is set by any redirect, here-doc, subshell, substitution, background job
- *  or comment: syntax the allowlist does not admit on a line that refers to the database. */
-function lex(line: string): Lexed | null {
-  const segments: Segment[] = [];
-  let special = false;
-  let words: Word[] = [];
-  let start = 0;
-  let pipedIn = false;
-  let w: Word | null = null;
-  let parts = 0;          // the spans that make up the current word
-  let quotedParts = 0;    // how many of them are quoted
-  let inRun = false;      // inside an unquoted run of the current word
-  const endWord = (): void => {
-    if (w) { w.quotedWhole = parts === 1 && quotedParts === 1; words.push(w); }
-    w = null; parts = 0; quotedParts = 0; inRun = false;
-  };
-  const endSegment = (at: number, nextPiped: boolean): void => {
-    endWord();
-    if (words.length > 0) segments.push({ words, text: line.slice(start, at), pipedIn });
-    words = []; pipedIn = nextPiped;
-  };
-  const word = (): Word => (w ??= { value: '', plain: true, quotedWhole: false, expands: false, tilde: false });
-  const run = (): Word => { const cur = word(); if (!inRun) { parts++; inRun = true; } return cur; };
-  const quoted = (): Word => { const cur = word(); parts++; quotedParts++; inRun = false; cur.plain = false; return cur; };
-  let i = 0;
-  while (i < line.length) {
-    const c = line[i];
-    if (c === ' ' || c === '\t') { endWord(); i++; continue; }
-    if (c === '\n' || c === ';') { endSegment(i, false); i++; start = i; continue; }
-    if (c === '&' && line[i + 1] === '&') { endSegment(i, false); i += 2; start = i; continue; }
-    if (c === '|' && line[i + 1] === '|') { endSegment(i, false); i += 2; start = i; continue; }
-    if (c === '|') { endSegment(i, true); i++; start = i; continue; }
-    if ('&<>()`'.includes(c) || (c === '#' && !w)) { special = true; const cur = run(); cur.plain = false; cur.value += c; i++; continue; }
-    if (c === "'") {
-      const end = line.indexOf("'", i + 1);
-      if (end === -1) return null;
-      quoted().value += line.slice(i + 1, end);
-      i = end + 1; continue;
-    }
-    if (c === '"') {
-      const cur = quoted();
-      let j = i + 1;
-      for (; j < line.length && line[j] !== '"'; j++) {
-        const d = line[j];
-        if (d === '\\' && j + 1 < line.length && '$`"\\\n'.includes(line[j + 1])) { cur.value += line[++j]; continue; }
-        if (d === '`') { special = true; cur.expands = true; }
-        if (d === '$' && /[A-Za-z_{(0-9@*#?$!-]/.test(line[j + 1] ?? '')) { cur.expands = true; if (line[j + 1] === '(') special = true; }
-        cur.value += d;
-      }
-      if (j >= line.length) return null;
-      i = j + 1; continue;
-    }
-    if (c === '\\') { const cur = run(); cur.plain = false; cur.value += line[i + 1] ?? ''; i += 2; continue; }
-    // An ordinary unquoted character.
-    const fresh = w === null;
-    const cur = run();
-    if (fresh && c === '~') {
-      if (line[i + 1] === '/') cur.tilde = true; else { cur.expands = true; cur.plain = false; }
-    } else if ('$*?[{~'.includes(c)) {
-      cur.expands = true; cur.plain = false;
-      if (c === '$' && line[i + 1] === '(') special = true;
-    }
-    cur.value += c; i++;
-  }
-  endSegment(line.length, false);
-  return { segments, special };
-}
-
 // ── the SQL ──
 /** The statements of a SQL text, split at semicolons outside literals, quoted names and comments. */
 export function splitStatements(sql: string): string[] {
@@ -238,26 +157,34 @@ function openDb(): Database.Database | undefined {
   try { return getDb(); } catch { return undefined; }
 }
 
-/** Is this one statement a read the door admits (before the credential check)? */
-function isAdmittedRead(stmt: string, db: Database.Database | undefined): boolean {
+/** The refusal for one statement the door does not admit as a read, or null when it is admitted
+ *  (the credential check runs before this). */
+function readRefusal(stmt: string, db: Database.Database | undefined): string | null {
   const b = bare(stmt);
-  if (CLI_ONLY_NAME.test(b)) return false;
-  if (tableFunctions(b).some((f) => !SAFE_TABLE_FUNCTIONS.has(f))) return false;
+  if (/^\s*\./.test(stmt)) return FACT_REFUSAL;   // a dot-command inside the SQL text
+  if (CLI_ONLY_NAME.test(b)) return FACT_REFUSAL;
+  if (tableFunctions(b).some((f) => !SAFE_TABLE_FUNCTIONS.has(f))) return FACT_REFUSAL;
   // FAIL CLOSED (re-review 3 M1): the server's own SQLite is the reference. A statement it cannot
   // compile, or that it compiles as anything but read-only, is not an admitted read, and with no
-  // connection to check against nothing is admitted.
-  if (!db) return false;
-  try { if (!db.prepare(stmt).readonly) return false; } catch { return false; }
+  // connection to check against nothing is admitted. Re-review 4 N3: a compile error is refused
+  // with SQLite's own words, so a wrong column name reads as a wrong column name.
+  if (!db) return FACT_REFUSAL;
+  try {
+    if (!db.prepare(stmt).readonly) return FACT_REFUSAL;
+  } catch (e) {
+    const msg = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, ' ').trim();
+    return `Refused: the Dojo's SQLite cannot compile this statement (${msg}), so it does not run.`;
+  }
   const kw = firstKeyword(stmt);
   if (kw === 'pragma') {
     const m = /^\s*pragma\s+([a-z_]+)\s*(?:\(\s*(?:[\w]+|''|"")\s*\))?\s*$/i.exec(b.replace(/^(?:\s|--[^\n]*)+/, ''));
-    return !!m && READ_PRAGMAS.has(m[1].toLowerCase());
+    return m && READ_PRAGMAS.has(m[1].toLowerCase()) ? null : FACT_REFUSAL;
   }
-  if (kw !== 'select' && kw !== 'with') return false;
+  if (kw !== 'select' && kw !== 'with') return FACT_REFUSAL;
   const top = topLevelWords(b);
-  if (top.some((t, k) => ['insert', 'update', 'delete', 'upsert', 'attach', 'detach'].includes(t) || (t === 'replace' && top[k + 1] === 'into'))) return false;
-  if (kw === 'with' && !top.includes('select')) return false;
-  return true;
+  if (top.some((t, k) => ['insert', 'update', 'delete', 'upsert', 'attach', 'detach'].includes(t) || (t === 'replace' && top[k + 1] === 'into'))) return FACT_REFUSAL;
+  if (kw === 'with' && !top.includes('select')) return FACT_REFUSAL;
+  return null;
 }
 
 // ── the Healer's repairs: a short fixed set ──
@@ -323,6 +250,13 @@ function isMetadataLook(words: readonly Word[]): boolean {
 // ── the verdict ──
 /** The verdict on one sqlite3 command's words, already known to be the exact shape. */
 function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
+  // Re-review 4: `.tables` alone prints table and view names only, which dojo_inspect's schema view
+  // lists too. `.schema` prints whole definitions (defaults, constraints, trigger and view text) of
+  // the credential tables as well, which is more than that view shows and cannot be bounded here,
+  // so it stays refused, with what to use instead.
+  const dot = sql.trim();
+  if (dot === '.tables') return { outcome: 'allowed' };
+  if (/^\.schema\b/i.test(dot)) return { outcome: 'refused', message: SCHEMA_REFUSAL };
   const statements = splitStatements(sql);
   if (statements.length === 0) return { outcome: 'refused', message: FACT_REFUSAL };
   const db = openDb();
@@ -333,7 +267,12 @@ function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
     const refused = refuseDeniedSql(s, db);
     if (refused) return { outcome: 'credential', message: refused };
   }
-  if (!repair && !statements.every((s) => isAdmittedRead(s, db))) return { outcome: 'refused', message: FACT_REFUSAL };
+  if (!repair) {
+    for (const s of statements) {
+      const refused = readRefusal(s, db);
+      if (refused) return { outcome: 'refused', message: refused };
+    }
+  }
   return { outcome: 'allowed' };
 }
 
@@ -347,8 +286,12 @@ function shapeSql(words: readonly Word[]): string | null {
   if (!p || p.expands) return null;
   const literal = (p.tilde && p.plain && p.value === TILDE_PATH) || (!p.tilde && abs !== null && p.value === abs && (p.plain || p.quotedWhole));
   if (!literal) return null;
-  const sql = words[i + 1];
-  if (!sql || i + 2 !== words.length || sql.expands || !sql.quotedWhole) return null;
+  // Re-review 4: sqlite3 reads its options on either side of the path, so output flags may follow it.
+  i++;
+  while (i < words.length && words[i].plain && OUTPUT_FLAGS.has(words[i].value)) i++;
+  const sql = words[i];
+  if (!sql || i + 1 !== words.length || sql.expands) return null;
+  if (!sql.quotedWhole && !(sql.plain && sql.value === '.tables')) return null;   // `.tables` is one plain word
   return sql.value;
 }
 
@@ -360,7 +303,7 @@ function shapeSql(words: readonly Word[]): string | null {
 export function dojoDoorVerdict(command: string | readonly string[], role: DoorRole): DoorVerdict {
   const text = typeof command === 'string' ? command : command.join(' ');
   // The words as the shell will unquote them count too, so `~/.do''jo/...` is still the folder.
-  const lexed = typeof command === 'string' ? lex(command) : null;
+  const lexed = typeof command === 'string' ? lexShellLine(command) : null;
   const unquoted = lexed ? lexed.segments.flatMap((seg) => seg.words.map((w) => w.value)).join(' ') : '';
   if (!refersToDojoDatabase(text) && !refersToDojoDatabase(unquoted)) return { outcome: 'untouched' };
   if (role === 'worker') return { outcome: 'refused', message: WORKER_REFUSAL };

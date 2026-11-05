@@ -138,9 +138,11 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
     }
     // Allowlist: anything but the one sqlite3 read shape is refused, a whole-file read included.
     for (const script of ['strings ~/.dojo/data/dojo.db | grep -i garden', 'cp ~/.dojo/data/dojo.db /tmp/copy.db', 'xxd ~/.dojo/data/dojo.db-wal | head', `sqlite3 ${DB} .dump`,
-      `sqlite3 ~/.dojo/data/dojo.db '.schema work'`, 'sqlite3 ~/.dojo/data/*.db "select 1"']) {
+      'sqlite3 ~/.dojo/data/*.db "select 1"']) {
       expect(refusal(PRIMARY, 'shell', script), script).toMatch(SHAPE);
     }
+    // Re-review 4: .schema prints whole definitions, credential tables included, so it is refused with what to use instead.
+    expect(refusal(PRIMARY, 'shell', `sqlite3 ~/.dojo/data/dojo.db '.schema work'`)).toMatch(/^Refused: \.schema prints whole table definitions/);
   });
 
   it('audit round: a WORKER\'s shell read of the live database stays refused, as a plain fact (its log read is unchanged)', () => {

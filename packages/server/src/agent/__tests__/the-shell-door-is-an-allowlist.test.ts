@@ -86,6 +86,12 @@ const ALLOWED: Row[] = [
   { who: MAIN, line: `/bin/ls -la ${ABS}`, want: 'allow', why: 'a metadata program from a system folder, absolute path' },
   { who: MAIN, line: 'ls -la ~/.dojo/data', want: 'allow', why: 'a listing of the data folder shows names and sizes' },
   { who: HEALER, line: `ls -la ${DB} ${DB}-wal ${DB}-shm && lsof ${DB}`, want: 'allow', why: 'the Healer\'s diagnostic looks' },
+  // ── re-review 4: the owner's plain reads ──
+  { who: MAIN, line: `sqlite3 -readonly ${DB} -header -column "select id from agents"`, want: 'allow', why: 'output flags after the path' },
+  { who: MAIN, line: `sqlite3 ${DB} -readonly -csv "select id from agents"`, want: 'allow', why: 'output flags on both sides of the path' },
+  { who: MAIN, line: `sqlite3 -readonly ${DB} "select a.id, j.key from agents a, json_each(a.config) j"`, want: 'allow', why: 'a table alias column named config is not the config table' },
+  { who: MAIN, line: `sqlite3 -readonly ${DB} .tables`, want: 'allow', why: '.tables lists names only, as dojo_inspect\'s schema view does' },
+  { who: HEALER, line: `sqlite3 -readonly ${DB} ".tables"`, want: 'allow', why: '.tables, quoted' },
   // ── re-review 3 M1: table-valued functions on the known-safe list still run ──
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select key, value from json_each('[1,2]')"`, want: 'allow', why: 'json_each is on the known-safe table-valued list' },
   { who: MAIN, line: `sqlite3 -readonly ${DB} "select name from pragma_table_info('messages')"`, want: 'allow', why: 'a schema pragma function is on the known-safe list' },
@@ -98,7 +104,6 @@ const REFUSED: Row[] = [
   { who: MAIN, line: `sqlite3 ${DB} <<EOF\nselect 1;\nEOF`, want: 'refuse', why: 'SQL from a here-doc' },
   { who: MAIN, line: `sqlite3 -cmd "select 1" ${DB} "select 1"`, want: 'refuse', why: 'an option flag that carries SQL' },
   { who: MAIN, line: `sqlite3 -init /tmp/q.sql ${DB} "select 1"`, want: 'refuse', why: 'an option flag that names a file of commands' },
-  { who: MAIN, line: `sqlite3 ${DB} ".tables"`, want: 'refuse', why: 'a dot-command' },
   { who: MAIN, line: `sqlite3 ${DB} ".dump"`, want: 'refuse', why: 'a dot-command' },
   { who: MAIN, line: `sqlite3 ${DB} select 1`, want: 'refuse', why: 'SQL as unquoted words' },
   { who: MAIN, line: `sqlite3 ${DB} "select 1" "select 2"`, want: 'refuse', why: 'more than one SQL argument' },
@@ -128,6 +133,12 @@ const REFUSED: Row[] = [
   // ── a path spelled apart with quotes is still the path ──
   { who: MAIN, line: `sqlite3 -readonly ~/.do''jo/data/dojo''.db "select 1"`, want: 'refuse', why: 'the path is not given literally' },
   { who: MAIN, line: "cp -r ~/.do''jo/da''ta /tmp/d", want: 'refuse', why: 'a whole-folder copy, the path spelled apart' },
+  // ── re-review 4: still refused ──
+  { who: MAIN, line: `sqlite3 ${DB} ".schema"`, want: 'refuse', why: '.schema prints whole table definitions, credential tables included' },
+  { who: MAIN, line: `sqlite3 ${DB} ".schema agents"`, want: 'refuse', why: '.schema with a table' },
+  { who: MAIN, line: `sqlite3 ${DB} ".tables x"`, want: 'refuse', why: '.tables with an argument is not the bare form' },
+  { who: MAIN, line: `sqlite3 ${DB} -cmd "select 1" "select 1"`, want: 'refuse', why: 'a flag carrying SQL after the path' },
+  { who: MAIN, line: `sqlite3 -readonly ${DB} "select value from main.config"`, want: 'refuse', why: 'a schema-qualified config is still refused' },
   // ── a write statement ──
   { who: MAIN, line: `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'"`, want: 'refuse', why: 'an UPDATE by the main agent' },
   { who: MAIN, line: `sqlite3 ${DB} "INSERT INTO config (key, value) VALUES ('k', 'v')"`, want: 'refuse', why: 'an INSERT' },
@@ -187,6 +198,11 @@ describe('the shell door on the Dojo database: an allowlist', () => {
     expect(credential && !credential.allowed ? credential.blockedMessage : '').toMatch(/^Refused: the statement reaches google_accounts, which holds credentials/);
     const other = door.redirectDojoQuestion(MAIN, 'cp -r ~/.dojo/data /tmp/d');
     expect(other && !other.allowed ? other.blockedMessage : '').toMatch(/^Refused: dojo_inspect answers .*only a plain read-only sqlite3 SELECT/);
+  });
+
+  it('re-review 4 N3: a statement SQLite cannot compile is refused with SQLite\'s own error', () => {
+    const v = door.redirectDojoQuestion(MAIN, `sqlite3 -readonly ${DB} "select id from work order by no_such_column desc limit 5"`);
+    expect(v && !v.allowed ? v.blockedMessage : '').toBe("Refused: the Dojo's SQLite cannot compile this statement (no such column: no_such_column), so it does not run.");
   });
 
   it('the argv door gets the same verdicts', () => {
