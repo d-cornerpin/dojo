@@ -11,12 +11,12 @@ Open Terminal (⌘-Space, type "Terminal") and paste the lines in the grey boxes
 
 **Dojo starts, but something looks broken or wrong.** → Go to **Situation B**.
 
-**Dojo will not start at all** — the dashboard will not load, the menu bar says the
+**Dojo will not start at all**, the dashboard will not load, the menu bar says the
 server is down. → Start at **Situation A**.
 
 ---
 
-## Situation A — Dojo will not start
+## Situation A: Dojo will not start
 
 ### A1. Put the previous version of the app back
 
@@ -29,7 +29,7 @@ it can be looked at, and restarts everything. Wait a minute, then try the dashbo
 again.
 
 **This puts the APP back. It does not put your DATA back.** If the update changed your
-data, that change is still there. Usually that is fine — the older app reads the newer
+data, that change is still there. Usually that is fine, the older app reads the newer
 data without complaining; that has been tested. If something still looks wrong
 afterwards, carry on to Situation B.
 
@@ -61,7 +61,7 @@ Free up the amount it names (empty the Trash, delete some large files) and start
 bash ~/.dojo/scripts/start.sh
 ```
 
-It will make the backup itself and carry on. Nothing has been damaged — Dojo stopped
+It will make the backup itself and carry on. Nothing has been damaged, Dojo stopped
 *before* changing anything, on purpose.
 
 If you would rather go ahead **without** a backup, and accept that you will not be able
@@ -76,7 +76,7 @@ That permission is used once and then forgotten, so the next update is protected
 
 ---
 
-## Situation B — Dojo runs, but your information looks wrong
+## Situation B: Dojo runs, but your information looks wrong
 
 This is where you put your **data** back to how it was before the update.
 
@@ -93,7 +93,7 @@ You will get a list like this:
       /Users/you/.dojo/data/backups/dojo-pre-900-to-900-2026-08-06T20-37-31.db
 ```
 
-The date is when the copy was made — normally moments before the update changed
+The date is when the copy was made, normally moments before the update changed
 anything. **Ignore the numbers in the file name**; they are always the same and mean
 nothing. The number that matters is the one after the word **chain**: a lower number is
 an older shape of your information.
@@ -154,7 +154,7 @@ If you go back to the older **3.3.3** app, the logs under `~/.dojo/logs/` may sh
 ## What you get back, and what you don't
 
 Restoring puts your database back to the copy's exact contents. **Anything that happened
-after that copy was made is gone from Dojo's memory** — messages, tasks and notes from
+after that copy was made is gone from Dojo's memory**, messages, tasks and notes from
 the hours since the update.
 
 One thing to know about going back **without** restoring the data (Situation A on its
@@ -172,7 +172,7 @@ agents, messages, files and settings are untouched.
 
 ## What if there is no backup?
 
-Then the update ran without saving one — which Dojo now refuses to do unless it is told
+Then the update ran without saving one, which Dojo now refuses to do unless it is told
 to, but an older version could. Your options:
 
 1. **`bash ~/.dojo/scripts/rollback.sh`** still works. It puts the old app back, and the
@@ -204,7 +204,7 @@ You are done when all three are true:
 
 1. The dashboard loads at <http://localhost:3001>.
 2. `bash ~/.dojo/scripts/status.sh` shows **API ✅ Healthy** with your agents counted,
-   and a **Database** size that looks like your real database — hundreds of megabytes,
+   and a **Database** size that looks like your real database, hundreds of megabytes,
    not a few hundred KB. (A small database means an empty one was restored.)
 3. Your agents and your recent conversations are there when you open the dashboard.
 
