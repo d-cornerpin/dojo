@@ -8,6 +8,8 @@
 //
 // Roles are structural (the primary flag and the PM role), never names.
 
+import { unknownArgsAgainstSchema } from '../../agent/tools/index.js';
+import { unreadArgsRefusal } from '../../agent/tools/unknown-args-refusal.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -238,11 +240,14 @@ describe('B1 the reassign verb needs a cause the engine can check', () => {
     expect(rowOf().agent_id).toBe(GONE);
   });
 
-  it('RED: the status door no longer moves the assignee on the side — the whole call is refused', () => {
+  it('RED: the status door no longer moves the assignee on the side — the whole call is refused (at the door since test-2 rank 3)', () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER });
-    const out = trackerUpdateStatus(MAIN, { taskId: TASK, status: 'in_progress', assignedTo: PEER });
-    expect(out.startsWith('Error'), out).toBe(true);
+    const v = unknownArgsAgainstSchema('work_update', { action: 'status', task_id: TASK, status: 'in_progress', assigned_to: PEER });
+    expect(v.unread).toEqual(['assigned_to']);
+    const out = unreadArgsRefusal(v.op!, v.unread);
+    expect(out.startsWith('Refused'), out).toBe(true);
     expect(out).toMatch(/action="reassign"/);
+    trackerUpdateStatus(MAIN, { taskId: TASK, status: 'in_progress', assignedTo: PEER });   // the writer never reads it either
     expect(rowOf()).toMatchObject({ agent_id: WORKER, assignee_agent: WORKER });
   });
 

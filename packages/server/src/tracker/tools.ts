@@ -1736,14 +1736,10 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
       status = mapped;
     }
-    // t193: the `assigned_to` side door is GONE (it moved work with no cause or ownership check).
-    // Moving is `:reassign`'s, under the row-authority cause rule; the whole call is refused.
-    if (args.assignedTo !== undefined && args.assignedTo !== null && args.assignedTo !== '') {
-      return 'Error: action="status" does not move a task to another agent, and nothing was changed. '
-        + 'Make the status change without assigned_to; to move the task, call '
-        + 'work_update(action="reassign", task_id, assigned_to, cause) with a cause '
-        + '("assignee_gone", "coordination" for your own task, or "user_requested" with user_quote).';
-    }
+    // t193: the `assigned_to` side door is GONE (it moved work with no cause or ownership check). Moving
+    // is `:reassign`'s, under the row-authority cause rule. A status call carrying `assigned_to` is now
+    // refused at the tool door by the per-operation argument check (test-2 rank 3, `WORK_OP_READS`),
+    // which replaced the one-off guard that stood here; this writer never reads an assignee.
     const priority = args.priority as string | undefined;
 
     if (!status && !priority) {
