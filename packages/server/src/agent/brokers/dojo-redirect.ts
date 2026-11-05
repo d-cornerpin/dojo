@@ -23,6 +23,12 @@
 //   • the line around it is plain commands joined by `;`, `&&`, `||` or `|`: no redirect, here-doc,
 //     subshell, substitution or background job, and nothing piped INTO sqlite3.
 //
+// THE ONE OTHER SHAPE, a look at the FILE and not its contents: a metadata program from
+// METADATA_PROGRAMS (ls, stat, du, wc -c, lsof, fuser, file, shasum), its plain words only (no
+// variable, glob or substitution), shows size, WAL growth and who holds the file, and reads no row.
+// `wc` counts only with `-c` (a line or word count reads the contents). A copy, an archive or any
+// reader of the bytes is not a metadata look.
+//
 // Any other line that refers to the database file or the data folder is refused with one factual
 // sentence (FACT_REFUSAL), a whole-folder copy or archive included. The platform log is not the
 // database: a grep or tail of it is not this door's business, for any agent.
@@ -56,6 +62,9 @@ export const FACT_REFUSAL = 'Refused: dojo_inspect answers questions about the D
 export const WORKER_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
 const SQLITE = new Set(['sqlite3', '/usr/bin/sqlite3']);
+/** Programs that look at a file's metadata (size, type, digest, who holds it), never its rows. */
+const METADATA_PROGRAMS = new Set(['ls', 'stat', 'du', 'wc', 'lsof', 'fuser', 'file', 'shasum']);
+const SYSTEM_BIN = new Set(['/bin', '/usr/bin', '/usr/sbin', '/sbin']);
 const OUTPUT_FLAGS = new Set(['-readonly', '-header', '-noheader', '-csv', '-json', '-line', '-column', '-list', '-box', '-table', '-markdown', '-tabs']);
 const READ_PRAGMAS = new Set(['table_info', 'table_xinfo', 'index_list', 'index_info', 'index_xinfo', 'foreign_key_list']);
 const TILDE_PATH = '~/.dojo/data/dojo.db';
@@ -258,6 +267,23 @@ export function isHealerRepair(stmt: string): boolean {
   });
 }
 
+/** Are these words a metadata look: a program from METADATA_PROGRAMS (bare, or from a system bin
+ *  folder) and plain words after it? `wc` passes only as a byte count. */
+function isMetadataLook(words: readonly Word[]): boolean {
+  const head = words[0];
+  if (!head || !head.plain) return false;
+  const base = path.basename(head.value);
+  const dir = path.dirname(head.value);
+  if (!METADATA_PROGRAMS.has(base) || (head.value !== base && !SYSTEM_BIN.has(dir))) return false;
+  const rest = words.slice(1);
+  if (rest.some((w) => w.expands)) return false;
+  if (base === 'wc') {
+    const flags = rest.filter((w) => w.value.startsWith('-'));
+    return flags.length > 0 && flags.every((w) => w.value === '-c' || w.value === '--bytes');
+  }
+  return true;
+}
+
 // ── the verdict ──
 /** The verdict on one sqlite3 command's words, already known to be the exact shape. */
 function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
@@ -300,6 +326,7 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
   if (typeof command !== 'string') {
     // No shell: every element is literal text, so nothing expands and the SQL element is whole.
     const words = command.map((value) => ({ value, plain: !/\s/.test(value), quotedWhole: true, expands: false, tilde: value.startsWith('~/') }));
+    if (isMetadataLook(words)) return { outcome: 'allowed' };
     const sql = shapeSql(words);
     return sql === null ? { outcome: 'refused', message: FACT_REFUSAL } : sqlVerdict(sql, role);
   }
@@ -308,6 +335,7 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
   let result: DoorVerdict = { outcome: 'allowed' };
   for (const seg of lexed.segments) {
     if (!refersToDojoDatabase(seg.text)) continue;
+    if (!seg.pipedIn && isMetadataLook(seg.words)) continue;   // a look at the file, not its rows
     const sql = seg.pipedIn ? null : shapeSql(seg.words);
     if (sql === null) return { outcome: 'refused', message: FACT_REFUSAL };
     const v = sqlVerdict(sql, role);

@@ -166,14 +166,16 @@ describe('what the redirect leaves exactly as it was', () => {
     expect(verdict(WORKER, 'shell', 'tail -20 ~/.dojo/logs/dojo.log').allowed).toBe(true);
   });
 
-  it('a look at the log FILE passes for every agent; a look at the database file is refused (allowlist, fail closed)', () => {
+  it('t267 review, kept by the allowlist: a look at the FILE, not its contents (size, WAL growth, who holds it), for the main agent and the Healer', () => {
+    const looks = ['ls -la ~/.dojo/data/dojo.db', 'du -sh ~/.dojo/data/dojo.db-wal', 'stat ~/.dojo/data/dojo.db-shm', 'lsof ~/.dojo/data/dojo.db', 'wc -c ~/.dojo/data/dojo.db'];
     for (const agent of [PRIMARY, HEALER, WORKER]) {
       for (const script of ['ls -la ~/.dojo/logs/dojo.log.1', 'wc -c ~/.dojo/logs/dojo.log']) {
         expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
       }
-      for (const script of ['ls -la ~/.dojo/data/dojo.db', 'du -sh ~/.dojo/data/dojo.db-wal', 'stat ~/.dojo/data/dojo.db-shm', 'lsof ~/.dojo/data/dojo.db', 'ls -la ~/.dojo/data/*.db']) {
-        expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(false);
-      }
+      // A worker is refused any reference to the database file, a look included.
+      for (const script of looks) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(agent !== WORKER);
+      // A glob is not plain words, and a line count reads the contents.
+      for (const script of ['ls -la ~/.dojo/data/*.db', 'wc -l ~/.dojo/data/dojo.db']) expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(false);
     }
   });
 

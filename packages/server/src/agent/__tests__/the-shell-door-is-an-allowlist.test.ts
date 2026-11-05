@@ -74,6 +74,18 @@ const ALLOWED: Row[] = [
   { who: WORKER, line: `tail -20 ${LOG}`, want: 'allow', why: 'a worker keeps its read of the platform log' },
   { who: MAIN, line: 'ls ~/Documents', want: 'allow', why: 'a line that refers to neither the database nor the data folder' },
   { who: MAIN, line: `sqlite3 ${home}/Projects/app.db "UPDATE items SET done = 1 WHERE id = 3"`, want: 'allow', why: 'another database file, a write included' },
+  // ── a look at the FILE, never its rows (coordinator follow-up 1): main agent and Healer ──
+  { who: MAIN, line: `ls -la ${DB}`, want: 'allow', why: 'ls shows size and dates' },
+  { who: MAIN, line: `stat ${DB}-shm`, want: 'allow', why: 'stat shows metadata' },
+  { who: MAIN, line: `du -sh ${DB}-wal`, want: 'allow', why: 'du shows WAL growth' },
+  { who: MAIN, line: `wc -c ${DB}-wal`, want: 'allow', why: 'a byte count reads no rows' },
+  { who: MAIN, line: `lsof ${DB}`, want: 'allow', why: 'lsof shows who holds the file' },
+  { who: MAIN, line: `fuser ${DB}`, want: 'allow', why: 'fuser shows who holds the file' },
+  { who: MAIN, line: `file ${DB}`, want: 'allow', why: 'file shows the file type' },
+  { who: MAIN, line: `shasum ${DB}`, want: 'allow', why: 'shasum shows a digest, not the contents' },
+  { who: MAIN, line: `/bin/ls -la ${ABS}`, want: 'allow', why: 'a metadata program from a system folder, absolute path' },
+  { who: MAIN, line: 'ls -la ~/.dojo/data', want: 'allow', why: 'a listing of the data folder shows names and sizes' },
+  { who: HEALER, line: `ls -la ${DB} ${DB}-wal ${DB}-shm && lsof ${DB}`, want: 'allow', why: 'the Healer\'s diagnostic looks' },
 ];
 
 const REFUSED: Row[] = [
@@ -117,7 +129,11 @@ const REFUSED: Row[] = [
   { who: MAIN, line: 'tar czf /tmp/d.tgz ~/.dojo/data', want: 'refuse', why: 'a whole-folder archive' },
   { who: MAIN, line: 'zip -r /tmp/d.zip ~/.dojo', want: 'refuse', why: 'an archive of the Dojo folder' },
   { who: MAIN, line: `strings ${DB} | head`, want: 'refuse', why: 'a whole-file read' },
-  { who: MAIN, line: `ls -la ${DB}`, want: 'refuse', why: 'any other command that refers to the database file' },
+  { who: MAIN, line: `wc -l ${DB}`, want: 'refuse', why: 'a line count reads the contents' },
+  { who: MAIN, line: `wc ${DB}`, want: 'refuse', why: 'wc without -c counts lines and words, which reads the contents' },
+  { who: MAIN, line: 'ls -la ~/.dojo/data/*.db', want: 'refuse', why: 'a metadata look through a glob is not plain words' },
+  { who: MAIN, line: 'cp ~/.dojo/data/dojo.db.bak /tmp/old.db', want: 'refuse', why: 'a copy of the backup out of the data folder is contents' },
+  { who: HEALER, line: 'cp ~/.dojo/data/dojo.db.bak /tmp/old.db', want: 'refuse', why: 'the same for the Healer' },
   { who: MAIN, line: `rm ${DB}-wal`, want: 'refuse', why: 'a file-level write' },
   { who: MAIN, line: `echo x >> ${DB}`, want: 'refuse', why: 'a redirect into the file' },
   { who: MAIN, line: `bash -c 'sqlite3 ${DB} "select 1"'`, want: 'refuse', why: 'sqlite3 inside a shell string, not the exact shape' },
@@ -171,5 +187,9 @@ describe('the shell door on the Dojo database: an allowlist', () => {
     expect(run(MAIN, ['sqlite3', ABS, 'select * from vault_entries'])).toBe('refuse');
     expect(run(MAIN, ['cp', '-r', `${home}/.dojo/data`, '/tmp/d'])).toBe('refuse');
     expect(run(WORKER, ['sqlite3', '-readonly', ABS, 'select 1'])).toBe('refuse');
+    expect(run(MAIN, ['ls', '-la', ABS])).toBe('allow');
+    expect(run(HEALER, ['du', '-sh', `${ABS}-wal`])).toBe('allow');
+    expect(run(MAIN, ['wc', '-l', ABS])).toBe('refuse');
+    expect(run(WORKER, ['ls', '-la', ABS])).toBe('refuse');
   });
 });

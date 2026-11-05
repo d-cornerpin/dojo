@@ -6,7 +6,8 @@
 // does. A line that refers to the live database or the Dojo data folder now runs only as one plain
 // sqlite3 read (see the header of dojo-redirect.ts), so every row below keeps its line and now pins
 // the main agent's verdict from `dojoDoorVerdict`: 'untouched' (the line refers to neither),
-// 'allowed' (the exact shape) or 'refused' (anything else that refers to them). Seeing through a
+// 'allowed' (the exact shape) or 'refused' (anything else that refers to them). A metadata look (ls, stat, du, wc -c, lsof, fuser,
+// file, shasum) with plain words is the one other allowed shape. Seeing through a
 // launcher no longer matters: a launcher is not the exact shape, so the line is refused.
 //
 // An agent bounds a shell call with `timeout 10 …`, lowers its priority with `nice -n 10 …`,
@@ -42,8 +43,8 @@ const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
 
   // ── unchanged: what already worked keeps working, and nulls stay null ──
   { line: 'time sqlite3 dojo.db "select 1"', want: 'refused', why: 'time takes no arguments; it already worked and must keep working' },
-  { line: 'ls -l ~/.dojo/data/dojo.db', want: 'refused', why: 'a look at the file is not the exact shape (fail closed)' },
-  { line: 'timeout 10 ls ~/.dojo/data/dojo.db', want: 'refused', why: 'the same look, wrapped' },
+  { line: 'ls -l ~/.dojo/data/dojo.db', want: 'allowed', why: 'a look at the file itself (a metadata look)' },
+  { line: 'timeout 10 ls ~/.dojo/data/dojo.db', want: 'refused', why: 'the same look behind a launcher is not the plain metadata shape' },
 ];
 
 describe('dojoDoorVerdict: commands wrapped in timeout/nice/sudo/env', () => {

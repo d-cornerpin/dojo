@@ -6,7 +6,8 @@
 // does. A line that refers to the live database or the Dojo data folder now runs only as one plain
 // sqlite3 read (see the header of dojo-redirect.ts), so every row below keeps its line and now pins
 // the main agent's verdict from `dojoDoorVerdict`: 'untouched' (the line refers to neither),
-// 'allowed' (the exact shape) or 'refused' (anything else that refers to them). Seeing through a
+// 'allowed' (the exact shape) or 'refused' (anything else that refers to them). A metadata look (ls, stat, du, wc -c, lsof, fuser,
+// file, shasum) with plain words is the one other allowed shape. Seeing through a
 // launcher no longer matters: a launcher is not the exact shape, so the line is refused.
 //
 // WHAT THIS IS FOR: the broker points the main agent at dojo_inspect instead of letting it
@@ -39,8 +40,8 @@ import { dojoDoorVerdict, type DoorOutcome } from '../dojo-redirect.js';
 // the reason doubles as the assertion's failure message, so a surprise names the case it surprised.
 const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
   // ── null: it only LOOKS at the file, or not at the dojo's at all ──
-  { line: 'ls ~/.dojo/data', want: 'refused', why: 'any command that refers to the data folder other than the exact shape (fail closed)' },
-  { line: 'ls dojo.db', want: 'refused', why: 'any command that refers to the database file other than the exact shape (fail closed)' },
+  { line: 'ls ~/.dojo/data', want: 'allowed', why: 'ls only looks at the directory (a metadata look), which no view answers' },
+  { line: 'ls dojo.db', want: 'allowed', why: 'a look at the file itself (a metadata look), which no view answers' },
   { line: 'grep foo mydojo.db', want: 'untouched', why: 'a different file name that merely ends in dojo.db: the boundary prefix excludes it' },
 
   // ── 'sql': a read of the live database, or reading it out ──
