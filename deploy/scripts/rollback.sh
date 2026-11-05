@@ -351,12 +351,13 @@ else
             echo "   The previous build was put back, so Dojo is as it was."
             if [ -d "$newest_backup" ]; then echo "   The backup is still at $(basename "$newest_backup")."; fi
         else
+            # Field fix 3 audit round: facts, never a chore for the owner (no "restore it with mv").
             echo "   The previous build could not be put back either. It is at:"
             echo "       $failed_dir"
             if [ -e "$PLATFORM_DIR" ]; then
-                echo "   $PLATFORM_DIR is in the way: remove or rename it first, then restore with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+                echo "   $PLATFORM_DIR is still in its place."
             else
-                echo "   Restore it manually with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+                echo "   $PLATFORM_DIR is empty."
             fi
         fi
     else
@@ -369,7 +370,7 @@ fi
 # 4. Restart.
 echo "   Starting services..."
 if ! reload_services; then
-    echo "❌ The build was rolled back to $target_ver, but a service above did not start. Run the rollback again or restart Dojo from the menu bar."
+    echo "❌ The build was rolled back to $target_ver, but a service above did not start."
     exit 1
 fi
 

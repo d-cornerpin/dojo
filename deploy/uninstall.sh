@@ -45,7 +45,7 @@ restart_services() {
     service_loaded "$svc" || down="${down:+$down and }the $svc"
   done
   if [ -n "$down" ]; then
-    echo "   Nothing was changed, but $down did not start. Run ~/.dojo/scripts/start.sh or restart Dojo from the menu bar."
+    echo "   Nothing was changed, but $down did not start."
   else
     echo "   Dojo has been started again; nothing was changed."
   fi
@@ -142,7 +142,5 @@ echo ""
 echo "  Your data was backed up to:"
 echo "  $BACKUP_DIR"
 echo ""
-echo "  To fully clean up, you can also remove:"
-echo "  • Homebrew packages: brew uninstall node@22 cliclick cloudflared"
-echo "  • Ollama: brew uninstall ollama"
+echo "  Left installed: the Homebrew packages node@22, cliclick and cloudflared, and Ollama."
 echo ""
