@@ -25,12 +25,13 @@ import { getDb } from '../../db/connection.js';
 import { onArrivalWhileBusy } from '../shared-state.js';
 import { getWaitingHumanConversations } from '../v2/counterparty.js';
 import { handToBackground } from '../effects/proc-tree.js';
-import { recordHandOff, endHandOff } from '../background-commands.js';
+import { recordHandOff, settleHandOff, endHandOff } from '../background-commands.js';
 import { getTurnScopedImRecipient } from '../../services/imessage-bridge.js';
 import { tellAgentAndWake, requesterReachSentence } from '../wake-with-notice.js';
 import type { PersonFirst } from './process-run.js';
 import { getCurrentToolCallId } from '../turn-state.js';
-import { noteHandedBack } from '../../work/handed-back-calls.js';
+import { exitStatusOf, NO_RESULT_FAILURE } from '../../work/command-status.js';
+import { redactHandedCredentials } from '../../credentials/secret-values.js';
 
 /** The newest message row of the whole store: what "after the command started" is measured against. */
 export function newestMessageSeq(): number {
@@ -61,15 +62,16 @@ export function personFirstFor(agentId: string, what: string): PersonFirst {
       // Re-review 4 (LOW): all of this happens BEFORE anything is awaited, so no teardown can reach the
       // child between the hand-back and its move to the background, and the asker is the live turn's.
       const askedOnIMessage = getTurnScopedImRecipient(agentId);
-      // Re-review 4 (N4): mark the CALL as handed back, with its final outcome, so the task ledger writes
-      // "still running" now and the real exit status when the command ends (`work/handed-back-calls.ts`).
+      // Re-review 4 (N4) / 5 (P1): the hand-off's row carries the CALL that was handed back, so the task
+      // ledger writes it "still running" and the row's own completion below settles it by call id.
       const callId = getCurrentToolCallId(agentId);
-      if (callId) noteHandedBack(callId, outcome);
-      const recordId = pid !== undefined && handToBackground(agentId, pid, what)
-        ? recordHandOff({ agentId, pid, what, startedAt: Date.now() })
+      const backgrounded = pid !== undefined && handToBackground(agentId, pid, what);
+      const recordId = backgrounded || callId
+        ? recordHandOff({ agentId, pid: pid ?? 0, what, startedAt: Date.now(), callId })
         : null;
       void (async () => {
-        const text = await outcome;
+        const text = await outcome.catch(() => NO_RESULT_FAILURE);
+        if (recordId) settleHandOff(recordId, redactHandedCredentials(agentId, exitStatusOf(text)));
         const reach = askedOnIMessage ? await requesterReachSentence(askedOnIMessage) : 'If the person who asked is on the dashboard, your written reply reaches them.';
         await tellAgentAndWake({
           agentId, from: 'Dojo: background command', intent: 'background_command_done', inFailureTurn: false,

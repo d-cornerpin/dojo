@@ -5,6 +5,7 @@
 // almost always one or the other, so a chain of continuations that touches no item, only ever making
 // new reads, would never be checked in on. The hold stands for such a job only while it is touching
 // items; one that is not lets the ladder run on its existing rungs, and the check-in carries the fact.
+import { STILL_RUNNING } from '../work/command-status.js';
 import { getDb } from '../db/connection.js';
 import { ledgerLastNewItemAt, ledgerNewItemsSince, ledgerTotals } from '../work/ledger-store.js';
 import { ledgerListing, type LedgerWorkEntry } from '../work/ledger-read.js';
@@ -134,11 +135,14 @@ function commandShown(cmd: string): string {
 function notListedLine(rest: readonly LedgerWorkEntry[]): string {
   if (rest.length === 0) return '';
   const files = rest.filter((e) => e.kind === 'file').length;
-  const failed = rest.filter((e) => e.kind === 'command' && e.status !== 'exit 0').length;
-  const clean = rest.length - files - failed - rest.filter((e) => e.kind === 'send').length;
+  // Re-review 5 (LOW): a command still running in the background has not failed; it is counted apart.
+  const running = rest.filter((e) => e.kind === 'command' && e.status === STILL_RUNNING).length;
+  const failed = rest.filter((e) => e.kind === 'command' && e.status !== 'exit 0' && e.status !== STILL_RUNNING).length;
+  const clean = rest.length - files - failed - running - rest.filter((e) => e.kind === 'send').length;
   const sends = rest.filter((e) => e.kind === 'send').length;
   const parts = [
     failed ? `${fmt(failed)} more ${failed === 1 ? 'command' : 'commands'} that failed` : '',
+    running ? `${fmt(running)} more ${running === 1 ? 'command' : 'commands'} still running` : '',
     sends ? `${fmt(sends)} more ${sends === 1 ? 'send' : 'sends'}` : '',
     files ? `${fmt(files)} more ${files === 1 ? 'file' : 'files'}` : '',
     clean ? `${fmt(clean)} more ${clean === 1 ? 'command' : 'commands'} that exited 0` : '',

@@ -21,7 +21,8 @@ export { ledgerTotals, ledgerWorkEntries, type LedgerWorkEntry } from './ledger-
 import type { ToolEffect } from '../agent/tools/types.js';
 import { appliedKeysOf } from '../google/gmail-label.js';
 import { appendWorkEvent } from './store.js';
-import { takeHandedBack } from './handed-back-calls.js';
+import { STILL_RUNNING, exitStatusOf } from './command-status.js';
+import { handOffForCall, ledgerTookHandOff } from '../agent/background-commands.js';
 import type { WorkEventKind } from './event-kinds.js';
 import type { Measure, MeasureCount } from './measure.js';
 
@@ -31,35 +32,22 @@ export const MEASURED_EVENT = 'measured' as const satisfies WorkEventKind;
 
 /** Record the items a call touched for a task. Returns the rows inserted or touched. `detail`: a
  *  command's exit status (the newest run's), null for everything else. */
-export function recordTouched(workId: string, tool: string, keys: string[], at: number = Date.now(), detail: string | null = null): number {
+export function recordTouched(
+  workId: string, tool: string, keys: string[], at: number = Date.now(), detail: string | null = null,
+  /** The call that wrote a command row (re-review 5, P1b): how a backgrounded command settles it. */
+  callId: string | null = null,
+): number {
   if (keys.length === 0) return 0;
   const db = getDb();
   const stmt = db.prepare(
-    `INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at, detail) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(work_id, item_key) DO UPDATE SET last_at = excluded.last_at, tool = excluded.tool, detail = excluded.detail`,
+    `INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at, detail, call_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(work_id, item_key) DO UPDATE SET last_at = excluded.last_at, tool = excluded.tool, detail = excluded.detail, call_id = excluded.call_id`,
   );
-  db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at, detail); })(keys);
+  db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at, detail, callId); })(keys);
   return keys.length;
 }
 
-/** A command's exit status, from the head of its result: the process runner (`agent/tools/process-run.ts`)
- *  leads a failed run with "command_failed: <reason>" and writes nothing of the kind on a clean exit. */
-function exitStatusOf(content: string): string {
-  const m = /^command_failed: ([^\n]+)/.exec(content);
-  return m ? m[1].trim() : 'exit 0';
-}
-
-/** A command's ledger status while it runs in the background (re-review 4, N4). */
-export const STILL_RUNNING = 'still running';
-
-/** A backgrounded command ended: its rows, written "still running" at `at`, take the real status. A row
- *  re-touched since (the same command run again) keeps its newer status. */
-function settleBackgroundCommand(workId: string, keys: string[], at: number, status: string): void {
-  try {
-    const stmt = getDb().prepare('UPDATE work_ledger SET detail = ? WHERE work_id = ? AND item_key = ? AND detail = ? AND last_at = ?');
-    for (const k of keys) stmt.run(status, workId, k, STILL_RUNNING, at);
-  } catch { /* the store is gone (shutdown): the row stays "still running", which is honest */ }
-}
+export { STILL_RUNNING } from './command-status.js';
 
 /** One of THIS round's tool results, as the executor hands them to the count (`turnToolResults`). */
 export interface RoundResult { toolCallId: string; isError: boolean; errorCode?: string; content?: string; keptWhole?: string }
@@ -102,15 +90,17 @@ export function recordCallsTouched(
       if (items.length > 0) recordTouched(workId, tc.name, items);
       if (commands.length > 0) {
         const r = roundResults.find((x) => x.toolCallId === tc.id);
-        const bg = takeHandedBack(tc.id);
-        if (bg && bg.final === null) {
-          // Re-review 4 (N4): handed to the background. Its result is not in this round, so the row says
-          // so, and is updated with the real exit status when the command ends.
-          const at = Date.now();
-          recordTouched(workId, tc.name, commands, at, STILL_RUNNING);
-          void bg.outcome.then((text) => settleBackgroundCommand(workId, commands, at, safe(exitStatusOf(text))), () => {});
+        // Re-review 4 (N4) / 5 (P1b): a call handed to the background has its hand-off row, by call id.
+        // Running: the row says so, and the hand-off settles it by call id when the command ends. Ended
+        // before this write: its real status, from that row.
+        const bg = handOffForCall(tc.id);
+        if (bg && bg.exitStatus === null) {
+          recordTouched(workId, tc.name, commands, Date.now(), STILL_RUNNING, tc.id);
+        } else if (bg) {
+          recordTouched(workId, tc.name, commands, Date.now(), bg.exitStatus, tc.id);
+          ledgerTookHandOff(bg.id);
         } else {
-          recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(bg ? bg.final ?? '' : (r?.keptWhole ?? r?.content ?? ''))));
+          recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(r?.keptWhole ?? r?.content ?? '')));
         }
       }
       // Audit #5: a successful send to a person is one delivery on the ledger, keyed by its call,
