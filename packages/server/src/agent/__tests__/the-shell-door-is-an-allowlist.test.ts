@@ -7,8 +7,8 @@
 // shell text cannot be complete, so the door fails closed: a line that refers to the live
 // database file or the Dojo data folder runs only in ONE exact shape (sqlite3, the literal path,
 // known output flags, one quoted SQL argument of read-only statements that each pass
-// refuseDeniedSql). Every other such line is refused. The Healer's fixed repair statements keep
-// working, alone on their line.
+// refuseDeniedSql). Every other such line is refused. The Healer keeps its existing repair scope
+// (owner ruling 2026-11-04): any changing statement that passes the same credential check and compiles.
 //
 // Each row is a command string and the verdict `redirectDojoQuestion` must return for it. The
 // refused shapes are named structurally; nothing here is executed.
@@ -166,11 +166,17 @@ const REFUSED: Row[] = [
   // ── a worker agent's read ──
   { who: WORKER, line: `sqlite3 -readonly ${DB} "select id from agents"`, want: 'refuse', why: 'a worker is refused any reference to the database file' },
   { who: WORKER, line: `ls -la ${DB}`, want: 'refuse', why: 'a worker is refused any reference to the database file' },
-  // ── the Healer: its fixed repairs only, alone on the line ──
-  { who: HEALER, line: `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'; select 1"`, want: 'refuse', why: 'a repair line holds only the one statement' },
-  { who: HEALER, line: `sqlite3 ${DB} "DELETE FROM messages"`, want: 'refuse', why: 'not one of the fixed repairs' },
-  { who: HEALER, line: `sqlite3 ${DB} "UPDATE agent_credentials SET agent_id = 'x' WHERE id = 'y'"`, want: 'refuse', why: 'not one of the fixed repairs, and a credential table' },
+  // ── the Healer: its repair scope, under the protections that hold for every role ──
+  { who: HEALER, line: `sqlite3 ${DB} "UPDATE agent_credentials SET agent_id = 'x' WHERE id = 'y'"`, want: 'refuse', why: 'a credential table is refused for every role, the Healer included' },
+  { who: HEALER, line: `sqlite3 ${DB} "UPDATE agents SET name = (SELECT value FROM google_accounts LIMIT 1) WHERE id = 'x'"`, want: 'refuse', why: 'a repair that reads a credential table is refused' },
+  { who: HEALER, line: `sqlite3 ${DB} "REINDEX github_account"`, want: 'refuse', why: 'a maintenance statement that NAMES a credential table is refused' },
+  { who: HEALER, line: `sqlite3 ${DB} "PRAGMA integrity_check(microsoft_accounts)"`, want: 'refuse', why: 'the same for an integrity check of one credential table' },
+  { who: MAIN, line: `sqlite3 ${DB} "PRAGMA integrity_check"`, want: 'refuse', why: 'the whole-database checks are the Healer\'s, not the main agent\'s read' },
   { who: HEALER, line: `sqlite3 ${DB} ".restore /tmp/old.db"`, want: 'refuse', why: 'a dot-command' },
+  { who: HEALER, line: `sqlite3 ${DB} ".import /tmp/rows.csv agents"`, want: 'refuse', why: 'a dot-command: .import writes rows no SQL check can read' },
+  { who: HEALER, line: `sqlite3 ${DB} "VACUUM INTO '/tmp/copy.db'"`, want: 'refuse', why: 'VACUUM INTO copies the credential tables into another file' },
+  { who: HEALER, line: `sqlite3 ${DB} "UPDATE agents SET name = readfile('/etc/hosts') WHERE id = 'x'"`, want: 'refuse', why: 'a CLI-only function stays refused' },
+  { who: HEALER, line: `sqlite3 ${DB} "UPDATE no_such_table SET a = 1"`, want: 'refuse', why: 'a statement the server cannot compile does not run (fail closed)' },
   { who: HEALER, line: `rm ${DB}-wal`, want: 'refuse', why: 'a file-level write is not a repair' },
   { who: HEALER, line: 'cp -r ~/.dojo/data /tmp/d', want: 'refuse', why: 'a whole-folder copy' },
 ];
@@ -183,7 +189,15 @@ const REPAIRS: Row[] = [
   `sqlite3 ${DB} "UPDATE work SET state = 'on_deck', next_run_at = 1725810300000 WHERE id = 'w1'"`,
   `sqlite3 ${DB} "UPDATE config SET value = 'v', updated_at = datetime('now') WHERE key = 'k';"`,
   `sqlite3 ${DB} 'PRAGMA wal_checkpoint(TRUNCATE);'`,
-].map((line) => ({ who: HEALER, line, want: 'allow' as Want, why: 'one of the Healer\'s fixed repairs' }));
+  // The owner's ruling (2026-11-04): the Healer's existing repair scope, as it stood before field fix 3.
+  `sqlite3 ${DB} "PRAGMA integrity_check"`,
+  `sqlite3 ${DB} 'PRAGMA quick_check;'`,
+  `sqlite3 ${DB} "VACUUM"`,
+  `sqlite3 ${DB} "REINDEX"`,
+  `sqlite3 ${DB} "UPDATE work SET title = 'renamed', priority = 'high' WHERE id = 'w1'"`,
+  `sqlite3 ${DB} "DELETE FROM messages WHERE id = 'm1'"`,
+  `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'; select 1"`,
+].map((line) => ({ who: HEALER, line, want: 'allow' as Want, why: 'within the Healer\'s repair scope' }));
 
 const verdictOf = (who: string, line: string): Want => (door.redirectDojoQuestion(who, line) ? 'refuse' : 'allow');
 
@@ -194,6 +208,10 @@ describe('the shell door on the Dojo database: an allowlist', () => {
 
   it('the same repairs by the main agent are refused', () => {
     for (const r of REPAIRS) expect(verdictOf(MAIN, r.line), r.line).toBe('refuse');
+  });
+
+  it('the same repairs by a worker are refused', () => {
+    for (const r of REPAIRS) expect(verdictOf(WORKER, r.line), r.line).toBe('refuse');
   });
 
   it('a credential refusal names the table; any other refusal is the one-sentence fact', () => {

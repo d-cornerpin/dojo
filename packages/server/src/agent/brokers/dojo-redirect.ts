@@ -35,9 +35,9 @@
 // database: a grep or tail of it is not this door's business, for any agent.
 //
 // WHO: the main agent and the Healer get the allowlist. A worker is refused any reference to the
-// database file or the data folder at all. The Healer's fixed repair statements (REPAIRS below)
-// keep working in the same shape; each must also pass `refuseDeniedSql`, and a repair line holds
-// only that one statement.
+// database file or the data folder at all. The Healer also keeps its existing repair scope in the
+// same shape: any changing statement, each passing `refuseDeniedSql` and the server's compile
+// (`healerRepairRefusal` below names the few that stay refused).
 //
 // THE LIMIT, STATED PLAINLY: a shell door reads the command line, so it cannot see inside a script
 // file the agent writes and then runs, or a program that opens the database by itself. This door
@@ -186,47 +186,44 @@ function readRefusal(stmt: string, db: Database.Database | undefined): string | 
   return null;
 }
 
-// ── the Healer's repairs: a short fixed set ──
-const LIT = String.raw`(?:'(?:[^']|'')*'|-?\d+(?:\.\d+)?|null|datetime\('now'\))`;
-const PERSIST = String.raw`json_set\(\s*config\s*,\s*'\$\.persist'\s*,\s*[01]\s*\)`;
-// These are MATCHERS for SQL text the Healer may run, not writes the engine makes: each entry pairs
-// a SQL column NAME (a string) with the value shape the door accepts for it. They are kept as
-// [name, shape] pairs, not object keys, so a matcher is never read as an assignment of that field
-// (the schedule census in tracker/__tests__/schedule-echo-seam.test.ts scans for field writes).
-const REPAIR_COLUMNS: Record<string, { where: string; cols: ReadonlyArray<readonly [string, string]> }> = {
-  agents: { where: 'id', cols: [['model_id', LIT], ['status', LIT], ['config', PERSIST]] },
-  work: { where: 'id', cols: [['state', LIT], ['next_run_at', LIT], ['schedule_status', LIT], ['updated_at', LIT]] },
-  config: { where: 'key', cols: [['value', LIT], ['updated_at', LIT]] },
-};
-const WAL_CHECKPOINT = /^\s*pragma\s+wal_checkpoint\s*(?:\(\s*(?:passive|full|restart|truncate)\s*\))?\s*$/i;
+// ── the Healer's repairs: its existing scope, restored ──
+// The owner's ruling (2026-11-04): full-Mac access is the main agent's only, "plus the Healer's
+// existing repair scope". Before field fix 3 the Healer could run any changing statement through
+// sqlite3 (`PRAGMA integrity_check`, `quick_check`, `VACUUM`, `REINDEX`, any UPDATE, DELETE or
+// schema change), refusing only sqlite3's `.restore`, `.open`, `.shell` and `.system`. The rebuild
+// cut that to a few fixed UPDATE shapes, which took the Healer's own database-health repairs away.
+// That scope is back, under the field fix 3 protections that still hold for every statement:
+//   * `refuseDeniedSql` refuses a credential table (named, or read through a subquery) for every role;
+//   * the server's own SQLite must compile the statement (fail closed, SQLite's own words on an error);
+//   * CLI-only functions (readfile, writefile, edit, ...) and unsafe table functions stay refused;
+//   * a dot-command stays refused (`.import` included: it writes rows no SQL check can read, so it
+//     cannot be held to the credential list);
+//   * `VACUUM INTO` stays refused: it writes a whole copy of the database, credential tables
+//     included, to another file.
+const VACUUM_INTO = /^\s*vacuum\b[^;]*\binto\b/i;
+/** The whole-database health checks and rebuilds. They open every table, credential tables among
+ *  them, by their nature, and return no row's contents: `ok` or the structural faults found (an
+ *  integrity check), or nothing at all (a rebuild). So the Healer's run of one is held to the
+ *  credential list by NAME (`REINDEX github_account` is still refused) and not by the tables it
+ *  opens, which for these is every table there is. */
+const WHOLE_DB_MAINTENANCE = /^\s*(?:pragma\s+(?:integrity_check|quick_check)\s*(?:\(\s*\w+\s*\))?|reindex(?:\s+\w+)?|vacuum)\s*$/i;
 
-/** Split at commas outside parentheses and literals. */
-function topLevelCommas(s: string): string[] {
-  const out: string[] = []; let depth = 0; let cur = ''; let q = false;
-  for (const c of s) {
-    if (c === "'") q = !q;
-    if (!q && c === '(') depth++;
-    if (!q && c === ')') depth--;
-    if (!q && depth === 0 && c === ',') { out.push(cur); cur = ''; continue; }
-    cur += c;
+/** The refusal for one statement the Healer may not run as a repair, or null when it may. The
+ *  credential check has already run on it. */
+export function healerRepairRefusal(stmt: string, db: Database.Database | undefined): string | null {
+  const b = bare(stmt);
+  if (/^\s*\./.test(stmt)) return FACT_REFUSAL;
+  if (CLI_ONLY_NAME.test(b)) return FACT_REFUSAL;
+  if (tableFunctions(b).some((f) => !SAFE_TABLE_FUNCTIONS.has(f))) return FACT_REFUSAL;
+  if (VACUUM_INTO.test(b)) return FACT_REFUSAL;
+  if (!db) return FACT_REFUSAL;
+  try {
+    db.prepare(stmt);
+  } catch (e) {
+    const msg = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, ' ').trim();
+    return `Refused: the Dojo's SQLite cannot compile this statement (${msg}), so it does not run.`;
   }
-  out.push(cur);
-  return out.map((x) => x.trim());
-}
-
-/** Is this one statement one of the Healer's fixed repairs? */
-export function isHealerRepair(stmt: string): boolean {
-  const s = stmt.trim();
-  if (WAL_CHECKPOINT.test(s)) return true;
-  const m = /^update\s+(\w+)\s+set\s+([\s\S]+?)\s+where\s+(\w+)\s*=\s*'(?:[^']|'')*'\s*$/i.exec(s);
-  if (!m) return false;
-  const spec = REPAIR_COLUMNS[m[1].toLowerCase()];
-  if (!spec || m[3].toLowerCase() !== spec.where) return false;
-  return topLevelCommas(m[2]).every((a) => {
-    const am = /^(\w+)\s*=\s*([\s\S]+)$/.exec(a);
-    const valueShape = am ? spec.cols.find(([name]) => name === am[1].toLowerCase())?.[1] : undefined;
-    return !!valueShape && new RegExp(`^${valueShape}$`, 'i').test(am![2].trim());
-  });
+  return null;
 }
 
 /** Are these words a metadata look: a program from METADATA_PROGRAMS (bare, or from a system bin
@@ -258,18 +255,18 @@ function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
   const statements = splitStatements(sql);
   if (statements.length === 0) return { outcome: 'refused', message: FACT_REFUSAL };
   const db = openDb();
-  const repair = role === 'healer' && statements.length === 1 && isHealerRepair(statements[0]);
-  // The credential check first, so a statement that names a credential table is refused with the
-  // sentence that names it; then the read-only check, which fails closed.
+  // The credential check first, for every role, so a statement that names a credential table is
+  // refused with the sentence that names it; then the read-only check, which fails closed. A
+  // statement the Healer runs that is not a read is held to its repair scope instead.
   for (const s of statements) {
-    const refused = refuseDeniedSql(s, db);
+    const maintenance = role === 'healer' && WHOLE_DB_MAINTENANCE.test(bare(s));
+    const refused = refuseDeniedSql(s, maintenance ? undefined : db);   // undefined: the credential list by name only
     if (refused) return { outcome: 'credential', message: refused };
   }
-  if (!repair) {
-    for (const s of statements) {
-      const refused = readRefusal(s, db);
-      if (refused) return { outcome: 'refused', message: refused };
-    }
+  for (const s of statements) {
+    const asRead = readRefusal(s, db);
+    const refused = asRead !== null && role === 'healer' ? healerRepairRefusal(s, db) : asRead;
+    if (refused) return { outcome: 'refused', message: refused };
   }
   return { outcome: 'allowed' };
 }
