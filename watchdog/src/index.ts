@@ -792,10 +792,11 @@ async function checkDiskSpace(): Promise<void> {
 // and back online, update failed, budget alerts, a broken agent, and the Mac critical). Told once per incident.
 async function alertDbIntegrity(status: string): Promise<void> {
   log('error', 'Database integrity check FAILED', { status });
+  // Re-review 4 L5: recorded first, whether or not a text can go (the dashboard's health page and history read it).
+  recordAlert(`DB integrity: ${status}`);
   const imRecipient = getImessageRecipient();
   if (claimAlertFor('db_integrity', imRecipient)) {
     await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
-    recordAlert(`DB integrity: ${status}`);
   }
 }
 

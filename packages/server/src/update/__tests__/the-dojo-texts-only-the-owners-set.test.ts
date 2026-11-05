@@ -68,4 +68,15 @@ describe('the watchdog texts only the owner\'s set (OR-AUDIT-ANSWERS (d))', () =
     expect(fn).toMatch(/sendSmartAlert\(/);
     expect(fn).toMatch(/recordAlert\(/);
   });
+
+  // Re-review 4 L5: the failure is recorded (the dashboard's health page and history read it) BEFORE, and whatever
+  // happens to, the text; with no iMessage recipient set it was not recorded at all.
+  it('L5: the integrity failure is recorded first, outside the text\'s claim, so no recipient still records it', () => {
+    const fn = /async function alertDbIntegrity[\s\S]*?\n}/.exec(src)?.[0] ?? '';
+    const rec = fn.indexOf('recordAlert(');
+    const claim = fn.indexOf('claimAlertFor(');
+    expect(rec, 'recorded').toBeGreaterThan(-1);
+    expect(rec, 'before the claim').toBeLessThan(claim);
+    expect(fn.slice(claim).includes('recordAlert('), 'and not again inside the claim').toBe(false);
+  });
 });
