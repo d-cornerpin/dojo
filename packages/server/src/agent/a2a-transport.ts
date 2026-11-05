@@ -2108,9 +2108,10 @@ async function deliverLateAnswerIfJoinFailedClosed(p: {
   const claimed = claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`);
   if (claimed.kind !== 'applied') return true;
   const answer = String(p.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
-  const deliveryId = await deliverJoinResultToOwner(
-    join, `Update: ${p.senderName} answered after all. ${answer}`, { tool: 'a2a-join-late', voice: 'courier' },
-  );
+  const lateText = `Update: ${p.senderName} answered after all. ${answer}`;
+  const deliveryId = await deliverJoinResultToOwner(join, lateText, { tool: 'a2a-join-late', voice: 'courier' });
+  // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the agent is told what the Dojo carried.
+  tellAgentWhatDojoSent({ agentId: join.agentId, recipient: 'the person who asked', text: `${OWNER_ALERT_DOJO_PREFIX} ${lateText}`, sent: !!deliveryId, why: `carrying ${p.senderName}'s late answer to the question you delegated` });
   if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'a late answer reached the owner', basis: 'late-answer' }), 'a2a: join settled on late answer', join.id);
   return true;
 }
@@ -2266,9 +2267,11 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}:\n${
             (p.content ?? '').trim()}`)
           .join('\n\n');
-        const deliveryId = await deliverJoinResultToOwner(
-          join, `${engineRelayPreface(piecesNow.length)}\n\n${body}`, { voice: 'courier' },
-        );
+        const relayText = `${engineRelayPreface(piecesNow.length)}\n\n${body}`;
+        const deliveryId = await deliverJoinResultToOwner(join, relayText, { voice: 'courier' });
+        // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the agent is told what the Dojo carried (a
+        // rider on its next turn; it asks for no wake, as this rung's comment below requires).
+        tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked', text: `${OWNER_ALERT_DOJO_PREFIX} ${relayText}`, sent: !!deliveryId, why: 'carrying the delegated pieces verbatim, because the compile was not written' });
         recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.engineRelay, {
           attempt: rung.attempt, bound: rung.bound,
           note: deliveryId

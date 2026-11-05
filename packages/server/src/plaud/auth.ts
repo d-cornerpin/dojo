@@ -7,6 +7,7 @@
 // out for every check.
 // ════════════════════════════════════════
 
+import { plaudExpiredText } from '../agent/engine-lines.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -133,12 +134,15 @@ export function notePlaudReauthRequired(agentId?: string | null): boolean {
       broadcast({
         type: 'chat:error',
         agentId,
-        error: 'Your Plaud login has expired, so I can\'t reach your recordings. '
-             + 'Reconnect it in Settings → Integrations → Plaud.',
+        // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the Dojo speaking, never "I"; the agent is told.
+        error: plaudExpiredText(),
         code: 'AUTH_INVALID',
         severity: 'error',
         retryable: false,
       });
+      void import('../agent/dojo-voice.js').then(({ tellAgentWhatDojoSent }) => tellAgentWhatDojoSent({
+        agentId, recipient: 'the owner (a dashboard card)', text: plaudExpiredText(), why: 'because the Plaud login expired',
+      })).catch(() => undefined);
     } catch { /* best effort */ }
   }
   return true;

@@ -10,6 +10,7 @@
 // between cycles and wakes when a cycle fires.
 // ════════════════════════════════════════
 
+import { HELD_CONSENT_EXPIRY_NOTE_TEXT } from '../agent/engine-lines.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import fs from 'node:fs';
 import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
@@ -78,7 +79,7 @@ const PROPOSAL_CLEARED_NOTE = 'Issue no longer detected in diagnostic, closed by
 // D-B v2: a quietly-queued Vitals consent (a held destructive call) that the
 // owner never decided gets the same 14-day age cap, closed with a plain,
 // non-error note (a quiet Vitals drop, never a loud alert).
-const HELD_CONSENT_EXPIRY_NOTE = 'This request sat for two weeks without a decision, so I let it go. Nothing was changed or deleted.';
+const HELD_CONSENT_EXPIRY_NOTE = HELD_CONSENT_EXPIRY_NOTE_TEXT;   // field fix 3 audit round (#6): the Dojo speaking, never 'I'
 
 // FA-X7(b): cap on how many cycles re-present an approved-but-unapplied
 // proposal to the Healer. An approved proposal wakes the Healer every cycle

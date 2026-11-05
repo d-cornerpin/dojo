@@ -36,6 +36,9 @@ import { broadcast } from '../gateway/ws.js';
 import { resolveRealPathHardened, isProtectedIdentityPath } from '../agent/permissions.js';
 import { withOutboundAsyncIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
 import { homeDir } from '../home.js';
+import { healerApprovalText } from '../agent/engine-lines.js';
+import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 
 const logger = createLogger('healer-approval-routing');
 
@@ -473,11 +476,9 @@ export function markHealerProposalAppliedBySignature(agentId: string, signature:
  */
 async function sendHealerApprovalRequestOverIMessage(proposalId: string): Promise<void> {
   const shortId = proposalId.slice(0, 8);
-  const text =
-    'Your self-healing helper needs your OK before it makes a change on your Mac ' +
-    'that could delete or overwrite something. Nothing has changed yet.\n\n' +
-    `Reply "yes ${shortId}" to approve or "no ${shortId}" to decline. Please ` +
-    'include that code so I change the right thing.';
+  // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): labelled "Dojo:", never "I", and the main
+  // agent is told what was sent (below, after the send).
+  const text = healerApprovalText(shortId);
 
   try {
     const bridge = await import('../services/imessage-bridge.js');
@@ -494,6 +495,10 @@ async function sendHealerApprovalRequestOverIMessage(proposalId: string): Promis
       { agentId: PLATFORM_SENDER, tool: 'healer-approval', channel: 'imessage', recipientId: owner },
       () => bridge.sendIMessage(owner, text),
     );
+    {
+      const mainAgent = getPrimaryAgentId();
+      if (mainAgent) tellAgentWhatDojoSent({ agentId: mainAgent, recipient: 'the owner (by iMessage)', text, sent: !!sent, why: 'to ask the owner to approve a change the Healer wants to make' });
+    }
     if (!sent) {
       logger.error('healer approval-routing: iMessage approval send failed; approval stays in Vitals', {
         proposalId,

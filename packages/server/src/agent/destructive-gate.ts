@@ -17,6 +17,7 @@
 // on use: one approval, one execution.
 // ════════════════════════════════════════
 
+import { URGENT_APPROVAL_EXPIRY_NOTE } from './engine-lines.js';
 import { v4 as uuidv4 } from 'uuid';
 import { turnContext } from './turn-context.js';
 import { getDb } from '../db/connection.js';
@@ -442,7 +443,7 @@ export async function sweepStaleApprovals(): Promise<void> {
       SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
       WHERE id = ? AND status = 'pending'
     `).run(
-      'This urgent approval went unanswered for over an hour, so I let it expire. Nothing was changed or deleted.',
+      URGENT_APPROVAL_EXPIRY_NOTE,   // field fix 3 audit round (#6): the Dojo speaking, never 'I'
       row.id,
     );
     if (marked.changes > 0) {
