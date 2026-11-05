@@ -1,8 +1,10 @@
-// v3.5 field fix 3, test-2 round. OWNER RULING (2026-11-04), verbatim: "obviously if a user types a
-// message on the dashboard, they get a response on the dashboard." The owner typing on the dashboard
-// is proof he is at it, so a dashboard message sent while presence says "away" flips presence back
-// to in-dojo, and the dashboard's presence pill is told (`system:presence`). Away keeps forwarding
-// everything else to the phone until then.
+// v3.5 field fix 3, re-review 2 (S9). OWNER RULING (2026-11-04), verbatim: "obviously if a user types a
+// message on the dashboard, they get a response on the dashboard." That is the REPLY's binding
+// (`agent/v2/reply-destination.ts`), which answers a dashboard ask on the dashboard whatever the
+// presence. The test-2 round also flipped presence to in-dojo when he typed there while away, which
+// went past his words: every LATER proactive reply then stayed on the dashboard, so an owner who typed
+// once from his phone's browser and walked away missed what away mode would have texted him. The flip
+// and its `system:presence` frame are removed; presence is his own switch.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -14,7 +16,7 @@ vi.mock('../../db/connection.js', async () => {
   return {
     getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
     closeDb: vi.fn(),
-    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-presence-flip', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-presence-kept', 'dojo.db'),
   };
 });
 const frames: Array<Record<string, unknown>> = [];
@@ -43,19 +45,18 @@ beforeEach(() => {
   frames.length = 0;
 });
 
-describe('a dashboard message means the owner is here', () => {
-  it('THE RED: typed on the dashboard while marked away: presence flips to in-dojo and the pill is told', async () => {
+describe('a dashboard message leaves the owner\'s presence as he set it', () => {
+  it('THE RED: typed on the dashboard while marked away: presence stays away, and nothing announces a change', async () => {
     setPresence('away');
     const r = await submitUserMessage(AGENT, 'what did the venue say?');
     expect(r.ok).toBe(true);
-    expect(getPresence()).toBe('in_dojo');
-    expect(frames.some((f) => f.type === 'system:presence' && (f.data as { status?: string })?.status === 'in_dojo')).toBe(true);
+    expect(getPresence()).toBe('away');
+    expect(frames.some((f) => f.type === 'system:presence')).toBe(false);
   });
 
-  it('CONTROL: already in the dojo, nothing changes and nothing is announced', async () => {
+  it('CONTROL: in the dojo, nothing changes either', async () => {
     setPresence('in_dojo');
     await submitUserMessage(AGENT, 'hello');
     expect(getPresence()).toBe('in_dojo');
-    expect(frames.some((f) => f.type === 'system:presence')).toBe(false);
   });
 });
