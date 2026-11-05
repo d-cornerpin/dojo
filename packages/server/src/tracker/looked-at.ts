@@ -274,7 +274,10 @@ export function readsBoundToRow(l: LookedAt, workId: string, names = rowReadName
  *  task record alone is the worker's own account and backs nothing. */
 export function closeBacking(l: LookedAt, workId: string): { backed: boolean; read: boolean } {
   const read = readsBoundToRow(l, workId);   // review M3b: a read backs only the row whose work it opened
-  const measured = !!l.measure && (l.measure.remaining === 0 || !!l.measure.named);
+  // Re-review 2 (S2): a 0 is done only when the count came DOWN to it (its first reading was above 0); a
+  // measure that read 0 from the start never counted anything. A named remainder still accounts for the rest.
+  const cameDown = !!l.measure && l.measure.remaining === 0 && (l.measure.initial ?? 0) > 0;
+  const measured = !!l.measure && (cameDown || !!l.measure.named);
   const ledger = !!l.ledger && (l.ledger.touched > 0 || l.ledger.commands > 0);
   // Audit #5 (W15): the worker's delivered line is the worker's own words. It backs an uphold only when a
   // review's request has shown its excerpt to the PM (that showing IS the PM reading it, ruling R3); the

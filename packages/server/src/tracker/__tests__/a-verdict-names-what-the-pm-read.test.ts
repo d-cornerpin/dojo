@@ -520,6 +520,15 @@ describe('#6b: an uphold with nothing structural behind it is refused at the PM\
     expect(upheld(t)).toBe(1);
   });
 
+  it('re-review 2 (S2): a measure that read 0 from the start (it never counted anything) does NOT back the close', async () => {
+    const t = newTask();
+    mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 0, measure_remaining = 0 WHERE id = ?').run(
+      JSON.stringify({ tool: 'file_list', args: { path: '/work/wrong-folder', pattern: '*.pdf' }, unit: 'files' }), t);
+    fileClose(t, undefined, seedDelivery('deliv-z0'));
+    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
+    expect(upheld(t)).toBe(0);
+  });
+
   it('a measure that reads 0 backs the close', async () => {
     const t = newTask();
     mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 3, measure_remaining = 0 WHERE id = ?').run(

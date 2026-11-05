@@ -75,9 +75,12 @@ function seedDelivery(): void {
 }
 
 async function openMeasured(initial: number, extra: Record<string, unknown> = {}): Promise<string> {
-  countMeasure.mockResolvedValueOnce({ ok: true, count: initial });
+  // Re-review 2 (S2): a measure whose first reading is 0 is refused when it is set. A task "at zero" is
+  // therefore one that was set with items and whose count came DOWN to 0: set at 5, then read 0.
+  countMeasure.mockResolvedValueOnce({ ok: true, count: initial === 0 ? 5 : initial });
   const out = await call('work_open:task', { title: 'Sort the inbox', goal: 'every inbox message labelled', measure: MEASURE, ...extra });
   const id = taskIdFrom(out);
+  if (initial === 0) db().prepare('UPDATE work SET measure_remaining = 0 WHERE id = ?').run(id);
   await call('work_update:status', { task_id: id, status: 'in_progress' });
   seedDelivery();
   return id;

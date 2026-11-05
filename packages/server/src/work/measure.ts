@@ -14,7 +14,8 @@ const files = async (): Promise<typeof import('../tools/file-set-count.js')> => 
 export type MeasureTool = 'gmail_search' | 'user_gmail_search' | 'outlook_search' | 'user_outlook_search' | 'file_list';
 /** A mailbox measure carries `query` (and optionally `account`); a file-set measure carries `path` and `pattern`. */
 export interface Measure { tool: MeasureTool; args: { query?: string; account?: string; path?: string; pattern?: string }; unit: string }
-export type MeasureCount = { ok: true; count: number } | { ok: false; error: string };
+/** `unreadable`: folders a file-set count could not read (named, never silently dropped). */
+export type MeasureCount = { ok: true; count: number; unreadable?: string[] } | { ok: false; error: string };
 type Counter = (m: Measure, agentId: string, agentName: string) => Promise<MeasureCount>;
 
 const COUNTERS: Record<MeasureTool, Counter> = {
@@ -22,7 +23,7 @@ const COUNTERS: Record<MeasureTool, Counter> = {
   user_gmail_search: async (m, agentId, agentName) => (await gmail()).countGmailSearch({ query: m.args.query ?? '', account: m.args.account }, agentId, agentName, 'user'),
   outlook_search: async (m, agentId, agentName) => (await outlook()).countOutlookSearch(m.args, agentId, agentName, 'agent'),
   user_outlook_search: async (m, agentId, agentName) => (await outlook()).countOutlookSearch(m.args, agentId, agentName, 'user'),
-  file_list: async (m) => (await files()).countFileSet(m.args),
+  file_list: async (m, agentId) => (await files()).countFileSet(m.args, agentId),
 };
 
 /** Every tool the engine can count, for readers that must size a line around the longest name. */

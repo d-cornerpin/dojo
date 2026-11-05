@@ -5,7 +5,7 @@
 // may not make, the engine does not make for it), and reads it. `tracker/measure-gate.ts` stores
 // and judges what this reads.
 import { getDb } from '../../../db/connection.js';
-import { parseMeasure, countMeasure, type Measure } from '../../../work/measure.js';
+import { parseMeasure, countMeasure, type Measure, type MeasureCount } from '../../../work/measure.js';
 import { recordMeasured } from '../../../work/ledger-store.js';
 import { editMeasure, namedRemainderNote, recordNamedRemainder, measuredOpenTasksOf, type MeasureReading } from '../../../tracker/measure-gate.js';
 import { resolveTaskId, resolveProjectId } from '../../../tracker/schema.js';
@@ -39,7 +39,23 @@ export async function readMeasureArg(agentId: string, raw: unknown): Promise<{ r
   if (!parsed.ok) return { error: `Error: ${parsed.error}` };
   const refused = await refusalFor(agentId, parsed.measure);
   if (refused) return { error: refused };
-  return { reading: { measure: parsed.measure, count: await countMeasure(parsed.measure, agentId, agentNameOf(agentId)), at: Date.now() } };
+  const count = await countMeasure(parsed.measure, agentId, agentNameOf(agentId));
+  // Re-review 2 (S2): a measure that reads 0 when it is set has counted nothing, so it can never show
+  // progress (a wrong folder, a pattern in the wrong case, a query that matches nothing); left standing,
+  // its 0 would read as done. Refused with the fact; never coaching.
+  if (count.ok && count.count === 0) return { error: `Error: ${MEASURE_READS_ZERO}.` };
+  return { reading: { measure: parsed.measure, count, at: Date.now() } };
+}
+
+/** The fact a measure refused at set time is told. */
+export const MEASURE_READS_ZERO = 'this measure reads 0 now, so it cannot show progress; check the folder, pattern or query';
+
+/** One gated count (re-review 2, S10): the measure's own tool gates for `agentId`, then the count. Every
+ *  count goes through here: at set (above), at a close (`remeasureTask`) and at the end of a turn
+ *  (`post-call-classify/job-turn-end.ts`), so a read that agent may no longer make is never made. */
+export async function gatedMeasureCount(m: Measure, agentId: string): Promise<MeasureCount> {
+  const refused = await refusalFor(agentId, m);
+  return refused ? { ok: false, error: refused } : countMeasure(m, agentId, agentNameOf(agentId));
 }
 
 /** A close of a measured task re-reads its measure first; the close door judges that reading.
@@ -55,9 +71,7 @@ export async function remeasureTask(_closer: string, taskId: string | null): Pro
   try { raw = JSON.parse(row.measure_json); } catch { return; }
   const parsed = parseMeasure(raw);
   if (!parsed.ok) return;
-  const owner = row.agent_id;
-  const refused = await refusalFor(owner, parsed.measure);
-  recordMeasured(taskId, refused ? { ok: false, error: refused } : await countMeasure(parsed.measure, owner, agentNameOf(owner)), Date.now());
+  recordMeasured(taskId, await gatedMeasureCount(parsed.measure, row.agent_id), Date.now());
 }
 
 /** Is this status argument a close? The status door's own reading of the word, never a second copy. */

@@ -155,6 +155,6 @@ export function recordMeasured(
 
 function appendMeasured(workId: string, count: MeasureCount, initial: number | null, at: number): void {
   appendWorkEvent(workId, MEASURED_EVENT, 'engine', count.ok
-    ? { remaining: count.count, initial, at, ok: true }
+    ? { remaining: count.count, initial, at, ok: true, ...(count.unreadable ? { unreadable: count.unreadable } : {}) }
     : { remaining: null, initial, at, ok: false, error: count.error }, at);
 }
