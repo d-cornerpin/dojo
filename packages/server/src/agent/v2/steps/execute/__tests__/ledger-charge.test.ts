@@ -15,6 +15,7 @@ vi.mock('../../../../../db/connection.js', () => ({
 }));
 
 import { countTrackerWorkThisIteration } from '../tracker-counting.js';
+import { effectsFor } from '../../../../tools/registry.js';
 import { initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import type { ExecuteContext } from '../index.js';
@@ -130,5 +131,94 @@ describe('the ledger charge', () => {
     countTrackerWorkThisIteration(stateWith(CALLS), ctxFor(CALLS), roundOf(CALLS));
     expect(ledger('claimed-old')).toEqual(['gmail:msg:failed-1', 'gmail:msg:ok-1', 'gmail:msg:ok-2']);
     expect(ledger('paused-new')).toEqual([]);
+  });
+});
+
+// v3.5 FIELD FIX 3 (#6a): on the owner's box a file-creation task was upheld on the worker's word,
+// because the ledger only knew mailbox items. The worker's file and command work now lands on the
+// SAME ledger, at the SAME seam, from the tools' own declared effects (`fs_write`, `proc`, `shell`).
+describe('v3.5 field fix 3 (#6a): the ledger learns the worker\'s file and command work', () => {
+  const detailOf = (taskId: string, key: string): string | null =>
+    (mockDb.current!.prepare('SELECT detail FROM work_ledger WHERE work_id = ? AND item_key = ?').get(taskId, key) as { detail: string | null } | undefined)?.detail ?? null;
+  const WORK: Call[] = [
+    { id: 'f1', name: 'file_write', arguments: { path: '/tmp/out/summary.md', content: 'x' } },
+    { id: 'f2', name: 'file_append', arguments: { path: '/tmp/out/log.md', content: 'y' } },
+    { id: 'f3', name: 'file_read', arguments: { path: '/tmp/out/summary.md' } },
+    { id: 'x1', name: 'exec', arguments: { argv: ['mkdir', '-p', '/tmp/out'] } },
+    { id: 'x2', name: 'shell', arguments: { script: 'ls /tmp/out | wc -l' } },
+    { id: 'x3', name: 'exec', arguments: { argv: ['false'] } },
+  ];
+  const round = (over: Record<string, Partial<RoundResult>> = {}): RoundResult[] =>
+    roundOf(WORK).map((r) => ({ ...r, ...(over[r.toolCallId] ?? {}) }));
+
+  it('files written are recorded by path, commands by their text with the exit status; a read is not', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(WORK), ctxFor(WORK), round({
+      x1: { content: '(command completed with no output)' },
+      x2: { content: 'stdout:\n3' },
+      x3: { content: 'command_failed: exit 1' },
+    }), effectsFor);
+    expect(ledger('only')).toEqual([
+      'cmd:false', 'cmd:ls /tmp/out | wc -l', 'cmd:mkdir -p /tmp/out',
+      'file:/tmp/out/log.md', 'file:/tmp/out/summary.md',
+    ]);
+    expect(detailOf('only', 'cmd:mkdir -p /tmp/out')).toBe('exit 0');
+    expect(detailOf('only', 'cmd:ls /tmp/out | wc -l')).toBe('exit 0');
+    expect(detailOf('only', 'cmd:false')).toBe('exit 1');
+    expect(detailOf('only', 'file:/tmp/out/summary.md')).toBeNull();
+  });
+
+  it('a refused command (nothing ran) and a failed write are not work done', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(WORK), ctxFor(WORK), round({
+      f1: { content: 'Error: permission denied', isError: true },
+      x1: { content: 'Error: exec takes an argv ARRAY', isError: true },
+      x2: { content: 'denied', errorCode: 'PERMISSION_DENIED' },
+      x3: { content: 'command_failed: exit 1' },
+    }), effectsFor);
+    expect(ledger('only')).toEqual(['cmd:false', 'file:/tmp/out/log.md']);
+  });
+
+  it('a re-run keeps one entry and its latest exit status', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    const once: Call[] = [{ id: 'r1', name: 'exec', arguments: { argv: ['make', 'report'] } }];
+    countTrackerWorkThisIteration(stateWith(once), ctxFor(once), [{ toolCallId: 'r1', name: 'exec', content: 'command_failed: exit 2', isError: false }], effectsFor);
+    const again: Call[] = [{ id: 'r2', name: 'exec', arguments: { argv: ['make', 'report'] } }];
+    countTrackerWorkThisIteration(stateWith(again), ctxFor(again), [{ toolCallId: 'r2', name: 'exec', content: 'stdout:\nbuilt', isError: false }], effectsFor);
+    expect(ledger('only')).toEqual(['cmd:make report']);
+    expect(detailOf('only', 'cmd:make report')).toBe('exit 0');
+  });
+});
+
+// v3.5 field fix 3, audit #5: the ledger records SENDS too (email, iMessage, SMS, phone, Teams), one
+// entry per successful send call, from the tool's own declared `send` effect, with the recipient the
+// arguments name. A send to another agent (send_to_agent, a group broadcast) is coordination, not
+// delivered work, and is not recorded.
+describe('audit #5: the ledger learns the worker\'s sends', () => {
+  const sendRows = (taskId: string): Array<{ item_key: string; tool: string; detail: string | null }> =>
+    mockDb.current!.prepare("SELECT item_key, tool, detail FROM work_ledger WHERE work_id = ? AND item_key LIKE 'send:%' ORDER BY item_key").all(taskId) as never;
+  const SENDS: Call[] = [
+    { id: 's1', name: 'gmail_send', arguments: { to: 'client@example.com', subject: 'Report', body: 'x' } },
+    { id: 's2', name: 'user_outlook_send', arguments: { to: 'boss@example.com', subject: 'y', body: 'z' } },
+    { id: 's3', name: 'gmail_reply', arguments: { message_id: 'm-9', body: 'thanks' } },
+    { id: 's4', name: 'imessage_send', arguments: { recipient: '+15550100', message: 'on my way' } },
+    { id: 's5', name: 'send_to_agent', arguments: { agent: 'pm', message: 'done' } },
+  ];
+
+  it('each successful send is one entry, with its recipient; a send to an agent is not delivered work', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(SENDS), ctxFor(SENDS), roundOf(SENDS), effectsFor);
+    expect(sendRows('only')).toEqual([
+      { item_key: 'send:s1', tool: 'gmail_send', detail: 'client@example.com' },
+      { item_key: 'send:s2', tool: 'user_outlook_send', detail: 'boss@example.com' },
+      { item_key: 'send:s3', tool: 'gmail_reply', detail: null },
+      { item_key: 'send:s4', tool: 'imessage_send', detail: '+15550100' },
+    ]);
+  });
+
+  it('a refused or failed send is not recorded', () => {
+    seedTrackerTask(mockDb.current!, { id: 'only', agentId: AGENT, status: 'in_progress' });
+    countTrackerWorkThisIteration(stateWith(SENDS), ctxFor(SENDS), roundOf(SENDS, ['s1', 's2', 's3', 's4']), effectsFor);
+    expect(sendRows('only')).toEqual([]);
   });
 });

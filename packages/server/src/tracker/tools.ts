@@ -1741,14 +1741,10 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
       status = mapped;
     }
-    // t193: the `assigned_to` side door is GONE (it moved work with no cause or ownership check).
-    // Moving is `:reassign`'s, under the row-authority cause rule; the whole call is refused.
-    if (args.assignedTo !== undefined && args.assignedTo !== null && args.assignedTo !== '') {
-      return 'Error: action="status" does not move a task to another agent, and nothing was changed. '
-        + 'Make the status change without assigned_to; to move the task, call '
-        + 'work_update(action="reassign", task_id, assigned_to, cause) with a cause '
-        + '("assignee_gone", "coordination" for your own task, or "user_requested" with user_quote).';
-    }
+    // t193: the `assigned_to` side door is GONE (it moved work with no cause or ownership check). Moving
+    // is `:reassign`'s, under the row-authority cause rule. A status call carrying `assigned_to` is now
+    // refused at the tool door by the per-operation argument check (test-2 rank 3, `WORK_OP_READS`),
+    // which replaced the one-off guard that stood here; this writer never reads an assignee.
     const priority = args.priority as string | undefined;
 
     if (!status && !priority) {
@@ -3956,7 +3952,7 @@ export async function trackerRetask(
       `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-      `Do the work the directive describes; when it is done, close it (work_update(action="status") with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
+      `Do the work the directive describes. Don't just acknowledge; do the thing.`;
     // t143 round 3 (I2): a directive, not a question — it wakes the agent and owes the PM no reply.
     redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {

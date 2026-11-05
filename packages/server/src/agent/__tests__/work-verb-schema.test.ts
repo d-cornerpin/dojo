@@ -212,11 +212,38 @@ const T262_BASELINE_CHARS = { work_open: 9478, work_update: 10075 };
 // Fix round 1: the measure says "a SET of mailbox messages" (only a mailbox can be measured) and work_open's goal
 // drops "close-out": work_open 8,407 → 8,405; work_update 10,193 → 10,180.
 const T266_BASELINE_CHARS = { work_open: 8405, work_update: 10180 };
+// ── v3.5 field fix 3, audit #5 ("done is measured" beyond Gmail): the measure object counts Outlook
+// search and a file set too. The enum is the registry's own list (+3 tools), `args` gains `path` and
+// `pattern` and loses `required: ['query']` (a file set has no query; parseMeasure requires per tool),
+// and the description names both kinds. The guard puts the post-t266 object back wherever it appears
+// (top level, each tasks[] item and each plan step) and must land on t266's bytes.
+const AUDIT5_BASELINE_CHARS = { work_open: 8922, work_update: 10531 };
+const PRE_AUDIT5_PROPERTIES = {
+  tool: { type: 'string', enum: ['gmail_search', 'user_gmail_search'] },
+  args: { type: 'object', properties: { query: { type: 'string' }, account: { type: 'string' } }, required: ['query'] },
+  unit: { type: 'string' },
+};
+const PRE_AUDIT5_MEASURE = {
+  type: 'object',
+  description: 'For a task over a SET of mailbox messages: the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" (your own mailbox) or "user_gmail_search" (the user\'s), with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it, at the end of each turn that makes progress, and when you close; your task board shows the last count.',
+  properties: PRE_AUDIT5_PROPERTIES,
+  required: ['tool', 'args'],
+};
+const PRE_AUDIT5_REF = { ...PRE_AUDIT5_MEASURE, description: WORK_MEASURE_REF_PROP.description };
+function withoutAudit5(schema: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(schema) as { properties: Record<string, unknown> };
+  type S = { properties: Record<string, unknown> } | undefined;
+  const put = (o: S, ref: boolean): void => { if (o?.properties.measure) o.properties.measure = structuredClone(ref ? PRE_AUDIT5_REF : PRE_AUDIT5_MEASURE); };
+  put(out, false);
+  put((out.properties.tasks as { items?: S } | undefined)?.items, true);
+  put(((out.properties.plan as { properties: Record<string, unknown> } | undefined)?.properties.steps as { items?: S } | undefined)?.items, true);
+  return out;
+}
 const PRE_T266_TASKS_TEXT = 'Project only. REQUIRED for kind="project": at least one task. The engine refuses project creation with zero tasks, a project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with work_open(kind="task", project_id=…) as the shape clarifies.';
 const PRE_T266_MEASURE = {
   ...WORK_MEASURE_PROP,
   description: 'For a task over a SET of items (messages, files, rows): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it and again when you close; your task board shows the last count.',
-  properties: { ...(WORK_MEASURE_PROP.properties as Record<string, unknown>), tool: { type: 'string', enum: ['gmail_search'] } },
+  properties: { ...PRE_AUDIT5_PROPERTIES, tool: { type: 'string', enum: ['gmail_search'] } },
 };
 type Schema = { properties: Record<string, unknown> };
 function withoutT266(schema: Record<string, unknown>): Record<string, unknown> {
@@ -249,14 +276,20 @@ function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const openWire = schemaOf('work_open');
   const updWire = schemaOf('work_update');
-  const openNow = withoutT266(openWire);
-  const updNow = withoutT266(updWire);
+  const openNow = withoutT266(withoutAudit5(openWire));
+  const updNow = withoutT266(withoutAudit5(updWire));
   const open = withoutT250(withoutT262(openNow));
   const upd = withoutT250(updNow);
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
-    expect(JSON.stringify(openWire).length).toBe(T266_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(updWire).length).toBe(T266_BASELINE_CHARS.work_update);
+    expect(JSON.stringify(openWire).length).toBe(AUDIT5_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(updWire).length).toBe(AUDIT5_BASELINE_CHARS.work_update);
+  });
+
+  it('audit #5: the measure object is the whole delta, and nothing else moved', () => {
+    expect(JSON.stringify(withoutAudit5(openWire)).length).toBe(T266_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(withoutAudit5(updWire)).length).toBe(T266_BASELINE_CHARS.work_update);
+    expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search', 'user_gmail_search', 'outlook_search', 'user_outlook_search', 'file_list']);
   });
 
   it('t266 — the measure words are the whole delta, and nothing else moved', () => {
@@ -266,7 +299,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(po.measure).toBe(WORK_MEASURE_PROP);
     expect((updWire as Schema).properties.measure).toBe(WORK_MEASURE_PROP);
     expect(((po.tasks as { items: Schema }).items.properties.measure)).toBe(WORK_MEASURE_REF_PROP);
-    expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search', 'user_gmail_search']);
+    expect(PRE_AUDIT5_PROPERTIES.tool.enum).toEqual(['gmail_search', 'user_gmail_search']);   // t266's enum, on the pre-audit-5 view
     expect(String(WORK_MEASURE_PROP.description)).toContain('at the end of each turn that makes progress');
     expect(WORK_MEASURE_REF_PROP.properties).toBe(WORK_MEASURE_PROP.properties);
     expect((po.tasks as { description: string }).description).toBe('Project only. Optional: tasks of your own. Leave it out and the engine makes one task per plan step; if you pass it, give exactly one task per plan step, in step order.');

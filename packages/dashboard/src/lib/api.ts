@@ -1154,17 +1154,25 @@ export const createProject = async (data: CreateProjectRequest): Promise<ApiResp
   });
 };
 
+/** Re-review 2 (S4): the finished tasks come a page at a time. `closedBefore` + `closedBeforeId` (the
+ *  oldest finished task held) asks for the page before; the answer's `closedHasOlder` says one exists. */
 export const getTasks = async (filter?: {
   status?: string;
   assignedTo?: string;
   priority?: string;
   projectId?: string;
-}): Promise<ApiResponse<TasksListResponse>> => {
+  closedBefore?: string;
+  closedBeforeId?: string;
+}): Promise<ApiResponse<TasksListResponse> & { closedHasOlder?: boolean }> => {
   const params = new URLSearchParams();
   if (filter?.status) params.set('status', filter.status);
   if (filter?.assignedTo) params.set('assignedTo', filter.assignedTo);
   if (filter?.priority) params.set('priority', filter.priority);
   if (filter?.projectId) params.set('projectId', filter.projectId);
+  if (filter?.closedBefore && filter?.closedBeforeId) {
+    params.set('closedBefore', filter.closedBefore);
+    params.set('closedBeforeId', filter.closedBeforeId);
+  }
   const query = params.toString();
   return request<TasksListResponse>(`/tracker/tasks${query ? `?${query}` : ''}`);
 };

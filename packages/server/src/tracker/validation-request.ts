@@ -27,13 +27,15 @@ export interface ValidationRequestParts {
   headExtras: string;
   /** The evidence lines, the closer's last note and the delivered-answer pointer. */
   evidenceBlock: string;
+  /** The room this row's ledger listing may take (review M1, `reviewLedgerRoomTokens`). */
+  ledgerRoomTokens?: number;
 }
 
 export function unvalidatedCompleteText(taskId: string, p: ValidationRequestParts): string {
   return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) closed by ${p.agentName}, awaiting your validation.${p.headExtras}\n`
     + `  Goal: ${p.goal ?? '(no goal recorded, pre-migration row)'}\n`
     + `  Result: ${p.result ?? '(none)'}\n`
-    + `  Evidence:\n${p.evidenceBlock}${validationMeasureLines(taskId)}${ownerWordsLines(taskId)}\n`
+    + `  Evidence:\n${p.evidenceBlock}${validationMeasureLines(taskId, p.ledgerRoomTokens)}${ownerWordsLines(taskId)}\n`
     + `  Priority=${p.priority}, revert_count=${p.revertCount}.\n`
     + `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). `
     + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true) when the work demonstrably matches the goal. `
@@ -41,6 +43,8 @@ export function unvalidatedCompleteText(taskId: string, p: ValidationRequestPart
     + `A measured task: validate when the measure reads 0, or when the named remainder's reason holds against the goal; reject and state the count when it does not; `
     + `when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker's reason. `
     + `An unmeasured task: judge the ledger and receipts above, not the result text. `
-    + `A task whose job is a decision (nothing to file or send) is delivered when the owner's recorded words or the recorded answer above settle it; the agent's own notes quoting the owner do not count. `
-    + `With no such record and nothing touched, reject it.`;
+    + `A task whose job is a decision (nothing to file or send) is delivered when the owner's recorded words or the recorded answer above settle it; the agent's own notes quoting the owner do not count.`;
+  // v3.5 field fix 3 (#6b): "With no such record and nothing touched, reject it." stood here, a
+  // prompt-only rule the PM broke on the owner's box. The engine enforces it now, at the PM's door
+  // (`tracker/empty-uphold.ts`), so the sentence is gone rather than kept beside the gate.
 }

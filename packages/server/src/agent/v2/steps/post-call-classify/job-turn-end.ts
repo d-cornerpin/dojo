@@ -25,7 +25,7 @@
 
 import type { Database } from 'better-sqlite3';
 import { taskScope } from '../../../../work/tracker-view.js';
-import { countMeasure, parseMeasure, type Measure } from '../../../../work/measure.js';
+import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
 import { jobCarriedIds, runCarriesJob } from '../../../../work/task-freshness.js';
 import { lastTurnEnd } from '../../../../work/job-momentum.js';
@@ -90,7 +90,10 @@ export async function readJobAtPassEnd(state: AgentTurnState, ctx: Pick<PostCall
   if (hit?.key === passKey(state)) return hit.facts;
   const facts = storedFacts(state, ctx.agentId, ctx.db);
   if (facts?.measure && facts.momentum && ctx.result.toolCalls.length === 0) {
-    const count = await countMeasure(facts.measure, ctx.agentId, ctx.agent.name ?? ctx.agentId);
+    // Re-review 2 (S10): the same gates as at set and at close. Loaded here, not at import, so this step
+    // takes no module edge onto the tool layer.
+    const { gatedMeasureCount } = await import('../../../tools/cat/measure-door.js');
+    const count = await gatedMeasureCount(facts.measure, ctx.agentId);
     recordMeasured(facts.taskId, count, Date.now(), { keepStoredOnFailure: true });
     if (count.ok) facts.remaining = count.count;
   }

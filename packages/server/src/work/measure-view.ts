@@ -8,7 +8,7 @@
 // view). The two model-authored terms (the query and the unit) are cut at the board's title width
 // when the view cannot hold them whole, like every other term the board does not author.
 import { getDb } from '../db/connection.js';
-import { parseMeasure, describeMeasure, type Measure } from './measure.js';
+import { parseMeasure, describeMeasure, measureSubject, type Measure } from './measure.js';
 import { ledgerTotals } from './ledger-store.js';
 import { recordedInstant } from '../memory/message-stamp.js';
 
@@ -42,7 +42,8 @@ export function formatMeasureLine(f: MeasureFacts, termWidth = Infinity): string
     return `Progress: ${n(f.touched)} items touched (no measure set — set one with work_update(action="edit", measure=…) if this task covers a set of mailbox messages)`;
   }
   const unit = cut(f.measure.unit, termWidth);
-  const head = `Progress: ${n(f.touched)} ${unit} touched; measure ${f.measure.tool} "${cut(f.measure.args.query, termWidth)}"`;
+  const subject = f.measure.args.query !== undefined ? `"${cut(f.measure.args.query, termWidth)}"` : cut(measureSubject(f.measure), termWidth);
+  const head = `Progress: ${n(f.touched)} ${unit} touched; measure ${f.measure.tool} ${subject}`;
   const start = f.initial === null ? '?' : n(f.initial);
   if (f.remaining === null) return `${head} could not be read at ${recordedInstant(f.at)} (${start} at start)`;
   return `${head} returned ${n(f.remaining)} remaining (of ${start} at start), measured ${recordedInstant(f.at)}`;

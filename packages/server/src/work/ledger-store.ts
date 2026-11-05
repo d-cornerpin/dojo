@@ -5,8 +5,20 @@
 // The ledger is written by the engine from the agent's successful mutation calls
 // (agent/v2/steps/execute/tracker-counting.ts, beside the effort charge), never by the model.
 // One row per (task, item): a re-touch moves `last_at`, so COUNT(*) is "distinct items touched".
+//
+// v3.5 field fix 3 (#6a): the same ledger holds the worker's file and command work, so a task done
+// in files and shell has a structural record too. A file it wrote is an item ("file:<path>"). A
+// command it ran ("cmd:<command>", with its exit status in `detail`, migration 211) is a RECORD of
+// the work and never an item: a command is as often a read (`ls`, `cat`) as a change, so the
+// measured-job readers below (momentum, "touched", the stall check) count items only.
 import { getDb } from '../db/connection.js';
-import { itemKeysOf } from '../tools/item-keys.js';
+import { itemKeysOf, sendRecipientsOf, COMMAND_KEY, SEND_KEY } from '../tools/item-keys.js';
+import { IS_ITEM } from './ledger-read.js';
+import { redactHandedCredentials } from '../credentials/secret-values.js';
+// The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
+// spine imports, so they must not pull this file's provider imports); re-exported here for the callers.
+export { ledgerTotals, ledgerWorkEntries, type LedgerWorkEntry } from './ledger-read.js';
+import type { ToolEffect } from '../agent/tools/types.js';
 import { appliedKeysOf } from '../google/gmail-label.js';
 import { appendWorkEvent } from './store.js';
 import type { WorkEventKind } from './event-kinds.js';
@@ -16,23 +28,24 @@ import type { Measure, MeasureCount } from './measure.js';
  *  so a reading is a record and never reads as the task moving (`taskMovedAtSql`). */
 export const MEASURED_EVENT = 'measured' as const satisfies WorkEventKind;
 
-/** Record the items a call touched for a task. Returns the rows inserted or touched. */
-export function recordTouched(workId: string, tool: string, keys: string[], at: number = Date.now()): number {
+/** Record the items a call touched for a task. Returns the rows inserted or touched. `detail`: a
+ *  command's exit status (the newest run's), null for everything else. */
+export function recordTouched(workId: string, tool: string, keys: string[], at: number = Date.now(), detail: string | null = null): number {
   if (keys.length === 0) return 0;
   const db = getDb();
   const stmt = db.prepare(
-    `INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(work_id, item_key) DO UPDATE SET last_at = excluded.last_at, tool = excluded.tool`,
+    `INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at, detail) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(work_id, item_key) DO UPDATE SET last_at = excluded.last_at, tool = excluded.tool, detail = excluded.detail`,
   );
-  db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at); })(keys);
+  db.transaction((ks: string[]) => { for (const k of ks) stmt.run(workId, k, tool, at, at, detail); })(keys);
   return keys.length;
 }
 
-export function ledgerTotals(workId: string): { touched: number; lastAt: number | null; byTool: Array<{ tool: string; n: number }> } {
-  const db = getDb();
-  const t = db.prepare('SELECT COUNT(*) AS n, MAX(last_at) AS last FROM work_ledger WHERE work_id = ?').get(workId) as { n: number; last: number | null };
-  const byTool = db.prepare('SELECT tool, COUNT(*) AS n FROM work_ledger WHERE work_id = ? GROUP BY tool ORDER BY n DESC, tool').all(workId) as Array<{ tool: string; n: number }>;
-  return { touched: t.n, lastAt: t.last, byTool };
+/** A command's exit status, from the head of its result: the process runner (`agent/tools/process-run.ts`)
+ *  leads a failed run with "command_failed: <reason>" and writes nothing of the kind on a clean exit. */
+function exitStatusOf(content: string): string {
+  const m = /^command_failed: ([^\n]+)/.exec(content);
+  return m ? m[1].trim() : 'exit 0';
 }
 
 /** One of THIS round's tool results, as the executor hands them to the count (`turnToolResults`). */
@@ -57,31 +70,55 @@ export function recordCallsTouched(
   workId: string,
   calls: ReadonlyArray<{ id: string; name: string; arguments?: Record<string, unknown> }>,
   roundResults: ReadonlyArray<RoundResult>,
+  /** Each tool's declared effects (`agent/tools/registry.ts` `effectsFor`), for its file and command work. */
+  effectsOf: (toolName: string) => readonly ToolEffect[] | undefined,
+  /** The agent that made the calls: whose handed credentials are scrubbed from every key and detail. */
+  agentId: string,
 ): void {
   const ok = succeededIn(roundResults);
+  // Review H3 (architecture rule 6): a command or a path can carry a credential the agent was handed
+  // (the model sees the real value), so every key and every detail goes through the tree's ONE
+  // redactor before it is written, exactly as the process audit row does (`agent/tools/util.ts:88`).
+  // The request and the verdict record read the ledger, so they only ever see the redacted form.
+  const safe = (k: string): string => redactHandedCredentials(agentId, k);
   for (const tc of calls) {
     if (ok(tc)) {
-      const keys = itemKeysOf(tc.name, tc.arguments ?? {});
-      if (keys.length > 0) recordTouched(workId, tc.name, keys);
+      const keys = [...new Set(itemKeysOf(tc.name, tc.arguments ?? {}, effectsOf(tc.name) ?? []).map(safe))];
+      const commands = keys.filter((k) => k.startsWith(COMMAND_KEY));
+      const items = keys.filter((k) => !k.startsWith(COMMAND_KEY));
+      if (items.length > 0) recordTouched(workId, tc.name, items);
+      if (commands.length > 0) {
+        const r = roundResults.find((x) => x.toolCallId === tc.id);
+        recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(r?.keptWhole ?? r?.content ?? '')));
+      }
+      // Audit #5: a successful send to a person is one delivery on the ledger, keyed by its call,
+      // with the recipient(s) its arguments name (redacted like every other entry).
+      const to = sendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []);
+      if (to !== undefined) recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), to ? safe(to.join(', ')) : null);
       continue;
     }
     const r = roundResults.find((x) => x.toolCallId === tc.id);
     if (!r?.isError || base(tc.name) !== 'gmail_label') continue;
     const applied = appliedKeysOf(r.keptWhole ?? r.content ?? '');
-    if (applied && applied.length > 0) recordTouched(workId, tc.name, applied);
+    if (applied && applied.length > 0) recordTouched(workId, tc.name, applied.map(safe));
   }
 }
 
 /** Distinct items touched (or re-touched) after `sinceMs`. */
 export function ledgerTouchedSince(workId: string, sinceMs: number): number {
-  return (getDb().prepare('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND last_at > ?').get(workId, sinceMs) as { n: number }).n;
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND last_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
 }
 
 /** v3.5 D1: items this task touched for the FIRST time after `sinceMs`. The turn end's momentum reads
  *  this, not `ledgerTouchedSince`: re-touching what the task already touched is not progress, so a
  *  loop over the same items cannot keep a job continuing (`post-call-classify/job-continues.ts`). */
 export function ledgerNewItemsSince(workId: string, sinceMs: number): number {
-  return (getDb().prepare('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ?').get(workId, sinceMs) as { n: number }).n;
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
+}
+
+/** When the task last touched an ITEM for the first time (0 when never): the continued-job fact's anchor. */
+export function ledgerLastNewItemAt(workId: string): number {
+  return (getDb().prepare(`SELECT MAX(first_at) AS at FROM work_ledger WHERE work_id = ? AND ${IS_ITEM}`).get(workId) as { at: number | null }).at ?? 0;
 }
 
 /** Store a reading of the task's measure. `remaining` null = the measure could not be read at `at`;
@@ -95,12 +132,30 @@ export function writeMeasured(workId: string, remaining: number | null, at: numb
 }
 
 /** A measure is SET on a task (open, or an edit: a new measure is a new scope), with its first reading. */
-export function setMeasure(workId: string, measure: Measure, count: MeasureCount, at: number): void {
+/**
+ * Re-review 3 (M4): a count that could not read every folder it covers is NO READING for any close. The
+ * files still to do may sit exactly in the folder it could not read (a revoked permission, an offline
+ * volume), so its number is a lower bound and a 0 from it would read as done. The task's row therefore
+ * stores it as a reading that could not be made; the event keeps the partial number and the folders,
+ * named, for display.
+ */
+export function readingForClose(count: MeasureCount): MeasureCount {
+  if (!count.ok || !count.unreadable || count.unreadable.length === 0) return count;
+  const n = count.unreadable.length;
+  return {
+    ok: false,
+    error: `${n} ${n === 1 ? 'folder' : 'folders'} could not be read (${count.unreadable.join(', ')}); `
+      + `${count.count} counted in the folders that could be read`,
+  };
+}
+
+export function setMeasure(workId: string, measure: Measure, raw: MeasureCount, at: number): void {
+  const count = readingForClose(raw);
   const n = count.ok ? count.count : null;
   getDb().prepare(
     'UPDATE work SET measure_json = ?, measure_initial = ?, measure_remaining = ?, measure_at = ? WHERE id = ?',
   ).run(JSON.stringify(measure), n, n, at, workId);
-  appendMeasured(workId, count, n, at);
+  appendMeasured(workId, count, n, at, raw.ok && raw.unreadable?.length ? { partial: raw.count, unreadable: raw.unreadable } : null);
 }
 
 /** A task's measure was re-read. `remaining` null on the row = it could not be read at `at`. The
@@ -110,16 +165,21 @@ export function setMeasure(workId: string, measure: Measure, count: MeasureCount
  *  the close gate read that row, and one failed sweep must not end the job or free a close. The
  *  close door's re-read never passes it: NULL there is the ruling (an outage never refuses a close). */
 export function recordMeasured(
-  workId: string, count: MeasureCount, at: number, opts?: { keepStoredOnFailure?: boolean },
+  workId: string, raw: MeasureCount, at: number, opts?: { keepStoredOnFailure?: boolean },
 ): void {
+  const count = readingForClose(raw);
+  const partial = raw.ok && raw.unreadable?.length ? { partial: raw.count, unreadable: raw.unreadable } : null;
   const row = getDb().prepare('SELECT measure_initial FROM work WHERE id = ?').get(workId) as { measure_initial: number | null } | undefined;
   const initial = row?.measure_initial ?? (count.ok ? count.count : null);
   if (count.ok || !opts?.keepStoredOnFailure) writeMeasured(workId, count.ok ? count.count : null, at, initial ?? undefined);
-  appendMeasured(workId, count, initial, at);
+  appendMeasured(workId, count, initial, at, partial);
 }
 
-function appendMeasured(workId: string, count: MeasureCount, initial: number | null, at: number): void {
+function appendMeasured(
+  workId: string, count: MeasureCount, initial: number | null, at: number,
+  partial: { partial: number; unreadable: string[] } | null = null,
+): void {
   appendWorkEvent(workId, MEASURED_EVENT, 'engine', count.ok
     ? { remaining: count.count, initial, at, ok: true }
-    : { remaining: null, initial, at, ok: false, error: count.error }, at);
+    : { remaining: null, initial, at, ok: false, error: count.error, ...(partial ?? {}) }, at);
 }

@@ -11,7 +11,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { createWorkTable, seedTrackerTask } from './work-fixture.js';
-import { recordTouched, ledgerTotals, ledgerTouchedSince, writeMeasured } from '../ledger-store.js';
+import { recordTouched, ledgerTotals, ledgerTouchedSince, ledgerNewItemsSince, ledgerWorkEntries, writeMeasured } from '../ledger-store.js';
 
 const TASK = 'task-ledger-1';
 
@@ -37,7 +37,7 @@ describe('work_ledger', () => {
   it('is per task, and an empty key list writes nothing', () => {
     recordTouched(TASK, 'gmail_label', ['gmail:msg:a'], 1000);
     expect(recordTouched('other-task', 'gmail_label', [], 1000)).toBe(0);
-    expect(ledgerTotals('other-task')).toEqual({ touched: 0, lastAt: null, byTool: [] });
+    expect(ledgerTotals('other-task')).toEqual({ touched: 0, commands: 0, lastAt: null, byTool: [] });
   });
   it('writeMeasured stores the reading, and null when it could not be read', () => {
     writeMeasured(TASK, 10412, 5000, 10551);
@@ -59,5 +59,31 @@ describe('a touch is movement', () => {
     // Another task's touch is not this task moving.
     recordTouched('other-task', 'gmail_label', ['gmail:msg:z'], 1_700_009_000_000);
     expect(movedAt()).toBe(1_700_000_900_000);
+  });
+});
+
+// v3.5 FIELD FIX 3 (#6a): a command run is on the ledger as a RECORD of the work, not as an item.
+// A command is often a read (`ls`, `cat`), so the measured-job momentum readers count items only:
+// a chain of continuations that only ever runs new reads is still a job touching nothing.
+describe('v3.5 field fix 3 (#6a): files and commands on the ledger', () => {
+  it('a file written is an item; a command is counted apart and never as momentum', () => {
+    recordTouched(TASK, 'file_write', ['file:/tmp/a.md'], 1000);
+    recordTouched(TASK, 'exec', ['cmd:ls /tmp'], 1000, 'exit 0');
+    recordTouched(TASK, 'shell', ['cmd:cat /tmp/a.md'], 2000, 'exit 1');
+    const t = ledgerTotals(TASK);
+    expect(t.touched).toBe(1);
+    expect(t.commands).toBe(2);
+    expect(t.byTool).toEqual([{ tool: 'file_write', n: 1 }]);
+    expect(ledgerNewItemsSince(TASK, 500)).toBe(1);
+    expect(ledgerTouchedSince(TASK, 1500)).toBe(0);
+  });
+  it('lists the file and command entries with their status, oldest first; mailbox items are counted, not listed', () => {
+    recordTouched(TASK, 'gmail_label', ['gmail:msg:a'], 500);
+    recordTouched(TASK, 'file_write', ['file:/tmp/a.md'], 1000);
+    recordTouched(TASK, 'exec', ['cmd:mkdir -p /tmp/x'], 900, 'exit 0');
+    expect(ledgerWorkEntries(TASK)).toEqual([
+      { kind: 'command', what: 'mkdir -p /tmp/x', tool: 'exec', status: 'exit 0' },
+      { kind: 'file', what: '/tmp/a.md', tool: 'file_write', status: null },
+    ]);
   });
 });

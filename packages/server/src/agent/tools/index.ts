@@ -78,7 +78,8 @@ import { validateToolArgs } from './validate-args.js';
 import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated, getAllToolDefinitions } from './definitions.js';
 import { getFilteredTools, getAgentDenySet } from './surface.js';
 import { describeNameFailure } from '../../tools/name-help.js';
-import { allUnknownArgsRefusal } from './unknown-args-refusal.js';
+import { allUnknownArgsRefusal, unreadArgsRefusal } from './unknown-args-refusal.js';
+import { unreadWorkArgs, type WorkOp } from '../../tools/work-verbs.js';
 import { handlerFor } from './handlers.js';
 // The registration LOOP over `toolDefinitions` travelled to the definitions
 // leaf with the array it projects; this file keeps only the cap's READER,
@@ -148,17 +149,20 @@ const MS_READ_TOOL_NAMES = new Set(microsoftReadToolDefinitions.map(t => t.name)
 export function unknownArgsAgainstSchema(
   name: string,
   args: Record<string, unknown> | undefined,
-): { declared: ReadonlySet<string> | null; extras: string[] } {
+): { declared: ReadonlySet<string> | null; extras: string[]; unread: string[]; op: WorkOp | null } {
   const def = toolDefinitionsByName().get(name);
   if (!def || !def.input_schema || typeof def.input_schema !== 'object') {
-    return { declared: null, extras: [] };
+    return { declared: null, extras: [], unread: [], op: null };
   }
   const schema = def.input_schema as { properties?: Record<string, unknown> };
   const declared = new Set(Object.keys(schema.properties ?? {}));
   const extras = Object.keys(args ?? {}).filter(
     (k) => !k.startsWith('__') && !declared.has(k),
   );
-  return { declared, extras };
+  // v3.5 field fix 3, test-2 rank 3: the same check PER OPERATION for the multi-action verbs. A
+  // DECLARED argument the operation this call resolves to does not read is `unread`.
+  const { op, unread } = unreadWorkArgs(name, args, declared);
+  return { declared, extras, unread, op };
 }
 
 // ── Tool Execution ──
@@ -307,7 +311,13 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   // agent (and through it, the user) finds out.
   let unknownArgsWarning: string | null = null;
   try {
-    const { declared, extras } = unknownArgsAgainstSchema(name, args);
+    const { declared, extras, unread, op } = unknownArgsAgainstSchema(name, args);
+    // Test-2 rank 3: an argument the chosen operation does not read is never silently dropped. The
+    // whole call is refused before anything runs (the call's other effects were premised on it).
+    if (op && unread.length > 0) {
+      logger.warn('Tool call refused: declared args its operation does not read', { tool: name, op, unread }, agentId);
+      return { toolCallId: id, name, content: unreadArgsRefusal(op, unread), isError: true, errorCode: 'UNKNOWN_ARGS' };
+    }
     if (declared) {
       if (extras.length > 0) {
         // A tool the handler is ABOUT to refuse as not-available must not lead
@@ -668,3 +678,7 @@ export function resultViewChars(toolName: string, content: string, isError = fal
   const ownPage = OWN_PAGE_TRAILERS.some((re) => re.test(tail));
   return Math.min(declared * CHARS_PER_TOKEN * (ownPage ? 2 : 1), TOOL_RESULT_VIEW_CHARS);
 }
+
+// v3.5 field fix 3 (#6a): each tool's declared effects, for the executor's ledger charge. LAST in the file on
+// purpose: `gates.js` above already loads the registry, so this re-export never moves evaluation order.
+export { effectsFor } from './registry.js';

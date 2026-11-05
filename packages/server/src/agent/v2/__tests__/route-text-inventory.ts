@@ -447,7 +447,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/work-verb-schema.ts",
-  "line": "description: 'For a task over a SET of mailbox messages: the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool=\"gmail_search\" (your own mailbox) or \"user_gmail_search\" (the user\\'s), with args.query (optionally args.account) and unit=\"messages\". Write the query so it SHRINKS as you work (e.g. \"in:inbox -label:Sorted\"), never one that stays constant. The engine counts it when you set it, at the end of each turn that makes progress, and when you close; your task board shows the last count.',",
+  "line": "description: 'For a task over a SET of items (mailbox messages, or files in a folder): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Mail: tool=\"gmail_search\" or \"outlook_search\" (your own mailbox), \"user_gmail_search\" or \"user_outlook_search\" (the user\\'s), with args.query (optionally args.account) and unit=\"messages\". Files: tool=\"file_list\" with args.path (the folder) and args.pattern (the files still to do there, e.g. \"*.pdf\"; \"**\" reaches into subfolders) and unit=\"files\". Write it so it SHRINKS as you work (e.g. \"in:inbox -label:Sorted\", or the folder the unfiled files sit in), never one that stays constant. The engine counts it when you set it, at the end of each turn that makes progress, and when you close; your task board shows the last count.',",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -1642,7 +1642,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "tools/categories.ts",
-  "line": "lines.push('- **Keep the tracker true.** When a task is done, close it with its result (`work_update(action=\"complete_step\")` in a multi-step project, `work_update(action=\"status\", status=\"complete\")` otherwise). Waiting on the user → `paused`; stuck on something they do not know → `blocked`. A project no longer wanted (a duplicate, superseded) → `work_update(action=\"close_project\", project_id, status=\"cancelled\", reason=\"…\")`, which closes it and its open tasks in one call. Work still going stays `in_progress`; at the start of a turn nobody is waiting on, the engine asks for one tracker call saying where stale work stands before other tools run.');",
+  "line": "lines.push('- **Keep the tracker true.** Waiting on the user → `paused`; stuck on something they do not know → `blocked`. A project no longer wanted (a duplicate, superseded) → `work_update(action=\"close_project\", project_id, status=\"cancelled\", reason=\"…\")`, which closes it and its open tasks in one call. Work still going stays `in_progress`; at the start of a turn nobody is waiting on, the engine asks for one tracker call saying where stale work stands before other tools run.');",
   "reason": "static tool guidance or a fact about who created a row ('created by the user'), not a recipient"
  },
  {

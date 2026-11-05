@@ -297,7 +297,7 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first, it reads the actual chat history from your messages table and is your fastest path back to context.');
     lines.push('- **When sharing a URL or file path with the person you are talking to**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\'t have the full string, call the source tool again.');
     lines.push('- **Default ON tracker for any work that isn\'t a one-shot lookup.** Open `work_open(kind="project")` BEFORE starting work on **any** request that has a deliverable, requires multiple steps, or could take more than ~3 tool calls. Don\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss (compaction summarizes older turns, you write the deliverable from your own summarized memory, and confabulate). Tracker rows survive compaction AND session reset; scratchpad survives compaction but NOT reset; raw context survives neither. **Cost of opening a tracker entry you didn\'t end up needing: zero. Cost of not opening one for work that turns out to be multi-step: 30+ minutes of stalled work, PM pokes, and lost context.** Skip the tracker only for one-shot Q&A where you\'re answering from existing context or a single tool call. After opening the tracker: scaffold the deliverable with `file_write`; loop (read 3-5 sources, write findings with `file_append`/`file_patch`, update `scratchpad_set` for in-flight memory, mark the step complete, move on); verify at the end. The engine backstops this: after ~4 work calls with no tracker entry you get a reminder, and at 6+ the engine opens a task for you automatically (nothing is ever refused). Better to open it yourself first with a real title and a plan (the approach, and each step: what, how, and how you will know it is done).');
-    lines.push('- **Keep the tracker true.** When a task is done, close it with its result (`work_update(action="complete_step")` in a multi-step project, `work_update(action="status", status="complete")` otherwise). Waiting on the user → `paused`; stuck on something they do not know → `blocked`. A project no longer wanted (a duplicate, superseded) → `work_update(action="close_project", project_id, status="cancelled", reason="…")`, which closes it and its open tasks in one call. Work still going stays `in_progress`; at the start of a turn nobody is waiting on, the engine asks for one tracker call saying where stale work stands before other tools run.');
+    lines.push('- **Keep the tracker true.** Waiting on the user → `paused`; stuck on something they do not know → `blocked`. A project no longer wanted (a duplicate, superseded) → `work_update(action="close_project", project_id, status="cancelled", reason="…")`, which closes it and its open tasks in one call. Work still going stays `in_progress`; at the start of a turn nobody is waiting on, the engine asks for one tracker call saying where stale work stands before other tools run.');
     lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC, and getting every downstream time wrong by 7+ hours.');
     lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only, the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own**, when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely, those stay open to every agent.');
   }
@@ -320,10 +320,6 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
 
   // Track which tools we've listed so we can report any uncategorized at the end
   const listed = new Set<string>();
-  // T80b: true once ANY category line below had to fall back to a `user_`
-  // twin because the canonical name was withheld. Selects which
-  // "User-account variants" sentence renders further down.
-  let anyCategorySubstituted = false;
 
   for (const category of TOOL_CATEGORIES) {
     // T80b substitution rule (was: `category.tools.filter(name =>
@@ -344,7 +340,6 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
         const userTwin = `user_${canonical}`;
         if (toolMap.has(userTwin)) {
           rendered.push(userTwin);
-          anyCategorySubstituted = true;
         }
       }
     }
@@ -377,18 +372,21 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   const trueOther = uncategorized.filter(t => !isMirroredUserVariant(t.name));
 
   if (mirroredUserVariants.length > 0) {
-    // "every ... tool above also has a twin" is only true when nothing
-    // above was substituted (every line above is genuinely canonical). The
-    // instant a category fell back to a `user_` name, that blanket claim
-    // stops being true for it, so the sentence is reworded to describe only
-    // what it still covers. Unsubstituted branch stays byte-identical to
-    // pre-T80b output — a full-access agent always takes it (cache-prefix
-    // gate, PRESERVE 3(a)).
-    if (!anyCategorySubstituted) {
-      lines.push(`**User-account variants (${mirroredUserVariants.length}):** every Gmail / Google / Microsoft tool above also has a \`user_\`-prefixed twin (e.g. \`user_gmail_send\`, \`user_calendar_create\`, \`user_outlook_inbox\`) that acts on the OWNER's personal account instead of your agent account. Call \`load_tool_docs\` on the \`user_\` name exactly as you would the base tool.`);
-    } else {
-      lines.push(`**User-account variants (${mirroredUserVariants.length}):** where a category above shows a canonical name, it also has a \`user_\`-prefixed twin (e.g. \`user_gmail_send\`, \`user_calendar_create\`, \`user_outlook_inbox\`) that acts on the OWNER's personal account instead of your agent account — call \`load_tool_docs\` on the \`user_\` name exactly as you would the base tool. Where a category above already shows a \`user_\`-prefixed name, that IS the tool you hold; it has no further twin.`);
+    // v3.5 field fix 3, test-2 rank 7: the held twins are NAMED, literally, never covered by a pattern
+    // sentence with three examples. The owner's field test: an agent holding both forms concluded
+    // `user_gmail_list_labels` "doesn't appear to exist" because the index never printed it. Order is
+    // the categories' DECLARED order (category by category, name by name), so the line is a function of
+    // the held names only: stable, sorted the same way every time, nothing volatile. This replaces both
+    // pattern sentences (the "every ... tool above" one and its T80b rewording).
+    const held = new Set(mirroredUserVariants.map((t) => t.name));
+    const ordered: string[] = [];
+    for (const category of TOOL_CATEGORIES) {
+      for (const canonical of category.tools) {
+        const twin = `user_${canonical}`;
+        if (held.has(twin) && !ordered.includes(twin)) ordered.push(twin);
+      }
     }
+    lines.push(`**User-account variants (${ordered.length}):** these act on the OWNER's personal account instead of your agent account, each the twin of the tool above with the same name after \`user_\`. Call \`load_tool_docs\` on the \`user_\` name exactly as you would the base tool: ${ordered.map((n) => `\`${n}\``).join(', ')}`);
     lines.push('');
   }
   if (trueOther.length > 0) {

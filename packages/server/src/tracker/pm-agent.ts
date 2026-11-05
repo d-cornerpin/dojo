@@ -1,6 +1,8 @@
 import { closeoutReceipts } from './closeout-receipts.js';
 import { unvalidatedCompleteText } from './validation-request.js';
-import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText } from './job-loop-facts.js';
+import { keepLedgerShownFor, noteAnswerShown } from './request-shown.js';
+import { currentTurnNumber } from '../agent/v2/turn-record.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -39,7 +41,7 @@ import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation, pokesSentThisCycle } from '../work/poke-ladder.js';
 import { holdLadder, resumeLadder, heldMsSince } from '../work/ladder-clock.js';
 import { patienceFloorFor, flooredThresholds, type PokeThresholds } from './assignee-patience.js';
-import { getAgentRuntime } from '../agent/runtime.js';
+import { getAgentRuntime, type RunOutcome } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
 import {
   deleteAgentDebrisBefore,
@@ -845,6 +847,9 @@ export interface ValidationCoverageInput {
   /** Read back AFTER the review turn: the ids that still await Key 2. */
   readonly stillAwaiting: ReadonlySet<string>;
   readonly nowMs: number;
+  /** What `handleMessage` did with the report (v3.5 field fix 3, #4). Only a turn that RAN can have
+   *  missed a row; a queued one has not happened yet. Omitted = 'ran' (the pure callers). */
+  readonly turn?: RunOutcome;
 }
 
 export interface ValidationCoverage {
@@ -854,6 +859,9 @@ export interface ValidationCoverage {
   readonly anyPastOwnerBound: boolean;
   /** Ask again on the next tick — the dedup must not swallow an unruled row. */
   readonly reReview: boolean;
+  /** Rows to put back on the doorbell: the review's turn was queued behind a run in flight, so the
+   *  next review (after that queued turn) carries them and judges coverage against a turn that ran. */
+  readonly carryForward: ReadonlyArray<string>;
 }
 
 /**
@@ -890,7 +898,24 @@ function idsStillAwaitingKeyTwo(ids: readonly string[]): Set<string> {
   }
 }
 
+/** Review round 2 (R5): ONE miss per row per real PM turn. Two reviews queued behind one busy run are both
+ *  judged on the same turn, and the second must not count that turn again: the miss count orders the queue
+ *  and releases the owner escalation. The turn rides on the miss record (`pm_turn`); 0 = unknown, never deduped. */
+function missAlreadyCounted(rowId: string, pmTurn: number): boolean {
+  if (pmTurn <= 0) return false;
+  return !!getDb().prepare(
+    `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'audit'
+       AND json_extract(payload, '$.action_taken') = ?
+       AND json_extract(json_extract(payload, '$.evidence_json'), '$.pm_turn') = ? LIMIT 1`,
+  ).get(rowId, VALIDATION_ATTEMPT_MISS, pmTurn);
+}
+
 export function validationCoverageAfterReview(input: ValidationCoverageInput): ValidationCoverage {
+  if ((input.turn ?? 'ran') !== 'ran') {
+    // No turn ran with this report, so nothing was missed. The rows still waiting ride the doorbell.
+    const carryForward = input.asked.filter((row) => input.stillAwaiting.has(row.id)).map((row) => row.id);
+    return { missed: [], anyPastOwnerBound: false, reReview: false, carryForward };
+  }
   const missed = input.asked
     .filter((row) => input.stillAwaiting.has(row.id))
     .map((row) => {
@@ -901,6 +926,7 @@ export function validationCoverageAfterReview(input: ValidationCoverageInput): V
     missed,
     anyPastOwnerBound: missed.some((m) => m.pastOwnerBound),
     reReview: missed.length > 0,
+    carryForward: [],
   };
 }
 
@@ -1896,6 +1922,18 @@ async function runPMReview(): Promise<void> {
   //     `closeRequestFiledExpr`'s to say, not this query's — the paused one was missing here
   //     for exactly as long as this query answered it itself.
   // Reading only the first shape is how the queue would go quiet while work waited in it.
+  // Review M1: the room each row's ledger listing may take is the PM's OWN measured assembly budget
+  // (the same `dialedPolicy` the turn's fit check uses), split across the rows this review asks about.
+  const pmBudgetTokens = await (async (): Promise<number> => {
+    try {
+      const { dialedPolicy } = await import('../agent/v2/steps/call-llm/reassemble-for-fit.js');
+      return (await dialedPolicy(pmId, pmAgent.model_id ?? '')).policy.assemblyBudgetTokens;
+    } catch (err) {
+      // The window alone (`pruneOldPMMessages`' own reading) when the tool payload cannot be measured.
+      logger.warn('PM review: the measured budget could not be read; the ledger listing uses the window alone', { error: err instanceof Error ? err.message : String(err) });
+      return contextWindowPolicy(agentTurnWindow(pmId, pmAgent.model_id ?? ''), { toolPayloadTokens: 0 }).assemblyBudgetTokens;
+    }
+  })();
   const unvalidatedCompleteRows = db.prepare(`
     SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
            w.result AS result, w.evidence_json AS evidence_json, w.last_smell_flag AS last_smell_flag,
@@ -1947,6 +1985,7 @@ async function runPMReview(): Promise<void> {
       .slice(0, 3)
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
+  keepLedgerShownFor(new Set(unvalidatedCompleteRows.map((r) => r.id)));   // review M1: the shown pages live only while a row awaits its verdict
   for (const cTask of unvalidatedCompleteRows) {
     // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
     // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/
@@ -2044,6 +2083,8 @@ async function runPMReview(): Promise<void> {
     // review could not do this before: the PM's ~40 `history_search` calls on S4 were searching
     // lanes the answer does not live in, because the payload gave it nothing to open.
     const answerPointer = resolveTaskAnswerPointer(cTask.id);
+    // Audit #5: the answer backs an uphold only once a request has put its excerpt in front of the PM.
+    if (answerPointer) noteAnswerShown(cTask.id, answerPointer.deliveryId);
     const deliveredLine = answerPointer
       ? `\n  📄 DELIVERED ANSWER ON RECORD (${answerPointer.basis === 'parent-ask-receipt'
           ? 'the receipt the engine recorded for the request this task exists for'
@@ -2064,6 +2105,7 @@ async function runPMReview(): Promise<void> {
       text: unvalidatedCompleteText(cTask.id, {
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
         headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}${deliveredLine}`,
+        ledgerRoomTokens: reviewLedgerRoomTokens(pmBudgetTokens, unvalidatedCompleteRows.length),
       }),
     });
   }
@@ -2270,7 +2312,11 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
   const runtime = getAgentRuntime();
   try {
-    await runtime.handleMessage(pmId, situationReport);
+    const asked = await runtime.handleMessage(pmId, situationReport);
+    // Review M5: a review queued behind a run in flight is judged on the queued turn that reads its
+    // report, when that turn has actually run. A PM busy turn after turn therefore still accrues a real
+    // miss per unruled turn, measured from the row's own wait, and still reaches the owner escalation.
+    const turn: RunOutcome = asked === 'queued' ? ((await runtime.whenQueuedRunEnds?.(pmId)) ?? 'not-run') : asked;
 
     // ── SWEEP-A TB8 JOB 2: DID THE VALIDATOR ACTUALLY RULE? ──────────────────────────────
     // The turn is back. Read the SAME rows again: anything this review handed the
@@ -2289,8 +2335,12 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     if (askedForKeyTwo.length > 0) {
       const stillAwaiting = idsStillAwaitingKeyTwo(askedForKeyTwo.map((r) => r.id));
       const coverage = validationCoverageAfterReview({
-        asked: askedForKeyTwo, stillAwaiting, nowMs: Date.now(),
+        asked: askedForKeyTwo, stillAwaiting, nowMs: Date.now(), turn,
       });
+      // v3.5 field fix 3 (#4): a turn that never ran (terminated before the queued turn) missed nothing.
+      // Its rows ride the doorbell into the next review, whose coverage check judges a turn that ran.
+      for (const id of coverage.carryForward) doorbellRows.add(id);
+      if (coverage.carryForward.length > 0) logger.info('PM review queued behind a run in flight; its rows stay on the doorbell', { turn, carried: coverage.carryForward.length });
       if (coverage.missed.length > 0) {
         // LOUD, at the production log level, with the denominator and the ordering fact.
         const line = 'PM validation review returned WITHOUT a verdict on rows it was handed';
@@ -2311,7 +2361,9 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
         // until one of these exists), and its COUNT is what orders the queue so a stubborn
         // row stops leading every review. The marker string is single-sourced in
         // `work/validation-drive.ts` so the writer here and the reader there cannot drift.
+        const judgedTurn = turn === 'ran' ? currentTurnNumber(pmId) : 0;   // R5: one miss per row per real PM turn
         for (const m of coverage.missed) {
+          if (missAlreadyCounted(m.id, judgedTurn)) continue;
           writeTaskLog({
             taskId: m.id,
             fromEntity: 'pm',
@@ -2323,6 +2375,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
               (m.pastOwnerBound
                 ? ` — PAST the ${VALIDATION_ESCALATION_MIN}-minute owner-escalation bound, so the owner has been (or is about to be) told this is unvalidated before its validator ruled`
                 : ''),
+            ...(judgedTurn > 0 ? { evidenceJson: JSON.stringify({ pm_turn: judgedTurn }) } : {}),
           });
         }
       }
@@ -2903,10 +2956,10 @@ export function buildPokeMessage(
 
   switch (pokeType) {
     case 'nudge':
-      return `Checking in on "${task.title}": no movement for ${idleMinutes} minutes.\n\n${taskInfo}${measureInfo}\n\nIf you are still on it, say what is next with work_note(task_id="${task.id}") and carry on; that answers this. If you are waiting on someone, status="paused" or "blocked" with the reason. If it is finished, close it with the result and evidence.`;
+      return `Checking in on "${task.title}": no movement for ${idleMinutes} minutes.\n\n${taskInfo}${measureInfo}\n\nIf you are still on it, say what is next with work_note(task_id="${task.id}") and carry on; that answers this. If you are waiting on someone, status="paused" or "blocked" with the reason.`;
 
     case 'urgent':
-      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}${measureInfo}\n\nAny one of these answers it:\n1. Still on it? Say what is next with work_note(task_id="${task.id}") and carry on\n2. Waiting on someone? work_update(action="status", task_id="${task.id}", status="paused" or "blocked", notes="...") with the reason\n3. Finished? work_update(action="status", task_id="${task.id}", status="complete", result, evidence)`;
+      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}${measureInfo}\n\nAny one of these answers it:\n1. Still on it? Say what is next with work_note(task_id="${task.id}") and carry on\n2. Waiting on someone? work_update(action="status", task_id="${task.id}", status="paused" or "blocked", notes="...") with the reason`;
 
     case 'escalate_primary':
       // t90 D1 (report #6): this rung NOTIFIES. It used to say "Reassign or unblock the task — or
@@ -2915,11 +2968,11 @@ export function buildPokeMessage(
       // not the PM. No silent handoffs." The close-out line stays — telling a status row the truth
       // about work that was already delivered is a repair, not a transfer — and the one thing the
       // primary is now told about reassignment is that it is not its call.
-      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes${pokesSent === 0 ? ' and no earlier check-in has been sent to it' : ` with no response after ${earlier}`}.\n\n${taskInfo}\n\nFor your awareness. ${left ? `${left} It is done when that reads 0. Do not close it for the agent.` : `If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that records the delivery; it is not a takeover.`}\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
+      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes${pokesSent === 0 ? ' and no earlier check-in has been sent to it' : ` with no response after ${earlier}`}.\n\n${taskInfo}\n\nFor your awareness.${left ? ` ${left} It is done when that reads 0.` : ''} Do not close it for the agent.\nDo NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
 
     case 'escalate_assignee':
       // Rung 3 with nobody else to tell: the same facts, addressed to the assignee itself.
-      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}${measureInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still on it? Say what is next with work_note(task_id="${task.id}") and carry on\n2. Waiting on someone? work_update(action="status", task_id="${task.id}", status="paused" or "blocked", notes="...") naming exactly what you are waiting on\n3. Finished? work_update(action="status", task_id="${task.id}", status="complete", result, evidence)`;
+      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}${measureInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still on it? Say what is next with work_note(task_id="${task.id}") and carry on\n2. Waiting on someone? work_update(action="status", task_id="${task.id}", status="paused" or "blocked", notes="...") naming exactly what you are waiting on`;
 
     case 'redrive':
       // The ladder's top rung, and the end of the PM's authority. It is a HARDER poke, not a
@@ -2933,7 +2986,7 @@ export function buildPokeMessage(
         + `naming exactly what you are waiting on.`;
 
     default:
-      return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}${measureInfo}\n\nStill on it? Say what is next with work_note(task_id="${task.id}"). Finished? Close it with the result and evidence.`;
+      return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}${measureInfo}\n\nStill on it? Say what is next with work_note(task_id="${task.id}").`;
   }
 }
 

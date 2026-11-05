@@ -6,9 +6,13 @@
 //   - One message / one conversation: resolved by gmail-archive.ts (t190), exactly as before.
 //   - Many (v3.5, B3): `message_ids` go through Gmail's batchModify in chunks of 1,000 (its documented
 //     maximum); `thread_ids` go one threads.modify each (Gmail has no thread batch). A chunk that fails
-//     does not stop the others, and the Error names the ids that were NOT changed. Batch labels the
-//     messages named, one by one: it does not widen an archive to the whole conversation (pass
-//     `thread_ids` for that), so a mailbox count taken per message reaches zero.
+//     does not stop the others, and the Error names the ids that were NOT changed.
+//   - v3.5 field fix 3, audit W18 (owner card: "Whole conversation"): a batch ARCHIVE (INBOX removed,
+//     no `this_message_only`) takes each named message's WHOLE conversation, exactly as the single
+//     archive does (gmail-archive.ts): each message's thread is looked up and each distinct
+//     conversation gets one threads.modify. A message whose conversation cannot be found is named as
+//     NOT changed, never silently archived on its own. Any other label change, or this_message_only,
+//     labels the messages named, one by one, as before.
 // ════════════════════════════════════════
 
 import { googleRead, googleWrite } from './client.js';
@@ -102,14 +106,28 @@ async function executeBatch(
   agentName: string,
   slot: string,
 ): Promise<string> {
-  const messages = unique([...messageIds, ...idList([args.message_id])]);
-  const threads = unique([...threadIds, ...idList([args.thread_id])]);
+  let messages = unique([...messageIds, ...idList([args.message_id])]);
+  let threads = unique([...threadIds, ...idList([args.thread_id])]);
   const labelBody = { addLabelIds: addLabels, removeLabelIds: removeLabels };
   const doneMessages: string[] = [];
   const doneThreads: string[] = [];
   const failedMessages: string[] = [];
   const failedThreads: string[] = [];
   const errors: string[] = [];
+
+  // W18: an archive widens each named message to its whole conversation.
+  const archives = removeLabels.some((l) => String(l).toUpperCase() === 'INBOX');
+  const widened = archives && args.this_message_only !== true && messages.length > 0;
+  if (widened) {
+    for (const id of messages) {
+      const found = await googleRead(`${gmailBase}/messages/${encodeURIComponent(id)}?format=minimal`, agentId, agentName, 'gmail_label:thread_lookup', { messageId: id }, slot);
+      const tid = (found.data as { threadId?: string } | null)?.threadId;
+      if (found.ok && tid) threads.push(tid);
+      else { failedMessages.push(id); errors.push(`could not find the conversation for message ${id} (${found.error ?? 'no thread id returned'})`); }
+    }
+    threads = unique(threads);
+    messages = [];
+  }
 
   for (let i = 0; i < messages.length; i += BATCH_MODIFY_IDS) {
     const chunk = messages.slice(i, i + BATCH_MODIFY_IDS);
@@ -129,7 +147,8 @@ async function executeBatch(
   const archivesMessages = doneMessages.length > 0 && removeLabels.some((l) => String(l).toUpperCase() === 'INBOX');
   if (errors.length === 0) {
     return `Labels updated on ${done.join(' and ')}.` +
-      (archivesMessages ? ' Each message was changed on its own; other messages in the same conversations keep their labels (use thread_ids to change whole conversations).' : '');
+      (widened ? ' Archived as the WHOLE conversation of each message named; to archive only the messages themselves, pass this_message_only=true.' : '')
+      + (archivesMessages ? ' Each message was changed on its own; other messages in the same conversations keep their labels (use thread_ids to change whole conversations).' : '');
   }
 
   const notDone: string[] = [];

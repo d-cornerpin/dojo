@@ -26,3 +26,23 @@ describe('itemKeysOf', () => {
     expect(itemKeysOf('gmail_label', {})).toEqual([]);
   });
 });
+
+// v3.5 field fix 3 (#6a): the worker's file and command work, from the tool's own declared effects.
+describe('itemKeysOf: files and commands, from declared effects', () => {
+  it('fs_write and fs_delete name a file; proc (argv) and shell (script) name a command; reads name nothing', () => {
+    expect(itemKeysOf('file_write', { path: '/w/a.md' }, [{ kind: 'fs_write', from: 'args.path' }])).toEqual(['file:/w/a.md']);
+    expect(itemKeysOf('file_patch', { path: '/w/a.md' }, [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }])).toEqual(['file:/w/a.md']);
+    expect(itemKeysOf('exec', { argv: ['mkdir', '-p', '/w'] }, [{ kind: 'proc', from: 'args.argv' }])).toEqual(['cmd:mkdir -p /w']);
+    expect(itemKeysOf('shell', { script: 'ls /w | wc -l' }, [{ kind: 'shell', from: 'args.script' }])).toEqual(['cmd:ls /w | wc -l']);
+    expect(itemKeysOf('file_read', { path: '/w/a.md' }, [{ kind: 'fs_read', from: 'args.path' }])).toEqual([]);
+  });
+  it('an array argument names each element; a derived effect, a blank or a non-string names nothing', () => {
+    expect(itemKeysOf('t', { out: { paths: ['/a', '', 3, '/b'] } }, [{ kind: 'fs_write', from: 'args.out.paths[]' }])).toEqual(['file:/a', 'file:/b']);
+    expect(itemKeysOf('t', {}, [{ kind: 'proc', from: 'derived:a helper process' }])).toEqual([]);
+    expect(itemKeysOf('exec', { argv: [] }, [{ kind: 'proc', from: 'args.argv' }])).toEqual([]);
+  });
+  it('mailbox keys and effect keys add up; nothing changes for a call without effects', () => {
+    expect(itemKeysOf('gmail_label', { message_id: 'm1' }, [{ kind: 'fs_write', from: 'args.save_to' }])).toEqual(['gmail:msg:m1']);
+    expect(itemKeysOf('gmail_label', { message_id: 'm1', save_to: '/w/m1.eml' }, [{ kind: 'fs_write', from: 'args.save_to' }])).toEqual(['gmail:msg:m1', 'file:/w/m1.eml']);
+  });
+});

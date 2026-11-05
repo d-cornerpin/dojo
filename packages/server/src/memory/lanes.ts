@@ -559,7 +559,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // longest countable tool's name, its query and unit at the title width, three 10-digit counts, the instant).
     // v3.5 (plan before project): 4,501 -> 4,759 (+258), a current row's plan line, cut at the last-note width (+ its `...`).
     // v3.5 field fix 3 review round 2: 4,759 -> 4,740 (-19), the stamp line's "; CLOSE if done" left (facts only).
-    reserveTokens: 4740,
+    reserveTokens: 4743,   // audit #5 merge: + user_outlook_search as the longest measure tool name, derived by the renderer
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
@@ -639,7 +639,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.integration-status',
     slot: MessageSlot.IntegrationStatusTail,
-    reserveTokens: 562,
+    reserveTokens: 612,   // test-2 rank 6: the failure term names its account (was 562)
     measured:
       'T76b, DERIVED BY CALLING THE RENDERER: `integrationStatusWorstCaseTokens()` '
       + '(`memory/integration-status-lane.ts`) builds LANE_LIMITS[\'lane.integration-status\'] '

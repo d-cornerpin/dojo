@@ -799,11 +799,30 @@ export const Tracker = () => {
     const filter = selectedProjectId !== 'all' ? { projectId: selectedProjectId } : undefined;
     const tasksResult = await api.getTasks(filter);
     if (mine !== latestLoad.current) return;
-    if (tasksResult.ok) { setTasks(tasksResult.data); setLoadError(null); }
-    else { setTasks([]); setLoadError(tasksResult.error); }
+    if (tasksResult.ok) { setTasks(tasksResult.data); setLoadError(null); setClosedHasOlder(tasksResult.closedHasOlder === true); }
+    else { setTasks([]); setLoadError(tasksResult.error); setClosedHasOlder(false); }
 
     setLoading(false);
   }, [selectedProjectId]);
+
+  // Re-review 2 (S4): the finished tasks come a page at a time. The page before is asked for with the
+  // oldest finished task the board holds (Chat's "load older" pattern: nothing older is fetched unasked).
+  const [closedHasOlder, setClosedHasOlder] = useState(false);
+  const loadingOlder = useRef(false);
+  const showOlderFinished = useCallback(async () => {
+    if (loadingOlder.current) return;
+    const finished = tasks.filter((t) => ['complete', 'fallen', 'cancelled'].includes(t.status) && t.completedAt);
+    const oldest = finished.reduce<Task | null>((o, t) => (!o || `${t.completedAt}|${t.id}` < `${o.completedAt}|${o.id}` ? t : o), null);
+    if (!oldest?.completedAt) { setClosedHasOlder(false); return; }
+    loadingOlder.current = true;
+    const mine = latestLoad.current;
+    const filter = selectedProjectId !== 'all' ? { projectId: selectedProjectId } : {};
+    const result = await api.getTasks({ ...filter, closedBefore: oldest.completedAt, closedBeforeId: oldest.id });
+    loadingOlder.current = false;
+    if (mine !== latestLoad.current || !result.ok) return;   // a failed page says nothing: the button stays to retry
+    setTasks((prev) => [...prev, ...result.data.filter((t) => !prev.some((p) => p.id === t.id))]);
+    setClosedHasOlder(result.closedHasOlder === true);
+  }, [tasks, selectedProjectId]);
 
   useEffect(() => {
     loadData();
@@ -1002,6 +1021,7 @@ export const Tracker = () => {
         onTaskClick={(taskId) => setSelectedTaskId(taskId)}
         onStatusChange={handleStatusChange}
         onTaskDeleted={loadData}
+        onShowOlderFinished={closedHasOlder ? showOlderFinished : undefined}
       />
 
       {/* Task Detail Panel */}

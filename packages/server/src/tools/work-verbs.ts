@@ -402,3 +402,83 @@ export const CLOSE_OPS_WITH_TASK_ID: ReadonlySet<string> = new Set([
   'work_update:status',
   'work_update:complete_step',
 ]);
+
+
+// ════════════════════════════════════════
+// v3.5 field fix 3, test-2 rank 3: WHAT EACH OPERATION READS.
+//
+// Each work verb declares the UNION of its operations' arguments (one schema per verb), and each
+// operation's handler (`agent/tools/cat/tracker.ts`) reads its own subset. The per-tool unknown-
+// argument check therefore passed `measure` on `complete_step` (declared, for `edit`), and the handler
+// dropped it without a word: the agent believed it had set a measure. This map is the same check, per
+// operation: a DECLARED argument the chosen operation does not read refuses the whole call before
+// anything runs (`unknownArgsAgainstSchema` → `unreadArgsRefusal`), and the refusal names, from this
+// same map, the operations that do read it. `an-argument-the-action-does-not-read-is-refused.test.ts`
+// holds it to the handlers (every direct read is listed) and to the schemas (every listed name is
+// declared, and every declared name is read by some operation), so it cannot drift.
+// The discriminators (`action`, `kind`) are read by every operation of their verb.
+// ════════════════════════════════════════
+
+export const WORK_OP_READS: Readonly<Record<WorkOp, readonly string[]>> = {
+  'work_open:project': ['kind', 'title', 'description', 'level', 'tasks', 'plan', 'allow_duplicate'],
+  'work_open:task': ['kind', 'title', 'description', 'project_id', 'assigned_to', 'assigned_to_group', 'priority', 'step_number',
+    'depends_on', 'phase', 'goal', 'measure', 'scheduled_start', 'repeat_interval', 'repeat_unit', 'repeat_days_of_week',
+    'repeat_end_type', 'repeat_end_value', 'anchor_time', 'local_time', 'local_timezone', 'allow_duplicate'],
+  'work_open:reminder': ['kind', 'what', 'when', 'anchor_time', 'local_time', 'local_timezone', 'repeat_interval', 'repeat_unit',
+    'repeat_days_of_week', 'repeat_end_type', 'repeat_end_value'],
+  'work_open:commitment': ['kind', 'description'],
+  'work_update:status': ['action', 'task_id', 'status', 'notes', 'resume_at', 'complete_all_runs', 'result', 'evidence', 'priority',
+    'user_quote', 'remainder'],
+  'work_update:edit': ['action', 'task_id', 'project_id', ...EDITABLE_FIELDS,   // the edit door's own field list, the one the shape ladder reads
+    'local_time', 'local_timezone', 'revert_to_original', 'measure'],
+  'work_update:reassign': ['action', 'task_id', 'assigned_to', 'assigned_to_group', 'cause', 'user_quote'],
+  'work_update:complete_step': ['action', 'task_id', 'notes', 'result', 'evidence', 'remainder'],
+  'work_update:close_project': ['action', 'project_id', 'reason', 'status', 'user_quote'],
+  'work_update:list': ['action', 'filter', 'verbose'],
+  'work_update:get': ['action', 'id', 'task_id', 'project_id', 'offset'],
+  'work_update:activity': ['action', 'hours', 'verbose'],
+  'work_note': ['task_id', 'notes'],
+  'work_close_request:override': ['action', 'task_id', 'requested_status', 'justification'],
+  'work_close_request:user_verdict': ['action', 'task_id', 'status_requested', 'agent_summary', 'pm_rejection_summary'],
+  'work_close_request:commitment': ['action', 'id', 'disposition', 'note'],
+  'work_validate:validate': ['action', 'kind', 'task_id', 'valid', 'reject_reason', 'target_status'],
+  'work_validate:retask': ['action', 'task_id', 'directive', 'target_status', 'allow_regenerate'],
+  'work_validate:override': ['action', 'override_request_id', 'approve', 'reason'],
+  'work_validate:apply_user_verdict': ['action', 'task_id', 'status', 'user_quote'],
+  'work_validate:apply_user_validation': ['action', 'task_id', 'validated', 'user_quote', 'feedback'],
+  'work_schedule:pause': ['action', 'task_id', 'mark_complete'],
+  'work_schedule:resume': ['action', 'task_id'],
+  'work_schedule:resolve_missed': ['action', 'task_id', 'resolution'],
+};
+
+/** NAVIGATION arguments an operation ACCEPTS without reading (never refused, never claimed as read): the
+ *  ids a model naturally carries from a sibling call, and the list door's `verbose`. The activity door
+ *  reports the whole board's window, so a task id on it changes nothing and costs nothing. */
+export const WORK_OP_ACCEPTS: Readonly<Partial<Record<WorkOp, readonly string[]>>> = {
+  'work_update:activity': ['task_id', 'project_id'],
+  'work_update:get': ['verbose'],
+};
+
+/** How an operation is spelled to the model: `work_update(action="edit")`, `work_open(kind="task")`. */
+export function workOpCallName(op: WorkOp): string {
+  const [verb, sub] = op.split(':');
+  if (!sub) return verb;
+  return verb === 'work_open' ? `${verb}(kind="${sub}")` : `${verb}(action="${sub}")`;
+}
+
+/** The DECLARED arguments of `args` that the operation the call resolves to does not read (in the call's
+ *  own order). Empty for a call that is not a work verb. `declared` is the verb's schema property set. */
+export function unreadWorkArgs(name: string, args: Args, declared: ReadonlySet<string>): { op: WorkOp | null; unread: string[] } {
+  const op = workOperation(name, args);
+  if (!op || !args) return { op, unread: [] };
+  const reads = new Set([...WORK_OP_READS[op], ...(WORK_OP_ACCEPTS[op] ?? [])]);
+  const unread = Object.keys(args).filter((k) => !k.startsWith('__') && declared.has(k) && has(args, k) && !reads.has(k));
+  return { op, unread };
+}
+
+/** The other work operations that read `arg`, as the model calls them (any work verb: `measure` is set
+ *  by `work_open` as well as by `work_update(action="edit")`). Discriminators are not doors, so they are
+ *  never named for each other. */
+export function workOpsThatRead(op: WorkOp, arg: string): string[] {
+  return WORK_OPS.filter((o) => o !== op && WORK_OP_READS[o].includes(arg)).map(workOpCallName);
+}

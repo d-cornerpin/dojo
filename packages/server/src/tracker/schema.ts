@@ -20,8 +20,9 @@ import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
 import {
   taskRowColumns, projectRowColumns, taskScope, projectScope, dueScope,
-  statusToState, tsToMs, type TrackerStatus,
+  statusToState, tsToMs, msToText, revertCountExpr, awaitingUserVerdictExpr, type TrackerStatus,
 } from '../work/tracker-view.js';
+import { TERMINAL_STATE_NAMES } from '../work/terminal-states.js';
 import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
@@ -912,17 +913,18 @@ export function formatResolveError(
   }
 }
 
-export function listTasks(filter?: {
+export interface TaskListFilter {
   status?: string;
   assignedTo?: string;
   priority?: string;
   projectId?: string;
-  /** PHASE-6 T0C-W: restrict to the overdue set — `dueScope()`'s single declaration of
+  /** PHASE-6 T0C-W: restrict to the overdue set, `dueScope()`'s single declaration of
    *  what the word means. See its header for the two live meanings it reconciles. */
   overdue?: boolean;
-}): Task[] {
-  const db = getDb();
+}
 
+/** The WHERE of a task list, shared by the whole list and the paged one (one filter, one meaning). */
+function taskListWhere(filter?: TaskListFilter): { conditions: string[]; params: unknown[] } {
   const conditions: string[] = [TASK_WHERE];
   const params: unknown[] = [];
 
@@ -947,15 +949,60 @@ export function listTasks(filter?: {
     conditions.push('work.parent_id = ?');
     params.push(filter.projectId);
   }
+  return { conditions, params };
+}
 
-  const sql = `${TASK_COLS} WHERE ${conditions.join(' AND ')}`
-    // t139 round 2: `priority` is TEXT ('high'|'normal'|'low'), so `priority DESC` sorted it
-    // ALPHABETICALLY — normal, low, high — and listed high-priority work LAST. Ranked explicitly.
-    + " ORDER BY CASE work.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,"
-    + ' work.step_number ASC, work.opened_at ASC';
+// t139 round 2: `priority` is TEXT ('high'|'normal'|'low'), so `priority DESC` sorted it
+// ALPHABETICALLY (normal, low, high) and listed high-priority work LAST. Ranked explicitly.
+const TASK_LIST_ORDER = " ORDER BY CASE work.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,"
+  + ' work.step_number ASC, work.opened_at ASC';
 
-  const rows = db.prepare(sql).all(...params) as TaskRow[];
+export function listTasks(filter?: TaskListFilter): Task[] {
+  const { conditions, params } = taskListWhere(filter);
+  const sql = `${TASK_COLS} WHERE ${conditions.join(' AND ')}${TASK_LIST_ORDER}`;
+  const rows = getDb().prepare(sql).all(...params) as TaskRow[];
   return rows.map(mapTaskRow);
+}
+
+/** The finished tasks a board page holds: the chat history's own page (the dashboard's existing
+ *  "load older" pattern). A display page, not a cap on what is kept or what can be read. */
+export const TASK_CLOSED_PAGE = 50;
+
+/**
+ * Re-review 2 (S4): the board's list, PAGED. The live tasks (anything not finished) come whole, since they
+ * are bounded by the work still open; the finished ones (done, failed, abandoned) come newest-closed first,
+ * one page at a time. `before` is the cursor of the oldest finished task already held (its closed time as
+ * the list renders it, and its id for ties); with a cursor, only the page before it is returned (the live
+ * tasks were sent with the first page). `closedHasOlder` says whether a further page exists.
+ */
+export function listTasksPage(
+  filter: TaskListFilter | undefined,
+  page: { before?: { at: string; id: string }; hideAgentIds?: ReadonlySet<string> } = {},
+): { tasks: Task[]; closedHasOlder: boolean } {
+  const db = getDb();
+  const { conditions, params } = taskListWhere(filter);
+  // Re-review 3 (M3): the system agents' tasks are dropped HERE, before the page is cut. Dropped after,
+  // a page made only of them reached the board empty, its cursor never moved, and the older visible
+  // tasks were out of reach. A system agent's task in dispute (thrown back, awaiting the owner's verdict,
+  // or a stalemate) stays visible so the owner can act on it.
+  const hidden = [...(page.hideAgentIds ?? [])];
+  if (hidden.length > 0) {
+    const marks = hidden.map(() => '?').join(', ');
+    conditions.push(`COALESCE(work.requester_id, '') NOT IN (${marks})`);
+    conditions.push(`(COALESCE(work.agent_id, '') NOT IN (${marks}) OR ${revertCountExpr('work')} > 0`
+      + ` OR ${awaitingUserVerdictExpr('work')} = 1 OR work.title LIKE 'STALEMATE on %')`);
+    params.push(...hidden, ...hidden);
+  }
+  const terminal = `work.state IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`;
+  const open = page.before ? [] : (db.prepare(`${TASK_COLS} WHERE ${[...conditions, `NOT ${terminal}`].join(' AND ')}${TASK_LIST_ORDER}`).all(...params) as TaskRow[]);
+  // The order and the cursor share ONE key: the closed time as the caller sees it (`completedAt`, to
+  // the second), then the id. Ordering by the ms value while comparing at the second let two tasks
+  // closed in the same second straddle a page edge in the wrong order (re-review 3, M3).
+  const closedAt = msToText('work.closed_at');
+  const cursor = page.before ? [`(${closedAt} < ? OR (${closedAt} = ? AND work.id < ?))`] : [];
+  const cursorParams = page.before ? [page.before.at, page.before.at, page.before.id] : [];
+  const closed = db.prepare(`${TASK_COLS} WHERE ${[...conditions, terminal, ...cursor].join(' AND ')} ORDER BY ${closedAt} DESC, work.id DESC LIMIT ?`).all(...params, ...cursorParams, TASK_CLOSED_PAGE + 1) as TaskRow[];
+  return { tasks: [...open, ...closed.slice(0, TASK_CLOSED_PAGE)].map(mapTaskRow), closedHasOlder: closed.length > TASK_CLOSED_PAGE };
 }
 
 /**

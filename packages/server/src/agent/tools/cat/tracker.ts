@@ -44,6 +44,7 @@ import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
+import { emptyUpholdRefusal } from '../../../tracker/empty-uphold.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, repeatNumberError, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
@@ -423,11 +424,8 @@ const tableOfHandlers: ToolHandlerMap = {
     // Phase B.1: result + evidence forwarded for the complete hard gate.
     if (args.result !== undefined) updateArgs.result = args.result;
     if (args.evidence !== undefined) updateArgs.evidence = args.evidence;
-    // assigned_to / priority forwards (these were missing before, even
-    // though trackerUpdateStatus accepts them)
-    // t193: forwarded so the door can REFUSE a move it no longer performs (silently dropping it
-    // would let a model believe the task moved).
-    if (args.assigned_to !== undefined) updateArgs.assignedTo = args.assigned_to;
+    // priority is the status door's second field. `assigned_to` is not read here: the per-operation
+    // argument check refuses a status call that carries it (test-2 rank 3), so it never reaches this.
     if (args.priority !== undefined) updateArgs.priority = args.priority;
     if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
     if (args.remainder !== undefined) updateArgs.remainder = args.remainder;
@@ -779,7 +777,12 @@ const tableOfHandlers: ToolHandlerMap = {
       target_status: args.target_status as string | undefined,
     };
     if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
-    else if (vkind === 'complete') content = await trackerMod.trackerValidateComplete(agentId, vp);
+    else if (vkind === 'complete') {
+      // v3.5 field fix 3 (#6b): an uphold nothing on record backs is refused once per review, with the facts.
+      const refusal = vp.valid ? emptyUpholdRefusal(agentId, vp.task_id) : null;
+      if (refusal) return { content: refusal, isError: true };
+      content = await trackerMod.trackerValidateComplete(agentId, vp);
+    }
     else content = await trackerMod.trackerValidateBlocked(agentId, vp);
     return { content, isError };
   },

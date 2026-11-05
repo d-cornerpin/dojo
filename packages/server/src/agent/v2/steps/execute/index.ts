@@ -37,6 +37,7 @@ import { anyIdenticalCallRefused, type RepeatCallState } from '../../identical-c
 import { latchEngineCut } from '../../engine-exit.js';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
+import { effectsFor } from '../../../tools/index.js';   // already loaded by run-one above: no new edge
 import { CANCELLED_BY_STOP } from './stop-race.js';
 import { persistXmlFallbackCollapse } from './xml-fallback.js';
 import { admitBatchToRoom } from './batch-admission.js';
@@ -272,7 +273,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     return requestExit(state, 'stopped-mid-batch') as ExecuteOutcome;
   }
 
-  state = countTrackerWorkThisIteration(state, ctx, turnToolResults);
+  state = countTrackerWorkThisIteration(state, ctx, turnToolResults, effectsFor);
   state = await runTrackerFloors(state, ctx);
 
   // ── complete_task / fire-and-forget generator exit conditions (Part XIX) ──

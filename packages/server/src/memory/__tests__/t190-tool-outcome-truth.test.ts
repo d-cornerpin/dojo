@@ -95,20 +95,27 @@ describe('t190 C1 — a tool\'s later success ends its earlier failure', () => {
     recordToolOutcome(AGENT, 'gmail_label', 'gmail_label|msg-B', true);
     recordToolOutcome(AGENT, 'gmail_label', 'gmail_label|msg-C', true);
     const line = googleLine(await buildIntegrationStatusLane(AGENT));
-    expect(line).toMatch(/UNRESOLVED FAILURE: gmail_label, last failed \[[^\]]+\], 2 in a row, with no success of that tool since\./);
+    expect(line).toMatch(/UNRESOLVED FAILURE on the agent's own account: gmail_label, last failed \[[^\]]+\], 2 in a row, with no later call of that account's tools in this family\./);
   });
 
   it('a history of pure failure is still printed', async () => {
     recordToolOutcome(AGENT, 'gmail_search', 'gmail_search|q1', true);
     const line = googleLine(await buildIntegrationStatusLane(AGENT));
-    expect(line).toMatch(/UNRESOLVED FAILURE: gmail_search, last failed \[[^\]]+\], 1 in a row, with no success of that tool since\./);
+    expect(line).toMatch(/UNRESOLVED FAILURE on the agent's own account: gmail_search, last failed \[[^\]]+\], 1 in a row, with no later call of that account's tools in this family\./);
   });
 
-  it('the record is per TOOL: another tool\'s success in the same family does not end this tool\'s failure', async () => {
+  it('test-2 rank 6 (reverses the old per-TOOL clause): a later success of another tool on the SAME account ends the status-line failure', async () => {
+    // The old clause held a failure open until that exact tool succeeded. On the owner's second field
+    // test that was a self-sealing loop: the agent believed the block, never called the tool, and the
+    // failure never cleared. The per-tool LEDGER still keeps the streak (the Healer reads it); what the
+    // status line reports is the account's newest outcome.
     recordToolOutcome(AGENT, 'gmail_label', 'gmail_label|msg-A', true);
+    await new Promise((r) => setTimeout(r, 5));   // the ledger's clock is SQL milliseconds: the success is LATER
     recordToolOutcome(AGENT, 'gmail_search', 'gmail_search|q1', false);
     const line = googleLine(await buildIntegrationStatusLane(AGENT));
-    expect(line).toMatch(/UNRESOLVED FAILURE: gmail_label,/);
+    expect(line).toContain('No unresolved tool failure on record.');
+    const streak = (mockDb.current!.prepare("SELECT consecutive_failures AS n FROM agent_tool_outcomes WHERE tool_name = 'gmail_label'").get() as { n: number }).n;
+    expect(streak).toBe(1);
   });
 
   it('Plaud, which has no success ledger, gets the same truth from the outcome record', async () => {

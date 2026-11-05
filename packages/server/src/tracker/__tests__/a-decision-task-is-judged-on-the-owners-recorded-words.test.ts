@@ -2,7 +2,8 @@
 // it in a LATER message; the turn that served it closed the task with the decision in its notes. The PM's
 // validation request must carry the owner's recorded words (the engine's newer-instruction link), so the
 // close is judged on that record, not on the agent's prose. With no such record and nothing touched, the
-// request tells the PM to refuse.
+// engine refuses the uphold at the PM's door (v3.5 field fix 3, #6b: `a-verdict-names-what-the-pm-read`);
+// the request no longer carries that rule as prompt text.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -54,9 +55,9 @@ describe('a decision-type close is judged on the owner\'s recorded words', () =>
     expect(text).toContain('A task whose job is a decision');
   });
 
-  it('with no owner words on record and nothing touched, the request says so and tells the PM to refuse', () => {
+  it('with no owner words on record, the request says so (the refusal itself is the engine\'s, at the PM\'s door)', () => {
     const text = unvalidatedCompleteText(TASK, parts());
     expect(text).toContain('Owner words recorded on this task: none');
-    expect(text).toContain('With no such record and nothing touched, reject it');
+    expect(text).not.toContain('With no such record and nothing touched, reject it');
   });
 });

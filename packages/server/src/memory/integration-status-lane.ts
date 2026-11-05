@@ -97,6 +97,7 @@ import { isOpenFailure, readToolOutcomes } from '../agent/v2/tool-outcomes.js';
 import { TOOL_CATEGORIES } from '../tools/categories.js';
 import { recordedInstant } from './message-stamp.js';
 import { estimateTokens } from './budget.js';
+import { sessionBoundaryText } from './session-boundary.js';
 import { laneLimit, truncateWrappedText } from './lanes.js';
 
 /** The lane's own id (the reserve) and the registry entry that rides it. */
@@ -112,6 +113,9 @@ export interface UnresolvedFailure {
   /** `agent_tool_outcomes.last_fail_at`, rendered as a recorded instant by the row builder. */
   lastAt: string;
   hits: number;   // failures in a row since that tool last succeeded (at least 1)
+  /** Test-2 rank 6: whose account the tool acts on. The owner's `user_` twins act on the owner's
+   *  account; every other tool on the agent's own. A failure on one says nothing about the other. */
+  account?: 'agent' | 'owner';
 }
 
 /**
@@ -191,9 +195,10 @@ export function integrationStatusLine(r: IntegrationStatusRow): string {
   if (r.unresolved) {
     const tool = r.unresolved.tool.length > toolCap
       ? `${r.unresolved.tool.slice(0, toolCap)}...` : r.unresolved.tool;
+    const account = r.unresolved.account === 'owner' ? "the owner's account" : "the agent's own account";
     parts.push(
-      `UNRESOLVED FAILURE: ${tool}, last failed ${recordedInstant(r.unresolved.lastAt)}, `
-      + `${r.unresolved.hits} in a row, with no success of that tool since.`,
+      `UNRESOLVED FAILURE on ${account}: ${tool}, last failed ${recordedInstant(r.unresolved.lastAt)}, `
+      + `${r.unresolved.hits} in a row, with no later call of that account's tools in this family.`,
     );
   } else {
     parts.push(NO_UNRESOLVED_FAILURE);
@@ -310,15 +315,35 @@ export function forgetToolFamilyIndex(): void {
   familyIndex = null;
 }
 
-/** The open failure each family carries for this agent; `readToolOutcomes` is newest-first and
- *  an open failure's newest instant IS its failure, so the first seen per family wins. */
+/**
+ * The open failure each family carries for this agent (test-2 rank 6: by ACCOUNT, and expiring on a
+ * real signal).
+ *
+ * Per family AND per account (the agent's own tools, or the owner's `user_` twins), only the NEWEST
+ * outcome is the status: a later success of ANY tool on that account clears an earlier failure, and a
+ * later different failure replaces it. It used to take only a success of the exact failed tool, so an
+ * agent that believed the block never called that tool again and the failure never cleared (the
+ * owner's field test: one agent-account `gmail_list_labels` failure read as "label listing is broken",
+ * for the owner's mailbox too). A failure from before the agent's current session boundary is history,
+ * not status. No timer: the two bounds are the next call on that account and the session boundary.
+ * `readToolOutcomes` is newest-first, so the first row seen per (family, account) is its newest outcome;
+ * the per-tool ledger itself is untouched (the Healer reads its streaks).
+ */
 function unresolvedByFamily(agentId: string): Map<IntegrationFamily, UnresolvedFailure> {
   const out = new Map<IntegrationFamily, UnresolvedFailure>(), index = toolFamilyIndex();
-  for (const o of readToolOutcomes(agentId).filter(isOpenFailure)) {
+  const boundary = sessionBoundaryText(agentId);
+  const seen = new Set<string>();
+  for (const o of readToolOutcomes(agentId)) {
     const family = index.get(o.toolName);
-    if (family && o.lastFailAt && !out.has(family)) {
-      out.set(family, { tool: o.toolName, lastAt: o.lastFailAt, hits: o.consecutiveFailures });
-    }
+    if (!family) continue;
+    const account: 'agent' | 'owner' = o.toolName.startsWith('user_') ? 'owner' : 'agent';
+    const key = `${family}|${account}`;
+    if (seen.has(key)) continue;   // an older outcome on an account whose newest is already read
+    seen.add(key);
+    if (!isOpenFailure(o) || !o.lastFailAt) continue;
+    if (boundary && o.lastFailAt < boundary) continue;   // before this session: history, not status
+    const prior = out.get(family);
+    if (!prior || o.lastFailAt > prior.lastAt) out.set(family, { tool: o.toolName, lastAt: o.lastFailAt, hits: o.consecutiveFailures, account });
   }
   return out;
 }
@@ -442,7 +467,7 @@ export function integrationStatusWorstCaseTokens(): number {
       connected: false,
       lastSuccessAt: widestInstantSource,
       connectedSince: widestInstantSource,
-      unresolved: { tool: 't'.repeat(toolCap + 10), lastAt: widestInstantSource, hits: 999_999 },
+      unresolved: { tool: 't'.repeat(toolCap + 10), lastAt: widestInstantSource, hits: 999_999, account: 'agent' },   // "the agent's own account" is the longer phrase
       hasSuccessLedger: true,
     });
   }

@@ -63,6 +63,8 @@
 // recorder the `:reassign` door and the dashboard door already use.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { unknownArgsAgainstSchema } from '../../agent/tools/index.js';
+import { unreadArgsRefusal } from '../../agent/tools/unknown-args-refusal.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -511,13 +513,21 @@ describe('§3 resolving forward is what agents do with a block', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§4 S5 — work_update(action="status", assigned_to=X) no longer moves anything', () => {
-  it('⚠ THE GAP, CLOSED (t193): the side door refuses the whole call — nothing moves, nothing is recorded', () => {
+  // Test-2 rank 3: the status DOOR refuses this whole call before it reaches the writer (the per-operation
+  // argument check, which replaced the writer's one-off guard), naming the door that does move work.
+  const doorSays = (args: Record<string, unknown>): string => {
+    const v = unknownArgsAgainstSchema('work_update', args);
+    expect(v.unread).toEqual(['assigned_to']);
+    return unreadArgsRefusal(v.op!, v.unread);
+  };
+
+  it('⚠ THE GAP, CLOSED (t193; the door since test-2 rank 3): the side door refuses the whole call, nothing moves', () => {
     seedTrackerTask(mockDb.current!, { id: 'ride-0001', title: TITLE, status: 'in_progress', agentId: VICTIM });
-    const out = trackerUpdateStatus(PRIMARY, {
-      taskId: 'ride-0001', status: 'in_progress', assignedTo: 'third',
-    });
-    expect(out.startsWith('Error'), out).toBe(true);
+    const out = doorSays({ action: 'status', task_id: 'ride-0001', status: 'in_progress', assigned_to: 'third' });
+    expect(out.startsWith('Refused'), out).toBe(true);
     expect(out, 'the refusal names the door that does move work').toContain('action="reassign"');
+    // And the writer itself never reads an assignee: even reached directly, nothing moves.
+    trackerUpdateStatus(PRIMARY, { taskId: 'ride-0001', status: 'in_progress', assignedTo: 'third' });
     expect(reassignmentsOf('ride-0001')).toEqual([]);
   });
 
@@ -556,6 +566,14 @@ describe('§4 S5 — work_update(action="status", assigned_to=X) no longer moves
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§5 the audit census', () => {
+  // Test-2 rank 3: the status DOOR refuses this whole call before it reaches the writer (the per-operation
+  // argument check, which replaced the writer's one-off guard), naming the door that does move work.
+  const doorSays = (args: Record<string, unknown>): string => {
+    const v = unknownArgsAgainstSchema('work_update', args);
+    expect(v.unread).toEqual(['assigned_to']);
+    return unreadArgsRefusal(v.op!, v.unread);
+  };
+
   /** Count the row's events by kind — the drive's own aftermath query, as an assertion. */
   const censusOf = (id = TASK): Record<string, number> => {
     const out: Record<string, number> = {};
@@ -593,14 +611,15 @@ describe('§5 the audit census', () => {
     expect(eventsOf().find((e) => e.kind === 'transition')!.actor).toBe(VICTIM);
   });
 
-  it('SIDE-DOOR call (t193): refused whole — no move and no transition on the record', () => {
+  it('SIDE-DOOR call (t193; the door since test-2 rank 3): refused whole, before the writer, so nothing half-applies', () => {
     seedTrackerTask(mockDb.current!, { id: 'ride-0006', title: TITLE, status: 'in_progress', agentId: VICTIM });
-    trackerUpdateStatus(PRIMARY, {
-      taskId: 'ride-0006', status: 'paused', assignedTo: 'third',
+    // The door refuses the whole call before any writer runs: no status half can land.
+    expect(doorSays({
+      action: 'status', task_id: 'ride-0006', status: 'paused', assigned_to: 'third',
       notes: 'handing this to a colleague while the supplier portal credential is reissued',
-    });
+    })).toMatch(/^Refused: work_update\(action="status"\) does not read "assigned_to", so nothing was done\./);
     expect(reassignmentsOf('ride-0006').length, 'nothing moved').toBe(0);
-    expect(censusOf('ride-0006').transition ?? 0, 'and the status half did not half-apply').toBe(0);
+    expect(censusOf('ride-0006').transition ?? 0, 'and nothing was recorded').toBe(0);
   });
 });
 

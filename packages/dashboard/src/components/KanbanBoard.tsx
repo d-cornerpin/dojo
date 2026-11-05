@@ -89,7 +89,12 @@ interface KanbanBoardProps {
   onTaskClick: (taskId: string) => void;
   onStatusChange: (taskId: string, newStatus: Task['status']) => void;
   onTaskDeleted?: () => void;
+  /** Re-review 2 (S4): the server holds older finished tasks; the finished columns offer the page before. */
+  onShowOlderFinished?: () => void;
 }
+
+/** The columns that hold finished tasks (the server pages these). */
+const FINISHED_COLUMNS: ReadonlySet<KanbanColumnKey> = new Set<KanbanColumnKey>(['complete', 'fallen']);
 
 interface ColumnDef {
   key: KanbanColumnKey;
@@ -120,6 +125,7 @@ const KanbanColumn = ({
   onTaskClick,
   onTaskDeleted,
   onDrop,
+  onShowOlder,
 }: {
   column: ColumnDef;
   tasks: Task[];
@@ -128,6 +134,7 @@ const KanbanColumn = ({
   onTaskClick: (taskId: string) => void;
   onTaskDeleted?: () => void;
   onDrop: (taskId: string, newStatus: Task['status']) => void;
+  onShowOlder?: () => void;
 }) => {
   const [dragOver, setDragOver] = useState(false);
 
@@ -175,6 +182,10 @@ const KanbanColumn = ({
 
       {tasks.length === 0 && (
         <div className="kempty">{dragOver ? 'Drop here' : 'No tasks'}</div>
+      )}
+
+      {onShowOlder && (
+        <button type="button" className="btn btn--sm" onClick={onShowOlder}>Show older finished tasks</button>
       )}
     </div>
   );
@@ -255,7 +266,7 @@ const SORT_BY_COLUMN: Record<KanbanColumnKey, Cmp> = {
   fallen: (a, b) => desc(a.updatedAt, b.updatedAt),
 };
 
-export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChange, onTaskDeleted }: KanbanBoardProps) => {
+export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChange, onTaskDeleted, onShowOlderFinished }: KanbanBoardProps) => {
   const tasksByStatus = columns.reduce(
     (acc, col) => {
       acc[col.key] = tasks
@@ -290,6 +301,7 @@ export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChang
             onTaskClick={onTaskClick}
             onTaskDeleted={onTaskDeleted}
             onDrop={handleDrop}
+            onShowOlder={FINISHED_COLUMNS.has(col.key) ? onShowOlderFinished : undefined}
           />
         ))}
       </div>

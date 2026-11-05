@@ -113,3 +113,32 @@ describe('the tracker lines around a close', () => {
     expect(read('work/row-authority.ts')).not.toContain('close it out with status="complete"');
   });
 });
+
+// v3.5 field fix 3, audit #5 (W7, the owner: "figure out how we make the dojo a place where agents will
+// actually get the job done and not just figure out ways to get the task closed."). Engine text states
+// facts and asks where work stands; it never coaches a close. The check-in tiers, the main agent's
+// escalation, the delivery-on-record check-in, the PM's retask and the tool index's tracker reflex all
+// used to carry "Finished? close it" lines.
+describe('audit #5 (W7): no engine line coaches a close', () => {
+  // The coaching forms. "Do not close it for the agent" (the main agent's escalation) is the opposite.
+  const COACHING = [/Finished\?/, /\bclose it with\b/i, /status="complete"/, /If (it is|you are) finished/i, /When a task is done, close it/];
+  it.each([...TIERS, 'escalate_primary'])('%s check-in coaches no close', (type) => {
+    const text = poke(type);
+    for (const re of COACHING) expect(text, `${type}: ${re}`).not.toMatch(re);
+    if (type !== 'escalate_primary') expect(text).toContain('work_note');   // the assignee is still asked where the work stands
+  });
+
+  it('the delivery-on-record check-in, the PM retask and the index reflex coach no close', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const pm = fs.readFileSync(path.join(here, '../pm-agent.ts'), 'utf8');
+    const delivery = pm.slice(pm.indexOf('DELIVERY ON RECORD: task'), pm.indexOf(': buildPokeMessage(task'));
+    expect(delivery.length).toBeGreaterThan(50);
+    expect(delivery).not.toMatch(/close it with/i);
+    expect(delivery).not.toMatch(/status="complete"/);
+    const tools = fs.readFileSync(path.join(here, '../tools.ts'), 'utf8');
+    const retask = tools.slice(tools.indexOf('Do the work the directive describes'), tools.indexOf('Do the work the directive describes') + 300);
+    expect(retask).not.toMatch(/close it/i);   // retask names no close at all now
+    const index = fs.readFileSync(path.join(here, '../../tools/categories.ts'), 'utf8');
+    expect(index).not.toContain('When a task is done, close it');
+  });
+});

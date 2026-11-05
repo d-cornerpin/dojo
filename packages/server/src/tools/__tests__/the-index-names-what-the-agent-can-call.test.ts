@@ -107,7 +107,8 @@ const ALWAYS_LOADED_MIRRORED = ['load_tool_docs', 'file_read'];
 // script run against the working tree before categories.ts was edited, then
 // JSON.stringify'd so this literal is byte-exact — including the single
 // trailing newline — with no risk of a hand-retyped mismatch).
-const PRE_T80B_OUTPUT = "## Available Tools\n\nTools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.\n**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task, file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and breaks the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type a URL from memory, if you don't have the full string, call the source tool again.\n\n**Always-loaded tools**: load_tool_docs, file_read\n\n**Meta:** `load_tool_docs`\n\n**File & System:** `file_read`, `file_list`, `exec`\n\n**Web:** `web_search`, `web_fetch`\n\n**Managing Other Agents:** `list_agents`, `spawn_agent`\n\n**Gmail:** `gmail_search`, `gmail_read`, `gmail_inbox`, `gmail_send`, `gmail_reply`, `gmail_forward`, `gmail_draft`, `gmail_label`, `gmail_list_labels`, `gmail_create_label`, `gmail_delete_label`, `gmail_list_attachments`, `gmail_read_attachment`\n\n**Google Calendar:** `calendar_agenda`, `calendar_search`, `calendar_list`, `calendar_create`, `calendar_update`, `calendar_delete`, `calendar_respond_invite`, `calendar_subscribe`, `calendar_unsubscribe`, `calendar_freebusy`\n\n**User-account variants (23):** every Gmail / Google / Microsoft tool above also has a `user_`-prefixed twin (e.g. `user_gmail_send`, `user_calendar_create`, `user_outlook_inbox`) that acts on the OWNER's personal account instead of your agent account. Call `load_tool_docs` on the `user_` name exactly as you would the base tool.\n";
+// Test-2 rank 7 RE-BLESSED this capture: the mirrored twins are listed literally (was a pattern sentence).
+const PRE_T80B_OUTPUT = "## Available Tools\n\nTools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.\n**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task, file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and breaks the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type a URL from memory, if you don't have the full string, call the source tool again.\n\n**Always-loaded tools**: load_tool_docs, file_read\n\n**Meta:** `load_tool_docs`\n\n**File & System:** `file_read`, `file_list`, `exec`\n\n**Web:** `web_search`, `web_fetch`\n\n**Managing Other Agents:** `list_agents`, `spawn_agent`\n\n**Gmail:** `gmail_search`, `gmail_read`, `gmail_inbox`, `gmail_send`, `gmail_reply`, `gmail_forward`, `gmail_draft`, `gmail_label`, `gmail_list_labels`, `gmail_create_label`, `gmail_delete_label`, `gmail_list_attachments`, `gmail_read_attachment`\n\n**Google Calendar:** `calendar_agenda`, `calendar_search`, `calendar_list`, `calendar_create`, `calendar_update`, `calendar_delete`, `calendar_respond_invite`, `calendar_subscribe`, `calendar_unsubscribe`, `calendar_freebusy`\n\n**User-account variants (23):** these act on the OWNER's personal account instead of your agent account, each the twin of the tool above with the same name after `user_`. Call `load_tool_docs` on the `user_` name exactly as you would the base tool: `user_gmail_search`, `user_gmail_read`, `user_gmail_inbox`, `user_gmail_send`, `user_gmail_reply`, `user_gmail_forward`, `user_gmail_draft`, `user_gmail_label`, `user_gmail_list_labels`, `user_gmail_create_label`, `user_gmail_delete_label`, `user_gmail_list_attachments`, `user_gmail_read_attachment`, `user_calendar_agenda`, `user_calendar_search`, `user_calendar_list`, `user_calendar_create`, `user_calendar_update`, `user_calendar_delete`, `user_calendar_respond_invite`, `user_calendar_subscribe`, `user_calendar_unsubscribe`, `user_calendar_freebusy`\n";
 
 describe('PART 1 — the cache gate: a full-access agent gets byte-identical output', () => {
   it('THE CACHE GATE: renders ALL_ACCESS_MIRRORED byte-identically to the captured pre-T80b output', () => {
@@ -115,9 +116,11 @@ describe('PART 1 — the cache gate: a full-access agent gets byte-identical out
     expect(output).toBe(PRE_T80B_OUTPUT);
   });
 
-  it('a full-access agent never triggers the reworded sentence — the old wording is exact and unconditional here', () => {
+  it('test-2 rank 7: the pattern sentence is retired; the twins are named, never "e.g." examples', () => {
     const output = generateToolIndex(makeTools(ALL_ACCESS_MIRRORED_NAMES), ALWAYS_LOADED_MIRRORED);
-    expect(output).toContain('every Gmail / Google / Microsoft tool above also has a `user_`-prefixed twin');
+    expect(output).not.toContain('every Gmail / Google / Microsoft tool above also has a `user_`-prefixed twin');
+    expect(output).not.toContain('(e.g. `user_gmail_send`');
+    expect(output).toContain('`user_gmail_list_labels`');
   });
 });
 
@@ -218,8 +221,8 @@ describe('PART 3 — the summary sentence stops claiming "above" once a family w
     expect(output).not.toContain('every Gmail / Google / Microsoft tool above also has a `user_`-prefixed twin');
   });
 
-  it('the reworded sentence is still true: it scopes the claim to categories that show a canonical name above', () => {
-    expect(output).toMatch(/where a category above shows a canonical name/);
+  it('test-2 rank 7: the leftover mirrored twin is named literally', () => {
+    expect(output).toMatch(/\*\*User-account variants \(1\):\*\*[^\n]*`user_gmail_inbox`$/m);
   });
 });
 
@@ -242,9 +245,11 @@ describe('PART 3 — a pure user-slot-only world needs no summary sentence at al
 // specific case is the one that goes back to being swallowed by the old
 // pattern sentence with no literal trace.
 //
-// NOTE ON THE ONE INTENTIONAL EXCEPTION: a tool held in BOTH its canonical
-// and user_ form (a genuine mirror — PRESERVE 3(a)'s golden case) is
-// reported by the pattern sentence, not listed literally by name. That
+// NOTE (test-2 rank 7): the one exception this note used to make, a tool held
+// in BOTH forms covered by a pattern sentence instead of its name, is retired;
+// see the rank-7 block at the end of this file. Historical note follows:
+// a tool held in BOTH its canonical and user_ form was reported by the
+// pattern sentence, not listed literally by name. That
 // exception is locked by Part 1's byte-identity test, so none of the four
 // maps below construct a both-forms-held pair; each base tool name appears
 // in at most one form, which is exactly the shape of every map that
@@ -496,5 +501,41 @@ describe('PART 6 — the seven-reflex block follows the three names its predicat
     // reflexes that assume they are one call away.
     const index = generateToolIndex(makeTools(ALL), ['load_tool_docs']);
     expect(index).not.toContain('**Seven reflexes worth building:**');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// v3.5 field fix 3, test-2 rank 7: THE HELD `user_` TWINS ARE NAMED LITERALLY.
+//
+// The owner's second field test: the agent held both forms of the Gmail tools and had used
+// `user_gmail_search`, `user_gmail_label` and `user_gmail_create_label`, but the index covered every
+// mirrored twin with ONE pattern sentence and three examples. It concluded `user_gmail_list_labels`
+// "doesn't appear to exist". The exception Part 4's note made for mirrored pairs is retired: every
+// held name is in the index literally, in the categories' DECLARED order (stable, never input order).
+// ════════════════════════════════════════════════════════════════════════
+
+describe('test-2 rank 7: every held user_ twin is named literally, in declared order', () => {
+  it('the full-access mirrored map: R6 completeness now holds for the mirrored twins too', () => {
+    const tools = makeTools(ALL_ACCESS_MIRRORED_NAMES);
+    assertEveryNameAppearsLiterally(tools, generateToolIndex(tools, ALWAYS_LOADED_MIRRORED));
+  });
+
+  it('THE INCIDENT: both forms held, and user_gmail_list_labels is on the page', () => {
+    const output = generateToolIndex(makeTools(['load_tool_docs', ...GMAIL_ALL, 'user_gmail_search', 'user_gmail_label', 'user_gmail_create_label', 'user_gmail_list_labels']), ['load_tool_docs']);
+    expect(output).toContain('`user_gmail_list_labels`');
+    expect(output).toMatch(/\*\*User-account variants \(4\):\*\*[^\n]*`user_gmail_search`, `user_gmail_label`, `user_gmail_list_labels`, `user_gmail_create_label`/);
+  });
+
+  it('the order is the categories\' declared order, whatever order the tools arrive in', () => {
+    const names = ['load_tool_docs', 'gmail_search', 'calendar_create', 'gmail_label', 'user_calendar_create', 'user_gmail_label', 'user_gmail_search'];
+    const a = generateToolIndex(makeTools(names), ['load_tool_docs']);
+    const b = generateToolIndex(makeTools([...names].reverse()), ['load_tool_docs']);
+    expect(a).toBe(b);
+    expect(a).toMatch(/`user_gmail_search`, `user_gmail_label`, `user_calendar_create`/);
+  });
+
+  it('nothing volatile: the line is a function of the held names only (byte-identical across calls)', () => {
+    const tools = makeTools(ALL_ACCESS_MIRRORED_NAMES);
+    expect(generateToolIndex(tools, ALWAYS_LOADED_MIRRORED)).toBe(generateToolIndex(tools, ALWAYS_LOADED_MIRRORED));
   });
 });
