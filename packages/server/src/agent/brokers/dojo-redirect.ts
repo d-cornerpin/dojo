@@ -288,7 +288,11 @@ function shapeSql(words: readonly Word[]): string | null {
   i++;
   while (i < words.length && words[i].plain && OUTPUT_FLAGS.has(words[i].value)) i++;
   const sql = words[i];
-  if (!sql || i + 1 !== words.length || sql.expands) return null;
+  if (!sql || sql.expands) return null;
+  // Re-review 5 LOW: `.schema agents` as two plain words is the quoted `".schema agents"`.
+  const table = words[i + 1];
+  if (sql.plain && sql.value === '.schema' && table && i + 2 === words.length && table.plain && /^[A-Za-z_]\w*$/.test(table.value)) return `.schema ${table.value}`;
+  if (i + 1 !== words.length) return null;
   if (!sql.quotedWhole && !(sql.plain && (sql.value === '.tables' || sql.value === '.schema'))) return null;   // one plain dot-command word
   return sql.value;
 }
