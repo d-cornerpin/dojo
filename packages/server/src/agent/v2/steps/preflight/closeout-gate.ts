@@ -61,11 +61,20 @@ export async function runCloseoutGate(
   // also close them out"): tracker hygiene is still a hard precondition,
   // just with a sane idle window before it kicks in.
   try {
-    // (1) Tasks the agent is in_progress on but hasn't touched in the
-    // last CLOSE_OUT_IDLE_MINUTES. "Touched" is the task's own movement
-    // (`work/task-freshness.ts`): a status, step or edit, a note naming it,
+    // (1) Tasks the agent is in_progress on but did not touch during its last WHOLE turn. "Touched"
+    // is the task's own movement (`work/task-freshness.ts`): a status, step or edit, a note naming it,
     // a turn whose trigger names it. Never another task's park (t143 r2).
-    const CLOSE_OUT_IDLE_MINUTES = 10;
+    //
+    // FIELD FIX 3 AUDIT ROUND (#8): this was "not touched in the last 10 minutes", a fixed clock (owner:
+    // "I don't want to put hard limits on the dojo"; "we can't have the dojo panick every 15 minutes
+    // because an agent isn't responding"). A slow model mid-call read as having abandoned its task. The
+    // real signal is the agent's own record: it has had a whole turn since the task last moved, and the
+    // task did not move in it. With no finished turn on record, nothing has been passed over.
+    const lastTurn = db.prepare(
+      `SELECT CAST(strftime('%s', started_at) AS INTEGER) * 1000 AS started_ms FROM turns
+        WHERE agent_id = ? AND ended_at IS NOT NULL ORDER BY turn_number DESC LIMIT 1`,
+    ).get(agentId) as { started_ms: number | null } | undefined;
+    const passedOverBefore = lastTurn?.started_ms ?? null;
     // t143 r4 (C1): only the job in flight (the standing carry) is exempt, however busy the agent has been.
     const jobWork = jobCarriedIds(agentId);
     const inProgressDanglers = (db.prepare(`
@@ -76,7 +85,7 @@ export async function runCloseoutGate(
         AND ${taskMovedAtSql('w')} < ?
       ORDER BY ${taskMovedAtSql('w')} ASC
       LIMIT 10
-    `).all(agentId, Date.now() - CLOSE_OUT_IDLE_MINUTES * 60_000) as Array<{ id: string; title: string; kind: string }>)
+    `).all(agentId, passedOverBefore ?? 0) as Array<{ id: string; title: string; kind: string }>)
       .filter((r) => !jobWork.includes(r.id));
 
     // (2) Stranded on_deck tasks. Catches the Presenton-shaped failure:
@@ -88,9 +97,9 @@ export async function runCloseoutGate(
     //
     // Criteria: on_deck task assigned to this agent, in a project this
     // agent created, the project has zero in_progress tasks, and the
-    // task hasn't been touched in 30+ minutes. The 30-minute floor
-    // prevents this from firing inside the same conversation as the
-    // creation, only catches genuinely abandoned work between sessions.
+    // task was not touched during the agent's last whole turn (field fix 3
+    // audit round: the same record-based signal, replacing a 30-minute
+    // clock; it still never fires inside the turn that created the task).
     const strandedRows = (db.prepare(`
       SELECT t.id AS id, t.title AS title, 'stranded' AS kind FROM work t
       INNER JOIN work p ON p.id = t.parent_id
@@ -108,7 +117,7 @@ export async function runCloseoutGate(
         )
       ORDER BY ${taskMovedAtSql('t')} ASC
       LIMIT 10
-    `).all(agentId, Date.now(), agentId, Date.now() - 30 * 60_000) as Array<{ id: string; title: string; kind: string }>)
+    `).all(agentId, Date.now(), agentId, passedOverBefore ?? 0) as Array<{ id: string; title: string; kind: string }>)
       .filter((r) => !jobWork.includes(r.id));
 
     // BUG-2 (comms-audit convergence pass): NEVER arm the close-out gate on a turn a

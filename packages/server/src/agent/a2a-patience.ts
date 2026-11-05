@@ -55,8 +55,9 @@ export interface A2ARetryBudget {
   floorSeconds: number;
   /** The undeclared-provider floor the ratio is taken against. */
   baselineSeconds: number;
-  /** `declared` when the recipient's provider named a patience, `default` otherwise. */
-  basis: 'declared' | 'default';
+  /** `declared` when the recipient's provider named a patience, `measured` when its own recent calls
+   *  took longer (field fix 3 audit round), `default` otherwise. */
+  basis: 'declared' | 'default' | 'measured';
 }
 
 /**

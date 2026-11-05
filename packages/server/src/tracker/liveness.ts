@@ -124,6 +124,29 @@ export function taskLastMovedAt(taskId: string, updatedAtMs: number): number {
   } catch { return updatedAtMs; /* the row's own clock, as before */ }
 }
 
+/** FIELD FIX 3 AUDIT ROUND (#8), OR-LONG-JOBS: "If the agent gives the PM a response that suggests
+ *  they are still working on the project, then the PM should let them work." The assignee's newest
+ *  answer since the PM first checked in on this task after it last moved (`movedAtMs`): its own entry
+ *  on the task (a "still working" note counts), or any model call it made (tokens moving). `null` when
+ *  nothing since, or when the PM has not checked in since the task moved, so the first check-in still
+ *  comes on schedule for a busy agent that dropped this task. A record read, no wording read. */
+export function answeredSinceCheckIn(taskId: string, agentId: string, movedAtMs: number): number | null {
+  try {
+    const db = getDb();
+    const lastCheckIn = (db.prepare(`SELECT MIN(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'poke' AND created_at > ?`)
+      .get(taskId, movedAtMs) as { at: number | null } | undefined)?.at ?? null;
+    if (lastCheckIn === null) return null;
+    const own = (db.prepare(`SELECT MAX(created_at) AS at FROM work_events
+        WHERE work_id = ? AND created_at > ? AND actor IN (?, 'agent:' || ?)`)
+      .get(taskId, lastCheckIn, agentId, agentId) as { at: number | null } | undefined)?.at ?? null;
+    const tokens = (db.prepare(`SELECT MAX(${textMs('created_at')}) AS at FROM cost_records
+        WHERE agent_id = ? AND ${textMs('created_at')} > ?`)
+      .get(agentId, lastCheckIn) as { at: number | null } | undefined)?.at ?? null;
+    const newest = Math.max(own ?? 0, tokens ?? 0);
+    return newest > 0 ? newest : null;
+  } catch { return null; }
+}
+
 function roleOf(agentId: string): string {
   if (isPrimaryAgent(agentId)) return 'your main agent';
   if (isPMAgent(agentId)) return 'project manager';

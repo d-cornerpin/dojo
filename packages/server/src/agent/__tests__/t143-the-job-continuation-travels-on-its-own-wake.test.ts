@@ -96,6 +96,14 @@ async function engineTurn(turnNumber: number, root: Root, body: () => Promise<vo
   try { await body(); } finally { endTurnContext(AGENT); }
 }
 
+/** Field fix 3 audit round (#8): the close-out gate names a task the agent passed over for a whole
+ *  turn (its record), not one idle past a 10-minute clock. The agent's next whole turn, on record. */
+function aWholeTurnPassedItOver(): void {
+  const sqlAt = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+  mockDb.current!.prepare(`INSERT INTO turns (agent_id, turn_number, kind, subject_kind, answered, started_at, ended_at, exit_reason)
+    VALUES (?, 8, 'user', 'conv', 1, ?, ?, 'answered')`).run(AGENT, sqlAt(Date.now() - 2 * MIN), sqlAt(Date.now() - MIN));
+}
+
 /** The real close-out gate, as a trigger-less continuation turn meets it. */
 async function gateNames(): Promise<string[]> {
   const { initState } = m.state;
@@ -168,6 +176,7 @@ describe('ROUND 6: the job travels on its own continuation wake', () => {
     // The chain ended cleanly: nothing carries the task now, and a later turn judges it like any other.
     expect(jobCarriedIds(AGENT)).toEqual([]);
     vi.setSystemTime(Date.now() + 15 * MIN);
+    aWholeTurnPassedItOver();
     await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
   });
 });
@@ -186,6 +195,7 @@ describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', 
     await vi.advanceTimersByTimeAsync(600);                                                     // the drain skips the wake
     expect(jobCarriedIds(AGENT)).toEqual([]);
     vi.setSystemTime(Date.now() + 15 * MIN);
+    aWholeTurnPassedItOver();
     await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
   });
 
@@ -225,6 +235,7 @@ describe('MERGE (t143 + t148): the one status writer does both jobs', () => {
     expect(lastError()).toMatch(/^\[budget_stop\]/);
     expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
     vi.setSystemTime(Date.now() + 15 * MIN);
+    aWholeTurnPassedItOver();
     await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
   });
 

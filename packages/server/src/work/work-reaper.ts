@@ -69,14 +69,13 @@ import { STUCK_AGENT_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 const logger = createLogger('work-reaper');
 
 // ════════════════════════════════════════════════════════════════════════════════
-// THE THIRTEEN CLIFFS
+// THE TWELVE CLIFFS (thirteen until field fix 3 audit round #8 removed close_out_idle)
 // ════════════════════════════════════════════════════════════════════════════════
 
 export type DeadlineId =
   | 'approval_stale_pending'
   | 'stuck_agent_check'
   | 'join_ttl_sweep'
-  | 'close_out_idle'
   | 'stale_task_window'
   | 'wake_freshness'
   | 'join_ttl'
@@ -127,12 +126,9 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
       'How often the delegated-join TTL reaper looks. Also a cadence rather than an age: the AGE it enforces is `join_ttl` below. Ten minutes is what the timer in index.ts ran at before this module owned it.',
     carriedFrom: '10 * 60_000 — index.ts, the D13 join TTL reaper interval',
   },
-  close_out_idle: {
-    id: 'close_out_idle', ms: 10 * MIN,
-    reason:
-      'A turn that has said nothing for this long is treated as idle for close-out purposes, so the engine can require an explicit end rather than let a silent turn drift.',
-    carriedFrom: 'CLOSE_OUT_IDLE_MINUTES = 10 — agent/v2/loop.ts (declared inside its function)',
-  },
+  // ⟨TOMBSTONE⟩ `close_out_idle` (10 min, CLOSE_OUT_IDLE_MINUTES) was here. Field fix 3 audit round
+  // (#8): the close-out gate reads the agent's last whole turn, not a clock (owner: "I don't want to
+  // put hard limits on the dojo"). The table holds twelve cliffs now.
   stale_task_window: {
     id: 'stale_task_window', ms: 30 * MIN,
     reason:
@@ -175,7 +171,7 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
   stale_request: {
     id: 'stale_request', ms: 12 * HOUR,
     reason:
-      'An override request the PM has not resolved, or a task awaiting the user\'s verdict, auto-resolves at this age so the system stays honest while humans are away. A TIMEOUT IS NOT A VERDICT: the auto-resolution is recorded as `auto_denied` and nothing is written to `adjudications`, because nobody ruled.',
+      'An override request the PM has not resolved auto-resolves at this age. (A task awaiting a verdict no longer drops to blocked at this age: field fix 3 audit round #9.) A TIMEOUT IS NOT A VERDICT: the auto-resolution is recorded as `auto_denied` and nothing is written to `adjudications`, because nobody ruled.',
     carriedFrom: 'STALE_REQUEST_HOURS = 12 — scheduler/runner.ts',
   },
   join_max_age: {
@@ -479,17 +475,8 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
       await closeRunsThatDelivered();
     },
   },
-  {
-    id: 'terminal-task-prune',
-    everyMs: 3_600_000,
-    cadenceFrom:
-      'PRUNE_INTERVAL_MS = 3600_000 ("once per hour is plenty") — the constant scheduler/runner.ts declared beside its own wall-clock throttle. The hour is carried; what died is the throttle, which existed only because a 30-second timer was calling an hourly job',
-    wakes: false,
-    run: async () => {
-      const { pruneTerminalTasks } = await import('../scheduler/runner.js');
-      pruneTerminalTasks();
-    },
-  },
+  // ⟨TOMBSTONE⟩ `terminal-task-prune` (@1h) was here: it deleted work records (field fix 3 audit
+  // round #9, ruling 9d keeps them). See the tombstone in scheduler/runner.ts.
   {
     id: 'join-ttl',
     everyMs: 10 * 60_000,

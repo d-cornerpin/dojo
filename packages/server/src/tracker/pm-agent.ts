@@ -56,7 +56,7 @@ import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // may import from it, never the reverse, so no cycle.
 import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
 import { effortNoveltyLines } from './effort-ledger.js';
-import { taskLastMovedAt, agentIsLive } from './liveness.js';
+import { taskLastMovedAt, agentIsLive, answeredSinceCheckIn } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
 import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './effort-verdict-failures.js';
@@ -2597,15 +2597,22 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     if ((assigneeStatus === 'working' && !looping) || leftAlone) holdLadder(task.id, getPMAgentId());
     else resumeLadder(task.id, getPMAgentId(), thresholds.first * 1000);
     if (assigneeStatus === 'working') continue;
-    const idleSeconds = Math.max(0, Math.floor((now - movedAt - heldMsSince(task.id, movedAt)) / 1000));
+    // Field fix 3 audit round (#8): the clock runs from the assignee's newest answer since the first
+    // check-in (its own entry on the task, a "still working" note included, or tokens moving), when that
+    // is newer than the task's movement: an agent that said it is working is let work (OR-LONG-JOBS).
+    const answeredAt = answeredSinceCheckIn(task.id, task.assignedTo, movedAt);
+    const clockFrom = Math.max(movedAt, answeredAt ?? 0);
+    const idleSeconds = Math.max(0, Math.floor((now - clockFrom - heldMsSince(task.id, clockFrom)) / 1000));
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
     // the same, the store is the spine, and the previous cycle's pokes survive a remediation.
     // t143/t151: real work on the task since the last check-in (a status, an edit, a deliverable, a turn that
-    // did something) closes it. A reply or a plain note is an ANSWER, recorded, not progress: it re-arms nothing.
+    // did something) closes the cycle. Field fix 3 audit round (#8): so does the assignee's answer (a
+    // "still working" note) or its tokens moving; the old "a plain note re-arms nothing" sent the second
+    // check-in at 15 minutes and the escalation at 30 to an agent that had said it was working.
     const answered = lastPokeOf(task.id);
-    if (answered && movedAt > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
+    if (answered && clockFrom > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
     const lastPoke = lastPokeOf(task.id);
     const lastPokeNumber = currentRung(task.id);
 

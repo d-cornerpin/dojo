@@ -347,7 +347,10 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
     expect(remediations('task-c')).toBe(1);
   });
 
-  it('a bare note is a record, not progress: it does not re-arm either', async () => {
+  // Field fix 3 audit round (#8), OR-LONG-JOBS: "If the agent gives the PM a response that suggests
+  // they are still working on the project, then the PM should let them work." Was: "a bare note is a
+  // record, not progress: it does not re-arm either" (walk item 17, not an owner ruling).
+  it('a "still working" note answers the check-in and re-arms the ladder', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-n', 'the price check', now - 6 * MIN, 'c-1');
@@ -355,9 +358,9 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
     vi.setSystemTime(now + MIN);
     expect(trackerAddNotes('helper', { taskId: 'task-n', notes: 'still working on it' })).toContain('[OK]');
     await sweepAt(now + 2 * MIN);
-    expect(remediations('task-n')).toBe(0);
+    expect(remediations('task-n')).toBe(1);
     await sweepAt(now + 10 * MIN);
-    expect(rungsSent('task-n')).toEqual([1, 2]);
+    expect(rungsSent('task-n')).toEqual([1, 1]);
   });
 
   it('CONTROL: a real change of the task (a status) re-arms', async () => {
@@ -394,7 +397,7 @@ describe('D — a note on a task already at that status is recorded (walk "other
     expect(notes('task-d2')).toEqual([]);
   });
 
-  it('GUARD: and that note is a record, not progress: it does not re-arm the ladder (walk item 17 / ruling B)', async () => {
+  it('and that note is the agent\'s answer: it re-arms the ladder (field fix 3 audit round #8, OR-LONG-JOBS)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-d3', 'the price check', now - 6 * MIN, 'c-1');
@@ -402,6 +405,6 @@ describe('D — a note on a task already at that status is recorded (walk "other
     vi.setSystemTime(now + MIN);
     trackerUpdateStatus('helper', { taskId: 'task-d3', status: 'in_progress', notes: 'still working' });
     await sweepAt(now + 2 * MIN);
-    expect(remediations('task-d3')).toBe(0);
+    expect(remediations('task-d3')).toBe(1);
   });
 });
