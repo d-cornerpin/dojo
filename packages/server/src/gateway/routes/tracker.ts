@@ -5,7 +5,7 @@ import {
   listProjects,
   createTask,
   getTask,
-  listTasks,
+  listTasksPage,
   updateTask,
   addTaskNotes,
   closeProjectAndOpenTasks,
@@ -185,7 +185,8 @@ trackerRouter.post('/projects', async (c) => {
 
 // ── Tasks ──
 
-// GET /tasks — list tasks with filters (hides internal sensei tasks)
+// GET /tasks — list tasks with filters (hides internal sensei tasks). Re-review 2 (S4): the finished ones are
+// paged (`closedBefore` + `closedBeforeId` for the page before; `closedHasOlder` says one exists).
 trackerRouter.get('/tasks', (c) => {
   const status = c.req.query('status') ?? undefined;
   const assignedTo = c.req.query('assignedTo') ?? undefined;
@@ -199,8 +200,15 @@ trackerRouter.get('/tasks', (c) => {
   if (priority) filter.priority = priority;
   if (projectId) filter.projectId = projectId;
 
-  const all = listTasks(Object.keys(filter).length > 0 ? filter : undefined);
-  if (includeSystem) return c.json({ ok: true, data: all });
+  // Re-review 2 (S4): paged. The live tasks come whole on the first page; the finished ones a page at a
+  // time, newest closed first, with the cursor of the oldest one the caller holds for the page before.
+  const closedBefore = c.req.query('closedBefore');
+  const closedBeforeId = c.req.query('closedBeforeId');
+  const page = listTasksPage(Object.keys(filter).length > 0 ? filter : undefined,
+    closedBefore && closedBeforeId ? { before: { at: closedBefore, id: closedBeforeId } } : {});
+  const all = page.tasks;
+  const closedHasOlder = page.closedHasOlder;
+  if (includeSystem) return c.json({ ok: true, data: all, closedHasOlder });
   const hidden = hiddenAgentIdSet();
 
   // v2.9.22: tasks assigned to system agents (PM/Healer/Dreamer) are
@@ -241,7 +249,7 @@ trackerRouter.get('/tasks', (c) => {
     }
     return true;
   });
-  return c.json({ ok: true, data: tasks });
+  return c.json({ ok: true, data: tasks, closedHasOlder });
 });
 
 // GET /tasks/:id — task detail
