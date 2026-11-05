@@ -4101,7 +4101,7 @@ describe('PHASE-6 CUT 7: the execute span kept the A2A re-send cap nobody tested
     // The refusal names the recipient and the cap, and says WHY re-sending cannot help.
     expect(refusals[0]).toContain('"alice"');
     expect(refusals[0]).toContain('5 messages this turn');
-    expect(refusals[0]).toContain('ASYNCHRONOUS');
+    expect(refusals[0]).toContain('asynchronous');   // field fix 3 audit round: a fact, no capitals, no order
   });
 
   it('DIFFERENT RECIPIENTS ARE INDEPENDENT — the cap is per recipient, not per turn', async () => {

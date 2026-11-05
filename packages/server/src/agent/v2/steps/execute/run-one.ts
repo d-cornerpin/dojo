@@ -53,9 +53,8 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   const {
     agentId, turnCtx, triggerRow, hasUnansweredUser, counterparty, identicalCallState,
     startAckArmed, startAckArmedAtMs, engineStartAckDeliveredThisTurn, fireStartAckIfOwed,
-    engineBlockEscapeHatch, engineStartAckAfterMs,
+    engineStartAckAfterMs,
   } = ctx;
-  const ENGINE_BLOCK_ESCAPE_HATCH = engineBlockEscapeHatch;
   const ENGINE_START_ACK_AFTER_MS = engineStartAckAfterMs;
   const onceGuardExecuted = sc.onceGuardExecuted;
   let { state, recentSigs } = sc;
@@ -109,7 +108,7 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     return done({
       toolCallId: tc.id,
       name: tc.name,
-      content: loopCheck.refusalMessage! + '\n\n' + ENGINE_BLOCK_ESCAPE_HATCH,
+      content: loopCheck.refusalMessage!,
       isError: true,
     });
   }

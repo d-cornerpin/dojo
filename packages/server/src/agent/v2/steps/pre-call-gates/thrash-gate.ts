@@ -63,7 +63,6 @@ const THRASH_GATE_DRIFT_HARD_LIMIT = 24;
  */
 export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): StepOutcome {
   const { agentId, turnNumber, counterparty, broadcast, detectTaskThrashing } = ctx;
-  const ENGINE_BLOCK_ESCAPE_HATCH = ctx.engineBlockEscapeHatch;
 
   // Last-resort auto-block. Two conditions trip it:
   //   (1) Refusal count exceeded, agent kept calling gated sigs and
@@ -85,7 +84,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
   // Drift (gate on while the agent varies its call signatures) is a
   // false-positive-prone signal: legitimate progress varies signatures too, so a
   // block at the soft threshold is exactly the "engine stops genuine work" failure
-  // the owner forbids. Inject ONE visible nudge (with the escape-hatch) and let the
+  // the owner forbids. Inject ONE visible nudge and let the
   // agent continue. CRITICAL: do NOT reset the drift window here, the earlier
   // version did, which let a signature-varying spiral loop forever (it never
   // increments the refusal count, so the refusal-breaker never caught it, and on
@@ -98,7 +97,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `[Engine hint] The engine thrash gate has been active for ${drift} iterations and you keep ` +
         `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
         `work_update(action="status") (or work_note), then continue. If you are stuck, tell ${userWords(currentAddress(agentId))} ` +
-        `where things stand and what you need. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
+        `where things stand and what you need.`;
       // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
       // This rung used to write the nudge TWICE: an events-lane row (lifted into
       // `lane.events` on a LATER turn) beside the queue entry. The paragraph that

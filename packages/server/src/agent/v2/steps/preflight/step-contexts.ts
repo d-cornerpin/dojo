@@ -14,8 +14,6 @@
 // job is a relocation. The cost of moving them is three passthroughs and three
 // sibling type imports; the cost of not moving them was a new mechanism.
 //
-// `ENGINE_BLOCK_ESCAPE_HATCH` arrives as an INPUT for the same reason `§6`'s threshold
-// does: it is declared at `loop.ts`'s module level and read outside this span too.
 // ════════════════════════════════════════
 
 import type { Database } from 'better-sqlite3';
@@ -69,7 +67,6 @@ export function runStepContexts(
   input: StepContextsInputs,
 ): StepContextsOutputs {
   const { agentId, stopStatusHeartbeat, detectTaskThrashing } = ctx;
-  const ENGINE_BLOCK_ESCAPE_HATCH = ctx.engineBlockEscapeHatch;
   const {
     db, turnNumber, counterparty, counterpartyIsAgentSender, chosenConvKey,
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
@@ -128,7 +125,6 @@ export function runStepContexts(
     counterparty,
     // HL4 step 2 (2d): the ack-delivery pair is GONE from this closure — see the
     // removal note on `PreCallGatesContext`, whose reader was the retired recap.
-    engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
     broadcast, stashContinuationIfHuman, detectTaskThrashing,
   });
 

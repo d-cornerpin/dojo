@@ -88,7 +88,6 @@ export interface PreflightContext {
   readonly startStatusHeartbeat: (agentId: string) => void;
   readonly stopStatusHeartbeat: (agentId: string) => void;
   readonly detectTaskThrashing: (agentId: string) => { thrashing: boolean; toolName?: string; signature?: string; count?: number };
-  readonly engineBlockEscapeHatch: string;
   readonly engineStartAckAfterMs: number;
 }
 

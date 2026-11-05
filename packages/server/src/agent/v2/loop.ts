@@ -101,17 +101,11 @@ import { ensureArtifactDir } from '../artifact-dir.js';
 
 const logger = createLogger('v2-loop');
 
-/** Standard tail appended to false-positive-prone engine refusals: makes the
- *  agent the tripwire for a wrong block. The engine can't always tell a genuine
- *  action from a pathological one, so when it refuses, the agent, which DOES
- *  have the context, is told to surface a wrong-looking block to the user
- *  instead of silently giving up. Strictly additive: it never blocks anything,
- *  it only adds a chance the user hears about a block that shouldn't have
- *  happened. (Model-dependent, so not a guarantee, a safety net, not a gate.) */
-const ENGINE_BLOCK_ESCAPE_HATCH =
-  'If you believe this block is a mistake and it is stopping something the person you are talking to genuinely needs, ' +
-  'do NOT silently give up, tell the person you are talking to what you were trying to do and that the engine blocked it, ' +
-  'so they can decide.';
+// ⟨TOMBSTONE⟩ The engine-block "escape hatch" tail lived here (v3.5 field fix 3, audit round #4). It was
+// appended to five engine refusals and told the agent to tell the person the engine had refused it and
+// let them decide: it handed the owner the engine's problem and narrated engine internals (owner,
+// 2026-11-04: he is furious when the agent tells him to do it himself). Each refusal now states its
+// facts. requirement preserved: a refusal still names what was refused and why, so the agent can act.
 
 // PHASE-6 T6 (CUT 8): `REDUNDANT_CLOSEOUT_MAX_CHARS` and `argsForResult` MOVED with the
 // code that binds them — every one of their five uses was inside the `postCallClassify`
@@ -395,7 +389,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // four status helpers measure zero readers outside and are passed anyway: they are
     // `setAgentStatus`'s own machinery, and it cannot move.
     setAgentStatus, startStatusHeartbeat, stopStatusHeartbeat, detectTaskThrashing,
-    engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
     engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
   });
   if (preflight.directive === 'abandon') return;
@@ -612,7 +605,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // pinning it here BY PATH on purpose.
         staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
         maxToolLoops: MAX_TOOL_LOOPS,
-        engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
         engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
       });
       turnCtx.state = executed.state;

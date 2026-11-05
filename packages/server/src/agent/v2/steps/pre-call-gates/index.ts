@@ -87,7 +87,6 @@ export interface PreCallGatesContext {
    * the driver because four of its five readers are in the `execute` tranche; passing
    * it keeps ONE definition rather than a second copy here.
    */
-  readonly engineBlockEscapeHatch: string;
   readonly broadcast: (event: WsEvent) => void;
   /** A closure over driver state (C3). Passed as a VALUE, which keeps its bindings. */
   readonly stashContinuationIfHuman: () => void;

@@ -115,7 +115,6 @@ export interface ExecuteContext {
    *  has a guard pinning it at `loop.ts` BY PATH on purpose (CUT 6's finding). */
   readonly staleTaskWindowMinutes: number;
   readonly maxToolLoops: number;
-  readonly engineBlockEscapeHatch: string;
   readonly engineStartAckAfterMs: number;
 }
 

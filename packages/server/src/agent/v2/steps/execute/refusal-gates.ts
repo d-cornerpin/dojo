@@ -55,8 +55,7 @@ export function runRefusalGates(
   ctx: ExecuteContext,
   isA2AReplyTool: boolean,
 ): { state: AgentTurnState; refusal: PendingToolResult | null } {
-  const { agentId, turnNumber, turnCtx, counterparty, reminderLaneRefusedSigs, engineBlockEscapeHatch } = ctx;
-  const ENGINE_BLOCK_ESCAPE_HATCH = engineBlockEscapeHatch;
+  const { agentId, turnNumber, turnCtx, counterparty, reminderLaneRefusedSigs } = ctx;
 
 
   // ── Reminder-delivery lane (destination-from-root) ──
@@ -110,11 +109,11 @@ export function runRefusalGates(
       a.to_agent ?? a.agent ?? a.to ?? a.recipient ?? a.group ?? a.group_id ?? '',
     ).trim().toLowerCase();
     if (recip && (state.sendsPerAgentThisTurn[recip] ?? 0) >= A2A_SEND_CAP_PER_RECIPIENT) {
+      // Audit round (#4): facts, not orders and not the escape hatch.
       const refusal =
-        `[System: you have already sent "${recip}" ${A2A_SEND_CAP_PER_RECIPIENT} messages this turn. ` +
-        `Inter-agent replies are ASYNCHRONOUS, "${recip}" answers on their OWN next turn, not in this one. ` +
-        `Re-sending the same ask (even reworded) does NOT get a faster reply; it only spams them. ` +
-        `End your turn now; you will see their reply when it arrives. ${ENGINE_BLOCK_ESCAPE_HATCH}]`;
+        `Refused: you have already sent "${recip}" ${A2A_SEND_CAP_PER_RECIPIENT} messages this turn. ` +
+        `Inter-agent replies are asynchronous: "${recip}" answers on its own next turn, and its reply arrives then. ` +
+        `A re-sent or reworded ask does not get a faster reply.`;
       try {
         broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
         broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
@@ -145,8 +144,7 @@ export function runRefusalGates(
         `  (a) Continue the work from that result: the next item or step, or \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
         `  (b) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
         `  (c) Send ${userWords(turnCtx.address)} a direct question if you need clarification.\n` +
-        `  (d) Only if the work is done: work_update(action="status", status='complete', result='...', evidence=[...]).\n\n` +
-        ENGINE_BLOCK_ESCAPE_HATCH;
+        `  (d) Only if the work is done: work_update(action="status", status='complete', result='...', evidence=[...]).`;
       state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
       logger.warn('v2: thrash gate refused tool call', {
         toolName: tc.name, signature: thisSig,
@@ -271,7 +269,7 @@ export function runRefusalGates(
   if (closeOut.refuse) {
     const taskListShort = closeOut.live.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
     // v3.5 field fix 3 (#2): NO ESCAPE HATCH HERE. The shared tail told the agent to "tell the
-    // person ... that the engine blocked it". On an A2A turn that made the primary text the
+    // person" the engine had refused it. On an A2A turn that made the primary text the
     // owner about tracker plumbing. Steers state facts; the engine never sends the agent to
     // narrate engine internals to the owner. The tracker call this gate asks for is always
     // allowed, so the gate cannot trap a genuine need.
@@ -346,8 +344,7 @@ export function runRefusalGates(
       `Write the combined reply now, as this turn's message; do not look anything up first. ` +
       `Only two calls run while this is owed: ONE send_to_agent (if a piece is a hand-off rather than a ` +
       `deliverable, ask that agent for the result directly), and a tracker status call. ` +
-      `"${tc.name}" works normally again as soon as the reply lands.\n\n` +
-      ENGINE_BLOCK_ESCAPE_HATCH
+      `"${tc.name}" works normally again as soon as the reply lands.`
     );
     try {
       broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
