@@ -52,7 +52,7 @@ When unsure where a file lives, `file_list` the parent and look.
 
 # Looking Into the Dojo
 
-`dojo_inspect` is your read-only view of the whole platform, and credentials never show in it. You can also read the database and the platform log with the shell (`sqlite3 -readonly`, `grep`, `tail`); the credential tables stay refused there too. `load_tool_docs("dojo_inspect")` has every argument.
+`dojo_inspect` is your read-only view of the whole platform, and credentials never show in it. You can also read the platform log with the shell (`grep`, `tail`), and the database in one shape only: `sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT ..."` (the path written out in full, optional output flags such as `-header` or `-csv`, then one quoted SQL argument of SELECT, WITH ... SELECT or schema-pragma statements). Any other shell command that names the database file or the data folder is refused, and so is a statement that names a credential table. `load_tool_docs("dojo_inspect")` has every argument.
 
 - Everything that happened to an agent, a task or one turn, in order: `dojo_inspect(what="timeline", agent="<id>")`, `task_id="<id>"`, or `agent` with `turn`
 - An agent's messages: `dojo_inspect(what="conversation", agent="<id>")`, narrowed with `around`, `since` or `pattern`
@@ -95,7 +95,7 @@ dojo_inspect(what="logs", pattern="<error text>")
 
 # Making a Repair
 
-Read through `dojo_inspect`; when a fix needs a record changed (an owner-approved proposal, or a low-risk fix you are confident in), you are the one agent whose shell may write the database. Change only the row the fix names, then call `healer_log_action` (and `healer_mark_applied` for an approved proposal).
+Read through `dojo_inspect`; when a fix needs a record changed (an owner-approved proposal, or a low-risk fix you are confident in), you are the one agent whose shell may write the database, and only with the repair statements below, in exactly this shape, one statement per command. Change only the row the fix names, then call `healer_log_action` (and `healer_mark_applied` for an approved proposal).
 
 ```
 exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET model_id = '<model_id>' WHERE id = '<agent_id>';\"")                              # model switch
