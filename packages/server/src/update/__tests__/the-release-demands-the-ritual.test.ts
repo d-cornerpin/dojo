@@ -86,7 +86,7 @@ const ritualMarker = () => ({
   ritualVersion: 2,
   targetedVersion: 'v9.9.9',
   fixesAfterFinalDraw: false,
-  targeted: Array.from({ length: 5 }, (_, i) => ({
+  targeted: Array.from({ length: 2 }, (_, i) => ({
     id: `targeted-probe-0${i + 1}`,
     attempts: 3,
     passCount: 3,
@@ -182,24 +182,26 @@ describe('LANE-3 — every way the ritual can be unproven is refused', () => {
   });
 
   it.each([
-    ['one of the five was not all green', (m: ReturnType<typeof ritualMarker>) => { m.targeted[0].allGreen = false; }, 'allGreen'],
+    ['one of the two was not all green', (m: ReturnType<typeof ritualMarker>) => { m.targeted[0].allGreen = false; }, 'allGreen'],
     ['one scenario ran only two attempts', (m: ReturnType<typeof ritualMarker>) => { m.targeted[1].attempts = 2; }, 'needs exactly 3'],
-    ['one scenario passed two of its three attempts', (m: ReturnType<typeof ritualMarker>) => { m.targeted[2].passCount = 2; }, 'unanimity'],
-    ['one scenario is not identified', (m: ReturnType<typeof ritualMarker>) => { m.targeted[3].id = ''; }, 'non-empty'],
-    ['four scenarios instead of five', (m: ReturnType<typeof ritualMarker>) => { m.targeted.pop(); }, 'needs exactly 5'],
-    ['six scenarios instead of five', (m: ReturnType<typeof ritualMarker>) => {
-      m.targeted.push({ id: 'targeted-probe-06', attempts: 3, passCount: 3, allGreen: true, gitSha: HEAD });
-    }, 'needs exactly 5'],
-    ['five copies of one scenario', (m: ReturnType<typeof ritualMarker>) => {
+    ['one scenario passed two of its three attempts', (m: ReturnType<typeof ritualMarker>) => { m.targeted[0].passCount = 2; }, 'unanimity'],
+    ['one scenario is not identified', (m: ReturnType<typeof ritualMarker>) => { m.targeted[1].id = ''; }, 'non-empty'],
+    ['one scenario instead of two', (m: ReturnType<typeof ritualMarker>) => { m.targeted.pop(); }, 'needs exactly 2'],
+    ['three scenarios instead of two', (m: ReturnType<typeof ritualMarker>) => {
+      m.targeted.push({ id: 'targeted-probe-03', attempts: 3, passCount: 3, allGreen: true, gitSha: HEAD });
+    }, 'needs exactly 2'],
+    ['five scenarios, the count retired on 2026-11-06', (m: ReturnType<typeof ritualMarker>) => {
+      for (const n of [3, 4, 5]) m.targeted.push({ id: `targeted-probe-0${n}`, attempts: 3, passCount: 3, allGreen: true, gitSha: HEAD });
+    }, 'needs exactly 2'],
+    ['two copies of one scenario', (m: ReturnType<typeof ritualMarker>) => {
       m.targeted = m.targeted.map((r) => ({ ...r, id: 'targeted-probe-01' }));
     }, 'distinct'],
-    ['one scenario records no head', (m: ReturnType<typeof ritualMarker>) => { m.targeted[4].gitSha = ''; }, 'gitSha missing'],
-    // THE ONE-HEAD RULE, v1's "a fix landed between the two proofs", generalised to five.
-    ['a fix landed between two of the five', (m: ReturnType<typeof ritualMarker>) => { m.targeted[2].gitSha = OTHER; }, 'not the same commit'],
-    // ...and "no fix landed SINCE", which stays a release-time comparison against the real HEAD.
-    ['the ritual proved a different tree', (m: ReturnType<typeof ritualMarker>) => { m.dojoHead = OTHER; m.gitSha = OTHER; }, 'not the tree being shipped'],
+    ['one scenario records no head', (m: ReturnType<typeof ritualMarker>) => { m.targeted[1].gitSha = ''; }, 'gitSha missing'],
+    // THE ONE-HEAD RULE, v1's "a fix landed between the two proofs", generalised.
+    ['a fix landed between the two', (m: ReturnType<typeof ritualMarker>) => { m.targeted[1].gitSha = OTHER; }, 'not the same commit'],
+    // "No product change SINCE" is the release-time rule marker_matches_tree, proven against real git at the end of this file.
     ['a fix landed after the ritual', (m: ReturnType<typeof ritualMarker>) => { m.fixesAfterFinalDraw = true; }, 'fixesAfterFinalDraw'],
-    ['the marker does not say which cut the five probed', (m: ReturnType<typeof ritualMarker>) => { m.targetedVersion = '  '; }, 'targetedVersion'],
+    ['the marker does not say which cut the two probed', (m: ReturnType<typeof ritualMarker>) => { m.targetedVersion = '  '; }, 'targetedVersion'],
     ['a pre-redesign kit wrote the marker (no ritualVersion)', (m: Record<string, unknown>) => { delete m.ritualVersion; }, 'ritualVersion'],
     ['the marker claims a ritual version this gate does not implement', (m: ReturnType<typeof ritualMarker>) => { m.ritualVersion = 3; }, 'literal 2'],
   ])('RED: %s', (_label, mutate, expected) => {
@@ -280,7 +282,7 @@ describe('the copy and the original check the same fields', () => {
     // And both must agree on the SAME five-different-things rule, measured rather than read.
     const marker = ritualMarker();
     marker.targeted = marker.targeted.map((r) => ({ ...r, id: 'targeted-probe-01' }));
-    expect(verdictFor(marker), 'five copies of one scenario id is one proof recorded five times')
+    expect(verdictFor(marker), 'two copies of one scenario id is one proof recorded twice')
       .not.toBe('');
   });
 
@@ -310,5 +312,111 @@ describe('the copy and the original check the same fields', () => {
       .toMatch(/targeted\|\|\s?\[\]/);
     expect(echoLine, 'the ✓ line should report the per-scenario ratio the gate validated')
       .toMatch(/passCount/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE PAID MARKER COVERS THIS TREE (owner ruling 2026-11-06). release.sh no longer demands the
+// marker's sha EQUAL HEAD. It demands the sha be an ANCESTOR of HEAD and that no product code
+// (packages, watchdog, templates, menubar) changed between them. That rule is one shell function,
+// `marker_matches_tree`, and these clauses run its own bytes against real throwaway git repositories.
+// They replace the old 'the ritual proved a different tree' clause, which tested the retired
+// sha-equality compare.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+function extractMarkerMatchesTree(): string {
+  const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
+  const m = /^marker_matches_tree\(\) \{\n[\s\S]*?\n\}\n/m.exec(sh);
+  if (!m) throw new Error('no marker_matches_tree() { ... } function in deploy/release.sh');
+  return m[0];
+}
+
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.com',
+  GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.com',
+  GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+};
+const git = (repo: string, ...args: string[]): string =>
+  execFileSync('git', args, { cwd: repo, encoding: 'utf-8', env: GIT_ENV }).trim();
+
+function commitFile(repo: string, rel: string, body: string, msg: string): string {
+  fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+  fs.writeFileSync(path.join(repo, rel), body);
+  git(repo, 'add', '--', rel);
+  git(repo, 'commit', '-q', '-m', msg);
+  return git(repo, 'rev-parse', 'HEAD');
+}
+
+function scratchRepo(): string {
+  const repo = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'marker-tree-'));
+  git(repo, 'init', '-q');
+  return repo;
+}
+
+/** What release.sh's own function says about `sha` at the repo's HEAD. */
+function treeVerdict(repo: string, sha: string): { ok: boolean; out: string } {
+  const script = `${extractMarkerMatchesTree()}\nmarker_matches_tree "$1"\n`;
+  try {
+    const out = execFileSync('bash', ['-c', script, 'marker-rule', sha], {
+      cwd: repo, encoding: 'utf-8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { ok: true, out };
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string };
+    return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+  }
+}
+
+describe('the paid marker covers this tree: an ancestor of HEAD with no product code changed since (real git)', () => {
+  it('the rule is one function in release.sh, and the behavioral gate calls it', () => {
+    const fn = extractMarkerMatchesTree();
+    expect(fn).toMatch(/merge-base --is-ancestor/);
+    expect(fn).toMatch(/git diff --quiet "\$1" HEAD -- packages watchdog templates menubar/);
+    expect(fs.readFileSync(RELEASE_SH, 'utf-8'), 'the behavioral gate no longer asks marker_matches_tree')
+      .toMatch(/marker_matches_tree "\$BEHAV_SHA"/);
+  });
+
+  it('ACCEPTS an ancestor marker when only gate-side and doc files changed after it', () => {
+    const repo = scratchRepo();
+    try {
+      const marker = commitFile(repo, 'packages/server/src/feature.ts', 'export const v = 1;\n', 'product at the paid run');
+      commitFile(repo, 'deploy/checks/check-fixture.mjs', '// gate side\n', 'gate-side change after the paid run');
+      commitFile(repo, 'docs/notes.md', 'notes\n', 'doc change after the paid run');
+      const accepted = treeVerdict(repo, marker);
+      expect(accepted.ok, `an ancestor with no product diff must be accepted: ${accepted.out}`).toBe(true);
+      expect(treeVerdict(repo, git(repo, 'rev-parse', 'HEAD')).ok, 'a marker at HEAD itself is accepted').toBe(true);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'packages/server/src/feature.ts', 'watchdog/w.ts', 'templates/SOUL.md', 'menubar/m.swift',
+  ])('REFUSES once product code changed after the paid run (%s), naming the file', (rel) => {
+    const repo = scratchRepo();
+    try {
+      const marker = commitFile(repo, 'packages/server/src/feature.ts', 'export const v = 1;\n', 'product at the paid run');
+      commitFile(repo, rel, 'changed after the paid run\n', `product change in ${rel}`);
+      const refused = treeVerdict(repo, marker);
+      expect(refused.ok, `a change to ${rel} after the paid run must be refused`).toBe(false);
+      expect(refused.out).toContain('product code changed since the paid run');
+      expect(refused.out, 'the refusal names the file that differs').toContain(rel);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('REFUSES a marker sha that is not an ancestor of HEAD, even with no product diff', () => {
+    const repo = scratchRepo();
+    try {
+      const marker = commitFile(repo, 'packages/server/src/feature.ts', 'export const v = 1;\n', 'product at the paid run');
+      const side = git(repo, 'commit-tree', `${marker}^{tree}`, '-m', 'a tree HEAD does not descend from');
+      const refused = treeVerdict(repo, side);
+      expect(refused.ok, 'a non-ancestor must be refused').toBe(false);
+      expect(refused.out).toContain('is not an ancestor of HEAD');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

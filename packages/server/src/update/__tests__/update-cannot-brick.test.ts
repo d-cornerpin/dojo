@@ -331,7 +331,8 @@ describe('update-cannot-brick — release gating', () => {
     const manifestPath = path.join(REPO_ROOT, 'deploy/checks/gate-manifest.mjs');
     const { GATES } = await import(/* @vite-ignore */ manifestPath) as { GATES: Array<{ id: string; tier: string }> };
     const wd = GATES.find(g => g.id === 'watchdog-contract');
-    expect(wd?.tier).toBe('blocking');
+    // Report tier since the owner ruling of 2026-11-06: it still runs on every release and prints its verdict.
+    expect(wd?.tier).toBe('report');
   });
 });
 
