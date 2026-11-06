@@ -46,7 +46,9 @@ import { generateSummary } from '../summarize.js';
 import { insertMessage } from '../message-store.js';
 import { eligibleSummaryWriters, summaryWriterCandidates, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { writersMayBeBack } from '../writer-wait.js';
-import { resolveSummaryWriterModel } from '../compaction.js';
+import { resolveSummaryWriterModel, rebuildContextItems } from '../compaction.js';
+import { createLeafSummary } from '../dag.js';
+import { condenseUntilFits } from '../condense-until-fits.js';
 import { __resetBrakesForTests, compactionIsBraked } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
@@ -214,9 +216,6 @@ describe('a cloud own-model writer is never refused for local memory', () => {
 
   it('the pair walk\'s refusal names the own model\'s verdict, not only the small writer\'s memory', async () => {
     writers.unreachable.clear();
-    const { createLeafSummary } = await import('../dag.js');
-    const { condenseUntilFits } = await import('../condense-until-fits.js');
-    const { rebuildContextItems } = await import('../compaction.js');
     seed(2);
     const ids = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
     const big = 'Earlier summary: the crew counted the depot and filed the manifests, bay by bay. '.repeat(1_400);   // more than the own 32K model holds as a pair

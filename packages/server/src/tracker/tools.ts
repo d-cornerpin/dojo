@@ -30,7 +30,7 @@ import {
 import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
+import { findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';

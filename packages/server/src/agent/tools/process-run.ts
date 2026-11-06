@@ -165,7 +165,7 @@ export async function runProcess(input: {
    *  waits for the command, as before. */
   personFirst?: PersonFirst;
 }): Promise<string> {
-  const { auditTarget, file, argv, timeout, cwd, note, audit, personFirst } = input;
+  const { auditTarget, file, argv, timeout, cwd, audit, personFirst } = input;
   // ── HONEST FAILURE FOR SUDO (owner ruling 2026-09-26, v3.2.2) ──
   // A sudo line on a box with no NOPASSWD rule does not fail — it BLOCKS on a password prompt nobody
   // can type into, and the turn dies on the timeout with nothing to read. `sudoWouldHang` probes it

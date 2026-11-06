@@ -292,7 +292,7 @@ export async function runReplyFloors(
 ): Promise<StepOutcome> {
   const { agentId, counterparty, db, result, triggerRow, turnNumber, turnStartedAt } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
-  let { persistedContent } = sc;
+  const { persistedContent } = sc;
   await askReplyClaims(state, ctx, persistedContent);   // waits only for a question the policy put in `model`
   // ── THE TRUTH GUARDS, ONE PROLOGUE AND ONE LOOP (HL4 step 2, merger 2) ──
   //
