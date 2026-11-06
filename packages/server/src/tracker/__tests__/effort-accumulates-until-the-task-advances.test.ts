@@ -424,7 +424,7 @@ describe('§5 trackerCompleteStep and closeProjectAndOpenTasks, called directly 
         taskStatus: 'cancelled', projectStatus: 'cancelled', reason: 'scope changed',
       });
 
-      expect(result).toEqual({ projectId: 'proj-1', tasksClosed: 2, alreadyClosed: 0, refused: 0 });
+      expect(result).toMatchObject({ projectId: 'proj-1', tasksClosed: 2, alreadyClosed: 0, refused: 0, unsettled: [] });   // v3.5: the result also carries each row's outcome
       expect(effortDelta(effortRow('child-1'))).toBe(0);
       expect(effortDelta(effortRow('child-2'))).toBe(0);
       expect(effortDelta(effortRow('proj-1'))).toBe(0); // the project row itself, schema.ts:426

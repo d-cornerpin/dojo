@@ -23,7 +23,7 @@ import type { Database } from 'better-sqlite3';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { taskScope, stampColumns } from '../../../../work/tracker-view.js';
+import { taskScope, stampColumns, closeRequestFiledExpr } from '../../../../work/tracker-view.js';
 import { taskMovedAtSql, jobCarriedIds } from '../../../../work/task-freshness.js';
 import { readMeasureFacts, formatMeasureLine } from '../../../../work/measure-view.js';
 import { advance } from '../../state.js';
@@ -77,11 +77,17 @@ export async function runCloseoutGate(
     const passedOverBefore = lastTurn?.started_ms ?? null;
     // t143 r4 (C1): only the job in flight (the standing carry) is exempt, however busy the agent has been.
     const jobWork = jobCarriedIds(agentId);
+    // v3.5 live check (preflight.4, row 5b): a close the worker has FILED waits on its verdict (the PM's,
+    // or the owner's when escalated), and the filing told the worker nothing further is needed from it.
+    // The ball is not the worker's, so neither arm names it: the PM ladder's own question
+    // (`closeRequestFiledExpr`, the one predicate), asked here too. A rejected close is open work again
+    // (`claim_rejected` ends the request), so the gate sees it as before.
     const inProgressDanglers = (db.prepare(`
       SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
         AND w.is_paused = 0
+        AND ${closeRequestFiledExpr('w')} = 0
         AND ${taskMovedAtSql('w')} < ?
       ORDER BY ${taskMovedAtSql('w')} ASC
       LIMIT 10
@@ -106,6 +112,7 @@ export async function runCloseoutGate(
       WHERE ${taskScope('t')} AND t.agent_id = ?
         AND t.state = 'on_deck'
         AND t.is_paused = 0
+        AND ${closeRequestFiledExpr('t')} = 0
         AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
         AND t.schedule_status != 'waiting'
         AND p.requester_id = ?

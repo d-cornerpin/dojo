@@ -3690,6 +3690,12 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
       reason,
       userQuote,
     });
+    // v3.5 live check (preflight.4, "Unexpected" 4): this answered "[OK] ... closed. Tasks closed by
+    // this call: 0" while every close was refused and the project stayed open, and the agent told the
+    // owner the work was finished. The project closed only when its own row settled and no open task
+    // was left behind; anything else is reported as what it is.
+    const closed = result.projectOutcome !== null && workSettled(result.projectOutcome) && result.unsettled.length === 0;
+    if (!closed) return projectCloseNotClosedText(projectId, project.title, status, result);
     notifyPrimaryAgent(
       `Project "${project.title}" was bulk-closed by ${agentId} (status=${status}). ${result.tasksClosed} open task(s) closed; ${result.alreadyClosed} were already terminal. Reason: ${reason}`,
       agentId,
@@ -3707,6 +3713,57 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
     logger.error('trackerCloseProject failed', { projectId, error: msg }, agentId);
     return `Error closing project: ${msg}`;
   }
+}
+
+/**
+ * What a project close that did NOT close says (v3.5 live check, preflight.4). Facts only, in the
+ * product's own refusal words (`closeRefusalText`, the renderer every close door uses): the project did
+ * not close, which rows refused and why, which rows' close requests are filed and wait on a verdict, and
+ * what is still open. Only filings (no refusal) is the normal Key-1 path, so it reads as [FILED], not as
+ * an error; any refusal leads with "Error:" so the model does not mistake it for success.
+ */
+function projectCloseNotClosedText(
+  projectId: string, title: string, status: 'complete' | 'cancelled',
+  result: ReturnType<typeof closeProjectAndOpenTasks>,
+): string {
+  const db = getDb();
+  const row = (id: string): { title: string; state: string } | undefined =>
+    db.prepare('SELECT COALESCE(title, id) AS title, state FROM work WHERE id = ?').get(id) as never;
+  const fact = (id: string, outcome: WorkOutcome): string =>
+    closeRefusalText(id, outcome, status).replace(/^Error:\s*/, '');
+  const isFiling = (o: WorkOutcome): boolean => o.kind === 'refused' && o.reason === 'requires-validation';
+  const taskRows = result.unsettled.filter((u) => u.workId !== projectId);
+  const refusedRows = taskRows.filter((u) => !isFiling(u.outcome));
+  const filedRows = taskRows.filter((u) => isFiling(u.outcome));
+  const po = result.projectOutcome;
+  const projectRefused = po !== null && !workSettled(po) && !isFiling(po);
+  const projectState = stateToStatus((row(projectId)?.state ?? 'open') as never);
+  const line = (id: string): string => {
+    const r = row(id);
+    return `"${r?.title ?? id}" (${id.slice(0, 8)}, ${r ? stateToStatus(r.state as never) : 'unknown'})`;
+  };
+
+  const head = refusedRows.length > 0 || projectRefused
+    ? `Error: project_id=${projectId} | status=${status} was not recorded. Project "${title}" did not close; it is still ${projectState}.`
+    : `[FILED] project_id=${projectId} | status=${status}: project "${title}" did not close yet; it is still ${projectState}. `
+      + `The close requests below are recorded and wait on the PM's verdict. Do NOT retry this call.`;
+  const out: string[] = [head, ``,
+    `Tasks closed by this call: ${result.tasksClosed}`,
+    `Tasks already in a terminal state (skipped): ${result.alreadyClosed}`];
+  if (refusedRows.length > 0) {
+    out.push(``, `Refused, still open (${refusedRows.length}):`);
+    for (const u of refusedRows) out.push(`  - ${line(u.workId)}: ${fact(u.workId, u.outcome)}`);
+  }
+  if (filedRows.length > 0) {
+    out.push(``, `Close requested, waiting on the PM's verdict, still open (${filedRows.length}):`);
+    for (const u of filedRows) out.push(`  - ${line(u.workId)}`);
+  }
+  if (po !== null && !workSettled(po)) {
+    out.push(``, projectRefused
+      ? `The project's own close was refused: ${fact(projectId, po).replace(/\bfor task (\S+):/, 'for project $1:')}`
+      : `The project's own close is requested and waits on the PM's verdict.`);
+  }
+  return out.join('\n');
 }
 
 // ── trackerValidatePause (v2.7.18) ──

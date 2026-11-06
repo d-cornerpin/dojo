@@ -173,7 +173,12 @@ describe('A4-I2: the schedule door and the project door hold the same rule', () 
   it('close_project(status="complete") at zero closes as before; status="cancelled" is never judged', async () => {
     const a = await projectWithMeasuredTask();
     countMeasure.mockResolvedValueOnce({ ok: true, count: 0 });
-    expect((await call('work_update:close_project', { project_id: a.project, status: 'complete', reason: 'all done here' })).content).toMatch(/^\[OK\]/);
+    // At zero the measure rule does not refuse. Nothing here was delivered, so the close still does not
+    // land (G7), and since the v3.5 live check the result says so instead of "[OK] ... closed".
+    const atZero = (await call('work_update:close_project', { project_id: a.project, status: 'complete', reason: 'all done here' })).content;
+    expect(atZero).not.toMatch(/^Refused: close_project\(status="complete"\) on a project with measured work left\./);
+    expect(atZero).toMatch(/did not close/);
+    expect(atZero).toContain('a task closes on a delivery');
     const b = await projectWithMeasuredTask();
     const calls = countMeasure.mock.calls.length;
     expect((await call('work_update:close_project', { project_id: b.project, status: 'cancelled', reason: 'scope changed' })).content).toMatch(/^\[OK\]/);

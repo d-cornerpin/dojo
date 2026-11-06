@@ -27,7 +27,7 @@ import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
-import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
+import { workSettled, noteUnsettled, type Actor, type WorkOutcome } from '../work/store.js';
 import { writeAssignee } from '../work/row-authority.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 import type { Plan } from '../work/plan.js';
@@ -379,7 +379,14 @@ export function closeProjectAndOpenTasks(params: {
   /** t193: the owner's exact words when an agent closes over other live agents' tasks because
    *  the owner asked; `setTrackerStatus`'s takeover gate checks them per task. */
   userQuote?: string | null;
-}): { projectId: string; tasksClosed: number; alreadyClosed: number; refused: number } {
+}): {
+  projectId: string; tasksClosed: number; alreadyClosed: number; refused: number;
+  /** v3.5 live check (preflight.4): every row that did NOT land, with the outcome that says why,
+   *  so the caller reports what is still open instead of a count it can mistake for success. */
+  unsettled: Array<{ workId: string; outcome: WorkOutcome }>;
+  /** The project row's own outcome; settled means the project itself closed. */
+  projectOutcome: WorkOutcome | null;
+} {
   const db = getDb();
   const { projectId, closingAgentId, taskStatus, projectStatus, reason, authority } = params;
   const actor = authority
@@ -404,6 +411,8 @@ export function closeProjectAndOpenTasks(params: {
   let tasksClosed = 0;
   let alreadyClosed = 0;
   let refused = 0;
+  const unsettled: Array<{ workId: string; outcome: WorkOutcome }> = [];
+  let projectOutcome: WorkOutcome | null = null;
   const TERMINAL = new Set(['done', 'failed', 'abandoned']);
 
   const closedTransitions: Array<{ taskId: string; from: string; to: string }> = [];
@@ -423,6 +432,7 @@ export function closeProjectAndOpenTasks(params: {
         // at). Counted and surfaced rather than swallowed — a silent skip here is how the
         // board and the truth drift apart.
         refused++;
+        if (!workSettled(r)) unsettled.push({ workId: t.id, outcome: r });
         logger.warn('bulk close refused for task', { taskId: t.id, result: r });
         continue;
       }
@@ -433,6 +443,7 @@ export function closeProjectAndOpenTasks(params: {
       ...actor, reason,
       resultDeliveryId: params.resultDeliveryId ?? null,
     });
+    projectOutcome = pr;
     if (pr.kind !== 'applied') {
       refused++;
       logger.warn('bulk close refused for project', { projectId, result: pr });
@@ -469,7 +480,7 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed, refused };
+  return { projectId, tasksClosed, alreadyClosed, refused, unsettled, projectOutcome };
 }
 
 export function updateProject(
