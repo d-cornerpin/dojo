@@ -72,6 +72,12 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 
 ## 3. Procedures
 
+### The release path, every candidate (owner ruling 2026-11-06)
+1. **Free readiness check.** `bash <test-kit>/checks/release-readiness.sh <checkout> <version> [--preflight] --notes-file <path>` runs the real `release.sh --dry-run` on a throwaway clone. It must say `READY FOR PAID RUN`. Report-only gates (size limits, growth, lint baseline and similar) print their results but never stop a release.
+2. **Live check.** Upgrade a copy of a lived-in box to the candidate (outbound channels off) and try every claim in the release notes by hand. Record what you saw.
+3. **One paid run.** `node behavioral/runner.mjs --targeted <version-tag>` in the test kit: two scenarios (decision-shadow-run and measured-job-finishes), 3 attempts each, all must pass. The result stays valid while no product code (`packages`, `watchdog`, `templates`, `menubar`) changes after it; gate-side or doc commits do not void it.
+4. **Owner approval, then `release.sh` for real** (Procedure A or B below).
+
 ### A — Cut a Preflight build (test a feature on a real box)
 ```bash
 git checkout Preflight          # create from main if it doesn't exist: git checkout -b Preflight main

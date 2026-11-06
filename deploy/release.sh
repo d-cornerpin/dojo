@@ -390,7 +390,10 @@ find_kit || true
 GATE_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit blocking pre-build)" \
   || fail "Gate manifest: deploy/checks/gate-manifest.mjs could not be read. NOT publishing."
 GATE_TOTAL="$(printf '%s' "$GATE_ROWS" | grep -c . || true)"
-[ "${GATE_TOTAL:-0}" -ge 8 ] \
+# Floor 5 since the owner ruling of 2026-11-06 moved eleven gates to the report tier: the
+# pre-build blocking list is byte hygiene, names/PII, migration freeze, SQL prepares and
+# commit identity (the other three blocking gates run post-smoke, further down).
+[ "${GATE_TOTAL:-0}" -ge 5 ] \
   || fail "Gate manifest: only ${GATE_TOTAL:-0} pre-build blocking gate(s) declared; a gate list that empties itself passes every release. NOT publishing."
 
 # ── EACH ROW'S DECLARED RELEASE ARGS ARE PASSED (t112, 2026-10-05) ──────────────────────
@@ -453,12 +456,14 @@ REPORT_N=0
 while IFS=$'\x1f' read -r r_id r_script r_args r_title r_fail; do
   [ -n "$r_id" ] || continue
   REPORT_N=$((REPORT_N + 1))
+  R_OUT="$(run_gate "$r_script" "$r_args" 2>&1)" && R_RC=0 || R_RC=$?
   {
     echo "── $r_id ──"
-    run_gate "$r_script" "$r_args" 2>&1 || echo "(exit $? — report tier, not blocking)"
+    printf '%s\n' "$R_OUT"
+    [ "$R_RC" -eq 0 ] || echo "(exit $R_RC, report tier, not blocking)"
     echo ""
   } >> "$RELEASE_RECORD"
-  echo "  · $r_id recorded"
+  if [ "$R_RC" -eq 0 ]; then echo "  · $r_id: ok (report only)"; else echo "  · $r_id: exit $R_RC (report only, not blocking): $(printf '%s\n' "$R_OUT" | grep -E '✗' | head -1 | cut -c1-160)"; fi
 done <<__REPORT_ROWS__
 $REPORT_ROWS
 __REPORT_ROWS__
@@ -667,15 +672,20 @@ echo "- unit suite: full server + dashboard vitest runs, green (never skippable)
 # release: same sha as HEAD, inside a freshness window, every rostered check
 # present, the two gates with no owner pointer green, and the acknowledged reds
 # carried through wearing their owners' names rather than counted as passes.
+#
+# NON-BLOCKING since the owner ruling of 2026-11-06: it runs, prints its verdict and goes into
+# the release record, and a missing, stale or red record no longer refuses the release.
 step "Prompt-gate record (cache prefix, prompt inventory, steer delivery, message prefix)"
-node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse HEAD)" \
-  || fail "Prompt-gate record: missing, stale, measured another tree, or a blocking prompt gate is red. NOT publishing."
+PG_OUT="$(node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse HEAD)" 2>&1)" && PG_RC=0 || PG_RC=$?
+printf '%s\n' "$PG_OUT" | sed 's/^/  /'
+[ "$PG_RC" -eq 0 ] || echo "  · prompt-gate record: exit $PG_RC (report only since 2026-11-06, not blocking)"
 {
   echo ""
-  echo "## Prompt gates (recorded — they cannot run inside a release)"
+  echo "## Prompt gates (recorded, report only)"
   echo ""
   echo '```'
-  node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse HEAD)" 2>&1
+  printf '%s\n' "$PG_OUT"
+  [ "$PG_RC" -eq 0 ] || echo "(exit $PG_RC, report only, not blocking)"
   echo '```'
   echo ""
 } >> "$RELEASE_RECORD"
@@ -685,14 +695,17 @@ node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse H
 # the gate checks for a RECENT full-suite green MARKER written only when every
 # scenario passed with zero blocking findings (dojo-test-kit/behavioral/
 # results/last-green.json). FA-D4: freshness is only the STALENESS FLOOR. The
-# gate must also mean "THIS change set passed," so we now HARD-MATCH the
-# marker's gitSha to the current pre-bump HEAD. HEAD is still the change-set
+# gate must also mean "THIS change set passed." Since the owner ruling of 2026-11-06
+# that means: the marker's sha is an ancestor of the pre-bump HEAD AND no product code
+# (packages, watchdog, templates, menubar) changed between them (marker_matches_tree
+# below). Gate-side and doc commits after the paid run no longer void it.
+# (Before 2026-11-06 this HARD-MATCHED the marker's gitSha to HEAD.) HEAD is still the change-set
 # commit at this point, the version bump above is uncommitted and the release
 # commit happens later, and the runner records exactly `git rev-parse HEAD` of
 # the platform repo, so an equal-length compare is exact. A change landed after
 # the green run ⇒ HEAD moved ⇒ mismatch ⇒ refuse. Run the suite with:
 #   (cd ../dojo-test-kit && node behavioral/runner.mjs)
-step "Behavioral suite gate (full-suite green marker, <24h AND same HEAD)"
+step "Behavioral suite gate (paid marker, <24h AND no product code changed since it ran)"
 if [ "$SKIP_BEHAVIORAL" = "1" ]; then
   echo "  ⚠⚠⚠ BEHAVIORAL SUITE GATE SKIPPED (--skip-behavioral-gate) ⚠⚠⚠"
   echo "  This build ships WITHOUT a suite-green marker tied to this HEAD."
@@ -715,14 +728,29 @@ BEHAV_SHA=$(node -e "try{console.log(require('$BEHAV_MARKER').gitSha||'unknown')
 if [ "$(node -e "console.log($BEHAV_AGE_H > 24 ? 1 : 0)")" = "1" ]; then
   fail "Behavioral gate: last-green marker is ${BEHAV_AGE_H}h old (>24h). Re-run the suite to green. NOT publishing."
 fi
-# FA-D4: SHA match. The marker must carry a readable sha AND it must equal the
-# tree we are about to ship, or the "green" tells us nothing about this change.
+# FA-D4, relaxed by the owner ruling of 2026-11-06. The marker must carry a readable sha, that
+# sha must be an ancestor of the tree we are about to ship, and no product code may differ
+# between the two, or the "green" tells us nothing about this change. One function, so the
+# kit's release-readiness check extracts and runs these exact bytes instead of a copy.
+marker_matches_tree() {
+  # $1 = the marker's sha. Prints the refusal reason and returns 1, or returns 0.
+  if ! git merge-base --is-ancestor "$1" HEAD 2>/dev/null; then
+    echo "marker sha ${1:0:8} is not an ancestor of HEAD $(git rev-parse --short=8 HEAD) (the paid run tested a tree this one does not descend from)"
+    return 1
+  fi
+  if ! git diff --quiet "$1" HEAD -- packages watchdog templates menubar; then
+    echo "product code changed since the paid run (marker ${1:0:8}, HEAD $(git rev-parse --short=8 HEAD)); files that differ:"
+    git diff --name-only "$1" HEAD -- packages watchdog templates menubar | sed 's/^/    /'
+    return 1
+  fi
+  return 0
+}
 HEAD_SHA="$(git rev-parse HEAD)"
 if [ "$BEHAV_SHA" = "unknown" ] || [ "$BEHAV_SHA" = "unreadable" ] || [ -z "$BEHAV_SHA" ]; then
   fail "Behavioral gate: the last-green marker has no readable gitSha, so it can't be tied to this change set. Re-run the behavioral suite to green. NOT publishing."
 fi
-if [ "$BEHAV_SHA" != "$HEAD_SHA" ]; then
-  fail "Behavioral gate: the suite passed a different tree (marker sha ${BEHAV_SHA:0:8}, current HEAD ${HEAD_SHA:0:8}), a change landed after the green run. Re-run the behavioral suite against this HEAD. NOT publishing."
+if ! BEHAV_TREE_WHY="$(marker_matches_tree "$BEHAV_SHA")"; then
+  fail "Behavioral gate: the paid marker does not cover this tree: $BEHAV_TREE_WHY Re-run the paid scenarios against this HEAD. NOT publishing."
 fi
 # K1 (2026-07-26): honesty check. The marker now records strict truth
 # (green flag, per-scenario pass ratios, flake markers, known-failing list,
@@ -776,6 +804,12 @@ if [ -n "$MODEL_MISMATCH" ]; then
 fi
 # ── The marker must be a RELEASE-RITUAL marker (owner ruling 2026-09-20, REDESIGNED 2026-10-11) ──
 #
+# OWNER RULING 2026-11-06 (test simplification): the ritual is now TWO targeted scenarios,
+# decision-shadow-run and measured-job-finishes, 3 attempts each, unanimity, one dojo head. The
+# other three of the v3.5 five never caught a Dojo bug through their own pass rules. The compare
+# against HEAD moved out of this block into marker_matches_tree above (ancestor + no product
+# diff). The history below describes the five-scenario ritual it replaced.
+#
 # THE OWNER'S REDESIGN, verbatim (2026-10-11): "we need to remove the random scenarios run before
 # each cut. Instead, I want 5 targeted scenarios against the things being fixed to make sure the
 # fixes hold." So the ritual is now ONE proof, five times over: FIVE hand-authored scenarios, each
@@ -827,25 +861,25 @@ if (m.mode !== 'release-ritual') bad.push('mode=' + JSON.stringify(m.mode) + ' (
 if (m.blast !== undefined) bad.push('marker carries the v1 blast{} object - the owner redesign of 2026-10-11 replaced the single blast-radius scenario plus the ten-random draw with FIVE hand-authored targeted scenarios, 3 attempts each, all at one dojo head. A v1 marker is not a weaker v2 marker, it is evidence about a different ritual: re-certify with --targeted <version-tag>');
 if (m.final !== undefined) bad.push('marker carries the v1 final{} object (the ten-random generated draw) - that draw was REMOVED from the cut path by the owner redesign of 2026-10-11 and no longer certifies anything. The generator and --generated mode still exist for the on-demand Real World protocol, but a generated run cannot mint a shippable marker: re-certify with --targeted <version-tag>');
 if (m.ritualVersion !== 2) bad.push('ritualVersion=' + JSON.stringify(m.ritualVersion) + ' (needs the literal 2; a marker carrying none was written by the pre-redesign kit and is refused rather than read as a v2 marker missing a field)');
-if (typeof m.targetedVersion !== 'string' || !m.targetedVersion.trim()) bad.push('targetedVersion missing - the marker cannot say WHICH cut these five scenarios were authored against, and five targeted scenarios are only evidence about the fixes they were aimed at');
+if (typeof m.targetedVersion !== 'string' || !m.targetedVersion.trim()) bad.push('targetedVersion missing - the marker cannot say WHICH cut these scenarios were authored against, and targeted scenarios are only evidence about the fixes they were aimed at');
 const t = m.targeted;
-if (!Array.isArray(t)) bad.push('no targeted[] array - the ritual requires 5 hand-authored scenarios aimed at this cut changes, each run 3 times with unanimity');
+if (!Array.isArray(t)) bad.push('no targeted[] array - the ritual requires 2 hand-authored scenarios aimed at this cut changes, each run 3 times with unanimity');
 else {
-  if (t.length !== 5) bad.push('targeted[] has ' + t.length + ' entries (needs exactly 5 - the owner number is five scenarios against the things being fixed)');
+  if (t.length !== 2) bad.push('targeted[] has ' + t.length + ' entries (needs exactly 2 - the owner number since 2026-11-06 is two scenarios, decision-shadow-run and measured-job-finishes)');
   var seenRejudged = {};
   var ids = t.map(function (e) { return (e && typeof e === 'object') ? e.id : null; });
   var named = ids.filter(function (x) { return typeof x === 'string' && x.trim(); });
   var distinct = new Set(named).size;
-  if (named.length !== t.length || distinct !== named.length) bad.push('targeted[] ids are ' + named.length + ' non-empty / ' + distinct + ' distinct of ' + t.length + ' - the ritual requires five DIFFERENT scenarios; a count alone is satisfiable by five copies of one id (or five entries with no id at all), which is one proof recorded five times');
+  if (named.length !== t.length || distinct !== named.length) bad.push('targeted[] ids are ' + named.length + ' non-empty / ' + distinct + ' distinct of ' + t.length + ' - the ritual requires two DIFFERENT scenarios; a count alone is satisfiable by two copies of one id (or two entries with no id at all), which is one proof recorded twice');
   t.forEach(function (r, i) {
     var label = (r && typeof r === 'object' && typeof r.id === 'string' && r.id) ? r.id : ('targeted[' + i + ']');
     if (!r || typeof r !== 'object') { bad.push('targeted[' + i + '] is not an object - it records no scenario, no attempts and no head'); return; }
     if (typeof r.id !== 'string' || !r.id.trim()) bad.push('targeted[' + i + '].id missing - which scenario this entry is about is not recorded');
     if (r.attempts !== 3) bad.push(label + ': attempts=' + JSON.stringify(r.attempts) + ' (needs exactly 3 - the standing blast discipline, owner ruling 2026-09-20)');
     if (r.passCount !== 3) bad.push(label + ': passCount=' + JSON.stringify(r.passCount) + ' of the required 3 - unanimity means every attempt passed; a majority, a retry rescue or a short record is not a 3/3');
-    if (r.allGreen !== true) bad.push(label + ': allGreen!=true - all 3 attempts of every one of the five must have passed');
-    if (typeof r.gitSha !== 'string' || !r.gitSha) bad.push(label + ': gitSha missing - cannot prove this scenario ran at the same commit as the other four');
-    else if (m.dojoHead && r.gitSha !== m.dojoHead) bad.push(label + ' ran at ' + String(r.gitSha).slice(0, 8) + ' but the marker dojoHead is ' + String(m.dojoHead).slice(0, 8) + ' - not the same commit (a fix landed between this scenario and the rest, so the five do not certify one build)');
+    if (r.allGreen !== true) bad.push(label + ': allGreen!=true - all 3 attempts of every one of the two must have passed');
+    if (typeof r.gitSha !== 'string' || !r.gitSha) bad.push(label + ': gitSha missing - cannot prove this scenario ran at the same commit as the other one');
+    else if (m.dojoHead && r.gitSha !== m.dojoHead) bad.push(label + ' ran at ' + String(r.gitSha).slice(0, 8) + ' but the marker dojoHead is ' + String(m.dojoHead).slice(0, 8) + ' - not the same commit (a fix landed between this scenario and the other, so the two do not certify one build)');
     // v3.4 (owner decision 22): attempts RE-JUDGED from their recording count only under the decision guards - the recording was proven complete by the self-replay at record time, the attempt ran against THIS product commit, no clause the recording held is gone, and the replay is green. Mirror of the kit validateReleaseRitualMarker block; check-ritual-parity binds them.
     if (r.rejudged !== undefined) {
       if (!Array.isArray(r.rejudged)) bad.push(label + ': rejudged is not an array of re-judge records');
@@ -870,12 +904,11 @@ else {
 }
 if (typeof m.dojoHead !== 'string' || !m.dojoHead) bad.push('dojoHead missing');
 if (m.gitSha && m.dojoHead && m.gitSha !== m.dojoHead) bad.push('marker.gitSha != marker.dojoHead');
-if (m.dojoHead && m.dojoHead !== '$HEAD_SHA') bad.push('dojoHead ' + String(m.dojoHead).slice(0, 8) + ' is not the tree being shipped (' + '$HEAD_SHA'.slice(0, 8) + ')');
 if (m.fixesAfterFinalDraw !== false) bad.push('fixesAfterFinalDraw=' + JSON.stringify(m.fixesAfterFinalDraw) + ' (must be the literal false)');
 console.log(bad.join(', '));
 ")
 if [ -n "$RITUAL_BAD" ]; then
-  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). The owner's 2026-10-11 redesign requires FIVE hand-authored targeted scenarios aimed at THIS cut's fixes, 3 green attempts each, all at this commit: author them as behavioral/blast/<version-tag>/*.mjs and run \`node behavioral/runner.mjs --targeted <version-tag>\` in $KIT_DIR. The ten-random generated draw is no longer part of the cut path and a mode:'generated' marker can never certify a cut. NOT publishing."
+  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). Since the owner ruling of 2026-11-06 the ritual is TWO targeted scenarios (decision-shadow-run and measured-job-finishes), 3 green attempts each, all at one commit with no product code changed since: author them as behavioral/blast/<version-tag>/*.mjs and run \`node behavioral/runner.mjs --targeted <version-tag>\` in $KIT_DIR. The ten-random generated draw is no longer part of the cut path and a mode:'generated' marker can never certify a cut. NOT publishing."
 fi
 # The ✓ line reports `targeted.length` and each entry's OWN recorded ratio — THE FIELDS THE GATE
 # CHECKED — never a separate stored count. v1 learned this the hard way: a marker carrying `n: 3`
@@ -884,7 +917,7 @@ fi
 echo "  ✓ release ritual proven: $(node -e "const m=require('$BEHAV_MARKER');const t=m.targeted||[];console.log(t.length+' targeted scenarios for '+(m.targetedVersion||'?')+', each '+[...new Set(t.map(r=>(r.passCount||0)+'/'+(r.attempts||0)))].join(' ')+' at '+String(m.dojoHead||'?').slice(0,8))")"
 echo "    $(node -e "const m=require('$BEHAV_MARKER');console.log((m.targeted||[]).map(r=>r.id).join(', '))")"
 echo "  ✓ battery ran on the declared floor model $(node -e "const d=require('$FLOOR_MODEL_FILE');console.log((d.observed&&d.observed.name||'?')+' ('+d.modelId.slice(0,8)+'…)')")"
-echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
+echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at ${BEHAV_SHA:0:8}, no product code changed since (HEAD ${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
 {
   echo ""
   echo "## Behavioral battery"

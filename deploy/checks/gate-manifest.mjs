@@ -43,9 +43,16 @@ import { fileURLToPath } from 'node:url';
 
 export const GATES = [
   // ════════ blocking ════════
+  // Owner ruling 2026-11-06 (test simplification): eleven entries in this block now carry
+  // tier 'report' in place (gate-manifest, size-ratchets, growth-detector, lint-baseline,
+  // orphan-structures, module-wiring, watchdog-contract, waiver-budget, must-consume,
+  // test-cold-imports, ritual-parity). In five weeks they refused releases for bookkeeping
+  // and never for a real Dojo bug, so they still run and print, and never refuse.
+  // What still blocks: the build works, safety, names/PII, bytes, migrations, SQL,
+  // commit identity, the post-smoke checks, and the release-only list below.
   {
     id: 'gate-manifest',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-gate-manifest.mjs',
     args: [],
@@ -85,7 +92,7 @@ export const GATES = [
   },
   {
     id: 'size-ratchets',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-ratchets.mjs',
     args: [],
@@ -95,7 +102,7 @@ export const GATES = [
   },
   {
     id: 'growth-detector',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-growth.mjs',
     args: [],
@@ -105,7 +112,7 @@ export const GATES = [
   },
   {
     id: 'lint-baseline',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-lint-baseline.mjs',
     args: [],
@@ -115,7 +122,7 @@ export const GATES = [
   },
   {
     id: 'orphan-structures',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-orphans.mjs',
     args: [],
@@ -125,7 +132,7 @@ export const GATES = [
   },
   {
     id: 'module-wiring',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-wiring.mjs',
     args: [],
@@ -135,7 +142,7 @@ export const GATES = [
   },
   {
     id: 'watchdog-contract',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-watchdog-contract.mjs',
     args: [],
@@ -155,7 +162,7 @@ export const GATES = [
   },
   {
     id: 'waiver-budget',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-waivers.mjs',
     args: [],
@@ -199,7 +206,7 @@ export const GATES = [
 
   {
     id: 'ritual-parity',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-ritual-parity.mjs',
     args: [],
@@ -222,7 +229,7 @@ export const GATES = [
 
   {
     id: 'must-consume',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-must-consume.mjs',
     args: [],
@@ -233,7 +240,7 @@ export const GATES = [
 
   {
     id: 'test-cold-imports',
-    tier: 'blocking',
+    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
     phase: 'pre-build',
     script: 'deploy/checks/check-test-cold-imports.mjs',
     args: [],
@@ -347,7 +354,7 @@ export const GATES = [
     args: [],
     releaseArgs: ['--head', '"$(git rev-parse HEAD)"'],
     title: 'Prompt-gate record (cache prefix, prompt inventory, steer delivery, message prefix)',
-    why: 'The four kit prompt checks read a LIVE server through the dev instruments, so they cannot run inside a release — a release build has no instruments by construction. The gate therefore reads a RECORDED marker and refuses if it is missing, stale, measured another tree, or carries a red blocking prompt gate. `--head` binds the record to this HEAD.',
+    why: 'NON-BLOCKING since the owner ruling of 2026-11-06: release.sh runs it and prints its verdict, and a missing, stale or red record no longer refuses the release (the cache-prefix determinism gate, which caught the one real bug, still blocks). The four kit prompt checks read a LIVE server through the dev instruments, so they cannot run inside a release, a release build has no instruments by construction. The gate therefore reads a RECORDED marker and refuses if it is missing, stale, measured another tree, or carries a red blocking prompt gate. `--head` binds the record to this HEAD.',
   },
   {
     id: 'behavioral-suite',
@@ -355,8 +362,8 @@ export const GATES = [
     phase: 'n/a',
     script: null,
     args: [],
-    title: 'Behavioral suite gate (full-suite green marker, <24h AND same HEAD)',
-    why: 'The behavioral suite lives in the sibling `dojo-test-kit` repo and takes far too long to run inline, so the release reads its green marker and refuses a stale one or one from another HEAD. Skippable ONLY by the owner\'s explicit --skip-behavioral-gate, and the skip is recorded in the release notes.',
+    title: 'Behavioral suite gate (paid marker, <24h AND no product code changed since it ran)',
+    why: 'Owner ruling 2026-11-06: the paid marker stays valid while no product code (packages, watchdog, templates, menubar) changed since it ran; its sha must be an ancestor of HEAD. The behavioral suite lives in the sibling `dojo-test-kit` repo and takes far too long to run inline, so the release reads its green marker and refuses a stale one or one from another HEAD. Skippable ONLY by the owner\'s explicit --skip-behavioral-gate, and the skip is recorded in the release notes.',
   },
 ];
 

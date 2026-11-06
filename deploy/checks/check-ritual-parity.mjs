@@ -140,7 +140,7 @@ function extractBlock(name) {
 
 const BLOCKS = [
   { name: 'BEHAV_DISHONEST', what: 'the K1 honesty block (green, verdicts, known-failing, merge provenance)' },
-  { name: 'RITUAL_BAD', what: 'the ritual-shape block (mode, ritualVersion, targetedVersion, five targeted 3/3 entries, heads, fixesAfterFinalDraw, and the named v1-shape refusals)' },
+  { name: 'RITUAL_BAD', what: 'the ritual-shape block (mode, ritualVersion, targetedVersion, two targeted 3/3 entries, heads, fixesAfterFinalDraw, and the named v1-shape refusals)' },
 ];
 for (const b of BLOCKS) {
   b.src = extractBlock(b.name);
@@ -193,7 +193,7 @@ if (failed) {
 // One valid marker, then one mutant per clause on either side. No names, no PII:
 // every identifier here is fictional and generic by construction (G1).
 //
-// THE SHAPE IS v2 (owner redesign 2026-10-11): five targeted scenarios, each 3
+// THE SHAPE IS v2 (owner redesign 2026-10-11; two scenarios since 2026-11-06): targeted scenarios, each 3
 // attempts / 3 passes / all-green, each recording the ONE head the marker claims.
 // The old v1 fixtures (blast{} 3/3 + final{} ten-family draw) are not kept as
 // "legacy also-accepted" cases — they are now MUTANTS, because both validators
@@ -201,10 +201,8 @@ if (failed) {
 // measuring the opposite of the rule.
 const SHA = '1111111111111111111111111111111111111111';
 const OTHER_SHA = '2222222222222222222222222222222222222222';
-const TARGETED_IDS = [
-  'targeted-probe-01', 'targeted-probe-02', 'targeted-probe-03',
-  'targeted-probe-04', 'targeted-probe-05',
-];
+// Two since the owner ruling of 2026-11-06 (decision-shadow-run + measured-job-finishes).
+const TARGETED_IDS = ['targeted-probe-01', 'targeted-probe-02'];
 
 /** A re-judge record carrying every decision-22 guard (the shape `behavioral/lib/rejudge.mjs countableAsAttempt` produces). */
 const rejudgedRecord = (over = {}) => ({
@@ -252,18 +250,21 @@ const MUTANTS = [
   }),
   mutant('ritualVersion missing (a pre-redesign kit wrote it)', (m) => { delete m.ritualVersion; }),
   mutant('ritualVersion is 3, not the literal 2', (m) => { m.ritualVersion = 3; }),
-  mutant('targetedVersion missing (which cut did these five probe?)', (m) => { delete m.targetedVersion; }),
+  mutant('targetedVersion missing (which cut did these two probe?)', (m) => { delete m.targetedVersion; }),
   mutant('targetedVersion is blank', (m) => { m.targetedVersion = '   '; }),
   mutant('no targeted[] at all', (m) => { delete m.targeted; }),
   mutant('targeted is an object, not an array', (m) => { m.targeted = { 'not-an': 'array' }; }),
-  mutant('targeted[] has 4 entries', (m) => { m.targeted = m.targeted.slice(0, 4); }),
-  mutant('targeted[] has 6 entries', (m) => {
-    m.targeted = [...m.targeted, { id: 'targeted-probe-06', attempts: 3, passCount: 3, allGreen: true, gitSha: SHA }];
+  mutant('targeted[] has 1 entry (the old count of five, or any short count, is refused the same way)', (m) => { m.targeted = m.targeted.slice(0, 1); }),
+  mutant('targeted[] has 5 entries (the five-scenario ritual retired 2026-11-06)', (m) => {
+    m.targeted = [...m.targeted, ...['03', '04', '05'].map((n) => ({ id: `targeted-probe-${n}`, attempts: 3, passCount: 3, allGreen: true, gitSha: SHA }))];
   }),
-  mutant('targeted[] is five copies of one id', (m) => { m.targeted = m.targeted.map((r) => ({ ...r, id: TARGETED_IDS[0] })); }),
-  mutant('targeted[] ids are five empty strings', (m) => { m.targeted = m.targeted.map((r) => ({ ...r, id: '' })); }),
-  mutant('four real ids and one blank', (m) => { m.targeted[3].id = '   '; }),
-  mutant('one entry is not an object', (m) => { m.targeted[2] = 'three green attempts, honest'; }),
+  mutant('targeted[] has 3 entries', (m) => {
+    m.targeted = [...m.targeted, { id: 'targeted-probe-03', attempts: 3, passCount: 3, allGreen: true, gitSha: SHA }];
+  }),
+  mutant('targeted[] is two copies of one id', (m) => { m.targeted = m.targeted.map((r) => ({ ...r, id: TARGETED_IDS[0] })); }),
+  mutant('targeted[] ids are two empty strings', (m) => { m.targeted = m.targeted.map((r) => ({ ...r, id: '' })); }),
+  mutant('one real id and one blank', (m) => { m.targeted[1].id = '   '; }),
+  mutant('one entry is not an object', (m) => { m.targeted[1] = 'three green attempts, honest'; }),
   mutant('one entry has no id', (m) => { delete m.targeted[1].id; }),
   // SINGLE-CLAUSE MEANS SINGLE CLAUSE (measured, 2026-10-11 mutant round M9). These two first
   // moved `passCount` alongside `attempts` to keep the entry coherent — and that made them
@@ -272,9 +273,9 @@ const MUTANTS = [
   // what a single-clause mutant is for, so `attempts` moves alone.
   mutant('one scenario ran 2 attempts, not 3', (m) => { m.targeted[0].attempts = 2; }),
   mutant('one scenario ran 4 attempts, not 3', (m) => { m.targeted[0].attempts = 4; }),
-  mutant('one scenario passed 2 of its 3 attempts (a majority, not unanimity)', (m) => { m.targeted[4].passCount = 2; }),
-  mutant('one scenario records allGreen false', (m) => { m.targeted[3].allGreen = false; }),
-  mutant('one scenario records no gitSha', (m) => { delete m.targeted[2].gitSha; }),
+  mutant('one scenario passed 2 of its 3 attempts (a majority, not unanimity)', (m) => { m.targeted[1].passCount = 2; }),
+  mutant('one scenario records allGreen false', (m) => { m.targeted[1].allGreen = false; }),
+  mutant('one scenario records no gitSha', (m) => { delete m.targeted[1].gitSha; }),
   mutant('one scenario ran at a DIFFERENT head than the rest', (m) => { m.targeted[1].gitSha = OTHER_SHA; }),
   mutant('dojoHead missing', (m) => { delete m.dojoHead; }),
   mutant('gitSha disagrees with dojoHead', (m) => { m.gitSha = OTHER_SHA; }),
