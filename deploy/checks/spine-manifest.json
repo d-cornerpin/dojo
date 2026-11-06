@@ -876,6 +876,16 @@
       "workShaped": false,
       "why": "A transport log mirroring Twilio's own call status for a phone call that already happened. No work is claimed, assigned or completed here.",
       "disposition": "Sweep B \u2014 voice/phone consolidation; the log stays."
+    },
+    {
+      "name": "background_commands",
+      "definedIn": "packages/server/src/db/migrations/213_background_commands.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "exit_status",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "A process record, not a second tracker. One row per OS process the exec door handed to the background because a person's message arrived while it ran (agent/background-commands.ts, field fix 3 re-review 3 to 5): `pid`, the command text, `call_id` (migration 214), and `exit_status`, which is the process's own exit status (NULL while it runs), not a work state. Nothing is claimed, assigned, reviewed or closed here. The row exists only while a promise of a TOOL RESULT is open, and is deleted once that result is saved for the agent (or kept only until the ledger write takes the exit status, then deleted); whatever is left at boot was cut by the restart and its agent is told. The work the command served is tracked where it always is: the task on `work`, and the command's row on `work_ledger`, which this table settles by call id. It is the same shape as agent/effects/toolbox-ledger.ts's record of process groups, kept in SQLite because SQLite is the only datastore.",
+      "disposition": "v3.5 field fix 3; stays. Rows are transient (deleted when the result is saved, or at the next boot), so the table holds no history."
     }
   ],
   "waivers": [

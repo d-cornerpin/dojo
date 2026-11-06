@@ -42,23 +42,23 @@
       "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 4 clauses, load ~190 with 300 files running): 13.8 s / 6.4 s."
     },
     "packages/server/src/services/__tests__/t138-r3-an-owner-card-outlives-the-page.test.ts": {
-      "count": 7,
+      "count": 5,
       "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 10 clauses, load ~190 with 300 files running): 19.9 s / 4.2 s."
     },
     "packages/server/src/services/__tests__/t138-r4-every-card-lasts-and-leaves-when-its-condition-ends.test.ts": {
-      "count": 11,
+      "count": 9,
       "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 10 clauses, load ~190 with 300 files running): 20.3 s / 3.8 s."
     },
     "packages/server/src/services/__tests__/t138-r5-a-dismissal-reaches-every-tab-and-a-watcher-survives-a-restart.test.ts": {
-      "count": 7,
+      "count": 5,
       "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 6 clauses, load ~190 with 300 files running): 14.0 s / 6.5 s."
     },
     "packages/server/src/services/__tests__/t138-r6-a-card-lives-exactly-as-long-as-its-condition.test.ts": {
-      "count": 12,
+      "count": 10,
       "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 9 clauses, load ~190 with 300 files running): 14.3 s / 3.9 s."
     },
     "packages/server/src/services/__tests__/t138-r7-a-watcher-card-follows-what-the-watcher-watches.test.ts": {
-      "count": 10,
+      "count": 8,
       "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 4 clauses, load ~190 with 300 files running): 7.5 s / 3.5 s."
     },
     "packages/server/src/costs/__tests__/t138-budget-warnings-reach-the-owner.test.ts": {
