@@ -86,6 +86,9 @@ export interface DoorObservation {
   provider?: string | null;
   threadRoot?: string | null;
   messageId?: string | null;
+  /** C6: the receipt the door's executor wrote for this send, for an unscoped crossing (a scope links its
+   *  own, `noteReceiptForOutbound`). The link is how a ledger send names the message it delivered. */
+  receiptId?: string | null;
 }
 
 interface OutboundScope {
@@ -250,6 +253,7 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
       provider: observed.provider ?? null,
       threadRoot: observed.threadRoot ?? null,
       messageId: observed.messageId ?? null,
+      receiptId: observed.receiptId ?? null,
       outcome: observed.outcome,
       detail: observed.detail ?? null,
     });
@@ -306,7 +310,7 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
     threadRoot: scope.intent.threadRoot ?? observed.threadRoot ?? null,
     conversationId: scope.intent.conversationId ?? null,
     messageId: scope.intent.messageId ?? observed.messageId ?? null,
-    receiptId: scope.receiptId,
+    receiptId: scope.receiptId ?? observed.receiptId ?? null,
     outcome: scope.failed ? 'failed' : observed.outcome,
     detail: mergedDetail(scope),
   });

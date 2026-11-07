@@ -727,7 +727,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 // so the grounding ledger recognizes "I told <agent>" as grounded across
                 // turns (recipient = target agent name; the A2A thread id is the provider
                 // id). skipAudit: the auditLog row above is the provenance row.
-                writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
+                const sendReceiptId = writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
                 // ── t116 E3 — THE DOOR THE SOURCE HAS BEEN NAMING FOR ITSELF ──
                 //
                 // `send_to_agent` wrote THREE bookkeeping rows here — the A2A reply mark, the
@@ -757,6 +757,7 @@ export const agentsHandlers: ToolHandlerMap = {
                   recipientDisplay: targetCheck?.name ?? agentRef,
                   provider: result.threadId, threadRoot: result.threadId,
                   messageId: result.messageId ?? null,
+                  receiptId: sendReceiptId,   // C6: the receipt names the delivery, so the peer message is findable from the send
                   detail: `A2A ${effectiveIntent}`,
                 }), 'send_to_agent: hand-off to a peer', {
                   from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
