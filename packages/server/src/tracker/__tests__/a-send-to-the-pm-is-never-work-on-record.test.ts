@@ -5,7 +5,8 @@
 // work on the task's record, and so a worker could satisfy the record check by telling the PM it was
 // finished. A send counts only when it DELIVERS THE WORK to the party the task serves (its requester,
 // or an agent the task names). A send to the PM, to the task's validator or to any service agent never
-// counts, and neither does a send whose only content is a status claim about the task.
+// counts unless the record shows that agent asked for the work, and a send whose only content is a
+// status claim about the task never counts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -143,15 +144,7 @@ describe('the loophole: a worker that only tells the PM it is done has nothing o
     expect(upheld(t)).toBe(0);
   });
 
-  it('NEGATIVE CONTROL: a send to the PM is never work even when the PM asked for the task', async () => {
-    const t = newTask(PM);
-    const payload = 'The export holds 412 rows; the two duplicates are removed.';
-    const s = send(PM, 'ANSWER', payload);
-    charge(t, s, PM, 'ANSWER', payload);
-    fileClose(t, s.delivery);
-    expect(ledgerSends(t)).toBe(0);
-    expect(await validate(t)).toMatch(REFUSED);
-  });
+  // A PM that asked for the work by record is answered by a send to it: see the last describe block.
 
   it('NEGATIVE CONTROL: a send to a service agent, or to an agent the task does not serve, is never work', async () => {
     const payload = 'The export holds 412 rows; the two duplicates are removed.';
@@ -225,5 +218,33 @@ describe('the review names each answer basis truthfully', () => {
     expect(labels?.['run-delivery']).toBe('the delivery this scheduled run settled on');
     expect(labels?.['close-request-delivery']).toBe('the delivery the worker named when it filed this close');
     expect(labels?.['task-turn-answer']).toBe('this task\'s own answered turn');
+  });
+});
+
+describe('when the PM asked for the work, the answer to the PM is the work (the PM still judges it)', () => {
+  const ANSWER = 'The export holds 4,212 rows; 37 have no owner and are listed in the attached query result.';
+  it('a substantive answer to a PM that asked by record counts as work on record', async () => {
+    const t = newTask(PM, 'Find how many rows the export holds');
+    const s = send(PM, 'ANSWER', ANSWER);
+    charge(t, s, PM, 'ANSWER', ANSWER);
+    fileClose(t, s.delivery);
+    expect(ledgerSends(t)).toBe(1);
+    expect(resolveTaskAnswerPointer(t)).not.toBeNull();
+  });
+  it('NEGATIVE CONTROL: the same PM-asked task, but only "done" sent to the PM, is refused for nothing on record', async () => {
+    const t = newTask(PM, 'Find how many rows the export holds');
+    const s = send(PM, 'COMPLETE', 'done');
+    charge(t, s, PM, 'COMPLETE', 'done');
+    fileClose(t, s.delivery);
+    expect(ledgerSends(t)).toBe(0);
+    expect(await validate(t)).toMatch(REFUSED);
+  });
+  it('NEGATIVE CONTROL: naming the PM in the title does not make it the requester; the answer to the PM does not count', async () => {
+    const t = newTask(REQUESTER, `Answer ${PM} with the row count`);
+    const s = send(PM, 'ANSWER', ANSWER);
+    charge(t, s, PM, 'ANSWER', ANSWER);
+    fileClose(t, s.delivery);
+    expect(ledgerSends(t)).toBe(0);
+    expect(await validate(t)).toMatch(REFUSED);
   });
 });

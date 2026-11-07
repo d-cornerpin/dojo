@@ -7,7 +7,11 @@
 // the party the task serves. So, by the engine's own rows and never by the model's account:
 //
 //   * a send to the PM, to the task's validator (the PM, and any agent that has ruled on the task),
-//     or to any service agent (`config/platform.ts` `isSystemServiceAgent`) is never work;
+//     or to any service agent (`config/platform.ts` `isSystemServiceAgent`) is never work, UNLESS
+//     the record shows that agent asked for this work (it is the task's requester, or it sent the
+//     message the task exists for). When the PM asked a question, the answer belongs to the PM and
+//     the PM judges it; a name in the title never makes the PM a requester, and a status claim to the
+//     PM never counts (the next rule);
 //   * a send whose intent does not deliver (only ANSWER, DELIVERABLE and COMPLETE do; FYI, STATUS,
 //     QUESTION, ASSIGN, BLOCK and FAIL never) is never work;
 //   * a send whose only content is a status claim about the task ("done", "task abc12345 is
@@ -83,8 +87,15 @@ function neverWorkRecipient(taskId: string, agentId: string): boolean {
 /** The agents this task serves: its requester, the sender of the message it (or its project) exists
  *  for, and any agent its title or goal names. Never its own worker. */
 export function servedAgentsOf(taskId: string): Set<string> {
+  return servedSets(taskId).served;
+}
+
+/** The served set, and the subset the RECORD says asked for the work (requester rows and the sender
+ *  of the source message, never a name in the title). */
+function servedSets(taskId: string): { served: Set<string>; askedByRecord: Set<string> } {
   const db = getDb();
   const out = new Set<string>();
+  const byRecord = new Set<string>();
   const w = db.prepare(
     `SELECT w.agent_id, w.assignee_agent, w.requester, w.requester_id, w.source_message_id, w.title, w.goal,
             p.requester AS p_requester, p.requester_id AS p_requester_id, p.source_message_id AS p_source_message_id
@@ -94,7 +105,7 @@ export function servedAgentsOf(taskId: string): Set<string> {
     source_message_id: string | null; title: string | null; goal: string | null;
     p_requester: string | null; p_requester_id: string | null; p_source_message_id: string | null;
   } | undefined;
-  if (!w) return out;
+  if (!w) return { served: out, askedByRecord: byRecord };
   if (w.requester === 'agent' && w.requester_id) out.add(w.requester_id);
   if (w.p_requester === 'agent' && w.p_requester_id) out.add(w.p_requester_id);
   for (const m of [w.source_message_id, w.p_source_message_id]) {
@@ -104,6 +115,7 @@ export function servedAgentsOf(taskId: string): Set<string> {
     const msg = db.prepare('SELECT source_agent_id FROM messages WHERE id = ?').get(m) as { source_agent_id: string | null } | undefined;
     if (msg?.source_agent_id) out.add(msg.source_agent_id);
   }
+  for (const r of out) byRecord.add(r);
   // The recipient the task names: an agent named, as a whole word, in its title or goal.
   const named = `${w.title ?? ''}\n${w.goal ?? ''}`.toLowerCase();
   if (named.trim()) {
@@ -118,7 +130,9 @@ export function servedAgentsOf(taskId: string): Set<string> {
   for (const r of out) ids.add(agentIdOf(r) ?? r);
   ids.delete(w.agent_id);
   if (w.assignee_agent) ids.delete(w.assignee_agent);
-  return ids;
+  const asked = new Set<string>();
+  for (const r of byRecord) { const id = agentIdOf(r) ?? r; if (ids.has(id)) asked.add(id); }
+  return { served: ids, askedByRecord: asked };
 }
 
 /** Does this send to other agent(s) deliver the task's work to the party it serves (header)? */
@@ -131,10 +145,11 @@ export function agentSendCountsAsWork(
     if (!send.intent || !DELIVERING_INTENTS.has(send.intent.toUpperCase())) return false;
     const task = getDb().prepare('SELECT id, title FROM work WHERE id = ?').get(taskId) as { id: string; title: string | null } | undefined;
     if (!task || isStatusClaimOnly(send.text ?? '', task)) return false;
-    const served = servedAgentsOf(taskId);
+    const { served, askedByRecord } = servedSets(taskId);
     return send.recipients.every((ref) => {
       const id = agentIdOf(ref);
-      return !!id && !neverWorkRecipient(taskId, id) && served.has(id);
+      if (!id || !served.has(id)) return false;
+      return !neverWorkRecipient(taskId, id) || askedByRecord.has(id);
     });
   } catch {
     return false;   // a send the record cannot place is never counted
