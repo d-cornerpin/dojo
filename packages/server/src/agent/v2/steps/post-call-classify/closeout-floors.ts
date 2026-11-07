@@ -24,7 +24,8 @@ import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveS
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { steerFired, type SteerFloorId } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { continuedJobStillGoing } from './job-turn-end.js';
+import { continuedJobStillGoing, jobTaskOf } from './job-turn-end.js';
+import { noteDeliveryHeld, tasksOwingADelivery } from '../../../../tracker/owed-delivery.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -48,8 +49,13 @@ const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
  */
 function demoteToWorkingNote(
   p: { agentId: string; messageId: string; turnNumber: number; text: string },
+  /** C8: why the Dojo held this line, recorded on every task the turn works that still owes a delivery. */
+  held?: { why: string; owed: () => string[] },
 ): void {
   if (isRowLabelOnly(p.text)) return; // t172: only the turn's label text — nothing to note
+  if (held) {
+    try { noteDeliveryHeld(held.owed(), { turnNumber: p.turnNumber, why: held.why, text: p.text }); } catch { /* the record never blocks the turn */ }
+  }
   try {
     const noteId = uuidv4();
     insertMessageIfAbsent({
@@ -69,13 +75,16 @@ function demoteToWorkingNote(
  */
 export function holdAndSteer(
   state: AgentTurnState,
-  at: { agentId: string; messageId: string; turnNumber: number; sc: PostCallScratch },
+  at: { agentId: string; messageId: string; turnNumber: number; sc: PostCallScratch; db?: PostCallClassifyContext['db'] },
   p: { floor: SteerFloorId; text: string; steer: string },
 ): StepOutcome | null {
   if (steerFired(state.steerQueue, p.floor)) return null;
   at.sc.persistedContent = null;
   broadcast({ type: 'chat:chunk', agentId: at.agentId, messageId: at.messageId, content: '', done: true });
-  demoteToWorkingNote({ agentId: at.agentId, messageId: at.messageId, turnNumber: at.turnNumber, text: p.text });
+  demoteToWorkingNote({ agentId: at.agentId, messageId: at.messageId, turnNumber: at.turnNumber, text: p.text }, at.db ? {
+    why: `held once by the reply check "${p.floor}"; the agent was told and decides whether to send it`,
+    owed: () => tasksOwingADelivery(at.agentId, state.turnStartMs, jobTaskOf(at.agentId, at.db!)?.id ?? null),
+  } : undefined);
   return continueLoop(persistEngineSteer(state, {
     agentId: at.agentId, content: p.steer, turnNumber: at.turnNumber, floor: p.floor, atLoop: state.loopCount,
   }, { broadcast }));
@@ -92,9 +101,12 @@ export function runCloseoutFloors(
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
 ): StepOutcome {
-  const { agentId, messageId, result, settledContextWakeTurn, turnCtx, turnNumber } = ctx;
+  const { agentId, messageId, result, settledContextWakeTurn, turnCtx, turnNumber, db } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
   let { persistedContent } = sc;
+  // C8: the tasks this turn is working that still owe their owner a delivery, read once and only when asked.
+  let owedMemo: string[] | null = null;
+  const owed = (): string[] => (owedMemo ??= tasksOwingADelivery(agentId, state.turnStartMs, jobTaskOf(agentId, db)?.id ?? null));
   // ── Redundant-closeout floor (engine-enforced "respond once") ──
   //
   // PHASE-2 T6 (C1, requirement 1a): the AUTHORITY here is now a RECEIPT.
@@ -120,7 +132,7 @@ export function runCloseoutFloors(
     turnDeliveredToPerson(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
   ) {
     // Field fix 3 audit round (#11): was a null + `chat:retract`. Now the agent is told and decides.
-    const held = holdAndSteer(state, { agentId, messageId, turnNumber, sc }, {
+    const held = holdAndSteer(state, { agentId, messageId, turnNumber, sc, db }, {
       floor: 'redundant-closeout', text: persistedContent,
       steer: `[Engine record: this turn already delivered its answer to the person. Your line "${quoteOf(persistedContent)}" has not been sent; `
         + 'written as your final reply again, it is sent as a further message. A final reply of [no-reply] sends nothing.]',
@@ -180,7 +192,9 @@ export function runCloseoutFloors(
       agentId, turnNumber, loopCount: state.loopCount, grantedAtLoop: grant.atLoop,
       owedCount: grant.messageIds.length, preview: persistedContent.slice(0, 80),
     }, agentId);
-    demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent });
+    demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
+      why: 'a second answer to a message that arrived mid-turn; that message is answered by its own turn', owed,
+    });
     persistedContent = null;
   }
 
@@ -198,6 +212,11 @@ export function runCloseoutFloors(
   // ping. Deliberate surfaces (scheduler digests, reminders, completion reports) are
   // exempt (deliberateSurfaceTurn) and never counted. This is lane-attribution, not
   // suppression: the commentary lands in the notices lane, just not as a ping.
+  //
+  // C8 (owner ruling (a), evidence round): a turn WORKING a task that still owes its owner a delivery is
+  // not on this budget. The owner asked for that line, so it is not unsolicited; the live check lost a
+  // helper's whole deliverable here, three turns running. Once a line has reached the person the task
+  // owes nothing more and its later turns are budgeted like any other (`tracker/owed-delivery.ts`).
   if (
     settledContextWakeTurn &&
     !deliberateSurfaceTurn &&
@@ -206,14 +225,23 @@ export function runCloseoutFloors(
     persistedContent && persistedContent.trim().length > 0
   ) {
     const streak = getProactiveSendStreak(agentId);
-    if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
+    if (owed().length > 0) {
+      // Solicited: neither demoted nor counted toward the streak of unprompted pings.
+      if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
+        logger.info('v2 RC-5.3: budget reached, but this turn is working a task that owes its owner a delivery; the line goes out (C8)', {
+          agentId, turnNumber, streak, tasks: owed(),
+        }, agentId);
+      }
+    } else if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
       logger.info('v2 RC-5.3: proactive-send budget reached; demoting unsolicited settled-wake outbound to a quiet notices-lane row instead of sending', {
         agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
         preview: persistedContent.slice(0, 80),
       }, agentId);
       // Convert the already-streamed dashboard bubble in place into the dimmed note
       // (same demote mechanism as the RC-9 text-with-tools path).
-      demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent });
+      demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
+        why: 'the proactive-send limit: the owner had not answered the agent\'s recent unprompted messages', owed,
+      });
       persistedContent = null;
     } else {
       // Allowed proactive delivery: count it toward the streak. It flows through to

@@ -21,7 +21,7 @@ import { isAdvancingStatusArg } from './work-status.js';
 import { TRIVIAL_TOOLS } from './tool-sets.js';
 import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
-import { taskScope } from '../../../../work/tracker-view.js';
+import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
 import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
 import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
 import type { ToolEffect } from '../../../tools/types.js';
@@ -54,6 +54,11 @@ import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
  * auto-scaffold above/below in this same iteration), a SEPARATE mechanism from this
  * durable per-task meter.
  *
+ * C5 (v3.5 field fix 3 evidence round): the order is `workingTaskOrder` (`work/tracker-view.ts`),
+ * shared with the job pick. Most recently updated still wins; a task whose close is filed goes last,
+ * and on a tie the earlier step of a planned project wins (two steps opened in one millisecond had
+ * the step-1 commands booked to step 2, whose sibling's close then read an empty ledger).
+ *
  * Exported so the "most-recently-updated wins" choice is directly testable in
  * isolation from the rest of this iteration's accounting.
  */
@@ -61,7 +66,7 @@ export function resolveCurrentClaimedTaskId(agentId: string): string | null {
   const row = getDb().prepare(
     `SELECT w.id AS id FROM work w
      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
-     ORDER BY w.updated_at DESC, w.rowid DESC LIMIT 1`,
+     ORDER BY ${workingTaskOrder('w')} LIMIT 1`,
   ).get(agentId) as { id: string } | undefined;
   return row?.id ?? null;
 }

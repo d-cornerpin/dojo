@@ -112,6 +112,15 @@ export function createWorkTable(db: DatabaseType.Database): void {
       directory_path TEXT NOT NULL, build_project_id TEXT, build_squad_id TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_work_a2a ON work(a2a_thread_id);
+    -- C4 (evidence round): the ledger charge reads the engine's receipt for a call (a send to another
+    -- agent counts only on its verified receipt) and ties the call's receipts to the charged task.
+    -- The columns those two statements touch, from migrations 087 and 116.
+    CREATE TABLE IF NOT EXISTS tool_receipts (
+      id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool TEXT NOT NULL, tier INTEGER NOT NULL DEFAULT 1,
+      verified INTEGER NOT NULL DEFAULT 0, basis TEXT NOT NULL DEFAULT 'provider-id', provider_id TEXT,
+      thread_id TEXT, recipient TEXT, task_id TEXT, turn_number INTEGER, call_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     -- PHASE-2 T8c2 item 4: "execute this occurrence once" is a CONSTRAINT, so a fixture
     -- without it would let the claim's own exactly-once test pass vacuously. Copied
     -- character for character from 135_work_spine.sql:70-71.

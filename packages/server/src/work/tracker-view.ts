@@ -436,6 +436,24 @@ export const unvalidatedPauseExpr = (a: string): string =>
 export const unvalidatedBlockExpr = (a: string): string =>
   `(${a}.state = 'blocked' AND ${validatedExpr(a, 'blocked')} = 0 AND ${closeRequestFiledExpr(a)} = 0)`;
 
+/**
+ * C5 (v3.5 field fix 3 evidence round): WHICH OF AN AGENT'S CLAIMED TASKS A TURN IS WORKING, when
+ * nothing carried names it (the job pick, `job-turn-end.ts`, and the charge, `tracker-counting.ts`,
+ * both order by this; a carried job still wins over it). An ORDER BY body over alias `a`.
+ *
+ * Measured on the owner's box: a planned project opened its two steps in one millisecond, so their
+ * `updated_at` tied and the old `rowid DESC` tiebreak booked the step-1 shell commands the turn ran
+ * next to step 2 ("Reply to ..."). Step 1's own close then read an empty ledger and was refused.
+ *   1. A task whose close is filed and pending is not being worked (its worker owes nothing more,
+ *      t152) and goes last.
+ *   2. The task the agent's own latest write touched (`updated_at`), as before.
+ *   3. On a tie, the EARLIER step of a planned project: steps are worked in order, so the open step
+ *      with the lowest number is the one in hand. A row with no step keeps the old newest-first tiebreak.
+ */
+export const workingTaskOrder = (a: string): string =>
+  `${pendingCloseRequestExpr(a)} ASC, ${a}.updated_at DESC, `
+  + `CASE WHEN ${a}.step_number IS NULL THEN 1 ELSE 0 END ASC, ${a}.step_number ASC, ${a}.rowid DESC`;
+
 /** The delivery the Key-1 request pointed at, so the validator closes against the receipt the
  *  worker actually had rather than resolving a fresh one. */
 export const closeRequestDeliveryExpr = (a: string): string =>

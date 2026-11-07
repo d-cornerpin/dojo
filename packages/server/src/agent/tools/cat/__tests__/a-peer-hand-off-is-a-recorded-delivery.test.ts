@@ -173,6 +173,12 @@ describe('§1 a delivered peer hand-off writes its own receipt', () => {
     expect(deliveries('send_to_agent').length).toBe(1);
   });
 
+  it('C6 (evidence round): the ledger row names the receipt that proved it, so the send finds its message', async () => {
+    await sendToAgent();
+    const [r] = receipts('send_to_agent');
+    expect(deliveries('send_to_agent')[0].receipt_id, 'the delivery does not name its receipt').toBe(r.id);
+  });
+
   it('the thread identity rides along, so the row can be joined back to the hop', async () => {
     await sendToAgent();
     const row = deliveries('send_to_agent')[0];
