@@ -31,7 +31,7 @@
 // ════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { taskScope, msToText } from '../work/tracker-view.js';
+import { taskScope, msToText, closeRequestDeliveryExpr, pendingCloseRequestExpr } from '../work/tracker-view.js';
 import { NON_ANSWERING_DISPLAY_KINDS, ENGINE_SENT_TOOLS } from '../work/ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import { measureReadsZero } from '../work/measure-close-gate.js';
@@ -188,14 +188,18 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 //   (b) the asks settled by the turn of the task's newest ANSWERED stamp
 //       (`messages.served_by_turn`, written as part of the settlement);
 //   (c) the task's own answered turn (`findDeliveryEvidenceForTask`).
+// Evidence round (C3, C4): a scheduled task is judged on its current run (its occurrence's receipt;
+// never the ask that set the schedule), and the delivery the worker's own pending close request named
+// (k) is read after (a).
 // ════════════════════════════════════════════════════════════════════════════════
 
 export interface TaskAnswerPointer {
   deliveryId: string;
   messageId: string | null;
   /** How the pointer was established — recorded, never inferred prose. `run-delivery`: a scheduled
-   *  task's current run settled on this delivery (the occurrence's own receipt). */
-  basis: 'parent-ask-receipt' | 'task-turn-answer' | 'run-delivery';
+   *  task's current run settled on this delivery (the occurrence's own receipt). `close-request-delivery`:
+   *  the delivery the worker's own pending close request named (C4). */
+  basis: 'parent-ask-receipt' | 'task-turn-answer' | 'run-delivery' | 'close-request-delivery';
   /** The delivered words, trimmed (a fixed placeholder for a channel send with no message row). */
   excerpt: string;
   channel: string | null;
@@ -243,7 +247,7 @@ function answerPointer(
   // only an ask receipt (arms a and b, whose settlement already required it to postdate the ask)
   // may be one.
   if (d.seq !== null && ask.seq !== null && d.seq <= ask.seq) return null;
-  if (d.seq === null && basis === 'task-turn-answer') return null;
+  if (d.seq === null && (basis === 'task-turn-answer' || basis === 'close-request-delivery')) return null;
   const raw = (d.content ?? '').replace(/^\[[^\]]*\]\s*/g, '').replace(/\s+/g, ' ').trim()
     || '(a channel send with no message row to quote)';
   return {
@@ -336,6 +340,20 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
         const p = m ? askReceipt(m) : null;
         if (p) return p;
       }
+    }
+    // (k) C4: the delivery the worker's own PENDING close request named (`closeRequestDeliveryExpr`, the
+    // Key-1 event's `result_delivery_id`, which G7 already required to be a real delivery row). It was
+    // never read here, so a close whose answer went out on its own turn (an answer to another agent,
+    // say) showed the PM no answer at all. Held to every rule above: a delivered line with a message
+    // row, by the task's own agent, not a chip, not engine-written, not the ack, on the ask's thread
+    // when the task has one, and inside the current run for a scheduled task.
+    const filed = db.prepare(
+      `SELECT ${closeRequestDeliveryExpr('w')} AS d FROM work w WHERE w.id = ? AND ${pendingCloseRequestExpr('w')} = 1`,
+    ).get(taskId) as { d: string | null } | undefined;
+    if (filed?.d) {
+      const anchor = !run && task.source_message_id ? askAnchor(task.source_message_id) : NO_ANCHOR;
+      const p = answerPointer(filed.d, 'close-request-delivery', task.agent_id, anchor, notBefore);
+      if (p) return p;
     }
     // (b) the asks the turn of its newest answered stamp settled.
     const stamp = db.prepare(

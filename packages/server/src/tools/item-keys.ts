@@ -18,10 +18,24 @@ export const COMMAND_KEY = 'cmd:';
 export const SEND_KEY = 'send:';
 
 /**
+ * C4 (v3.5 field fix 3 evidence round): the agent(s) a send addresses (`args.agent` / `args.group_id`),
+ * or undefined when the call is not a send to another agent. Such a send is work on the record ONLY
+ * with the engine's verified receipt for that exact call (`work/ledger-store.ts`): an answer the main
+ * agent gave another agent is real work, and on the owner's box the record could not see it.
+ */
+export function agentSendRecipientsOf(args: Record<string, unknown>, effects: readonly ToolEffect[]): string[] | undefined {
+  const sends = effects.filter((e) => e.kind === 'send' && (e.from === 'args.agent' || e.from === 'args.group_id'));
+  if (sends.length === 0) return undefined;
+  const named = sends.flatMap((e) => argValues(args, e.from)).filter((v): v is string => typeof v === 'string' && v.trim() !== '').map((v) => v.trim());
+  return [...new Set(named)];
+}
+
+/**
  * Audit #5: the recipient(s) a successful SEND names, from the tool's declared `send` effect, or null
  * when the declaration derives the recipient (a reply goes to the message's sender). `undefined` when
  * the call is not a send to a person: no `send` effect, or one addressed to another agent or an agent
- * group (`args.agent` / `args.group_id`), which is coordination and not delivered work.
+ * group (`args.agent` / `args.group_id`): that one is read by `agentSendRecipientsOf`, and reaches the
+ * ledger only on its verified receipt.
  */
 export function sendRecipientsOf(args: Record<string, unknown>, effects: readonly ToolEffect[]): string[] | null | undefined {
   const sends = effects.filter((e) => e.kind === 'send');

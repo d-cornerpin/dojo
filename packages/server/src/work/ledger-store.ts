@@ -12,7 +12,7 @@
 // the work and never an item: a command is as often a read (`ls`, `cat`) as a change, so the
 // measured-job readers below (momentum, "touched", the stall check) count items only.
 import { getDb } from '../db/connection.js';
-import { itemKeysOf, sendRecipientsOf, COMMAND_KEY, SEND_KEY } from '../tools/item-keys.js';
+import { itemKeysOf, sendRecipientsOf, agentSendRecipientsOf, COMMAND_KEY, SEND_KEY } from '../tools/item-keys.js';
 import { IS_ITEM } from './ledger-read.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 // The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
@@ -107,6 +107,14 @@ export function recordCallsTouched(
       // with the recipient(s) its arguments name (redacted like every other entry).
       const to = sendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []);
       if (to !== undefined) recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), to ? safe(to.join(', ')) : null);
+      // C4: a send to another agent is one delivery on the ledger too, but only on the engine's own
+      // VERIFIED receipt for this exact call (the transport's persisted peer message): the record never
+      // counts a send that did not land, and never one the model only claimed.
+      const peers = to === undefined ? agentSendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []) : undefined;
+      if (peers !== undefined && verifiedReceiptFor(tc.id, agentId)) {
+        recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), safe(`agent ${peers.join(', ') || 'unnamed'}`), tc.id);
+      }
+      stampCallReceipts(tc.id, agentId, workId);
       continue;
     }
     const r = roundResults.find((x) => x.toolCallId === tc.id);
@@ -114,6 +122,19 @@ export function recordCallsTouched(
     const applied = appliedKeysOf(r.keptWhole ?? r.content ?? '');
     if (applied && applied.length > 0) recordTouched(workId, tc.name, applied.map(safe));
   }
+}
+
+/** The engine's verified receipt for one call (`tool_receipts.call_id`, written by the tool's executor). */
+function verifiedReceiptFor(callId: string, agentId: string): boolean {
+  return !!getDb().prepare('SELECT 1 FROM tool_receipts WHERE call_id = ? AND agent_id = ? AND verified = 1 LIMIT 1').get(callId, agentId);
+}
+
+/** C4: a receipt carried no task id unless the close gate consumed it in its own turn, so a send made a
+ *  turn before the close belonged to no task. The call was charged to this task, so its receipts are
+ *  tied to it here (first tie wins, as at the gate: `receipts/store.ts:stampReceiptsTask`). */
+function stampCallReceipts(callId: string, agentId: string, workId: string): void {
+  getDb().prepare(`UPDATE tool_receipts SET task_id = ?, updated_at = datetime('now') WHERE call_id = ? AND agent_id = ? AND task_id IS NULL`)
+    .run(workId, callId, agentId);
 }
 
 /** Distinct items touched (or re-touched) after `sinceMs`. */

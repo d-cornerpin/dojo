@@ -33,6 +33,7 @@ import { unvalidatedCloseExpr } from '../work/tracker-view.js';
 import { resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { readAuditTrail } from '../work/audit-trail.js';
+import { workerReadsOf } from './worker-reads.js';
 
 export interface LookedAt {
   tasks: string[]; activity: string[]; files: string[]; messages: string[]; results: string[]; vault: string[];
@@ -222,11 +223,12 @@ function pathsIn(text: string): string[] {
  *  answer's message and the paths it names, the owner's recorded messages; and the folders the ledger
  *  WROTE into (only these: a folder a command or a pointer merely names is never a licence for the reads
  *  under it). A read binds to the row only when it opens one of these. */
-export function rowReadNames(workId: string): { paths: string[]; messages: string[]; wroteInto: string[] } {
+export function rowReadNames(workId: string): { paths: string[]; messages: string[]; wroteInto: string[]; vault: string[] } {
   const db = getDb();
   const paths: string[] = [];
   const messages: string[] = [];
   const wroteInto: string[] = [];
+  const vault: string[] = [];
   const keys = db.prepare('SELECT item_key AS k FROM work_ledger WHERE work_id = ?').all(workId) as Array<{ k: string }>;
   for (const { k } of keys) {
     if (k.startsWith('file:')) {
@@ -248,7 +250,15 @@ export function rowReadNames(workId: string): { paths: string[]; messages: strin
   if (answer?.messageId) messages.push(answer.messageId);
   if (answer?.excerpt) paths.push(...pathsIn(answer.excerpt));
   for (const m of readLaterMessages(workId)) if (m.messageId) messages.push(m.messageId);
-  return { paths: [...new Set(paths.map(trimSlash))], messages: [...new Set(messages)], wroteInto: [...new Set(wroteInto)] };
+  // C4: what the worker read while working the row, that the PM can open again itself (`worker-reads.ts`).
+  // Named, never counted on its own: the PM's own read of the same thing is what binds.
+  const reads = workerReadsOf(workId);
+  paths.push(...reads.files);
+  messages.push(...reads.messages);
+  vault.push(...reads.vault);
+  return {
+    paths: [...new Set(paths.map(trimSlash))], messages: [...new Set(messages)], wroteInto: [...new Set(wroteInto)], vault: [...new Set(vault)],
+  };
 }
 
 function trimSlash(p: string): string { return p.length > 1 ? p.replace(/\/+$/, '') : p; }
@@ -262,10 +272,11 @@ function opensRowWork(read: string, names: { paths: string[]; wroteInto: string[
 const sameMessage = (read: string, named: string): boolean => read === named || (read.length >= 8 && named.startsWith(read));
 
 /** Did these reads open THIS row's work (review M3b, R7)? Its activity, or something its record names. */
-export function readsBoundToRow(l: LookedAt, workId: string, names = rowReadNames(workId)): boolean {
+export function readsBoundToRow(l: LookedAt, workId: string, names: { paths: string[]; messages: string[]; wroteInto: string[]; vault?: string[] } = rowReadNames(workId)): boolean {
   return l.activity.some((id) => matchesWork(workId, id))
     || l.files.some((f) => opensRowWork(f, names))
-    || [...l.messages, ...l.results].some((m) => names.messages.some((n) => sameMessage(m, n)));
+    || [...l.messages, ...l.results].some((m) => names.messages.some((n) => sameMessage(m, n)))
+    || l.vault.some((v) => (names.vault ?? []).includes(v));
 }
 
 /** Does anything STRUCTURAL back this close (v3.5 field fix 3, #6b)? A measure at 0 or with a named
