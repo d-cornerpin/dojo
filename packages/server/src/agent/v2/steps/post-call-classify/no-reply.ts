@@ -116,7 +116,7 @@ export async function runNoReply(
   // same line written again goes out as written.
   if (declineRead && persistedContent) {
     const t = persistedContent.replace(/\s+/g, ' ').trim();
-    const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc }, {
+    const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc, db: ctx.db }, {
       floor: 'prose-decline', text: persistedContent,
       steer: `[Engine record: your reply opens as a decision not to reply: "${t.length > 120 ? `${t.slice(0, 120)}…` : t}". `
         + 'It has not been sent; written as your final reply again, it is sent as written. A final reply of [no-reply] sends nothing.]',

@@ -369,7 +369,7 @@ export async function runReplyFloors(
         // Field fix 3 audit round (#11): was a silent null. The agent is told which sent reply this
         // matches, and decides; written again, it goes out.
         const prev = match.content.replace(/\s+/g, ' ').trim();
-        const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc }, {
+        const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc, db: ctx.db }, {
           floor: 'near-duplicate-reply', text: persistedContent,
           steer: `[Engine record: your reply matches one you already sent: "${prev.length > 120 ? `${prev.slice(0, 120)}…` : prev}". `
             + 'It has not been sent; written as your final reply again, it is sent again. A final reply of [no-reply] sends nothing.]',

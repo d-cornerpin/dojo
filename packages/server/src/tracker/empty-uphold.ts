@@ -32,6 +32,7 @@ import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { taskScope, unvalidatedCloseExpr } from '../work/tracker-view.js';
 import { resolveTaskId } from './schema.js';
 import { closeBacking, lookedAtThisTurn, readsBoundToRow, readsSince, taskAnswerFor } from './looked-at.js';
+import { heldDeliveryLine } from './owed-delivery.js';
 
 const logger = createLogger('empty-uphold');
 
@@ -104,9 +105,12 @@ function emptyRecordFacts(row: { evidence_json: string | null; measure_json: str
     const ev = JSON.parse(row.evidence_json ?? '[]') as Array<{ pointer?: unknown }>;
     pointers = Array.isArray(ev) ? ev.map((e) => (typeof e?.pointer === 'string' ? e.pointer.trim() : '')).filter(Boolean) : [];
   } catch { /* no readable evidence: nothing named */ }
+  // C8 (owner ruling (a)): a line the Dojo itself held back is said as that, never as the agent doing nothing.
+  const held = heldDeliveryLine(taskId).replace(/^\n\s*/, '');
   return 'Refused: nothing on record shows this work. '
     + 'The ledger for this task is empty (no files written, no commands run, no items touched). '
     + `${measure} ${delivered ? `${delivered} ` : ''}`
+    + (held ? `${held} ` : '')
     + 'Nothing of the work itself has been read since the close was filed. '
     + (pointers.length > 0 ? `The worker's evidence names: ${pointers.join(', ')}. ` : '')
     + 'Read the work (the files or the messages it names) before ruling.';

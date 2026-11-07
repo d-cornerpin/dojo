@@ -3,6 +3,7 @@
 import { validationMeasureLines } from './job-loop-facts.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { workerReadsOf } from './worker-reads.js';
+import { heldDeliveryLine } from './owed-delivery.js';
 
 const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
 
@@ -49,7 +50,7 @@ export function unvalidatedCompleteText(taskId: string, p: ValidationRequestPart
   return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) closed by ${p.agentName}, awaiting your validation.${p.headExtras}\n`
     + `  Goal: ${p.goal ?? '(no goal recorded, pre-migration row)'}\n`
     + `  Result: ${p.result ?? '(none)'}\n`
-    + `  Evidence:\n${p.evidenceBlock}${validationMeasureLines(taskId, p.ledgerRoomTokens)}${workerReadsLines(taskId)}${ownerWordsLines(taskId)}\n`
+    + `  Evidence:\n${p.evidenceBlock}${validationMeasureLines(taskId, p.ledgerRoomTokens)}${workerReadsLines(taskId)}${heldDeliveryLine(taskId)}${ownerWordsLines(taskId)}\n`
     + `  Priority=${p.priority}, revert_count=${p.revertCount}.\n`
     + `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). `
     + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true) when the work demonstrably matches the goal. `

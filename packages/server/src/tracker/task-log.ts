@@ -77,7 +77,10 @@ export type TaskLogEntryKind =
   // T10G: the two the spine names honestly. A PM blessing used to arrive here wearing a
   // `transition` label with `from_status = to_status`; it is a VERDICT and now says so.
   | 'claim_upheld'
-  | 'claim_rejected';
+  | 'claim_rejected'
+  // C8 (evidence round, owner ruling (a)): the Dojo held back a line a task owed its owner, and why
+  // (`tracker/owed-delivery.ts`). The PM's review says so; it never counts as delivered.
+  | 'delivery_held';
 
 export interface TaskLogEntryInput {
   taskId: string;
