@@ -193,8 +193,9 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 export interface TaskAnswerPointer {
   deliveryId: string;
   messageId: string | null;
-  /** How the pointer was established — recorded, never inferred prose. */
-  basis: 'parent-ask-receipt' | 'task-turn-answer';
+  /** How the pointer was established — recorded, never inferred prose. `run-delivery`: a scheduled
+   *  task's current run settled on this delivery (the occurrence's own receipt). */
+  basis: 'parent-ask-receipt' | 'task-turn-answer' | 'run-delivery';
   /** The delivered words, trimmed (a fixed placeholder for a channel send with no message row). */
   excerpt: string;
   channel: string | null;
@@ -220,6 +221,8 @@ function askAnchor(messageId: string): AskAnchor {
 /** The candidate, if it is the agent's answer on the ask's thread and not an engine-marked line. */
 function answerPointer(
   deliveryId: string, basis: TaskAnswerPointer['basis'], agentId: string, ask: AskAnchor,
+  /** A scheduled task's run start (ms): a delivery from before the run is not the run's (C3). */
+  notBeforeMs: number | null = null,
 ): TaskAnswerPointer | null {
   const d = getDb().prepare(
     `SELECT d.id AS id, d.message_id AS message_id, d.channel AS channel, d.conversation_id AS conversation_id,
@@ -234,6 +237,7 @@ function answerPointer(
     created_at: string; content: string | null; seq: number | null;
   } | undefined;
   if (!d) return null;
+  if (notBeforeMs !== null && Date.parse(`${d.created_at.replace(' ', 'T')}Z`) < Math.floor(notBeforeMs / 1000) * 1000) return null;
   if (ask.conversationId && d.conversation_id !== ask.conversationId) return null;
   // After the ask arrived, on the message log. A channel send with no message row has no position;
   // only an ask receipt (arms a and b, whose settlement already required it to postdate the ask)
@@ -246,6 +250,49 @@ function answerPointer(
     deliveryId: d.id, messageId: d.message_id, basis, channel: d.channel, at: d.created_at,
     excerpt: raw.length > ANSWER_EXCERPT_CHARS ? `${raw.slice(0, ANSWER_EXCERPT_CHARS)}…` : raw,
   };
+}
+
+const NO_ANCHOR: AskAnchor = { conversationId: null, seq: null };
+
+/**
+ * C3 (v3.5 field fix 3 evidence round): THE RUN A SCHEDULED TASK'S CLOSE IS ABOUT.
+ *
+ * Measured on the owner's box: a daily reminder's review showed the setup confirmation
+ * ("Reminder set ... every day at 9:30 AM", the receipt of the ask that CREATED the schedule) as
+ * "DELIVERED ANSWER ON RECORD ... This IS the dereference", for a run whose own turns all hit
+ * provider errors. A run points at its own delivery.
+ *
+ * Scheduled = the row carries a schedule (`repeat_interval` / `scheduled_start`) or the scheduler
+ * has opened an occurrence for it. Its run is the newest occurrence opened at or before the close
+ * was filed (now, when none is filed); a row from before occurrence rows existed falls back to the
+ * scheduler's newest fire (`transition` to claimed, by the scheduler). `null`: not scheduled.
+ * `'never-ran'`: scheduled, and no run has started, so nothing can be a run's delivery.
+ */
+function scheduledRunOf(taskId: string): { startMs: number; deliveryId: string | null } | 'never-ran' | null {
+  const db = getDb();
+  const row = db.prepare(
+    `SELECT w.repeat_interval AS repeat_interval, w.scheduled_start AS scheduled_start,
+            EXISTS (SELECT 1 FROM work o WHERE o.parent_id = w.id AND o.kind = 'occurrence') AS has_runs
+       FROM work w WHERE w.id = ?`,
+  ).get(taskId) as { repeat_interval: number | null; scheduled_start: number | null; has_runs: number } | undefined;
+  if (!row || (!row.repeat_interval && row.scheduled_start === null && !row.has_runs)) return null;
+  const filed = db.prepare(
+    `SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ?
+       AND ((kind = 'validation_requested' AND json_extract(payload, '$.requested_state') = 'done')
+         OR (kind = 'transition' AND json_extract(payload, '$.to') = 'done'))`,
+  ).get(taskId) as { at: number | null } | undefined;
+  const ref = filed?.at ?? Date.now();
+  const occ = db.prepare(
+    `SELECT opened_at, result_delivery_id FROM work
+      WHERE parent_id = ? AND kind = 'occurrence' AND opened_at <= ?
+      ORDER BY opened_at DESC, rowid DESC LIMIT 1`,
+  ).get(taskId, ref) as { opened_at: number; result_delivery_id: string | null } | undefined;
+  if (occ) return { startMs: occ.opened_at, deliveryId: occ.result_delivery_id };
+  const fired = db.prepare(
+    `SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'transition' AND actor = 'scheduler'
+       AND json_extract(payload, '$.to') = 'claimed' AND created_at <= ?`,
+  ).get(taskId, ref) as { at: number | null } | undefined;
+  return fired?.at != null ? { startMs: fired.at, deliveryId: null } : 'never-ran';
 }
 
 /** THE task's answer (rules above). Null when there is none. Read by the worker's close, G7's
@@ -262,19 +309,33 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
       agent_id: string; source_message_id: string | null; parent_source_message_id: string | null;
     } | undefined;
     if (!task) return null;
+    // C3: a SCHEDULED task's work is its runs. The ask that set the schedule was answered by the
+    // setup confirmation ("Reminder set ... every day at 9:30 AM"), which is never a run's delivery,
+    // so arm (a) is not read for it, and every other candidate must come from the current run.
+    const run = scheduledRunOf(taskId);
+    if (run === 'never-ran') return null;
+    const notBefore = run ? run.startMs : null;
     const askReceipt = (messageId: string): TaskAnswerPointer | null => {
       // `ask:<messageId>` is the spine's own derivation (`work/store.ts:askIdForMessage`).
       const ask = db.prepare(`SELECT result_delivery_id FROM work WHERE id = ? AND kind = 'ask'`)
         .get(`ask:${messageId}`) as { result_delivery_id: string | null } | undefined;
       return ask?.result_delivery_id
-        ? answerPointer(ask.result_delivery_id, 'parent-ask-receipt', task.agent_id, askAnchor(messageId))
+        ? answerPointer(ask.result_delivery_id, 'parent-ask-receipt', task.agent_id, askAnchor(messageId), notBefore)
         : null;
     };
 
-    // (a) the ask this task (or its project) exists for.
-    for (const m of [task.source_message_id, task.parent_source_message_id]) {
-      const p = m ? askReceipt(m) : null;
-      if (p) return p;
+    if (run) {
+      // (r) the run's own settlement receipt: the occurrence row the scheduler opened for it.
+      if (run.deliveryId) {
+        const p = answerPointer(run.deliveryId, 'run-delivery', task.agent_id, NO_ANCHOR, notBefore);
+        if (p) return p;
+      }
+    } else {
+      // (a) the ask this task (or its project) exists for.
+      for (const m of [task.source_message_id, task.parent_source_message_id]) {
+        const p = m ? askReceipt(m) : null;
+        if (p) return p;
+      }
     }
     // (b) the asks the turn of its newest answered stamp settled.
     const stamp = db.prepare(
@@ -300,7 +361,7 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
           ORDER BY rowid DESC LIMIT 1`,
       ).get(task.agent_id, evidence.answerMessageId) as { id: string } | undefined;
       if (d) {
-        const p = answerPointer(d.id, 'task-turn-answer', task.agent_id, askAnchor(task.source_message_id));
+        const p = answerPointer(d.id, 'task-turn-answer', task.agent_id, run ? NO_ANCHOR : askAnchor(task.source_message_id), notBefore);
         if (p) return p;
       }
     }
