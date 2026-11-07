@@ -172,7 +172,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
       taskId: TASK, status: 'complete',
       result: `Connected and verified. Authenticated with ${FAKE_TOKEN} and pulled 14 invoices.`,
       evidence: [
-        { kind: 'claim', claim: `the provider accepted the token ${FAKE_TOKEN} on the first call`, pointer: 'run-1' },
+        { kind: 'claim', claim: `the provider accepted the token ${FAKE_TOKEN} on the first call`, pointer: '/tmp/provider/run-1.log' },
       ],
     });
 
@@ -196,7 +196,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
       taskId: TASK, status: 'complete',
       result: 'Done.',
       evidence: [
-        { kind: 'claim', claim: `used ${FAKE_TOKEN} to authenticate`, pointer: 'run-9' },
+        { kind: 'claim', claim: `used ${FAKE_TOKEN} to authenticate`, pointer: '/tmp/provider/run-9.log' },
       ],
     });
 
@@ -207,7 +207,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed.length).toBeGreaterThan(0);
     expect(parsed[0].kind).toBe('claim');
-    expect(parsed[0].pointer).toBe('run-9');
+    expect(parsed[0].pointer).toBe('/tmp/provider/run-9.log');
     expect(parsed[0].claim).toContain('to authenticate');
     expect(parsed[0].claim).not.toContain(FAKE_TOKEN);
   });
@@ -219,7 +219,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
     trackerUpdateStatus(AGENT, {
       taskId: TASK, status: 'complete',
       result: `Rotated to ${FAKE_PW}; old token ${FAKE_TOKEN} revoked.`,
-      evidence: [{ kind: 'claim', claim: `new value ${FAKE_PW} accepted`, pointer: 'p1' }],
+      evidence: [{ kind: 'claim', claim: `new value ${FAKE_PW} accepted`, pointer: '/tmp/rotate/p1.log' }],
     });
 
     expect(sweepForValue(FAKE_TOKEN)).toEqual([]);
@@ -238,7 +238,7 @@ describe('§2 an ordinary close is unchanged', () => {
     const result = 'Filed 31 messages and drafted 4 replies for review.';
     trackerUpdateStatus(AGENT, {
       taskId: TASK, status: 'complete', result,
-      evidence: [{ kind: 'claim', claim: 'four drafts saved', pointer: 'drafts/' }],
+      evidence: [{ kind: 'claim', claim: 'four drafts saved', pointer: '/tmp/inbox/drafts/' }],
     });
 
     const row = rowOf();
@@ -254,7 +254,7 @@ describe('§2 an ordinary close is unchanged', () => {
     const result = `A literal that happens to look like ${FAKE_TOKEN} but was never handed here.`;
     trackerUpdateStatus(AGENT, {
       taskId: TASK, status: 'complete', result,
-      evidence: [{ kind: 'claim', claim: 'done', pointer: 'x' }],
+      evidence: [{ kind: 'claim', claim: 'done', pointer: '/tmp/inbox/x' }],
     });
 
     // Keyed per agent, as the redactor is everywhere else in the tree. This clause exists so

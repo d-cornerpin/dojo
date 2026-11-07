@@ -8,7 +8,10 @@
 // thread ffd47263 ...", "delivery 4f82ddbc"), so nothing structured named the message.
 //
 // What must stay true: a pointer that names nothing the worker holds (another agent's own message, an
-// id that does not exist, prose with no id at all) still binds nothing.
+// id that does not exist, prose with no id at all) still binds nothing. And (the C4 loophole, owner
+// ruling) a send binds only when it delivered the work to the party the task serves: the send here is
+// the worker's answer to the agent that asked for the task; the same answer sent to the PM names nothing.
+// (On the owner's box the answer went to the PM itself; under the ruling that send is never work.)
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -30,6 +33,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/a2a-transport.js', () => ({ deliverA2AMessage: async () => ({ delivered: true, threadId: 't' }) }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { clearPlatformConfigCache } from '../../config/platform.js';
 import { keepLedgerShownFor } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { recordCallsTouched } from '../../work/ledger-store.js';
@@ -43,6 +47,7 @@ import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
 const WORKER = 'main-agent';
 const PM = 'pm-agent';
+const REQUESTER = 'helper-agent';
 const PM_TURN = 6551;
 // The real shape: the A2A delivery row and the message it carried (the PM's own inbound copy).
 const DELIVERY = '4f82ddbc-d40d-4ef3-9316-8eb3b2a10fd2';
@@ -52,18 +57,18 @@ let projectId = '';
 let n = 0;
 const db = (): Database.Database => mockDb.current!;
 
-function seedSend(): void {
+function seedSend(to = REQUESTER): void {
   db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, display_kind, a2a_thread_id, source_agent_id, created_at, sent_at) VALUES (?, ?, 'a2a', 'user', ?, 'a2a', 'ffd47263', ?, ?, ?)`)
-    .run(MESSAGE, PM, '[A2A:ANSWER thread:ffd47263 from:Main] Verified independently: no export exists.', WORKER, Date.now(), Date.now());
-  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES (?, ?, 1804, 'send_to_agent', 'a2a', ?, 'delivered', datetime('now'))`)
-    .run(DELIVERY, WORKER, MESSAGE);
+    .run(MESSAGE, to, '[A2A:ANSWER thread:ffd47263 from:Main] Verified independently: no export exists.', WORKER, Date.now(), Date.now());
+  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, message_id, detail, outcome, created_at) VALUES (?, ?, 1804, 'send_to_agent', 'a2a', ?, ?, 'A2A ANSWER', 'delivered', datetime('now'))`)
+    .run(DELIVERY, WORKER, to, MESSAGE);
   // The PM's own note: a message that exists but is not the worker's work.
   db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, display_kind, created_at, sent_at) VALUES (?, ?, 'a2a', 'assistant', 'my own note', 'agent-text', ?, ?)`)
     .run(PM_OWN_NOTE, PM, Date.now(), Date.now());
 }
 function taskWithPointer(pointer: string): string {
   const t = openTrackerTask({
-    projectId, title: 'Reply on thread ffd47263', status: 'in_progress', assignedTo: WORKER, createdBy: WORKER,
+    projectId, title: 'Reply on thread ffd47263', status: 'in_progress', assignedTo: WORKER, createdBy: REQUESTER,
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
   db().prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([{ kind: 'external_action', claim: 'answered the PM, engine-verified outbound', pointer }]), t);
@@ -95,15 +100,17 @@ beforeEach(() => {
   resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
-  for (const id of [WORKER, PM]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
+  for (const id of [WORKER, PM, REQUESTER]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
   projectId = openTrackerProject({ name: 'p', createdBy: WORKER, origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null } } as never) as string;
+  db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_id', ?)").run(PM);
+  clearPlatformConfigCache();
   openTurnContext(PM).turnNumber = PM_TURN;
-  seedSend();
 });
-afterEach(() => { endTurnContext(PM); mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { endTurnContext(PM); clearPlatformConfigCache(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('C6: the PM reads the message a pointer names, and the uphold is no longer refused again', () => {
   it('THE OWNER\'S BOX: a pointer naming the send\'s delivery by its prefix; the PM\'s history_get on the message binds', async () => {
+    seedSend();
     const t = taskWithPointer('delivery 4f82ddbc on thread ffd47263, 16:05 PST');
     expect(await validate(t)).toMatch(REFUSED);
     pmRead('history_get', { id: MESSAGE });
@@ -111,19 +118,22 @@ describe('C6: the PM reads the message a pointer names, and the uphold is no lon
   });
 
   it('a pointer that carries the message id in prose resolves to that message', () => {
+    seedSend();
     const t = taskWithPointer('message 1bb1e8f7 on thread ffd47263 (agent -> PM)');
     expect(rowReadNames(t).messages).toContain(MESSAGE);
   });
 
   it('a send on the ledger names the message its receipt proved', () => {
+    seedSend();
     const t = taskWithPointer('RECENT OUTBOUND agent -> PM');
     db().prepare(`INSERT INTO tool_receipts (id, agent_id, tool, tier, verified, basis, call_id) VALUES ('rcpt-1', ?, 'send_to_agent', 1, 1, 'provider-id', 'call-send')`).run(WORKER);
     db().prepare('UPDATE deliveries SET receipt_id = ? WHERE id = ?').run('rcpt-1', DELIVERY);
-    recordCallsTouched(t, [{ id: 'call-send', name: 'send_to_agent', arguments: { agent: PM, intent: 'ANSWER', payload: 'x' } }], [{ toolCallId: 'call-send', isError: false }], effectsFor, WORKER);
+    recordCallsTouched(t, [{ id: 'call-send', name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'Verified independently: no export exists.' } }], [{ toolCallId: 'call-send', isError: false }], effectsFor, WORKER);
     expect(rowReadNames(t).messages).toContain(MESSAGE);
   });
 
   it('NEGATIVE CONTROL: prose with no id names nothing; reading the message then is still refused', async () => {
+    seedSend();
     const t = taskWithPointer('RECENT OUTBOUND [Nov 5, 2026, 04:05 PM UTC-08:00] agent -> PM');
     expect(await validate(t)).toMatch(REFUSED);
     pmRead('history_get', { id: MESSAGE });
@@ -131,10 +141,20 @@ describe('C6: the PM reads the message a pointer names, and the uphold is no lon
   });
 
   it('NEGATIVE CONTROL: an id that is not the worker\'s (the PM\'s own note) or does not exist resolves to nothing', async () => {
+    seedSend();
     expect(resolveEvidencePointer(WORKER, `see ${PM_OWN_NOTE.slice(0, 8)} and deadbeef99`)).toEqual([]);
     const t = taskWithPointer(`see ${PM_OWN_NOTE.slice(0, 8)}`);
     expect(await validate(t)).toMatch(REFUSED);
     pmRead('history_get', { id: PM_OWN_NOTE });
+    expect(await validate(t)).toMatch(REFUSED);
+  });
+
+  it('NEGATIVE CONTROL (the C4 loophole): the same pointer naming the same answer SENT TO THE PM binds nothing; the PM reading it is still refused', async () => {
+    seedSend(PM);
+    const t = taskWithPointer('delivery 4f82ddbc on thread ffd47263, 16:05 PST');
+    expect(rowReadNames(t).messages).not.toContain(MESSAGE);
+    expect(await validate(t)).toMatch(REFUSED);
+    pmRead('history_get', { id: MESSAGE });
     expect(await validate(t)).toMatch(REFUSED);
   });
 });

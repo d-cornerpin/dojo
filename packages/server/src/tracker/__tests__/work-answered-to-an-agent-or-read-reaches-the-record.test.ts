@@ -13,6 +13,10 @@
 //
 // What must stay true: nothing the engine did not see is counted. A send with no verified receipt, a
 // tool-call row the close happened to point at, and a read the PM has not repeated back nothing.
+//
+// The follow-up ruling (the C4 loophole): a send counts only when it delivers the work to the party the
+// task serves. The answer here goes to the agent that asked for the task; the same answer to the PM
+// itself (the owner's-box shape) is never work (`a-send-to-the-pm-is-never-work-on-record.test.ts`).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -47,6 +51,7 @@ import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
 const WORKER = 'main-agent';
 const PM = 'pm-agent';
+const REQUESTER = 'helper-agent';
 const PM_TURN = 6434;
 const WORK_TURN = 1793;
 let projectId = '';
@@ -56,7 +61,7 @@ const db = (): Database.Database => mockDb.current!;
 function newTask(): string {
   return openTrackerTask({
     projectId, title: 'Establish the real disposal path for the blocked fixture rows', status: 'in_progress',
-    assignedTo: WORKER, createdBy: WORKER, origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
+    assignedTo: WORKER, createdBy: REQUESTER, origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
 }
 /** One of the worker's tool calls in its working turn, and the result the engine stored for it. */
@@ -74,7 +79,7 @@ function receipt(callId: string, verified: boolean): void {
   db().prepare(
     `INSERT INTO tool_receipts (id, agent_id, tool, tier, verified, basis, provider_id, thread_id, recipient, turn_number, call_id)
      VALUES (?, ?, 'send_to_agent', 1, ?, 'provider-id', 'thread-1a9e', 'thread-1a9e', ?, ?, ?)`,
-  ).run(`rcpt-${callId}`, WORKER, verified ? 1 : 0, PM, WORK_TURN, callId);
+  ).run(`rcpt-${callId}`, WORKER, verified ? 1 : 0, REQUESTER, WORK_TURN, callId);
 }
 /** The charge site's ledger write for this round (`tracker-counting.ts` -> `recordCallsTouched`). */
 function charge(taskId: string, calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>): void {
@@ -119,18 +124,18 @@ beforeEach(() => {
   resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
-  for (const id of [WORKER, PM]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
+  for (const id of [WORKER, PM, REQUESTER]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
   projectId = openTrackerProject({ name: 'p', createdBy: WORKER, origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null } } as never) as string;
   openTurnContext(PM).turnNumber = PM_TURN;
 });
 afterEach(() => { endTurnContext(PM); mockDb.current?.close(); mockDb.current = null; });
 
 describe('C4: an answer sent to another agent, on the engine\'s verified receipt, is on the record', () => {
-  it('THE OWNER\'S BOX: the answer to the PM a turn before the close backs the uphold; the receipt is tied to the task', async () => {
+  it('the answer to the requesting agent a turn before the close backs the uphold; the receipt is tied to the task', async () => {
     const t = newTask();
-    const send = workerCall('send_to_agent', { agent: PM, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });
+    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });
     receipt(send, true);
-    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: PM, intent: 'ANSWER', payload: '...' } }]);
+    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' } }]);
     // The close's own delivery on the box was the tool-call row of the close itself (a chip, not an answer).
     fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
     expect(await validate(t)).not.toMatch(REFUSED);
@@ -140,11 +145,11 @@ describe('C4: an answer sent to another agent, on the engine\'s verified receipt
 
   it('NEGATIVE CONTROL: a send with no verified receipt (it did not land) is not counted, and the uphold is refused', async () => {
     const t = newTask();
-    const send = workerCall('send_to_agent', { agent: PM, intent: 'ANSWER', payload: 'done' });
+    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });
     receipt(send, false);
-    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: PM, intent: 'ANSWER', payload: 'done' } }]);
-    const bare = workerCall('send_to_agent', { agent: PM, intent: 'ANSWER', payload: 'done' });   // no receipt at all
-    charge(t, [{ id: bare, name: 'send_to_agent', arguments: { agent: PM, intent: 'ANSWER', payload: 'done' } }]);
+    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' } }]);
+    const bare = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });   // no receipt at all
+    charge(t, [{ id: bare, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' } }]);
     fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
     expect(await validate(t)).toMatch(REFUSED);
     expect(upheld(t)).toBe(0);

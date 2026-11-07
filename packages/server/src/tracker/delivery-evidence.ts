@@ -35,6 +35,7 @@ import { taskScope, msToText, closeRequestDeliveryExpr, pendingCloseRequestExpr 
 import { NON_ANSWERING_DISPLAY_KINDS, ENGINE_SENT_TOOLS } from '../work/ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import { measureReadsZero } from '../work/measure-close-gate.js';
+import { agentSendCountsAsWork, agentSendOfDelivery } from '../work/send-counts-as-work.js';
 
 const logger = createLogger('delivery-evidence');
 
@@ -224,6 +225,8 @@ function askAnchor(messageId: string): AskAnchor {
 
 /** The candidate, if it is the agent's answer on the ask's thread and not an engine-marked line. */
 function answerPointer(
+  /** The task the answer is for: an answer sent to another agent must deliver ITS work (`agentSendCountsAsWork`). */
+  taskId: string,
   deliveryId: string, basis: TaskAnswerPointer['basis'], agentId: string, ask: AskAnchor,
   /** A scheduled task's run start (ms): a delivery from before the run is not the run's (C3). */
   notBeforeMs: number | null = null,
@@ -241,6 +244,11 @@ function answerPointer(
     created_at: string; content: string | null; seq: number | null;
   } | undefined;
   if (!d) return null;
+  // The C4 loophole: a line sent to another agent is the task's answer only when it delivers the work to
+  // the party the task serves; a send to the PM, the validator or a service agent, or a bare status claim
+  // ("done"), never is (`work/send-counts-as-work.ts`).
+  const peerSend = agentSendOfDelivery(d.id);
+  if (peerSend && !agentSendCountsAsWork(taskId, peerSend)) return null;
   if (notBeforeMs !== null && Date.parse(`${d.created_at.replace(' ', 'T')}Z`) < Math.floor(notBeforeMs / 1000) * 1000) return null;
   if (ask.conversationId && d.conversation_id !== ask.conversationId) return null;
   // After the ask arrived, on the message log. A channel send with no message row has no position;
@@ -324,14 +332,14 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
       const ask = db.prepare(`SELECT result_delivery_id FROM work WHERE id = ? AND kind = 'ask'`)
         .get(`ask:${messageId}`) as { result_delivery_id: string | null } | undefined;
       return ask?.result_delivery_id
-        ? answerPointer(ask.result_delivery_id, 'parent-ask-receipt', task.agent_id, askAnchor(messageId), notBefore)
+        ? answerPointer(taskId, ask.result_delivery_id, 'parent-ask-receipt', task.agent_id, askAnchor(messageId), notBefore)
         : null;
     };
 
     if (run) {
       // (r) the run's own settlement receipt: the occurrence row the scheduler opened for it.
       if (run.deliveryId) {
-        const p = answerPointer(run.deliveryId, 'run-delivery', task.agent_id, NO_ANCHOR, notBefore);
+        const p = answerPointer(taskId, run.deliveryId, 'run-delivery', task.agent_id, NO_ANCHOR, notBefore);
         if (p) return p;
       }
     } else {
@@ -352,7 +360,7 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
     ).get(taskId) as { d: string | null } | undefined;
     if (filed?.d) {
       const anchor = !run && task.source_message_id ? askAnchor(task.source_message_id) : NO_ANCHOR;
-      const p = answerPointer(filed.d, 'close-request-delivery', task.agent_id, anchor, notBefore);
+      const p = answerPointer(taskId, filed.d, 'close-request-delivery', task.agent_id, anchor, notBefore);
       if (p) return p;
     }
     // (b) the asks the turn of its newest answered stamp settled.
@@ -379,7 +387,7 @@ export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | nu
           ORDER BY rowid DESC LIMIT 1`,
       ).get(task.agent_id, evidence.answerMessageId) as { id: string } | undefined;
       if (d) {
-        const p = answerPointer(d.id, 'task-turn-answer', task.agent_id, run ? NO_ANCHOR : askAnchor(task.source_message_id), notBefore);
+        const p = answerPointer(taskId, d.id, 'task-turn-answer', task.agent_id, run ? NO_ANCHOR : askAnchor(task.source_message_id), notBefore);
         if (p) return p;
       }
     }

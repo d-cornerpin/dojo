@@ -34,7 +34,8 @@ import { resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { readAuditTrail } from '../work/audit-trail.js';
 import { workerReadsOf } from './worker-reads.js';
-import { refNames, resolveEvidencePointer, storedRef, type PointerRef } from './evidence-pointers.js';
+import { refNames, resolveEvidencePointer, storedRefs, type PointerRef } from './evidence-pointers.js';
+import { isNonWorkAgentSendMessage } from '../work/send-counts-as-work.js';
 
 export interface LookedAt {
   tasks: string[]; activity: string[]; files: string[]; messages: string[]; results: string[]; vault: string[];
@@ -253,9 +254,9 @@ export function rowReadNames(workId: string): { paths: string[]; messages: strin
     for (const e of Array.isArray(ev) ? ev : []) {
       // C6: a pointer is resolved to the records it names (`evidence-pointers.ts`): a stored `ref` when the
       // close door wrote one, else the ids in the pointer, looked up among the worker's own rows.
-      const stored = storedRef(e?.ref);
+      const stored = storedRefs(e?.ref);
       const p = typeof e?.pointer === 'string' ? e.pointer.trim() : '';
-      const refs: PointerRef[] = stored ? [stored] : (p && row ? resolveEvidencePointer(row.who, p) : []);
+      const refs: PointerRef[] = stored ?? (p && row ? resolveEvidencePointer(row.who, p) : []);
       const named = refNames(refs);
       paths.push(...named.paths);
       messages.push(...named.messages);
@@ -273,9 +274,26 @@ export function rowReadNames(workId: string): { paths: string[]; messages: strin
   paths.push(...reads.files);
   messages.push(...reads.messages);
   vault.push(...reads.vault);
+  // The C4 loophole: a message the worker sent another agent names the row's work only when that send
+  // delivered the work to the party the task serves. Its "done" to the PM, its line to the validator or
+  // a service agent, a bare status claim: the PM reading one of those is not a read of the work, so none
+  // is named (`work/send-counts-as-work.ts`), however the record came to point at it.
+  const who = (db.prepare('SELECT COALESCE(assignee_agent, agent_id) AS who FROM work WHERE id = ?').get(workId) as { who: string } | undefined)?.who;
+  const kept = who ? [...new Set(messages)].filter((name) => !namesNonWorkSend(workId, who, name)) : [...new Set(messages)];
   return {
-    paths: [...new Set(paths.map(trimSlash))], messages: [...new Set(messages)], wroteInto: [...new Set(wroteInto)], vault: [...new Set(vault)],
+    paths: [...new Set(paths.map(trimSlash))], messages: kept, wroteInto: [...new Set(wroteInto)], vault: [...new Set(vault)],
   };
+}
+
+/** Does this message name (an id, or the 8+ character prefix a read binds by) open a send by the worker
+ *  that is not work on the row? */
+function namesNonWorkSend(workId: string, worker: string, name: string): boolean {
+  try {
+    const ids = name.length >= 8
+      ? (getDb().prepare('SELECT id FROM messages WHERE id >= ? AND id < ? LIMIT 5').all(name, `${name}~`) as Array<{ id: string }>).map((r) => r.id)
+      : [name];
+    return ids.some((id) => isNonWorkAgentSendMessage(workId, worker, id));
+  } catch { return true; }   // a name the record cannot place is never a licence to bind
 }
 
 function trimSlash(p: string): string { return p.length > 1 ? p.replace(/\/+$/, '') : p; }

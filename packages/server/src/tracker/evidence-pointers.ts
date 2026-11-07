@@ -15,11 +15,11 @@
 //     and the messages it wrote or delivered. A token that matches more than one record names none.
 // The message a pointer resolves to is what a PM `history_get` opens, so that read now binds.
 //
-// THE FILING HALF (owner-ruled shape, not wired here): the close door (`tracker/tools.ts`, the
-// worker's `evidence` validation) is where a pointer should be resolved once and stored as a `ref`
-// beside it, and a pointer that names nothing refused. That door and the `evidence` parameter's
-// description are outside this change (the description is cached prompt prefix). `rowReadNames`
-// already reads a stored `ref` first, so the door can adopt `resolveEvidencePointer` as is.
+// THE FILING HALF: the close door (`tracker/tools.ts` `closeEvidenceGate`, the worker's `evidence`
+// validation) resolves each pointer once when the close is filed and stores the result as the entry's
+// `ref`; a pointer that names nothing is refused there, naming the pointer. The `evidence` parameter's
+// description is unchanged (cached prompt prefix): the refusal text is the only guidance.
+// `rowReadNames` reads the stored `ref` first.
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -32,7 +32,8 @@ export type PointerRef =
 
 /** Id-shaped tokens: a full uuid, or a hex run of 8 or more (the prefix every tool prints). */
 const ID_TOKEN = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]*)\b/g;
-const PATH = /^(?:\/|~\/)\S+$/;
+// A path may hold spaces ("~/Documents/Claude Code Projects/..."); it is still one path.
+const PATH = /^(?:\/|~\/)[^\n\r]*\S$/;
 
 /** Rows whose id starts with `token`, on the primary key's index (ids are lower-case hex and dashes). */
 const startsWith = (col: string): string => `${col} >= ? AND ${col} < ?`;
@@ -75,6 +76,17 @@ export function refNames(refs: readonly PointerRef[]): { messages: string[]; pat
     else if (r.messageId) messages.push(r.messageId);
   }
   return { messages, paths };
+}
+
+/** The stored `ref` on an evidence entry, as the close door writes it (one ref, or an array when the
+ *  pointer named several records), or null when none is stored. */
+export function storedRefs(v: unknown): PointerRef[] | null {
+  if (Array.isArray(v)) {
+    const refs = v.map(storedRef).filter((r): r is PointerRef => r !== null);
+    return refs.length > 0 ? refs : null;
+  }
+  const one = storedRef(v);
+  return one ? [one] : null;
 }
 
 /** A stored `ref` on an evidence entry, when the close door wrote one (see the header). */

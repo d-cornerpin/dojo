@@ -14,6 +14,7 @@
 import { getDb } from '../db/connection.js';
 import { itemKeysOf, sendRecipientsOf, agentSendRecipientsOf, COMMAND_KEY, SEND_KEY } from '../tools/item-keys.js';
 import { IS_ITEM } from './ledger-read.js';
+import { agentSendCountsAsWork } from './send-counts-as-work.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 // The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
 // spine imports, so they must not pull this file's provider imports); re-exported here for the callers.
@@ -110,8 +111,17 @@ export function recordCallsTouched(
       // C4: a send to another agent is one delivery on the ledger too, but only on the engine's own
       // VERIFIED receipt for this exact call (the transport's persisted peer message): the record never
       // counts a send that did not land, and never one the model only claimed.
+      // The C4 loophole (owner ruling: the PM verifies so a worker cannot close a job on its own say-so):
+      // the send counts only when it delivers the work to the party the task serves, never a send to the
+      // PM, the task's validator or a service agent, and never one that only claims a status
+      // (`work/send-counts-as-work.ts`).
       const peers = to === undefined ? agentSendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []) : undefined;
-      if (peers !== undefined && verifiedReceiptFor(tc.id, agentId)) {
+      const a = tc.arguments ?? {};
+      if (peers !== undefined && verifiedReceiptFor(tc.id, agentId) && agentSendCountsAsWork(workId, {
+        recipients: typeof a.group_id === 'string' && a.group_id.trim() ? [] : peers,
+        intent: typeof a.intent === 'string' ? a.intent : null,
+        text: typeof a.payload === 'string' ? a.payload : null,
+      })) {
         recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), safe(`agent ${peers.join(', ') || 'unnamed'}`), tc.id);
       }
       stampCallReceipts(tc.id, agentId, workId);

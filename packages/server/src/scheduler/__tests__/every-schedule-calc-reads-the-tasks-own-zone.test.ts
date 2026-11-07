@@ -174,7 +174,7 @@ describe('the schedule calcs that skip the row\'s zone', () => {
 
     const text = await trackerUpdateStatus('worker', {
       taskId: 'ending-daily', status: 'complete',
-      result: 'the last digest went out', evidence: [{ kind: 'claim', claim: 'the digest reached the outbox', pointer: 'outbox' }],
+      result: 'the last digest went out', evidence: [{ kind: 'claim', claim: 'the digest reached the outbox', pointer: '/var/spool/digest/outbox' }],
     });
 
     // The task-zone answer is terminal: this close is the task's LAST run. The box-zone answer

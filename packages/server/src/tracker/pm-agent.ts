@@ -4,7 +4,7 @@ import { keepLedgerShownFor, noteAnswerShown } from './request-shown.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer, taskWorkOnRecord, type TaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { getBoxTimeZone } from '../scheduler/engine.js';
@@ -63,6 +63,16 @@ import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
 import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './effort-verdict-failures.js';
 import { unvalidatedBlockIssueText } from './block-review-facts.js';
+
+
+/** Where a delivered answer on record came from, said truthfully for each recorded basis
+ *  (`TaskAnswerPointer.basis` in `delivery-evidence.ts`). */
+export const ANSWER_BASIS_LABEL: Record<TaskAnswerPointer['basis'], string> = {
+  'parent-ask-receipt': 'the receipt the engine recorded for the request this task exists for',
+  'task-turn-answer': 'this task\'s own answered turn',
+  'run-delivery': 'the delivery this scheduled run settled on',
+  'close-request-delivery': 'the delivery the worker named when it filed this close',
+};
 
 const logger = createLogger('pm-agent');
 
@@ -2089,9 +2099,7 @@ async function runPMReview(): Promise<void> {
     // Audit #5: the answer backs an uphold only once a request has put its excerpt in front of the PM.
     if (answerPointer) noteAnswerShown(cTask.id, answerPointer.deliveryId);
     const deliveredLine = answerPointer
-      ? `\n  📄 DELIVERED ANSWER ON RECORD (${answerPointer.basis === 'parent-ask-receipt'
-          ? 'the receipt the engine recorded for the request this task exists for'
-          : 'this task\'s own answered turn'}`
+      ? `\n  📄 DELIVERED ANSWER ON RECORD (${ANSWER_BASIS_LABEL[answerPointer.basis]}`
         + `${answerPointer.channel ? `, via ${answerPointer.channel}` : ''}`
         + `${answerPointer.at ? `, ${answerPointer.at} UTC` : ''}`
         + `; delivery ${answerPointer.deliveryId.slice(0, 8)}`

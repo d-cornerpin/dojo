@@ -89,6 +89,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { turnContext, getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
+import { resolveEvidencePointer } from './evidence-pointers.js';
 import { insertEngineEventIfAbsent, insertMessageIfAbsent } from '../memory/message-store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
@@ -1590,7 +1591,7 @@ function closeEvidenceGate(agentId: string, taskId: string, args: Record<string,
     const breaker = noteHardGateRejection(taskId, agentId, 'missing result field on complete');
     return (
       `Error: ${door} requires a non-empty \`result\` field describing what was done. ` +
-      `Example call: work_update(action="status", task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
+      `Example call: work_update(action="status", task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"~/project/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
       breaker
     );
   }
@@ -1599,7 +1600,7 @@ function closeEvidenceGate(agentId: string, taskId: string, args: Record<string,
     return (
       `Error: ${door} requires \`evidence\` as a non-empty array. Each entry must be {kind, claim, pointer?}. ` +
       `Supported kinds (text-only, PM-readable): claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. ` +
-      `Example: evidence=[{kind:"file_modified", claim:"updated 12 routes", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].` +
+      `Example: evidence=[{kind:"file_modified", claim:"updated 12 routes", pointer:"~/project/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].` +
       breaker
     );
   }
@@ -1644,6 +1645,29 @@ function closeEvidenceGate(agentId: string, taskId: string, args: Record<string,
       normEvidence.push({ ...e, kind: 'claim', claim: `${claim}${note}` });
     }
   }
+  // ── C6, the filing half: every pointer names a real record ──
+  // Each pointer the worker gave is resolved now, by the engine's own rows (`evidence-pointers.ts`), and
+  // the result is stored beside it as the entry's `ref`, so the PM's read of what it names binds to the
+  // row. A pointer that names nothing (prose around no id, an id the worker holds no record of, a
+  // relative path) is refused here, naming the pointer. The `evidence` parameter's description is
+  // cached prompt prefix and is not changed: this refusal is the only guidance.
+  for (let i = 0; i < normEvidence.length; i++) {
+    const e = normEvidence[i];
+    if (e.pointer === undefined || e.pointer === null) continue;
+    const pointer = typeof e.pointer === 'string' ? e.pointer.trim() : '';
+    const refs = pointer ? resolveEvidencePointer(agentId, pointer) : [];
+    if (refs.length === 0) {
+      const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] pointer resolved to nothing`);
+      return (
+        `Error: evidence[${i}].pointer ${JSON.stringify(typeof e.pointer === 'string' ? e.pointer : String(e.pointer))} resolved to nothing. ` +
+        `A pointer must name a real delivery, message, file or receipt id: the delivery, message or receipt id a tool printed ` +
+        `(the full id or its first 8 characters), or the absolute path of a file. Words around no id name nothing. ` +
+        `Fix that pointer, or leave pointer out of that entry and say it in the claim.${breaker}`
+      );
+    }
+    normEvidence[i] = { ...e, pointer, ref: refs.length === 1 ? refs[0] : refs };
+  }
+
   // ── C26 receipt gate ──
   // A turn that ran a tier-1/2 (machine-verifiable) send tool must produce a
   // verified receipt to close as complete. This makes Layer 1 a REAL gate
@@ -1677,7 +1701,8 @@ function closeEvidenceGate(agentId: string, taskId: string, args: Record<string,
   for (const r of receiptRows) {
     const label = r.verified === 1 ? 'verified' : 'unverified';
     const idPart = r.provider_id ? `, id ${r.provider_id}` : '';
-    evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id });
+    const refs = resolveEvidencePointer(agentId, r.id);
+    evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id, ...(refs.length === 1 ? { ref: refs[0] } : {}) });
   }
 
   // Persist result + (augmented) evidence on the task row for PM to read.
