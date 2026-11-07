@@ -8,8 +8,8 @@
 // re-counted, so the turn that finished a job had its one result kept as a note (fix round 1, I2).
 //
 // THE JOB'S TASK (one pick, `jobTaskOf`): on the run the park's own wake started, the job's own
-// carried task; otherwise the agent's most recently updated claimed, unpaused task (the effort
-// meter's pick). A task that really left `claimed`, or was paused, is no longer the job; a status
+// carried task; otherwise the claimed, unpaused task the turn is working (`workingTaskOrder`, the
+// effort meter's pick: most recently updated, a filed close last, the earlier step on a tie). A task that really left `claimed`, or was paused, is no longer the job; a status
 // call that was refused or failed, or a move on another task, changes nothing here (fix round 1, I1).
 //
 // MOMENTUM (owner 2026-10-19, refined by the orchestrator in fix round 1): this turn touched an item
@@ -24,7 +24,7 @@
 // ════════════════════════════════════════
 
 import type { Database } from 'better-sqlite3';
-import { taskScope } from '../../../../work/tracker-view.js';
+import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
 import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
 import { jobCarriedIds, runCarriesJob } from '../../../../work/task-freshness.js';
@@ -58,7 +58,7 @@ export function jobTaskOf(agentId: string, db: Database): TaskRow | null {
   return (db.prepare(`
     SELECT w.id AS id, w.measure_json AS measureJson, w.measure_remaining AS stored FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0 ${only}
-    ORDER BY w.updated_at DESC, w.rowid DESC LIMIT 1
+    ORDER BY ${workingTaskOrder('w')} LIMIT 1
   `).get(agentId, ...(carried ?? [])) as TaskRow | undefined) ?? null;
 }
 
