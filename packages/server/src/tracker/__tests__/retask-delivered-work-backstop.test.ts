@@ -37,6 +37,10 @@ const facts = (over: Partial<RetaskProtectionFacts> = {}): RetaskProtectionFacts
   status: 'in_progress',
   completeValidated: false,
   closeRequestPending: false,
+  // PM-CANNOT-APPROVE C9: every clause here is about work that WAS delivered, so the default says
+  // so. What a filed close with nothing delivered does is its own suite
+  // (`a-retask-reads-the-same-answer-record-as-validate.test.ts`).
+  answerDelivered: true,
   ...over,
 });
 

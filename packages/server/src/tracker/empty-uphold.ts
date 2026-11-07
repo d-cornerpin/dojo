@@ -53,8 +53,14 @@ function forgetSettledRefusals(): void {
   for (const id of ids) if (!pending.has(id)) refusedAt.delete(id);
 }
 
-/** The refusal for an uphold nothing backs, or null to let the ruling through. */
-export function emptyUpholdRefusal(pmAgentId: string, rawTaskId: string): string | null {
+/** The refusal for an uphold nothing backs, or null to let the ruling through.
+ *
+ *  PM-CANNOT-APPROVE C7: `opts.override` is the override door's approval to `complete`, which upholds a
+ *  close exactly as `validate` does and so meets this same check. An override is its own close claim,
+ *  so it is checked whether or not a Key-1 request is still filed on the row; with none filed the
+ *  request's facts are not on hand, and only a read of this row's work can back it (never less than
+ *  `validate` asks). A reject, a deny or a retask never comes here. */
+export function emptyUpholdRefusal(pmAgentId: string, rawTaskId: string, opts: { override?: boolean } = {}): string | null {
   try {
     const ctx = turnContext(pmAgentId);
     if (!ctx) return null;
@@ -64,9 +70,9 @@ export function emptyUpholdRefusal(pmAgentId: string, rawTaskId: string): string
     const taskId = resolved.id;
     const row = getDb().prepare(
       `SELECT w.evidence_json AS evidence_json, w.measure_json AS measure_json, w.measure_remaining AS measure_remaining
-         FROM work w WHERE ${taskScope('w')} AND w.id = ? AND ${unvalidatedCloseExpr('w')}`,
+         FROM work w WHERE ${taskScope('w')} AND w.id = ?${opts.override ? '' : ` AND ${unvalidatedCloseExpr('w')}`}`,
     ).get(taskId) as { evidence_json: string | null; measure_json: string | null; measure_remaining: number | null } | undefined;
-    if (!row) return null;   // no close is pending: the validate door says so itself
+    if (!row) return null;   // no close is pending (validate) or no such task (override): that door says so itself
 
     forgetSettledRefusals();
     const since = refusedAt.get(taskId);

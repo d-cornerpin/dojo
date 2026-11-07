@@ -18,6 +18,7 @@ import {
   engineScaffoldScope,
 } from '../work/tracker-view.js';
 import { workSettled, isStateConflict, noteUnsettled, type WorkOutcome } from '../work/store.js';
+import { withUnit } from '../db/unit.js';
 import {
   fileOverrideRequest, pendingOverrideForAgent, pendingOverrideForTask,
   findOverrideRequest, resolveOverrideRequest,
@@ -31,6 +32,7 @@ import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
 import { findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
+import { taskAnswerFor } from './looked-at.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
@@ -295,6 +297,14 @@ export interface RetaskProtectionFacts {
    * (`tracker-view.ts:pendingCloseRequestExpr`.)
    */
   closeRequestPending: boolean;
+  /**
+   * PM-CANNOT-APPROVE C9: WHETHER AN ANSWER IS ACTUALLY ON RECORD, from the one reader the
+   * validate door's record check uses (`looked-at.ts:taskAnswerFor`). A filed close is a CLAIM
+   * that the work was delivered, not the delivery: on a lived-in box this door told the PM
+   * "already delivered to the user" two seconds before the validate door refused the same row
+   * because no delivered answer was on record, so the PM could neither approve nor send it back.
+   */
+  answerDelivered: boolean;
 }
 
 /**
@@ -318,8 +328,10 @@ export interface RetaskProtectionFacts {
  * whole reason T8c converted this guard into a predicate before the column could go.
  */
 export function retaskWouldOverwriteDeliveredWork(f: RetaskProtectionFacts): boolean {
-  return (f.status === 'complete' && !f.completeValidated)
-    || f.closeRequestPending;
+  // C9: a close filed (either shape) protects the work only when an answer is on record; with
+  // none, there is nothing delivered to overwrite and sending the work back is the right verb.
+  return ((f.status === 'complete' && !f.completeValidated)
+    || f.closeRequestPending) && f.answerDelivered;
 }
 
 /** The whole gate: protected AND the caller did not deliberately opt in. `allowRegenerate` is
@@ -464,6 +476,9 @@ export async function fileAssignDeliverableCloseRequest(
  *  post-trigger battery found missing: a FILED Key-1 request must not be error-shaped, and a
  *  genuine refusal still must be. Both directions, so neither can drift. */
 export { closeRefusalText as closeRefusalTextForTest };
+
+/** Thrown inside the reject unit so a refused reopen or move rolls the whole send-back back. */
+class RejectRefused extends Error {}
 
 function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): string {
   if (r.kind === 'applied') return '';
@@ -3948,10 +3963,16 @@ export async function trackerRetask(
   // delivered work genuinely misses the goal and a fresh pass is warranted). This
   // keys on the neutral fact marker, never on a completion flag, so it protects the
   // artifact without pretending the task closed.
+  // PM-CANNOT-APPROVE C9: "delivered" is read from the answer record, the same reader the
+  // validate door's record check uses, never inferred from a close having been filed.
+  const answerOnRecord = taskAnswerFor(taskId) !== null;
+  const closeFiled = (task.status === 'complete' && task.complete_validated !== 1) || task.close_request_pending === 1;
+  const closeFiledUndelivered = closeFiled && !answerOnRecord;
   if (retaskIsRefused({
     status: task.status,
     completeValidated: task.complete_validated === 1,
     closeRequestPending: task.close_request_pending === 1,
+    answerDelivered: answerOnRecord,
   }, args.allow_regenerate)) {
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) has already had its work delivered to the user and is awaiting adjudication. Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action="retask") with allow_regenerate=true. Otherwise, if the delivery meets the goal, bless the close with work_validate(action="validate", kind="complete", valid=true); if entirely new work is needed, create a NEW task with work_open(kind="task").`;
   }
@@ -4024,7 +4045,8 @@ export async function trackerRetask(
   return (
     `[OK] Retasked "${task.title}" (${taskId}) from ${task.status} to ${targetStatus}. ` +
     (redriven ? `Directive delivered to ${task.assigned_to}.` : `Directive NOT delivered to ${task.assigned_to}.${REDRIVE_LATER}`) +
-    ' revert_count incremented.'
+    ' revert_count incremented.' +
+    (closeFiledUndelivered ? ' A close was filed on it, but no delivered answer was on record, so nothing delivered was overwritten.' : '')
   );
 }
 
@@ -4658,21 +4680,26 @@ export async function trackerValidateComplete(
     const isRecurring = isScheduledRecurringRow(task.schedule_status, task.repeat_interval);
 
     if (isRecurring) {
-      // Archive this run's result/evidence to task_log BEFORE clearing
-      // them, preserves the per-run history.
-      writeTaskLog({
-        taskId,
-        fromEntity: 'pm',
-        entryKind: 'transition',
-        fromStatus: 'complete',
-        toStatus: 'pending-advance',
-        actionTaken: `work_validate(action="validate", kind=complete, valid=true), recurring per-run`,
-        reason: 'PM blessed this run',
-        note: task.result,
-        evidenceJson: task.evidence_json,
-      });
-      // Clear result/evidence so the next run starts fresh.
-      noteUnsettled(patchWork(taskId, { result: null, evidence_json: null }), 'trackerValidateComplete: result cleared so the next run starts fresh', { taskId });
+      // PM-CANNOT-APPROVE C1: with no run in flight there is no run result to archive, so an
+      // engine-closed row keeps its result for the verdict below instead of losing it to a
+      // per-run reset that never happens.
+      if (keyOneOnly || inFlightOccurrence(taskId)) {
+        // Archive this run's result/evidence to task_log BEFORE clearing
+        // them, preserves the per-run history.
+        writeTaskLog({
+          taskId,
+          fromEntity: 'pm',
+          entryKind: 'transition',
+          fromStatus: 'complete',
+          toStatus: 'pending-advance',
+          actionTaken: `work_validate(action="validate", kind=complete, valid=true), recurring per-run`,
+          reason: 'PM blessed this run',
+          note: task.result,
+          evidenceJson: task.evidence_json,
+        });
+        // Clear result/evidence so the next run starts fresh.
+        noteUnsettled(patchWork(taskId, { result: null, evidence_json: null }), 'trackerValidateComplete: result cleared so the next run starts fresh', { taskId });
+      }
       // Advance the schedule. onTaskRunComplete:
       //   - marks the running task_run row complete
       //   - increments run_count
@@ -4704,13 +4731,34 @@ export async function trackerValidateComplete(
       // refused up front), and Key 2 has just moved the row to done: the schedule must stop with it.
       const stopped = !advanced && keyOneOnly;
       if (stopped) noteUnsettled(patchWork(taskId, { schedule_status: 'completed', is_paused: 1 }), 'trackerValidateComplete: the blessed stop ended the schedule', { taskId });
+      // PM-CANNOT-APPROVE C1: THE VERDICT IS NEVER THE THING SKIPPED. This branch used to answer
+      // "[NO-OP] No open run to validate" and write nothing, so a recurring row the ENGINE had
+      // closed (`done`, no Key 2) with no run in flight, or with its schedule already ended,
+      // could never leave the PM's queue: measured on a lived-in box, 143 PM approvals thrown
+      // away on one row over 24 days. RC-17.7's requirement is kept whole: with nothing advanced,
+      // the schedule is left exactly as it is. Only the advance is skipped; the PM's verdict on
+      // the close the row carries is recorded like any other.
       if (!advanced && !stopped) {
-        logger.info('Recurring validate found no open run to advance (no-op); schedule left intact', { taskId, pmAgentId }, pmAgentId);
-        return (
-          `[NO-OP] No open run to validate on "${task.title}" (${taskId.slice(0, 8)}). ` +
-          `This occurrence was already closed or advanced, so nothing changed and the recurring schedule was left intact. ` +
-          `You do not need to re-validate already-closed runs; wait for the next scheduled fire if one is due.`
-        );
+        upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
+        const ruled = getTask(taskId);
+        if (ruled) broadcast({ type: 'tracker:task_updated', data: ruled });
+        writeTaskLog({
+          taskId, fromEntity: 'pm', entryKind: 'transition',
+          fromStatus: 'complete', toStatus: 'complete',
+          actionTaken: 'work_validate(action="validate", kind=complete, valid=true), no run in flight',
+          reason: 'PM blessed the close; no run was in flight, so the schedule was left as it was',
+        });
+        try {
+          const { checkDependencies } = await import('./pm-agent.js');
+          checkDependencies(taskId);
+        } catch (err) {
+          logger.warn('checkDependencies failed after a no-run recurring validate (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+        }
+        try {
+          checkProjectCompletion(task.project_id, pmAgentId);
+        } catch { /* best-effort */ }
+        logger.info('Recurring close validated by PM with no run in flight; schedule left as it was', { taskId, pmAgentId }, pmAgentId);
+        return `[OK] Complete validated on "${task.title}" (${taskId.slice(0, 8)}). No run was in flight, so the schedule was left as it was.`;
       }
       // A genuine terminal close is signalled by schedule_status='completed'
       // (no further runs). A per-run advance leaves schedule_status='waiting'.
@@ -4784,11 +4832,34 @@ export async function trackerValidateComplete(
     return `Error: target_status="${targetStatus}" is not allowed. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
   }
 
-  const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
-    by: 'pm', actorId: pmAgentId, claim: 'authoritative',
-    reason: `PM rejected the close: ${rejectReason}`,
-  });
+  // PM-CANNOT-APPROVE C1: a row the ENGINE closed is already `done`, and a settled row's only
+  // way back is `open` (the store's one reopen edge, an authority's move). Going straight to the
+  // target was refused as an illegal move and reported as "deleted", so the PM could not reject
+  // an engine close at all. The reopen and the target land in ONE unit, or neither does.
+  let sentBack: WorkOutcome | null = null;
+  try {
+    withUnit(() => {
+      if (task.status === 'complete' && !keyOneOnly) {
+        const reopened = setTrackerStatus(taskId, 'active', {
+          by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+          reason: `PM rejected the close: ${rejectReason}`,
+        });
+        if (!workSettled(reopened)) { sentBack = reopened; throw new RejectRefused(); }
+      }
+      const moved = setTrackerStatus(taskId, targetStatus as TrackerStatus, {
+        by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+        reason: `PM rejected the close: ${rejectReason}`,
+      });
+      if (!workSettled(moved)) { sentBack = moved; throw new RejectRefused(); }
+    });
+  } catch (err) {
+    if (!(err instanceof RejectRefused)) throw err;
+  }
+  const refusedMove = sentBack as WorkOutcome | null;   // assigned inside the unit's closure
+  if (refusedMove) return closeRefusalText(taskId, refusedMove, targetStatus);
+  const updated = getTask(taskId);
   if (!updated) return `Error: task ${taskId} was deleted before complete-reject could land.`;
+  broadcast({ type: 'tracker:task_updated', data: updated });
   // Clear stale result/evidence on revert so the agent can resubmit cleanly.
   throwBackClaim(taskId, 'done', 'pm', pmAgentId, rejectReason);
   noteUnsettled(patchWork(taskId, { result: null, evidence_json: null }), 'trackerValidateComplete: result cleared after the PM rejected the close', { taskId });

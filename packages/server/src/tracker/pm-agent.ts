@@ -1706,7 +1706,9 @@ async function runPMReview(): Promise<void> {
   // (with "X minutes" counters) is what the LLM sees. Without this split,
   // every minute of elapsed time changed the hash and the dedup at line
   // 510 never fired (v2.3.7).
-  const issues: Array<{ stableId: string; text: string }> = [];
+  // PM-CANNOT-APPROVE C2: `owes` marks a row that is waiting on the PM's verdict, and names the
+  // verdicts open to it. A review that carries any such row carries ONLY those rows (below).
+  const issues: Array<{ stableId: string; text: string; owes?: string }> = [];
   // SWEEP-A TB8 JOB 2 — the rows this review actually puts in front of the validator with
   // Key 2 outstanding. Scoped DELIBERATELY to the unvalidated-COMPLETE queue: that is the
   // two-key class the owner's law is about and the one `delegation-longhorizon` clause (c)
@@ -1888,6 +1890,7 @@ async function runPMReview(): Promise<void> {
       : '(EMPTY)';
     issues.push({
       stableId: `${pTask.id}|UNVALIDATED_PAUSE`,
+      owes: 'uphold the pause or reject it',
       text:
         `UNVALIDATED_PAUSE: "${pTask.title}" (${pTask.id.slice(0, 8)}) was paused by ${agentName} but has not been validated yet.\n` +
         `  Pause reason notes: "${pauseReason}"\n` +
@@ -2102,6 +2105,7 @@ async function runPMReview(): Promise<void> {
     void cTask.attempts_recorded;
     issues.push({
       stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
+      owes: 'uphold the close or reject it naming what is missing',
       text: unvalidatedCompleteText(cTask.id, {
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
         headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}${deliveredLine}`,
@@ -2134,6 +2138,7 @@ async function runPMReview(): Promise<void> {
     const blockReason = obsRow?.note?.trim() || '(no recent observation)';
     issues.push({
       stableId: `${bTask.id}|UNVALIDATED_BLOCK|${bTask.revert_count}`,
+      owes: 'uphold the block or reject it',
       // C3 (t190): the review always carries the platform's own recent tool/connection facts.
       text: await unvalidatedBlockIssueText({
         taskId: bTask.id, title: bTask.title, agentName, assigneeId: bTask.assigned_to,
@@ -2153,6 +2158,7 @@ async function runPMReview(): Promise<void> {
       : agents.find(a => a.id === oRow.requestedBy)?.name ?? oRow.requestedBy;
     issues.push({
       stableId: `override|${oRow.id}`,
+      owes: 'approve the override or deny it',
       text:
         `OVERRIDE_REQUEST (id=${oRow.id.slice(0, 8)}): ${agentName} wants task "${oRow.taskTitle ?? '?'}" (${oRow.taskId.slice(0, 8)}) forced to "${oRow.requestedStatus}".\n` +
         `  Goal: ${oRow.taskGoal ?? '(no goal recorded)'}\n` +
@@ -2198,11 +2204,29 @@ async function runPMReview(): Promise<void> {
   }).join('\n');
 
   // Pre-digested issues the engine already detected
+  // ── PM-CANNOT-APPROVE C2: A VALIDATION REVIEW CARRIES ONLY THE ROWS THAT OWE A VERDICT ──
+  // Measured on a lived-in box: the one row owed a verdict sat as item 8, behind seven BLOCKED
+  // lines for rows already validated and already escalated, under a board summary, and the
+  // footer told the PM that silence was correct when nothing was actionable. Silence followed
+  // on about 2,800 reviews. When any row owes a verdict, the review is those rows and nothing
+  // else, each with its own line naming the verdicts open to it, and nothing in it says that
+  // ending silently is right. The patrol review below is unchanged and returns once the
+  // verdicts are in. This is per-review conversation text, never the PM's stable system block.
+  const verdictIssues = issues.filter((issue) => issue.owes);
+  const isValidationReview = verdictIssues.length > 0;
+  const reviewIssues = isValidationReview ? verdictIssues : issues;
+
   const engineIssues = issues.length > 0
     ? `\nENGINE-DETECTED ISSUES (act on these):\n${issues.map((issue, i) => `${i + 1}. ${issue.text}`).join('\n')}`
     : '';
 
-  const situationReport = `Tracker review -- ${activeTasks.length} active tasks:
+  const situationReport = isValidationReview
+    ? `Tracker review -- validation: ${verdictIssues.length} row(s) owe your verdict:
+
+${verdictIssues.map((issue, i) => `${i + 1}. ${issue.text}\n  [Engine hint: rule on this one: ${issue.owes}, or ask for more if the record cannot settle it.]`).join('\n\n')}
+
+[Engine hint: each row above is waiting on your verdict and stays waiting until you rule on it, so a reply with no verdict leaves it where it is. A verdict is recorded on every one of them, a finished row included. A rejection is as much a verdict as an uphold. Message ${primaryName} only if there is something they need to do.]`
+    : `Tracker review -- ${activeTasks.length} active tasks:
 
 ${taskSummary}
 ${engineIssues}
@@ -2248,13 +2272,13 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   // "X minutes ago" drift that defeated the older text hash (v2.3.7). A genuinely large
   // report is still fine when the issue-set DID change, this gates frequency/necessity,
   // never length.
-  const stableIssuesKey = issues.map(i => i.stableId).sort().join(',');
+  const stableIssuesKey = reviewIssues.map(i => i.stableId).sort().join(',');
   const reportHash = stableIssuesKey;
   // SWEEP CORE-2 item 1 — A DOORBELL DEFEATS THE DEDUP, because a doorbell IS the change.
   // The gate compares the issue-SET; a row rung in by its own completion event can have the
   // same stable id it had a minute ago (the id is `task|UNVALIDATED_COMPLETE|revert_count`),
   // and skipping it as "unchanged" is precisely what swallowed the silent turns TB8 measured.
-  const carriedDoorbell = issues.some((i) => doorbell.has(i.stableId.split('|')[0]));
+  const carriedDoorbell = reviewIssues.some((i) => doorbell.has(i.stableId.split('|')[0]));
   if (reportHash === lastSituationReportHash && !carriedDoorbell) {
     // TB8 JOB 2: promoted from `logger.debug` (structurally invisible in production).
     // THIS is the line that swallowed the two silent validation turns measured in battery

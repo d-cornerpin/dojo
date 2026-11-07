@@ -45,6 +45,7 @@ import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
 import { emptyUpholdRefusal } from '../../../tracker/empty-uphold.js';
+import { findOverrideRequest } from '../../../work/override-requests.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, repeatNumberError, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
@@ -837,6 +838,15 @@ const tableOfHandlers: ToolHandlerMap = {
       { name: 'reason', value: args.reason, type: 'string' },
     ]);
     if (toErr) { content = toErr; isError = true; return { content, isError }; }
+    // PM-CANNOT-APPROVE C7: an override that APPROVES a close upholds it, so it meets the same record
+    // check as `validate` (it used to skip it, and became the way around it). A deny never does.
+    if (args.approve === true) {
+      const req = findOverrideRequest(String(args.override_request_id).trim());
+      if (req && req.status === 'pending' && isCompleteStatus(req.requestedStatus)) {
+        const refusal = emptyUpholdRefusal(agentId, req.taskId, { override: true });
+        if (refusal) return { content: refusal, isError: true };
+      }
+    }
     content = await trackerOverride(agentId, {
       override_request_id: args.override_request_id as string,
       approve: args.approve as boolean,
