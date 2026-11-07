@@ -18,6 +18,7 @@ import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker, type Inbou
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
 import { normalizeQuote } from '../work/row-authority.js';
+import { turnContext } from '../agent/turn-context.js';
 
 interface Row {
   content: string; lane: string; channel: string; source_agent_id: string | null;
@@ -63,23 +64,77 @@ const quotableUnits = (words: string): string[] => {
   return units.map(normalizeQuote).filter((u) => u.length > 0);
 };
 
+const ROW_COLS = `content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
+            inbound_meta, origin_intent`;
+/** The candidate rows: person-authored inbound (role user, through an ingest door, no agent sender). */
+const PERSON_INBOUND = "role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL";
+
+const saidIn = (rows: Row[], q: string, floorMs: number): boolean =>
+  rows.some((m) => {
+    const words = ownerWords(m, floorMs);
+    return words !== null && quotableUnits(words).includes(q);
+  });
+
+/** The newest instant the owner was asked about `taskId`, by the ask's own event kind, or null. */
+function askedAt(taskId: string, kind: string): number | null {
+  const r = getDb().prepare(
+    'SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = ?',
+  ).get(taskId, kind) as { at: number | null };
+  return r.at;
+}
+
+/** Did the owner write `q` (normalised) in a message sent at or after `atMs`? */
+function ownerSaidSince(atMs: number, q: string): boolean {
+  const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
+  const rows = getDb().prepare(
+    `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND sent_at >= ?`,
+  ).all(floor) as Row[];
+  return saidIn(rows, q, floor);
+}
+
 /** Did the owner himself write `quote` (a whole message or sentence), since the verdict on `taskId` was requested? */
 export function ownerSaidSinceVerdictAsked(taskId: string, quote: string): boolean {
   const q = normalizeQuote(quote);
   if (!q) return false;
-  const asked = getDb().prepare(
-    'SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = ?',
-  ).get(taskId, WORK_EVENT.userVerdictRequested) as { at: number | null };
-  if (asked.at === null) return false;
-  const askedFloor = Math.floor(asked.at / 1000) * 1000;
+  const at = askedAt(taskId, WORK_EVENT.userVerdictRequested);
+  return at !== null && ownerSaidSince(at, q);
+}
+
+// v3.5 field fix 3 (owner ruling b): "the owner approved" is accepted only when the owner's words really
+// appear in the conversation. The PM review exists so agents cannot close jobs on their own to get out of
+// the work, so BOTH owner doors (`apply_user_verdict`, `apply_user_validation`) take their quote through this.
+//
+// Newer than the ask: the ask is the task's own event (`user_verdict_requested` for a stalemate verdict,
+// `validation_escalated` for a validation check). With no ask on record, only the owner's message this turn
+// is answering counts, and the owner's later messages in the same conversation: never older history.
+export type OwnerQuoteProof = { ok: true } | { ok: false; why: string };
+
+export function ownerQuoteProof(
+  taskId: string, ask: 'verdict' | 'validation', agentId: string, quote: string,
+): OwnerQuoteProof {
+  const q = normalizeQuote(quote);
+  if (!q) return { ok: false, why: 'no quote was given' };
+  const at = askedAt(taskId, ask === 'verdict' ? WORK_EVENT.userVerdictRequested : WORK_EVENT.validationEscalated);
+  if (at !== null) {
+    return ownerSaidSince(at, q)
+      ? { ok: true }
+      : { ok: false, why: 'the quote is not in any message the owner sent after being asked about this task' };
+  }
+  const root = turnContext(agentId)?.root;
+  if (!root || root.kind !== 'ask' || !root.sourceMessageId) {
+    return { ok: false, why: 'the owner was never asked about this task and this turn is not answering a message from the owner' };
+  }
+  const rootRow = getDb().prepare(
+    `SELECT ${ROW_COLS}, conversation_id, sent_at FROM messages WHERE id = ? AND ${PERSON_INBOUND}`,
+  ).get(root.sourceMessageId) as (Row & { conversation_id: string | null; sent_at: number }) | undefined;
+  if (!rootRow || ownerWords(rootRow, rootRow.sent_at) === null) {
+    return { ok: false, why: 'the message this turn is answering is not from the owner' };
+  }
   const rows = getDb().prepare(
-    `SELECT content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
-            inbound_meta, origin_intent
-       FROM messages
-      WHERE role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL AND sent_at >= ?`,
-  ).all(askedFloor) as Row[];   // floored to the second: `sent_at`'s default is second-resolution
-  return rows.some((m) => {
-    const words = ownerWords(m, askedFloor);
-    return words !== null && quotableUnits(words).includes(q);
-  });
+    `SELECT ${ROW_COLS} FROM messages
+      WHERE ${PERSON_INBOUND} AND (id = ? OR (conversation_id IS ? AND sent_at >= ?))`,
+  ).all(root.sourceMessageId, rootRow.conversation_id, rootRow.sent_at) as Row[];
+  return saidIn(rows, q, rootRow.sent_at)
+    ? { ok: true }
+    : { ok: false, why: 'the quote is not in the owner\'s message this turn is answering' };
 }

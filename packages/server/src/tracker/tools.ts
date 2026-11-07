@@ -58,7 +58,7 @@ import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js'
 import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import { planOfProject } from '../work/plan-store.js';
 import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
-import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
+import { ownerQuoteProof } from './owner-words.js';   // v3.5: an owner verdict is applied only from the owner's own words
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
 import { closeFiledRefusal } from './close-filed-guard.js';
@@ -4220,6 +4220,32 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
 }
 
 /**
+ * v3.5 field fix 3 (owner ruling b): an owner verdict door (`apply_user_validation`, `apply_user_verdict`)
+ * applies only a quote the owner really wrote, after being asked about this task (`owner-words.ts:
+ * ownerQuoteProof`). On a mismatch: nothing changes, the refusal goes on the task's log, and the agent is told
+ * what is required. `null` = verified.
+ */
+function ownerQuoteRefusal(
+  taskId: string, title: string, ask: 'verdict' | 'validation', door: string, callerAgentId: string, userQuote: string,
+): string | null {
+  const proof = ownerQuoteProof(taskId, ask, callerAgentId, userQuote);
+  if (proof.ok) return null;
+  logger.warn('owner verdict refused: the quote is not the owner\'s own words', { taskId, callerAgentId, door, why: proof.why }, callerAgentId);
+  writeTaskLog({
+    taskId,
+    fromEntity: 'engine',
+    entryKind: 'observation',
+    actionTaken: `${door} via ${callerAgentId} refused`,
+    reason: 'owner quote not verified',
+    note: `${proof.why}. Quoted: ${userQuote.slice(0, 200)}`,
+  });
+  const owner = getOwnerName();
+  return `Error: ${door} on "${title}" (${taskId.slice(0, 8)}) was refused: ${proof.why}. `
+    + `An owner verdict is applied only from ${owner}'s own reply. Ask ${owner} about this task, wait for the answer, `
+    + `and call again with user_quote set to the exact words of the reply (the whole reply, or a whole sentence of it). Nothing was changed.`;
+}
+
+/**
  * work_validate(action="apply_user_validation"), used by the primary agent when the user
  * replies to a "[VALIDATION CHECK]" system message in chat. The user is
  * telling us whether work that's been sitting unvalidated is actually
@@ -4298,6 +4324,8 @@ export async function trackerApplyUserValidation(
   if (!flagColumn) {
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is currently status="${task.status}". User-validation only applies to complete/paused/blocked.`;
   }
+  const notTheOwners = ownerQuoteRefusal(taskId, task.title, 'validation', 'apply_user_validation', callerAgentId, userQuote);
+  if (notTheOwners) return notTheOwners;
 
   if (args.validated) {
     upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}${args.reason ? ` (${args.reason})` : ''}`);
@@ -5251,14 +5279,16 @@ export async function trackerApplyUserVerdict(
   if (task.awaiting_user_verdict !== 1) {
     return `Error: task ${taskId.slice(0, 8)} is not awaiting_user_verdict. Apply only works on stalemate-flagged tasks.`;
   }
+  const notTheOwners = ownerQuoteRefusal(taskId, task.title, 'verdict', 'apply_user_verdict', agentId, userQuote);
+  if (notTheOwners) return notTheOwners;
 
   // Force the status, clear the stalemate flag, validate immediately
   // (user is the ultimate authority). updateTask handles is_paused etc.
   // v3.5 (t250 fix round 4, ruling): the owner's exemption from the measure is for a VERIFIED owner
-  // act. A close whose quote is not found in the owner's own words on record is judged as the PM's.
-  const ownerClose = status !== 'complete' || ownerSaidSinceVerdictAsked(taskId, userQuote);
+  // act. Field fix 3 (ruling b): an unverified quote is now refused above, for every status, so what
+  // reaches here is the owner's own act.
   const verdict = setTaskStatusResult(taskId, status as TrackerStatus, {
-    by: ownerClose ? 'owner' : 'pm', actorId: ownerClose ? 'user' : agentId, claim: 'authoritative',
+    by: 'owner', actorId: 'user', claim: 'authoritative',
     reason: `owner's verdict: ${userQuote.slice(0, 200)}${[args.reason, args.feedback].filter(Boolean).map((x) => `; ${x}`).join('')}`,
     resultDeliveryId: status === 'complete' ? deliveryForTaskClose(taskId) : null,
   });

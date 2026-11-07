@@ -253,6 +253,9 @@ describe('fix round 3 (NB1): THE OWNER CAN ALWAYS CLOSE HIS OWN TASK', () => {
 });
 
 describe('fix round 4: a stalemate verdict is the owner\'s only when his own words are on record', () => {
+  // v3.5 field fix 3 (owner ruling b): an unverified quote is no longer judged as the PM's close (which the
+  // remainder rule then refused); it is refused at the verdict door itself, for every status.
+  const NOT_THE_OWNERS = /^Error: apply_user_verdict on "Sort the inbox" \([0-9a-f]{8}\) was refused: .*Nothing was changed\.$/;
   const awaiting = (id: string): boolean => (db().prepare(
     "SELECT (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_requested') > COALESCE((SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_cleared'), -1) AS a",
   ).get(id, id) as { a: number }).a === 1;
@@ -289,11 +292,11 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     ['the quote is in a row the platform wrote to itself (no channel)', () => ownerSays('The rest can wait until next week.', { channel: null, inbound_meta: null })],
     ['the quote is in a message from a contact, not the owner', () => ownerSays('The rest can wait until next week.', { channel: 'imessage', inbound_meta: JSON.stringify({ channel: 'imessage', sender: '+15550100', authorized: true }) })],
   ] as const) {
-    it(`unverified (${why}): the close is the PM's, and the remainder rule refuses it`, async () => {
+    it(`unverified (${why}): the verdict is refused at the door, nothing changes`, async () => {
       const id = await stalemated();
       setup();
       const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
-      expect(out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+      expect(out).toMatch(NOT_THE_OWNERS);
       expect(readWork(id).state).toBe('claimed');
       expect(awaiting(id)).toBe(true);
     });
@@ -313,7 +316,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   ] as const) {
     it(`a fragment is refused: owner "${owner}", quoted "${quote}"`, async () => {
       const r = await verdictOn(owner, quote);
-      expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+      expect(r.out).toMatch(NOT_THE_OWNERS);
       expect(r.state).toBe('claimed');
     });
   }
@@ -345,18 +348,18 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   it('an email reply, even from the owner\'s own mailbox, never verifies a quote', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Yes. Close it, I&#39;ll do the rest.'), "close it, I'll do the rest", emailRow('owner@home.example'));
-    expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+    expect(r.out).toMatch(NOT_THE_OWNERS);
     expect(r.state).toBe('claimed');
   });
   it('an email from anyone else is not the owner', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Close it.'), 'close it', emailRow('someone@else.example'));
-    expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+    expect(r.out).toMatch(NOT_THE_OWNERS);
   });
   it('the agent\'s own question, quoted back in an owner-mailbox reply, never verifies', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Not yet. On Mon, the agent wrote: > 30 messages are still left. Close it now? Or keep going?'), 'Close it now', emailRow('owner@home.example'));
-    expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+    expect(r.out).toMatch(NOT_THE_OWNERS);
     expect(r.state).toBe('claimed');
   });
   // P44 (owner ruling 2026-10-27): the owner's email counts as him ONLY when the mail watcher stamped it — after the
@@ -383,7 +386,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   ] as const) {
     it(`P44 unverified (${why}): refused`, async () => {
       const r = await verdictOn(owner, quote, row);
-      expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+      expect(r.out).toMatch(NOT_THE_OWNERS);
       expect(r.state).toBe('claimed');
     });
   }
@@ -405,7 +408,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     seedDelivery();
     requestUserVerdict(id, PM, { status_requested: 'complete' });
     const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
-    expect(out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+    expect(out).toMatch(NOT_THE_OWNERS);
     expect(readWork(id).state).toBe('claimed');
   });
 
@@ -416,7 +419,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   ] as const) {
     it(`a question is never approval: owner "${owner}", quoted "${quote}"`, async () => {
       const r = await verdictOn(owner, quote);
-      expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+      expect(r.out).toMatch(NOT_THE_OWNERS);
       expect(r.state).toBe('claimed');
     });
   }

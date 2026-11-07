@@ -37,7 +37,7 @@ import { WORK_OP_READS, WORK_OP_ACCEPTS, WORK_OPS, workOperation } from '../../.
 import { getAllToolDefinitions } from '../definitions.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
 import { appendWorkEvent } from '../../../work/store.js';
-import { requestUserVerdict } from '../../../work/tracker-store.js';
+import { requestUserVerdict, recordValidationEscalation } from '../../../work/tracker-store.js';
 import { trackerHandlers } from '../cat/tracker.js';
 
 const AGENT = 'unread-args-agent';
@@ -201,6 +201,15 @@ describe('the owner-verdict doors read reason, never refuse it', () => {
   const payloads = (): string => (db().prepare('SELECT payload FROM work_events WHERE work_id = ? ORDER BY id').all(TASK) as { payload: string }[]).map((r) => r.payload).join('\n');
   const note = (verdict: string): string => (db().prepare('SELECT note FROM adjudications WHERE work_id = ? AND verdict = ? ORDER BY id DESC').get(TASK, verdict) as { note: string }).note;
   const setState = (state: string): void => { db().prepare('UPDATE work SET state = ? WHERE id = ?').run(state, TASK); };
+  // v3.5 field fix 3 (owner ruling b): these doors apply only the owner's own words, sent after he was asked.
+  // So each case records the ask and the owner's real reply, and quotes that reply.
+  const ownerReplies = (content: string): void => {
+    db().prepare(`INSERT INTO messages (id, agent_id, conversation_id, lane, role, content, channel, authorized, provenance,
+        display_kind, display_tier, inbound_meta, sent_at)
+      VALUES (?, ?, 'conv-owner', 'owner', 'user', ?, 'dashboard', 1, 'live', 'unclassified', 'user-visible', ?, ?)`)
+      .run(`m-${Math.random()}`, AGENT, content, JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }), Date.now() + 1000);
+  };
+  const askedAndAnswered = (reply: string): void => { recordValidationEscalation(TASK, 'scheduler', 'conv-owner'); ownerReplies(reply); };
 
   it('the map reads them, so the door never refuses the call over them', () => {
     expect(unknownArgsAgainstSchema('work_validate', { action: 'apply_user_verdict', task_id: TASK, status: 'on_deck', user_quote: 'q', reason: 'r', feedback: 'f' }).unread).toEqual([]);
@@ -209,6 +218,7 @@ describe('the owner-verdict doors read reason, never refuse it', () => {
 
   it('apply_user_verdict: reason and feedback both ride the transition reason', async () => {
     requestUserVerdict(TASK, 'pm', { why: 'stalemate' });
+    ownerReplies('Park it for now.');
     const out = await run('work_validate:apply_user_verdict', { task_id: TASK, status: 'on_deck', user_quote: 'park it for now', reason: 'the owner wants it later', feedback: 'start with the oldest label' });
     expect(out, out).toMatch(/^\[OK\]/);
     expect(payloads()).toContain('the owner wants it later');
@@ -217,6 +227,7 @@ describe('the owner-verdict doors read reason, never refuse it', () => {
 
   it('apply_user_validation, validated=false with reason only: the reason is the feedback', async () => {
     setState('blocked');
+    askedAndAnswered('No, not done.');
     const out = await run('work_validate:apply_user_validation', { task_id: TASK, validated: false, user_quote: 'no, not done', reason: 'two labels are still there' });
     expect(out, out).toMatch(/^\[OK\]/);
     expect(note('rejected')).toBe('two labels are still there');
@@ -224,6 +235,7 @@ describe('the owner-verdict doors read reason, never refuse it', () => {
 
   it('apply_user_validation, validated=false with feedback and reason: both are kept', async () => {
     setState('blocked');
+    askedAndAnswered('No.');
     await run('work_validate:apply_user_validation', { task_id: TASK, validated: false, user_quote: 'no', feedback: 'clear the label', reason: 'two are left' });
     expect(note('rejected')).toBe('clear the label\ntwo are left');
     expect(payloads()).toContain('clear the label\\ntwo are left');
@@ -231,6 +243,7 @@ describe('the owner-verdict doors read reason, never refuse it', () => {
 
   it('apply_user_validation, validated=true with reason: the uphold carries it', async () => {
     setState('blocked');
+    askedAndAnswered('Yes, it is blocked.');
     const out = await run('work_validate:apply_user_validation', { task_id: TASK, validated: true, user_quote: 'yes, it is blocked', reason: 'waiting on the vendor' });
     expect(out, out).toMatch(/^\[OK\]/);
     expect(note('upheld')).toContain('waiting on the vendor');
