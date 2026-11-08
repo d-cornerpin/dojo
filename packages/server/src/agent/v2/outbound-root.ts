@@ -8,12 +8,12 @@
 // that read. Phase-3 T7 could not take the strip because the replacement did not exist and
 // `no-outreach-without-inbound` (the 3:32 AM scenario) asserts on the pile today.
 //
-// What stood at `loop.ts` was SIX terms ANDed, five of them negations:
+// The hold this replaces was five terms ANDed, four of them negations:
 //
 //   settledContextWakeTurn && inboundChannel === null && counterparty.kind !== 'agent'
-//     && !isEngineTurn && !engineCompletionAckThisTurn && !steeredForSilentCloseout
+//     && !isEngineTurn && !steeredForSilentCloseout
 //
-// Six booleans that only mean something as a conjunction, where every carve-out is a NOT and
+// Booleans that only mean something as a conjunction, where every carve-out is a NOT and
 // the thing being carved out of is never named. Adding a seventh carve-out is one more `&&
 // !x`, which is how a pile becomes a pile: nobody can say what the rule IS, only what it is
 // not. The scar ledger's own requirement line names the fix — *"carve-outs become root kinds,

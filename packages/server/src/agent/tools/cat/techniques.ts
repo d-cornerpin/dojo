@@ -9,9 +9,7 @@
 // function scope. They are kept: renaming them would be tidying done during a
 // move, and a diff that renames is a diff a reviewer cannot check by eye.
 //
-// `delete_technique`'s trainer/sensei fallback ladder — the one that keeps
-// delete working on an install with the trainer disabled or dead — is carried
-// across with its exact refusal wording and its `trainerLive` IIFE.
+// `delete_technique` lets a sensei delete when no live trainer exists, with its own refusal wording.
 //
 // ── THE `techniques/tools.js` LAZY LOADS ARE KEPT, DELIBERATELY ──
 // §T0-PINS P8 pins them SANCTIONED and says they MOVE WITH THEIR HANDLERS: nine
@@ -128,8 +126,7 @@ export const techniqueHandlers: ToolHandlerMap = {
 
   async delete_technique({ agentId, args }) {
     // Trainer-only, same ownership rule as save/update/publish.
-    // Mirror the executor-side fallback in techniques/tools.ts so a
-    // trainer-disabled install doesn't lose delete capability.
+    // With no live trainer a sensei may delete (same fallback as techniques/tools.ts).
     if (!isTrainer(agentId)) {
       const dtAgentRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
       const dtAgentClass = dtAgentRow?.classification ?? 'apprentice';

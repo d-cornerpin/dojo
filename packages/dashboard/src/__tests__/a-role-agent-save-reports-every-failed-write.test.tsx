@@ -39,7 +39,7 @@ describe('saveRoleAgent', () => {
     ]);
   });
 
-  it('with no name nothing is written', async () => {   // a blank name skips the model write too
+  it('with no name, no write happens', async () => {   // a blank name skips the model, name and id writes
     await expect(saveRoleAgent('pm', '  ', 'm1')).resolves.toBeNull();
     expect(server.puts).toEqual([]);
   });
