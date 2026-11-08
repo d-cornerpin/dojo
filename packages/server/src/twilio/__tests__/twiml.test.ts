@@ -7,18 +7,10 @@
 // well-formedness-attacking string survives every builder only in escaped form.
 import { describe, it, expect } from 'vitest';
 import {
-  twimlEmpty,
   twimlReject,
-  twimlSayAndHangup,
   twimlVoicemail,
   twimlConnectStream,
 } from '../twiml.js';
-
-describe('twimlEmpty', () => {
-  it('acks the webhook with a bare Response and no body', () => {
-    expect(twimlEmpty()).toBe('<?xml version="1.0" encoding="UTF-8"?><Response/>');
-  });
-});
 
 describe('twimlReject', () => {
   it('escapes the reason on its way into the Reject attribute', () => {
@@ -30,14 +22,6 @@ describe('twimlReject', () => {
   it('defaults the reason to "rejected"', () => {
     expect(twimlReject()).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response><Reject reason="rejected"/></Response>',
-    );
-  });
-});
-
-describe('twimlSayAndHangup', () => {
-  it('escapes the greeting inside <Say> then hangs up', () => {
-    expect(twimlSayAndHangup("it's <b> & co")).toContain(
-      "<Say>it&apos;s &lt;b&gt; &amp; co</Say><Hangup/>",
     );
   });
 });
@@ -97,19 +81,11 @@ describe('every builder escapes a well-formedness attack', () => {
     expect(twimlReject(INJECT)).not.toContain(INJECT);
   });
 
-  it('twimlSayAndHangup', () => {
-    expect(twimlSayAndHangup(INJECT)).not.toContain(INJECT);
-  });
-
   it('twimlVoicemail (greeting and both callbacks)', () => {
     expect(twimlVoicemail(INJECT, INJECT, INJECT)).not.toContain(INJECT);
   });
 
   it('twimlConnectStream (url and both from/to)', () => {
     expect(twimlConnectStream(INJECT, { from: INJECT, to: INJECT })).not.toContain(INJECT);
-  });
-
-  it('twimlEmpty has no caller-controlled argument to escape', () => {
-    expect(twimlEmpty()).not.toContain(INJECT);
   });
 });

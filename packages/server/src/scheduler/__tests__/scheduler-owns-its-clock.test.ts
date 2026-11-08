@@ -83,11 +83,13 @@ describe('A1 the scheduler owns its own interval', () => {
     expect(src).toMatch(/pm-agent\.ts/);
   });
 
-  it('the boot path starts the scheduler independently of whether the PM agent is enabled', () => {
+  it('the boot path starts the scheduler independently of the PM agent', () => {
     const boot = stripComments(read('index.ts'));
     expect(boot).toMatch(/startScheduler\(\)/);
-    // The old coupling: the ONLY start was inside the `isPMEnabled()` block.
-    const pmBlock = boot.slice(boot.indexOf('isPMEnabled()'), boot.indexOf('isPMEnabled()') + 600);
+    // The old coupling: the ONLY start was inside the PM start-up block.
+    const at = boot.indexOf('ensurePMAgentRunning()');
+    expect(at).toBeGreaterThan(-1);
+    const pmBlock = boot.slice(at, at + 600);
     expect(pmBlock).not.toMatch(/startScheduler/);
   });
 });

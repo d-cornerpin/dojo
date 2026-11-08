@@ -26,14 +26,13 @@
 //
 // ── THE ORDER IS THE CONTRACT ──
 //   1. `recoverDeferredReply`      G-SUP-2 — the answer that rode with a tool call.
-//   2. `runCompletionAck`          the scaffolded-work detection (see its header).
-//   3. `routeTerminalReply`        which channel the reply goes out on, and the send.
-//   4. `surfaceStrandedAttachments` the show_to_user safety net — deliberately AFTER
+//   2. `routeTerminalReply`        which channel the reply goes out on, and the send.
+//   3. `surfaceStrandedAttachments` the show_to_user safety net, deliberately AFTER
 //                                  the router, which is why it sends files itself.
-//   5. `scheduleCompletionReport`  the A2A ack-and-ghost follow-up.
-//   6. the tail                    heartbeat off, recovery streak cleared, healer
+//   4. `scheduleCompletionReport`  the A2A ack-and-ghost follow-up.
+//   5. the tail                    heartbeat off, recovery streak cleared, healer
 //                                  "recovered", technique usage. NOT the status: teardown's.
-// Steps 1 and 4 can both produce the turn's reply text, and 3 sits between them: a
+// Steps 1 and 3 can both produce the turn's reply text, and 2 sits between them: a
 // reordering would silently change what gets routed and what only reaches the
 // dashboard. The contract test pins the order for that reason.
 //
@@ -66,7 +65,6 @@ import type { AgentTurnState, TurnPhase } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import { recoverDeferredReply } from './deferred-recovery.js';
-import { runCompletionAck } from './completion-ack.js';
 import { routeTerminalReply } from './route-reply.js';
 import { surfaceStrandedAttachments } from './stranded-attachments.js';
 import { scheduleCompletionReport } from './close-the-loop.js';
@@ -87,7 +85,6 @@ export interface FinalizeContext {
   /** The driver's own handle, resolved once at turn start exactly as before. */
   readonly db: ReturnType<typeof getDb>;
   readonly counterparty: TurnCounterparty;
-  readonly counterpartyIsAgentSender: boolean;
   readonly chosenConvKey: string | null;
   readonly turnStartedAt: string;
   readonly settledContextWakeTurn: boolean;
@@ -108,8 +105,7 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
   const { agentId, turnCtx, db, stopStatusHeartbeat } = ctx;
 
   state = recoverDeferredReply(state, ctx);
-  const engineCompletionAckThisTurn = runCompletionAck(state, ctx);
-  state = await routeTerminalReply(state, ctx, engineCompletionAckThisTurn);
+  state = await routeTerminalReply(state, ctx);
   state = await surfaceStrandedAttachments(state, ctx);
   await scheduleCompletionReport(ctx);
 

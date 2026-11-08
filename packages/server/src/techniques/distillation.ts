@@ -24,7 +24,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId } from '../config/platform.js';
-import { getTrainerAgentId, isTrainerEnabled } from '../config/platform.js';
+import { getTrainerAgentId } from '../config/platform.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from '../work/tracker-view.js';
 import { lessonsTouchedSince, LESSON_LIFETIME_MS, type LessonRow } from '../vault/lessons-store.js';
@@ -175,11 +175,6 @@ function markLessonsFed(lessons: LessonRow[]): void {
  * primary (owner-approval relay + retirement flags).
  */
 export async function runDistillationCycle(): Promise<void> {
-  if (!isTrainerEnabled()) {
-    logger.debug('distillation: trainer disabled, skipping');
-    return;
-  }
-
   // ── 5b: repeated-success → draft candidates ──
   const groups = findRepeatedSuccessGroups();
   const candidates: CompletionGroup[] = [];

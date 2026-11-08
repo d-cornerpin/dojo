@@ -8,7 +8,7 @@
 // current behaviour and must pass against the unchanged scrub.ts.
 
 import { describe, it, expect } from 'vitest';
-import { scrubFiles, applyPlaceholders, findPlaceholders, isBinaryFile } from '../scrub.js';
+import { scrubFiles, isBinaryFile } from '../scrub.js';
 
 // Scrub a single file and return its redacted content (undefined when the file
 // was binary or clean, and so left out of the result map).
@@ -110,28 +110,6 @@ describe('scrubFiles — every remaining PATTERNS entry', () => {
       expect(scrubbed).not.toContain(c.secret);
     });
   }
-});
-
-describe('applyPlaceholders — substitutes known labels only', () => {
-  it('leaves an unknown label in place', () => {
-    expect(applyPlaceholders('{{NEEDS_FROM_USER:A}} {{NEEDS_FROM_USER:B}}', { A: 'x' })).toBe(
-      'x {{NEEDS_FROM_USER:B}}',
-    );
-  });
-
-  // The substitution runs through a replacement function, so a `$&` in the
-  // supplied value is inserted literally rather than expanding to the match.
-  it('inserts a value containing $& literally, not as a replacement pattern', () => {
-    expect(applyPlaceholders('{{NEEDS_FROM_USER:A}}', { A: 'pre $& post' })).toBe('pre $& post');
-  });
-});
-
-describe('findPlaceholders — distinct labels in first-seen order', () => {
-  it('de-duplicates repeated labels and keeps order', () => {
-    expect(findPlaceholders('{{NEEDS_FROM_USER:A}}{{NEEDS_FROM_USER:A}}{{NEEDS_FROM_USER:B_2}}')).toEqual(
-      ['A', 'B_2'],
-    );
-  });
 });
 
 describe('isBinaryFile — keys on the case-insensitive extension', () => {

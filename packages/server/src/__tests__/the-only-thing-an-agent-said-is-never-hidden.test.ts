@@ -30,10 +30,14 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  askedByAPerson, conversationalRun, noteOn, renderWorkingNote, showsWorkingNote,
+  askedByAPerson, conversationalRun, noteOn, renderWorkingNote,
   visibleAgentText, workingNoteVerdict,
   type NoteRow,
 } from '../../../dashboard/src/lib/working-note-visibility';
+
+/** Is this note on screen at all, given the viewer's mode? (What `Chat.tsx` does with the render.) */
+const showsWorkingNote = (rows: readonly NoteRow[], index: number, wordy: boolean): boolean =>
+  renderWorkingNote(rows, index, wordy) !== 'hide';
 
 const PLAIN = '[working-note] ';
 const INTERNAL = '[working-note:internal] ';
@@ -379,21 +383,5 @@ describe('R4 — what KEEPS the 45 correctly-demoted scheduler notes demoted', (
   it('a non-note row still gets no verdict and renders as nothing of this file\'s business', () => {
     expect(renderWorkingNote([person('hi')], 0, false)).toBe('hide');
     expect(renderWorkingNote([answer('hello')], 0, true)).toBe('hide');
-  });
-
-  it('showsWorkingNote agrees with the render for every verdict, in both modes', () => {
-    // The two exported doors may not disagree: `showsWorkingNote` has 23 clauses behind it and
-    // is still what the regression controls above call, so this pins them to one answer.
-    const cases: NoteRow[][] = [
-      [person('q'), plainNote('only thing said')],
-      [user('═══ DREAM CYCLE ═══'), plainNote('cycle narration')],
-      [person('q'), plainNote('n'), answer('the real answer')],
-      [person('q'), internalNote('n'), answer('the real answer')],
-    ];
-    for (const rows of cases) {
-      for (const wordy of [false, true]) {
-        expect(showsWorkingNote(rows, 1, wordy)).toBe(renderWorkingNote(rows, 1, wordy) !== 'hide');
-      }
-    }
   });
 });

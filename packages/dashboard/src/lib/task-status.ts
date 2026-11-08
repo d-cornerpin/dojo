@@ -35,9 +35,6 @@ export const KANBAN_COLUMN_KEYS = [
 
 export type KanbanColumnKey = (typeof KANBAN_COLUMN_KEYS)[number];
 
-/** The two outcomes that share the terminal column, in render order. */
-export const TERMINAL_COLUMN_STATUSES = ['fallen', 'cancelled'] as const;
-
 /**
  * Which column a task renders in. TOTAL over `Task['status']` — a status that returns null
  * here is a row that vanishes from the board, which is the failure this module exists to

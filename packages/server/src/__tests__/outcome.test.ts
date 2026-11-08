@@ -20,10 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  OUTCOME_KINDS, PROVENANCES, NON_LIVE_PROVENANCES, TOOL_SEAM_REASONS,
-  applied, noChange, refused, failed, unknownOutcome, quarantineUnknown,
-  isApplied, isNoChange, isRefused, isFailed, isUnknown, isSettled,
-  isNonLiveProvenance, isOutcomeShaped, outcomeReason, describeOutcome,
+  OUTCOME_KINDS,
+  applied, refused, failed, unknownOutcome, quarantineUnknown,
+  isApplied, isNonLiveProvenance,
   type Outcome, type ToolSeamReason, type ToolResult,
 } from '@dojo/shared';
 import { classifyToolResult, toolResultOf, toolWasBlocked } from '../agent/tool-outcome.js';
@@ -39,58 +38,20 @@ describe('Outcome<T>: the five arms', () => {
     expect(isApplied(o)).toBe(true);
     if (o.kind !== 'applied') throw new Error('unreachable');
     expect(o.value.eventId).toBe(7);
-    // The applied arm has no `reason` — there is nothing to explain.
-    expect(outcomeReason(o)).toBeNull();
   });
 
-  it('keeps no_change, refused and failed as THREE different answers', () => {
-    const n = noChange('already-in-state', 'already done');
+  it('keeps refused and failed as different answers, each naming its gate STRUCTURALLY', () => {
     const r = refused('done-requires-delivery', 'nothing was delivered');
     const f = failed('crashed', 'the transport threw');
-
-    expect([isNoChange(n), isRefused(n), isFailed(n)]).toEqual([true, false, false]);
-    expect([isNoChange(r), isRefused(r), isFailed(r)]).toEqual([false, true, false]);
-    expect([isNoChange(f), isRefused(f), isFailed(f)]).toEqual([false, false, true]);
-
-    // Every non-applied arm names its gate STRUCTURALLY. The binding caution is
-    // receipt-keyed, never prose-keyed: a caller must never have to parse `detail`.
-    expect(outcomeReason(r)).toBe('done-requires-delivery');
-    expect(outcomeReason(f)).toBe('crashed');
-  });
-
-  it('merges exactly two arms in isSettled, and no others', () => {
-    expect(isSettled(applied(null))).toBe(true);
-    expect(isSettled(noChange('already-in-state', 'x'))).toBe(true);
-    expect(isSettled(refused('illegal-transition', 'x'))).toBe(false);
-    expect(isSettled(failed('crashed', 'x'))).toBe(false);
-    expect(isSettled(unknownOutcome('imported', 'x', 'migrated'))).toBe(false);
-  });
-
-  it('recognises an Outcome by SHAPE, which is what the lint rule keys on', () => {
-    expect(isOutcomeShaped(applied(1))).toBe(true);
-    expect(isOutcomeShaped(refused('r', 'd'))).toBe(true);
-    expect(isOutcomeShaped({ kind: 'noop', detail: 'x' })).toBe(false);   // the pre-T1 vocabulary
-    expect(isOutcomeShaped({ decision: 'noop' })).toBe(false);
-    expect(isOutcomeShaped(null)).toBe(false);
-    expect(isOutcomeShaped('applied')).toBe(false);
-  });
-
-  it('describes an outcome for a log without ever becoming the machine-read fact', () => {
-    expect(describeOutcome(refused('no-such-work', 'gone'))).toBe('refused (no-such-work): gone');
-    expect(describeOutcome(applied(1))).toBe('applied');
-    expect(describeOutcome(unknownOutcome('imported', 'from the bridge', 'rescued')))
-      .toBe('unknown (rescued/imported): from the bridge');
+    expect([r.kind, r.reason]).toEqual(['refused', 'done-requires-delivery']);
+    expect([f.kind, f.reason]).toEqual(['failed', 'crashed']);
   });
 });
 
 describe('the tool seam reason (research 22)', () => {
-  it('is blocked | crashed | cancelled — three causes a boolean isError cannot tell apart', () => {
-    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled', 'invalid_args']);
-  });
-
   it('types a tool-seam outcome with that vocabulary', () => {
     const o: Outcome<string, ToolSeamReason> = refused('blocked', 'denied by tools_policy');
-    expect(outcomeReason(o)).toBe('blocked');
+    expect(o.kind === 'refused' && o.reason).toBe('blocked');
   });
 });
 
@@ -128,10 +89,6 @@ describe('the tool door classifies STRUCTURALLY (PHASE-4 T1 cluster 3)', () => {
     expect([blockedLookingProse.kind, blockedLookingProse.kind === 'failed' && blockedLookingProse.reason])
       .toEqual(['failed', 'crashed']);
     expect(toolWasBlocked(blockedLookingProse)).toBe(false);
-  });
-
-  it('names the three tool-seam reasons and no others', () => {
-    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled', 'invalid_args']);
   });
 });
 
@@ -184,8 +141,6 @@ describe("PHASE-4 T3: the spin brake is `cancelled`'s producer, on ONE arm only"
 
 describe("the `unknown` quarantine — legal ONLY where provenance <> 'live'", () => {
   it("knows the provenance vocabulary the messages CHECK declares", () => {
-    expect([...PROVENANCES]).toEqual(['live', 'migrated', 'rescued']);
-    expect([...NON_LIVE_PROVENANCES]).toEqual(['migrated', 'rescued']);
     expect(isNonLiveProvenance('live')).toBe(false);
     expect(isNonLiveProvenance('migrated')).toBe(true);
     expect(isNonLiveProvenance('rescued')).toBe(true);
@@ -195,8 +150,8 @@ describe("the `unknown` quarantine — legal ONLY where provenance <> 'live'", (
   it('ALLOWS unknown for migrated and rescued data', () => {
     const m = unknownOutcome('imported', 'the bridge carried it', 'migrated');
     const r = unknownOutcome('imported', 'recovered from a broken row', 'rescued');
-    expect(isUnknown(m) && m.provenance).toBe('migrated');
-    expect(isUnknown(r) && r.provenance).toBe('rescued');
+    expect(m.kind === 'unknown' && m.provenance).toBe('migrated');
+    expect(r.kind === 'unknown' && r.provenance).toBe('rescued');
   });
 
   // ── THE REFUSALS. These are the clauses; the two above are the controls. ──

@@ -10,7 +10,7 @@ import {
 import { isPastFirstRun, markFirstRunComplete } from '../../config/setup-state.js';
 import { LoginSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
-import { isPMEnabled, isTrainerEnabled, getPrimaryAgentId } from '../../config/platform.js';
+import { getPrimaryAgentId } from '../../config/platform.js';
 import type { SetupStatus } from '@dojo/shared';
 import type { AppEnv } from '../server.js';
 
@@ -143,28 +143,24 @@ setupRouter.post('/complete', async (c) => {
     ensureSystemGroup();
   } catch { /* ignore */ }
 
-  // Spawn PM agent if enabled
-  if (isPMEnabled()) {
-    try {
-      const { ensurePMAgentRunning } = await import('../../tracker/pm-agent.js');
-      ensurePMAgentRunning();
-    } catch (err) {
-      logger.error('Failed to spawn PM agent', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+  // Spawn the PM agent
+  try {
+    const { ensurePMAgentRunning } = await import('../../tracker/pm-agent.js');
+    ensurePMAgentRunning();
+  } catch (err) {
+    logger.error('Failed to spawn PM agent', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
-  // Spawn Trainer agent if enabled
-  if (isTrainerEnabled()) {
-    try {
-      const { ensureTrainerAgentRunning } = await import('../../techniques/trainer-agent.js');
-      ensureTrainerAgentRunning();
-    } catch (err) {
-      logger.error('Failed to spawn Trainer agent', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+  // Spawn the Trainer agent
+  try {
+    const { ensureTrainerAgentRunning } = await import('../../techniques/trainer-agent.js');
+    ensureTrainerAgentRunning();
+  } catch (err) {
+    logger.error('Failed to spawn Trainer agent', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   // Ensure Healer agent exists (permanent resident)

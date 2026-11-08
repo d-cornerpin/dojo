@@ -369,7 +369,7 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
 const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: HealerCfg; refresh: () => Promise<void> }) => {
   const [healerModelId, setHealerModelId] = useState(config.modelId ?? '');
   const [healerTime, setHealerTime] = useState(config.healerTime);
-  const [healerMode, setHealerMode] = useState<'active' | 'monitor' | 'off'>(config.healerMode);
+  const [healerMode, setHealerMode] = useState<'active' | 'monitor'>(config.healerMode);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [running, setRunning] = useState(false);
@@ -505,7 +505,6 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
           {([
             { value: 'active' as const, label: 'Active', desc: 'Auto-fix routine issues + propose complex fixes for your approval' },
             { value: 'monitor' as const, label: 'Monitor', desc: 'Compile diagnostic report only, no fixes applied' },
-            { value: 'off' as const, label: 'Off', desc: 'Healer disabled' },
           ]).map((option) => (
             <label key={option.value} className="flex items-start gap-2 cursor-pointer">
               <input
@@ -537,7 +536,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
         <button
           type="button"
           onClick={handleRunNow}
-          disabled={running || healerMode === 'off'}
+          disabled={running}
           className="btn btn--sm"
         >
           {running ? 'Running...' : 'Run Now'}

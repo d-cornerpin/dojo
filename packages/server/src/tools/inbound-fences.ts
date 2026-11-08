@@ -70,7 +70,7 @@ export function fencedMailBlock(m: { account: string; from: string; subject: str
 
 /** What the provider's own check said about an email whose From is one of the owner's own addresses
  *  (P44; `services/mail-owner-intake.ts`). `confirmed` carries the owner's NEW words, quoted text left out. */
-export type UnconfirmedReason = 'bcc' | 'seen_before' | 'no_message_id' | 'check_failed' | 'outlook_closed';
+export type UnconfirmedReason = 'bcc' | 'seen_before' | 'no_message_id' | 'check_failed';
 export type OwnerEmailNotice = { state: 'confirmed'; words: string } | { state: 'unconfirmed'; reason: UnconfirmedReason };
 
 /** Why a mail naming the owner's own address is not treated as the owner speaking: the REAL reason for each state (C11). */
@@ -79,7 +79,6 @@ function unconfirmedWhy(owner: string, reason: UnconfirmedReason): string {
     case 'bcc': return `This email names ${owner}'s own address as the sender, but your mailbox was not on its To or Cc (it reached you as a blind copy or a list delivery), so it is NOT treated as ${owner} speaking. `;
     case 'seen_before': return `This email names ${owner}'s own address as the sender, but a mail with this same Message-ID was already seen earlier, so this copy is NOT treated as ${owner} speaking again. `;
     case 'no_message_id': return `This email names ${owner}'s own address as the sender, but it has no Message-ID, so it cannot be told apart from a replay and is NOT treated as ${owner} speaking. `;
-    case 'outlook_closed': return `This email names ${owner}'s own address as the sender, but the platform does not confirm owner emails that arrive over Outlook, so it is NOT treated as ${owner} speaking. `;
     default: return `This email names ${owner}'s own address as the sender, but the mail provider's own check could not confirm that it really came from them, so it is NOT treated as ${owner} speaking. `;
   }
 }

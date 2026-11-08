@@ -3,7 +3,7 @@
 // `=` and the quotes; a `Bearer <value>` header must keep the word Bearer.
 
 import { describe, it, expect } from 'vitest';
-import { scrubFiles, applyPlaceholders } from '../scrub.js';
+import { scrubFiles } from '../scrub.js';
 
 function scrubOne(content: string) {
   return scrubFiles([{ path: 'a.md', content }]);
@@ -23,12 +23,6 @@ describe('scrub keeps the assignment name', () => {
   it('keeps `DB_PASSWORD=` before the assigned value', () => {
     const { scrubbed } = scrubOne(`DB_PASSWORD=${'c'.repeat(18)}`);
     expect(scrubbed.get('a.md')).toBe(`DB_PASSWORD={{NEEDS_FROM_USER:DB_PASSWORD}}`);
-  });
-
-  it('round-trips a filled placeholder back to the original assignment', () => {
-    const { scrubbed } = scrubOne(`export GITHUB_TOKEN="${'a'.repeat(20)}"`);
-    const filled = applyPlaceholders(scrubbed.get('a.md')!, { GITHUB_TOKEN: 'NEW' });
-    expect(filled).toBe(`export GITHUB_TOKEN="NEW"`);
   });
 
   it('guards: a key-shaped value wins first and keeps its name', () => {

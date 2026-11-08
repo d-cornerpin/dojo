@@ -19,7 +19,6 @@
 // 3. `{{imaginer_agent_name}}` is filled by the ONE substituter — the second one is deleted.
 // 4. A stored soul carrying `{{…}}` is re-seeded; an OWNER-EDITED soul is never overwritten.
 // 5. The in-code stub is the last resort only, it is substituted too, and it is loud.
-// 6. BOTH dead writes are gone — the create-time one and `clearImaginerSession`'s.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import realOs from 'node:os';
@@ -179,31 +178,6 @@ describe('the Imaginer runs on its whole soul', () => {
     expect(soul).not.toContain('{{');
     expect(soul).toContain('You are Iris,');
     expect(logs.join(' ')).toMatch(/IMAGINER-SOUL\.md/);
-  });
-});
-
-describe('both dead writes are gone, not left beside the live one', () => {
-  const SRC = fs.readFileSync(path.resolve(__dirname, '../../imaginer/imaginer-agent.ts'), 'utf-8');
-
-  it('imaginer-agent.ts no longer reads the template, substitutes a name, or writes a soul row', () => {
-    expect(SRC).not.toMatch(/function loadImaginerSoulPrompt/);
-    expect(SRC).not.toMatch(/loadImaginerSoulPrompt\(\)/);
-    expect(SRC).not.toMatch(/insertMessageIfAbsent/);
-    // The private substituter — the whole reason two stores could disagree. Asserted as the
-    // CODE shape (a `.replace(/{{…}}/g, name)` chain), not as the word: the tombstone above it
-    // names the placeholder on purpose, and a guard that forbids naming the thing it moved
-    // would forbid the record of the move.
-    expect(SRC).not.toMatch(/\.replace\(\/\\\{\\\{/);
-    expect(SRC).not.toMatch(/getOwnerName/);
-    // …and the module no longer touches the filesystem at all.
-    expect(SRC).not.toMatch(/from 'node:fs'/);
-    expect(SRC).not.toMatch(/readFileSync/);
-  });
-
-  it('clearing the session no longer re-plants an identity, because the identity is not in the session', () => {
-    expect(SRC).toContain('W42 TOMBSTONE');
-    expect(SRC).toContain('prompt/assembler.ts');
-    expect(SRC).toMatch(/deleteAllForAgent\(imaginerId\);/);
   });
 });
 

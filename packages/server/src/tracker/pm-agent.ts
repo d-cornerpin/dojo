@@ -50,7 +50,7 @@ import {
 import { freshTailHorizon } from '../memory/tail-horizon.js';
 import { contextWindowPolicy } from '../memory/budget.js';
 import { agentTurnWindow } from '../router/router-window.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
@@ -267,11 +267,6 @@ export function pmMayCall(name: string, args?: Record<string, unknown>): boolean
 // ── Ensure PM Agent Running ──
 
 export function ensurePMAgentRunning(): void {
-  if (!isPMEnabled()) {
-    logger.info('PM agent is disabled, skipping auto-spawn');
-    return;
-  }
-
   if (!isSetupCompleted()) {
     logger.info('Setup not completed, deferring PM agent creation to setup wizard');
     return;

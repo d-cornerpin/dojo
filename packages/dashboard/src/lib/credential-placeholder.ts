@@ -50,11 +50,6 @@ export type CredentialSegment =
   | { kind: 'text'; text: string }
   | { kind: 'credential'; tag: string | null };
 
-/** True when this text carries at least one placeholder the renderer must replace. */
-export function hasCredentialPlaceholder(text: string): boolean {
-  return new RegExp(CREDENTIAL_PLACEHOLDER_SOURCE).test(text);
-}
-
 /**
  * Split a string into drawable spans. Text runs are preserved byte-for-byte —
  * including empty-string gaps being DROPPED rather than emitted — so a caller

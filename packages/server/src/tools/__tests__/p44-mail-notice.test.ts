@@ -183,7 +183,7 @@ describe('P44 — the notices that must not change', () => {
 });
 
 describe('C11 — the unconfirmed notice gives the REAL reason for each state', () => {
-  const say = (reason: 'bcc' | 'seen_before' | 'no_message_id' | 'check_failed' | 'outlook_closed') => mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent: true, fromAddr: 'owner@example.test', from: 'owner@example.test',
+  const say = (reason: 'bcc' | 'seen_before' | 'no_message_id' | 'check_failed') => mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent: true, fromAddr: 'owner@example.test', from: 'owner@example.test',
     addressing: ADDRESSING('neither'), ownerEmail: { state: 'unconfirmed', reason } });
   it('a blind copy or list delivery says your mailbox was not on To or Cc, not that the check failed', () => {
     const out = say('bcc');
@@ -197,13 +197,8 @@ describe('C11 — the unconfirmed notice gives the REAL reason for each state', 
   });
   it('a message with no Message-ID says so', () => expect(say('no_message_id')).toMatch(/no Message-ID/));
   it('a failed provider check keeps the check-failed wording', () => expect(say('check_failed')).toMatch(/could not confirm/));
-  it('Outlook confirmation being closed says that', () => {
-    const out = say('outlook_closed');
-    expect(out).toMatch(/Outlook/);
-    expect(out).not.toMatch(/could not confirm/);
-  });
   it('every reason still says it is NOT treated as the owner speaking, and offers asking the owner', () => {
-    for (const r of ['bcc', 'seen_before', 'no_message_id', 'check_failed', 'outlook_closed'] as const) {
+    for (const r of ['bcc', 'seen_before', 'no_message_id', 'check_failed'] as const) {
       expect(say(r)).toMatch(/NOT treated as The owner speaking/);
       expect(say(r)).toMatch(/ask The owner, on the channel they usually use/);
     }

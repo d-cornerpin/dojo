@@ -74,7 +74,6 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   // Is the From an owner address at all? (No headers needed to answer that, so no extra fetch otherwise.)
   const claim = ownerEmailVerdict({ provider: i.provider, from: i.from, headers: [], ownerAddresses });
   if (claim.verdict === 'unconfirmed' && NOT_ABOUT_OWNER.has(claim.reason)) return { state: 'none' };
-  if (claim.verdict === 'unconfirmed' && claim.reason === 'outlook_not_open') return { state: 'unconfirmed', reason: 'outlook_closed' };   // Outlook confirmation is closed (`outlook-owner-gate.ts`): no fetch
   if (i.placement === 'neither') return { state: 'unconfirmed', reason: 'bcc' };
   const headers = await i.headers().catch(() => null);
   // The provider's list must show the From it judged: none at all is a list it did not really give.

@@ -20,17 +20,8 @@ export interface ApiError {
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;
 
 // ── Auth ──
-export interface LoginRequest {
-  password: string;
-}
-
 export interface LoginResponse {
   token: string;
-}
-
-export interface ChangePasswordRequest {
-  currentPassword: string;
-  newPassword: string;
 }
 
 export interface AuthMeResponse {
@@ -83,14 +74,6 @@ export type ProviderResponse = Provider;
 export type ProviderModelsResponse = Model[];
 
 // ── Models ──
-export interface EnableModelsRequest {
-  modelIds: string[];
-}
-
-export interface DisableModelsRequest {
-  modelIds: string[];
-}
-
 export type ModelsListResponse = Model[];
 
 // ── Identity ──
@@ -98,10 +81,6 @@ export interface IdentityFileResponse {
   content: string;
   /** USER.md only: the owner's mailboxes (connected Google/Microsoft accounts of kind 'user'). */
   mailboxes?: Array<{ address: string; provider: 'google' | 'microsoft'; accountId: string }>;
-}
-
-export interface UpdateIdentityRequest {
-  content: string;
 }
 
 export interface GenerateIdentityRequest {
@@ -124,10 +103,6 @@ export interface GenerateIdentityResponse {
 }
 
 // ── Chat ──
-export interface SendMessageRequest {
-  content: string;
-}
-
 export interface SendMessageResponse {
   messageId: string;
 }

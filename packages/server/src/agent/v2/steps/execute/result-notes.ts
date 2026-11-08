@@ -100,8 +100,7 @@ export function appendBookkeepingNudgeIfRelevant<T extends { name?: string; cont
  * 8-char prefix). Returns false, so the generic note (which keeps the [no-reply]
  * escape) is used, when: not a marker task, OR the user already received a
  * substantive reply for this work since the task was created (a silent
- * cross-turn close where silence IS correct, the same case the completion-ack
- * dedup handles). Synchronous DB reads, best-effort: any miss returns false.
+ * cross-turn close where silence IS correct). Synchronous DB reads, best-effort: any miss returns false.
  */
 export function userRequestedCloseWantsReply(
   toolName: string | undefined,
@@ -136,10 +135,7 @@ export function userRequestedCloseWantsReply(
       const receipt = answerReceiptForAsk(task.source_message_id);
       if (!(receipt.legacyRow && !receipt.answered)) return !receipt.answered;
     }
-    // UX-REPAIR T15: the pre-spine probe is one function now (`answered-edge.ts`), shared with
-    // the completion detection in `finalize/completion-ack.ts` that used to carry its own copy
-    // of these six clauses. The boundary is ms on both sides — `opened_at` is epoch ms and the
-    // ms→text→seconds→ms round-trip that used to sit here is gone entirely.
+    // The pre-spine probe is one function (`answered-edge.ts`); `opened_at` is epoch ms.
     return !substantiveReplySince(agentId, task.opened_at_ms);
   } catch {
     return false;

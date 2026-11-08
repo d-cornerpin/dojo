@@ -2023,7 +2023,7 @@ export const rollbackToVersion = async (tag: string): Promise<ApiResponse<{ mess
 export interface HealerConfig {
   modelId: string | null;
   healerTime: string;
-  healerMode: 'active' | 'monitor' | 'off';
+  healerMode: 'active' | 'monitor';
   // v2.3.19 — provider-isolation surface. true when the Healer and the
   // primary agent are on the same provider, which defeats the cross-
   // provider safety net (if that provider goes down both go down).

@@ -320,7 +320,6 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     const entry = readFileSync(path.join(HERE, '..', 'index.ts'), 'utf8');
     const order = [
       'recoverDeferredReply(state, ctx)',
-      'runCompletionAck(state, ctx)',
       'routeTerminalReply(state, ctx',
       'surfaceStrandedAttachments(state, ctx)',
       'scheduleCompletionReport(ctx)',

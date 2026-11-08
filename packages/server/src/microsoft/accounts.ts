@@ -85,14 +85,7 @@ function rowToAccount(r: MicrosoftAccountRow): MicrosoftAccount {
 
 // ── Reads ──
 
-// FA-TS1 diagnostics: mirrors google/accounts.ts: count microsoft_accounts
-// scans to verify the per-tool scan collapse from dev. Reset between measures.
-let microsoftAccountScanCount = 0;
-export function __getMicrosoftAccountScanCount(): number { return microsoftAccountScanCount; }
-export function __resetMicrosoftAccountScanCount(): void { microsoftAccountScanCount = 0; }
-
 export function listMicrosoftAccounts(kind?: MicrosoftAccountKind): MicrosoftAccount[] {
-  microsoftAccountScanCount++;
   const db = getDb();
   const rows = (kind
     ? db.prepare('SELECT * FROM microsoft_accounts WHERE kind = ? ORDER BY position').all(kind)

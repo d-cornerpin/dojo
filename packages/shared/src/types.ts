@@ -360,17 +360,6 @@ export interface Message {
   origin?: MessageOrigin;
 }
 
-export interface AuditEntry {
-  id: string;
-  agentId: string;
-  actionType: 'tool_call' | 'file_read' | 'file_write' | 'exec' | 'model_call' | 'error';
-  target: string | null;
-  result: 'success' | 'denied' | 'error';
-  detail: string | null;
-  cost: number | null;
-  createdAt: string;
-}
-
 export interface LogEntry {
   timestamp: string;
   level: 'debug' | 'info' | 'warn' | 'error';
@@ -632,16 +621,6 @@ export interface Task {
   goal: string | null;
   result: string | null;
   evidence: Array<{ kind: string; [k: string]: unknown }>;
-}
-
-export interface PokeEntry {
-  id: string;
-  taskId: string;
-  agentId: string;
-  pokeNumber: number;
-  pokeType: 'nudge' | 'urgent' | 'escalate_primary' | 'escalate_owner' | 'dead_agent';
-  sentAt: string;
-  responseReceived: boolean;
 }
 
 export interface CompletionAnnouncement {

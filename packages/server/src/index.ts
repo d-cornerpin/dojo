@@ -19,7 +19,7 @@ import { closeServers, trackRequests } from './gateway/close-servers.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
 import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
@@ -678,10 +678,10 @@ async function main(): Promise<void> {
     })();
   }, 20_000);
 
-  // 4c. Ensure PM agent exists and poke loop is running (if enabled and setup is complete)
+  // 4c. Ensure PM agent exists and poke loop is running (once setup is complete)
   {
     const { isSetupCompleted } = await import('./config/platform.js');
-    if (isSetupCompleted() && isPMEnabled()) {
+    if (isSetupCompleted()) {
       try {
         const { ensurePMAgentRunning } = await import('./tracker/pm-agent.js');
         ensurePMAgentRunning();
@@ -698,12 +698,10 @@ async function main(): Promise<void> {
   //
   // This used to be installed by `startPokeLoop()` inside 4c above, which meant the platform's
   // answer to "when does a schedule fire" was a side effect of the PROJECT MANAGER starting.
-  // A box with `isPMEnabled() === false` therefore fired no reminders and no recurring tasks
-  // at all, silently. The clock is the scheduler's now and starts on its own terms.
+  // The clock is the scheduler's now and starts on its own terms.
   //
-  // The gate that REMAINS is `isSetupCompleted()`: before OOBE finishes there is no owner, no
-  // primary agent to fire toward, and no schedules to fire. `isPMEnabled()` is gone from it,
-  // deliberately — the project manager validates work, it does not keep time.
+  // The gate is `isSetupCompleted()`: before OOBE finishes there is no owner, no
+  // primary agent to fire toward, and no schedules to fire.
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -718,10 +716,10 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c2. Ensure Trainer agent exists (if enabled and setup is complete)
+  // 4c2. Ensure Trainer agent exists (once setup is complete)
   {
-    const { isTrainerEnabled, isSetupCompleted: isSetupDone } = await import('./config/platform.js');
-    if (isSetupDone() && isTrainerEnabled()) {
+    const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone()) {
       try {
         const { ensureTrainerAgentRunning } = await import('./techniques/trainer-agent.js');
         ensureTrainerAgentRunning();

@@ -14,7 +14,6 @@ vi.mock('../client.js', () => ({
   calendarPrefix: () => 'me/', drivePrefix: () => 'me/drive/',
 }));
 vi.mock('../auth.js', () => ({
-  getAccessToken: () => 'AGENT-TOKEN',
   getValidAccessToken: async () => 'AGENT-TOKEN',
   getValidAccessTokenForAccount: vi.fn(async (id: string): Promise<string | null> => `token-for-${id}`),
 }));

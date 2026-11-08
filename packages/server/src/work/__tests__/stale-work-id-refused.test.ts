@@ -42,7 +42,10 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
-import { isOutcomeShaped } from '@dojo/shared';
+import { OUTCOME_KINDS } from '@dojo/shared';
+
+const isOutcomeShaped = (v: unknown): boolean =>
+  typeof v === 'object' && v !== null && (OUTCOME_KINDS as readonly unknown[]).includes((v as { kind?: unknown }).kind);
 import { runMigrations } from '../../db/migrations.js';
 import { patchWork } from '../tracker-store.js';
 import { transition } from '../store.js';

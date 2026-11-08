@@ -42,8 +42,6 @@ vi.mock('../../../config/setup-state.js', () => ({
 
 vi.mock('../../../config/platform.js', () => ({
   getPrimaryAgentId: () => 'primary-1',
-  isPMEnabled: () => true,
-  isTrainerEnabled: () => true,
   clearPlatformConfigCache: () => {},
 }));
 

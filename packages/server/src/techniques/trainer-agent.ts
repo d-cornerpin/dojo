@@ -2,7 +2,7 @@ import { primaryReady } from '../agent/primary-ready.js';
 import { getDb } from '../db/connection.js';
 import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
-import { getPrimaryAgentId, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, isSetupCompleted } from '../config/platform.js';
+import { getPrimaryAgentId, getTrainerAgentId, getTrainerAgentName, isSetupCompleted } from '../config/platform.js';
 import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
 import { googleReadToolDefinitions } from '../google/tools-read.js';
 import { microsoftReadToolDefinitions } from '../microsoft/tools-read.js';
@@ -36,11 +36,6 @@ const logger = createLogger('trainer-agent');
 // ── Ensure Trainer Agent Running ──
 
 export function ensureTrainerAgentRunning(): void {
-  if (!isTrainerEnabled()) {
-    logger.info('Trainer agent is disabled, skipping auto-spawn');
-    return;
-  }
-
   if (!isSetupCompleted()) {
     logger.info('Setup not completed, deferring Trainer agent creation to setup wizard');
     return;
@@ -129,7 +124,6 @@ export function ensureTrainerAgentRunning(): void {
   if (!configCheck) {
     db.prepare("INSERT OR IGNORE INTO config (key, value, updated_at) VALUES ('trainer_agent_id', ?, datetime('now'))").run(trainerId);
     db.prepare("INSERT OR IGNORE INTO config (key, value, updated_at) VALUES ('trainer_agent_name', ?, datetime('now'))").run(trainerName);
-    db.prepare("INSERT OR IGNORE INTO config (key, value, updated_at) VALUES ('trainer_agent_enabled', 'true', datetime('now'))").run();
     logger.info('Wrote missing trainer config settings', { trainerId, trainerName });
   }
 

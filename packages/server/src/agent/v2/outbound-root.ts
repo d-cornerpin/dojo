@@ -22,14 +22,13 @@
 // ── WHAT REPLACES IT ────────────────────────────────────────────────────────────────────
 // The rule stated once, positively: **a user-facing CHANNEL PUSH requires an affirmative
 // root — a reason, on the record, why the platform is reaching a person right now.** Each of
-// the five old negations is one such reason, and each has a name a human can read in a log:
+// the old negations is one such reason, and each has a name a human can read in a log:
 //
 //   inbound_channel    they wrote in on a channel this turn; the reply goes back on it
 //   waiting_human      a human conversation was already open when the turn began
 //   peer_turn          the counterparty is an agent (the reply is forced to dashboard anyway)
 //   engine_occurrence  an engine turn — a scheduler/reminder the agent must deliver
-//   completion_ack     a real "done" for work that just finished (the always-ack law)
-//   steered_closeout   the silent-closeout steer's reply IS that completion ack, in the
+//   steered_closeout   the silent-closeout steer's reply IS the completion ack, in the
 //                      agent's own voice (owner ruling 2026-07-22)
 //
 // NO ROOT -> the push is HELD. That is the 3:32 AM class: the platform woke itself, nobody
@@ -41,9 +40,9 @@
 // 21, caution 2). A held push leaves a `deliveries` row with `outcome='held'`, which is why
 // "did we withhold, or did we push and forget to say so" is answerable at all.
 //
-// The dissolution is EXACT: `held === (root === null)` is the same boolean the six-term
-// conjunction produced, proven by exhausting all 64 combinations against the original
-// expression rather than by reading it. `no-outreach-without-inbound` is green on both sides.
+// The dissolution is EXACT: `held === (root === null)` is the same boolean the conjunction
+// produced (its completion-ack term was a constant false), proven by exhausting all 32
+// combinations against the original expression rather than by reading it. `no-outreach-without-inbound` is green on both sides.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /** Why the platform is allowed to reach a person on a channel right now. One name per reason;
@@ -53,7 +52,6 @@ export type OutboundRootKind =
   | 'waiting_human'
   | 'peer_turn'
   | 'engine_occurrence'
-  | 'completion_ack'
   | 'steered_closeout';
 
 export interface OutboundRootInput {
@@ -65,8 +63,6 @@ export interface OutboundRootInput {
   counterpartyKind: 'user' | 'agent' | string;
   /** An engine-driven turn: a scheduler occurrence or reminder the agent must deliver. */
   isEngineTurn: boolean;
-  /** A real completion ack for work that just finished (the always-ack law). */
-  engineCompletionAckThisTurn: boolean;
   /** The silent-closeout floor steered this turn; its reply IS the completion ack. */
   steeredForSilentCloseout: boolean;
 }
@@ -87,7 +83,7 @@ export interface OutboundRootDecision {
  */
 const ORDER: readonly OutboundRootKind[] = [
   'inbound_channel', 'waiting_human', 'peer_turn',
-  'engine_occurrence', 'completion_ack', 'steered_closeout',
+  'engine_occurrence', 'steered_closeout',
 ];
 
 export function outboundRoot(input: OutboundRootInput): OutboundRootDecision {
@@ -96,7 +92,6 @@ export function outboundRoot(input: OutboundRootInput): OutboundRootDecision {
     waiting_human: !input.settledContextWakeTurn,
     peer_turn: input.counterpartyKind === 'agent',
     engine_occurrence: input.isEngineTurn,
-    completion_ack: input.engineCompletionAckThisTurn,
     steered_closeout: input.steeredForSilentCloseout,
   };
   const roots = ORDER.filter((k) => present[k]);

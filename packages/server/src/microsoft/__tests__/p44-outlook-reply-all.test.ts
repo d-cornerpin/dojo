@@ -25,7 +25,6 @@ import { sendMarkedDraft } from '../send-as-draft.js';
 import { judgeOwnerEmail } from '../../services/mail-owner-intake.js';
 import { isPlatformSent } from '../../services/platform-sends.js';
 import Database from 'better-sqlite3';
-vi.mock('../../services/outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));
 import { runMigrations } from '../../db/migrations.js';
 import { executeMicrosoftWriteTool } from '../tools-write.js';
 

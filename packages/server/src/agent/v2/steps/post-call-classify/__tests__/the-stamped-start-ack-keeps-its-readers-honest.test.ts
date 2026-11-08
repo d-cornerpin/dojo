@@ -17,19 +17,15 @@
 //                                              byte-identical by (1), so the turn-end demotion
 //                                              S1 observed still demotes the ack.
 //   3  the sixth narrowing                   — `mb.display_kind='agent-text'`; same, byte-identical.
-//   4  `finalize/completion-ack.ts`          — `AND origin_intent IS NULL`, comment: "Engine acks
-//   5  `execute/result-notes.ts`                are excluded STRUCTURALLY by their origin_intent
+//   5  `execute/result-notes.ts`             : "Engine acks are excluded STRUCTURALLY by their origin_intent
 //                                              tag." These were WRITTEN EXPECTING THE STAMP. Their
 //                                              activation is designed behaviour being restored:
 //                                              a 57-char "On it —" used to count as a substantive
 //                                              reply and suppress the completion machinery.
 //                                              Ruled ACCEPTED, and proven here in BOTH directions.
-//                                              Reader 4 could not activate in T2's sitting (its
-//                                              selector was dormant — see the block above its
-//                                              clauses); UX-REPAIR ROUND 2 T15 repaired the
-//                                              selector and those clauses flipped, deliberately.
-//                                              Both probes now share ONE predicate,
+//                                              The probe reads one predicate,
 //                                              `answered-edge.ts:substantiveReplySince`.
+//   (Reader 4, the finalize completion-ack detection, was log-only and is deleted.)
 //
 // The 237 historical unstamped acks on the dev body stay unstamped — no backfill — so the probes'
 // behaviour on history is unchanged by construction.
@@ -72,9 +68,6 @@ import {
 } from '../../../../../memory/message-store.js';
 import { classifyMessageForDisplay } from '@dojo/shared';
 import { userRequestedCloseWantsReply } from '../../execute/result-notes.js';
-import { runCompletionAck } from '../../finalize/completion-ack.js';
-import type { AgentTurnState } from '../../../state.js';
-import type { FinalizeContext } from '../../finalize/index.js';
 import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -323,97 +316,5 @@ describe('reader 5: the close-note steer stops being suppressed by an "On it"', 
     assistantRow('ack', STAMPED_ACK, t + 1000, null);        // history: origin_intent NULL
     expect(userRequestedCloseWantsReply('work_update', { action: 'status', task_id: 'task-1' }, AGENT))
       .toBe(false);
-  });
-});
-
-describe('reader 4: the completion detection engages — and still composes NOTHING (OR2)', () => {
-  const finalizeCtx = (turnStartedAt: string): FinalizeContext => ({
-    agentId: AGENT, turnNumber: 4, db: mockDb.current!,
-    counterparty: { kind: 'user' }, counterpartyIsAgentSender: false, turnStartedAt,
-  } as unknown as FinalizeContext);
-  const turnState = (): AgentTurnState => ({
-    lastAssistantTextForIM: null, surfacedReplyThisTurn: false, explicitSendThisTurn: {},
-    steerQueue: { pending: [], fired: [] },
-  } as unknown as AgentTurnState);
-
-  /** A scaffold task CLOSED during this turn — the input the detection reads. The upheld
-   *  adjudication (the two-key trigger) and the receipt (migration 135's `done means DELIVERED`
-   *  CHECK) are the schema's own conditions for a closed row; this fixture honours both rather
-   *  than working around them. */
-  function completedScaffold(id: string, openedAtMs: number, closedAtMs: number): void {
-    scaffoldTask(id, openedAtMs);
-    mockDb.current!.prepare(
-      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at)
-       VALUES (?, 'done', 'upheld', 'pm', ?)`,
-    ).run(id, Date.now());
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id,
-                               outcome, created_at)
-       VALUES (?, ?, 4, 'dashboard', 'dashboard', ?, 'delivered', datetime('now'))`,
-    ).run(`d-${id}`, AGENT, CONV);
-    mockDb.current!.prepare(
-      `UPDATE work SET state='done', closed_at=?, result_delivery_id=? WHERE id=?`,
-    ).run(closedAtMs, `d-${id}`, id);
-  }
-
-  // ⚠ THE PIN THIS SITTING WROTE, AND THE FLIP IT WAS WRITTEN FOR — UX-REPAIR ROUND 2, T15.
-  //
-  // T2's sitting measured reader 4's activation as LATENT and pinned it rather than fixing it:
-  // one line ABOVE the `origin_intent IS NULL` probe, the detection's scaffold selector bounded
-  // an INTEGER epoch-ms column with the TEXT `turnStartedAt` —
-  //
-  //     AND t.closed_at >= ?          .all(agentId, turnStartedAt)
-  //
-  // — and in SQLite every INTEGER sorts BELOW every TEXT, so the comparison was false for every
-  // row that existed. Measured then on the live body (`~/.dojo/data/dojo.db`, read-only):
-  //     closed_at >= '2026-01-01 00:00:00'   -> 0 engine-scaffold done tasks
-  //     closed_at >= 1767225600000           -> 25
-  // The stamp reached a probe nothing could reach. The pin's own words were: *"pinned here so a
-  // future repair of the selector cannot land without meeting the stamp"*.
-  //
-  // T15 IS THAT REPAIR, and this is the pin doing its job: the second clause below used to
-  // assert that the stamp changed NOTHING, and it now asserts the opposite in both directions.
-  // The change is deliberate, argued in the plan (T15's intent inventory: "the T2R dormancy-pin
-  // test FLIPS consciously — that is what the pin is for"), and the full behavioural proof lives
-  // with the repair, in `finalize/__tests__/the-completion-ack-probe-lives-again.test.ts`. What
-  // stays here is reader 4's disposition, because this file is the record of what the STAMP did
-  // to each of its readers: the activation T2 could only rule for, observed.
-  it('the selector reads the column\'s own type now — the ms bound, in production', () => {
-    const t = Date.now() - 60_000;
-    const turnStartedAt = new Date(t).toISOString().slice(0, 19).replace('T', ' ');
-    completedScaffold('task-1', t, Date.now());
-    const sel = (bound: string | number): number => (mockDb.current!.prepare(
-      `SELECT count(*) c FROM work t WHERE t.root_kind='engine_scaffold' AND t.kind='task'
-         AND t.agent_id = ? AND t.state = 'done' AND t.closed_at >= ? AND t.repeat_interval IS NULL`,
-    ).get(AGENT, bound) as { c: number }).c;
-    // The measurement that named the defect, kept: this is why the TEXT bound had to go.
-    expect(sel(turnStartedAt), 'the bound production used to pass').toBe(0);
-    expect(sel(t), 'the same instant as epoch ms').toBe(1);
-    // And the source no longer passes the text form or round-trips it.
-    const src = SRC('../../finalize/completion-ack.ts');
-    expect(src, 'the selector is bound with ms').toContain('turnStartedAtMs');
-    expect(src, 'and nothing converts an instant on this path').not.toContain('unixepoch(');
-  });
-
-  it('ACTIVATED — the stamp decides it: a stamped ack fires the detection, a real answer quiets it', () => {
-    for (const [stamp, expectFire] of [[START_ACK_INTENT, true], [null, false]] as const) {
-      warns.length = 0; infos.length = 0;
-      const t = Date.now() - 60_000;
-      const turnStartedAt = new Date(t).toISOString().slice(0, 19).replace('T', ' ');
-      completedScaffold(`task-${stamp}`, t, Date.now());
-      assistantRow(`ack-${stamp}`, STAMPED_ACK, t + 1000, stamp);
-      const before = (mockDb.current!.prepare('SELECT count(*) c FROM messages').get() as { c: number }).c;
-
-      expect(runCompletionAck(turnState(), finalizeCtx(turnStartedAt))).toBe(false);
-
-      // Stamped: the engine ack is not an answer, so the person is still owed and the
-      // detection says so. Unstamped (the 237 historical rows): unchanged, still read as an
-      // answer, still deduped.
-      expect(warns.some((w) => /NO user-facing reply/.test(w.msg)), `stamp=${stamp}`).toBe(expectFire);
-      expect(infos.some((i) => /completion ack skipped/.test(i.msg)), `stamp=${stamp}`).toBe(!expectFire);
-      // OR2 is unmoved by the activation: the engine detects, it does not speak.
-      expect((mockDb.current!.prepare('SELECT count(*) c FROM messages').get() as { c: number }).c)
-        .toBe(before);
-    }
   });
 });

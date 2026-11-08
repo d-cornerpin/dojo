@@ -523,7 +523,6 @@ describe('there is exactly one rename door', () => {
   // `renameAgent`. Declared here rather than excluded silently, so a SIXTH one is a finding.
   const DECLARED_RESYNC = [
     'packages/server/src/healer/healer-agent.ts',
-    'packages/server/src/imaginer/imaginer-agent.ts',
     'packages/server/src/techniques/trainer-agent.ts',
     'packages/server/src/tracker/pm-agent.ts',
     'packages/server/src/vault/maintenance.ts',

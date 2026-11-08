@@ -81,15 +81,6 @@ export function automationInstructions(execPath?: string | null): string {
   );
 }
 
-/** The one-line "why", for a surface sitting next to the iMessage toggle. */
-export function automationWhy(): string {
-  return (
-    `Sending an iMessage means driving ${AUTOMATION_TARGET_APP}, which macOS treats as automation. `
-    + 'The request comes from the helper the Dojo server runs to do the sending, not from this '
-    + 'dashboard, and not from Terminal.'
-  );
-}
-
 /**
  * WHAT THE STATUS LIGHT ON THIS ROW CAN SEE — and as of t115 it can see the thing itself.
  *

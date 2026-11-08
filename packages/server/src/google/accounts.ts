@@ -88,17 +88,7 @@ function rowToAccount(r: GoogleAccountRow): GoogleAccount {
 
 // ── Reads ──
 
-// FA-TS1 diagnostics: count google_accounts scans so the perf fix can be
-// verified from dev. Before the fix a multi-tool turn drove ~185 scans per
-// callModel; after tier 1 + the memo a whole turn should show a small constant.
-// Zero cost in the hot path (an integer increment); read via the exported
-// getter from a dev route or REPL, reset between measurements.
-let googleAccountScanCount = 0;
-export function __getGoogleAccountScanCount(): number { return googleAccountScanCount; }
-export function __resetGoogleAccountScanCount(): void { googleAccountScanCount = 0; }
-
 export function listGoogleAccounts(kind?: GoogleAccountKind): GoogleAccount[] {
-  googleAccountScanCount++;
   const db = getDb();
   const rows = (kind
     ? db.prepare('SELECT * FROM google_accounts WHERE kind = ? ORDER BY position').all(kind)

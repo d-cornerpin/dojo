@@ -29,8 +29,6 @@ export async function saveRoleAgent(role: 'pm' | 'trainer', name: string, modelI
     const r = await put(`${role}_agent_model`, modelId);
     if (!r.ok) return r.error;
   }
-  const en = await put(`${role}_agent_enabled`, 'true');
-  if (!en.ok) return en.error;
   if (name.trim()) {
     const nm = await put(`${role}_agent_name`, name.trim());
     if (!nm.ok) return nm.error;

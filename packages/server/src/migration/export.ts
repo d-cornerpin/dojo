@@ -57,12 +57,6 @@ const VOICE_KEEP_SUBDIR = 'custom';
 const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE]);
 const JUNK = new Set(['.DS_Store']);
 
-export interface ExportProgress {
-  stage: string;
-  progress: number;
-  message: string;
-}
-
 function broadcastProgress(stage: string, progress: number, message: string): void {
   broadcast({
     type: 'migration:progress',

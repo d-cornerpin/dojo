@@ -1,7 +1,6 @@
-// Outlook owner confirmation is OPEN (live check C3, 2026-10-31: Exchange's real topmost Authentication-Results carries the
-// authserv-id mx.microsoft.com, with the same shape for external Gmail, external Microsoft 365 and self-sent mail). This file uses
-// the REAL gate (no mock). Same-tenant internal mail was not covered by that check: with no Microsoft-stamped topmost header it
-// stays unconfirmed (fail closed).
+// Outlook owner confirmation (live check C3, 2026-10-31: Exchange's real topmost Authentication-Results carries the
+// authserv-id mx.microsoft.com, with the same shape for external Gmail, external Microsoft 365 and self-sent mail).
+// Same-tenant internal mail was not covered by that check: with no Microsoft-stamped topmost header it stays unconfirmed (fail closed).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -15,7 +14,6 @@ vi.mock('../../microsoft/client.js', () => ({ msGraphRead: (...a: unknown[]) => 
 vi.mock('../../google/client.js', () => ({ googleRead: vi.fn() }));
 import { runMigrations } from '../../db/migrations.js';
 import { judgeOutlookOwnerEmail } from '../mail-owner-intake.js';
-import { outlookOwnerConfirmationOpen } from '../outlook-owner-gate.js';
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:'); runMigrations(); graph.mockReset();
@@ -29,9 +27,7 @@ const arrives = (auth: string[]) => {
   return judgeOutlookOwnerEmail({ kind: 'agent', placement: 'to', fromAddress: 'owner@home.test', messageId: 'm1', accountId: 'agent' });
 };
 
-describe('Outlook owner confirmation is open (C3, 2026-10-31)', () => {
-  it('the gate is open', () => { expect(outlookOwnerConfirmationOpen()).toBe(true); });
-
+describe('an Outlook email is confirmed as the owner by the real Exchange header (C3, 2026-10-31)', () => {
   it('the real Exchange header shape (version token after mx.microsoft.com, compauth clause) confirms the owner', async () => {
     expect(await arrives([REAL])).toEqual({ state: 'confirmed', words: 'close it' });
     expect(graph).toHaveBeenCalledTimes(1);

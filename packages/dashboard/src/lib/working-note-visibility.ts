@@ -260,16 +260,6 @@ export function workingNoteVerdict(rows: readonly NoteRow[], index: number): Not
   return 'dimmed';
 }
 
-/** Is this note on screen at all, given the viewer's mode? `true` for a promoted reply too —
- *  a reply is the most on-screen a row can be. */
-export function showsWorkingNote(
-  rows: readonly NoteRow[], index: number, wordyMode: boolean,
-): boolean {
-  const verdict = workingNoteVerdict(rows, index);
-  if (verdict === null) return false;
-  return wordyMode || verdict !== 'wordyOnly';
-}
-
 /** The one question `Chat.tsx` asks per row, at both of its note arms: how does this render? */
 export function renderWorkingNote(
   rows: readonly NoteRow[], index: number, wordyMode: boolean,

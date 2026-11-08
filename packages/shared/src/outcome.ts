@@ -61,9 +61,6 @@ export type Provenance = 'live' | 'migrated' | 'rescued';
 /** The only provenances an `unknown` outcome may speak about. */
 export type NonLiveProvenance = Exclude<Provenance, 'live'>;
 
-export const PROVENANCES: readonly Provenance[] = ['live', 'migrated', 'rescued'] as const;
-export const NON_LIVE_PROVENANCES: readonly NonLiveProvenance[] = ['migrated', 'rescued'] as const;
-
 export function isNonLiveProvenance(p: unknown): p is NonLiveProvenance {
   return p === 'migrated' || p === 'rescued';
 }
@@ -79,7 +76,6 @@ export function isNonLiveProvenance(p: unknown): p is NonLiveProvenance {
  *                 Not `blocked`: retry with the arguments CORRECTED, not never.
  */
 export type ToolSeamReason = 'blocked' | 'crashed' | 'cancelled' | 'invalid_args';
-export const TOOL_SEAM_REASONS: readonly ToolSeamReason[] = ['blocked', 'crashed', 'cancelled', 'invalid_args'] as const;
 
 // ── The arms ──
 //
@@ -158,10 +154,6 @@ export function applied<T>(value: T, detail?: string): OutcomeApplied<T> {
   return detail === undefined ? { kind: 'applied', value } : { kind: 'applied', value, detail };
 }
 
-export function noChange<R extends string>(reason: R, detail: string): OutcomeNoChange<R> {
-  return { kind: 'no_change', reason, detail };
-}
-
 export function refused<R extends string>(reason: R, detail: string): OutcomeRefused<R> {
   return { kind: 'refused', reason, detail };
 }
@@ -217,54 +209,4 @@ export function quarantineUnknown<T, R extends string>(
 
 export function isApplied<T, R extends string>(o: Outcome<T, R>): o is OutcomeApplied<T> {
   return o.kind === 'applied';
-}
-export function isNoChange<T, R extends string>(o: Outcome<T, R>): o is OutcomeNoChange<R> {
-  return o.kind === 'no_change';
-}
-export function isRefused<T, R extends string>(o: Outcome<T, R>): o is OutcomeRefused<R> {
-  return o.kind === 'refused';
-}
-export function isFailed<T, R extends string>(o: Outcome<T, R>): o is OutcomeFailed<R> {
-  return o.kind === 'failed';
-}
-export function isUnknown<T, R extends string>(o: Outcome<T, R>): o is OutcomeUnknown<R> {
-  return o.kind === 'unknown';
-}
-
-/**
- * "Did the caller get what it asked for, or is the world already that way?"
- *
- * The one predicate that legitimately merges two arms, because a dozen call sites
- * ask exactly this question and every one of them wrote it as
- * `r.kind !== 'applied' && r.kind !== 'noop'`. It merges NOTHING ELSE: a refusal,
- * a failure and an unknown stay three different answers.
- */
-export function isSettled<T, R extends string>(o: Outcome<T, R>): o is OutcomeApplied<T> | OutcomeNoChange<R> {
-  return o.kind === 'applied' || o.kind === 'no_change';
-}
-
-/** The gate name, or `null` on the arm that has none. Never parses `detail`. */
-export function outcomeReason<T, R extends string>(o: Outcome<T, R>): R | null {
-  return o.kind === 'applied' ? null : o.reason;
-}
-
-/** One line for a log or a steer. Diagnostics only — nothing load-bearing reads it. */
-export function describeOutcome<T, R extends string>(o: Outcome<T, R>): string {
-  if (o.kind === 'applied') return o.detail ? `applied: ${o.detail}` : 'applied';
-  if (o.kind === 'unknown') return `unknown (${o.provenance}/${String(o.reason)}): ${o.detail}`;
-  return `${o.kind} (${String(o.reason)}): ${o.detail}`;
-}
-
-/**
- * Structural recogniser, exported so a CHECKER can share it with the type.
- *
- * The must-consume lint rule asks the TypeScript checker the same question this
- * asks a value: does it carry a `kind` drawn from `OUTCOME_KINDS`? Keeping the
- * predicate here means the rule and the type cannot drift apart the way a
- * hand-copied list of names does.
- */
-export function isOutcomeShaped(v: unknown): v is Outcome<unknown, string> {
-  if (typeof v !== 'object' || v === null) return false;
-  const k = (v as { kind?: unknown }).kind;
-  return typeof k === 'string' && (OUTCOME_KINDS as readonly string[]).includes(k);
 }

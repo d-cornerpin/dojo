@@ -30,10 +30,13 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import {
-  hasCredentialPlaceholder, splitCredentialPlaceholders,
+  splitCredentialPlaceholders,
   CREDENTIAL_CHIP_LABEL, credentialChipTitle,
 } from '../lib/credential-placeholder';
 import { Markdown } from '../components/Markdown';
+
+/** Does the renderer find a placeholder in this text? (The split is what the chat renders through.) */
+const hasCredentialPlaceholder = (text: string): boolean => splitCredentialPlaceholders(text).some((s) => s.kind === 'credential');
 
 const TAGGED = '<redacted-credential:c1>';
 const BARE = '<redacted-credential>';

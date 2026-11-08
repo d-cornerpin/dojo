@@ -94,7 +94,7 @@ export function runStepContexts(
   // the `try` would hand finalize a picture of the turn as it began.
   const finalizeContext = (): FinalizeContext => ({
     agentId, turnCtx, turnNumber, db,
-    counterparty, counterpartyIsAgentSender, chosenConvKey, turnStartedAt,
+    counterparty, chosenConvKey, turnStartedAt,
     settledContextWakeTurn, isA2ATurn, isEngineTurn, broadcast,
     noteTerminalAnswer, persistRoutingMarker, stopStatusHeartbeat,
   });

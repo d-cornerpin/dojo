@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
 import {
-  automationInstructions, automationWhy,
+  automationInstructions,
   AUTOMATION_PANE, AUTOMATION_TARGET_APP, AUTOMATION_VERIFY, AUTOMATION_SEND_HINT,
 } from '../lib/automation-permission';
 
@@ -53,7 +53,7 @@ describe('the words name the right target', () => {
     // The old copy stopped at the asking process ("node") and never said the word
     // Messages, so a user who found the row still did not know what to switch on.
     expect(AUTOMATION_TARGET_APP).toBe('Messages');
-    for (const words of [automationInstructions('/x/node'), automationWhy(), AUTOMATION_SEND_HINT]) {
+    for (const words of [automationInstructions('/x/node'), AUTOMATION_SEND_HINT]) {
       expect(words, 'the copy has to name the app being controlled').toContain(AUTOMATION_TARGET_APP);
     }
   });
@@ -88,12 +88,6 @@ describe('the words name the right target', () => {
       expect(s).not.toMatch(/\/bin\/node/);
       expect(s).toMatch(/reports its exact path/i);
     }
-  });
-
-  it('the "why" names the spawned helper, not Terminal and not the dashboard', () => {
-    const why = automationWhy();
-    expect(why).toMatch(/not from Terminal/i);
-    expect(why).toMatch(/dashboard/i);
   });
 
   it('⚠ the verify line CLAIMS the check, because as of t115 there is one', () => {

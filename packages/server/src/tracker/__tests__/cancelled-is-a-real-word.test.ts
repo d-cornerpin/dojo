@@ -72,7 +72,7 @@ import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixt
 import { statusToState, stateToStatus } from '../../work/tracker-view.js';
 import { isTerminalTaskStatus } from '../../agent/tool-helpers.js';
 import {
-  TERMINAL_COLUMN_STATUSES, columnKeyForStatus, terminalOutcomeLabel, KANBAN_COLUMN_KEYS,
+  columnKeyForStatus, terminalOutcomeLabel, KANBAN_COLUMN_KEYS,
 } from '../../../../dashboard/src/lib/task-status';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -339,7 +339,6 @@ describe('§4 a cancelled row is visible on the board, with its own word', () =>
 
   it('cancelled and fallen share ONE column and are labelled differently', () => {
     expect(columnKeyForStatus('cancelled')).toBe(columnKeyForStatus('fallen'));
-    expect(TERMINAL_COLUMN_STATUSES).toEqual(['fallen', 'cancelled']);
     expect(terminalOutcomeLabel('fallen')).toBe('Failed');
     expect(terminalOutcomeLabel('cancelled')).toBe('Cancelled');
     expect(terminalOutcomeLabel('complete')).toBeNull();

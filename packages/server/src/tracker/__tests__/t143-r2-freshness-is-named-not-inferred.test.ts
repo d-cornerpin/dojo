@@ -321,8 +321,7 @@ describe('ROUND 2 (2+3) + ROUND 3 (C1): freshness is refreshed only by activity 
 });
 
 describe('ROUND 2 (1): the platform notice never depends on the project manager existing', () => {
-  it('with the PM switched off, the scheduler\'s own tick tells the owner about a wedged agent, once', async () => {
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_enabled', 'false')").run();
+  it('with no PM agent, the scheduler\'s own tick tells the owner about a wedged agent, once', async () => {
     db().prepare("DELETE FROM agents WHERE id = 'pm'").run();
     wedgedToolCall(3 * 60 * MIN);
     expect(await runSchedulerTick()).toBe('ran');

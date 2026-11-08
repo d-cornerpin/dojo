@@ -236,10 +236,6 @@ function persistConnectedState(email: string | null): void {
 let loginProcess: ChildProcess | null = null;
 let pendingLoginUrl: string | null = null;
 
-export function isLoginInProgress(): boolean {
-  return loginProcess !== null;
-}
-
 /**
  * Start the Plaud login flow. Spawns `npx -y @plaud-ai/cli login` and
  * captures the auth URL from stdout. The URL is broadcast over WebSocket

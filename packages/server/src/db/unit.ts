@@ -151,9 +151,3 @@ export function afterCommit(effect: CommitEffect): void {
   }
   pending.push(effect);
 }
-
-/** True while a unit is open. For assertions and for guards that must refuse to
- *  do something un-transactional mid-unit; not a control-flow crutch. */
-export function inUnit(): boolean {
-  return depth > 0;
-}

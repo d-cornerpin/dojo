@@ -250,7 +250,6 @@ describe('the five boot rewriters are retired (owner ruling 3)', () => {
     ['tracker/pm-agent.ts', 'PM agent already running'],
     ['techniques/trainer-agent.ts', 'Trainer agent already running'],
     ['healer/healer-agent.ts', 'Healer agent already running'],
-    ['imaginer/imaginer-agent.ts', 'Imaginer agent already running'],
     ['vault/maintenance.ts', 'Dreamer agent already running'],
   ];
 

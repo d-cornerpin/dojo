@@ -172,14 +172,9 @@ export function owesAnswer(messageId: string | null | undefined): boolean {
  * row (`origin_intent IS NOT NULL` — this is how a promoted start-ack is refused, exactly as
  * T2's stamp was written to be read), and anything under 40 trimmed characters.
  *
- * UX-REPAIR T15 — ONE COPY, AND A BOUNDARY THAT IS ms ON BOTH SIDES. This clause list used to
- * exist twice, in `finalize/completion-ack.ts` and `execute/result-notes.ts`, each with its own
- * `created_at >= (unixepoch(?) * 1000)` round-trip over a column that is ALREADY epoch ms.
- * The round-trip is the defect's family: `unixepoch()` of an ms NUMBER is NULL, and an INTEGER
- * ms column bounded by a TEXT datetime matches nothing in SQLite — which is precisely how the
- * completion probe's scaffold selector sat dormant for its whole life. So the parameter here is
- * ms, the column is ms, and there is no conversion anywhere on the path. Two copies of one
- * question could answer it differently; one cannot.
+ * The boundary is ms on both sides: `unixepoch()` of an ms NUMBER is NULL, and an INTEGER ms
+ * column bounded by a TEXT datetime matches nothing in SQLite, so there is no conversion
+ * anywhere on the path.
  */
 export function substantiveReplySince(agentId: string, sinceMs: number): boolean {
   return !!getDb().prepare(

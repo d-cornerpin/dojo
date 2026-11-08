@@ -251,10 +251,8 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
   //    `config/platform.ts` resolves each through `get(key, FALLBACK)` with a shipped default.
   trainer_agent_id: 'OPTIONAL — `config/platform.ts` resolves it through get() with a shipped default id',
   trainer_agent_name: 'OPTIONAL — `config/platform.ts` resolves it through get() with a shipped default name',
-  trainer_agent_enabled: 'OPTIONAL — an absent row reads as the shipped enablement default',
   imaginer_agent_id: 'OPTIONAL — `config/platform.ts` resolves it through get() with a shipped default id',
   imaginer_agent_name: 'OPTIONAL — `config/platform.ts` resolves it through get() with a shipped default name',
-  imaginer_enabled: 'OPTIONAL — an absent row reads as the shipped enablement default',
   household_agent_ids: 'OPTIONAL — an absent row reads as an empty allow-list, which shares nothing; sharing is opt-in',
   sudo_policy: 'OPTIONAL — an absent row reads as the shipped default policy, which is the cautious one',
 
@@ -263,7 +261,6 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
   healer_mode: 'OPTIONAL — an absent row reads as the shipped healer cadence',
   healer_time: 'OPTIONAL — an absent row reads as the shipped healer schedule',
   healer_report_recipient: 'PER-BOX — who gets a healer report is a per-installation choice; absent means nobody is notified',
-  imaginer_brain_model: 'OPTIONAL — falls back to the box\'s configured model',
   imaginer_image_model: 'OPTIONAL — falls back to the box\'s configured image model',
   embedding_config: 'OPTIONAL — `memory/embeddings.ts` reads it `if (row)` and otherwise uses the shipped embedding defaults',
   dreaming_time: 'OPTIONAL — an absent row reads as the shipped dreaming schedule',

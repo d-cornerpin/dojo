@@ -10,7 +10,7 @@ vi.mock('../connection.js', () => ({
   },
 }));
 
-import { withUnit, afterCommit, inUnit } from '../unit.js';
+import { withUnit, afterCommit } from '../unit.js';
 
 beforeEach(() => {
   const d = new Database(':memory:');
@@ -37,7 +37,9 @@ describe('withUnit effect queue', () => {
     expect(outerEffect).toHaveBeenCalledTimes(1);
     expect(innerEffect).not.toHaveBeenCalled();
     expect(mockDb.current!.prepare('SELECT v FROM t').all()).toEqual([{ v: 'outer' }]);
-    expect(inUnit()).toBe(false);
+    const outside = vi.fn();
+    afterCommit(outside);   // no unit left open: the effect runs at once
+    expect(outside).toHaveBeenCalledTimes(1);
   });
 
   it('a deeper rolled-back unit drops only its own effects, not its parent\'s', () => {

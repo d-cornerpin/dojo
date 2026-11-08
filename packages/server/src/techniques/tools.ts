@@ -31,7 +31,7 @@ import {
   emptyDependencyManifest,
 } from './dependencies.js';
 import { VERSIONS_SUBDIR } from './versioning.js';
-import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent, isTrainerEnabled } from '../config/platform.js';
+import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent } from '../config/platform.js';
 import { mayUseTechnique } from '../agent/access/read.js';
 // (getDb is already imported above)
 
@@ -44,24 +44,18 @@ const logger = createLogger('technique-tools');
  *
  * Policy:
  *   - The trainer agent is always allowed.
- *   - If the trainer is disabled in config OR the configured trainer
- *     agent doesn't exist / has been terminated, fall back to allowing
- *     any sensei-class caller. Without this fallback, installs that
- *     disabled the trainer (or never set one up) would have ALL
- *     technique mutation refused — bricking the feature.
+ *   - If the configured trainer agent doesn't exist / has been terminated,
+ *     fall back to allowing any sensei-class caller. Without this fallback,
+ *     installs with no live trainer would have ALL technique mutation
+ *     refused, bricking the feature.
  *   - Otherwise, refuse with a redirect to the trainer.
  */
 function authorizeTechniqueMutation(agentId: string, classification: string, verb: string): string | null {
   if (isTrainerAgent(agentId)) return null;
 
-  // Fallback: trainer disabled per install config, OR no live trainer
-  // agent exists. Allow sensei-class callers (mirrors the pre-trainer-
+  // Fallback: no live trainer agent exists. Allow sensei-class callers (mirrors the pre-trainer-
   // ownership behavior so the feature still works on a trainer-less
   // install).
-  if (!isTrainerEnabled()) {
-    if (classification === 'sensei') return null;
-    return `Refused: ${verb} is restricted to Sensei agents (the trainer is disabled on this install).`;
-  }
   try {
     const trainerId = getTrainerAgentId();
     const row = getDb()

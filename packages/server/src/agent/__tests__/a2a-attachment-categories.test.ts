@@ -73,9 +73,9 @@ vi.mock('../../memory/compaction.js', async () => {
 vi.mock('../../config/platform.js', () => ({
   clearPlatformConfigCache: vi.fn(), getSudoPolicyRaw: () => null, getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestUser', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
-  getPMAgentId: () => 'pm', getPMAgentName: () => 'PM', isPMEnabled: () => false,
-  getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer', isTrainerEnabled: () => false,
-  getImaginerAgentId: () => 'imaginer', getImaginerAgentName: () => 'Imaginer', isImaginerEnabled: () => false,
+  getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
+  getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',
+  getImaginerAgentId: () => 'imaginer', getImaginerAgentName: () => 'Imaginer',
   isSetupCompleted: () => true, setPlatformConfig: vi.fn(), getAllPlatformConfig: () => ({}),
   isPrimaryAgent: (id: string) => id === 'primary', isPMAgent: (id: string) => id === 'pm',
   isTrainerAgent: (id: string) => id === 'trainer', isImaginerAgent: (id: string) => id === 'imaginer',

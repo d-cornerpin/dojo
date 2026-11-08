@@ -26,20 +26,16 @@ import {
   A2A_ENVELOPE_RE,
   A2A_THREAD_RE,
   parseA2AThreadShort,
-  isInboundA2AMarker,
   SOURCE_ENVELOPE_PREFIXES,
-  SOURCE_ENVELOPE_RE,
   SOURCE_ENVELOPE_ANYWHERE_RE,
   ENGINE_SCAFFOLD_PREFIXES,
   ENGINE_SCAFFOLD_RE,
-  ENGINE_SCAFFOLD_ANYWHERE_RE,
   NEW_SESSION_BRACKET_RE,
   NEW_SESSION_BRACKET_ANYWHERE_RE,
   TECHNIQUE_FRESH_SENTINEL,
   TECHNIQUE_FRESH_HEADER_RE,
   parseTechniqueFreshRead,
   PROMPT_HISTORY_EXCLUDED_PREFIXES,
-  promptHistoryMarkerSqlClauses,
 } from '@dojo/shared';
 import { FXID } from '../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -84,8 +80,8 @@ const OWNER = 'shared/src/markers.ts';
 
 describe('E18 drift 1 — one flag, not two (the /i seed pair)', () => {
   it('matches BOTH cases of the modern envelope from the ONE matcher', () => {
-    expect(isInboundA2AMarker('[A2A:REQUEST thread:bp0atnn9 from:maddy] hi')).toBe(true);
-    expect(isInboundA2AMarker('[a2a:request thread:bp0atnn9 from:maddy] hi')).toBe(true);
+    expect(A2A_INBOUND_RE.test('[A2A:REQUEST thread:bp0atnn9 from:maddy] hi')).toBe(true);
+    expect(A2A_INBOUND_RE.test('[a2a:request thread:bp0atnn9 from:maddy] hi')).toBe(true);
   });
 
   it('the assembler and compaction now read the SAME matcher object', async () => {
@@ -119,8 +115,8 @@ describe('E18 drift 2 — GROUP BROADCAST is in the taxonomy', () => {
 
   it('a broadcast is inbound PEER traffic, never the owner speaking', () => {
     const row = '[SOURCE: GROUP BROADCAST FROM maddy] the deck is ready';
-    expect(isInboundA2AMarker(row)).toBe(true);
-    expect(SOURCE_ENVELOPE_RE.test(row)).toBe(true);
+    expect(A2A_INBOUND_RE.test(row)).toBe(true);
+    expect(SOURCE_ENVELOPE_PREFIXES.some((pre) => row.startsWith(pre))).toBe(true);
   });
 });
 
@@ -138,7 +134,6 @@ describe('E18 drift 3 — the [System note:] colon-requirement leak', () => {
       '[Context note: the user just hit the Stop button]', '[DOJO technique]']) {
       expect(ENGINE_SCAFFOLD_RE.test(s), `${s} is not recognised`).toBe(true);
     }
-    expect(ENGINE_SCAFFOLD_ANYWHERE_RE.test('trailing [Engine note: z]')).toBe(true);
   });
 });
 
@@ -195,6 +190,10 @@ describe('the fresh-read sentinel — one literal, one extractor', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 // The SQL half — asserted equal, not generated. markers.ts states why.
 // ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The `NOT LIKE` clause each of the two statements must contain, in this order. */
+const promptHistoryMarkerSqlClauses = (column = 'content'): string[] =>
+  PROMPT_HISTORY_EXCLUDED_PREFIXES.map((p) => `${column} NOT LIKE '${p}%'`);
 
 describe('the prompt-history marker filter has ONE definition in two languages', () => {
   const SQL_FILE = 'server/src/prompt/assembler.ts';

@@ -9,7 +9,7 @@ import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
 import { SOUL_ADMIN_COMMANDS_CLAIM } from '../agent/brokers/sudo-claim.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName} from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, getHealerAgentId, getHealerAgentName, getImaginerAgentName} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, settingsPath, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
@@ -273,7 +273,7 @@ export function healerSoulDefaultFrom(
 /**
  * T59 — THE IMAGINER, the same shape one agent over. Measured at `85537ff`:
  * `GET /api/agents/imaginer/system-prompt` returned **0 bytes** and the agent has **zero**
- * `role='system'` rows at all — `imaginer/imaginer-agent.ts` writes one only at CREATE, and
+ * `role='system'` rows at all: the retired Imaginer module wrote one only at CREATE, and
  * this box's Imaginer predates that write. Its 2,737-byte template, which is the only place
  * the engine-handled `image_create` flow is ever explained to it, reached nothing.
  */
@@ -1581,18 +1581,16 @@ export function renderPmAwareness(agentId: string): string | null {
 }
 
 /** The `trainer-awareness` slot (primary only): names the Trainer agent (owns
- *  save_technique/update_technique). Null for non-primary / trainer disabled. */
+ *  save_technique/update_technique). Null for non-primary / no live trainer. */
 export function renderTrainerAwareness(agentId: string): string | null {
   if (!isPrimaryAgent(agentId)) return null;
   try {
-    if (isTrainerEnabled()) {
-      const trainerName = getTrainerAgentName();
-      const trainerId = getTrainerAgentId();
-      const db = getDb();
-      const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
-      if (trainerAgent && trainerAgent.status !== 'terminated') {
-        return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`;
-      }
+    const trainerName = getTrainerAgentName();
+    const trainerId = getTrainerAgentId();
+    const db = getDb();
+    const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
+    if (trainerAgent && trainerAgent.status !== 'terminated') {
+      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`;
     }
   } catch { /* Trainer may not be configured */ }
   return null;

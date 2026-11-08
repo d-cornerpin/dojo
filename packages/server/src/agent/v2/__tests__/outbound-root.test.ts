@@ -5,7 +5,7 @@
 //
 // The pile was six booleans ANDed, five of them negations, and its whole meaning lived in the
 // conjunction. The proof that it dissolved rather than CHANGED is not a reading of the diff:
-// it is all 64 combinations of those six inputs, evaluated against the original expression
+// it is all 32 combinations of the live inputs, evaluated against the original expression
 // transcribed verbatim from `loop.ts` at dojo `79f6010`, and against the root decision. They
 // agree on every one. That is what makes `no-outreach-without-inbound` green on both sides a
 // prediction rather than a hope.
@@ -25,7 +25,6 @@ import {
  *     state.inboundChannel === null &&
  *     counterparty.kind !== 'agent' &&
  *     !isEngineTurn &&
- *     !engineCompletionAckThisTurn &&
  *     !steerFired(state.steerQueue, 'silent-closeout');
  *
  * Kept here as the oracle. If a future edit changes what the platform holds, this clause is
@@ -36,21 +35,20 @@ function legacySettledContextHold(i: OutboundRootInput): boolean {
     && i.inboundChannel === null
     && i.counterpartyKind !== 'agent'
     && !i.isEngineTurn
-    && !i.engineCompletionAckThisTurn
     && !i.steeredForSilentCloseout;
 }
 
-/** All 64 combinations of the six inputs the old conjunction read. */
+/** All 32 combinations of the five inputs the old conjunction read (its sixth, the
+ *  completion-ack flag, was a constant false and is gone). */
 function everyCombination(): OutboundRootInput[] {
   const out: OutboundRootInput[] = [];
-  for (let m = 0; m < 64; m++) {
+  for (let m = 0; m < 32; m++) {
     out.push({
       inboundChannel: (m & 1) ? 'imessage' : null,
       settledContextWakeTurn: !!(m & 2),
       counterpartyKind: (m & 4) ? 'agent' : 'user',
       isEngineTurn: !!(m & 8),
-      engineCompletionAckThisTurn: !!(m & 16),
-      steeredForSilentCloseout: !!(m & 32),
+      steeredForSilentCloseout: !!(m & 16),
     });
   }
   return out;
@@ -62,18 +60,17 @@ const PHANTOM: OutboundRootInput = {
   settledContextWakeTurn: true,
   counterpartyKind: 'user',
   isEngineTurn: false,
-  engineCompletionAckThisTurn: false,
   steeredForSilentCloseout: false,
 };
 
-describe('the dissolution is EXACT — 64 combinations, not a reading of the diff', () => {
-  it('held === the six-term conjunction, on every one of the 64', () => {
+describe('the dissolution is EXACT: 32 combinations, not a reading of the diff', () => {
+  it('held === the conjunction, on every one of the 32', () => {
     const disagreements = everyCombination()
       .filter((i) => outboundRoot(i).held !== legacySettledContextHold(i));
     expect(disagreements).toEqual([]);
   });
 
-  it('the oracle is not vacuous: it holds on exactly ONE of the 64, and that one is the phantom', () => {
+  it('the oracle is not vacuous: it holds on exactly ONE of the 32, and that one is the phantom', () => {
     const holds = everyCombination().filter(legacySettledContextHold);
     expect(holds).toHaveLength(1);
     expect(holds[0]).toEqual(PHANTOM);
@@ -89,7 +86,7 @@ describe('the dissolution is EXACT — 64 combinations, not a reading of the dif
   });
 });
 
-describe('the six carve-outs are ROOT KINDS now, and each one is reachable by name', () => {
+describe('the carve-outs are ROOT KINDS now, and each one is reachable by name', () => {
   const only = (over: Partial<OutboundRootInput>): OutboundRootInput => ({ ...PHANTOM, ...over });
 
   const CASES: Array<[OutboundRootKind, Partial<OutboundRootInput>]> = [
@@ -97,7 +94,6 @@ describe('the six carve-outs are ROOT KINDS now, and each one is reachable by na
     ['waiting_human', { settledContextWakeTurn: false }],
     ['peer_turn', { counterpartyKind: 'agent' }],
     ['engine_occurrence', { isEngineTurn: true }],
-    ['completion_ack', { engineCompletionAckThisTurn: true }],
     ['steered_closeout', { steeredForSilentCloseout: true }],
   ];
 

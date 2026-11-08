@@ -18,7 +18,6 @@ vi.mock('../../db/connection.js', () => ({
   closeDb: vi.fn(), getDbPath: () => ':memory:',
 }));
 vi.mock('../../tools/unified-read.js', () => ({ otherMailboxesCountSection: vi.fn(async () => '') }));
-vi.mock('../../services/outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));
 vi.mock('../../services/email-attachments.js', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../../services/email-attachments.js');
   return { ...actual, readLocalAttachments: vi.fn(() => ({ ok: true, attachments: [{ path: '/x/a.txt', name: 'a.txt', size: 3, mimeType: 'text/plain', content: Buffer.from('abc') }] })) };

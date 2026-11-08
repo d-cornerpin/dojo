@@ -17,11 +17,6 @@ export function twimlReject(reason = 'rejected'): string {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Reject reason="${xmlEscape(reason)}"/></Response>`;
 }
 
-/** Play a greeting, then hang up. */
-export function twimlSayAndHangup(text: string): string {
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Say>${xmlEscape(text)}</Say><Hangup/></Response>`;
-}
-
 /**
  * Voicemail: greet, then record. Twilio sends a status callback
  * with RecordingSid + TranscriptionText (when transcribe=true) once
@@ -75,9 +70,4 @@ export function twimlConnectStream(
     `</Connect>` +
     `</Response>`
   );
-}
-
-/** Empty response (acks the webhook without taking action). */
-export function twimlEmpty(): string {
-  return `<?xml version="1.0" encoding="UTF-8"?><Response/>`;
 }

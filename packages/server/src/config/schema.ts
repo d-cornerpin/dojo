@@ -83,7 +83,6 @@ export const CreateProviderSchema = z.object({
   ...prefillThroughputFields,
 });
 
-export type CreateProviderInput = z.infer<typeof CreateProviderSchema>;
 
 // ── Provider Response-Patience Schema (T64b) ──
 //
@@ -100,7 +99,6 @@ export const ProviderPatienceSchema = z.object(streamPatienceFields).strict()
     { message: 'Body must name at least one of `firstChunkTimeoutMs` or `streamIdleTimeoutMs` (a number of milliseconds, or null to use the standard bound)' },
   );
 
-export type ProviderPatienceInput = z.infer<typeof ProviderPatienceSchema>;
 
 // ── Provider Prefill-Throughput Schema (NO-DOOMED-DIALS T81b) ──
 //
@@ -114,7 +112,6 @@ export const ProviderPrefillThroughputSchema = z.object(prefillThroughputFields)
     { message: 'Body must name `prefillTokensPerSec` (a whole number of tokens per second, or null to leave throughput undeclared)' },
   );
 
-export type ProviderPrefillThroughputInput = z.infer<typeof ProviderPrefillThroughputSchema>;
 
 // ── Provider Edit Schema (T66b) ──
 //
@@ -146,7 +143,6 @@ export const EditProviderSchema = z.object({
     { message: 'Body must name at least one of `name`, `baseUrl`, `behavesLike` or `credential`' },
   );
 
-export type EditProviderInput = z.infer<typeof EditProviderSchema>;
 
 // ── Model Schema ──
 export const ModelDataSchema = z.object({
@@ -161,7 +157,6 @@ export const ModelDataSchema = z.object({
   isEnabled: z.boolean().default(false),
 });
 
-export type ModelDataInput = z.infer<typeof ModelDataSchema>;
 
 // ── Login Schema ──
 export const LoginSchema = z.object({

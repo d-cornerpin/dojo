@@ -221,26 +221,3 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
 
   return { scrubbed, redactions, placeholders };
 }
-
-/**
- * Apply a placeholder substitution map back to a previously-scrubbed
- * file. Used on the import side once the Trainer has collected values from
- * the user.
- */
-export function applyPlaceholders(content: string, values: Record<string, string>): string {
-  return content.replace(/\{\{NEEDS_FROM_USER:([A-Z0-9_]+)\}\}/g, (_match, label: string) => {
-    return Object.prototype.hasOwnProperty.call(values, label) ? values[label] : `{{NEEDS_FROM_USER:${label}}}`;
-  });
-}
-
-/**
- * Scan a single string for any remaining placeholders. Useful for
- * detecting "still needs setup" state.
- */
-export function findPlaceholders(content: string): string[] {
-  const labels = new Set<string>();
-  for (const m of content.matchAll(/\{\{NEEDS_FROM_USER:([A-Z0-9_]+)\}\}/g)) {
-    labels.add(m[1]);
-  }
-  return Array.from(labels);
-}

@@ -46,7 +46,6 @@ vi.mock('../../config/platform.js', () => ({
   getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer',
   getTrainerAgentName: () => 'Trainer',
-  isTrainerEnabled: () => false,
   getHealerAgentId: () => 'healer',
   getHealerAgentName: () => 'Healer',
 }));

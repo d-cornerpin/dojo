@@ -66,7 +66,6 @@ const STATUS_OWNER_MODULE = 'agent/agent-status.ts';
 const SWEEP_OWNED_WRITERS: Record<string, string> = {
   'gateway/routes/agents.ts': 'SWEEP-E — the dashboard doors',
   'vault/maintenance.ts': 'SWEEP-C — the Dreamer, + one member of the re-enrolment class',
-  'imaginer/imaginer-agent.ts': 'SWEEP-G — the Imaginer (re-enrolment class)',
   'techniques/trainer-agent.ts': 'SWEEP-D — the Trainer (re-enrolment class)',
 };
 
@@ -89,7 +88,6 @@ const SWEEP_F_CONVERTED: readonly string[] = [
 /** THE RE-ENROLMENT CLASS, named once. Membership is pinned in both directions below.
  *  Five at T10; THREE now — SWEEP CORE-2 item 2 converted the Healer's and the PM's. */
 const RE_ENROLMENT_CLASS: readonly string[] = [
-  'imaginer/imaginer-agent.ts',
   'techniques/trainer-agent.ts',
   'vault/maintenance.ts',
 ];

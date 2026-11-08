@@ -29,15 +29,10 @@ import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/**
- * Returns the state it advanced. `engineCompletionAckThisTurn` arrives as an argument
- * rather than on the context because it is produced by the step BEFORE this one, in
- * the same span — a value, computed and consumed inside one call of `runFinalize`.
- */
+/** Returns the state it advanced. */
 export async function routeTerminalReply(
   state: AgentTurnState,
   ctx: FinalizeContext,
-  engineCompletionAckThisTurn: boolean,
 ): Promise<AgentTurnState> {
   const { agentId, turnNumber, turnCtx, counterparty, chosenConvKey, settledContextWakeTurn, isEngineTurn } = ctx;
 
@@ -169,7 +164,6 @@ export async function routeTerminalReply(
         settledContextWakeTurn,
         counterpartyKind: counterparty.kind,
         isEngineTurn,
-        engineCompletionAckThisTurn,
         // A steered closeout reply IS the completion ack, in the agent's own
         // voice (owner ruling 2026-07-22); it keeps the same standing.
         steeredForSilentCloseout: steerFired(state.steerQueue, 'silent-closeout'),

@@ -30,7 +30,7 @@ import { getDb } from '../../../db/connection.js';
 import { deleteTechnique, getTechnique, resolveTechniqueRef } from '../../../techniques/store.js';
 import { listDiskVersions, backfillDiskVersionsFromDb } from '../../../techniques/versioning.js';
 import {
-  isTrainerAgent as isTrainer, isTrainerEnabled, getTrainerAgentName, getTrainerAgentId,
+  isTrainerAgent as isTrainer, getTrainerAgentName, getTrainerAgentId,
 } from '../../../config/platform.js';
 import { toolsLogger as logger } from '../util.js';
 import type { ToolHandlerMap } from '../handler.js';
@@ -139,8 +139,7 @@ export const techniqueHandlers: ToolHandlerMap = {
           return !!r && r.status !== 'terminated';
         } catch { return false; }
       })();
-      const fallback = !isTrainerEnabled() || !trainerLive;
-      if (fallback) {
+      if (!trainerLive) {
         if (dtAgentClass !== 'sensei') {
           return { content: 'Refused: delete_technique is restricted to Sensei agents (no live trainer on this install).', isError: true };
         }

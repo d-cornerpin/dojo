@@ -60,7 +60,6 @@ vi.mock('../../config/platform.js', () => ({
   getPMAgentId: () => 'pm-1',
   getTrainerAgentId: () => 't-1',
   getTrainerAgentName: () => 'Trainer',
-  isTrainerEnabled: () => true,
   getHealerAgentId: () => 'h-1',
   getHealerAgentName: () => 'Healer',
   getImaginerAgentName: () => 'Imaginer',

@@ -158,7 +158,7 @@ function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMess
   return { message, contextWindow, trimmed };
 }
 
-export const HEALER_MODES = ['active', 'monitor', 'off'] as const;
+export const HEALER_MODES = ['active', 'monitor'] as const;
 export type HealerMode = typeof HEALER_MODES[number];
 
 // ── Config ──
@@ -217,7 +217,7 @@ export function getHealerConfig(): {
   return {
     modelId: modelRow?.value ?? null,
     healerTime: timeRow?.value ?? '04:00',
-    healerMode: (modeRow?.value as HealerMode) ?? 'active',
+    healerMode: modeRow?.value === 'off' ? 'monitor' : (modeRow?.value as HealerMode) ?? 'active',   // the retired 'off' reads as monitor
     providerSharedWithPrimary,
     primaryProviderName,
     healerProviderName,
@@ -887,11 +887,6 @@ export function scheduleHealingCycle(): void {
   if (!isSetupCompleted()) return;
 
   const config = getHealerConfig();
-  if (config.healerMode === 'off') {
-    logger.info('Healer is disabled, not scheduling');
-    return;
-  }
-
   const now = new Date();
   const { delayMs, usedFallback } = nextDailyRunDelayMs(config.healerTime, '04:00', now);
   if (usedFallback) {

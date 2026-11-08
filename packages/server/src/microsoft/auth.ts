@@ -209,10 +209,6 @@ export function setMicrosoftConnected(connected: boolean, email?: string, accoun
   }
 }
 
-export function setMicrosoftEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
-  updateMicrosoftAccount(ensureSlotAccount(slot).id, { enabled });
-}
-
 export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
   const current = getEnabledMsServices(slot);
   updateMicrosoftAccount(ensureSlotAccount(slot).id, { enabledServices: JSON.stringify({ ...current, ...services }) });
@@ -269,8 +265,6 @@ export function listMicrosoftAccountViews(): MicrosoftAccountView[] {
 }
 
 // ── Token Management ──
-
-export function getAccessToken(slot: AccountSlot = 'agent'): string | null { return slotAccount(slot)?.accessToken ?? null; }
 
 const refreshPromises: Map<string, Promise<string | null> | null> = new Map();
 

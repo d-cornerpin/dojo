@@ -39,11 +39,13 @@ import {
 
 import {
   splitCredentialPlaceholders,
-  hasCredentialPlaceholder,
   credentialChipTitle,
   CREDENTIAL_CHIP_LABEL,
   CREDENTIAL_CHIP_HINT,
 } from '../../../../dashboard/src/lib/credential-placeholder';
+
+/** Does the renderer find a placeholder in this text? (The split is what the chat renders through.) */
+const hasCredentialPlaceholder = (text: string): boolean => splitCredentialPlaceholders(text).some((s) => s.kind === 'credential');
 
 const AGENT = 'agent-under-test';
 const SECRET = 'hunter2-hunter2-hunter2';

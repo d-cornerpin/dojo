@@ -10,7 +10,7 @@
 // for something the owner did on purpose. Worse, if the owner cancels and
 // presses Connect again at once, the OLD child's exit event later clears
 // `loginProcess`/`pendingLoginUrl` even though the NEW child is the live login:
-// `isLoginInProgress()` turns false, a third click starts a second login on top
+// the login reads as not running, a third click starts a second login on top
 // of the new one, and Cancel no longer reaches it. The `error` handler has the
 // same shape.
 //
@@ -60,7 +60,7 @@ vi.mock('../client.js', () => ({
   runPlaudJson: vi.fn(async () => ({ ok: false })),
 }));
 
-const { startPlaudLogin, cancelPlaudLogin, isLoginInProgress } = await import('../auth.js');
+const { startPlaudLogin, cancelPlaudLogin } = await import('../auth.js');
 const { broadcast } = await import('../../gateway/ws.js');
 const spawnMock = vi.mocked(spawn);
 
@@ -82,7 +82,7 @@ describe('a cancelled login does not report a failure', () => {
     child.emit('exit', null, 'SIGTERM');
 
     expect(broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'plaud:login_failed' }));
-    expect(isLoginInProgress()).toBe(false);
+    expect(cancelPlaudLogin()).toEqual({ cancelled: false });   // nothing left running
   });
 
   it('a replaced login is not clobbered by the OLD child exit', async () => {
@@ -95,7 +95,6 @@ describe('a cancelled login does not report a failure', () => {
     childAt(0).emit('exit', null, 'SIGTERM');
 
     // B is still the live login: state must not have been cleared by A's exit.
-    expect(isLoginInProgress()).toBe(true);
     expect(cancelPlaudLogin()).toEqual({ cancelled: true });
     expect((childAt(1).kill as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('SIGTERM');
   });
@@ -110,7 +109,7 @@ describe('the genuine outcomes still work', () => {
       type: 'plaud:login_failed',
       error: 'Plaud CLI exited with code 1.',
     });
-    expect(isLoginInProgress()).toBe(false);
+    expect(cancelPlaudLogin()).toEqual({ cancelled: false });   // nothing left running
   });
 
   it('a second start while a login runs returns alreadyRunning and does not spawn again', async () => {
@@ -139,7 +138,7 @@ describe('the spawn error handler', () => {
     childAt(0).emit('error', new Error('ENOENT'));
 
     expect(broadcast).toHaveBeenCalledWith({ type: 'plaud:login_failed', error: 'ENOENT' });
-    expect(isLoginInProgress()).toBe(false);
+    expect(cancelPlaudLogin()).toEqual({ cancelled: false });   // nothing left running
   });
 
   it('the same error on a cancelled (stale) child broadcasts nothing', async () => {

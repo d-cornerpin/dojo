@@ -53,7 +53,6 @@ vi.mock('../../../config/platform.js', async () => {
     isPMAgent: (id: string) => id === 'pm',
     isHealerAgent: () => false,
     isTrainerAgent: () => false,
-    isTrainerEnabled: () => false,
     getPrimaryAgentId: () => 'primary',
   };
 });

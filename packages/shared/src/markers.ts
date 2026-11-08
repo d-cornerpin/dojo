@@ -202,12 +202,6 @@ export function parseA2AThreadShort(content: string | null | undefined): string 
   return m ? m[1].slice(0, A2A_THREAD_SHORT_LENGTH) : null;
 }
 
-/** True if this row is inbound peer traffic by its PROSE marker alone. Structured origin
- *  (`origin.kind === 'agent'`) is always the primary signal; this is the legacy fallback. */
-export function isInboundA2AMarker(content: string | null | undefined): boolean {
-  return !!content && A2A_INBOUND_RE.test(content);
-}
-
 // ════════════════════════════════════════════════════════════════════════════════════════
 // FAMILY 2 — `[SOURCE: …]` PLATFORM ENVELOPES
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -244,7 +238,6 @@ export const SOURCE_ENVELOPE_PREFIXES: readonly string[] = [
   ...PLATFORM_SOURCE_ENVELOPE_PREFIXES,
 ];
 
-export const SOURCE_ENVELOPE_RE = anchored(SOURCE_ENVELOPE_PREFIXES);
 export const SOURCE_ENVELOPE_ANYWHERE_RE = anywhere(SOURCE_ENVELOPE_PREFIXES);
 
 /** The generic opener, for readers that only need "is this ANY source envelope". */
@@ -271,7 +264,6 @@ export const ENGINE_SCAFFOLD_PREFIXES: readonly string[] = [
 ];
 
 export const ENGINE_SCAFFOLD_RE = anchored(ENGINE_SCAFFOLD_PREFIXES);
-export const ENGINE_SCAFFOLD_ANYWHERE_RE = anywhere(ENGINE_SCAFFOLD_PREFIXES);
 
 /** The two engine notes injected AHEAD of a user turn. Both open `[Context note:`; only
  *  the stop one was ever filtered out of summaries, which is research 06 §5's
@@ -300,7 +292,6 @@ export const ENGINE_INJECTION_PREFIXES: readonly string[] = [
  * `visibility.ts`'s `formatDivider` / `NEW_SESSION_DIVIDER`. It is display furniture, not
  * an engine marker, and PHASE-1 T8's non-fold list is the record of why.
  */
-export const NEW_SESSION_BRACKET_PREFIX = '[New Session';
 export const NEW_SESSION_BRACKET_RE = /^\s*\[New Session[\]:]/i;
 export const NEW_SESSION_BRACKET_ANYWHERE_RE = /\[New Session[\]:]/i;
 
@@ -350,9 +341,3 @@ export const PROMPT_HISTORY_EXCLUDED_PREFIXES: readonly string[] = [
   '[A2A:',
   '[SOURCE: AGENT MESSAGE FROM',
 ];
-
-/** The `NOT LIKE` clause the two statements must each contain, in this order. The
- *  conformance test builds this and asserts it appears verbatim in both. */
-export function promptHistoryMarkerSqlClauses(column = 'content'): string[] {
-  return PROMPT_HISTORY_EXCLUDED_PREFIXES.map((p) => `${column} NOT LIKE '${p}%'`);
-}
