@@ -126,15 +126,6 @@ const ENTRIES = [
 // rather than a guess.
 const ALLOWLIST = [
   {
-    path: 'packages/server/src/imaginer/imaginer-agent.ts',
-    date: '2026-07-28',
-    owner: 'SWEEP-F',
-    reason:
-      'The Imaginer. SWEEP-G.md:31 books it explicitly — "the Imaginer file (-223, SWEEP-F) and its ' +
-      'live residue (owner-gated, SWEEP-F)" — and the owner gate is why it is not simply gone: the ' +
-      'residue question is his, not a worker\'s. Phase 0 confirmed it as the research seed expectation.',
-  },
-  {
     path: 'packages/server/src/agent/v2/classifiers/index.ts',
     date: '2026-07-28',
     owner: 'PHASE-6',

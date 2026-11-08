@@ -611,13 +611,6 @@
       "why": "+30, and it is one exported function plus the block that records the defect family it closes. `substantiveReplySince(agentId, sinceMs)` is the six-clause \"has the person already had a substantive, model-authored reply since this instant\" probe that existed TWICE — in `agent/v2/steps/finalize/completion-ack.ts` and `agent/v2/steps/execute/result-notes.ts` — each with its own `unixepoch(?) * 1000` round-trip over a column that is ALREADY epoch ms. THE DELETION IS REAL AND LANDED IN THE SAME CHANGE: result-notes.ts went 152 -> 147 and completion-ack.ts's copy is gone (its +7 is the defect record, not code). This module is the right owner and not a convenience: both call sites already imported it, `owesAnswer`/`answerReceiptForAsk` are the KEYED form of the same question and this is their pre-spine fallback, so the fallback finally sits beside the reader it falls back from instead of being copied into two step packages. ALTERNATIVES MEASURED AND REFUSED. (a) Leave one copy and have the other import it: a step package importing a sibling step package's internals is exactly the edge the step split exists to prevent, and it makes one of the two files the accidental owner of a rule neither wrote. (b) Cut the 15-line comment to land at +15: those lines are the only record of WHY the boundary may never convert — `unixepoch()` of an ms number is NULL, and an INTEGER ms column bounded by TEXT matches nothing in SQLite — which is the defect that kept the completion detection dormant for its whole life. Deleting the measurement to hit a number is the failure the no-quota rule names. (c) A shared `work/` helper: this is a question about `messages`, not the tracker projection, and `tracker-view.ts` is where the ms<->text conversions live, i.e. the very thing this predicate exists to stop reaching for. From here this file may only shrink."
     },
     {
-      "path": "packages/server/src/agent/v2/steps/finalize/completion-ack.ts",
-      "from": 147,
-      "to": 154,
-      "by": "UX-REPAIR ROUND 2 T15 (2026-08-10) — the scaffold selector reads its column's own type",
-      "why": "+7 NET, and the code in this file SHRANK: the 10-line duplicated `messages` probe and the 4-line text-sorted `earliestTaskCreatedAt` are gone, replaced by one call and a 7-line ms selection. The growth is the 8-line block above the selector recording what was wrong — `closed_at` is INTEGER epoch ms, the bound was the TEXT `turnStartedAt`, every INTEGER sorts below every TEXT in SQLite, and all three arms of this detection are gated on the result being non-empty, so the mechanism had never run once since it was written. That paragraph is the whole reason a future reader will not re-introduce the text bound, and it names the two siblings (`close-the-loop.ts`, `silent-closeout.ts`) that already did it correctly so the correct form is one grep away. REFUSED: dropping it to land at -1. A dormancy this total, invisible for a whole design era, is exactly the class that comes back when the only record of it lives in a commit message. From here this file may only shrink."
-    },
-    {
       "path": "packages/dashboard/src/lib/api.ts",
       "from": 2356,
       "to": 2361,
@@ -2570,13 +2563,6 @@
       "to": 211,
       "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the reply-destination resolver — and the kit instrument anchor)",
       "why": "NOT A RAISE — a new file at 211, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
-    },
-    {
-      "path": "packages/server/src/agent/v2/steps/finalize/completion-ack.ts",
-      "from": null,
-      "to": 147,
-      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the scaffolded-work completion detection)",
-      "why": "NOT A RAISE — a new file at 147, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
     },
     {
       "path": "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts",
@@ -9703,7 +9689,6 @@
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 152,
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 452,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
-    "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 109,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
