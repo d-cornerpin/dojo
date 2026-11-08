@@ -612,7 +612,13 @@
       "column": "status_before_pause",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
       "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, scheduler/runner.ts, work/tracker-store.ts.",
-      "verifiedBy": "git grep -l 'status_before_pause' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "verifiedBy": "git grep -l 'status_before_pause' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "debloat Step 2f",
+        "date": "2026-11-08",
+        "reason": "Step 2b-ii made paused a hold (work.hold_kind); nothing writes or reads the pre-pause status now. Step 2f drops the column in migration 901's work CREATE."
+      }
     },
     {
       "id": "work.last_run_at",
