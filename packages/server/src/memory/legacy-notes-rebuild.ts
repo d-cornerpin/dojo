@@ -165,10 +165,9 @@ function deleteSubtree(id: string): void {
 async function rebuildAgent(agentId: string, units: readonly Unit[], stats: LegacyRebuildStats): Promise<void> {
   const db = getDb();
   if (agentBusy(agentId)) { stats.waiting[agentId] = 'the agent is mid-turn'; return; }
-  const own = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
   const ready: Unit[] = [];
   for (const unit of units) {
-    const writer = pickWriter(agentId, own);
+    const writer = pickWriter(agentId);
     if (!writer) { stats.waiting[agentId] = 'no summary writer is answering'; return; }
     const outcome = await stageUnit(unit, writer, stats);
     if (outcome === 'staged') ready.push(unit);

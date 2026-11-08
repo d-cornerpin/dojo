@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // t140 round 3 — THE OUT-OF-VIEW FOLD WHEN THE SUMMARY WRITER FAILS (re-review 2 §2, R-V333-10).
 //
-// The engine's assembly door (`out-of-view-fold.ts`'s `assembleWithNothingOutOfViewUnsummarised`)
+// The engine's assembly door (`out-of-view.ts`'s `assembleWithNothingOutOfViewUnsummarised`)
 // summarises the rows its assembly took out of the view before the turn is dialed. Round 2 made
 // that exact; this file is what happens when the model writing the summary does not answer:
 //

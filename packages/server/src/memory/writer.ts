@@ -1,7 +1,8 @@
 // Which model writes an agent's summaries, and which writers wait until something changes.
 // The order is the agent's own model, then the Dojo's small writer when the memory free holds it; nothing after.
 // A writer that cannot write now is marked waiting (agent, writer, span key) with the reason, and is not asked
-// again until one of the signals in `clearOn` fires. A span whose rows change has a new key, so it is asked again.
+// again until one of the signals in `clearOn` fires. "Not answering" is a fact about the writer, so it is kept once
+// for every agent (agent `*`). A span whose rows change has a new key, so it is asked again.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -30,6 +31,8 @@ const REASONS: readonly WaitReason[] = ['not-answering', 'no-room', 'memory-unre
 /** Reasons about the writer now, not about a span: a person speaking or a restart lets them go. */
 const TRANSIENT: readonly WaitReason[] = ['not-answering', 'no-room', 'memory-unreadable'];
 const SCOPE = 'writer_wait.';
+/** The agent part of a mark about the writer itself, for every agent. */
+export const EVERY_AGENT = '*';
 
 export type Signal =
   | { kind: 'person-spoke'; agentId: string }
@@ -85,16 +88,17 @@ export function clearOn(signal: Signal): void {
     const del = db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?');
     const drop = (r: { scope: string; key: string }): void => { del.run(r.scope, r.key); };
     switch (signal.kind) {
-      case 'person-spoke': rows(TRANSIENT).filter((r) => r.agent === signal.agentId).forEach(drop); break;
+      case 'person-spoke': rows(TRANSIENT).filter((r) => r.agent === signal.agentId || (r.agent === EVERY_AGENT && candidateOf(signal.agentId, r.writer))).forEach(drop); break;
       case 'own-model-changed': if (signal.agentId) rows(REASONS).filter((r) => r.agent === signal.agentId).forEach(drop); break;
       case 'span-written': rows(['check-failed']).filter((r) => r.agent === signal.agentId && signal.spanKeys.includes(r.span)).forEach(drop); break;
       case 'boot': rows(TRANSIENT).forEach(drop); break;
       case 'memory-readable': rows(['memory-unreadable']).forEach(drop); break;
       case 'writer-answered': {
-        // A summary answer frees the writer for everyone, and lets the small writer be sized again for the agent it
-        // wrote for; any other answer frees only the writer, and only for an agent left with no writer.
+        // A summary answer frees the writer, and lets the small writer be sized again for the agent it wrote for; any
+        // other answer frees it only while an agent of its order waits with no writer that can run.
+        const waitsOn = (writer: string): boolean => [...wakes.keys()].some((id) => noWriterNow(id) && candidateOf(id, writer));
         const back = rows(['not-answering']).filter((r) => providerOf(r.writer) === signal.providerKey
-          && (!signal.modelId || r.writer === signal.modelId) && (signal.summaryFor !== undefined || noWriterNow(r.agent)));
+          && (!signal.modelId || r.writer === signal.modelId) && (signal.summaryFor !== undefined || waitsOn(r.writer)));
         back.forEach(drop);
         rows(['no-room']).filter((r) => r.agent === signal.summaryFor).forEach(drop);
         if (back.length > 0) logger.info('A summary writer answered again; it is asked again', { providerKey: signal.providerKey });
@@ -154,7 +158,7 @@ export function settleSummaryCall(result: SummaryResult, agentId: string, modelI
   if (!modelId || (!result.ok && (result.tooBig || !abortBlamesWriter(abortSignal)))) return result;
   if (result.ok) clearOn({ kind: 'writer-answered', providerKey: providerOf(modelId), summaryFor: agentId });
   else {
-    markWaiting(agentId, modelId, '', 'not-answering');
+    markWaiting(EVERY_AGENT, modelId, '', 'not-answering');
     logger.warn('Summary writer failed; it is passed over until something changes', { modelId }, agentId);
   }
   return result;
@@ -178,7 +182,7 @@ export function summaryWriterCandidates(preferredModelId?: string, agentId?: str
 
 /** Is this writer passed over for this agent now: its provider's breaker open, or it waits? */
 export function writerPassedOver(modelId: string, agentId?: string): boolean {
-  return !!writerBreaker(modelId) || (agentId !== undefined && waiting(agentId, modelId) !== null);
+  return !!writerBreaker(modelId) || waiting(EVERY_AGENT, modelId) !== null || (agentId !== undefined && waiting(agentId, modelId) !== null);
 }
 
 /** The writers that may be dialled now, and for `span` when given (less those that cannot hold it). `passWriter`, a
@@ -203,6 +207,8 @@ export function spanUnwritable(agentId: string, span: ReadonlyArray<{ id: string
   const candidates = summaryWriterCandidates(ownModel(agentId), agentId);
   return candidates.length > 0 && candidates.every((w) => waiting(agentId, w, key) === 'cannot-hold');
 }
+
+const candidateOf = (agentId: string, writer: string): boolean => summaryWriterCandidates(ownModel(agentId), agentId).includes(writer);
 
 function noWriterNow(agentId: string): boolean {
   const own = ownModel(agentId);

@@ -198,7 +198,7 @@ describe('N-C: the free memory counts what loaded models really hold', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 // v3.5 field fix 3, owner box evidence (owner-box-imessage-2026-11-04.txt): COMPACTION_DEFECT stage `summariser_refused`,
 // detail "the memory free now cannot hold a summary on the Dojo's writer", on a box whose resolved writer was a CLOUD
-// model (DeepSeek, the old Settings pick). The memory gate (`writer-fallback-room.ts`) never judged the cloud model: it
+// model (DeepSeek, the old Settings pick). The memory gate (`writer.ts`) never judged the cloud model: it
 // returns null for every model but the Dojo's own (local) writer. The pair walk (`condense-until-fits.ts`) asked the
 // cloud writer first (it answered "cannot hold this input"), then the small writer (no room), and the defect line kept
 // only the LAST writer's reason, so the record blamed the local writer's memory for a cloud writer's verdict.

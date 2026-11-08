@@ -129,12 +129,14 @@ describe('a waiting writer is retried when a person spoke', () => {
     expect(summariser.calls, 'the other agent dialled nothing').toEqual([]);
   });
 
-  it('a person writing to an agent that dials nothing does not re-arm the writers for anyone else', async () => {
-    await gate(OTHER, 600, 1, true);                         // the other agent's writers fail
+  it('the mark is the writer\'s: a person writing to any agent of its order buys one try, spent once, then none', async () => {
+    await gate(OTHER, 600, 1, true);                         // the writers fail
     summariser.calls = [];
     await gate(THIRD, 650, 1, true);                         // a person writes to a third agent (nothing to replace)
-    await gate(OTHER, 601, 1, false);                        // nobody wrote to the other agent
-    expect(summariser.calls, 'nothing was dialled for an agent nobody wrote to').toEqual([]);
+    await gate(OTHER, 601, 1, false);                        // the next fold spends that one try
+    expect(summariser.calls.length, 'each writer tried once').toBe(WRITERS.length);
+    await gate(OTHER, 602, 1, false);
+    expect(summariser.calls.length, 'and not again until a new signal').toBe(WRITERS.length);
   });
 
 });

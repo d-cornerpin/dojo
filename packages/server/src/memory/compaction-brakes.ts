@@ -9,8 +9,6 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { isStopFenced } from '../agent/shared-state.js';
-import { getMessagesOutsideFreshTail } from './store.js';
-import { getCompactedMessageIds } from './dag.js';
 import { spanWaitsForAWriter, writerBreaker } from './writer.js';
 import {
   reportCompactionDefect, noteCompactionRecovered, clearCompactionFailure, __resetCompactionFailuresForTests,
@@ -46,7 +44,8 @@ const recordOf = (agentId: string): PassRecord => {
   return r;
 };
 
-const progressed = (r: PassResult): boolean => r.leafCreated + r.condensedCreated > 0 || r.tokensReclaimed >= FORCED_YIELD_FLOOR_TOKENS;
+/** Did a pass make progress: it wrote a summary, or reclaimed at least the floor? */
+export const progressed = (r: PassResult): boolean => r.leafCreated + r.condensedCreated > 0 || r.tokensReclaimed >= FORCED_YIELD_FLOOR_TOKENS;
 
 function brakeFacts(agentId: string): { seq: number; session: string | null; model: string | null } {
   try {
@@ -178,27 +177,6 @@ async function recordingForcedPass<T extends PassResult>(agentId: string, run: (
     notePassOutcome(agentId, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, again ? { stage: 'summariser_threw', detail } : undefined);
     throw err;
   }
-}
-
-/** With nothing left outside the protected recent part, a boundary refusal's pass folds that part's OLDEST whole
- *  exchange (never the newest, which the agent is answering), so every round makes progress. */
-export async function foldOldestProtectedGroup(args: {
-  agentId: string; protectedFromSeq: number; condensed: PassResult; fold: (throughSeq: number) => Promise<number>;
-}): Promise<PassResult> {
-  const { agentId, protectedFromSeq, condensed } = args;
-  if (progressed(condensed)) return condensed;
-  const compacted = getCompactedMessageIds(agentId);
-  const { groupTail } = await import('./assembler.js');   // loaded late: the assembler reaches the model layer
-  const groups = groupTail(getMessagesOutsideFreshTail(agentId, 1).filter((m) => !compacted.has(m.id) && (m.rowid ?? 0) >= protectedFromSeq));
-  // The first group and every group after it up to the next row a person or peer sent: a view opens on a user row.
-  let end = 0;
-  while (end + 1 < groups.length && groups[end + 1].messages[0].role !== 'user') end++;
-  const oldest = groups.length > 1 ? groups.slice(0, end + 1).flatMap((g) => g.messages) : [];
-  const throughSeq = oldest.length > 0 ? oldest[oldest.length - 1].rowid ?? 0 : 0;
-  const result: PassResult = { leafCreated: throughSeq > 0 ? await args.fold(throughSeq) : 0, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
-  logger.info('forced pass: nothing outside the protected recent part; folded its oldest group', { throughSeq, leafCreated: result.leafCreated, groupsLeft: groups.length - 1 }, agentId);
-  notePassOutcome(agentId, true, result, { waiting: spanWaitsForAWriter(agentId) });
-  return result;
 }
 
 type ForcedOpts = { abortSignal?: AbortSignal; inTurn?: boolean; measure: () => Promise<{ assembledTokens: number; budgetTokens: number }> };

@@ -28,7 +28,7 @@ import { agentBusy } from './rebuild-signals.js';
 import { ownerProgressFrame } from '../services/owner-card-frames.js';
 import {
   abortBlamesWriter, eligibleSummaryWriters, markWaiting, ownModel, pickWriter, spanKeyOf, spanUnwritable, spanWaitsForAWriter,
-  summaryWriterCandidates, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER,
+  summaryWriterCandidates, EVERY_AGENT, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER,
 } from './writer.js';
 import { compactionFailureReason, noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
 import type { Message } from '@dojo/shared';
@@ -246,16 +246,9 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     if (checkFailed) continue;
     if (stopped) break;
     if (done) { replaced++; continue; }
-    const answeringRefused = eligibleSummaryWriters(own, agentId).length > 0 && eligibleSummaryWriters(own, agentId, source).length === 0;
-    if (source.length > 1 && answeringRefused) {
-      const later = source.slice(Math.ceil(source.length / 2));
-      supersedeUncondensedPlaceholders(agentId, later.map((m) => m.id));
-      queue.unshift(id, placeholderFor(agentId, later));
-      continue;
-    }
-    if (source.length === 1 && spanUnwritable(agentId, source)) { keepRowWhole(agentId, id, source[0]); replaced++; continue; }
-    if (answeringRefused) continue;
-    break;
+    const next = whenNoWriterHoldsIt(agentId, own, id, source, queue);
+    if (next === 'kept') replaced++;
+    if (next === 'stop') break;
   }
   if (replaced > 0) rebuildContextItems(agentId);
   if (!hasUncondensedPlaceholders(agentId)) noteCompactionRecovered(agentId, 0);
@@ -265,6 +258,20 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   }
   logger.info('Placeholder replacement pass', { replaced, remaining: hasUncondensedPlaceholders(agentId) }, agentId);
   return replaced;
+}
+
+/** A span no answering writer would take: split it (its later half becomes its own placeholder, both queued), keep a
+ *  single row no candidate can hold whole behind its pointer, or stop when the writers are out rather than refusing. */
+function whenNoWriterHoldsIt(agentId: string, own: string | undefined, id: string, source: Message[], queue: string[]): 'next' | 'kept' | 'stop' {
+  const answeringRefused = eligibleSummaryWriters(own, agentId).length > 0 && eligibleSummaryWriters(own, agentId, source).length === 0;
+  if (source.length > 1 && answeringRefused) {
+    const later = source.slice(Math.ceil(source.length / 2));
+    supersedeUncondensedPlaceholders(agentId, later.map((m) => m.id));
+    queue.unshift(id, placeholderFor(agentId, later));
+    return 'next';
+  }
+  if (source.length === 1 && spanUnwritable(agentId, source)) { keepRowWhole(agentId, id, source[0]); return 'kept'; }
+  return answeringRefused ? 'next' : 'stop';
 }
 
 // ── The turn's door: the assembly it dials, with every row out of view represented in view.
@@ -337,7 +344,7 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
         const r = await leavingViewPass(agentId, writer, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: owed }, { abortSignal: bound.signal });
         // A span that failed its check goes to no other writer this turn.
         if (summaryCheckRefusedSince(agentId, passStart)) break;
-        if (r.leafCreated === 0 && bound.signal.reason === FOLD_IN_TURN_LIMIT) markWaiting(agentId, writer, '', 'not-answering');
+        if (r.leafCreated === 0 && bound.signal.reason === FOLD_IN_TURN_LIMIT) markWaiting(EVERY_AGENT, writer, '', 'not-answering');
         else if (r.leafCreated === 0 && abortBlamesWriter(bound.signal)) failedWriter = writer;
       }
       covered += writeUncondensedPlaceholders(agentId, throughSeq);

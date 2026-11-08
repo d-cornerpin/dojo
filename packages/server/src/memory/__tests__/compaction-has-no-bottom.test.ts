@@ -674,7 +674,7 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
   });
 
   // Re-review 2 S6: a fold marks only its LAST chunk open (still growing), so a refused row there holds that span until
-  // it closes instead of re-running the check on every busy pass (summary-check-ledger.ts spanHeld).
+  // it closes instead of re-running the check on every busy pass (summary-check.ts writeThenCheck).
   it('S6: only the fold\'s last leaf chunk is marked open', async () => {
     mockDb.current!.prepare('UPDATE messages SET token_count = 4000 WHERE agent_id = ?').run(AGENT);
     __resetEstimateCacheForTests();

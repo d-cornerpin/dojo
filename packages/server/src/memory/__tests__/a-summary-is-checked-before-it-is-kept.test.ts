@@ -108,6 +108,14 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
   });
 
+  it('a part the decision model refuses as too large: the summary is kept, and counted unchecked in the Healer line', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('request entity too large', { status: 413 })));
+    writer.outputs = ['The owner asked for the offsite budget.'];
+    expect(await write()).toMatchObject({ ok: true });
+    expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
+    expect(summaryCheckLine()).toMatch(/1 checked, .* 1 unchecked \(decision model unavailable\)\.$/);
+  });
+
   it('failures, isolated or repeating, on one writer or two, send no card', async () => {
     writer.outputs = ['fine', 'PENDING a.', 'PENDING b.', 'PENDING c.', 'PENDING d.', 'PENDING e.', 'PENDING f.'];
     await write(); await write(); await write(); await write('writer-large');

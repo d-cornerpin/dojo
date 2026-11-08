@@ -15,6 +15,7 @@ import { createLogger } from '../logger.js';
 import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
 import { rebuildGuard } from './rebuild-signals.js';
 import { openCatchUps, replacePlaceholdersInBackground } from './out-of-view.js';
+import { clearOn } from './writer.js';
 
 const logger = createLogger('legacy-rebuild-boot');
 
@@ -52,7 +53,9 @@ export function resumeCatchUpsAtBoot(): number {
   return started;
 }
 
-/** Called once from boot. Returns at once; the timer is unref'd so it never holds a process open. */
+/** Called once from boot: a restart lets every waiting writer be asked again, and after the settle the open
+ *  catch-ups resume and the older-notes rebuild runs. Returns at once; the timer never holds a process open. */
 export function scheduleLegacyRebuildAtBoot(): void {
+  clearOn({ kind: 'boot' });
   setTimeout(() => { resumeCatchUpsAtBoot(); void runLegacyRebuildAtBoot(); }, BOOT_SETTLE_MS).unref();
 }

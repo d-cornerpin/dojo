@@ -81,7 +81,7 @@ export async function runContextGates(
 // every tool round: a writer resolution, a second dry run and a "Compaction check" line each time (field report 3,
 // Problem 5b). The pass's answer (`cannotHelp`) is recorded against the summary set it measured; the gate asks again
 // only when that set changes (a note written or merged, a changed raw size) or a person speaks (which earns the
-// writers a retry, `noteAPersonSpoke`). No clock: the signal is the set itself.
+// writers a retry, `clearOn`). No clock: the signal is the set itself.
 const cannotHelpFor = new Map<string, string>();
 const summarySetOf = (view: { summaryCount: number; summaryRawTokens: number }): string => `${view.summaryCount}:${view.summaryRawTokens}`;
 

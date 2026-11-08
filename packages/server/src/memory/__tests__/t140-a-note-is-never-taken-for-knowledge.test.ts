@@ -138,9 +138,8 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
 //   summary-rebuild.ts      leaf-only filler check (a note is skipped); non-leaf → condensed path,
 //                           where a note has no children and is SKIPPED, never written — and a
 //                           note's fixed text is never flagged in the first place (witnessed above).
-//   uncondensed-head.ts / uncondensed-placeholder.ts   the identity itself.
-//   catch-up-state.ts       field fix Y: does a note still wait? (`hasUncondensedPlaceholders`, moved here from
-//                           uncondensed-placeholder.ts) — a catch-up stands, and its card shows, while one does.
+//   uncondensed-head.ts     the identity itself.
+//   out-of-view.ts          writes and replaces notes, and asks whether one still waits (`hasUncondensedPlaceholders`).
 // t269 fix round 1 — the fourth value, 'kept_whole' (one row no writer could summarise, kept whole behind
 // its pointer), reviewed against every reader above: the lane labels it; backfill and embedding treat it as
 // a leaf (its text is the row as summary input shows it, scrubbed); the condenser never merges it; dag.ts

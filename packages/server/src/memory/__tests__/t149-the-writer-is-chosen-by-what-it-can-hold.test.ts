@@ -7,7 +7,7 @@
 // pass ended with nothing written and armed the 15-minute low-yield brake, so compaction sat
 // stalled for a quarter of an hour although another writer was answering.
 //
-// THE DOORS: the out-of-view door (`out-of-view-fold.ts`) and the real `checkAndCompact` (the
+// THE DOORS: the out-of-view door (`out-of-view.ts`) and the real `checkAndCompact` (the
 // gate's pressure pass, and its leaving-view pass), on the real migration chain. The model is
 // scripted per writer; each dial's size is judged by the same budget formula the provider boundary
 // applies (`contextWindowPolicy`, no tools, less the call's own system prompt).
@@ -93,7 +93,7 @@ function appendTurn(rowRepeat = 1): void {
 /** A conversation whose older half is far larger than a 16K writer can hold in one call. */
 function seedALongCut(): void { for (let t = 1; t <= 24; t++) appendTurn(); }
 /** Field fix Y: the same, kept under one summary's worth (~29K tokens in all), so the turn's own door still folds
- *  it inline. A larger cut is a catch-up the background folder takes (`catch-up-state.ts`); these clauses are about
+ *  it inline. A larger cut is a catch-up the background folder takes (`out-of-view.ts`); these clauses are about
  *  which writer a turn's fold may dial. */
 function seedACutTheTurnFolds(): void { for (let t = 1; t <= 12; t++) appendTurn(); }
 

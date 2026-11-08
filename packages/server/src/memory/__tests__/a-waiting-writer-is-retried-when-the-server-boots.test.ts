@@ -1,42 +1,46 @@
 // A waiting writer is asked again when the server boots: a restart is a real change (Ollama or the provider may be
-// back), so the marks about a writer now (not answering, no room) go and the next pass tries it; a failed try marks
-// it again. A span no writer can hold stays waiting across the boot. The restart is simulated by resetting the
-// module registry while the database is kept.
+// back), so the boot's memory start lets every writer that was not answering be tried once; a failed try marks it
+// again. Driven through the boot's own call (`scheduleLegacyRebuildAtBoot`, as index.ts makes it) and `checkAndCompact`.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import Database from 'better-sqlite3';
 
-const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../db/connection.js', () => ({
-  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
-  getDbPath: () => ':memory:',
-}));
+vi.mock('../../db/connection.js', async () => (await import('./helpers/one-writer-box.js')).connectionMock());
+vi.mock('../../agent/model.js', async () => (await import('./helpers/one-writer-box.js')).modelMock());
+vi.mock('../embeddings.js', () => ({ generateEmbedding: async () => new Float32Array([1, 0, 0, 0]), queueEmbedding: () => {}, storeEmbedding: async () => {}, refreshEmbedding: () => {} }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e, getWSStatus: () => ({}) }));
+vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
+vi.mock('../../vault/archive.js', () => ({ archiveMessagesBeforeCompaction: () => 'archive-1', isDreamerIgnored: () => false, getArchiveHighWaterMark: () => null }));
 
-const OWN = 'm-boot-own';
-const AGENT = 'agent-boot-waiting';
-const restart = async (): Promise<typeof import('../writer.js')> => { vi.resetModules(); return import('../writer.js'); };
+import { box, seedBox, AGENT, OWN } from './helpers/one-writer-box.js';
+import { checkAndCompact } from '../compaction.js';
+import { markWaiting, EVERY_AGENT, __resetSummaryWriterHealthForTests } from '../writer.js';
+import { __resetBrakesForTests } from '../compaction-brakes.js';
+import { scheduleLegacyRebuildAtBoot } from '../legacy-rebuild-boot.js';
 
 beforeEach(async () => {
-  mockDb.current = new Database(':memory:');
-  (await import('../../db/migrations.js')).runMigrations();
-  const db = mockDb.current;
-  db.prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p-boot', 'Own', 'openai-compatible', 'api_key')").run();
-  db.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
-              VALUES (?, 'p-boot', ?, ?, '["text","tools"]', 200000, 4096, 1, 1, 1)`).run(OWN, OWN, OWN);
-  db.prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES (?, 'A worker agent', ?, 'idle', '{}')").run(AGENT, OWN);
+  __resetBrakesForTests(); __resetSummaryWriterHealthForTests();
+  await seedBox();
+  box.db!.prepare("UPDATE models SET is_enabled = 0 WHERE id != ?").run(OWN);   // the own model is the only writer
+  markWaiting(EVERY_AGENT, OWN, '', 'not-answering');                              // it was not answering at shutdown
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { box.db?.close(); box.db = null; });
 
 describe('a waiting writer is retried when the server boots', () => {
-  it('the mark survives until the boot; the boot lets the writer be tried; a span verdict stays', async () => {
-    const before = await restart();
-    before.markWaiting(AGENT, OWN, '', 'not-answering');
-    before.markWaiting(AGENT, OWN, 'span-a', 'cannot-hold');
-    expect(before.spanWaitsForAWriter(AGENT), 'precondition: its span waits at shutdown').toBe(true);
+  it('before the boot nothing is dialled; the boot lets the own model be tried, and it writes', async () => {
+    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    expect(box.calls, 'it still waits').toEqual([]);
+    scheduleLegacyRebuildAtBoot();
+    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    expect(box.calls.length).toBeGreaterThan(0);
+    expect(box.calls.every((m) => m === OWN)).toBe(true);
+  });
 
-    const after = await restart();
-    expect(after.pickWriter(AGENT), 'until the boot signal, it still waits').toBeNull();
-    after.clearOn({ kind: 'boot' });
-    expect(after.pickWriter(AGENT), 'one try after boot').toBe(OWN);
-    expect(after.waiting(AGENT, OWN, 'span-a'), 'a span no writer can hold is not a boot question').toBe('cannot-hold');
+  it('a try after the boot that fails marks it again: the next pass dials nothing', async () => {
+    box.down.add(OWN);
+    scheduleLegacyRebuildAtBoot();
+    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    const tried = box.calls.length;
+    expect(tried).toBeGreaterThan(0);
+    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    expect(box.calls.length).toBe(tried);
   });
 });

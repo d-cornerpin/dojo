@@ -425,12 +425,10 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
     // Anything flagged resets the streak: the write boundary is not yet provably holding.
     recordCleanStock(flagged.length, stockScanned);
 
-    // Owner ruling 2026-10-24 ("The agents model."): each flag's writer is resolved for ITS agent — the Settings pick,
-    // else that agent's own model, else the small writer (t144: a writer not answering is passed over, never dialled).
-    const own = (agentId: string): string | undefined => (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
+    // Each flag's writer is resolved for its own agent: its own model, else the small writer, never one that waits.
     const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length, stockScanned };
     for (const flag of flagged) {
-      const modelId = opts?.modelId ?? pickWriter(flag.agentId, own(flag.agentId));
+      const modelId = opts?.modelId ?? pickWriter(flag.agentId);
       if (!modelId) { stats.skipped++; continue; }   // no writer answering for this agent: a later night
       try {
         const outcome = await rebuildOneSummary(flag, modelId);

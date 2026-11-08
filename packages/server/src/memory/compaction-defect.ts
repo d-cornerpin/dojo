@@ -139,7 +139,8 @@ export function reportCompactionDefect(
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
   // The work is not moving, whatever the stage, so the catch-up glyph ends (a later turn on notes shows it again).
-  void import('./out-of-view.js').then((m) => m.withdrawCatchUpProgress(agentId), () => undefined);   // loaded late: the door imports the compactor
+  void import('./out-of-view.js').then((m) => m.withdrawCatchUpProgress(agentId),   // loaded late: the door imports the compactor
+    (err: unknown) => logger.warn('The catch-up glyph could not be withdrawn', { error: err instanceof Error ? err.message : String(err) }, agentId));
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
   if (breaker) {
     logger.info('Compaction failure card suppressed: the provider breaker already told the owner', {

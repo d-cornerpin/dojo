@@ -64,7 +64,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
 import { insertMessage } from '../message-store.js';
-import { eligibleSummaryWriters, writerPassedOver, markWaiting, __resetSummaryWriterHealthForTests } from '../writer.js';
+import { eligibleSummaryWriters, writerPassedOver, markWaiting, EVERY_AGENT, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { __resetBrakesForTests, compactionIsBraked, compactionBrakeMsLeft } from '../compaction-brakes.js';
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
@@ -149,7 +149,7 @@ async function serveImmediateWakes(limit = 20): Promise<number> {
 }
 const defectErrorLines = (): number => logLines.filter((l) => l.level === 'error' && l.message.startsWith('COMPACTION_DEFECT')).length;
 
-describe('I-1: a span waiting for a writer parks on that writer coming back — never an immediate wake, never a clock', () => {
+describe('a span waiting for a writer parks on that writer coming back, never an immediate wake and never a clock', () => {
   it('16 GB, own model down, nobody writing: over a long outage no wake at all; its model answering → exactly one wake, the span summarised once, zero cloud calls', async () => {
     seed();
     wakes.turn = overBudgetTurn;
@@ -199,10 +199,10 @@ describe('I-1: a span waiting for a writer parks on that writer coming back — 
   });
 });
 
-describe('I-2: its model answering re-arms the waiting agent\'s writer — for that agent only, and its ordinary work never parks', () => {
-  it('the background fold waits without parking; the agent\'s own turn answering re-arms its writer for it; an agent not waiting stays passed over', async () => {
+describe('its model answering frees the writer while an agent waits on it, and its ordinary work never parks', () => {
+  it('the background fold waits without parking; a call to its own model answering frees the writer for every agent of its order', async () => {
     seed(); seed(OTHER, 4);
-    markWaiting(AGENT, OWN, '', 'not-answering'); markWaiting(OTHER, OWN, '', 'not-answering');   // its model stopped answering a summary call
+    markWaiting(EVERY_AGENT, OWN, '', 'not-answering');   // its model stopped answering a summary call
     await checkAndCompact(AGENT, OWN, 8_000, { force: true });   // the small writer has no room: the span waits
     const before = writers.calls.length;
     await checkAndCompact(AGENT, OWN, 8_000, { inTheBackground: true });
@@ -213,8 +213,8 @@ describe('I-2: its model answering re-arms the waiting agent\'s writer — for t
 
     writers.unreachable.clear();
     recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });   // the agent's own turn answered on its model
-    expect(eligibleSummaryWriters(OWN, AGENT), 'its writer gets one more try, for it').toEqual([OWN]);
-    expect(writerPassedOver(OWN, OTHER), 'a chat answer re-arms nobody whose span is not waiting (t207)').toBe(true);
+    expect(eligibleSummaryWriters(OWN, AGENT), 'its writer gets one more try').toEqual([OWN]);
+    expect(writerPassedOver(OWN, OTHER), 'the mark is the writer\'s, so it is gone for every agent').toBe(false);
     await checkAndCompact(AGENT, OWN, 8_000, { force: true });
     expect(writers.calls.slice(before), 'its next pass dials its own model, and only it').toEqual(expect.arrayContaining([OWN]));
     expect(writers.calls.slice(before).every((m) => m === OWN)).toBe(true);
@@ -233,6 +233,21 @@ describe('I-2: its model answering re-arms the waiting agent\'s writer — for t
 });
 
 // A re-arm buys one try: a summary the in-turn fold's patience cuts marks the writer again (`out-of-view.ts`).
+describe('a writer that failed is one wait for every agent', () => {
+  it('two agents on one failing writer: one call between them; the second is not asked to wait on it until a signal', async () => {
+    seed(); seed(OTHER);
+    await overBudgetTurn();
+    const calls = writers.calls.filter((m) => m === OWN).length;
+    expect(calls, 'the first agent tried it once').toBe(1);
+    await checkAndCompact(OTHER, OWN, 8_000, { force: true, inTurn: true, dialedModelId: OWN });
+    expect(writers.calls.filter((m) => m === OWN).length, 'the second agent does not dial it again').toBe(calls);
+    writers.unreachable.clear();
+    recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });
+    await checkAndCompact(OTHER, OWN, 8_000, { force: true, inTurn: true, dialedModelId: OWN });
+    expect(writers.calls.filter((m) => m === OWN).length, 'after the signal it is tried').toBeGreaterThan(calls);
+  });
+});
+
 describe('a re-arm buys one try: a try cut by the turn\'s patience marks the writer again', () => {
   it('re-armed → one timed-out try → passed over again; the next turns dial nothing until a new signal', async () => {
     seed();
@@ -240,7 +255,7 @@ describe('a re-arm buys one try: a try cut by the turn\'s patience marks the wri
     await overBudgetTurn();                                     // waiting, parked
     recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });   // re-armed for it: one try
     expect(eligibleSummaryWriters(OWN, AGENT)).toEqual([OWN]);
-    markWaiting(AGENT, OWN, '', 'not-answering');               // that try ran past the turn's patience
+    markWaiting(EVERY_AGENT, OWN, '', 'not-answering');         // that try ran past the turn's patience
     expect(eligibleSummaryWriters(OWN, AGENT), 'the re-arm is spent').toEqual([]);
     await settle(1_300); await Promise.all(wakes.turns);       // the wake the re-arm earned
     const calls = writers.calls.length;

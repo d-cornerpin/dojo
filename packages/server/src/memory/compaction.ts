@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { MIN_COMPACTABLE_ROWS, compactionDoor, compactionIsBraked, foldOldestProtectedGroup, notePassOutcome,
+import { MIN_COMPACTABLE_ROWS, compactionDoor, compactionIsBraked, notePassOutcome, progressed,
   summaryWriterUnavailable } from './compaction-brakes.js';
 import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
 import { cachedAssembledEstimate } from './assembled-estimate-cache.js';
@@ -15,7 +15,7 @@ import type { PromptTurnContext } from '../prompt/assembler.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
-import { V2_STUB_AFTER_TURNS, type ContextView } from './assembler.js';
+import { V2_STUB_AFTER_TURNS, groupTail, type ContextView } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter } from './writer.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
@@ -386,7 +386,7 @@ const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, t
  * Skipping returns the same zero result those callers already handle — every
  * caller reads the counts and none treats zero as an error — and the work is
  * not lost: the next turn's gate re-checks and compacts if pressure remains. v3.5 D18 r4: for an UNFORCED
- * pass only; a forced pass is never skipped silently: a turn's parks, the owner's waits (`forcedPassDoor`).
+ * pass only; a forced pass is never skipped silently: a turn's parks, the owner's waits (`compactionDoor`).
  *
  * Scope: `withLock` is IN-PROCESS. One dojo server owns its box, which is the
  * shape of the observed race; it is not a cross-process lock and must not be
@@ -782,6 +782,26 @@ export async function leavingViewPass(
     });
   }
   logger.info('Leaving-view condense complete', { ...result, cause: leaving.cause }, agentId);
+  return result;
+}
+
+/** With nothing left outside the protected recent part, a boundary refusal's pass folds that part's OLDEST whole
+ *  exchange (never the newest, which the agent is answering), so every round makes progress. */
+async function foldOldestProtectedGroup(args: {
+  agentId: string; protectedFromSeq: number; condensed: CompactionResult; fold: (throughSeq: number) => Promise<number>;
+}): Promise<CompactionResult> {
+  const { agentId, protectedFromSeq, condensed } = args;
+  if (progressed(condensed)) return condensed;
+  const compacted = getCompactedMessageIds(agentId);
+  const groups = groupTail(getMessagesOutsideFreshTail(agentId, 1).filter((m) => !compacted.has(m.id) && (m.rowid ?? 0) >= protectedFromSeq));
+  // The first group and every group after it up to the next row a person or peer sent: a view opens on a user row.
+  let end = 0;
+  while (end + 1 < groups.length && groups[end + 1].messages[0].role !== 'user') end++;
+  const oldest = groups.length > 1 ? groups.slice(0, end + 1).flatMap((g) => g.messages) : [];
+  const throughSeq = oldest.length > 0 ? oldest[oldest.length - 1].rowid ?? 0 : 0;
+  const result: CompactionResult = { leafCreated: throughSeq > 0 ? await args.fold(throughSeq) : 0, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
+  logger.info('forced pass: nothing outside the protected recent part; folded its oldest group', { throughSeq, leafCreated: result.leafCreated, groupsLeft: groups.length - 1 }, agentId);
+  notePassOutcome(agentId, true, result, { waiting: spanWaitsForAWriter(agentId) });
   return result;
 }
 

@@ -27,7 +27,7 @@
 //     inside a turn until it has answered once; the background keeps trying it, and its first
 //     answer clears that at once.
 //
-// THE DOORS: the real door (`out-of-view-fold.ts`), the real replacement, the real assembler, a
+// THE DOORS: the real door (`out-of-view.ts`), the real replacement, the real assembler, a
 // migrated DB; the model is scripted per writer, on a fake clock.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
