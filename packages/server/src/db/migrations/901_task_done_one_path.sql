@@ -47,9 +47,9 @@ INSERT INTO _td_map
 SELECT id, class, from_state,
        CASE WHEN class IN ('rehandin','rehandin_recurring','paused','blocked','project_working') THEN 'claimed'
             WHEN class = 'sent_back' THEN 'sent_back'
-            WHEN class IN ('on_deck','project_paused','project_blocked') OR from_state = 'on_deck' THEN 'open'
             WHEN class = 'project_done' THEN 'done'
             WHEN class = 'project_abandoned' THEN 'abandoned'
+            WHEN class IN ('on_deck','project_paused','project_blocked') OR from_state = 'on_deck' THEN 'open'
             ELSE from_state END,
        hold, CASE WHEN hold IS NOT NULL THEN COALESCE(NULLIF(trim(replace(replace(entry_reason, char(10), ' '), char(13), ' ')), ''), from_state) END,
        class IN ('rehandin','rehandin_recurring'), live AND verdict_open, live AND override_open,
@@ -259,7 +259,8 @@ UPDATE config SET value = 'monitor', updated_at = datetime('now') WHERE key = 'h
 -- 9. A file's link to the delivery that carried it had no reader.
 ALTER TABLE turn_artifacts DROP COLUMN delivery_id;
 
--- 10. Assertions: any false one aborts the whole file.
+-- 10. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
+--     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.
 CREATE TEMP TABLE _td_assert (name TEXT PRIMARY KEY, ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _td_assert (name, ok) VALUES
   ('every_scoped_row_mapped_once',
@@ -270,8 +271,6 @@ INSERT INTO _td_assert (name, ok) VALUES
    (SELECT COUNT(*) FROM (SELECT state, COUNT(*) AS n FROM work WHERE NOT EXISTS (SELECT 1 FROM _td_map m WHERE m.id = work.id) GROUP BY state
       EXCEPT SELECT state, n FROM _td_rest)) = 0
    AND (SELECT COUNT(*) FROM work WHERE NOT EXISTS (SELECT 1 FROM _td_map m WHERE m.id = work.id)) = (SELECT COALESCE(SUM(n), 0) FROM _td_rest)),
-  ('no_board_row_paused_blocked_or_on_deck',
-   (SELECT COUNT(*) FROM work WHERE kind IN ('task','project') AND state IN ('paused','blocked','on_deck')) = 0),
   ('every_rehandin_has_its_hint',
    (SELECT COUNT(*) FROM _td_map m WHERE m.rehandin AND (SELECT COUNT(*) FROM work_events e WHERE e.work_id = m.id
       AND e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = 'upgrade_rehandin_hint') <> 1) = 0),
@@ -287,8 +286,6 @@ INSERT INTO _td_assert (name, ok) VALUES
    (SELECT COUNT(*) FROM work_events WHERE id <= (SELECT max_event FROM _td_counts)) = (SELECT events FROM _td_counts)
    AND (SELECT COUNT(*) FROM work_events WHERE actor = 'migration-901') = (SELECT COUNT(*) FROM work_events) - (SELECT events FROM _td_counts)),
   ('adjudications_intact', (SELECT adjudications FROM _td_counts) = (SELECT COUNT(*) FROM adjudications)),
-  ('paired_nullability', (SELECT COUNT(*) FROM work WHERE (state IN ('done','failed','abandoned')) <> (closed_at IS NOT NULL)) = 0),
-  ('done_has_delivery', (SELECT COUNT(*) FROM work WHERE state = 'done' AND result_delivery_id IS NULL) = 0),
   ('census_after_equals_before',
    (SELECT COUNT(*) FROM (SELECT class, n FROM _td_before EXCEPT
       SELECT m.class, COUNT(*) FROM _td_map m JOIN work w ON w.id = m.id AND w.state = m.to_state AND w.hold_kind IS m.hold_kind GROUP BY m.class)) = 0);

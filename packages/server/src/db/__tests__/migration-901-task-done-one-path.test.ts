@@ -26,7 +26,8 @@ const LANDS: Record<string, { state: string | 'same'; hold: string | null | 'old
   claimed: { state: 'claimed', hold: null }, open: { state: 'open', hold: null },
   rehandin: { state: 'claimed', hold: null }, rehandin_recurring: { state: 'claimed', hold: null }, sent_back: { state: 'sent_back', hold: null },
   project_empty: { state: 'open', hold: null }, project_working: { state: 'claimed', hold: null }, project_done: { state: 'done', hold: null },
-  project_paused: { state: 'open', hold: 'paused' }, project_abandoned: { state: 'abandoned', hold: null },
+  project_paused: { state: 'open', hold: 'paused' }, project_blocked: { state: 'open', hold: 'blocked' },
+  project_abandoned: { state: 'abandoned', hold: null },
 };
 
 let ids: Record<string, string[]>;
@@ -67,6 +68,8 @@ describe('migration 901 on a lived-in box', () => {
     expect(work('t-blocked-unvalidated').hold_reason).toBe('the venue is closed on weekends');
     expect(work('t-blocked-bare').hold_reason).toBe('blocked');
     expect(work('t-paused-step').hold_at).toBe(old('t-paused-step').updated_at);
+    expect(work('t-paused-until').paused_until).toBe(old('t-paused-until').paused_until);
+    for (const id of ['t-paused-pm-confirmed', 't-blocked-pm-confirmed']) expect(entriesOf(id, 'upgrade_rehandin_hint'), id).toHaveLength(0);
   });
 
   it('2. a filed close or an open request comes back to Working with one hint, its requests answered once, a recurring stop paused', () => {
@@ -84,6 +87,10 @@ describe('migration 901 on a lived-in box', () => {
     expect(work('p-all-done')).toMatchObject({ state: 'done', result_delivery_id: work('t-child-done-2').result_delivery_id });
     expect(work('p-all-done').closed_at).not.toBeNull();
     expect(work('p-done-one-cancelled-child').state).toBe('done');
+    expect(work('p-on-deck-all-done')).toMatchObject({ state: 'done', result_delivery_id: work('t-on-deck-child-done').result_delivery_id });
+    expect(all(`SELECT p.id FROM work p WHERE p.kind = 'project' AND p.state NOT IN ('done','failed','abandoned')
+      AND EXISTS (SELECT 1 FROM work c WHERE c.parent_id = p.id AND c.kind = 'task')
+      AND NOT EXISTS (SELECT 1 FROM work c WHERE c.parent_id = p.id AND c.kind = 'task' AND c.state NOT IN ('done','abandoned'))`)).toEqual([]);
   });
 
   it('4. a live row with no goal takes its description or title, recorded on its trail; finished rows keep theirs', () => {

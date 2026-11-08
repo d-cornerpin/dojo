@@ -58,7 +58,7 @@ export interface RowSpec {
   id: string; kind?: 'task' | 'project' | 'occurrence' | 'ask' | 'commitment'; state: string; worker?: string;
   root?: string; parent?: string; idleDays?: number; recurring?: boolean; nextRunAt?: number | null; isPaused?: 0 | 1;
   scheduleStatus?: string | null; title?: string | null; goal?: string | null; description?: string | null;
-  measured?: boolean; sequence?: number; scheduledStart?: number | null; missedRunsPausedAt?: number | null;
+  measured?: boolean; sequence?: number; scheduledStart?: number | null; missedRunsPausedAt?: number | null; pausedUntil?: number | null;
 }
 
 /** One old-shape row. A terminal row is closed on its own delivery when it is done. */
@@ -68,15 +68,15 @@ export function seedRow(s: RowSpec, now = Date.now()): string {
   doneDb().prepare(
     `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread,
        title, goal, description, opened_at, updated_at, closed_at, result_delivery_id, repeat_interval, repeat_unit,
-       schedule_status, next_run_at, is_paused, measure_json, sequence, scheduled_start, missed_runs_paused_at)
-     VALUES (?, ?, ?, ?, 'owner', ?, ?, ?, 'task', 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       schedule_status, next_run_at, is_paused, measure_json, sequence, scheduled_start, missed_runs_paused_at, paused_until)
+     VALUES (?, ?, ?, ?, 'owner', ?, ?, ?, 'task', 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     s.id, s.kind ?? 'task', s.parent ?? null, s.worker ?? MAIN, s.root ?? 'tracker', s.id, s.state,
     s.title === undefined ? `Job ${s.id}` : s.title, s.goal === undefined ? 'The owner has it' : s.goal, s.description ?? null,
     at, at, terminal ? at : null, s.state === 'done' ? delivery(s.worker) : null,
     s.recurring ? 1 : null, s.recurring ? 'day' : null, s.scheduleStatus ?? (s.recurring ? 'waiting' : null),
     s.nextRunAt ?? null, s.isPaused ?? 0, s.measured ? '{"kind":"label","target":0}' : null, s.sequence ?? null,
-    s.scheduledStart ?? null, s.missedRunsPausedAt ?? null,
+    s.scheduledStart ?? null, s.missedRunsPausedAt ?? null, s.pausedUntil ?? null,
   );
   event(s.id, 'opened', {}, at, s.worker ?? MAIN);
   return s.id;
@@ -97,7 +97,7 @@ export function seedLivedInBox(now = Date.now()): Record<string, string[]> {
   // Finished history.
   const validated = put('history_done', { id: 't-done-validated', state: 'done' });
   doneDb().prepare("INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at) VALUES (?, 'done', 'upheld', ?, ?)").run(validated, PM, t);
-  put('history_done', { id: 't-done-engine', state: 'done', worker: HELPER });
+  put('history_done', { id: 't-done-engine', state: 'done', worker: HELPER, recurring: true, scheduleStatus: 'completed' });
   put('history_done', { id: 't-done-measured', state: 'done', measured: true, goal: null });
   put('history_done', { id: 't-done-scaffold', state: 'done', root: 'engine_scaffold', worker: GONE });
   put('history_done', { id: 't-done-legacy', state: 'done', root: 'legacy', worker: HELPER });
@@ -120,6 +120,12 @@ export function seedLivedInBox(now = Date.now()): Record<string, string[]> {
   put('on_deck', { id: 't-daily-long-overdue', state: 'on_deck', worker: HELPER, recurring: true, nextRunAt: now - 3 * DAY });
   put('on_deck', { id: 't-missed-runs', state: 'on_deck', worker: HELPER, recurring: true, nextRunAt: now - 5 * DAY, isPaused: 1, scheduleStatus: 'paused', missedRunsPausedAt: now - 2 * DAY });
   put('on_deck', { id: 't-future-one-off', state: 'on_deck', scheduledStart: now + 2 * DAY });
+  put('paused', { id: 't-paused-until', state: 'paused', pausedUntil: now + DAY });
+  for (const [cls, state] of [['paused', 'paused'], ['blocked', 'blocked']]) {
+    const id = put(cls, { id: `t-${state}-pm-confirmed`, state });
+    event(id, 'validation_requested', { requested_state: state, reason: 'confirm the hold', from: 'claimed' }, t - 1000);
+    event(id, 'claim_upheld', { claim_state: state, note: 'confirmed' }, t, PM);
+  }
 
   // Live tasks that keep their state.
   put('claimed', { id: 't-claimed-fresh', state: 'claimed' });
@@ -135,6 +141,7 @@ export function seedLivedInBox(now = Date.now()): Record<string, string[]> {
   // Filed closes and open requests: back to Working with a hint.
   fileClose(put('rehandin', { id: 't-close-on-claimed', state: 'claimed' }), t);
   fileClose(put('rehandin', { id: 't-close-on-paused', state: 'paused', idleDays: 20 }), t);
+  fileClose(put('rehandin', { id: 't-close-on-blocked', state: 'blocked' }), t);
   fileClose(put('rehandin_recurring', { id: 't-recurring-stop', state: 'claimed', worker: HELPER, recurring: true, nextRunAt: now + DAY }), t);
   event(put('rehandin', { id: 't-override-open', state: 'claimed' }), 'override_request', { reason: 'please close it' }, t);
   event(put('rehandin', { id: 't-verdict-open', state: 'blocked' }), 'user_verdict_requested', { question: 'is it done?' }, t);
@@ -150,6 +157,11 @@ export function seedLivedInBox(now = Date.now()): Record<string, string[]> {
   put('project_paused', { id: 'p-paused-empty', kind: 'project', state: 'paused', worker: GONE });
   put('project_abandoned', { id: 'p-all-cancelled', kind: 'project', state: 'open' });
   put('history_abandoned', { id: 't-child-cancelled', state: 'abandoned', parent: 'p-all-cancelled' });
+  put('project_blocked', { id: 'p-blocked-empty', kind: 'project', state: 'blocked' });
+  put('project_done', { id: 'p-on-deck-all-done', kind: 'project', state: 'on_deck' });
+  put('history_done', { id: 't-on-deck-child-done', state: 'done', parent: 'p-on-deck-all-done' });
+  put('project_abandoned', { id: 'p-on-deck-all-cancelled', kind: 'project', state: 'on_deck' });
+  put('history_abandoned', { id: 't-on-deck-child-cancelled', state: 'abandoned', parent: 'p-on-deck-all-cancelled' });
   put('history_done', { id: 'p-done', kind: 'project', state: 'done', worker: HELPER });
   put('history_done', { id: 'p-legacy-done', kind: 'project', state: 'done', root: 'legacy', worker: HELPER });
   put('history_abandoned', { id: 'p-cancelled', kind: 'project', state: 'abandoned' });
