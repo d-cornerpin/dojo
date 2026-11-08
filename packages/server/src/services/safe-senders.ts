@@ -3,8 +3,8 @@
 //
 // Moved byte-for-byte out of `services/imessage-bridge.ts` (which re-exports every name, so no
 // importer changed), because the owner question had THREE readers and two of them could not
-// import the bridge: the told record (`work/validation-drive.ts`) sits under `work/store.ts`,
-// which the bridge reaches through the outbound ledger — a cycle — so t142 wrote its own parse,
+// import the bridge: a reader under `work/store.ts`, which the bridge reaches through the outbound
+// ledger (a cycle), once wrote its own parse,
 // and it disagreed with the bridge on a list with nobody starred and on a legacy bare-string
 // list (the bridge texted an owner the record then refused). This module imports only the
 // database, the logger and the recipient comparison, so every reader can share it.

@@ -34,7 +34,7 @@
 //     earns 9 turns, so the slow recipient in the report is waited for on its own clock.
 //
 // ── ONE-DIRECTIONAL, AND THAT IS THE WHOLE SAFETY ARGUMENT ────────────────────────────
-// Every value is a `max` against today's constant, exactly as `flooredThresholds` is, so this
+// Every value is a `max` against today's constant, exactly as `patienceBoundMs` is, so this
 // function cannot make the engine give up SOONER than it does today for any row — including the
 // adversarial shape, a provider that declares a 1-second patience. `a2aRetryBudgetFor` is a
 // FLOOR on patience, never a replacement for it.

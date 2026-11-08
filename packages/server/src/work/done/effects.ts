@@ -5,7 +5,6 @@
 //   tasks, a finished schedule stops, and a send-back reaches the worker of record.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { ringValidationDoorbell } from '../validation-drive.js';
 import { retireEngineEventsForTask } from '../../agent/v2/counterparty.js';
 import { claimTrackerNoticeForTask } from '../../memory/message-store.js';
 import { checkDependencies } from '../../tracker/dependencies.js';
@@ -18,6 +17,8 @@ import { latestHandIn, workerOf, OWNER_ID } from './record.js';
 import { settleProject } from './project-state.js';
 
 const logger = createLogger('work-effects');
+/** The PM module, loaded once and shared, so a burst of hand-ins never races its own import. */
+let pmAgent: Promise<typeof import('../../tracker/pm-agent.js')> | null = null;
 
 /** The hand-in-time effects, in order. */
 export function onHandedIn(workId: string, handInEventId: number): void {
@@ -30,7 +31,8 @@ export function onHandedIn(workId: string, handInEventId: number): void {
   }
   relayAssignHandbackIfMissing(workId, h.note);
   retireQueuedPrompts(workerOf(workId), workId);
-  ringValidationDoorbell({ workId, shape: 'close-request' });
+  void (pmAgent ??= import('../../tracker/pm-agent.js')).then(({ armDebouncedReview }) => armDebouncedReview(workId, 'hand-in'))
+    .catch((err: unknown) => logger.warn('hand-in: the decider could not be woken', { workId, error: String(err) }));
 }
 
 /** Every unserved prompt for this work (its assignment notice, triggers, pokes) retires, so handed-in work

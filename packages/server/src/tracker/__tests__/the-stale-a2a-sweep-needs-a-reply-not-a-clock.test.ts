@@ -75,7 +75,7 @@ vi.mock('../../agent/agent-notice.js', async (importOriginal) => ({
 
 
 
-import { runPokeCheck } from '../pm-agent.js';
+import { handInAnsweredAssignTasks } from '../../work/done/hand-in.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
 const RECEIVER = 'receiver-agent';
@@ -101,7 +101,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     seed('t-chatty', 'thread-aaa', 3 * 3600_000);
     mockDb.current!.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES ('m1', ?, 'assistant', 'hi', ?)")
       .run(RECEIVER, Date.now());
-    await runPokeCheck();
+    handInAnsweredAssignTasks();
     expect(stateOf('t-chatty'), 'activity elsewhere is a guess, not a record').toBe('open');
   });
 
@@ -109,7 +109,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     seed('t-replied', 'thread-bbb', 60_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a1', ?, 'thread-bbb', 'COMPLETE')")
       .run(RECEIVER);
-    await runPokeCheck();
+    handInAnsweredAssignTasks();
     expect(stateOf('t-replied')).toBe('handed_in');
   });
 
@@ -117,7 +117,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     seed('t-other', 'thread-ccc', 3 * 3600_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a2', ?, 'thread-zzz', 'COMPLETE')")
       .run(RECEIVER);
-    await runPokeCheck();
+    handInAnsweredAssignTasks();
     expect(stateOf('t-other')).toBe('open');
   });
 
@@ -126,7 +126,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     seed('t-live', 'thread-ddd', 3 * 3600_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a9', ?, 'thread-ddd', ?)")
       .run(RECEIVER, intent);
-    await runPokeCheck();
+    handInAnsweredAssignTasks();
     expect(stateOf('t-live')).toBe('open');
   });
 
@@ -134,7 +134,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     seed('t-final', 'thread-eee', 60_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a8', ?, 'thread-eee', ?)")
       .run(RECEIVER, intent);
-    await runPokeCheck();
+    handInAnsweredAssignTasks();
     expect(stateOf('t-final')).toBe('handed_in');
   });
 });

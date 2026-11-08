@@ -1,6 +1,7 @@
 // A project is its tasks (owner rule D-K): a task closed as can't be done keeps its project working; all
 // tasks done (or done and cancelled) makes it done when the last decision lands; all cancelled cancels it;
-// a project with no tasks keeps the state it has. Driven through real decisions.
+// a project with no tasks keeps the state it has; a project the owner closes as done ends its open tasks
+// cancelled. Driven through real decisions.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -85,5 +86,13 @@ describe('a project is derived from its tasks', () => {
     expect(r).toMatchObject({ tasksClosed: 2, refused: 0, projectClosed: true });
     expect([stateOf(PROJECT), stateOf(), stateOf('sib-open')]).toEqual(['abandoned', 'abandoned', 'abandoned']);
     expect([eventCount('decided'), eventCount('decided', 'sib-open')]).toEqual([1, 1]);
+  });
+
+  it('the owner closing a project as done ends its open tasks cancelled, never done', () => {
+    freshBoard();
+    underAProject();
+    const r = decide({ workId: PROJECT, deciderAgentId: null, verdict: 'owner_done', reason: 'The launch went ahead' });
+    expect(r.kind).toBe('decided');
+    expect([stateOf(PROJECT), stateOf()]).toEqual(['done', 'abandoned']);
   });
 });

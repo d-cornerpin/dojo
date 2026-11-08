@@ -17,8 +17,6 @@ import { timeline } from '../timeline.js';
 import { stampTasksAtTurnFinalize } from '../../tracker/task-stamps.js';
 import { lastTurnEnd, recordContinued, recordStalled } from '../../work/job-momentum.js';
 import { taskMovedAtSql } from '../../work/task-freshness.js';
-import { continuedJobTouchingNothing } from '../../tracker/job-loop-facts.js';
-import { closeoutMeasure } from '../../tracker/closeout-measure.js';
 import { recordTurnOnTasks } from '../../work/task-turns.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { T0, at, sqlTime } from './seed.js';
@@ -89,7 +87,6 @@ describe('an assignee works a task across two turns', () => {
 });
 
 describe('lastTurnEnd and its readers are exactly as before the task turns were recorded', () => {
-  const touchingNothing = (sinceMs: number): boolean => continuedJobTouchingNothing(TASK, sinceMs);
   beforeEach(() => { db.prepare("UPDATE work SET measure_json = '{}' WHERE id = ?").run(TASK); });
 
   it('continued, then a tool-loop park that wrote nothing, then the continuation: still a continued end', () => {
@@ -97,7 +94,6 @@ describe('lastTurnEnd and its readers are exactly as before the task turns were 
     finalize(7, TASK);
     finalize(8, TASK);                                   // turn 8 carried the job and parked by the loop cap: no continued
     expect(lastTurnEnd(TASK)).toMatchObject({ kind: 'continued', payload: { turnNumber: 7 } });
-    expect(touchingNothing(0)).toBe(true);               // the PM ladder's leave-alone rule still sees the continued job
   });
 
   it('stalled, then a turn that only noted the task: the stall is still the last end and still reported', () => {
@@ -106,7 +102,6 @@ describe('lastTurnEnd and its readers are exactly as before the task turns were 
     finalize(8);
     expect(db.prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'claim_turn'").get(TASK)).toEqual({ n: 1 });
     expect(lastTurnEnd(TASK)).toMatchObject({ kind: 'stalled', payload: { remaining: 10412 } });
-    expect(closeoutMeasure(TASK).stalledRemaining).toBe(10412);
   });
 
   it('a task no turn ended on reads null even when turns worked it', () => {

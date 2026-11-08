@@ -54,7 +54,6 @@ import { runTurnClassification } from './turn-classification.js';
 import { runCounterpartyAndRecord } from './counterparty-and-record.js';
 import { runTurnClosures } from './turn-closures.js';
 import { runStartAck } from './start-ack.js';
-import { runCloseoutGate } from './closeout-gate.js';
 import { runCompileGate } from './compile-gate.js';
 import { runRecallFlag } from './recall-flag.js';
 import { runStepContexts } from './step-contexts.js';
@@ -257,8 +256,6 @@ export async function runPreflight(
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,
     fireStartAckIfOwed,
   } = runStartAck(turnCtx, ctx, { db, counterparty, triggerRow, turnNumber });
-
-  await runCloseoutGate(turnCtx, ctx, { db, triggerRow });
 
   // T47's sibling gate, immediately after the one it inherits BUG-2 from — same lane
   // separation, same `triggerRow` ternary, and their allowed sets union so a turn armed by

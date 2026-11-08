@@ -76,6 +76,7 @@ const MIGRATION = liveCheckMigration();
 const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = [
   'claim_rejected', 'claim_upheld', 'override_request', 'override_resolved',
   'user_verdict_cleared', 'user_verdict_requested', 'validation_requested',
+  'person_told', 'poke', 'poke_remediation',
 ];
 
 // ── the source walk ────────────────────────────────────────────────────────────────────
@@ -292,8 +293,9 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     // 27 since v3.3.3 t142 landed `person_told`'s (`work/validation-drive.ts:recordPersonTold`);
     // 28 since v3.5 landed `measured`'s (`work/ledger-store.ts`, MEASURED_EVENT);
     // 30 since v3.5 D1 landed `continued`'s and `stalled`'s (`work/job-momentum.ts`);
-    // 27 since 901: four hand-in and decision kinds written, the seven verdict-door kinds not.
-    expect(writtenKinds().kinds.size).toBe(27);
+    // 27 since 901: four hand-in and decision kinds written, the seven verdict-door kinds not;
+    // 24 since the stall ladder: `person_told`, `poke` and `poke_remediation` have no writer.
+    expect(writtenKinds().kinds.size).toBe(24);
   });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
@@ -316,8 +318,7 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     expect(sorted(boundConstantValues('OCCURRENCE_EVENT')!))
       .toEqual(['occurrence_fired', 'occurrence_released', 'occurrence_settled']);
     expect(sorted(boundConstantValues('WORK_EVENT')!)).toEqual([
-      'activity', 'person_told', 'revert_reset',
-      'validation_escalated',
+      'activity', 'revert_reset', 'validation_escalated',
     ]);
   });
 

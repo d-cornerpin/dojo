@@ -6,7 +6,7 @@
 //   claim_rejected          the PM rejected its close
 //   rearm_refused           a re-arm was refused
 //   floor_ghosted           a floor's steer went unanswered
-//   poke_escalated          the poke ladder reached rung 3 (escalate to the main agent) or beyond
+//   stall_escalated         the stall ladder brought in the PM or the main agent (`work/done/ladder.ts`)
 //   identical_call_refused  a turn that claimed it ended on the identical-call brake
 //   destructive_hold        a turn that claimed it had a destructive call held for approval
 //   task_failed             the task itself ended failed (its helper errored out, or the reaper gave up on it)
@@ -28,9 +28,6 @@ export interface FrictionTask {
   eventIds: number[];
 }
 
-/** The poke ladder's rungs: 1 nudge, 2 urgent, 3 escalate to the main agent, 4 re-drive (work/poke-ladder.ts). */
-const POKE_ESCALATED_FROM_RUNG = 3;
-
 interface Hit { work_id: string; event_id: number }
 
 /** Each source answers: which (task, evidence event) happened at or after `@since` (epoch ms)? */
@@ -41,10 +38,10 @@ const SOURCES: ReadonlyArray<{ kind: string; sql: string }> = [
            WHERE e.kind = '${kind}' AND e.created_at >= @since`,
   })),
   {
-    kind: 'poke_escalated',
+    kind: 'stall_escalated',
     sql: `SELECT e.work_id AS work_id, e.id AS event_id FROM work_events e
-           WHERE e.kind = 'poke' AND e.created_at >= @since
-             AND CAST(json_extract(e.payload, '$.rung') AS INTEGER) >= ${POKE_ESCALATED_FROM_RUNG}`,
+           WHERE e.kind = 'audit' AND e.created_at >= @since
+             AND json_extract(e.payload, '$.entry_kind') IN ('ladder_pm', 'ladder_decider')`,
   },
   {
     kind: 'task_failed',

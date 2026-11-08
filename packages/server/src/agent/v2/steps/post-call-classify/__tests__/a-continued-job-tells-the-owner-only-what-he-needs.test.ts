@@ -39,7 +39,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched, recordMeasured } from '../../../../../work/ledger-store.js';
 import { recordContinued } from '../../../../../work/job-momentum.js';
-import { chargeEffortCalls } from '../../../../../tracker/effort-ledger.js';
+import { noteTurnCalls as chargeEffortCalls } from '../../../../../work/job-momentum.js';
 import { armTimerWake, beginJobRun, carryJobWork, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPostCallClassify, type PostCallClassifyContext } from '../index.js';

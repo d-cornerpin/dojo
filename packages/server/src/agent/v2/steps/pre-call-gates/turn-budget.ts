@@ -37,7 +37,7 @@ import { turnContinuationCounts, isStopFenced } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
-import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
 import { parkJob } from '../../../../work/job-continuation.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
@@ -183,10 +183,7 @@ export async function runTurnTimeBudget(
       return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
 
-    // t137: NO PARK ROW AND NO BROADCAST HERE. A pending PM circling verdict goes to the AGENT
-    // as a rider notice its continuation reads (`deliverPendingCirclingVerdict`); it used to ride
-    // the park row, which only the owner ever saw.
-    deliverPendingCirclingVerdict(agentId);   // never throws; a failure leaves it pending for the sweep
+    // No park row and no broadcast here.
     //
     // T79a: this checkpoint is about to park the turn with whatever the agent had claimed
     // still in flight. Square the tracker BEFORE queuing the continuation, so the very next

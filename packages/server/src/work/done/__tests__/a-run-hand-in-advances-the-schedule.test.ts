@@ -1,11 +1,13 @@
 // A scheduled run that finishes is handed in by the engine for its worker, with scope `run`: the
 // schedule advances at the hand-in with no decision, the next run is never held for one, the stale-run
-// sweep leaves it alone, a send-back on a run is a hint while the next run still fires, and a later run
-// cannot be handed in on an earlier run's delivery.
+// sweep leaves it alone, a send-back on a run is a hint while the next run still fires, a later run
+// cannot be handed in on an earlier run's delivery, and a run that owed a message and sent none is recorded
+// undelivered at once (one hint to its worker), never held.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../../agent/runtime.js', async () => (await import('./helpers/ladder-world.js')).runtimeMock());
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { onTaskRunComplete, cleanupStaleRuns } from '../../../scheduler/runner.js';
@@ -105,5 +107,19 @@ describe('a run hand-in advances the schedule', () => {
     expect(r.isError).toBe(true);
     expect(r.content).toMatch(/before the task was opened/);
     expect(stateOf()).toBe('claimed');
+  });
+
+  it('a run whose delivery is still owed when its next run is due fires on time, and its worker is hinted once', async () => {
+    freshBoard();
+    doneDb().prepare("UPDATE work SET task_kind = 'reminder' WHERE id = ?").run(TASK);
+    aRunInFlight('run-1', Date.now() - 30_000);
+    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
+    const settled = doneDb().prepare("SELECT json_extract(payload, '$.run_status') AS s FROM work_events WHERE work_id = 'run-1' AND kind = 'occurrence_settled'").get() as { s: string };
+    expect(settled.s).toBe('undelivered');
+    expect(schedule()).toEqual({ next_run_at: NEXT, schedule_status: 'waiting' });
+    expect(due(NEXT + 1_000)).toBe(true);
+    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(false);
+    const hints = doneDb().prepare("SELECT content FROM messages WHERE agent_id = ? AND content LIKE '[Engine hint: a run of%'").all(WORKER) as Array<{ content: string }>;
+    expect(hints).toHaveLength(1);
   });
 });

@@ -29,7 +29,6 @@ import * as coldImport3 from '../../work/engine-checkpoint-note.js';
 import * as coldImport4 from '../../work/job-continuation.js';
 import * as coldImport5 from '../turn-context.js';
 import * as coldImport6 from '../v2/state.js';
-import * as coldImport7 from '../v2/steps/preflight/closeout-gate.js';
 import * as coldImport8 from '../agent-status.js';
 import * as coldImport9 from '../v2/honest-stop.js';
 import * as coldImport10 from '../shared-state.js';
@@ -55,7 +54,7 @@ const MIN = 60_000;
 let m: {
   runtime: typeof import('../runtime.js'); fresh: typeof import('../../work/task-freshness.js');
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
-  state: typeof import('../v2/state.js'); gate: typeof import('../v2/steps/preflight/closeout-gate.js');
+  state: typeof import('../v2/state.js');
   status: typeof import('../agent-status.js'); park: typeof import('../v2/honest-stop.js'); shared: typeof import('../shared-state.js');
   rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/agents.js');
 };
@@ -68,7 +67,7 @@ beforeEach(async () => {
   m = {
     runtime: coldImport1, fresh: coldImport2,
     note: coldImport3, cont: coldImport4, ctx: coldImport5,
-    state: coldImport6, gate: coldImport7,
+    state: coldImport6,
     status: coldImport8, park: coldImport9, shared: coldImport10,
     rl: coldImport11, routes: coldImport12,
   };
@@ -102,19 +101,6 @@ async function engineTurn(turnNumber: number, root: Root, body: () => Promise<vo
   try { await body(); } finally { endTurnContext(AGENT); }
 }
 
-/** The real close-out gate, as a trigger-less continuation turn meets it. */
-async function gateNames(): Promise<string[]> {
-  const { initState } = m.state;
-  const { runCloseoutGate } = m.gate;
-  const tc = m.ctx.turnContext(AGENT)!;
-  tc.state = initState({
-    agentId: AGENT, contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'm-a', turnNumber: tc.turnNumber ?? 0,
-    triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
-    lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
-  });
-  await runCloseoutGate(tc, { agentId: AGENT } as never, { db: mockDb.current!, triggerRow: undefined as never });
-  return [...(tc.state!.danglingTaskIds ?? [])];
-}
 
 const touchedAt = (): number => (mockDb.current!.prepare("SELECT updated_at AS u FROM work WHERE id = 'task-job'").get() as { u: number }).u;
 

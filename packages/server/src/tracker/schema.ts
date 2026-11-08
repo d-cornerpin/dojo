@@ -1053,14 +1053,3 @@ export function addTaskNotes(id: string, notes: string): void {
   appendWorkNotes(id, `[${timestamp}] ${notes}`);
   logger.info('Task notes added', { taskId: id, notesLength: notes.length });
 }
-
-// ── Poke Log ── REMOVED (PHASE-2 T8c item 1)
-//
-// `logPoke` / `getPokeLog` / `getLastPoke` / `clearPokeLog` and the `poke_log` table they
-// wrote are gone. The escalation ladder's rung is now `MAX(rung)` over `work_events` rows of
-// kind `poke`, bounded by the last `poke_remediation` marker — `work/poke-ladder.ts`.
-// requirement preserved: the cross-restart poke dedup (a rung already sent in this cycle is
-// never re-sent) and the re-arm-only-at-a-remediation invariant, both asserted in
-// `work/__tests__/poke-ladder.test.ts`. `getPokeLog` had ZERO production readers (measured:
-// `grep -rn getPokeLog packages/ watchdog/` returned only this declaration and the compiled
-// `dist/` copy), so nothing replaced it.

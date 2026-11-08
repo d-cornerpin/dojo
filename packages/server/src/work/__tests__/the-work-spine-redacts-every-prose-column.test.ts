@@ -343,7 +343,6 @@ const REVIEWED_RAW_WRITERS: Record<string, string> = {
     'claimOccurrence binds the engine literal `occurrence #N` to `title`; its other '
     + 'statements move schedule state and agent handles. No caller text reaches a column.',
   'work/next-run.ts': 'the firing clock: timestamps and schedule enums only.',
-  'work/effort-meter.ts': 'integer counters only.',
   'work/purge-sweep.ts': 'sets parent_id NULL.',
   'work/work-refs.ts': 'sets parent_id NULL.',
   'work/ask-remediation.ts': 'stamps result_delivery_id (a delivery row id).',

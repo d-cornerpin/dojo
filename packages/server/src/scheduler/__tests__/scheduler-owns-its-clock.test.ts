@@ -239,7 +239,7 @@ const MOVED_TO_THE_REAPER = [
   'cleanupStaleRuns',
   'pruneTerminalTasks',
   'resumeExpiredPauses',
-  'sweepUnvalidatedTasksForUserEscalation',
+  'runLadder',
   'closeRunsThatDelivered',
 ];
 
@@ -257,7 +257,7 @@ describe('A5 the scheduler tick keeps only scheduling', () => {
   it('the reaper declares them, each with the clock its cadence was carried from', async () => {
     const { REAPER_KINDS, REAPER_BASE_TICK_MS } = await import('../../work/work-reaper.js');
     const ids = REAPER_KINDS.map((k) => k.id);
-    for (const id of ['orphaned-and-stale-runs', 'expired-pauses', 'validation-escalation',
+    for (const id of ['orphaned-and-stale-runs', 'expired-pauses', 'ladder',
       'steered-run-delivery-close']) {
       expect(ids, `reaper is missing kind ${id}`).toContain(id);
     }
@@ -273,9 +273,9 @@ describe('A5 the scheduler tick keeps only scheduling', () => {
     expect(REAPER_KINDS.find((k) => k.id === 'terminal-task-prune')).toBeUndefined();
   });
 
-  it('the validation escalation is declared as a kind that WAKES — the storm law can see it', async () => {
+  it('the stall ladder is declared as a kind that WAKES, so the storm law can see it', async () => {
     const { REAPER_KINDS } = await import('../../work/work-reaper.js');
-    expect(REAPER_KINDS.find((k) => k.id === 'validation-escalation')?.wakes).toBe(true);
+    expect(REAPER_KINDS.find((k) => k.id === 'ladder')?.wakes).toBe(true);
   });
 });
 

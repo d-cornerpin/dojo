@@ -1,28 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-1 CT2 — A SCHEDULED RUN CANNOT BE RECORDED COMPLETE WITHOUT A MESSAGE.
-//
-// ── THE INCIDENT THESE ARMS ARE WRITTEN FROM (the owner's box, his transcript, 2026-08-07) ──
-// His Tomorrow Brief — a recurring scheduled task — fired on time. His agent did the work and
-// wrote the brief. Then it marked the run COMPLETE and sent NOTHING. His own sentence about it
-// is the rule under test: *"I won't close the run until after the message is sent."*
-//
-// ── AND THE SHAPE IT ACTUALLY TOOK, DRIVEN, before a line of this fix existed ──
-// dojo `8a060c5`, behavioral run `bmslpj41gkx`, 2026-08-09 11:16 UTC, through the real doors:
-//
-//   task      d277e98c "Tomorrow Brief (ct2run-bmslpj41gkx)", created via POST /api/tracker/tasks
-//             task_kind = NULL            ← the platform declared nothing; there was no mechanism
-//   run       occurrence 2fc4e3e3 seq 1 · state `done` · run_status `complete`
-//             → the owner's run history read **complete**
-//   receipt   b57483d6 · tool=dashboard · channel=dashboard · display_kind='tool-turn'
-//             content = [{"type":"tool_use","name":"work_update",
-//                         "input":{"action":"status","status":"complete"}}]
-//             THE RUN WAS MARKED COMPLETE ON THE CHIP OF THE CALL THAT MARKED IT COMPLETE.
-//   and the brief DID exist, one delivery earlier, and was not what the run closed on:
-//             "Tomorrow (Mon, Aug 10) is clear — no events on any of your calendars."
-//
-// ARM 3a below is that row, replayed. The rest are its negative controls and the ladder.
-// ════════════════════════════════════════════════════════════════════════════════
-
+// A scheduled run is DECLARED deliverable-owing from its definition, never from the run (ARM 1), and a
+// second live recurring task of the same shape by the same owner is caught as a twin (ARM 4). What a run
+// owing a message settles as is `a-fired-reminder-reaches-the-user` and the run hand-in tests.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -47,14 +25,6 @@ import {
   occurrenceOwesDeliverable, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS,
   DECLARATION_MARKER,
 } from '../deliverable-declaration.js';
-import {
-  claimOccurrence, settleOccurrence, runDeliverableEvidence, runSettleApplied,
-  OCCURRENCE_KIND, OCCURRENCE_EVENT,
-} from '../occurrences.js';
-import {
-  MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STAND_DOWN_MARKER,
-  RUN_DELIVER_STEER_MARKER, nextRunDeliverRung, recordRunDeliverSteer,
-} from '../run-deliver-drive.js';
 
 const W = 'sched-1';
 const AGENT = 'a1';
@@ -73,26 +43,6 @@ function createLedgerTables(db: Database.Database): void {
   `);
 }
 
-/** A delivery, plus the message row it points at when it has one. */
-function seedDelivery(o: {
-  id: string; tool?: string; channel?: string; outcome?: string;
-  displayKind?: string | null; content?: string | null; atSec?: number;
-}): void {
-  const db = mockDb.current!;
-  const messageId = o.displayKind === null ? null : `m-${o.id}`;
-  if (messageId) {
-    db.prepare('INSERT INTO messages (id, display_kind, content) VALUES (?, ?, ?)')
-      .run(messageId, o.displayKind ?? 'agent-text', o.content ?? 'here is your brief');
-  }
-  const at = new Date((o.atSec ?? Math.floor(RUN_OPENED / 1000) + 10) * 1000)
-    .toISOString().slice(0, 19).replace('T', ' ');
-  db.prepare(
-    `INSERT INTO deliveries (id, agent_id, tool, channel, outcome, message_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(o.id, AGENT, o.tool ?? 'dashboard', o.channel ?? 'dashboard',
-        o.outcome ?? 'delivered', messageId, at);
-}
-
 const seedSchedule = (extra: Record<string, unknown> = {}): void => {
   seedTrackerTask(mockDb.current!, {
     id: W, title: 'Tomorrow Brief', status: 'on_deck', agentId: AGENT,
@@ -102,32 +52,6 @@ const seedSchedule = (extra: Record<string, unknown> = {}): void => {
     ...extra,
   });
 };
-
-const claim = (): string => claimOccurrence({
-  workId: W, sequence: 1, occurrenceMs: RUN_OPENED,
-  nowMs: RUN_OPENED + 1, nextRunMs: RUN_OPENED + 86_400_000, agentId: AGENT,
-})!;
-
-const stateOf = (id: string): string =>
-  (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
-
-const settledRunStatus = (id: string): string | null => {
-  const r = mockDb.current!.prepare(
-    `SELECT json_extract(payload, '$.run_status') AS s FROM work_events
-      WHERE work_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`,
-  ).get(id, OCCURRENCE_EVENT.settled) as { s: string | null } | undefined;
-  return r?.s ?? null;
-};
-
-const receiptOf = (id: string): string | null =>
-  (mockDb.current!.prepare('SELECT result_delivery_id AS d FROM work WHERE id = ?')
-    .get(id) as { d: string | null }).d;
-
-const markerCount = (id: string, marker: string): number =>
-  (mockDb.current!.prepare(
-    `SELECT COUNT(*) AS n FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = ?`,
-  ).get(id, marker) as { n: number }).n;
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -228,245 +152,8 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-describe('ARM 2 — THE EVIDENCE: six narrowings, each a negative control', () => {
-  let runId = '';
-  beforeEach(() => { seedSchedule(); declareDeliverableOnSchedule(W); runId = claim(); });
-
-  it('2a a real owner-lane message with text IS the evidence', () => {
-    seedDelivery({ id: 'd-msg', content: 'Tomorrow (Mon, Aug 10) is clear.' });
-    expect(runDeliverableEvidence(runId)?.id).toBe('d-msg');
-  });
-
-  it('2b NARROWING — a tool-call CHIP is not a message (the owner\'s own case)', () => {
-    seedDelivery({ id: 'd-chip', displayKind: 'tool-turn', content: '[{"type":"tool_use"}]' });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it('2c NARROWING — an engine start-ack is not the thing', () => {
-    seedDelivery({ id: 'd-ack', tool: 'engine-ack' });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it("2d NARROWING — the platform's own alert voice is not the agent's work", () => {
-    seedDelivery({ id: 'd-alert', tool: 'alert', channel: 'imessage', displayKind: null });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it('2e NARROWING — an a2a hand-off to an apprentice is not the owner hearing it', () => {
-    seedDelivery({ id: 'd-a2a', tool: 'send_to_agent', channel: 'a2a', displayKind: null });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it('2f NARROWING — a send that did not succeed is not a send', () => {
-    seedDelivery({ id: 'd-fail', outcome: 'failed' });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it('2g NARROWING — a delivery that PREDATES the run cannot be its deliverable', () => {
-    seedDelivery({ id: 'd-old', atSec: Math.floor(RUN_OPENED / 1000) - 60 });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it('2h NARROWING — READ THE REPLY: a message row that exists and is BLANK is a send of nothing', () => {
-    seedDelivery({ id: 'd-blank', content: '   ' });
-    expect(runDeliverableEvidence(runId)).toBeNull();
-  });
-
-  it('2i POSITIVE CONTROLS — the narrowings must not eat honest channel sends', () => {
-    seedDelivery({ id: 'd-sms', tool: 'auto-route', channel: 'imessage', displayKind: null });
-    expect(runDeliverableEvidence(runId)?.id, 'a channel send records no chat row at all').toBe('d-sms');
-  });
-
-  it("2j POSITIVE CONTROL — the engine's COMPILED join relay to the owner is admitted (TB13 whole)", () => {
-    seedDelivery({ id: 'd-relay', tool: 'a2a-join-relay', channel: 'dashboard', content: 'the compiled answer' });
-    expect(runDeliverableEvidence(runId)?.id).toBe('d-relay');
-  });
-
-  it('2k the chip does not shadow the real message even when it is NEWER', () => {
-    // This is the owner's exact ordering: the brief lands, then the close-out call's chip.
-    seedDelivery({ id: 'd-brief', content: 'Tomorrow is clear.', atSec: Math.floor(RUN_OPENED / 1000) + 10 });
-    seedDelivery({ id: 'd-chip', displayKind: 'tool-turn', content: '[{"type":"tool_use"}]', atSec: Math.floor(RUN_OPENED / 1000) + 20 });
-    expect(runDeliverableEvidence(runId)?.id).toBe('d-brief');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════
-describe('ARM 3 — THE CLOSER: the run closes on the message, or it does not close', () => {
-  it("3a THE OWNER'S CASE — a declared run whose only delivery is a chip is OWED, not complete", () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    seedDelivery({ id: 'd-chip', displayKind: 'tool-turn', content: '[{"type":"tool_use","name":"work_update"}]' });
-
-    // The caller passes the chip, exactly as `deliveryForAgentSince` hands it over today.
-    const s = settleOccurrence(runId, 'complete', 'd-chip', 'wrote the brief');
-
-    expect(s.verdict, 'the run must NOT be settled').toBe('owed');
-    expect(s.outcome, 'nothing may be transitioned').toBeNull();
-    expect(runSettleApplied(s)).toBe(false);
-    expect(stateOf(runId), 'the run is still in flight, so a later delivery can still close it').toBe('open');
-    expect(settledRunStatus(runId), 'NOTHING may be recorded complete').toBeNull();
-  });
-
-  it('3b …and the SAME run closes on the real message when one exists, not on the chip', () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    seedDelivery({ id: 'd-brief', content: 'Tomorrow (Mon, Aug 10) is clear — no events.', atSec: Math.floor(RUN_OPENED / 1000) + 10 });
-    seedDelivery({ id: 'd-chip', displayKind: 'tool-turn', content: '[{"type":"tool_use"}]', atSec: Math.floor(RUN_OPENED / 1000) + 20 });
-
-    const s = settleOccurrence(runId, 'complete', 'd-chip', 'wrote the brief');
-
-    expect(s.verdict).toBe('settled');
-    expect(runSettleApplied(s)).toBe(true);
-    expect(stateOf(runId)).toBe('done');
-    expect(receiptOf(runId), 'THE CALLER NARROWS THE SCOPE; THE AUTHORITY DECIDES').toBe('d-brief');
-    expect(settledRunStatus(runId)).toBe('complete');
-  });
-
-  it('3c NEGATIVE CONTROL — a task that owes nobody anything settles EXACTLY as before', () => {
-    seedTrackerTask(mockDb.current!, {
-      id: W, title: 'Nightly backup', status: 'on_deck', agentId: AGENT,
-      next_run_at: RUN_OPENED, schedule_status: 'waiting', is_paused: 0,
-      repeat_interval: 1, repeat_unit: 'days', attempts: 0,
-      description: 'back up the database to the NAS every night at 2am',
-    });
-    expect(declareDeliverableOnSchedule(W)).toBeNull();
-    const runId = claim();
-    const s = settleOccurrence(runId, 'complete', null, 'backed up');
-    expect(s.verdict).toBe('settled');
-    expect(stateOf(runId)).toBe('abandoned');       // G7: no delivery, so not `done`
-    expect(settledRunStatus(runId)).toBe('complete'); // and the owner's history still says so
-  });
-
-  // ⚠ UX-REPAIR ROUND 4 T19 (D4) — THIS CLAUSE'S SUBJECT CHANGED, DELIBERATELY, AND IT IS
-  // STRICTER FOR IT. Its original property was "the gate only ever narrows a `complete`", and
-  // the reason `failed` was outside it was that nobody had asked what a `failed` close MEANS
-  // for a run that owed a person a message. The owner's box answered on 2026-08-10: the
-  // 30-minute idle reaper closed a reminder run `failed` with the note "assigned agent idle for
-  // 30+ minutes" — true about the agent, silent about the owner, and rendered as a neutral
-  // badge behind two clicks. `failed` now reaches the gate to be RENAMED by the authority
-  // (UNDELIVERED, the word the platform already owns for exactly this) and is NEVER refused —
-  // refusing it would leave a stalled run open for ever, which is the safety net's own failure
-  // mode. `skipped` is untouched, and a `failed` run that DID deliver keeps the caller's word.
-  it('3d — `skipped` never reaches the gate, and `failed` is renamed by it, never refused', () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const a = claim();
-    // A run that owed a message and reached nobody: settled, never refused, and the run's own
-    // word is the honest one rather than the caller's.
-    const failed = settleOccurrence(a, 'failed', null, 'provider error');
-    expect(failed.verdict).toBe('settled');
-    expect(settledRunStatus(a)).toBe(RUN_STATUS_UNDELIVERED);
-    expect(markerCount(a, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(1);
-  });
-
-  it('3d(ii) NEGATIVE CONTROL — a task that owes NOBODY a message still settles `failed`', () => {
-    seedSchedule({ task_kind: null, description: 'nightly database backup', title: 'DB backup' });
-    const a = claim();
-    expect(settleOccurrence(a, 'failed', null, 'provider error').verdict).toBe('settled');
-    expect(stateOf(a)).toBe('failed');
-    expect(settledRunStatus(a)).toBe('failed');
-    expect(markerCount(a, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(0);
-  });
-
-  it('3e THE LADDER — bounded steers, then a stand-down that is NEVER complete', () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    seedDelivery({ id: 'd-chip', displayKind: 'tool-turn', content: '[{"type":"tool_use"}]' });
-
-    // Rungs 1..N: refused, and each one recorded on the run's own history by the caller that
-    // performed it — the ladder decides, the caller spends (`join-drive.ts`'s rule).
-    for (let i = 1; i <= MAX_RUN_DELIVER_STEERS; i++) {
-      const rung = nextRunDeliverRung(runId);
-      expect(rung.rung).toBe('steer');
-      expect(rung.attempt).toBe(i);
-      expect(settleOccurrence(runId, 'complete', 'd-chip', null).verdict).toBe('owed');
-      // Each drive is a SEPARATE TURN — see 3e2 for why that is the unit.
-      recordRunDeliverSteer(runId, { attempt: rung.attempt, bound: rung.bound, taskId: W, why: 'test', turnNumber: 100 + i });
-    }
-    expect(markerCount(runId, RUN_DELIVER_STEER_MARKER)).toBe(MAX_RUN_DELIVER_STEERS);
-    expect(nextRunDeliverRung(runId).rung).toBe('stand-down');
-
-    // Rung N+1: the run is settled, and the word is UNDELIVERED.
-    const s = settleOccurrence(runId, 'complete', 'd-chip', 'wrote the brief');
-    expect(s.verdict).toBe('settled');
-    expect(runSettleApplied(s)).toBe(true);
-    expect(stateOf(runId)).toBe('abandoned');
-    expect(settledRunStatus(runId), 'the owner must NEVER read "complete" for a run he never heard')
-      .toBe(RUN_STATUS_UNDELIVERED);
-    expect(receiptOf(runId)).toBeNull();
-    expect(markerCount(runId, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(1);
-    const ev = mockDb.current!.prepare(
-      `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1`,
-    ).get(runId) as { payload: string };
-    expect(ev.payload).toContain('reached NOBODY');
-  });
-
-  it('3e2 A RETRY LOOP INSIDE ONE TURN IS ONE DRIVE, not the whole ladder', () => {
-    // MEASURED, run `bmslqef2w3r`: the floor model called `work_update(status="complete")` FOUR
-    // TIMES inside one turn, before it had spoken at all. Counting ROWS spent the entire ladder
-    // in ten seconds and stood the run down while the agent was still working — and it then
-    // delivered a perfectly good brief into a run already recorded UNDELIVERED. A rung is a
-    // DRIVE: a separate attempt, with a turn in between for the agent to act on the steer.
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    for (let i = 0; i < 8; i++) {
-      recordRunDeliverSteer(runId, { attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'retry loop', turnNumber: 4242 });
-    }
-    expect(markerCount(runId, RUN_DELIVER_STEER_MARKER), 'eight rows were written').toBe(8);
-    expect(nextRunDeliverRung(runId).rung, 'and they are ONE drive').toBe('steer');
-    expect(nextRunDeliverRung(runId).attempt).toBe(2);
-    // Three DISTINCT turns is what spends it.
-    recordRunDeliverSteer(runId, { attempt: 2, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'x', turnNumber: 4243 });
-    recordRunDeliverSteer(runId, { attempt: 3, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'x', turnNumber: 4244 });
-    expect(nextRunDeliverRung(runId).rung).toBe('stand-down');
-  });
-
-  it('3e3 a steer from OUTSIDE a turn is still its own drive — it cannot be free', () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    recordRunDeliverSteer(runId, { attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'x', turnNumber: null });
-    expect(nextRunDeliverRung(runId).attempt).toBe(2);
-  });
-
-  it('3f the ladder counts PER RUN, so yesterday\'s steers do not spend today\'s', () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const first = claim();
-    for (let i = 1; i <= MAX_RUN_DELIVER_STEERS; i++) {
-      recordRunDeliverSteer(first, { attempt: i, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'test', turnNumber: 200 + i });
-    }
-    expect(nextRunDeliverRung(first).rung).toBe('stand-down');
-    const second = claimOccurrence({
-      workId: W, sequence: 2, occurrenceMs: RUN_OPENED + 86_400_000,
-      nowMs: RUN_OPENED + 86_400_001, nextRunMs: null, agentId: AGENT,
-    })!;
-    expect(nextRunDeliverRung(second).rung, 'a fresh run starts at rung 1').toBe('steer');
-    expect(nextRunDeliverRung(second).attempt).toBe(1);
-  });
-
-  it('3g occurrenceOwesDeliverable reads the PARENT schedule, one column, never prose', () => {
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    expect(occurrenceOwesDeliverable(runId)).toEqual({ owes: true, taskKind: 'brief', taskId: W });
-    expect(occurrenceOwesDeliverable('no-such-run')).toEqual({ owes: false, taskKind: null, taskId: null });
-  });
-
-  it('3h a run settled complete with no delivery is gated too', () => {
-    // A caller's word that a declared run is complete, with no delivery, never records it complete.
-    seedSchedule();
-    declareDeliverableOnSchedule(W);
-    const runId = claim();
-    const s = settleOccurrence(runId, 'complete', null, 'All runs completed by agent');
-    expect(s.verdict).toBe('owed');
-    expect(settledRunStatus(runId)).toBeNull();
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════
 describe('ARM 4 — THE DUPLICATE-RECURRING GUARD (Step 3)', () => {

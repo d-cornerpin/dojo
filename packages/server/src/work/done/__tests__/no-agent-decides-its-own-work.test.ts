@@ -71,7 +71,7 @@ describe('no agent decides its own work', () => {
     await handedIn(WORKER);
     for (const n of [1, 2]) {
       doneDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'audit', ?, 'engine', ?)")
-        .run(TASK, JSON.stringify({ entry_kind: 'observation', action_taken: 'validation_review_miss', n }), Date.now());
+        .run(TASK, JSON.stringify({ entry_kind: 'review_miss', n }), Date.now());
     }
     expect(whoDecides(TASK)).toEqual({ kind: 'owner' });
     await openAll(MAIN);

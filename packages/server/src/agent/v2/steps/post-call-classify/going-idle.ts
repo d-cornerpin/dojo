@@ -110,13 +110,10 @@ export async function runGoingIdle(
   // One-shot so a model that insists on
   // stopping doesn't trigger a loop.
   //
-  // Skip if the close-out gate is already armed for this turn
-  // (the gate's own message + dispatcher already covers the case)
-  // or the add-notes-stop nudge just fired (we just told them).
+  // Skip if the add-notes-stop nudge just fired (we just told them).
   if (
     !turnCtx.goingIdleDetectorRanThisTurn &&
-    !steerFired(state.steerQueue, 'add-notes-stop') &&
-    !state.nudgedForCloseOutThisTurn
+    !steerFired(state.steerQueue, 'add-notes-stop')
   ) {
     // Find in_progress tasks assigned to this agent. Use the same
     // criterion the close-out gate uses but at end-of-turn instead

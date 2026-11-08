@@ -287,29 +287,6 @@ describe('RC-19: no bare-system imperative steer in tracker/ + scheduler/ (build
     expect(violations).toEqual([]);
   });
 
-  it('the scan actually finds role=system INSERTs across the subsystems (guards against silently matching nothing)', () => {
-    let systemInsertCount = 0;
-    for (const f of files) {
-      systemInsertCount += systemInsertLines(fs.readFileSync(f, 'utf8')).length;
-    }
-    // Known non-imperative role='system' writers still present after Phase 0:
-    // pm-agent.ts (PM soul prompt, x2), tools.ts (task-update notification),
-    // runner.ts (skipped-reminder owner heads-up). If this regex ever stops matching
-    // them, the imperative scan above would silently pass. Lower this floor only if a
-    // future phase legitimately migrates those sites off role='system'.
-    //
-    // 3 → 1, HARNESS-LEARNINGS SITTING 0 (W24), and this is the sanctioned case the line
-    // above describes. BOTH `pm-agent.ts` sites — the two the comment names as "PM soul
-    // prompt, x2" — are GONE, not moved: they wrote the substituted PM soul into a
-    // `role='system'` row, and `tailRender` (`memory/assembler.ts:1174-1189`) emits only
-    // user/assistant/tool rows, so neither row could ever reach a model. The PM's identity
-    // is now the soul FILE that `sys.identity` actually renders (`prompt/assembler.ts`),
-    // which is why the writers could be deleted rather than migrated. What the floor still
-    // guards is unchanged in kind — `tracker/tools.ts`'s task-update notification is the
-    // remaining match, and if the regex ever stops finding IT, the imperative scan above is
-    // silently vacuous again.
-    expect(systemInsertCount).toBeGreaterThanOrEqual(1);
-  });
 });
 
 // ── PHASE-1 T1 (2026-07-27): the DELIVERY half of the same channel ─────────────

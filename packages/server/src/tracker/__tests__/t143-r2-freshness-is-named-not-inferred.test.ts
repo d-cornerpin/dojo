@@ -17,9 +17,7 @@
 // rows). The 30-second status heartbeat (`runtime.ts` `startStatusHeartbeat`) is a timer, not
 // progress, and is never read as evidence.
 //
-// Every clause drives the real doors: the project manager's own sweep (`runPokeCheck`), the
-// engine's real checkpoint writer and turn-finalize stamper (the two records a 15-minute park
-// leaves on the tracker), the real agents route (the per-agent setting), the real owner-notice
+// Every clause drives the real doors: the scheduler's own tick, the retask door, the real owner-notice
 // door down to the `deliveries` ledger. Only the phone (`child_process`), the socket, the A2A
 // transport and the engine runtime are replaced.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -98,17 +96,6 @@ import { runMigrations } from '../../db/migrations.js';
 // Each clause boots the real module graph and runs the full migration chain; an import cost, not
 // a timing assertion. Nothing here measures time.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
-import { runPokeCheck, queueEffortReviewIfNeeded, runEffortReview } from '../pm-agent.js';
-import { pendingCirclingVerdict } from '../effort-governor.js';
-import { registerAbortable, releaseAbortable, activeRuns } from '../../agent/shared-state.js';
-import { configRouter } from '../../gateway/routes/config.js';
-import { trackerAddNotes } from '../tools.js';
-import { recordPoke, currentRung } from '../../work/poke-ladder.js';
-import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
-import { endJobCarry, registerTimerWake, beginJobRun, endJobRun } from '../../work/task-freshness.js';
-import { injectTaskAssignmentNotification } from '../notify.js';
-import { stampTasksAtTurnFinalize } from '../task-stamps.js';
-import { agentsRouter } from '../../gateway/routes/agents.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
 const OWNER = 'owner@example.test';
@@ -145,10 +132,6 @@ const ownerTexts = (): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
 ).get(OWNER) as { n: number }).n;
 /** The phone sends (the bridge's own `--help` probe and path lookups are not sends). */
-const sent = (): string[] => transport.filter((t) => t.includes('"send"'));
-const pokes = (taskId: string): number => (db().prepare(
-  "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'poke'",
-).get(taskId) as { n: number }).n;
 
 /** A claimed task on the helper, opened (and last written) at `atMs`. */
 function claimedTask(id: string, title: string, atMs: number, convKey: string): void {
@@ -188,137 +171,10 @@ function wedgedToolCall(quietMs: number, now = Date.now()): void {
 }
 
 
-import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
-import { initState } from '../../agent/v2/state.js';
-import { runCloseoutGate } from '../../agent/v2/steps/preflight/closeout-gate.js';
 import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
-import { trackerValidatePause, trackerRetask } from '../tools.js';
+import { trackerRetask } from '../tools.js';
+import { endJobCarry } from '../../work/task-freshness.js';
 import { sweepSilentAgents } from '../liveness.js';
-
-/** One engine turn of the long job: a turn context like the engine's own, then the two records a
- *  15-minute park leaves (the checkpoint and the turn-finalize stamp), then the turn ends. The
- *  first turn's trigger is the owner's ask; a continuation's trigger is the engine's self-wake. */
-function parkedTurn(turnNumber: number, at: number, askMessageId: string | null): void {
-  vi.setSystemTime(at);
-  if (askMessageId === null) beginJobRun('helper', 'timer'); // the park's own wake fires: this run carries the job
-  const tc = openTurnContext('helper');
-  tc.turnNumber = turnNumber;
-  tc.root = askMessageId ? { kind: 'ask', id: askMessageId, sourceMessageId: askMessageId } : null;
-  db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-                VALUES ('helper', ?, ?, ?, 'budget', 0)`).run(turnNumber, sqlTime(at - 15 * MIN), sqlTime(at));
-  modelCallFinished(at);
-  noteEngineCheckpoint('helper', 'turn-budget');
-  registerTimerWake('helper');   // the park's continuation, armed on its own timer
-  stampTasksAtTurnFinalize({
-    agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
-    rootSourceMessageId: askMessageId, convKey: 'c-job', servedTaskId: null,
-  });
-  endTurnContext('helper');
-  endJobRun('helper'); // the carrying run ends; a further park registered its own wake
-}
-
-/** The close-out gate as a continuation turn of this agent meets it (no human waiting). */
-async function gateNames(): Promise<string[]> {
-  const tc = openTurnContext('helper');
-  tc.state = initState({
-    agentId: 'helper', contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'm-a', turnNumber: 99,
-    triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
-    lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
-  });
-  try {
-    await runCloseoutGate(tc, { agentId: 'helper' } as never, { db: db(), triggerRow: undefined as never });
-    return [...(tc.state!.danglingTaskIds ?? [])];
-  } finally {
-    endTurnContext('helper');
-  }
-}
-
-/** An unrelated owner message takes a turn mid-job: its own trigger, no park, then it ends. */
-function ownerTurn(turnNumber: number, at: number, askMessageId: string): void {
-  vi.setSystemTime(at);
-  const tc = openTurnContext('helper');
-  tc.turnNumber = turnNumber;
-  tc.root = { kind: 'ask', id: askMessageId, sourceMessageId: askMessageId };
-  db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-                VALUES ('helper', ?, ?, ?, 'answered', 1)`).run(turnNumber, sqlTime(at - MIN), sqlTime(at));
-  modelCallFinished(at);
-  stampTasksAtTurnFinalize({
-    agentId: 'helper', turnNumber, outcome: 'answered', answerMessageId: null,
-    rootSourceMessageId: askMessageId, convKey: 'c-job', servedTaskId: null,
-  });
-  endTurnContext('helper');
-}
-
-/** The long job on the helper, with two abandoned tasks planted BEFORE it: one from another
- *  conversation, one from the SAME conversation as the job. The job parks, the owner sends an
- *  UNRELATED message mid-job (it takes the next turn), then the job's continuations park twice
- *  more (the review's exact shape, C1). */
-async function longJobWithTwoAbandoned(now: number): Promise<void> {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  claimedTask('task-other-conv', 'the forgotten report', now - 120 * MIN, 'c-old');
-  claimedTask('task-same-conv', 'the half-done spreadsheet', now - 100 * MIN, 'c-job');
-  seedTrackerTask(db(), {
-    id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
-    opened_at: now - 60 * MIN, updated_at: now - 60 * MIN, origin_conv_key: 'c-job',
-    source_message_id: 'msg-ask', priority: 'normal',
-  } as never);
-  parkedTurn(41, now - 45 * MIN, 'msg-ask'); // the owner's ask: the turn whose trigger names the job
-  ownerTurn(42, now - 35 * MIN, 'msg-unrelated'); // an unrelated owner message takes the next turn
-  parkedTurn(43, now - 25 * MIN, null);     // continuations: the engine's self-wake
-  parkedTurn(44, now - 12 * MIN, null);
-  parkedTurn(45, now - MIN, null);
-  vi.setSystemTime(now);
-}
-
-/** The job is over (its task closed) and the agent goes quiet past its window. */
-function jobEndsAndAgentGoesQuiet(now: number): void {
-  db().prepare("UPDATE work SET state = 'abandoned', closed_at = 1791936612000 WHERE id = 'task-live'").run();
-  vi.setSystemTime(now + 3 * 60 * MIN);
-}
-
-describe('ROUND 2 (2+3) + ROUND 3 (C1): freshness is refreshed only by activity that names the task; a moving agent is left alone', () => {
-  it('while the job runs (long job, an unrelated owner message, two more parks): the job is never refused or poked and stays open; the abandoned others are still named and re-driven', async () => {
-    await longJobWithTwoAbandoned(Date.now());
-    const named = await gateNames();
-    expect(named).toEqual(expect.arrayContaining(['task-other-conv', 'task-same-conv']));
-    expect(named).not.toContain('task-live');
-    await runPokeCheck();
-    expect(pokes('task-live')).toBe(0);
-    expect(pokes('task-other-conv')).toBeGreaterThan(0);
-    expect(pokes('task-same-conv')).toBeGreaterThan(0);
-    expect((db().prepare("SELECT state FROM work WHERE id = 'task-live'").get() as { state: string }).state).toBe('claimed');
-    expect(ownerTexts()).toBe(0);
-  });
-
-  it('AFTER the job stops, the close-out gate names BOTH abandoned tasks (another conversation, the same conversation)', async () => {
-    const now = Date.now();
-    await longJobWithTwoAbandoned(now);
-    jobEndsAndAgentGoesQuiet(now);
-    const named = await gateNames();
-    expect(named).toContain('task-other-conv');
-    expect(named).toContain('task-same-conv');
-    expect(named).not.toContain('task-live');
-  });
-
-  it('AFTER the job stops, the PM re-drives an abandoned task from the SAME conversation as the long job', async () => {
-    const now = Date.now();
-    await longJobWithTwoAbandoned(now);
-    jobEndsAndAgentGoesQuiet(now);
-    await runPokeCheck();
-    expect(pokes('task-same-conv')).toBeGreaterThan(0);
-    expect(pokes('task-other-conv')).toBeGreaterThan(0);
-    expect(pokes('task-live')).toBe(0);
-  });
-
-  it('the timestamp itself: the job survives an unrelated message mid-job (every park moves the job\'s own row) and no other row', async () => {
-    const now = Date.now();
-    await longJobWithTwoAbandoned(now);
-    const at = (id: string): number => (db().prepare('SELECT updated_at AS u FROM work WHERE id = ?').get(id) as { u: number }).u;
-    expect(at('task-live')).toBe(now - MIN);
-    expect(at('task-other-conv')).toBe(now - 120 * MIN);
-    expect(at('task-same-conv')).toBe(now - 100 * MIN);
-  });
-});
 
 describe('ROUND 2 (1): the platform notice never depends on the project manager existing', () => {
   it('with no PM agent, the scheduler\'s own tick tells the owner about a wedged agent, once', async () => {
@@ -339,17 +195,6 @@ describe('ROUND 3 (I2): a check-in owes no reply — nothing waits, nothing esca
     db().prepare("SELECT task_id, content, a2a_requires_response FROM messages WHERE agent_id = 'helper' AND lane = 'events'")
       .all() as never;
 
-  it('a PM check-in on a quiet, idle assignee wakes it through an events-lane notice that names the task; no A2A owes the PM a reply', async () => {
-    claimedTask('task-quiet', 'the price check', Date.now() - 3 * 60 * MIN, 'c-1');
-    await runPokeCheck();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(pokes('task-quiet')).toBeGreaterThan(0);
-    expect(a2a.filter((m) => (m as { requiresResponse?: boolean }).requiresResponse)).toHaveLength(0);
-    const row = eventsToHelper().find((r) => r.content.includes('the price check'));
-    expect(row?.task_id).toBe('task-quiet');
-    expect(row?.a2a_requires_response ?? 0).toBe(0);
-  });
-
   it('the retask directive is delivered the same way: a notice naming the task, no reply owed', async () => {
     claimedTask('task-redo', 'the price check', Date.now() - 30 * MIN, 'c-1');
     const out = await trackerRetask('pm', { task_id: 'task-redo', directive: 'The brief went to chat but the task says email; send it by email with the same content.' });
@@ -359,96 +204,10 @@ describe('ROUND 3 (I2): a check-in owes no reply — nothing waits, nothing esca
   });
 });
 
-describe('ROUND 4 (C1): "moving" is no blanket shield — only the job in flight, or an agent live right now, is left alone', () => {
-  /** The agent said "on it" a minute ago and left the task claimed; nothing is live. */
-  function saidOnItAndLeft(): void {
-    const now = Date.now();
-    claimedTask('task-onit', 'the price check', now - 30 * MIN, 'c-1');
-    db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-                  VALUES ('asst-onit', 'helper', 'assistant', 'On it - I will have the prices shortly.', 9, ?)`).run(now - MIN);
-    modelCallFinished(now - MIN);
-    // The "on it" turn's own record (field fix 3 audit round #8: the close-out gate reads the agent's
-    // last whole turn, not a 10-minute clock; this is the turn that passed the task over).
-    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-                  VALUES ('helper', 9, ?, ?, 'answered', 1)`).run(sqlTime(now - 2 * MIN), sqlTime(now - MIN));
-  }
-
-  it('the "on it" + claimed-and-left task is named by the close-out gate and nudged by the PM on schedule, however recently the agent spoke', async () => {
-    saidOnItAndLeft();
-    await runPokeCheck();
-    expect(pokes('task-onit')).toBeGreaterThan(0);
-    expect(await gateNames()).toContain('task-onit');
-  });
-
-  it('an agent with a turn live RIGHT NOW (the live-run registry) is not poked; the same agent the moment it is not live, is', async () => {
-    saidOnItAndLeft();
-    activeRuns.add('helper');
-    try {
-      await runPokeCheck();
-      expect(pokes('task-onit')).toBe(0);
-    } finally {
-      activeRuns.delete('helper');
-    }
-    await runPokeCheck();
-    expect(pokes('task-onit')).toBeGreaterThan(0);
-  });
-
-  it('a model request open on a live connection right now is not poked either', async () => {
-    saidOnItAndLeft();
-    const open = new AbortController();
-    expect(registerAbortable('helper', open)).toBe(true);
-    try {
-      await runPokeCheck();
-      expect(pokes('task-onit')).toBe(0);
-    } finally {
-      releaseAbortable('helper', open);
-    }
-  });
-});
-
-describe('ROUND 4 (I1): a turn woken by a PM re-drive is not, by being woken, progress on the task', () => {
-  it('a woken turn that does nothing leaves the ladder to advance to rung 3', async () => {
-    const now = Date.now();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    claimedTask('task-lazy', 'the price check', now - 20 * MIN, 'c-1');
-    await runPokeCheck();                       // idle 20 min: the urgent rung (2)
-    await new Promise((r) => setTimeout(r, 20));
-    expect(currentRung('task-lazy')).toBe(2);
-    // The woken turn: the engine serves the re-drive's event row (naming the task), the agent
-    // writes a line and ends its turn. It touched nothing on the task.
-    vi.setSystemTime(now + MIN);
-    db().prepare("UPDATE messages SET served_by_turn = 50 WHERE agent_id = 'helper' AND lane = 'events' AND task_id = 'task-lazy'").run();
-    const tc = openTurnContext('helper');
-    tc.turnNumber = 50;
-    tc.root = { kind: 'engine', id: 'redrive', sourceMessageId: null };
-    tc.servedWork = { taskId: 'task-lazy', runId: null, taskKind: 'task', originConvKey: null };
-    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-                  VALUES ('helper', 50, ?, ?, 'answered', 1)`).run(sqlTime(now), sqlTime(now + MIN));
-    stampTasksAtTurnFinalize({
-      agentId: 'helper', turnNumber: 50, outcome: 'answered', answerMessageId: null,
-      rootSourceMessageId: null, convKey: null, servedTaskId: 'task-lazy',
-    });
-    endTurnContext('helper');
-    vi.setSystemTime(now + 11 * MIN);           // 31 minutes idle in all
-    await runPokeCheck();
-    expect(currentRung('task-lazy')).toBe(3);
-  });
-});
-
 describe('ROUND 4 (minors): a failed re-drive is not dropped; a crash-left turn row is not a live agent', () => {
   const blockEvents = (): void => {
     db().exec("CREATE TRIGGER block_events BEFORE INSERT ON messages WHEN NEW.lane = 'events' BEGIN SELECT RAISE(ABORT, 'disk said no'); END");
   };
-
-  it('a poke whose re-drive could not be written is not recorded: the next sweep tries it again', async () => {
-    claimedTask('task-retry', 'the price check', Date.now() - 30 * MIN, 'c-1');
-    blockEvents();
-    await runPokeCheck();
-    expect(pokes('task-retry')).toBe(0);
-    db().exec('DROP TRIGGER block_events');
-    await runPokeCheck();
-    expect(pokes('task-retry')).toBeGreaterThan(0);
-  });
 
   it('a retask whose directive could not be delivered says so, instead of "Directive delivered"', async () => {
     claimedTask('task-redo2', 'the price check', Date.now() - 30 * MIN, 'c-1');
@@ -465,126 +224,5 @@ describe('ROUND 4 (minors): a failed re-drive is not dropped; a crash-left turn 
     modelCallFinished(now - 199 * MIN);
     sweepSilentAgents();
     expect(ownerTexts()).toBe(0);
-  });
-});
-
-describe('ROUND 5 (R4-C1): the job carry has no clock — only its tasks closing, or the chain ending cleanly, ends it', () => {
-  it('a continuation holding one call/tool longer than 20 minutes keeps the carry: the next park still touches the job, no refusal, no poke, no strike', async () => {
-    const now = Date.now();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    seedTrackerTask(db(), {
-      id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
-      opened_at: now - 60 * MIN, updated_at: now - 60 * MIN, origin_conv_key: 'c-job',
-      source_message_id: 'msg-ask', priority: 'normal',
-    } as never);
-    parkedTurn(41, now - 45 * MIN, 'msg-ask');   // park at t0
-    parkedTurn(42, now - 14 * MIN, null);        // the continuation ran ONE call for 31 minutes, then parked
-    const at = (db().prepare("SELECT updated_at AS u FROM work WHERE id = 'task-live'").get() as { u: number }).u;
-    expect(at, 'the second park still knows the job').toBe(now - 14 * MIN);
-    vi.setSystemTime(now);                       // 14 minutes later, between continuations
-    expect(await gateNames()).toEqual([]);
-    await runPokeCheck();
-    expect(pokes('task-live')).toBe(0);
-    expect((db().prepare("SELECT state FROM work WHERE id = 'task-live'").get() as { state: string }).state).toBe('claimed');
-  });
-
-  it('a clean end of the chain (a continuation that parks no further) ends the carry; the task is then judged like any other', async () => {
-    const now = Date.now();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    seedTrackerTask(db(), {
-      id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
-      opened_at: now - 90 * MIN, updated_at: now - 90 * MIN, origin_conv_key: 'c-job',
-      source_message_id: 'msg-ask', priority: 'normal',
-    } as never);
-    parkedTurn(41, now - 60 * MIN, 'msg-ask');
-    // the continuation finishes its work without parking again, leaving the task claimed
-    vi.setSystemTime(now - 50 * MIN);
-    beginJobRun('helper', 'timer');
-    const tc = openTurnContext('helper');
-    tc.turnNumber = 42;
-    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-                  VALUES ('helper', 42, ?, ?, 'answered', 0)`).run(sqlTime(now - 50 * MIN), sqlTime(now - 49 * MIN));
-    endTurnContext('helper');
-    endJobRun('helper');
-    vi.setSystemTime(now);
-    expect(await gateNames()).toContain('task-live');
-  });
-
-  it('a scheduler wake (not the park\'s launch) cannot consume the carry', async () => {
-    const now = Date.now();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    seedTrackerTask(db(), {
-      id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
-      opened_at: now - 60 * MIN, updated_at: now - 60 * MIN, origin_conv_key: 'c-job',
-      source_message_id: 'msg-ask', priority: 'normal',
-    } as never);
-    parkedTurn(41, now - 20 * MIN, 'msg-ask');
-    const tc = openTurnContext('helper');        // an unrelated wake: nobody launched a continuation for it
-    tc.turnNumber = 42;
-    endTurnContext('helper');
-    parkedTurn(43, now - 5 * MIN, null);         // the real continuation still carries the job
-    expect((db().prepare("SELECT updated_at AS u FROM work WHERE id = 'task-live'").get() as { u: number }).u).toBe(now - 5 * MIN);
-  });
-});
-
-describe('ROUND 5 (R4-C2): a job that starts from a tracker notice is carried', () => {
-  it('a sub-agent assigned a task by a REAL assignment notice, working it across parks, is left alone by the gate and the PM, and the woken first turn is still not progress', async () => {
-    const now = Date.now();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    seedTrackerTask(db(), {
-      id: 'task-assigned', agentId: 'helper', status: 'in_progress', title: 'the vendor audit',
-      opened_at: now - 70 * MIN, updated_at: now - 70 * MIN, origin_conv_key: null, priority: 'normal',
-    } as never);
-    vi.setSystemTime(now - 60 * MIN);
-    const res = injectTaskAssignmentNotification({ assignedAgentId: 'helper', creatorAgentId: 'pm', taskId: 'task-assigned', title: 'the vendor audit', description: 'audit them', projectId: null, priority: 'normal' } as never);
-    expect(res.ok).toBe(true);
-    // The engine serves the notice row to the helper's first turn (naming the task), which parks.
-    db().prepare("UPDATE messages SET served_by_turn = 60 WHERE agent_id = 'helper' AND lane = 'events' AND task_id = 'task-assigned'").run();
-    const tc = openTurnContext('helper');
-    tc.turnNumber = 60;
-    tc.root = { kind: 'engine', id: 'assign', sourceMessageId: null };
-    tc.servedWork = { taskId: 'task-assigned', runId: null, taskKind: 'task', originConvKey: null };
-    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-                  VALUES ('helper', 60, ?, ?, 'budget', 0)`).run(sqlTime(now - 75 * MIN), sqlTime(now - 60 * MIN));
-    modelCallFinished(now - 60 * MIN);
-    noteEngineCheckpoint('helper', 'turn-budget');
-    registerTimerWake('helper');
-    stampTasksAtTurnFinalize({ agentId: 'helper', turnNumber: 60, outcome: 'budget', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId: 'task-assigned' });
-    endTurnContext('helper');
-    expect(db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-assigned' AND kind = 'activity'").get())
-      .toEqual({ n: 0 });                          // being woken by the notice is not progress ...
-    parkedTurn(61, now - 40 * MIN, null);          // ... but its job runs on through the continuations
-    parkedTurn(62, now - 8 * MIN, null);
-    vi.setSystemTime(now);
-    expect(await gateNames()).toEqual([]);
-    await runPokeCheck();
-    expect(pokes('task-assigned')).toBe(0);
-  });
-});
-
-describe('ROUND 5 (minor): the no-primary rung-3 re-drive is addressed to the assignee', () => {
-  const textsToHelper = (): string[] =>
-    (db().prepare("SELECT content FROM messages WHERE agent_id = 'helper' AND lane = 'events'").all() as Array<{ content: string }>).map((r) => r.content);
-
-  it('with no primary on the box, rung 3 reads as a second-person check-in, not "ESCALATION ... for your awareness"', async () => {
-    claimedTask('task-r3', 'the price check', Date.now() - 31 * MIN, 'c-1');
-    recordPoke('task-r3', 'pm', 1, 'nudge', 'helper');
-    recordPoke('task-r3', 'pm', 2, 'urgent', 'helper');
-    await runPokeCheck();
-    expect(currentRung('task-r3')).toBe(3);
-    const t = textsToHelper().join('\n');
-    expect(t).not.toContain('ESCALATION');
-    expect(t).toMatch(/your|you /i);
-  });
-
-  it('a TERMINATED primary counts as no primary: the assignee is re-driven, nothing is sent to the dead one', async () => {
-    db().prepare("INSERT INTO agents (id, name, status, model_id, classification) VALUES ('primary', 'Main', 'terminated', 'm-a', 'sensei')").run();
-    claimedTask('task-r3b', 'the price check', Date.now() - 31 * MIN, 'c-1');
-    recordPoke('task-r3b', 'pm', 1, 'nudge', 'helper');
-    recordPoke('task-r3b', 'pm', 2, 'urgent', 'helper');
-    await runPokeCheck();
-    expect(currentRung('task-r3b')).toBe(3);
-    expect(textsToHelper().join('\n')).not.toContain('ESCALATION');
-    expect((db().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'primary'").get() as { n: number }).n).toBe(0);
   });
 });

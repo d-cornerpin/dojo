@@ -19,14 +19,10 @@
 // This file holds the four legs that live in `work/`:
 //
 //   D2  the receipt reader stops counting a tool-call chip as a person receiving something
-//   D3  the deliver ladder can actually be exhausted — an in-turn burst is still ONE drive
-//       (unchanged), but a TURN that ends undelivered on an already-steered run now spends
-//       its rung at the turn boundary, so the honest stand-down is reachable
 //   D4  a `failed` close of a run that OWED a person a message and reached nobody is recorded
 //       UNDELIVERED, not silently neutral — the 30-minute idle reaper stops walking past the
 //       deliverable authority
-//   D6  a run that DELIVERED and was never steered gets closed on that delivery — the
-//       complement of the steered arm, answered with evidence rather than with a steer
+//   D6  a run that DELIVERED and was never handed in gets closed on that delivery
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -51,16 +47,11 @@ import { runMigrations } from '../../db/migrations.js';
 import { turnDeliveredToPerson } from '../../agent/v2/answered-edge.js';
 import { NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import {
-  claimOccurrence, settleOccurrence, runDeliverableEvidence,
-  advanceRunDeliverLadderAtTurnEnd, runsReadyToCloseOnDelivery,
+  claimOccurrence, settleOccurrence, runsReadyToCloseOnDelivery, RUN_STATUS_UNDELIVERED,
   OCCURRENCE_EVENT,
 } from '../occurrences.js';
 import { declareDeliverableOnSchedule } from '../deliverable-declaration.js';
 import { seedTrackerTask } from './work-fixture.js';
-import {
-  MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
-  RUN_DELIVER_STAND_DOWN_MARKER, recordRunDeliverSteer, runDriveCount,
-} from '../run-deliver-drive.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -149,12 +140,6 @@ const settledRunStatus = (id: string): string | null => {
 const stateOf = (id: string): string =>
   (db().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
 
-const markerRows = (id: string, marker: string): number =>
-  (db().prepare(
-    `SELECT COUNT(*) AS n FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = ?`,
-  ).get(id, marker) as { n: number }).n;
-
 /** A delivery INSIDE the run's window, pointing at a row of the given display kind. */
 function deliverInRun(id: string, displayKind: string, turnNumber: number): void {
   const msg = seedMessage(`m-${id}`, displayKind);
@@ -220,94 +205,6 @@ describe('D2 — the turn-receipt reader excludes the chips the platform already
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §2 — D3. THE LADDER CAN BE SPENT.
-//
-// `runDriveCount` counts DISTINCT TURNS and that is MEASURED, not designed (behavioral run
-// `bmslqef2w3r`: four `complete` calls inside one turn burned the whole ladder in ten
-// seconds). That rule stays. What it could not do is ADVANCE: the count only moved when the
-// model attempted another close, so a model that stops calling the tool freezes the ladder
-// at whatever rung it reached — the incident read `1 of 3`, `2 of 3`, `2 of 3` and stood
-// down never. The turn BOUNDARY is the missing drive tick.
-// ══════════════════════════════════════════════════════════════════════════════
-describe('D3 — a turn that ends undelivered on a steered run spends its rung at the boundary', () => {
-  beforeEach(() => {
-    seedSchedule(W, 'reminder');
-    declareDeliverableOnSchedule(W);
-  });
-
-  it('CONTROL (anti-burn, unchanged): three steers inside ONE turn are ONE drive', () => {
-    const run = claim();
-    for (const attempt of [1, 2, 3]) {
-      recordRunDeliverSteer(run, {
-        attempt, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'in-turn retry', turnNumber: 4602,
-      });
-    }
-    expect(markerRows(run, RUN_DELIVER_STEER_MARKER)).toBe(3);
-    expect(runDriveCount(run, RUN_DELIVER_STEER_MARKER)).toBe(1);
-  });
-
-  it('the turn boundary advances the ladder when the turn ends with nothing delivered', () => {
-    const run = claim();
-    recordRunDeliverSteer(run, {
-      attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'close attempted', turnNumber: 4602,
-    });
-    seedTurn(4602); seedTurn(4603);
-    // Turn 4602 ends undelivered: its own drive is already on the ledger, so nothing new.
-    expect(advanceRunDeliverLadderAtTurnEnd(run, 4602).spent).toBe(false);
-    expect(runDriveCount(run, RUN_DELIVER_STEER_MARKER)).toBe(1);
-    // Turn 4603 ends undelivered too, and the model never called the tool again. TODAY the
-    // ladder sits at 1 for ever; the boundary is the drive that was missing.
-    expect(advanceRunDeliverLadderAtTurnEnd(run, 4603).spent).toBe(true);
-    expect(runDriveCount(run, RUN_DELIVER_STEER_MARKER)).toBe(2);
-  });
-
-  it('reaching the bound at a turn boundary is where the STAND-DOWN becomes due', () => {
-    const run = claim();
-    recordRunDeliverSteer(run, {
-      attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'close attempted', turnNumber: 4602,
-    });
-    seedTurn(4602); seedTurn(4603); seedTurn(4604);
-    expect(advanceRunDeliverLadderAtTurnEnd(run, 4603).standDownDue).toBe(false);
-    const last = advanceRunDeliverLadderAtTurnEnd(run, 4604);
-    expect(runDriveCount(run, RUN_DELIVER_STEER_MARKER)).toBe(MAX_RUN_DELIVER_STEERS);
-    expect(last.standDownDue).toBe(true);
-    expect(last.taskId).toBe(W);
-  });
-
-  it('CONTROL: a run that was NEVER steered never burns a rung at a turn boundary', () => {
-    const run = claim();
-    seedTurn(4610);
-    const r = advanceRunDeliverLadderAtTurnEnd(run, 4610);
-    expect(r.spent).toBe(false);
-    expect(r.standDownDue).toBe(false);
-    expect(runDriveCount(run, RUN_DELIVER_STEER_MARKER)).toBe(0);
-  });
-
-  it('CONTROL: a turn that DELIVERED never burns a rung', () => {
-    const run = claim();
-    recordRunDeliverSteer(run, {
-      attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'close attempted', turnNumber: 4602,
-    });
-    seedTurn(4603);
-    deliverInRun('d-real', 'agent-text', 4603);
-    expect(runDeliverableEvidence(run)).not.toBeNull();
-    expect(advanceRunDeliverLadderAtTurnEnd(run, 4603).spent).toBe(false);
-    expect(runDriveCount(run, RUN_DELIVER_STEER_MARKER)).toBe(1);
-  });
-
-  it('CONTROL: a chip-only turn is still an undelivered turn (D2\'s set, one owner)', () => {
-    const run = claim();
-    recordRunDeliverSteer(run, {
-      attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'close attempted', turnNumber: 4602,
-    });
-    seedTurn(4603);
-    deliverInRun('d-chip', 'tool-turn', 4603);
-    expect(runDeliverableEvidence(run)).toBeNull();
-    expect(advanceRunDeliverLadderAtTurnEnd(run, 4603).spent).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
 // §3 — D4. A `failed` CLOSE STOPS WALKING PAST THE DELIVERABLE AUTHORITY.
 //
 // `settleOccurrence` applied the CT2 gate only inside `if (runStatus === 'complete')`, so
@@ -321,9 +218,8 @@ describe('D4 — a failed close of a run that owed a person a message records UN
     declareDeliverableOnSchedule(W);
     const run = claim();
     const s = settleOccurrence(run, 'failed', null, 'Auto-failed: assigned agent idle for 30+ minutes');
-    expect(s.verdict).toBe('settled');
+    expect(s.outcome?.kind).toBe('applied');
     expect(settledRunStatus(run)).toBe(RUN_STATUS_UNDELIVERED);
-    expect(markerRows(run, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(1);
   });
 
   it('CONTROL: a task that owes NOBODY a message still settles `failed`, byte-identically', () => {
@@ -332,7 +228,6 @@ describe('D4 — a failed close of a run that owed a person a message records UN
     settleOccurrence(run, 'failed', null, 'provider error');
     expect(settledRunStatus(run)).toBe('failed');
     expect(stateOf(run)).toBe('failed');
-    expect(markerRows(run, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(0);
   });
 
   it('CONTROL: a deliverable-owing run that DID deliver keeps the caller\'s `failed` word', () => {
@@ -341,9 +236,8 @@ describe('D4 — a failed close of a run that owed a person a message records UN
     const run = claim();
     seedTurn(4602);
     deliverInRun('d-real', 'agent-text', 4602);
-    settleOccurrence(run, 'failed', null, 'the agent died after speaking');
+    settleOccurrence(run, 'failed', 'd-real', 'the agent died after speaking');
     expect(settledRunStatus(run)).toBe('failed');
-    expect(markerRows(run, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(0);
   });
 
   it('CONTROL: `skipped` is untouched — a run that never ran owes no explanation', () => {
@@ -352,7 +246,6 @@ describe('D4 — a failed close of a run that owed a person a message records UN
     const run = claim();
     settleOccurrence(run, 'skipped', null, 'Skipped: the task was cancelled; schedule stopped');
     expect(settledRunStatus(run)).toBe('skipped');
-    expect(markerRows(run, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(0);
   });
 });
 
@@ -379,7 +272,6 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
     deliverInRun('d-real', 'agent-text', 4621);
     const ready = runsReadyToCloseOnDelivery();
     expect(ready.map((r) => r.occurrenceId)).toContain(run);
-    expect(ready.find((r) => r.occurrenceId === run)?.steered).toBe(false);
   });
 
   it('CONTROL: an unsteered run with NOTHING delivered is left alone', () => {
@@ -393,17 +285,6 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
     seedTurn(4621);
     deliverInRun('d-chip', 'tool-turn', 4621);
     expect(runsReadyToCloseOnDelivery()).toEqual([]);
-  });
-
-  it('CONTROL: the STEERED arm still selects exactly what it always did', () => {
-    const run = claim();
-    recordRunDeliverSteer(run, {
-      attempt: 1, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'close attempted', turnNumber: 4602,
-    });
-    seedTurn(4602);
-    deliverInRun('d-real', 'agent-text', 4602);
-    const ready = runsReadyToCloseOnDelivery();
-    expect(ready.find((r) => r.occurrenceId === run)?.steered).toBe(true);
   });
 
   it('a run whose own turn is still RUNNING is not closed out from under it', () => {

@@ -224,17 +224,6 @@ describe('D1 — a scheduler turn serving a user-deliverable run remembers the w
 // Tail-side strings only: neither rides the cached prompt prefix.
 // ══════════════════════════════════════════════════════════════════════════════
 describe('the engine stops asking for the shape it destroys', () => {
-  it('the run-deliver steer asks for a SEPARATE tool-less reply first', async () => {
-    const { runDeliverSteerText } = await import('../../../../../work/run-deliver-drive.js');
-    const text = runDeliverSteerText({
-      taskId: 't1', taskTitle: 'Reminder: routine', taskKind: 'reminder', attempt: 1, bound: 3,
-    });
-    expect(text).not.toContain('and THEN call');
-    expect(text.toLowerCase()).toContain('separate');
-    // and it still names the tool and the bound, so nothing was lost in the rewording
-    expect(text).toContain('work_update(action="hand_in")');
-    expect(text).toContain('steer 1 of 3');
-  });
 
   it('the reminder wake asks for the reply as its own response, bookkeeping after', async () => {
     const fs = await import('node:fs');

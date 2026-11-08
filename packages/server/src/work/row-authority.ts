@@ -43,7 +43,6 @@ import { turnContext } from '../agent/turn-context.js';
 import { currentAddress } from '../agent/v2/turn-address.js';
 import { recordMove } from './move-record.js';
 import { isTerminal, type Actor, type WorkState } from './store.js';
-import { pieceIdsExpr } from './validation-drive.js';
 import { holdOf } from './done/hold.js';
 
 const logger = createLogger('row-authority');
@@ -107,8 +106,14 @@ function isOwn(f: RowFacts, actorId: string): boolean {
   }
 }
 
-/** OR-PM-1v2's "declined": a delegated piece of this row came back FAILED (an a2a FAIL). Read on
- *  the same two edges the owner-escalation count uses (`pieceIdsExpr`), not a second copy. */
+/** The delegated pieces one row owns, by both recorded edges: `parent_id`, and the ASSIGN task's thread. */
+const pieceIdsExpr = (owner: string, extraFrom = '', extraWhere = ''): string =>
+  `SELECT c.id FROM work c${extraFrom}`
+  + `  WHERE c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.parent_id IS NOT NULL${extraWhere}`
+  + `    AND (c.parent_id = ${owner}.id`
+  + `         OR (${owner}.a2a_thread_id IS NOT NULL AND c.root_id = ${owner}.a2a_thread_id))`;
+
+/** OR-PM-1v2's "declined": a delegated piece of this row came back FAILED (an a2a FAIL). */
 function wasDeclined(id: string): boolean {
   try {
     return !!getDb().prepare(

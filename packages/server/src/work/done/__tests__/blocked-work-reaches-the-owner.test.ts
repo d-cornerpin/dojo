@@ -1,0 +1,67 @@
+// Blocked work reaches the owner (owner ruling OR-PM-1v2: "the path is for that to get escalated to the
+// user which should already happen after some failures/time"). A blocked hold with no progress is a stall:
+// its worker is hinted with the reason, then the PM is told, then the owner gets one card saying what is
+// stuck, since when and what was tried. A task the owner cancelled reaches nobody, and healthy work that
+// keeps moving never escalates.
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
+vi.mock('../../../gateway/ws.js', async () => (await import('./helpers/ladder-world.js')).wsMock());
+vi.mock('../../../agent/runtime.js', async () => (await import('./helpers/ladder-world.js')).runtimeMock());
+vi.mock('../../../tracker/pm-agent.js', async (orig) => ({ ...(await orig<object>()), armDebouncedReview: vi.fn() }));
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
+
+import { runLadder, LADDER_ENTRY } from '../ladder.js';
+import { setHold } from '../hold.js';
+import { decide } from '../decide.js';
+import { freshBoard, WORKER, TASK } from './helpers/decision-world.js';
+import { hintsTo, cards, entries, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { doneDb } from './helpers/done-db.js';
+
+const REASON = 'waiting for the landlord to send the signed lease';
+const stallCards = (): typeof cards => cards.filter((c) => c.cardKey === `stall:${TASK}`);
+/** The ladder's own entries and the hold, moved back in time so its bounds have passed. */
+const backdate = (ms: number): void => {
+  doneDb().prepare('UPDATE work_events SET created_at = created_at - ? WHERE work_id = ?').run(ms, TASK);
+  doneDb().prepare('UPDATE work SET updated_at = updated_at - ? WHERE id = ?').run(ms, TASK);
+};
+
+beforeEach(() => { freshBoard(); resetLadderWorld(); expect(setHold(TASK, 'blocked', REASON, WORKER).ok).toBe(true); });
+
+describe('blocked work reaches the owner', () => {
+  it('hint with the reason, then the PM, then one card for the owner', async () => {
+    backdate(6 * MIN);
+    await runLadder();
+    expect(hintsTo(WORKER)).toHaveLength(1);
+    expect(hintsTo(WORKER)[0]).toContain(REASON);
+    backdate(6 * MIN);
+    await runLadder();
+    expect(entries(TASK, LADDER_ENTRY.pm)).toBe(1);
+    expect(stallCards()).toEqual([]);
+    backdate(6 * MIN);
+    await runLadder();
+    expect(stallCards()).toHaveLength(1);
+    expect(stallCards()[0].error).toMatch(/^"Write the report" has not moved since .+\. Tried: .*a hint to its worker.*the project manager was told/);
+    backdate(6 * MIN);
+    await runLadder();
+    expect(stallCards()).toHaveLength(1);
+  });
+
+  it('a task the owner cancelled reaches nobody', async () => {
+    expect(decide({ workId: TASK, deciderAgentId: null, verdict: 'cancel', reason: 'The move is off' }).kind).toBe('decided');
+    backdate(60 * MIN);
+    await runLadder();
+    expect(hintsTo(WORKER)).toEqual([]);
+    expect(cards).toEqual([]);
+  });
+
+  it('work that keeps moving never escalates', async () => {
+    for (let i = 0; i < 4; i++) {
+      backdate(4 * MIN);
+      doneDb().prepare("INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES (?, 'activity', ?, '{}', ?)").run(TASK, WORKER, Date.now());
+      await runLadder();
+    }
+    expect(hintsTo(WORKER)).toEqual([]);
+    expect(cards).toEqual([]);
+  });
+});

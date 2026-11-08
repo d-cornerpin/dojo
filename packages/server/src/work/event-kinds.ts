@@ -22,7 +22,6 @@
 //     work/audit-trail.ts       AUDIT_KIND        audit
 //     work/occurrences.ts       OCCURRENCE_EVENT  occurrence_fired|released|settled
 //     work/override-requests.ts OVERRIDE_EVENT    override_request, override_resolved
-//     work/poke-ladder.ts       POKE_EVENT / REMEDIATION_EVENT   poke, poke_remediation
 //     work/tracker-view.ts      WORK_EVENT        validation_escalated, user_verdict_requested,
 //                                                 user_verdict_cleared, revert_reset, activity
 //   = 24 writable from production code. Every one of the 29 call sites passes either a
@@ -93,10 +92,7 @@ export const WORK_EVENT_KINDS = [
   // discriminator: the mechanism that KNOWS an ask is still owed now says so on that ask's
   // spine, instead of only quoting its text into a re-prompt nothing can read as evidence.
   'owed_interrupt',
-  // v3.3.3 t142 (migration 189). "A person was told about this work", keyed by the delivery
-  // that told them and written ONLY by a path that structurally holds the work id
-  // (`work/validation-drive.ts:recordPersonTold`). The owner-escalation ladder reads it as
-  // "this episode is already settled" instead of guessing from turn roots.
+  // `person_told`, `poke`, `poke_remediation`: old rows only; nothing writes them.
   'person_told',
   'poke',
   'poke_remediation',

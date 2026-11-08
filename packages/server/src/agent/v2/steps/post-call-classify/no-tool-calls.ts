@@ -50,7 +50,6 @@ import { runOwedInterrupt } from './owed-interrupt.js';
 import { runPromiseFloor } from './promise-floor.js';
 import { runHandoffFloors } from './handoff-floors.js';
 import { runMissedReply } from './missed-reply.js';
-import { runTrackerCloseout } from './tracker-closeout.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 /** One member of the turn-ending family: the floor it speaks as, and its detector. */
@@ -86,7 +85,6 @@ export const TURN_ENDING_FAMILY: readonly TurnEndingFloor[] = Object.freeze(([
   { floor: 'a2a-handoff-floor',      run: runHandoffFloors },
   { floor: 'a2a-missed-reply',       run: runMissedReply },
   { floor: 'going-idle-in-progress', run: runGoingIdle },
-  { floor: 'tracker-closeout',       run: runTrackerCloseout },
 ] as TurnEndingFloor[]).sort((a, b) => steerPriority(a.floor) - steerPriority(b.floor)));
 
 /** The turn-ending floor family, in the order the DECLARED TABLE ranks it. */

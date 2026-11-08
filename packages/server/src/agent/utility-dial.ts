@@ -36,7 +36,6 @@ import { effectiveDivisor } from '../memory/budget.js';
 export type UtilityPurpose =
   | 'ask_title'
   | 'multistep_classify'
-  | 'effort_verdict'
   | 'memory_summarize'
   | 'continuity_brief'
   | 'vision_caption'
@@ -76,22 +75,6 @@ const DIALS: Readonly<Record<UtilityPurpose, UtilityDial>> = {
   // one small JSON object. 48 tokens covers it with the braces and a long project name.
   // The caller passes its own `AbortSignal.timeout`, so no budget is imposed here.
   multistep_classify: { purpose: 'multistep_classify', maxOutputTokens: 48, latencyBudgetMs: null },
-
-  // `{"advancing": true|false, "reason": "one or two sentences", "task_id": "<uuid>"}` — the PM's
-  // advancing-or-circling judgment on one task. The whole artifact is one small JSON object, so
-  // the arithmetic is `multistep_classify`'s with room for the two fields it does not have: a
-  // 36-char uuid is ~18 tokens, and "one or two sentences" of reason is ~40. 128 covers both with
-  // the braces and slack for a model that opens with a stray newline, and is far short of the
-  // room an essay would need.
-  // ⚠ `null` HERE MEANS "THE CALLER OWNS THE BUDGET", the first of the two readings this field's
-  // doc gives — NOT "no budget". t123 round 1 wrote the second reading into this comment ("a 60s
-  // background sweep with nobody waiting on it, so a slow answer costs nothing") and it was
-  // wrong in the one way that mattered: the sweep AWAITS this call in a loop and is itself
-  // fire-and-forget, so a slow answer stalls the sweep and the next tick starts a duplicate
-  // review that can land a duplicate poke at an agent. The caller now passes its own
-  // `AbortSignal.timeout(EFFORT_VERDICT_LATENCY_BUDGET_MS)` (120s) — see `tracker/pm-agent.ts`,
-  // which also carries the single-flight guard that makes the duplicate impossible either way.
-  effort_verdict: { purpose: 'effort_verdict', maxOutputTokens: 128, latencyBudgetMs: null },
 
   // A conversation summary, and the ONLY entry whose size the CALLER knows better than this table:
   // `getDepthPrompt(depth, targetTokens)` tells the model its target in words. The cap is applied

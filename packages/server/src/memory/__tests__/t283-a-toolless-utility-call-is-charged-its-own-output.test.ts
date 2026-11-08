@@ -94,7 +94,7 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 const PURPOSES: UtilityPurpose[] = [
-  'ask_title', 'multistep_classify', 'effort_verdict', 'continuity_brief',
+  'ask_title', 'multistep_classify', 'continuity_brief',
   'vision_caption', 'page_summary', 'voice_opener', 'memory_summarize',
 ];
 

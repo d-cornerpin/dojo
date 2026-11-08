@@ -14,21 +14,16 @@
 // owner actually talks to. "Hey, I'm here. What's up?" is the CORRECT answer to the only
 // message the assembly still contained.
 //
-// This file pins the two guarantees the owner's screenshot is the absence of:
+// This file pins the guarantee the owner's screenshot is the absence of:
 //
 //   §A  A PM asked a question mid-conversation still has the conversation's PRIOR messages in
-//       its assembled window after the 60-second sweep has run across the turn.
-//   §B  An internal advancing/reason verdict NEVER persists to a user-visible lane. (The
-//       verdict's own wiring — asked for off the turn plumbing, on the non-persisting model
-//       path — is pinned behaviourally in `the-pm-reviews-effort-and-rules.test.ts` §4. What
-//       is pinned HERE is the census: the shape cannot reach a message row, and the mechanism
-//       that used to put it there is gone from the tree.)
+//       its assembled window after the review's prune has run across the turn.
 //
 // ⚠ WHAT §A DRIVES, STATED EXACTLY, because the honest scope matters more than the word
 // "integration". It drives the REAL assembler (`assembleContext`) against the REAL migration
 // chain, and between the two assemblies it drives the REAL delete door the 60-second sweep
 // calls (`deleteAgentDebrisBefore`, via the pruner's own cutoff shape). It does NOT drive
-// `runPokeCheck`'s whole body — `runPMReview` is module-private and fire-and-forget, so
+// the whole review: `runPMReview` is fire-and-forget, so
 // driving it would mean asserting through a promise nobody returns. The deletes ARE the sweep's
 // only effect on this conversation, so they are what is driven; §B's source census is what
 // catches a re-introduction of the mechanism itself.
@@ -350,100 +345,3 @@ describe('§A the conversation survives the sweep that used to erase it', () => 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-describe('§B the engine\'s private verdict never reaches a user-visible lane', () => {
-  // The shape is a PROMPT LITERAL, not a DB type: exactly one non-test site in the tree
-  // produces it, so "where could this have come from" has one answer.
-  it('B1 — the verdict envelope is asked for in exactly one place, and that place does not drive a turn', () => {
-    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
-
-    // The prompt literal is still here (the feature exists)…
-    expect(pmAgent).toMatch(/JSON object and nothing else/);
-
-    // …and `runEffortReview` no longer reaches the turn plumbing to ask for it. These three
-    // are the mechanism that published it: an events-lane prompt row as the delivery vehicle,
-    // a real agent turn, and a read-back of the persisted assistant reply.
-    // ⚠ ANCHORED ON `runEffortReviewOnce`, NOT the exported `runEffortReview`. The fix round
-    // split the function: the export is now a thin single-flight wrapper and the body moved
-    // into `runEffortReviewOnce`. A slice anchored on the export therefore reads the WRAPPER,
-    // which contains no `callModel` — and the "it must still ask somebody" clause below would
-    // fail for a reason that has nothing to do with the defect it guards. Caught exactly that
-    // way while planting M9. Both anchors are asserted present so this cannot silently slice
-    // nothing if either name changes again.
-    expect(pmAgent, 'the single-flight wrapper is gone — re-point this slice').toMatch(/export async function runEffortReview\(/);
-    const marker = 'async function runEffortReviewOnce';
-    expect(pmAgent, 'runEffortReviewOnce is gone — re-point this slice').toContain(marker);
-    const review = pmAgent.slice(pmAgent.indexOf(marker));
-    const body = review.slice(0, review.indexOf('\n}\n'));
-    expect(body, 'the effort review inserts an engine event again — the row IS the delivery mechanism')
-      .not.toMatch(/insertEngineEventIfAbsent/);
-    expect(body, 'the effort review drives an agent turn again, which is what published the verdict')
-      .not.toMatch(/handleMessage/);
-    expect(body, 'the effort review reads its verdict back out of the messages table again')
-      .not.toMatch(/FROM messages/);
-
-    // Counted the other way: it must actually ASK somebody. A body that reaches no model at
-    // all would satisfy every clause above while deleting the feature.
-    expect(body, 'the effort review no longer calls a model at all').toMatch(/callModel/);
-    expect(body, 'the call must be toolless — that is what makes it persist nothing').toMatch(/tools:\s*false/);
-    expect(body, 'the call must declare its purpose so the utility dial applies').toMatch(/purpose:\s*'effort_verdict'/);
-  });
-
-  // ⚠ THE FIX-ROUND CLAUSE, and the one line round 1 failed to copy from the precedent it copied
-  // everything else from. `work/ask-title.ts` passes its own `AbortSignal.timeout` because a
-  // measured utility call on a user's box once took 275 SECONDS. This call needs it for a second
-  // reason round 1 created: it is now guarded by a single-flight marker, and a call that never
-  // settles would hold that marker for ever, so no later sweep could ever review the task again.
-  // The budget is what turns "wedged for ever" into "retried on the next tick".
-  it('B4 — the verdict call carries a BOUNDED latency budget, like every other utility dial', () => {
-    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
-    const marker = 'async function runEffortReviewOnce';
-    const review = pmAgent.slice(pmAgent.indexOf(marker));
-    const body = review.slice(0, review.indexOf('\n}\n'));
-
-    expect(body, 'the verdict call has no latency budget — a hung call wedges this task out of review for ever')
-      .toMatch(/abortSignal:\s*AbortSignal\.timeout\(/);
-
-    // Counted the other way: a budget must be a real finite number, not `Infinity` or a 0 that
-    // aborts instantly, and it must be declared rather than inlined as a magic literal.
-    const declared = /const EFFORT_VERDICT_LATENCY_BUDGET_MS = ([0-9_]+);/.exec(pmAgent);
-    expect(declared, 'the budget is no longer a declared constant').not.toBeNull();
-    const ms = Number(declared![1].replace(/_/g, ''));
-    expect(ms).toBeGreaterThan(1_000);
-    expect(ms).toBeLessThanOrEqual(600_000);
-  });
-
-  it('B5 — the review is SERIALISED: the guard and its release are both present', () => {
-    // The behavioural proof is in `the-pm-reviews-effort-and-rules.test.ts` (driven with a hung
-    // mock). This is the structural half: the guard must be released in a `finally`, because a
-    // release on the happy path only is how a failed call wedges a task permanently.
-    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
-    expect(pmAgent, 'the single-flight set is gone').toMatch(/effortReviewsInFlight/);
-    const wrapper = pmAgent.slice(pmAgent.indexOf('export async function runEffortReview('));
-    const body = wrapper.slice(0, wrapper.indexOf('\n}\n'));
-    expect(body, 'the guard no longer refuses a second in-flight review').toMatch(/effortReviewsInFlight\.has\(/);
-    expect(body, 'the guard is never released in a finally — a failed call wedges the task').toMatch(/finally\s*\{[\s\S]*effortReviewsInFlight\.delete\(/);
-  });
-
-  it('B2 — assistant output has no engine lane, so the only safe route is not to persist it', () => {
-    // This is the v3.4 structural finding, pinned here as a TRIPWIRE rather than fixed: the
-    // lane default fails OPEN (`m.lane ?? 'owner'`), and assistant output can only ever reach
-    // `a2a` or that default. While that is true, ANY engine intent that drives a PM turn
-    // publishes its internal output — which is why t123's fix was to stop driving the turn,
-    // not to add a seventh special case to the persistence classifier. If the default is ever
-    // made to fail closed, this clause is the one that should be revisited.
-    const store = stripComments(readSrc('memory/message-store.ts'));
-    expect(store, "the lane default changed — re-derive whether the effort verdict still needs to avoid the turn path")
-      .toMatch(/const lane: Lane = m\.lane \?\? 'owner'/);
-  });
-
-  it('B3 — the verdict purpose is a declared utility dial, capped to the artifact', async () => {
-    // A purpose the dial table has never heard of leaves the call UNTOUCHED — no output cap,
-    // thinking left on. So "declared" is the difference between a 128-token JSON object and a
-    // model monologuing on the PM's dime; the string in `pm-agent.ts` is not self-enforcing.
-    const { utilityDial, isUtilityPurpose } = await import('../../agent/utility-dial.js');
-    expect(isUtilityPurpose('effort_verdict'), 'the purpose is not in the dial table, so nothing caps the call').toBe(true);
-    const dial = utilityDial('effort_verdict')!;
-    expect(dial.maxOutputTokens).toBeLessThanOrEqual(256);
-    expect(dial.maxOutputTokens).toBeGreaterThanOrEqual(64);
-  });
-});

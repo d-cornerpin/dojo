@@ -51,7 +51,7 @@ vi.mock('../../config/platform.js', () => ({
 import { onTaskRunComplete } from '../runner.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { declareDeliverableOnSchedule } from '../../work/deliverable-declaration.js';
-import { RUN_STATUS_UNDELIVERED } from '../../work/run-deliver-drive.js';
+import { RUN_STATUS_UNDELIVERED } from '../../work/occurrences.js';
 import { OCCURRENCE_EVENT } from '../../work/occurrences.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 

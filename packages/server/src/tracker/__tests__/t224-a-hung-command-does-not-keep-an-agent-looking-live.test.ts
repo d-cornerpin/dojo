@@ -4,11 +4,10 @@
 // THE DEFECT (t223 section 3). Liveness reads the abort registry as "a model or media request is
 // open" and counts it as movement RIGHT NOW. t203 put every child the toolbox spawns into that
 // registry for its whole life, so a sub-agent wedged on a command that never exits looked
-// permanently live: the SILENT window never closed, the owner got no notice and no `person_told`
-// record, and later the ladder raised the very same task with him again.
+// permanently live: the SILENT window never closed and the owner got no notice.
 //
 // This clause drives the REAL spawn door (a real child that never exits, inside a real per-call
-// capability) and the REAL liveness sweep, down to the owner-notice door and the task's spine.
+// capability) and the REAL liveness sweep, down to the owner-notice door.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -148,11 +147,6 @@ describe('t224: a sub-agent wedged on a command that never exits is SILENT, and 
     ).get(OWNER) as { n: number }).n;
     expect(texts, 'the owner is told once that the sub-agent has shown no sign of work').toBe(1);
     expect(transport.filter((t) => t.includes('"send"'))[0]).toContain('has shown no sign of work');
-    const told = (id: string): Array<{ via: string }> => db().prepare(
-      "SELECT json_extract(payload, '$.via') AS via FROM work_events WHERE work_id = ? AND kind = 'person_told'",
-    ).all(id) as Array<{ via: string }>;
-    expect(told('task-new')).toEqual([{ via: 'owner_notice' }]);
-    expect(told('task-old')).toEqual([]);
   });
 
   it('RED: the abort registry, which liveness reads as "a request is open", holds nothing for a running command', async () => {

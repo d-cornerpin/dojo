@@ -159,11 +159,6 @@ export function ledgerNewItemsSince(workId: string, sinceMs: number): number {
   return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
 }
 
-/** When the task last touched an ITEM for the first time (0 when never): the continued-job fact's anchor. */
-export function ledgerLastNewItemAt(workId: string): number {
-  return (getDb().prepare(`SELECT MAX(first_at) AS at FROM work_ledger WHERE work_id = ? AND ${IS_ITEM}`).get(workId) as { at: number | null }).at ?? 0;
-}
-
 /** Store a reading of the task's measure. `remaining` null = the measure could not be read at `at`;
  *  `initial` is given only when the measure is set (a new measure is a new scope). Field fix 3
  *  re-review 2 (S2): a measure that could not be read at set takes its first successful reading as

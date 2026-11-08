@@ -95,7 +95,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // the turn decides before the main `try` opens lives there, including the three closures
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
-import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
 import { parkJob } from '../../work/job-continuation.js';
 import { ensureArtifactDir } from '../artifact-dir.js';
 
@@ -637,11 +637,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         agentId, maxLoops: MAX_TOOL_LOOPS,
       }, agentId);
       turnCtx.toolLoopCapReached = true;   // C2: teardown records the CUT, not the model's intent
-      // t137 ROUND 2 (R-V333-3, OR-LONG-JOBS): this checkpoint is invisible housekeeping, like the
-      // 15-minute park — it no longer writes or broadcasts a "[System: This turn reached N tool
-      // calls …]" row to the owner's chat (role='system', so the model never read it either). A
-      // pending PM circling verdict goes to the AGENT as a rider notice its continuation reads.
-      deliverPendingCirclingVerdict(agentId);   // never throws; a failure leaves it pending for the sweep
+      // This checkpoint is invisible housekeeping, like the 15-minute park: no row in the owner's chat.
       // T79a: same reasoning as the turn-budget checkpoint (`pre-call-gates/turn-budget.ts`)
       // — this checkpoint is about to park the turn and self-continue with whatever the
       // agent had claimed still in flight. Square the tracker BEFORE scheduling that

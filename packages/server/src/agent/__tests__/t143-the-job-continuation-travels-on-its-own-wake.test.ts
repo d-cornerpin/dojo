@@ -4,13 +4,12 @@
 // The real runtime (`agent/runtime.ts`: `handleMessage`, the busy path, the queued-wakeup drain, the
 // run's `finally`) runs here; only the turn itself (`runV2Turn`) is scripted. A scripted turn does
 // exactly what the engine's turns do at a park: it opens its turn context, calls the real checkpoint
-// writer and the park's wake helper, and ends. The close-out gate is the real gate.
+// writer and the park's wake helper, and ends.
 //
 // THE REAL ORDER (the round-5 review's trace): the owner's message arrives mid-job and is queued on the
 // shared wake set; the job parks (the tool-loop cap) and its own continuation is armed on a 1 s timer;
 // the drain runs the OWNER's turn first; the timer fires while that turn is still running; the
-// continuation follows. Throughout: the carry is intact, the gate names nothing, and no PM rung sees an
-// abandoned task (the PM leaves exactly `jobCarriedIds` alone).
+// continuation follows. Throughout: the carry is intact (the stall ladder leaves exactly `jobCarriedIds` alone).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -23,7 +22,6 @@ import * as coldImport3 from '../../work/engine-checkpoint-note.js';
 import * as coldImport4 from '../../work/job-continuation.js';
 import * as coldImport5 from '../turn-context.js';
 import * as coldImport6 from '../v2/state.js';
-import * as coldImport7 from '../v2/steps/preflight/closeout-gate.js';
 import * as coldImport8 from '../agent-status.js';
 import * as coldImport9 from '../v2/honest-stop.js';
 import * as coldImport10 from '../shared-state.js';
@@ -49,7 +47,7 @@ const MIN = 60_000;
 let m: {
   runtime: typeof import('../runtime.js'); fresh: typeof import('../../work/task-freshness.js');
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
-  state: typeof import('../v2/state.js'); gate: typeof import('../v2/steps/preflight/closeout-gate.js');
+  state: typeof import('../v2/state.js');
   status: typeof import('../agent-status.js'); park: typeof import('../v2/honest-stop.js'); shared: typeof import('../shared-state.js');
   rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/agents.js');
 };
@@ -62,7 +60,7 @@ beforeEach(async () => {
   m = {
     runtime: coldImport1, fresh: coldImport2,
     note: coldImport3, cont: coldImport4, ctx: coldImport5,
-    state: coldImport6, gate: coldImport7,
+    state: coldImport6,
     status: coldImport8, park: coldImport9, shared: coldImport10,
     rl: coldImport11, routes: coldImport12,
   };
@@ -96,27 +94,13 @@ async function engineTurn(turnNumber: number, root: Root, body: () => Promise<vo
   try { await body(); } finally { endTurnContext(AGENT); }
 }
 
-/** Field fix 3 audit round (#8): the close-out gate names a task the agent passed over for a whole
- *  turn (its record), not one idle past a 10-minute clock. The agent's next whole turn, on record. */
+/** The agent's next whole turn, on record. */
 function aWholeTurnPassedItOver(): void {
   const sqlAt = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
   mockDb.current!.prepare(`INSERT INTO turns (agent_id, turn_number, kind, subject_kind, answered, started_at, ended_at, exit_reason)
     VALUES (?, 8, 'user', 'conv', 1, ?, ?, 'answered')`).run(AGENT, sqlAt(Date.now() - 2 * MIN), sqlAt(Date.now() - MIN));
 }
 
-/** The real close-out gate, as a trigger-less continuation turn meets it. */
-async function gateNames(): Promise<string[]> {
-  const { initState } = m.state;
-  const { runCloseoutGate } = m.gate;
-  const tc = m.ctx.turnContext(AGENT)!;
-  tc.state = initState({
-    agentId: AGENT, contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'm-a', turnNumber: tc.turnNumber ?? 0,
-    triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
-    lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
-  });
-  await runCloseoutGate(tc, { agentId: AGENT } as never, { db: mockDb.current!, triggerRow: undefined as never });
-  return [...(tc.state!.danglingTaskIds ?? [])];
-}
 
 const touchedAt = (): number => (mockDb.current!.prepare("SELECT updated_at AS u FROM work WHERE id = 'task-job'").get() as { u: number }).u;
 
@@ -131,7 +115,7 @@ describe('ROUND 6: the job travels on its own continuation wake', () => {
   it('an owner message queued mid-job is served first; the job\'s continuation (deferred behind it) still carries the job — carry intact, no refusal', async () => {
     const { jobCarriedIds } = m.fresh;
     const rt = m.runtime.getAgentRuntime();
-    const seen: Array<{ turn: string; carried: string[]; gate?: string[] }> = [];
+    const seen: Array<{ turn: string; carried: string[] }> = [];
     let releaseOwnerTurn: () => void = () => undefined;
     const ownerTurnHeld = new Promise<void>((r) => { releaseOwnerTurn = r; });
     const steps: Array<() => Promise<void>> = [];
@@ -146,14 +130,14 @@ describe('ROUND 6: the job travels on its own continuation wake', () => {
       seen.push({ turn: 'owner', carried: jobCarriedIds(AGENT) });
       await ownerTurnHeld;                                             // the 1 s timer fires while this runs
     }));
-    // Turn 3: the job's continuation (trigger-less). The gate meets a stale task that is the job.
+    // Turn 3: the job's continuation (trigger-less), on a stale task that is the job.
     steps.push(() => engineTurn(3, null, async () => {
-      seen.push({ turn: 'continuation-1', carried: jobCarriedIds(AGENT), gate: await gateNames() });
+      seen.push({ turn: 'continuation-1', carried: jobCarriedIds(AGENT) });
       await toolLoopPark();                                            // and parks again
     }));
     // Turn 4: the next continuation finishes the work without parking: the chain ends cleanly.
     steps.push(() => engineTurn(4, null, async () => {
-      seen.push({ turn: 'continuation-2', carried: jobCarriedIds(AGENT), gate: await gateNames() });
+      seen.push({ turn: 'continuation-2', carried: jobCarriedIds(AGENT) });
     }));
     script.run = async () => { await steps.shift()?.(); };
 
@@ -169,15 +153,12 @@ describe('ROUND 6: the job travels on its own continuation wake', () => {
     expect(seen.map((s) => s.turn)).toEqual(['owner', 'continuation-1', 'continuation-2']);
     expect(seen[0].carried, 'the owner\'s turn does not take the job').toEqual(['task-job']);
     expect(seen[1].carried).toEqual(['task-job']);
-    expect(seen[1].gate, 'zero gate refusals on the stale job').toEqual([]);
     expect(touchedAt(), 'the continuation\'s park still knows the job').toBeGreaterThan(Date.now() - 30 * MIN);
     expect(seen[2].carried).toEqual(['task-job']);
-    expect(seen[2].gate).toEqual([]);
     // The chain ended cleanly: nothing carries the task now, and a later turn judges it like any other.
     expect(jobCarriedIds(AGENT)).toEqual([]);
     vi.setSystemTime(Date.now() + 15 * MIN);
     aWholeTurnPassedItOver();
-    await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
   });
 });
 
@@ -196,7 +177,6 @@ describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', 
     expect(jobCarriedIds(AGENT)).toEqual([]);
     vi.setSystemTime(Date.now() + 15 * MIN);
     aWholeTurnPassedItOver();
-    await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
   });
 
   it('an agent that leaves the running states through the one status writer (terminated, error, paused, rate-limited) ends the carry', async () => {
@@ -236,7 +216,6 @@ describe('MERGE (t143 + t148): the one status writer does both jobs', () => {
     expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
     vi.setSystemTime(Date.now() + 15 * MIN);
     aWholeTurnPassedItOver();
-    await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
   });
 
   it('a plain paused write over a park clears the park tag AND ends the carry (one statement path, both effects)', async () => {
@@ -264,43 +243,41 @@ async function runToCarryingContinuation(carryingBody: () => Promise<void> | voi
 
 describe('ROUND 7 (R6-I1): a carrying run that ends with a wake of its own hands the job to it', () => {
   it('a 429 silent retry of the carrying continuation restarts it AS the job: carry intact in the gap, no refusal on the retry', async () => {
-    const seen: Array<{ turn: string; carried: string[]; gate?: string[] }> = [];
+    const seen: Array<{ turn: string; carried: string[] }> = [];
     await runToCarryingContinuation(
       () => {
         seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT) });
         vi.setSystemTime(Date.now() + 15 * MIN);                            // 15 quiet minutes inside the call
         m.rl.scheduleRateLimitRetry(AGENT, null, 'hello');                  // the provider said 429; ends without parking
       },
-      [async () => { seen.push({ turn: 'retry', carried: m.fresh.jobCarriedIds(AGENT), gate: await gateNames() }); }],
+      [async () => { seen.push({ turn: 'retry', carried: m.fresh.jobCarriedIds(AGENT) }); }],
     );
     expect(seen.map((x) => x.turn)).toEqual(['continuation']);
     expect(m.fresh.jobCarriedIds(AGENT), 'in the 10 s gap the retry carries the job').toEqual(['task-job']);
     await vi.advanceTimersByTimeAsync(11_000);                              // the silent retry fires
     expect(seen.map((x) => x.turn)).toEqual(['continuation', 'retry']);
     expect(seen[1].carried).toEqual(['task-job']);
-    expect(seen[1].gate, 'the stale job is not named at the retry').toEqual([]);
     expect(m.fresh.jobCarriedIds(AGENT), 'the retry ended without a further wake: the chain is over').toEqual([]);
   });
 
   it('a recovery re-queue (queueSelfWake) of the carrying continuation is served by a run that carries the job', async () => {
-    const seen: Array<{ turn: string; carried: string[]; gate?: string[] }> = [];
+    const seen: Array<{ turn: string; carried: string[] }> = [];
     await runToCarryingContinuation(
       () => {
         seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT) });
         vi.setSystemTime(Date.now() + 15 * MIN);
         m.shared.queueSelfWake(AGENT, 'recovery-requeue');                  // what the recovery cascade does
       },
-      [async () => { seen.push({ turn: 'requeued', carried: m.fresh.jobCarriedIds(AGENT), gate: await gateNames() }); }],
+      [async () => { seen.push({ turn: 'requeued', carried: m.fresh.jobCarriedIds(AGENT) }); }],
     );
     await vi.advanceTimersByTimeAsync(700);                                 // the drain
     expect(seen.map((x) => x.turn)).toEqual(['continuation', 'requeued']);
     expect(seen[1].carried).toEqual(['task-job']);
-    expect(seen[1].gate).toEqual([]);
     expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
   });
 
   it('the turn-budget park with the owner\'s message merged on the same wake: the one drained run serves both and carries the job; its continuation too', async () => {
-    const seen: Array<{ turn: string; carried: string[]; carries: boolean; gate?: string[] }> = [];
+    const seen: Array<{ turn: string; carried: string[]; carries: boolean }> = [];
     const rt = m.runtime.getAgentRuntime();
     const steps: Array<() => Promise<void>> = [
       () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
@@ -315,7 +292,7 @@ describe('ROUND 7 (R6-I1): a carrying run that ends with a wake of its own hands
         m.cont.queueJobContinuation(AGENT, 'turn-budget-continuation');
       }),
       () => engineTurn(3, null, async () => {
-        seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT), carries: m.fresh.runCarriesJob(AGENT), gate: await gateNames() });
+        seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT), carries: m.fresh.runCarriesJob(AGENT) });
       }),
     ];
     script.run = async () => { await steps.shift()?.(); };
@@ -324,7 +301,7 @@ describe('ROUND 7 (R6-I1): a carrying run that ends with a wake of its own hands
     await vi.advanceTimersByTimeAsync(700);
     expect(seen.map((x) => x.turn)).toEqual(['merged', 'continuation']);
     expect(seen[0]).toMatchObject({ carried: ['task-job'], carries: true });
-    expect(seen[1]).toMatchObject({ carried: ['task-job'], carries: true, gate: [] });
+    expect(seen[1]).toMatchObject({ carried: ['task-job'], carries: true });
     expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
   });
 });

@@ -48,10 +48,10 @@ describe('frictionCensus — deterministic, no model', () => {
     const e1 = event('task-rough-1', 'rearm_refused', { reason: 'x' });
     const e2 = event('task-rough-1', 'claim_rejected', { note: 'not done' });
     task('task-rough-2', 'agent-y', 'Book the venue');
-    const e3 = event('task-rough-2', 'poke', { rung: 3, poke_type: 'escalate_primary' });
+    const e3 = event('task-rough-2', 'audit', { entry_kind: 'ladder_pm' });
     const e4 = event('task-rough-2', 'floor_ghosted', { floor: 'delegated-job-stuck' });
     task('task-quiet', 'agent-z', 'Water the plants');
-    event('task-quiet', 'poke', { rung: 1, poke_type: 'nudge' });
+    event('task-quiet', 'audit', { entry_kind: 'ladder_hint' });
     event('task-quiet', 'transition', { to: 'done' });
 
     const found = frictionCensus(SINCE);
@@ -61,7 +61,7 @@ describe('frictionCensus — deterministic, no model', () => {
     expect(one.kinds.sort()).toEqual(['claim_rejected', 'rearm_refused']);
     expect(one.eventIds.sort()).toEqual([e1, e2].sort());
     const two = found.find((f) => f.taskId === 'task-rough-2')!;
-    expect(two.kinds.sort()).toEqual(['floor_ghosted', 'poke_escalated']);
+    expect(two.kinds.sort()).toEqual(['floor_ghosted', 'stall_escalated']);
     expect(two.eventIds.sort()).toEqual([e3, e4].sort());
   });
 
@@ -113,7 +113,7 @@ describe('buildRoughTasksBatch — the Dreamer\'s one batch', () => {
     task('task-rough-2', 'agent-y', 'Book the venue');
     const e2 = event('task-rough-2', 'floor_ghosted', { floor: 'delegated-job-stuck' });
     task('task-quiet', 'agent-z', 'Water the plants');
-    event('task-quiet', 'poke', { rung: 1 });
+    event('task-quiet', 'audit', { entry_kind: 'ladder_hint' });
 
     const batch = buildRoughTasksBatch(SINCE, 100_000)!;
     expect(batch.verbatim).toBe(true);

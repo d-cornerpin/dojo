@@ -128,7 +128,7 @@ const PRODUCER_ALLOWLIST: string[] = [
   'agent/v2/steps/preflight/turn-trigger.ts',
   'agent/v2/steps/preflight/counterparty-and-record.ts',
   'gateway/routes/chat.ts', 'gateway/routes/twilio.ts',
-  'scheduler/runner.ts', 'services/gmail-watcher.ts', 'services/imessage-bridge.ts',
+  'services/gmail-watcher.ts', 'services/imessage-bridge.ts',
   'services/outlook-watcher.ts', 'services/teams-watcher.ts', 'twilio/call-session.ts',
   'twilio/sms-inbound.ts',
 ];

@@ -220,9 +220,7 @@ export function tsToMs(text: string | null | undefined): number | null {
  * only the unit it is returned in changed, and every caller compares in that unit.
  *
  * `stateSql` is a SQL expression, so a caller can ask about a literal state (`'blocked'`) or
- * about the row's CURRENT state (`w.state`) — the latter is the ESCALATION EPISODE, see
- * `work/validation-drive.ts:ownerEpisodeSettledExpr`. One definition serves both, so a verdict
- * and a "the owner was told" record are scoped to the same boundary by construction.
+ * about the row's CURRENT state (`w.state`).
  */
 export const lastEntryEventIdExpr = (a: string, stateSql: string): string =>
   `(SELECT MAX(e.id) FROM work_events e`
@@ -248,8 +246,7 @@ export const validatedExpr = (a: string, state: WorkState): string =>
   + (state === 'done' ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
   + `   AND adj.event_seq >= COALESCE(${lastEntryEventIdExpr(a, `'${state}'`)}, 0)) THEN 1 ELSE 0 END)`;
 
-/** Board work handed in and waiting for its decision (`work/done/`), as 1/0. The readers of the
- *  filed-close question all read this one fact now; 2d replaces them with the one ladder. */
+/** Board work handed in and waiting for its decision (`work/done/`), as 1/0. */
 export const handedInExpr = (a: string): string => `(CASE WHEN ${a}.state = 'handed_in' THEN 1 ELSE 0 END)`;
 
 /**
@@ -271,8 +268,7 @@ export const workingTaskOrder = (a: string): string =>
   + `CASE WHEN ${a}.step_number IS NULL THEN 1 ELSE 0 END ASC, ${a}.step_number ASC, ${a}.rowid DESC`;
 
 export const WORK_EVENT = {
-  /** The 5-minute unvalidated-transition escalation (was `validation_escalated_at` +
-   *  `validation_thread_id`). Payload: `{ thread_id }`. */
+  /** The owner was asked about this row (the stall ladder's card). Payload: `{ thread_id }`. */
   validationEscalated: 'validation_escalated',
   /** `revert_count = 0`. The count itself is `COUNT(adjudications rejected)`, so a RESET has
    *  to be a marker the count reads past rather than an assignment. */
@@ -281,22 +277,13 @@ export const WORK_EVENT = {
    *  turn-finalize, replacing SIX denormalized columns. Payload:
    *  `{ turn, outcome, answered, delivery_summary }`. */
   activity: 'activity',
-  /** v3.3.3 t142 (migration 189) — A PERSON WAS TOLD ABOUT THIS WORK. Written only by
-   *  `work/validation-drive.ts:recordPersonTold`, by a path that structurally holds the work
-   *  id. Payload: `{ delivery_id, via, channel }`; it counts only while that delivery is still
-   *  `delivered` (an outbound scope can downgrade its row to `failed` after the fact). */
-  personTold: 'person_told',
 } as const satisfies Record<string, WorkEventKind>;
 
 const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
   `(SELECT MAX(e.${col}) FROM work_events e WHERE e.work_id = ${a}.id AND e.kind = '${kind}')`;
 
-/** `validation_escalated_at` — the newest stamp's instant, for DISPLAY (the dashboard's "user
- *  has been asked" label). It is deliberately unscoped, and since t142 that is a known gap: the
- *  escalation sweep reads stamps PER EPISODE for a blocked row (`validation-drive.ts:
- *  ownerEpisodeSettledExpr`), so after a re-block this label still shows the previous episode's
- *  ask until the ladder runs again. Migration 189d's carried stamps copy the original instant,
- *  so the upgrade itself moves no label. */
+/** `validation_escalated_at`: the newest owner ask's instant (the stall ladder's card), for DISPLAY
+ *  (the dashboard's "user has been asked" label). */
 export const validationEscalatedAtExpr = (a: string): string =>
   msToText(lastEvent(a, WORK_EVENT.validationEscalated));
 

@@ -311,7 +311,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     expect(advanceAt).toBeLessThan(callAt);
   });
 
-  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: three directives, SEVEN exits, EIGHTEEN continues', () => {
+  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: three directives, SEVEN exits, SIXTEEN continues', () => {
     // Twenty-four conversions — the most of any tranche in the phase, four times
     // `execute`'s six. Every one of them was a `break` or a `continue` of the driver's
     // loop before the cut, so a new silent way out cannot appear without failing here.
@@ -335,9 +335,8 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
       walk(sf);
     }
     expect([...directives].sort()).toEqual(['continue', 'exit', 'proceed']);
-    // The seven: empty-after-tools · the empty-response give-up · the near-duplicate
-    // reply · the A2A missed-reply hardcap · the close-out one-shot · the tracker
-    // close-out hardcap · and the plain "no tool calls, the turn is done".
+    // The exits: empty-after-tools · the empty-response give-up · the near-duplicate
+    // reply · the A2A missed-reply hardcap · the plain "no tool calls, the turn is done".
     // ⚠ RE-DERIVED, NOT LOWERED (SWEEP-A TB8 JOB 1): SEVEN -> EIGHT. The eighth is the
     // grind rung's give-up arm — a truncated call that spent its whole output budget with
     // no tool call, twice in one turn. It reaches the SAME failure surface the
@@ -346,9 +345,9 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // ⚠ RE-DERIVED (v3.5 D1): EIGHT -> NINE. The ninth is the going-idle detector's job-turn-end
     // exit (`going-idle.ts`, after `job-continues.ts` has either parked a job that made progress
     // or recorded a continued turn that made none as stalled). Both arms END the turn, so the
-    // closure menu and the tracker close-out nudge that follow it never run on a job with items
-    // left. The continue count is UNCHANGED at sixteen: no re-entry was converted into it.
-    expect(exitSites).toBe(9);
+    // closure menu that follows it never runs on a job with items left. The close-out one-shot and
+    // the tracker close-out hardcap went with the close-out gate: SEVEN.
+    expect(exitSites).toBe(7);
     // The eighteen re-entries: three in the empty-response ladder and FIFTEEN floors that
     // hand the model one more round to put something right.
     //
@@ -397,7 +396,8 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // (closeout-floors.ts), the ONE re-entry shared by the three floors that used to NULL the
     // agent's reply (redundant closeout, near-duplicate, prose decline) and now steer instead.
     // Exits UNCHANGED at nine: a suppression became a re-entry, no way out was added.
-    expect(continueSites).toBe(17);
+    // SEVENTEEN -> SIXTEEN: the tracker close-out nudge's re-entry went with the close-out gate.
+    expect(continueSites).toBe(16);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
@@ -455,7 +455,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
       'uncommitted-promise', 'false-delivery-claim',
       'silent-closeout', 'add-notes-stop', 'going-idle-in-progress', 'owed-interrupt',
       'promise-floor', 'a2a-handoff-floor', 'reminder-silence', 'ghosted-ask',
-      'ghosted-ask-answer', 'a2a-missed-reply', 'tracker-closeout',
+      'ghosted-ask-answer', 'a2a-missed-reply',
       // field fix 3 audit round (#11): the three floors that used to suppress the reply now steer
       'redundant-closeout', 'near-duplicate-reply', 'prose-decline',
     ];

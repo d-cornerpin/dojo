@@ -64,12 +64,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
 import { workOperation } from '../../tools/work-verbs.js';
-import {
-  withOutboundAsync, withOutboundAsyncIfAbsent, outboundIntentForTool, currentOutboundDeliveryId,
-} from '../v2/outbound.js';
-import { TOLD_ABOUT_TASK_ARG, agentMayNameTask } from './told-about-task.js';
-import { recordPersonTold } from '../../work/validation-drive.js';
-import { resolveTaskId } from '../../tracker/schema.js';
+import { withOutboundAsyncIfAbsent, outboundIntentForTool } from '../v2/outbound.js';
 import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { sharePathGuard, pdfInputPaths } from '../path-guards.js';
@@ -208,26 +203,7 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
   // transport writes no row at all.
   const intent = outboundIntentForTool(agentId, resolved.name, resolved.args as Record<string, unknown>, turnContext(agentId)?.root?.conversationId ?? null);
   if (intent !== null) {
-    // t146: a send whose ARGUMENTS name its task (`task_id`, ./told-about-task.ts) opens its OWN
-    // scope, and the person is recorded as told about that task from the row THIS send wrote.
-    // The record itself refuses anyone but the owner or the row's requester, and only a caller who
-    // holds, was assigned or opened the row (or the primary) may name it. No argument, no
-    // record: never inferred from the words or from what the turn was serving. Whether the send
-    // reached the person is the ledger's answer (the record checks the delivery's outcome).
-    const named = (resolved.args as Record<string, unknown>)[TOLD_ABOUT_TASK_ARG];
-    if (typeof named !== 'string' || named.trim() === '') {
-      return withOutboundAsyncIfAbsent(intent, () => dispatchResolved(agentId, toolCall, resolved));
-    }
-    return withOutboundAsync(intent, async () => {
-      const r = await dispatchResolved(agentId, toolCall, resolved);
-      const deliveryId = currentOutboundDeliveryId();
-      const task = resolveTaskId(named);
-      if (deliveryId && task.ok && agentMayNameTask(agentId, task.id)) {
-        const told = recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
-        if (told.kind === 'refused') logger.info('a send named its task but is not recorded as a tell', { taskId: task.id, reason: told.reason }, agentId);
-      }
-      return r;
-    });
+    return withOutboundAsyncIfAbsent(intent, () => dispatchResolved(agentId, toolCall, resolved));
   }
   return dispatchResolved(agentId, toolCall, resolved);
 }

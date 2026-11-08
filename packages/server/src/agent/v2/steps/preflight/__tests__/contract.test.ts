@@ -290,7 +290,7 @@ describe('the step never writes `phase`', () => {
         .map((m) => ({ rel, patch: m[1] })),
     );
     expect(advances.map((a) => a.rel).sort())
-      .toEqual(['closeout-gate.ts', 'compile-gate.ts', 'recall-flag.ts']);
+      .toEqual(['compile-gate.ts', 'recall-flag.ts']);
     for (const a of advances) expect(a.patch).not.toMatch(/\bphase\b/);
   });
 });

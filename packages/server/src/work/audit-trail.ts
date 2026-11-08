@@ -71,7 +71,7 @@ export function appendAuditEntry(workId: string, actor: string, f: AuditEntryFie
   });
 }
 
-/** The ladder clock's open-stretch marker (`work/ladder-clock.ts`): bookkeeping, never shown in the trail. */
+/** An old bookkeeping marker some rows still carry: never shown in the trail. */
 export const LADDER_HELD_ENTRY = 'ladder_held';
 
 /**

@@ -330,22 +330,7 @@ const STEPS_BY_PATH: Declaration[] = [
       + '"exactly one of these in THIS file", so importing the shared derivation here would '
       + 'delete the guarantee in order to satisfy the census.',
   },
-  {
-    rel: 'packages/server/src/tracker/__tests__/effort-accumulates-until-the-task-advances.test.ts',
-    verdict: 'cannot-go-quiet',
-    why: 'IT GROWS NO WALK — there is no readFileSync/readdirSync of the step packages here '
-      + 'at all (this file does not even set readsSource). The one occurrence of '
-      + 'agent/v2/steps is a plain named import of resolveCurrentClaimedTaskId from '
-      + 'agent/v2/steps/execute/tracker-counting.js (SLOW-INFERENCE T79c\'s charge-site '
-      + 'resolution), used directly as a function call, not read as text. A PHASE-6 cut that '
-      + 'relocated that file could not make this guard go quiet the way a hand-rolled text '
-      + 'walk can: the import would fail to RESOLVE, which TypeScript refuses at compile '
-      + 'time — louder and earlier than even a readFileSync ENOENT at test-run time. The '
-      + 'failure mode this census exists to prevent (a corpus silently narrowing until a '
-      + 'negative clause passes vacuously) cannot occur here because there is no corpus and '
-      + 'no negative clause over step-package text; the whole file exercises one specific '
-      + 'exported function, by direct call, against fixture rows.',
-  },
+
   {
     rel: 'packages/server/src/work/__tests__/the-revet-hooks-fire-at-both-registrations.test.ts',
     verdict: 'cannot-go-quiet',
@@ -372,15 +357,7 @@ const STEPS_BY_PATH: Declaration[] = [
       + '`engineText()` would be the wrong corpus AND useless here — concatenated engine text '
       + 'cannot be called, and what this file needs from `model-call.ts` is its BEHAVIOUR.',
   },
-  {
-    rel: 'packages/server/src/tracker/__tests__/t143-r2-freshness-is-named-not-inferred.test.ts',
-    verdict: 'cannot-go-quiet',
-    why: 'It IMPORTS the close-out gate (`steps/preflight/closeout-gate.ts`) to DRIVE it, the way '
-      + 'the declaration above imports `model-call.ts`: there is no readFileSync, no corpus and no '
-      + 'clause over step-package text. Each clause asserts what the real gate armed '
-      + '(`danglingTaskIds`) after real parks. A cut that moved the gate would fail to RESOLVE the '
-      + 'import at compile time, which cannot be silent.',
-  },
+
 ];
 
 // ════════════════════════════════════════════════════════════════════════════════════════

@@ -325,6 +325,9 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
     { cls: 'informational', what: 'Ollama stopped during its update and has not come back', why: 'audit #7: the Dojo tries again at its next start; the card asks nothing of him (no hidden Repair button)' },
     { cls: 'informational', what: 'the same condition, from the restart path', why: 'the same answer' },
   ],
+  'work/done/ladder.ts': [
+    { cls: 'action', what: 'a task is stuck: waiting for his decision, or the ladder above him ran out', why: 'he decides, closes or cancels it on the board; once a day per task, never a text' },
+  ],
   'services/watcher-status.ts': [
     { cls: 'action', what: 'a mail/chat watcher has been failing', why: 'he reconnects the account (OR-AUDIT-ANSWERS (d): a card, no longer a text)' },
   ],

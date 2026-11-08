@@ -678,7 +678,7 @@ async function main(): Promise<void> {
     })();
   }, 20_000);
 
-  // 4c. Ensure PM agent exists and poke loop is running (once setup is complete)
+  // 4c. Ensure the PM agent exists (once setup is complete)
   {
     const { isSetupCompleted } = await import('./config/platform.js');
     if (isSetupCompleted()) {

@@ -20,7 +20,6 @@ import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { closeOutGateDecision } from '../../stale-work-ids.js';
 import { compileOwedGateDecision } from '../../compile-owed-gate.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
@@ -230,72 +229,6 @@ export function runRefusalGates(
     }, agentId);
     // Fall through: the tool executes normally. No refusal.
   }
-  // ── Pre-turn close-out gate (v2.5.46) ──
-  // Refuse non-tracker tool calls when the agent has dangling
-  // in_progress tasks from a previous turn. The agent MUST
-  // engage with the tracker (status update, complete_step, or
-  // add_notes for "still working") before doing other work.
-  // Once any qualifying tracker call lands, the gate disengages
-  // for the rest of the turn (re-arms next turn if there are
-  // still danglers).
-  //
-  // HAND-PICKED, NOT DERIVABLE, and legitimately so: this is a work-FAMILY
-  // allowlist (the stable tracker surface plus load_tool_docs so the agent
-  // can fetch a close-out tool's schema). Its domain is the work family,
-  // which does not span the google/microsoft/_ms/user_ tool explosion that
-  // drifts, so it does not have the defect-class disease. No display/effect
-  // classifier encodes "counts as engaging with your dangling tasks"; that
-  // is exactly this gate's private rule.
-  //
-  // PHASE-2 T8V: keyed on OPERATIONS. Allowing the bare verb `work_update`
-  // would let the agent past the gate with anything that verb can do; the
-  // ops below are exactly the retired names this list used to carry, and
-  // the two obligation ops are deliberately NOT here (closing a promise is
-  // not engaging with a dangling task).
-  //
-  // PHASE-6 T0D: the three conditions are unchanged and tested in the same
-  // order; the gate re-validates against the spine before it refuses, so a
-  // dangler deleted mid-turn can no longer trap the agent. Why, and what it
-  // costs: `stale-work-ids.ts`.
-  const closeOut = closeOutGateDecision(
-    state.danglingTaskIds, state.closeOutGateSatisfied, toolOpKey(tc.name, tc.arguments),
-  );
-  if (closeOut.live.length !== state.danglingTaskIds.length) {
-    state = advance(state, { danglingTaskIds: closeOut.live });
-    logger.info('v2: close-out gate dropped dangling ids whose rows are gone', {
-      agentId, remaining: closeOut.live.length,
-    }, agentId);
-  }
-  if (closeOut.refuse) {
-    const taskListShort = closeOut.live.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
-    // v3.5 field fix 3 (#2): NO ESCAPE HATCH HERE. The shared tail told the agent to "tell the
-    // person" the engine had refused it. On an A2A turn that made the primary text the
-    // owner about tracker plumbing. Steers state facts; the engine never sends the agent to
-    // narrate engine internals to the owner. The tracker call this gate asks for is always
-    // allowed, so the gate cannot trap a genuine need.
-    const refusalText = (
-      `Refused: engine tracker check. ${closeOut.live.length} in_progress task(s) of yours have not moved for a while ` +
-      `(ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
-      `Say where they stand before any other tool: work_note(task_id, notes="what is next") if you are continuing; ` +
-      `work_update(action="status", status="paused"|"blocked") if you are waiting; work_update(action="hand_in") only for one that is done. ` +
-      `After any one of those the gate stands down for this turn and "${tc.name}" works normally. ` +
-      `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.`
-    );
-    try {
-      broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
-      broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
-    } catch { /* best effort */ }
-    logger.info('v2: close-out gate refused call', {
-      agentId, tool: tc.name, danglingCount: closeOut.live.length,
-    }, agentId);
-    return { state, refusal: {
-      toolCallId: tc.id,
-      name: tc.name,
-      content: refusalText,
-      isError: true,
-    } };
-  }
-
   // ── UX-REPAIR ROUND 12 T47 — THE PRE-TURN COMPILE GATE ──
   //
   // The owner is owed a compiled reply, every delegated piece is back, and the redrive ladder
@@ -304,13 +237,6 @@ export function runRefusalGates(
   // `load_tool_docs`, `history_search`, `history_get`, `work_update` (errored ×2) and
   // `history_get`, across 12m26s, with no reply. Persuasion failed 3/3; this is the same duty
   // made mechanical, in the shape of the gate directly above that already worked.
-  //
-  // IT SITS AFTER THE CLOSE-OUT GATE ON PURPOSE. When both are armed the agent should read the
-  // close-out gate's "tracker call first" instruction, and it does, because that gate speaks
-  // first. There is no deadlock in either order: `COMPILE_OWED_ALLOWED_OPS` is a SUBSET of
-  // `CLOSE_OUT_WORK_OPS`, so any call that satisfies the close-out gate also passes this one,
-  // and the owed compile is then discharged by TEXT, which neither gate blocks. That collision
-  // is argued in full at `compile-owed-gate.ts` and driven in `integration.test.ts`.
   //
   // The re-validation is the DISARM: the decision re-reads `compile_pending` at the moment it
   // would refuse, so the model's own answer, T48's engine relay, a fail-closed notice and a

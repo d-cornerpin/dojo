@@ -37,10 +37,6 @@ import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type T
 import { takeoverRefusal } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
 import { isSystemServiceAgent } from '../config/platform.js';
-// SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
-// leaf (imports only the DB connection), so importing it here creates no cycle with the
-// CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
-import { advanceBaseline } from '../tracker/effort-governor.js';
 
 const logger = createLogger('tracker-store');
 
@@ -585,19 +581,6 @@ export function setTrackerStatus(
     note: input.note ?? null,
     actorId: input.actorId ?? undefined,
   });
-  // SLOW-INFERENCE T79c: a genuine advance moves the effort baseline. `result.kind`
-  // is `'applied'` ONLY when `transition()` actually moved `work.state` — never on a
-  // refusal, and never on G4's "already in that state" no-op. That is what makes a
-  // looping agent's same-status spam (the tool's own `[NO-OP] ... no change made`
-  // text at `tracker/tools.ts`) unable to reset its own meter: `setTrackerStatus` is
-  // this platform's ONE status writer for the tracker's two nouns (doc comment
-  // above), so `work_update(action="status")`, `work_update(action="complete_step")`
-  // and every PM path all clear this same gate. Rung AFTER the transition, deliberately: pure
-  // bookkeeping must never be able to fail or roll back a state change that has
-  // already been decided.
-  if (result.kind === 'applied') {
-    advanceBaseline(id);
-  }
   return result;
 }
 
@@ -621,17 +604,6 @@ export function deliveryForCompletedChildren(projectId: string): string | null {
   ).get(projectId) as { id: string } | undefined;
   return r?.id ?? null;
 }
-
-// ⟨TOMBSTONE⟩ `deliveryAboutWorkSince` lived here (t124): "has a person been told about THIS
-// row since the first steer?", answered from the turn's recorded root (`ask` / `occurrence`).
-// t142 replaced its only caller — the escalation sweep's `spokeSince` branch — with the told
-// RECORD (`work/validation-drive.ts:recordPersonTold`, a `person_told` event keyed by the
-// delivery that told the person), and t146 deleted it once nothing called it. Its `occurrence`
-// edge was the over-credit t142 removed (any scheduled-run output retired an escalation).
-// requirement preserved: unrelated chatter never retires an escalation, and an a2a / engine-ack
-// / undelivered send never counts — asserted by the told record's own refusals in
-// `work/__tests__/t142-a-person-was-told.test.ts` §5 and the driven arm in
-// `work/__tests__/blocked-work-reaches-the-owner.test.ts` §2.
 
 // ⟨TOMBSTONE⟩ `claimOccurrence` lived here and was D21's timestamp CAS: one UPDATE keyed on
 // `next_run_at = ?`. It moved to `work/occurrences.ts` and CHANGED SHAPE in PHASE-2 T8c2

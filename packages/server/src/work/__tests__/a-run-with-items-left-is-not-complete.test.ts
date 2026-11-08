@@ -1,6 +1,6 @@
 // v3.5 DONE IS MEASURED, fix round 3 (NB3) — the engine's own RUN closes go through the measure:
-// \`closeRunsThatDelivered\` (the scheduler closes a run on its delivery) and the deliver-ladder
-// stand-down (\`onTaskRunComplete\` from the turn boundary). A run that ends with items left is
+// \`closeRunsThatDelivered\` (the scheduler closes a run on its delivery) and \`onTaskRunComplete\`.
+// A run that ends with items left is
 // never recorded \`complete\`: it settles in the existing honest non-complete terminal (the
 // occurrence \`abandoned\`, its run word \`incomplete\`), the remainder is on the task's record, and
 // the schedule ADVANCES so the next run fires.
@@ -28,6 +28,7 @@ vi.mock('../../logger.js', async (orig) => {
   return { ...real, createLogger: (name: string) => { const l = real.createLogger(name); return { ...l, warn: (msg: string, ...rest: unknown[]) => { warns.push(msg); return (l.warn as (...a: unknown[]) => void)(msg, ...rest); } }; } };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => 'ran' }) }));
 const { countMeasure } = vi.hoisted(() => ({ countMeasure: vi.fn() }));
 vi.mock('../measure.js', async (orig) => ({ ...(await orig<typeof import('../measure.js')>()), countMeasure }));
 vi.mock('../../agent/access/read.js', async (orig) => ({ ...(await orig<typeof import('../../agent/access/read.js')>()), toolCategoryGranted: () => true }));
@@ -37,18 +38,13 @@ import { closeRunsThatDelivered, onTaskRunComplete, forceResetStuckRecurringTask
 import { turnDeliveredToPerson } from '../../agent/v2/answered-edge.js';
 import { NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import {
-  claimOccurrence, settleOccurrence, runDeliverableEvidence,
-  advanceRunDeliverLadderAtTurnEnd, runsReadyToCloseOnDelivery,
+  claimOccurrence, settleOccurrence, runsReadyToCloseOnDelivery, RUN_STATUS_UNDELIVERED,
   OCCURRENCE_EVENT,
 } from '../occurrences.js';
 import { declareDeliverableOnSchedule } from '../deliverable-declaration.js';
 import { listOccurrenceRuns } from '../occurrence-runs.js';
 import { countOf } from '../measure-close-gate.js';
 import { seedTrackerTask } from './work-fixture.js';
-import {
-  MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
-  RUN_DELIVER_STAND_DOWN_MARKER, recordRunDeliverSteer, runDriveCount,
-} from '../run-deliver-drive.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -137,11 +133,6 @@ const settledRunStatus = (id: string): string | null => {
 const stateOf = (id: string): string =>
   (db().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
 
-const markerRows = (id: string, marker: string): number =>
-  (db().prepare(
-    `SELECT COUNT(*) AS n FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = ?`,
-  ).get(id, marker) as { n: number }).n;
 
 /** A delivery INSIDE the run's window, pointing at a row of the given display kind. */
 function deliverInRun(id: string, displayKind: string, turnNumber: number): void {
@@ -241,17 +232,11 @@ describe('minor (b): a stuck schedule with no runs left and items left is handed
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// fix round 4 (re-review 3, New Breakage 1) — THE DELIVERABLE GATE DECIDES FIRST. A run that owed a
-// message and sent nothing is refused (`owed`) while its ladder lasts, and recorded UNDELIVERED with
-// the owner's one alert once it is spent, exactly as before this lane, whatever the measure says.
-// Only a run the gate would record COMPLETE becomes INCOMPLETE while items are left.
+// THE DELIVERABLE GATE DECIDES FIRST. A run that owed a message and sent nothing is recorded
+// UNDELIVERED with the owner's one alert, whatever the measure says. Only a run the gate would record
+// COMPLETE becomes INCOMPLETE while items are left.
 // ══════════════════════════════════════════════════════════════════════════════
 const ghostRows = (): number => (db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'floor_ghosted'").get() as { n: number }).n;
-const spendLadder = (run: string, turns: number): void => {
-  for (let t = 1; t <= turns; t += 1) {
-    recordRunDeliverSteer(run, { attempt: t, bound: MAX_RUN_DELIVER_STEERS, taskId: W, why: 'nothing sent', turnNumber: 100 + t });
-  }
-};
 
 describe('fix round 4: the deliverable gate decides before the measure', () => {
   beforeEach(() => {
@@ -260,44 +245,19 @@ describe('fix round 4: the deliverable gate decides before the measure', () => {
     countMeasure.mockReset();
   });
 
-  it('owed a message, sent nothing, items left, ladder spent: UNDELIVERED, the stand-down row, the owner\'s alert, and the schedule advances', async () => {
+  it('owed a message, sent nothing, items left: UNDELIVERED, the owner\'s alert, and the schedule advances', async () => {
     measure(5);
     const run = claim();
-    spendLadder(run, MAX_RUN_DELIVER_STEERS);
-    expect(runDeliverableEvidence(run)).toBeNull();
     expect(await onTaskRunComplete(W, 'complete', 'the deliver ladder stood down')).toBe(true);
     expect(stateOf(run)).toBe('abandoned');
     expect(settledRunStatus(run)).toBe(RUN_STATUS_UNDELIVERED);
-    expect(markerRows(run, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(1);
     expect(ghostRows()).toBe(1);
     expect(nextRunOf().status).toBe('waiting');
   });
 
-  it('the stand-down door with NO delivery (the turn boundary spends the last steer): UNDELIVERED with the alert, never incomplete', async () => {
-    measure(5);
-    const run = claim();
-    spendLadder(run, MAX_RUN_DELIVER_STEERS - 1);
-    seedTurn(200);
-    const ladder = advanceRunDeliverLadderAtTurnEnd(run, 200);
-    expect(ladder.standDownDue).toBe(true);
-    expect(await onTaskRunComplete(W, 'complete', 'the deliver ladder stood down')).toBe(true);
-    expect(settledRunStatus(run)).toBe(RUN_STATUS_UNDELIVERED);
-    expect(ghostRows()).toBe(1);
-  });
-
-  it('owed a message, sent nothing, items left, ladder NOT spent: refused (owed), the run stays open', () => {
-    measure(5);
-    const run = claim();
-    const s = settleOccurrence(run, 'complete', null, 'done, I think');
-    expect(s.verdict).toBe('owed');
-    expect(['open', 'claimed']).toContain(stateOf(run));
-    expect(settledRunStatus(run)).toBeNull();
-  });
-
-  it('CONTROL at zero: the same spent-ladder run is UNDELIVERED with the alert, as on base', async () => {
+  it('CONTROL at zero: the same run is UNDELIVERED with the alert', async () => {
     measure(0);
     const run = claim();
-    spendLadder(run, MAX_RUN_DELIVER_STEERS);
     expect(await onTaskRunComplete(W, 'complete', 'the deliver ladder stood down')).toBe(true);
     expect(settledRunStatus(run)).toBe(RUN_STATUS_UNDELIVERED);
     expect(ghostRows()).toBe(1);

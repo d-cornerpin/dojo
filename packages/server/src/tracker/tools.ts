@@ -21,7 +21,6 @@ import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-
 import { createLogger } from '../logger.js';
 import { createProject, getProject, createTask, getTask, listTasks, listProjects, updateTask, updateProject, resolveTaskId, resolveProjectId, formatResolveError, setTaskStatus, setTaskStatusResult, broadcastTaskSettled } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
-import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification } from './notify.js';
 import { writeTaskLog, listTaskLog } from './task-log.js';
 import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
@@ -2374,12 +2373,6 @@ export async function trackerRetask(
     reason: `PM retask: ${directive.slice(0, 200)}`,
   });
   if (!updated) return `Error: task ${taskId} was deleted before retask could land.`;
-
-  // Retask is a remediation: the PM is sending the agent back to redo the
-  // work, which starts a fresh escalation cycle. Re-arm the ladder so it climbs
-  // from nudge(1) if this task stalls again. Marking at a remediation event
-  // (never mid-cycle) keeps the cross-restart poke dedup intact.
-  recordRemediation(taskId, pmAgentId, `PM retask: ${directive.slice(0, 120)}`);
 
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });

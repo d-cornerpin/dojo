@@ -18,6 +18,7 @@ import { checkProof, proofFor, type HandInOutcome, type ProofItemInput } from '.
 import { workerOf, unitOrRollback, type HandInRecord, type HandInScope } from './record.js';
 import { onHandedIn } from './effects.js';
 import { isHousekeeping, settleHousekeeping } from './housekeeping.js';
+import { createLogger } from '../../logger.js';
 
 export type HandInBy = { kind: 'worker'; agentId: string } | { kind: 'engine'; onBehalfOf: string; because: string };
 export interface HandInInput { workId: string; by: HandInBy; outcome: HandInOutcome; items: ProofItemInput[]; note: string; scope?: HandInScope }
@@ -113,4 +114,23 @@ export function engineHandIn(
   if (opts.outcome === 'finished') return { kind: 'refused', text: `Refused: the engine found no proof on record for ${workId}.` };
   const record: ProofItemInput = { kind: 'remainder', ref: 'engine record', facts: { reason: because } };
   return handIn({ workId, by, outcome: 'cant_be_done', items: [...(opts.outcome === 'cant_be_done' ? items : []), record], note: because, scope: opts.scope });
+}
+
+/** An assign task (opened by the engine for an ASSIGN, still Open, unscheduled) whose receiver replied on
+ *  its own thread with a final intent is handed in as can't be done on that reply, for the decider. Never a
+ *  clock, never an agent- or owner-made task. The reply test is in the WHERE, so silent rows never fill the window. */
+export function handInAnsweredAssignTasks(): number {
+  const rows = getDb().prepare(
+    `SELECT t.id, t.agent_id FROM work t WHERE ${taskScope('t')} AND t.state = 'open' AND t.a2a_thread_id IS NOT NULL
+        AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled') AND t.is_paused = 0
+        AND EXISTS (SELECT 1 FROM a2a_replies r WHERE r.agent_id = t.agent_id AND r.thread_id = t.a2a_thread_id
+                     AND r.reply_intent IN ('ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'))
+      ORDER BY t.updated_at ASC LIMIT 50`,
+  ).all() as Array<{ id: string; agent_id: string }>;
+  let handed = 0;
+  for (const t of rows) {
+    if (engineHandIn(t.id, `the receiver ${t.agent_id} replied on this ticket's own thread and never moved the ticket`, { outcome: 'cant_be_done' }).kind === 'handed_in') handed += 1;
+  }
+  if (handed > 0) createLogger('hand-in').info('answered assign tasks handed in', { handed, candidates: rows.length });
+  return handed;
 }

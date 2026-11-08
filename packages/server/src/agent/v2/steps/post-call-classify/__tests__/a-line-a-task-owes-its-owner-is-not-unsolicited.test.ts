@@ -37,7 +37,7 @@ import { runCloseoutFloors } from '../closeout-floors.js';
 import { bumpProactiveSendStreak, getProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from '../../../proactive-budget.js';
 import { openTrackerProject, openTrackerTask } from '../../../../../work/tracker-store.js';
 import { appendWorkEvent } from '../../../../../work/store.js';
-import { unvalidatedCompleteText } from '../../../../../tracker/pm-agent.js';
+import { heldDeliveryLine } from '../../../../../tracker/owed-delivery.js';
 import { trackerHandlers } from '../../../../../agent/tools/cat/tracker.js';
 import { openTurnContext, endTurnContext } from '../../../../../agent/turn-context.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
@@ -134,7 +134,7 @@ describe('C8: a line the Dojo holds back for another reason is recorded on the t
   it('the task records that the Dojo held the line and why; the review says so', () => {
     const t = heldByTheArrivalRule();
     expect(held(t).map((h) => h.reason)).toEqual(['a second answer to a message that arrived mid-turn; that message is answered by its own turn']);
-    const review = unvalidatedCompleteText(t, { title: 'x', agentName: HELPER, goal: 'deliver the line', result: 'quiet-day line delivered', priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '' });
+    const review = heldDeliveryLine(t);
     expect(review).toContain('Held by the Dojo: the worker\'s line at ');
     expect(review).toContain(`was not sent (a second answer to a message that arrived mid-turn; that message is answered by its own turn): "${LINE}". Nothing from it reached the person`);
   });
@@ -143,7 +143,7 @@ describe('C8: a line the Dojo holds back for another reason is recorded on the t
   it('a hold that a later delivered line replaced is not reported', () => {
     const t = heldByTheArrivalRule();
     db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES ('d-later', ?, 62, 'dashboard', 'dashboard', 'delivered', datetime('now', '+1 minute'))`).run(HELPER);
-    const review = unvalidatedCompleteText(t, { title: 'x', agentName: HELPER, goal: null, result: null, priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '' });
+    const review = heldDeliveryLine(t);
     expect(review).not.toContain('Held by the Dojo');
   });
 });

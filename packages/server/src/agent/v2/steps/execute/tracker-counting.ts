@@ -22,38 +22,15 @@ import { TRIVIAL_TOOLS } from './tool-sets.js';
 import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
-import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
+import { noteTurnCalls } from '../../../../work/job-momentum.js';
 import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
 import type { ToolEffect } from '../../../tools/types.js';
 import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
 import { heldExpr } from '../../../../work/done/hold.js';
 
 /**
- * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.
- *
- * Same scope, same predicate, same filter as `tracker-floors.ts`'s own nag — it
- * resolves "the only open tracker task assigned to you" (the "hasn't been updated in
- * a while" message, ~line 283 there) via `taskScope`, `state = 'claimed'` (status
- * "in_progress"), `agent_id = ?`. Copied in SHAPE rather than by calling that code,
- * because the nag's question is "is there a stale one to name in a message" (it reads
- * every claimed task and picks the STALEST to warn about) and this one is "which row
- * pays for THIS call" — a different question that additionally needs a deterministic
- * pick when more than one task is claimed at once: charge the MOST RECENTLY UPDATED
- * one (`ORDER BY updated_at DESC, rowid DESC LIMIT 1`). That is also the task most
- * likely to be the one this iteration's calls were actually for, since a tracker
- * write on it is what would have bumped `updated_at` in the first place.
- *
- * T79 FIX WAVE, FINDING 3 (minor): `, rowid DESC` is the tiebreak. `noteEngineCheckpoint`
- * (`work/engine-checkpoint-note.ts`) touches every one of an agent's claimed tasks with ONE
- * shared `now` at a checkpoint, so two tasks can share the exact same `updated_at` — without a
- * secondary sort the pick between them is whatever order SQLite happens to return, unspecified
- * and untested. `rowid` is monotonic insertion order, always present on this table (a normal
- * rowid table, not `WITHOUT ROWID`), and free of ties by construction.
- *
- * Returns `null` when nothing is claimed — charge nothing in that case. Untracked
- * work already has its own governor (the tracker floors: the >3 nudge / >=6
- * auto-scaffold above/below in this same iteration), a SEPARATE mechanism from this
- * durable per-task meter.
+ * The agent's CURRENT claimed task, the one this iteration's work calls are booked to; `null` when
+ * nothing is claimed.
  *
  * C5 (v3.5 field fix 3 evidence round): the order is `workingTaskOrder` (`work/tracker-view.ts`),
  * shared with the job pick. Most recently updated still wins; a task whose close is filed goes last,
@@ -128,20 +105,7 @@ export function countTrackerWorkThisIteration(
   const nonTrackerInThisIter = result.toolCalls.filter(
     (tc) => !isTrackerFamilyCall(tc.name, tc.arguments) && !TRIVIAL_TOOLS.has(tc.name),
   ).length;
-  // T79 FIX WAVE, FINDING 1 (CRITICAL) — the durable effort meter's OWN count, computed here
-  // but consumed ONLY at the charge site below. `nonTrackerInThisIter` above exists for the
-  // SCAFFOLDING FLOORS (FA-T3's deliberate anti-false-positive carve-out for TRIVIAL_TOOLS —
-  // reconnaissance lookups should not trip the >=6 auto-scaffold), and every floor/nudge that
-  // reads it keeps reading exactly that number, untouched.
-  //
-  // The effort meter has no such reason to look away: a wide loop built entirely of
-  // TRIVIAL_TOOLS calls (varied gmail_search / gmail_inbox / calendar-lookup shapes — the
-  // plan's own motivating scenario, a mailbox sweep re-enumerating forever) is real, ongoing
-  // model spend on a claimed task, and before this fix it charged the meter NOTHING, so on an
-  // uncapped provider row nothing ever stopped it. This count reuses `isTrackerFamilyCall` —
-  // the SAME authoritative tracker-family predicate `trackerInThisIter` above already applies
-  // — and excludes nothing else: every call this iteration that is not a tracker-family call,
-  // TRIVIAL_TOOLS included, is chargeable effort.
+  // Every work call this iteration that is not a tracker-family call, trivial lookups included.
   const chargeableCallsInThisIter = result.toolCalls.filter(
     (tc) => !isTrackerFamilyCall(tc.name, tc.arguments),
   );
@@ -195,23 +159,11 @@ export function countTrackerWorkThisIteration(
       }
     }
   }
-  // T79c (T79 FIX WAVE, FINDING 1): charge this iteration's chargeable work calls to the
-  // agent's CURRENT claimed task — durably, in the row, where a compaction cannot erase it
-  // (unlike the in-memory cross-turn counter mirrored just above). This is the complementary
-  // half of T79a's engine checkpoint note: that task keeps a claimed row's `updated_at` honest
-  // across a checkpoint-and-continue so it is never mistaken for abandoned; this counter is
-  // what stops that same aliveness from being spent forever on a task nobody is really
-  // advancing. See `taskToCharge` above for how "current claimed task" is
-  // resolved and why nothing is charged when there isn't one.
-  //
-  // Deliberately OUTSIDE the `if (nonTrackerInThisIter > 0 || trackerInThisIter > 0)` gate
-  // above: a trivial-only iteration (FINDING 1's mailbox-sweep scenario) trips neither of
-  // those two, so nesting the charge inside that gate — as it stood before this fix — silently
-  // skipped it even after `chargeableCallsInThisIter` was widened to see it.
+  // This iteration's work calls, on the agent's current claimed task: what they touched, and which were new.
   if (chargeableCallsInThisIter.length > 0) {
     const claimedTaskId = taskToCharge(agentId);
     if (claimedTaskId) {
-      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) }); // t172: repeat vs new; v3.5 D1: this turn's new SUCCESSFUL ones
+      noteTurnCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) });
       recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsOf, agentId); // v3.5: the items THIS round's successes touched; field fix 3: and the files and commands, from each tool's declared effects
     }
   }

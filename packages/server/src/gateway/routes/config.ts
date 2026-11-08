@@ -27,7 +27,7 @@ import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { importOwnerCards } from '../../migration/import-recovery.js';
 import { builtInToolsOwnerCards, markBuiltInToolsCardShown } from '../../services/built-in-tools-card.js';
-import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
+import { ownerCardEnded } from '../../services/owner-card-frames.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
@@ -2903,10 +2903,6 @@ const ownerCards = () => [
   ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
   ...accountOwnerCards(), ...watcherOwnerCards(), ...importOwnerCards(), ...builtInToolsOwnerCards(),
 ].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey, cardClass: (card as { cardClass?: 'action' | 'informational' }).cardClass }));
-
-// The owner-notice door asks this list whether a card LASTS (t146): a card it would not re-derive
-// is a live frame only, and is not the owner told about a work row.
-registerStandingOwnerCards(ownerCards);
 
 // GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
 configRouter.get('/owner-notices', (c) => {

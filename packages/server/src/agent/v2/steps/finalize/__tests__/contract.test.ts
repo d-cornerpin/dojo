@@ -271,10 +271,12 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // exit in `post-call-classify/going-idle.ts` (a job that made progress was parked, or a
     // continued turn that made none was recorded as stalled; either way the turn ends there).
     // `breaks.length` is UNCHANGED at 6, so an exit was ADDED, not converted.
-    expect(stepExitSites).toBe(24);
+    // ⚠ RE-DERIVED, LOWERED BY A DELETION: 24 -> 22. The −2 are the close-out one-shot and the
+    // tracker close-out hardcap, deleted with the close-out gate. `breaks.length` is UNCHANGED at 6.
+    expect(stepExitSites).toBe(22);
     // THE INVARIANT UNDERNEATH BOTH HALVES, stated as its own clause so a future cut
     // that moves N exits and adds N+1 cannot pass by moving the two numbers in step.
-    expect(breaks.length + stepExitSites).toBe(30);
+    expect(breaks.length + stepExitSites).toBe(28);
     const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
     const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
     for (const b of breaks) {

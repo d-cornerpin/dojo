@@ -3,9 +3,6 @@
 // named. The PM judges the close on that record, not on the result text.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', async () => {
@@ -25,7 +22,6 @@ import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { setMeasure, recordMeasured, recordTouched } from '../../work/ledger-store.js';
 import { recordNamedRemainder } from '../measure-gate.js';
 import { validationMeasureLines } from '../job-loop-facts.js';
-import { unvalidatedCompleteText } from '../pm-agent.js';
 import { estimateTokens } from '../../memory/budget.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -128,12 +124,6 @@ describe('field fix 3 review M1: the review SHOWS a bounded ledger; the ledger r
     expect(out).toContain(`command run: set -e (+40 more lines, ${script.length.toLocaleString('en-US')} characters) (shell, exit 0)`);
     expect(out).not.toContain('echo line 3 ');
   });
-  it('pm-agent sizes the room from the PM\'s own measured budget (dialedPolicy), split across the rows it asks about', () => {
-    const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const pm = fs.readFileSync(path.join(dir, 'pm-agent.ts'), 'utf8');
-    expect(pm).toMatch(/dialedPolicy\(pmId/);
-    expect(pm).toMatch(/reviewLedgerRoomTokens\(/);
-  });
 });
 
 describe('audit #5: the Ledger names what the task sent', () => {
@@ -155,19 +145,5 @@ describe('E1: an unparsable measure is never "none set"', () => {
     const out = await lines();
     expect(out).toContain('\n  Measure: could not be read (measure unparsable)\n');
     expect(out).not.toContain('none set');
-  });
-});
-
-describe('E1: the request text itself, from the real assembly', () => {
-  const parts = (): Parameters<typeof unvalidatedCompleteText>[1] => ({
-    title: 'the mailbox sweep', agentName: 'Worker', goal: 'no message carries the label', result: 'done',
-    priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '    1. [receipt] cleared @ x',
-  });
-  it('pm-agent uses it, and the old record line is gone: one place states the measure', () => {
-    const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const pm = fs.readFileSync(path.join(dir, 'pm-agent.ts'), 'utf8');
-    expect(pm).toContain('unvalidatedCompleteText(cTask.id');
-    expect(pm).not.toContain('validationRecordLine');
-    expect(fs.readFileSync(path.join(dir, 'job-loop-facts.ts'), 'utf8')).not.toContain('validationRecordLine');
   });
 });

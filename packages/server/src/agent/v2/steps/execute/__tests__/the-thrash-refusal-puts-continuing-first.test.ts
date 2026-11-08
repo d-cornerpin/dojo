@@ -1,6 +1,5 @@
-// v3.5 text wave — the close-out gate's refusal asks where the work stands; it does not ask the
-// agent to close it (done-is-measured Part C4). Continuing (`work_note`) is named before any
-// status, and "complete" only for a task that is done.
+// The thrash refusal asks where the work stands; it does not ask the agent to close it. Continuing
+// is named first, and "done" only for work that is done.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -38,39 +37,7 @@ beforeEach(() => {
     VALUES (?, 'Worker', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(AGENT);
 });
 
-describe('the close-out gate refusal', () => {
-  it('names work_note before any status word, and says complete only for a task that is done', () => {
-    const id = createTask({ title: 'Sort the inbox', assignedTo: AGENT, createdBy: AGENT, origin: { kind: null, sourceMessageId: null, turn: null, convKey: null } });
-    const state = {
-      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
-      structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
-      loopCount: 0, closeOutGateSatisfied: false, danglingTaskIds: [id], compileGateSatisfied: true, compileOwedAskIds: [],
-    };
-    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '' };
-    const out = runRefusalGates(state as never, { id: 'c1', name: 'gmail_search', arguments: { query: 'x' } } as never, ctx as never, false);
-    const text = out.refusal?.content ?? '';
-    expect(text).toContain('Refused: engine tracker check.');
-    const note = text.indexOf('work_note(');
-    expect(note).toBeGreaterThan(-1);
-    for (const w of ['paused', 'blocked', 'hand_in']) expect(text.indexOf(w)).toBeGreaterThan(note);
-    expect(text).toContain('work_update(action="hand_in") only for one that is done');
-    expect(text).not.toMatch(/never closed|resolve at least one/);
-  });
-
-  it('field fix 3 (#2): the refusal never tells the agent to report the engine block to the person', () => {
-    const id = createTask({ title: 'Sort the inbox', assignedTo: AGENT, createdBy: AGENT, origin: { kind: null, sourceMessageId: null, turn: null, convKey: null } });
-    const state = {
-      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
-      structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
-      loopCount: 0, closeOutGateSatisfied: false, danglingTaskIds: [id], compileGateSatisfied: true, compileOwedAskIds: [],
-    };
-    const hatch = 'tell the person you are talking to what you were trying to do and that the engine blocked it';
-    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: hatch };
-    const text = runRefusalGates(state as never, { id: 'c3', name: 'send_to_agent', arguments: { to_agent: 'pm', message: 'x' } } as never, ctx as never, true).refusal?.content ?? '';
-    expect(text).toContain('Refused: engine tracker check.');
-    expect(text).not.toContain(hatch);
-    expect(text).not.toMatch(/engine blocked it/i);
-  });
+describe('the thrash refusal', () => {
 
   it('fix round 1 (I-2): the thrash refusal puts continuing first and offers complete only for done work', () => {
     const call = { id: 'c2', name: 'gmail_search', arguments: { query: 'in:inbox' } };

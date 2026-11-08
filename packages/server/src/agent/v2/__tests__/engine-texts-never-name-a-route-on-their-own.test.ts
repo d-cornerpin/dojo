@@ -45,7 +45,7 @@ function hits(): Array<{ file: string; line: string }> {
 
 describe('the census covers every file that builds model-facing text', () => {
   it('the scope includes the prompt, tracker, work, services, microsoft, google, twilio and tool trees', () => {
-    for (const f of ['prompt/registry/entries.ts', 'prompt/assembler.ts', 'tracker/version-gap-reconcile.ts', 'work/run-deliver-drive.ts', 'services/imessage-bridge.ts', 'microsoft/tools-write.ts', 'google/tools-write.ts', 'agent/tools/cat/canvas.ts', 'scheduler/runner.ts']) {
+    for (const f of ['prompt/registry/entries.ts', 'prompt/assembler.ts', 'tracker/version-gap-reconcile.ts', 'services/imessage-bridge.ts', 'microsoft/tools-write.ts', 'google/tools-write.ts', 'agent/tools/cat/canvas.ts', 'scheduler/runner.ts']) {
       expect(SCOPE_FILES, f).toContain(f);
     }
   });

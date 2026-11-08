@@ -429,9 +429,9 @@ export function answeredPairsForMessages(
  * The narrowing is not new and is not invented here: `NON_ANSWERING_DISPLAY_KINDS` is the
  * declared set `work/ask-settlement.ts` already uses for exactly this reason — *"a bubble the
  * PLATFORM ITSELF has already declared not to be the answer … without this entry an ask could
- * be closed on a receipt pointing at a row the platform has on record as drafting"* — and
- * `work/occurrences.ts`'s `runDeliverableEvidence` reads it too. Three readers of one question
- * now read one set. IMPORTED, never retyped.
+ * be closed on a receipt pointing at a row the platform has on record as drafting"*, and the
+ * proof check's delivery rule reads it too. Every reader of the question reads one set. IMPORTED,
+ * never retyped.
  *
  * A receipt with NO message row behind it (the channel doors write those) is untouched: the
  * clause is a `NOT EXISTS`, exactly as the deliverable authority writes it.

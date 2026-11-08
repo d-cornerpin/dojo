@@ -300,7 +300,6 @@ describe('settling an occurrence — the run outcome, not a judgement', () => {
     // read as `done` — the same call T7 made for commitments and T8b for tracker closes.
     const id = claim();
     const r = settleOccurrence(id, 'complete', null, null);
-    expect(r.verdict).toBe('settled');
     expect(r.outcome!.kind).toBe('applied');
     expect(stateOf(id)).toBe('abandoned');
     const ev = mockDb.current!.prepare(

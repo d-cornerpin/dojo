@@ -14,15 +14,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
-import { VALIDATION_ESCALATION_MIN } from './validation-clock.js';
 import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
 } from '../work/tracker-view.js';
-import {
-  patchWork, setTrackerStatus, bumpWorkAttempts,
-  recordValidationEscalation,
-} from '../work/tracker-store.js';
+import { patchWork, setTrackerStatus, bumpWorkAttempts } from '../work/tracker-store.js';
 import { engineHandIn } from '../work/done/hand-in.js';
 import { clearHold, heldExpr } from '../work/done/hold.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
@@ -31,19 +27,11 @@ import { noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
-  sweepTerminatedAgentOccurrences, runsReadyToCloseOnDelivery, runDeliverableEvidence,
+  sweepTerminatedAgentOccurrences, runsReadyToCloseOnDelivery, RUN_STATUS_UNDELIVERED,
 } from '../work/occurrences.js';
-// SWEEP CORE-1 CT2 — the deliverable declaration and the steer-to-deliver ladder's verify rung.
-import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
-// SWEEP CORE-2 item 1 — the owner-escalation candidate query and the ordering law it obeys.
-import {
-  countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
-  ownerVerdictNudgeText, ownerEscalationAlertLine, failureArmStillWithinPatience,
-  escalationSteerCount, recordEscalationSteer,
-  recordAttemptsForRowsNoValidatorEverSaw, noteValidatorSilence,
-} from '../work/validation-drive.js';
-import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
-import { currentTurnNumber } from '../agent/v2/turn-record.js';
+import { proofDelivery } from '../work/done/proof.js';
+import { hintOnce, LADDER_HINT } from '../work/done/ladder.js';
+import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
@@ -53,10 +41,9 @@ import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
-import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { recordMove } from '../work/move-record.js';
-import { OWNER_ALERT_HEADS_UP_PREFIX, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
-import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
+import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 // t114 (census row 30): the liveness fact every other reaper in the tree guards on. Until
 // now `scheduler/` imported it nowhere, which is why this was the only reaper that could
 // force-fail a run that was still executing.
@@ -209,299 +196,6 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
 
 
 
-// ── 5-minute validation escalation ──
-//
-// If a task has been sitting in complete/paused/blocked with the matching
-// *_validated flag at 0 for more than 5 minutes AND we haven't asked the
-// user yet, the engine asks the user directly via primary-agent chat (and
-// iMessage when the user-away setting is on). One ask, then we leave the
-// task alone — the dashboard bug icon stays until either PM, the user, or
-// the assigned agent (acting on user feedback) validates.
-
-// EXPORTED, SWEEP-A TB8 JOB 2 — the only clock in the product that says how long a row may
-// await Key 2 before the OWNER is told about it, and so also the only honest bound on how long
-// the platform's own validator may take. Still ONE number: `tracker/pm-agent.ts` reads it
-// rather than declaring a second, because the two clocks must be ORDERED (the validator is
-// accountable before the owner is bothered) and two copies cannot be ordered.
-//
-// It is DECLARED one file over, in `validation-clock.ts`, because pm-agent derives its bound
-// from it at MODULE SCOPE and this module reaches pm-agent again through its own dependency
-// graph — so a declaration here was a temporal dead zone for any process that entered this
-// module first (t117; the full argument is in `validation-clock.ts`). Reading it through this
-// re-export is safe — an ESM re-export binds to the leaf's own binding — but the DECLARATION
-// must not come back here.
-export { VALIDATION_ESCALATION_MIN };
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-2 ITEM 1 — THE ORDERING LAW LANDS HERE. TB8 handed this up and named it a
-// design fork; the owner ruled it on 2026-08-06: *"Escalation to the owner only AFTER a
-// recorded validation attempt."*
-//
-// What that fixes, measured: BATTERY6 `bmsh708xse7` — 5 of 6 owner-escalated rows never
-// received an in-window verdict. BATTERY9 `bmshmu5ygd5` — 3 of 3. And the original clock,
-// battery `bmsgs7qejup`: this sweep told the owner three rows were unvalidated at 01:20:00
-// and its own validator upheld them at 01:23:11. An escalation naming un-attempted work is
-// the defect all six denominators measured.
-//
-// The candidate query moved to `work/validation-drive.ts` — beside the spine tables it reads
-// and beside the attempt ledger it now consults, so the law and the query cannot drift apart.
-// Everything this function does with the rows is unchanged.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
-  const db = getDb();
-  try {
-    // OWNER-SCOPE RULE (owner ruling, 2026-07-18): the ask-the-user escalation
-    // exists for USER-meaningful work: the user asked for something, the PM
-    // cannot verify it, so the user adjudicates. Engine-resident maintenance
-    // (dreamer archive batches, healer/trainer/imaginer housekeeping, PM
-    // self-tasks) is categorically NOT the user's to sign off: the user has no
-    // way to know whether an archive batch distilled correctly, and the engine
-    // holds its own receipts (the dream report records archives processed).
-    // Those tasks stay in the PM sweep's jurisdiction and NEVER escalate here.
-    // Production incident: first boot on the release that made this sweep's
-    // channel visible surfaced stale churn-era dreamer tasks to the owner as
-    // "was it actually done?" yes/no questions the owner cannot answer.
-    const { getSystemServiceAgentIds } = await import('../config/platform.js');
-    const serviceIds = getSystemServiceAgentIds().filter((id): id is string => Boolean(id));
-    const staleBefore = Date.now() - VALIDATION_ESCALATION_MIN * 60_000;
-    const admitted = selectRowsForOwnerEscalation(staleBefore, serviceIds);
-
-    // ── t124 OWNER CORRECTION 2026-10-07 — A FAILED ROW IS LATE ON ITS ASSIGNEE'S CLOCK. ──
-    //
-    // The failure shape is admitted by SQL on the existence of a recorded failure; how much room
-    // that failure buys is a JUDGEMENT ABOUT PACE, and the owner's standing rule is that this
-    // platform never writes such a judgement as a number: *"we don't specify numbers or times. We
-    // make judgement calls based on how fast the model and model provider are."* This lane's first
-    // cut shipped `ESCALATION_FAILURE_THRESHOLD = 3` and that was the violation — a statement about
-    // pace with the pace taken out of it, applied identically to a provider that answers in two
-    // seconds and one whose first chunk honestly takes ten minutes (the agent t90 exists to
-    // protect).
-    //
-    // So the room is resolved HERE, through the ladder's own two functions in the ladder's own
-    // order (`tracker/pm-agent.ts`: `patienceFloorFor` → `flooredThresholds(POKE_THRESHOLDS[
-    // priority], floorSeconds)`), at the rung the platform already names for escalation. There is
-    // exactly ONE place a speed judgement is made in this platform and this is a READER of it, not
-    // a second copy: no reference speed is invented, no multiplier is chosen, and `flooredThresholds`
-    // is all `max`, so this can never fire sooner than the base table for any row.
-    //
-    // It lands in the scheduler and not in `work/validation-drive.ts` for the reason that module
-    // already states about `staleBeforeMs`: the scheduler owns the clock, the drive owns the law. A
-    // patience-scaled idle bound is a clock, and `work/` may not import `tracker/`. The LAW is
-    // still the drive's — `failureArmStillWithinPatience` — so the comparison's direction cannot
-    // drift from the module that owns the arm.
-    //
-    // ONLY failure-shape-alone rows are held. A blocked or unvalidated-close row is late at the
-    // sweep's own bound and is untouched by this, which is the negative control in the clause file.
-    const { patienceFloorFor, flooredThresholds } = await import('../tracker/assignee-patience.js');
-    const { POKE_THRESHOLDS } = await import('../tracker/pm-agent.js');
-    const nowForPatience = Date.now();
-    const heldForPatience: Array<{ id: string; idleSeconds: number; roomSeconds: number; basis: string }> = [];
-    const stale = admitted.filter((r) => {
-      if (r.by_state_arm === 1) return true;
-      const floor = patienceFloorFor(r.assigned_to);
-      const room = flooredThresholds(
-        POKE_THRESHOLDS[r.priority] ?? POKE_THRESHOLDS.normal, floor.floorSeconds,
-      ).escalate;
-      const idleSeconds = Math.max(0, Math.floor((nowForPatience - r.updated_at_ms) / 1000));
-      if (failureArmStillWithinPatience(idleSeconds, room)) {
-        heldForPatience.push({ id: r.id, idleSeconds, roomSeconds: room, basis: floor.basis });
-        return false;
-      }
-      return true;
-    });
-    // SAID OUT LOUD, like every other hold this sweep applies. A row kept back because its
-    // assignee's own model is still inside one legitimate escalate-rung is not a silent skip, and
-    // on the day that resolution is wrong the log is where it becomes visible.
-    if (heldForPatience.length > 0) {
-      logger.info('Validation escalation HELD on ASSIGNEE PATIENCE: these rows have failed but are still inside their own model\'s escalate rung', {
-        held: heldForPatience.length, rows: heldForPatience.slice(0, 5), escalating: stale.length,
-      });
-    }
-
-    // THE HOLD IS SAID OUT LOUD. A row kept back by the ordering law is not a silent skip:
-    // it is the platform saying "my own validator has not been asked yet, so this is not the
-    // owner's problem yet" — and it must be readable when it is wrong.
-    const heldBack = countRowsHeldBackFromOwner(staleBefore, serviceIds);
-    if (heldBack > 0) {
-      logger.info('Validation escalation HELD: these rows are past the bound but their validator has no recorded attempt', {
-        heldBack, boundMin: VALIDATION_ESCALATION_MIN, escalating: stale.length,
-      });
-    }
-    // ── UX-REPAIR T40 — THE FLOOR, AND THE ONE THING THE OWNER IS TOLD. ──
-    // The hold above was already said out loud; what it never had was an END. A row past the
-    // bound whose validator was never asked stayed held FOREVER, because the only writers of
-    // an attempt record live inside the validator's own review. The floor writes the
-    // attempt-of-record so the escalation immediately above can see the row on the NEXT pass,
-    // and — because the reality check correctly silences escalation for work that already
-    // reached the person, which is exactly the owner's incident — it also tells him the one
-    // fact escalation cannot: his task validation is stalled. Once per episode.
-    const stalled = recordAttemptsForRowsNoValidatorEverSaw(staleBefore, serviceIds);
-    await noteValidatorSilence(stalled.length, getPrimaryAgentId());
-    // UX-REPAIR round 2 T12 — THE REALITY CHECK, SAID OUT LOUD. A row held back because the
-    // ledger says its work already reached the person is not a silent skip; and it deliberately
-    // does NOT burn `validation_escalated`, which ends the row's escalation episode (t142: one
-    // shot per episode), so a row whose delivery is later undone can still be escalated.
-    const skippedAsDelivered = selectRowsSkippedAsDelivered(staleBefore, serviceIds);
-    if (skippedAsDelivered.length > 0) {
-      logger.info('escalation_skipped_delivered: these rows are past the bound but the platform already delivered their work', {
-        skipped: skippedAsDelivered.length, boundMin: VALIDATION_ESCALATION_MIN,
-        rows: skippedAsDelivered.slice(0, 5).map((r) => ({ id: r.id, deliveryId: r.deliveryId })),
-      });
-    }
-    if (stale.length === 0) return;
-
-    const { writeTaskLog } = await import('../tracker/task-log.js');
-    const { broadcast } = await import('../gateway/ws.js');
-    const stamp = { run: (threadId: string, id: string) => recordValidationEscalation(id, 'scheduler', threadId) };
-    const primaryId = getPrimaryAgentId();
-    const { v4: uuidv4 } = await import('uuid');
-
-    // P5b: validation_thread_id becomes REAL. Written since 2026-06-01 and
-    // read by nothing, it now records the CONVERSATION the verdict ask goes
-    // to (the owner's dashboard conversation), so the apply side can verify
-    // the reply came from where the question was asked.
-    const { resolveOrCreateConversation } = await import('../memory/conversations.js');
-    const ownerConvId = resolveOrCreateConversation(primaryId, {
-      channel: 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
-    });
-    for (const t of stale) {
-      const threadId = ownerConvId ?? uuidv4();
-      const agentName = t.assigned_to
-        ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(t.assigned_to) as { name: string } | undefined)?.name ?? t.assigned_to
-        : 'an agent';
-      // UX-REPAIR round 2 T12 — OR2'S SHAPE, at last. The old text was engine-composed, spoke
-      // TO the owner by name, and handed the primary a canned tool call with a 36-char task id
-      // in it — 732 chars, sliced to 400 by the events lane, cut MID-TASK-ID, so it could not
-      // have been complied with even in principle. `ownerVerdictNudgeText` is the recorded
-      // conversion pattern instead (PHASE-4.md:14, owner ruling 2026-07-30): the AGENT is told
-      // the fact and asked to decide and speak. It fits the 400-char gist WHOLE, so the severed
-      // instruction dies without touching the cap (O15 refused).
-      const askText = ownerVerdictNudgeText({
-        taskId: t.id, title: t.title, status: t.status, agentName,
-        ownerName: getOwnerName(), boundMin: VALIDATION_ESCALATION_MIN,
-      });
-
-      // ── v3.3.3 t142: THE VERIFY STEP IS A RECORD, READ BEFORE THE ROW IS EVER SELECTED ──
-      //
-      // ⟨TOMBSTONE⟩ This was `spokeSince = deliveryAboutWorkSince(t.id, firstSteerAt) !== null`
-      // — "has a person been told about THIS row since the first steer?", answered from turn
-      // roots. The review ruling of 2026-10-07 proved it FALSE BY CONSTRUCTION for a plain
-      // task (the steer rides `ENGINE_RIDER_INTENTS`, so no turn is rooted at it, and the
-      // `ask` edge predates the steer), and its one live edge — `occurrence` — OVER-CREDITED:
-      // any delivered output of a scheduled run retired the escalation, including output that
-      // said nothing about the block (driven RED in `work/__tests__/t142-a-person-was-told.test.ts`
-      // §2). The interim was the fail-safe "always tell".
-      //
-      // Both are gone. "A person was told about this row" is now a `person_told` record on the
-      // row's own spine, written only by a path that structurally holds the work id
-      // (`work/validation-drive.ts:recordPersonTold`), and `selectRowsForOwnerEscalation`
-      // excludes a row whose CURRENT episode is settled (`ownerEpisodeSettledExpr`) before it
-      // is ever steered — so a row reaching this loop is, by the record, one nobody has told.
-      // What remains is the ladder itself: steer the primary, bounded, then the platform's own
-      // surface. requirement preserved: the owner is not told twice about an episode a
-      // recording path already told him about, and is never told zero times about one it did
-      // not (the negative controls in that test file).
-      const steersSpent = escalationSteerCount(t.id);
-
-      if (steersSpent >= MAX_FLOOR_STEER_ATTEMPTS) {
-        // It has been asked twice on two separate turns and has not raised it. That is a
-        // PLATFORM fault and the platform's own watchdog surface is what says so — never the
-        // engine wearing the agent's face (OR2's last clause).
-        // ── t124 — THE OWNER IS TOLD WHAT IS BLOCKED, SINCE WHEN, AND WHAT WAS TRIED. ──
-        // The line was one fixed sentence that named no work, carried nothing actionable,
-        // and asserted "your PM cannot confirm it" unconditionally — which this lane's own
-        // blocked-arm fix turns into a LIE for the PM-upheld case it newly admits.
-        // `ownerEscalationAlertLine` composes it from the row's recorded facts and omits any
-        // clause whose fact is not on file; the argument lives with it in `validation-drive`.
-        // Field fix 3 audit round (#9), OR-ENGINE-LABELLED: the row is labelled as the Dojo, and the
-        // main agent is told exactly what the Dojo put in front of the owner.
-        const ownerLine = ownerEscalationAlertLine({
-          title: t.title, status: t.status, since: t.updated, agentName,
-          steers: steersSpent, failures: t.failures,
-          obstacle: t.obstacle,
-        });
-        const ghost = recordFloorGhost({
-          agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
-          attempts: steersSpent,
-          label: OWNER_ALERT_DOJO_PREFIX,
-          ownerLine,
-          detail: {
-            steers: steersSpent, task_title: t.title,
-            // The facts the sentence was built from, on the row's own durable history, so the
-            // alert can be audited against what the platform knew when it spoke.
-            failures: t.failures,
-            stated_obstacle: t.obstacle, since: t.updated,
-          },
-        }, { broadcast });
-        tellAgentWhatDojoSent({
-          agentId: primaryId, recipient: 'the owner (on the dashboard)', text: `${OWNER_ALERT_DOJO_PREFIX} ${ownerLine}`,
-          sent: ghost.noticeId !== null,
-          why: `because "${t.title}" was ${t.status} with no record of anyone bringing it to the owner after ${steersSpent} reminders to you`,
-        });
-        stamp.run(threadId, t.id);
-        writeTaskLog({
-          taskId: t.id,
-          fromEntity: 'engine',
-          entryKind: 'directive',
-          actionTaken: '5-min validation escalation: asked user',
-          reason: `task has been ${t.status} with *_validated=0 since ${t.updated}; the primary was steered `
-            + `${steersSpent} time(s) and did not come back — handed to the platform surface`,
-          note: askText,
-        });
-      } else {
-        // Dead-channel demolition (Phase 0.2): the nudge is a model-VISIBLE awareness NOTICE
-        // (role='user' origin_kind='engine'), the same idiom alertMissedRuns uses, NOT a bare
-        // role='system' row — those are stripped by the context builder, which is how this
-        // flow was silently dead before 2f302dc. What CHANGED in T12 is the voice (the agent
-        // decides and speaks; see ownerVerdictNudgeText) and the fact that ONE silent turn no
-        // longer ends the story: the stamp is not written until the ladder says it is over.
-        postAgentNotice({
-          toAgentId: primaryId,
-          fromName: 'Scheduler',
-          selfIntro: false,
-          intent: 'validation_check',
-          brief: askText,
-        });
-        recordEscalationSteer(t.id, {
-          attempt: steersSpent + 1, bound: MAX_FLOOR_STEER_ATTEMPTS,
-          turnNumber: currentTurnNumber(primaryId) || null,
-        });
-        logger.info('validation escalation: steered the primary to decide whether the owner needs to rule', {
-          taskId: t.id, attempt: steersSpent + 1, bound: MAX_FLOOR_STEER_ATTEMPTS,
-        });
-      }
-
-      // Re-broadcast the task so the dashboard re-renders with the
-      // "user has been asked" indicator (the bug icon pulse). Send the FULL
-      // row (getTask) rather than a 2-field partial, which would blank every
-      // other column on the card until reload.
-      const fresh = getTask(t.id);
-      if (fresh) {
-        broadcast({ type: 'tracker:task_updated', data: fresh });
-      }
-    }
-    // Wake the primary once so it sees the validation NOTICE(s) and relays the
-    // question(s) to the owner this turn instead of waiting for an unrelated
-    // trigger. Best-effort: the notices are already persisted in the awareness
-    // lane and will surface on the next assembled context regardless. Copies the
-    // alertMissedRuns wake idiom above.
-    try {
-      const runtime = getAgentRuntime();
-      runtime.handleMessage(primaryId, '[scheduler: validation check pending]').catch((err) => {
-        logger.warn('sweepUnvalidatedTasksForUserEscalation: primary wake failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    } catch { /* runtime not ready, notices are in the store, read next time */ }
-    logger.info('Validation escalation: asked user about unvalidated tasks', { count: stale.length });
-  } catch (err) {
-    logger.warn('sweepUnvalidatedTasksForUserEscalation failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
 // ── D12: deterministic missed-runs fallback ──
 //
 // alertMissedRuns pauses an overdue recurring task and asks the assigned
@@ -613,63 +307,15 @@ export async function autoResolveStaleMissedRunPauses(): Promise<void> {
 
 // ── Check and trigger due tasks ──
 
-// ════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-1 CT2 — THE VERIFY RUNG OF THE STEER-TO-DELIVER LADDER.
-//
-// OR2's shape is detect → steer → VERIFY → bounded retry, and this is the verify. Without it
-// the ladder is a wall: MEASURED on the first post-fix drive (behavioral run `bmslq48axkn`,
-// 2026-08-09), the model called `work_update(status="complete")` BEFORE it spoke, was correctly
-// refused, then went on and delivered a real brief — *"Good morning — here's tomorrow's brief
-// (Monday, Aug 10): your calendar is clear…"* — and never called the tool again. The person had
-// their brief and the run sat `open` for ever. A refusal that leaves the run stuck is not an
-// improvement on a lie; it is a different failure.
-//
-// So the run closes ON THE DELIVERY, exactly as an ask does (`work/ask-settlement.ts`'s
-// delivery arm). The scope is deliberately narrow and every clause of it is load-bearing:
-//
-//   * the run must have been STEERED at least once. The steer is the agent's own assertion
-//     that the work is finished, refused only for want of evidence; without it this sweep would
-//     be closing runs nobody said were done, which is a different and much worse behaviour.
-//   * the evidence is re-derived by the AUTHORITY (`runDeliverableEvidence`), never by this
-//     sweep. One predicate, one owner.
-//   * the close goes through `onTaskRunComplete`, the ordinary full flow, so the run count, the
-//     next occurrence, the audit trail and the notices are all exactly what they would have
-//     been if the model had called the tool a second time itself.
-//
-// It rides the scheduler tick because that is where run lifecycle already lives (beside
-// `cleanupOrphanedRuns` and the orphan sweep) and because the tick is the platform's existing
-// 30-second clock — a cadence carried, not re-chosen.
-//
-// ⚠ UX-REPAIR ROUND 4 T19 (D6) — AND THE FIRST CLAUSE'S WORRY IS NOW ANSWERED WITH EVIDENCE
-// RATHER THAN OBEYED AS PROSE, which is why the name lost the word "Steered". The complement
-// of the case above — the model DELIVERS FIRST and never attempts a close at all — produces no
-// steer marker and was uncovered. Driven, 2026-08-10 18:45Z: a one-shot reminder reached the
-// owner (`agent-text`, a real `deliveries` row), the run sat `open` for twelve minutes, the
-// model was refused `complete` TWICE for want of a pointer the ledger already held, and the
-// run was only resolved because a PM poke dragged the model back and a second agent authorised
-// a cancel. Absent that it meets the 30-minute idle reaper and a perfectly delivered reminder
-// is recorded failed. A steer is the agent SAYING it is finished; `runDeliverableEvidence` is
-// the ledger SHOWING the person got something, and the second is the stronger of the two.
-//
-// The row set — including the one narrowing the unsteered arm needs, that the agent's own turn
-// has ENDED — lives with the authority in `work/occurrences.ts:runsReadyToCloseOnDelivery`,
-// so this sweep still asks and never decides.
-// ════════════════════════════════════════════════════════════════════════════════
+// A run whose task owes a person a message, that delivered it and never handed the run in, is closed on
+// that delivery once its own turn has ended (`runsReadyToCloseOnDelivery`), through the ordinary flow.
 export async function closeRunsThatDelivered(): Promise<number> {
   let closed = 0;
   for (const row of runsReadyToCloseOnDelivery()) {
     try { await (await import('../agent/tools/cat/measure-door.js')).remeasureTask('scheduler', row.taskId); }   // v3.5: the run is judged on a fresh reading
     catch (err) { logger.warn('Scheduler: re-reading a delivered run\'s measure failed; left for the next tick', { taskId: row.taskId, runId: row.occurrenceId, error: String(err) }); continue; }   // one row never stops the sweep
-    logger.info('Scheduler: a run delivered — closing it on the message', {
-      taskId: row.taskId, runId: row.occurrenceId, deliveryId: row.deliveryId,
-      tool: row.tool, steered: row.steered,
-    });
-    const advanced = await onTaskRunComplete(
-      row.taskId, 'complete',
-      row.steered
-        ? 'the run was steered to deliver and the message reached the user; closed on that delivery'
-        : 'the run delivered its message to the user without ever asking to close; closed on that delivery',
-    ).catch((err: unknown) => {
+    logger.info('Scheduler: a run delivered, closing it on the message', { taskId: row.taskId, runId: row.occurrenceId, deliveryId: row.deliveryId });
+    const advanced = await onTaskRunComplete(row.taskId, 'complete', 'the run delivered its message without being handed in; closed on that delivery').catch((err: unknown) => {
       logger.warn('Scheduler: closing a delivered run failed (non-fatal)', {
         taskId: row.taskId, runId: row.occurrenceId,
         error: err instanceof Error ? err.message : String(err),
@@ -698,7 +344,7 @@ export async function checkScheduledTasks(): Promise<void> {
   //
   //   cleanupOrphanedRuns + cleanupStaleRuns    -> `orphaned-and-stale-runs`      @30s
   //   resumeExpiredPauses                       -> `expired-pauses`               @30s
-  //   sweepUnvalidatedTasksForUserEscalation    -> `validation-escalation`        @30s
+  //   runLadder (work/done/ladder.ts)           -> `ladder`                       @30s
   //   closeRunsThatDelivered                    -> `steered-run-delivery-close`   @30s
   //   (pruneTerminalTasks -> `terminal-task-prune` @1h was here; deleted, field fix 3 audit round #9)
   //
@@ -1047,23 +693,9 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // recompute next_run_at (the P-5 run-counter inflation class), so it bails as a no-op.
   const occRow = db.prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
     .get(runId) as { agent_id: string; opened_at: number } | undefined;
-  // The run's own deliverable rule (`runDeliverableEvidence`): a run is judged on what it delivered to the
-  // person its schedule serves, whoever that is, never on the asker rule a task's proof uses.
-  const delivered = occRow ? runDeliverableEvidence(runId)?.id ?? null : null;
+  // A run is judged on what it delivered in its own window to the person its schedule serves, whoever that is.
+  const delivered = occRow ? proofDelivery(taskId, true) : null;
   const settled = settleOccurrence(runId, status, delivered, summary);
-
-  // ── SWEEP CORE-1 CT2 — THE RUN OWES A MESSAGE AND NONE WAS SENT. ──
-  // The authority refused, the run is still open, and NOTHING here may advance: no run count,
-  // no next occurrence, no "completed" log entry, no notice to the owner that a run finished.
-  // The caller (the model's own close tool) is handed the refusal and steers on it. This is the
-  // whole of the owner's sentence in code — *"I won't close the run until after the message is
-  // sent."* The bound is the ladder's, inside the authority, not a loop here.
-  if (settled.verdict === 'owed') {
-    logger.info('Scheduler: run close REFUSED — it owes a user-visible message and none was sent', {
-      taskId, runId, detail: settled.detail,
-    });
-    return false;
-  }
 
   if (settled.outcome?.kind !== 'applied') {
     logger.info('Scheduler: run already closed elsewhere, skipping advance', {
@@ -1118,6 +750,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
           detail: { task_id: taskId, run_status: settled.runStatusRecorded },
         }, { broadcast });
       }
+      if (occRow?.agent_id) await hintOnce(taskId, occRow.agent_id, LADDER_HINT.undelivered(title), `undelivered:${runId}`);
     } catch (err) {
       logger.warn('Scheduler: could not surface an undelivered run to the owner (non-fatal)', {
         taskId, runId, error: err instanceof Error ? err.message : String(err),

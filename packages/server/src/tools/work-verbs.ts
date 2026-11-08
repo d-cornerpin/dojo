@@ -301,38 +301,11 @@ export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
   'work_note',
 ]);
 
-/**
- * Satisfies the pre-turn close-out gate once the agent engages.
- * Was `{tracker_update_status, tracker_complete_step, tracker_add_notes,
- * tracker_close_project}` — note this is a strictly SMALLER set than the gate's
- * allowlist below, because a read may pass the gate without disengaging it.
- */
+/** The work ops that engage with open work: what the compile gate lets through besides the reply. */
 export const SATISFYING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
   'work_update:hand_in',
   'work_note',
-]);
-
-/**
- * The pre-turn close-out gate's ALLOWLIST: what an agent with dangling
- * in_progress tasks may still call. `load_tool_docs` is in it (not a work op)
- * because the agent may need a close-out tool's schema before it can call it.
- * The two obligation ops are deliberately absent: closing a promise is not
- * engaging with a dangling task.
- */
-export const CLOSE_OUT_WORK_OPS: ReadonlySet<string> = new Set([
-  'work_update:status',
-  'work_update:hand_in',
-  'work_note',
-  'work_update:get',             // read-only allowed (investigate before resolving)
-  'work_update:list',            // ditto
-  'work_update:activity',        // ditto (T60) — a read cannot resolve a dangling task, and
-                                 // refusing it would only blind the agent it is nagging
-  'work_update:edit',            // editing the task counts as engagement
-  'work_schedule:pause',
-  'work_schedule:resume',
-  'work_schedule:resolve_missed',
-  'load_tool_docs',
 ]);
 
 /**

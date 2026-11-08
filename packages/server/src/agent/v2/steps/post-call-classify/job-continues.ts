@@ -32,7 +32,7 @@
 import { lastTurnEnd, recordContinued, recordStalled } from '../../../../work/job-momentum.js';
 import { parkJob } from '../../../../work/job-continuation.js';
 import { runCarriesJob } from '../../../../work/task-freshness.js';
-import { deliverPendingCirclingVerdict, noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
 import { readJobAtPassEnd } from './job-turn-end.js';
 import { createLogger } from '../../../../logger.js';
 import type { AgentTurnState } from '../../state.js';
@@ -49,7 +49,6 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
   // Step 1: a human waiting who has no reply yet gets today's path (the reply comes first), and so does a
   // turn whose close-out gate armed and was not answered (its escalation runs next).
   if (ctx.triggerRow && !(sc.persistedContent ?? '').trim()) return null;
-  if (state.danglingTaskIds.length > 0 && !state.closeOutGateSatisfied) return null;
   if (ctx.turnCtx.jobParked) return null;   // this turn already queued its continuation (another park)
   const job = await readJobAtPassEnd(state, ctx);
   // Ruling 2: continuation is for a measured job whose reading shows items left (0 = finished; never read = nothing to go on).
@@ -57,25 +56,15 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
   const { taskId, remaining, touchedThisTurn, novelCallsThisTurn } = job;
 
   if (job.momentum) {
-    // The park, as the engine's other checkpoints do it: a pending PM verdict rides to the agent, the
-    // job's own task is carried and noted on its record (the activity line; NOT its last-moved time: a
+    // The park, as the engine's other checkpoints do it: the job's own task is carried and noted on its record (the activity line; NOT its last-moved time: a
     // park is not progress, so the PM's ladder still sees a job that stops moving), the conversation
     // rides on (C3: an owner's job keeps his channel), then the one park door.
-    deliverPendingCirclingVerdict(agentId);
     try { noteEngineCheckpoint(agentId, 'job-continues', [taskId]); } catch (err) {
       logger.warn('v2: job-continues checkpoint note failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
     }
     ctx.stashContinuationIfHuman();
     parkJob(agentId, `job continues: ${remaining} remain`, 'timer');
     recordContinued(taskId, { remaining, touchedThisTurn, novelCallsThisTurn, turnNumber });
-    // A continuation that touched no item: the PM's ladder is asked HERE, at the boundary between the
-    // job's turns (pokes never fire mid-turn), whether its check-in is due (fix round 3). A due check-in
-    // is handed to the continuation as a PM rider, read before it acts (fix round 4).
-    if (touchedThisTurn === 0) {
-      try { await (await import('../../../../tracker/pm-agent.js')).checkInAtThePark(taskId); } catch (err) {
-        logger.warn('v2: check-in at the park failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-      }
-    }
     logger.info('v2 job continues: turn ended mid-job with momentum, parked', { agentId, taskId, remaining, touchedThisTurn, novelCallsThisTurn }, agentId);
     return 'continued';
   }

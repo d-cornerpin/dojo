@@ -425,36 +425,13 @@ export interface AgentTurnState {
    */
   recallLaneReachedModelThisTurn: boolean;
   /**
-   * v2.5.46, pre-turn close-out gate. At preflight we look up the
-   * agent's in_progress tasks that were NOT touched in the previous
-   * turn. If any exist, this list is populated. Until at least one of
-   * them is resolved (work_update(action="status") / work_update(action="complete_step")),
-   * the tool dispatcher refuses non-tracker tool calls.
-   */
-  danglingTaskIds: readonly string[];
-  /**
-   * v2.5.46, flips true the moment the agent closes (status updated)
-   * any in_progress task this turn. Disengages the close-out gate for
-   * the remainder of the turn (further close-outs encouraged but not
-   * forced; the gate fires fresh next turn if there are still danglers).
-   */
-  closeOutGateSatisfied: boolean;
-  /**
-   * v2.5.46, fire-once flag for the loud system message that
-   * accompanies the first close-out gate refusal in a turn. Set true
-   * in preflight when the gate is armed; used by enforcement code to
-   * tell "gate is armed for this turn" from "no danglers."
-   */
-  nudgedForCloseOutThisTurn: boolean;
-  /**
    * UX-REPAIR ROUND 12 T47, the compile gate's arming. At preflight we look up the asks whose
    * delegated pieces are all back, whose compiled reply the owner has NOT had, and which the
    * redrive ladder has already come back for at least once. While this list is non-empty the
    * tool dispatcher refuses every call outside `COMPILE_OWED_ALLOWED_OPS` (the tracker
    * close-outs plus `send_to_agent`).
    *
-   * BUG-2 applies to this list exactly as it applies to `danglingTaskIds`: it is EMPTY on a
-   * turn a human is waiting on. The reasoning and the ternary are at
+   * It is EMPTY on a turn a human is waiting on. The reasoning and the ternary are at
    * `steps/preflight/compile-gate.ts`; the decision is at `compile-owed-gate.ts`.
    */
   compileOwedAskIds: readonly string[];
@@ -659,9 +636,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     structuringToolCalledThisTurn: false,
     lastContextRatio: 0,
     recallLaneReachedModelThisTurn: false,
-    danglingTaskIds: [],
-    closeOutGateSatisfied: false,
-    nudgedForCloseOutThisTurn: false,
     compileOwedAskIds: [],
     compileGateSatisfied: false,
     compileOrderReachedModel: false,

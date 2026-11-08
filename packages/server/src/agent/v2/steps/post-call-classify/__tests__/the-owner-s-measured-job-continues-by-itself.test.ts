@@ -37,7 +37,7 @@ vi.mock('../../../../a2a-transport.js', () => ({ deliverA2AMessage: deliverA2A, 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
-import { chargeEffortCalls } from '../../../../../tracker/effort-ledger.js';
+import { noteTurnCalls as chargeEffortCalls } from '../../../../../work/job-momentum.js';
 import { endJobCarry } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';

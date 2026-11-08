@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // bug #980 — THE STALE-A2A SWEEP MUST REACH PAST THE ROWS IT WILL NEVER CLOSE.
 //
-// `runPokeCheck`'s A2A sweeper (pm-agent.ts) selected its candidates with `LIMIT 50` and NO
+// The answered-assign sweep (`work/done/hand-in.ts`) selected its candidates with `LIMIT 50` and NO
 // `ORDER BY`, then dropped every row whose receiver had sent no assistant message since the
 // row opened — in JavaScript, AFTER the limit. Rows whose receiver stayed silent fail that
 // check forever and refill the window on every minute's tick. Once 50 such rows exist, the
@@ -91,7 +91,7 @@ import { runMigrations } from '../../db/migrations.js';
 
 // The full migration chain boots per file; an import cost, not a timing assertion.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
-import { runPokeCheck } from '../pm-agent.js';
+import { handInAnsweredAssignTasks } from '../../work/done/hand-in.js';
 import { listTasks } from '../schema.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
@@ -157,7 +157,7 @@ describe('stale-A2A sweep reaches past the rows it will never close', () => {
     `).run();
     // `sleeper` sent nothing, ever — no assistant message after any silent row opened.
 
-    await runPokeCheck();
+    handInAnsweredAssignTasks();
     // The PM review the tick fires at the end is unawaited; let it flush so it cannot land
     // after the assertions below.
     await new Promise((r) => setTimeout(r, 15));

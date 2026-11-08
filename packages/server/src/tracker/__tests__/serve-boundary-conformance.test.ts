@@ -137,12 +137,6 @@ describe('drive boundary (P2)', () => {
     expect(code).not.toMatch(/deliverable_shown\s*===?\s*1/);
   });
 
-  it('pokes never fire mid-turn (working-skip), replacing the restart-counter-prompt class', () => {
-    const pm = read('tracker/pm-agent.ts');
-    expect(pm).toMatch(/assigneeStatus === 'working'\) continue;/);
-    expect(pm).not.toMatch(/continue from EXACTLY where you stopped/i);
-  });
-
   it('the stale-trigger prose confessions are gone (the engine enforces what they begged for)', () => {
     const tools = read('tracker/tools.ts');
     expect(tools).not.toMatch(/STALE trigger/);

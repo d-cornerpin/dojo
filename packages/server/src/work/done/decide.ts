@@ -140,10 +140,9 @@ export function decide(input: DecideInput): DecideResult {
     const open = getDb().prepare(
       `SELECT w.id, w.state FROM work w WHERE w.parent_id = ? AND ${taskScope('w')} AND w.state NOT IN ('done','failed','abandoned')`,
     ).all(row.id) as Array<{ id: string; state: WorkState }>;
-    for (const t of open) {
-      const child = applyDecision(t.id, t.state, to, { ...p, reason: `closed with its project: ${reason}`, outcome: to === 'done' ? 'finished' : 'cant_be_done', run: false });
+    for (const t of open) {   // a task has no proof of its own here, so it never ends done with its project
+      const child = applyDecision(t.id, t.state, to === 'done' ? 'abandoned' : to, { ...p, reason: `closed with its project: ${reason}`, outcome: 'cant_be_done', run: false });
       if (child.kind !== 'applied') unclosed.push(t.id);
-      else if (input.verdict === 'owner_done') recordOwnerRemainder(t.id);
     }
   }
   const words: Partial<Record<WorkState, string>> = { done: 'Done', failed: "Closed: couldn't be done", sent_back: 'Sent back to its worker', abandoned: 'Cancelled', open: 'decided for this run; the schedule goes on' };

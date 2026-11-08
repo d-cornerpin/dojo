@@ -93,12 +93,10 @@ vi.mock('../../agent/agent-notice.js', async (importOriginal) => ({
 }));
 
 
-import { runPokeCheck, POKE_THRESHOLDS } from '../pm-agent.js';
 import {
-  patienceFloorFor, flooredThresholds, recordReassignment, PATIENCE_ENTRY,
+  patienceFloorFor, patienceBoundMs, recordReassignment, PATIENCE_ENTRY,
 } from '../assignee-patience.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
-import { currentRung } from '../../work/poke-ladder.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS } from '../pm-agent.js';
 
@@ -217,32 +215,20 @@ describe('§1 the patience floor is derived, and it only ever lengthens', () => 
    * clause ever goes red, every undeclared box on the planet just had its PM made more or less
    * patient by a change that was supposed to touch only declared ones.
    */
-  it('an UNDECLARED provider reproduces today\'s table exactly, for every priority', () => {
-    const floor = Math.ceil((STREAM_FIRST_CHUNK_TIMEOUT_MS + STREAM_IDLE_TIMEOUT_MS) / 1000);
-    for (const [priority, base] of Object.entries(POKE_THRESHOLDS)) {
-      expect(flooredThresholds(base, floor), `priority=${priority} must be byte-identical`)
-        .toEqual(base);
-    }
+  it('an UNDECLARED provider waits the base bound, five minutes', () => {
+    seedAssignee({ agentId: 'fast-agent' });
+    expect(patienceBoundMs('fast-agent')).toBe(300_000);
   });
 
-  it('a declared SLOW provider lengthens every rung, in proportion to one legitimate call', () => {
+  it('a declared SLOW provider waits one legitimate call', () => {
     // 600 s before token 1 + 600 s of permitted silence = a 1,200 s step. The owner's DS4 row.
-    const base = POKE_THRESHOLDS.normal;
-    expect(flooredThresholds(base, 1_200)).toEqual({
-      first: 1_200,       // was 300  — one step
-      second: 2_400,      // was 900  — two
-      escalate: 3_600,    // was 1800 — three
-      autoReset: 4_800,   // was 3600 — four
-    });
+    seedAssignee({ agentId: SLOW_AGENT, firstChunkMs: 600_000, idleMs: 600_000 });
+    expect(patienceBoundMs(SLOW_AGENT)).toBe(1_200_000);
   });
 
-  it('⚠ a floor NEVER shortens the ladder, however small the declaration', () => {
-    // A provider declaring one second of patience must not bring the PM FORWARD. Every value is
-    // a `max`, and this is the shape that would prove otherwise.
-    const base = POKE_THRESHOLDS.high;
-    expect(flooredThresholds(base, 1)).toEqual(base);
-    expect(flooredThresholds(base, 0)).toEqual(base);
-    expect(flooredThresholds(base, -5)).toEqual(base);
+  it('⚠ a floor NEVER shortens the bound, however small the declaration', () => {
+    seedAssignee({ agentId: 'tiny-agent', firstChunkMs: 500, idleMs: 500 });
+    expect(patienceBoundMs('tiny-agent')).toBe(300_000);
   });
 
   it('reads the assignee\'s own provider, and calls a default a default', () => {
@@ -268,66 +254,7 @@ describe('§1 the patience floor is derived, and it only ever lengthens', () => 
 // §2 — THE PM POKES. THE CENSUS IS THAT IT DOES NOTHING ELSE.
 // ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * THE POKE LADDER'S OWN SOURCE — scoped, and the scope is argued.
- *
- * `runPokeCheck` hosts TWO mechanisms: an A2A auto-task sweeper that closes stale engine-created
- * `on_deck` rows (unrelated, pre-existing, and it legitimately names that state), and the poke
- * ladder. A census over the whole function would be reading the wrong mechanism's writes, so this
- * slices from where the ladder reads its thresholds to the end of the sweep — which is exactly the
- * region both deleted shapes lived in.
- *
- * Comment lines are stripped: the tombstones inside quote the deleted writes verbatim, which is how
- * a tombstone works and must not make a census red.
- */
-function pokeLadderSource(): string {
-  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
-  const from = src.indexOf('const patienceFloor = patienceFloorFor(');
-  expect(from, 'the ladder must still be findable by its threshold read').toBeGreaterThan(0);
-  const rest = src.slice(from);
-  const to = rest.search(/\n(?:export )?(?:async )?function |\nexport const /);
-  const body = to > 0 ? rest.slice(0, to) : rest;
-  return body.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-}
-
 describe('§2 no path from the PM to a task\'s assignee', () => {
-  /**
-   * ⚠ THE CLAUSE THAT MATTERS MOST, AND IT COUNTS.
-   *
-   * Both shapes that died here were reachable from ONE `if` inside the poke sweep, and a
-   * behavioural clause can only ever prove that today's code does not take them. This census
-   * proves the writes are not in the function at all — so a future "helpful" rung cannot rebuild
-   * one without turning this red.
-   *
-   * It counts its own patterns on purpose: `BANNED` is asserted to be the length it was written
-   * with, so deleting a row to make the census pass fails the census.
-   */
-  const BANNED: ReadonlyArray<[string, string]> = [
-    ["'on_deck'", 'moving a task back to the deck is taking it away from its assignee'],
-    ['onTaskRunComplete', 'failing a scheduled run is not a poke'],
-    ["intent: 'ASSIGN'", 'ASSIGN is the ownership-transfer intent; the PM may never mint one'],
-    // WRITE shapes, not bare names: the ladder legitimately READS `task.assignedTo` seven times
-    // (to pick a recipient, to guard on the assignee's status, to broadcast who was poked), and a
-    // census that banned the read would have to be weakened the first time it misfired. The
-    // property-assignment form is what a write looks like in every one of these call shapes.
-    ['assignedTo:', 'the ladder may not write an assignee'],
-    ['agent_id:', 'nor the column under it'],
-    ['assignee_agent', 'nor the nullable column beside that one'],
-    ['updateTask(', 'nor reach the helper the dashboard uses to move one'],
-    ['work_update:reassign', 'nor reach for the verb'],
-    ['requestUserVerdict', 'and it may not raise an owner decision either (owner ruling 2026-10-02)'],
-    ['requestAssigneeDecision', 'including the one this package built and the owner struck out'],
-  ];
-
-  it('⚠ CENSUS: the poke ladder contains none of the ten writes that could move work', () => {
-    expect(BANNED.length, 'the census must still check ten patterns — deleting a row is not a pass')
-      .toBe(10);
-    const body = pokeLadderSource();
-    for (const [pattern, why] of BANNED) {
-      expect(body, `${why} — found \`${pattern}\` in runPokeCheck`).not.toContain(pattern);
-    }
-  });
-
   it('CENSUS: pm-agent.ts mints no ASSIGN intent anywhere in the file', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8')
       .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
@@ -348,154 +275,6 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
       'the human path must stay open; only the overseer loses it').toBe(false);
   });
 
-  it('WIRE: the real sweep pokes the assignee and moves nothing', async () => {
-    seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
-    seedAssignee({ agentId: PRIMARY, status: 'idle' });
-    seedStaleTask('t-report6', 4_000);   // past normal.autoReset (3600) on an undeclared row
-    const before = taskRow('t-report6');
-
-    await runPokeCheck();
-    await flushMicrotasks();
-
-    const after = taskRow('t-report6');
-    expect(after.state, 'the assignment must NOT be taken away').toBe(before.state);
-    expect(after.agent_id, 'and must NOT move to anyone, least of all the primary').toBe(SLOW_AGENT);
-    expect(handoffDeliveries(), 'no ASSIGN handoff may be sent to anyone').toEqual([]);
-    expect(deliveriesTo(PRIMARY), 'the primary is not a fallback bin').toEqual([]);
-
-    // What DID happen: the top rung poked the ASSIGNEE, and said the task is still theirs.
-    expect(eventCount('t-report6', 'poke'), 'the PM\'s one authority is to keep it working')
-      .toBeGreaterThan(0);
-    const poked = deliveriesTo(SLOW_AGENT) as Array<{ payload?: string }>;
-    expect(poked.length, 'and the poke goes to the agent doing the work').toBeGreaterThan(0);
-    expect(poked.map((d) => d.payload ?? '').join('\n'))
-      .toContain('still yours and nobody is taking it from you');
-    expect(eventCount('t-report6', 'user_verdict_requested'),
-      'and the owner is not asked anything — that was struck out').toBe(0);
-  });
-
-  it('WIRE: rung 3 notifies the primary without handing it anything', () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
-    const text = src.slice(src.indexOf("case 'escalate_primary':"));
-    const body = text.slice(0, text.indexOf("\n\n    case 'redrive':"))
-      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    expect(body, 'the escalation must not instruct a reassignment').not.toContain('Reassign or unblock');
-    expect(body, 'nor a cancel').not.toContain("cancel/fail it if it's no longer needed");
-    expect(body, 'nor promise the owner a decision that is no longer raised')
-      .not.toContain('asks the owner');
-    expect(body, 'it says the work is not moving').toContain('will not move the work');
-    expect(body, 'and names the reaper as the owner of a genuinely dead process')
-      .toContain('reaper');
-    // v3.5 field fix 3, audit #5 (W7): the "already delivered? call status=complete" line is gone. It told
-    // the main agent to close another agent's work, which is close-coaching; the escalation now states the
-    // facts and that the work is the agent's to finish.
-    expect(body, 'the escalation coaches no close (W7)').not.toContain('status="complete"');
-    expect(body).toContain('Do not close it for the agent.');
-  });
-
-  it('the ladder tops out: rung 4 is recorded, so it does not re-ask every minute', async () => {
-    seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
-    seedStaleTask('t-once', 4_000);
-
-    await runPokeCheck();
-    await flushMicrotasks();
-    const afterFirst = eventCount('t-once', 'poke');
-    await runPokeCheck();
-    await flushMicrotasks();
-
-    expect(eventCount('t-once', 'poke'), 'a 60-second sweep must not re-poke the top rung forever')
-      .toBe(afterFirst);
-    // Dead PROCESSES are the engine reaper's job, not the ladder's (owner ruling, point 4).
-    expect(taskRow('t-once').agent_id, 'and the task stays with its assignee either way')
-      .toBe(SLOW_AGENT);
-  });
-
-  /**
-   * ⚠ FIX ROUND 1, RULING R9 — THE OTHER HALF OF THE CLAUSE ABOVE, AND THE HALF THAT WAS MISSING.
-   *
-   * The clause above proves the top rung does not fire on the NEXT SWEEP. Read alone it was also
-   * satisfied by `lastPokeNumber < 4`, which made rung 4 the ladder's last word for the whole
-   * cycle: an assignee that was slow but ALIVE and stalled AFTER its fourth poke was never poked
-   * again, and the reaper only reaches DEAD processes. So "keep the agent working" — the entire
-   * authority OR-PM-1 grants the PM — had a ceiling of four pokes.
-   *
-   * This drives exactly that stall and asserts BOTH directions, because a clause that only
-   * asserted the later poke would be satisfied by a 60-second poke loop, which is the defect in
-   * the opposite direction and the reason the rung is recorded at all:
-   *   NOT BEFORE — half an interval after the recorded rung-4 poke, nothing new.
-   *   AFTER      — a full `autoReset` interval later, one more re-drive, at the ASSIGNEE.
-   *
-   * The clock is moved by aging the RECORDED poke event rather than by waiting, which is the
-   * same instrument `work_events.created_at` gives every other ladder clause: the interval is
-   * read off the record, so the record is the honest thing to move.
-   */
-  it('⚠ R9: a stall AFTER the fourth poke is re-driven once the interval passes, and not before',
-    async () => {
-      seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
-      seedStaleTask('t-periodic', 4_000); // past normal.autoReset (3600) on an undeclared row
-      const stateBefore = taskRow('t-periodic').state;
-
-      await runPokeCheck();
-      await flushMicrotasks();
-      expect(eventCount('t-periodic', 'poke'), 'the top rung fires once to begin with').toBe(1);
-      expect(currentRung('t-periodic'), 'and it is rung 4 that fired').toBe(4);
-
-      // ── NOT BEFORE: half an interval of continued silence buys no second re-drive ──
-      const agePoke = (seconds: number): void => {
-        mockDb.current!.prepare(
-          `UPDATE work_events SET created_at = created_at - ?
-            WHERE work_id = ? AND kind = 'poke'`,
-        ).run(seconds * 1000, 't-periodic');
-      };
-      agePoke(1_800); // half of normal.autoReset
-      await runPokeCheck();
-      await flushMicrotasks();
-      expect(eventCount('t-periodic', 'poke'), 'half an interval is not an interval').toBe(1);
-
-      // ── AFTER: the rest of the interval passes and the PM re-drives ──
-      // t143 round 3 (I2): the re-drive owes no reply and travels no A2A thread, so there is no
-      // hop counter to exhaust and no transport drop to say out loud — the periodic re-drive has
-      // no ceiling by construction (the N1 hop-cap defect cannot exist on this path).
-      agePoke(1_801);
-      await runPokeCheck();
-      await flushMicrotasks();
-      expect(eventCount('t-periodic', 'poke'), 'the PM keeps the agent working, with no ceiling')
-        .toBe(2);
-      expect(currentRung('t-periodic'), 'still the top rung — the ladder does not grow a rung 5')
-        .toBe(4);
-      expect((deliveriesTo(SLOW_AGENT) as Array<{ requiresResponse?: boolean }>).every((d) => d.requiresResponse === false),
-        'and neither re-drive owes the PM a reply').toBe(true);
-
-      // ⛔ AND IT IS STILL ONLY A POKE. R9 granted no new authority, and these are the writes
-      // OR-PM-1 forbids: the task did not move, the primary was told nothing, no ASSIGN exists.
-      const poked = deliveriesTo(SLOW_AGENT) as Array<{ payload?: string }>;
-      expect(poked.length, 'both re-drives went to the agent doing the work').toBe(2);
-      expect(poked.map((d) => d.payload ?? '').join('\n'))
-        .toContain('still yours and nobody is taking it from you');
-      expect(handoffDeliveries(), 'a periodic rung may not become a periodic handoff').toEqual([]);
-      expect(deliveriesTo(PRIMARY), 'nor a periodic escalation').toEqual([]);
-      expect(taskRow('t-periodic').agent_id, 'and the assignment never moves').toBe(SLOW_AGENT);
-      expect(taskRow('t-periodic').state, 'nor does the state').toBe(stateBefore);
-    });
-
-  it('WIRE: the slow sub-agent of report #6 is not even poked at this idle time', async () => {
-    seedAssignee({ agentId: SLOW_AGENT, status: 'idle', firstChunkMs: 600_000, idleMs: 600_000 });
-    seedStaleTask('t-slow', 1_000);   // over the stock first rung (300), under the floored one (1200)
-
-    await runPokeCheck();
-    await flushMicrotasks();
-
-    expect(eventCount('t-slow', 'poke'),
-      'poking a slow box mid-inference is the half of the fix the ruling explicitly keeps').toBe(0);
-    expect(taskRow('t-slow').agent_id).toBe(SLOW_AGENT);
-
-    // And the control: the same declared row IS poked once its own floor is passed.
-    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?')
-      .run(Date.now() - 1_500 * 1000, 't-slow');
-    await runPokeCheck();
-    await flushMicrotasks();
-    expect(eventCount('t-slow', 'poke'), 'patience is a floor, not an exemption').toBeGreaterThan(0);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -521,9 +300,6 @@ describe('§3 a human reassignment is recorded at both of its doors', () => {
     expect(payload, 'the prior assignee\'s last state is the half an owner cannot reconstruct later')
       .toContain('prior assignee last state');
     expect(payload).toContain('status=working');
-    // The ladder re-arm the call site used to do by itself now rides along, inseparably.
-    expect(eventCount('t-moved', 'poke_remediation'),
-      'the record and the re-arm must not be able to come apart').toBe(1);
   });
 
   it('the prior assignee\'s last activity is the newest message as a UTC date, never epoch digits', () => {

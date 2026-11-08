@@ -55,7 +55,7 @@ describe('the reminder lane asks the same owner question', () => {
     const state = {
       sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
       structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
-      loopCount: 0, closeOutGateSatisfied: true, danglingTaskIds: [], compileGateSatisfied: true, compileOwedAskIds: [],
+      loopCount: 0, compileGateSatisfied: true, compileOwedAskIds: [],
     };
     const ctx = {
       agentId: 'quillon', turnNumber: 1,
@@ -94,7 +94,7 @@ describe('the reminder lane reads the turn address for where the reminder lands'
     const state = {
       sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
       structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
-      loopCount: 0, closeOutGateSatisfied: true, danglingTaskIds: [], compileGateSatisfied: true, compileOwedAskIds: [],
+      loopCount: 0, compileGateSatisfied: true, compileOwedAskIds: [],
     };
     const ctx = {
       agentId: 'quillon', turnNumber: 1,

@@ -103,48 +103,18 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
 
 /** Is a turn live, or a model request open on a live connection, RIGHT NOW? The live-run registry
  *  and the abort registry — never a row (a crash leaves rows behind; nothing live is left behind).
- *  The PM's ladder leaves an agent alone for exactly this instant; the 2-hour any-row window is for
- *  the SILENT notice only (t143 round 4). */
+ *  The stall ladder leaves an agent alone for exactly this instant; the 2-hour any-row window is for
+ *  the SILENT notice only. */
 export function agentIsLive(agentId: string): boolean {
   return activeRuns.has(agentId) || countAbortable(agentId) > 0;
 }
 
-/** The task's own last movement, epoch ms — the PM ladder's idle clock (t137 review M3). Since
- *  round 2 the checkpoint touches only the job's own work, so the row's clock is honest; the one
- *  expression is shared with the close-out gate (`work/task-freshness.ts`). */
+/** The task's own last movement, epoch ms: the stall ladder's clock (`work/task-freshness.ts`). */
 export function taskLastMovedAt(taskId: string, updatedAtMs: number): number {
   try {
     const r = getDb().prepare(`SELECT ${taskMovedAtSql('w')} AS at FROM work w WHERE w.id = ?`).get(taskId) as { at: number } | undefined;
     return r?.at ?? updatedAtMs;
   } catch { return updatedAtMs; /* the row's own clock, as before */ }
-}
-
-/** FIELD FIX 3 AUDIT ROUND (#8), OR-LONG-JOBS: "If the agent gives the PM a response that suggests
- *  they are still working on the project, then the PM should let them work." The assignee's newest
- *  answer since the PM first checked in on this task after it last moved (`movedAtMs`): a turn that
- *  WORKED THIS TASK, on the task's own record: the agent wrote on it (a "still working" note counts,
- *  as does a status or claim), the engine recorded a turn that served it (`claim_turn`, never written
- *  for a turn only woken by a notice, `work/task-turns.ts`), or a call touched its ledger. `null` when
- *  nothing since, or when the PM has not checked in since the task moved, so the first check-in still
- *  comes on schedule for a busy agent that dropped this task. A record read, no wording read.
- *
- *  RE-REVIEW 2 (S3): this read any model call by the agent ("tokens moving") as an answer, which let
- *  the check-in turn's own call, chat about other things and the agent's compaction summaries re-arm
- *  the ladder forever; a dropped task never escalated. Tokens are not read here at all now. */
-export function answeredSinceCheckIn(taskId: string, agentId: string, movedAtMs: number): number | null {
-  try {
-    const db = getDb();
-    const lastCheckIn = (db.prepare(`SELECT MIN(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'poke' AND created_at > ?`)
-      .get(taskId, movedAtMs) as { at: number | null } | undefined)?.at ?? null;
-    if (lastCheckIn === null) return null;
-    const own = (db.prepare(`SELECT MAX(created_at) AS at FROM work_events
-        WHERE work_id = ? AND created_at > ? AND (actor IN (?, 'agent:' || ?) OR kind = 'claim_turn')`)
-      .get(taskId, lastCheckIn, agentId, agentId) as { at: number | null } | undefined)?.at ?? null;
-    const ledger = (db.prepare(`SELECT MAX(last_at) AS at FROM work_ledger WHERE work_id = ? AND last_at > ?`)
-      .get(taskId, lastCheckIn) as { at: number | null } | undefined)?.at ?? null;
-    const newest = Math.max(own ?? 0, ledger ?? 0);
-    return newest > 0 ? newest : null;
-  } catch { return null; }
 }
 
 function roleOf(agentId: string): string {
@@ -249,9 +219,8 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
   const words = silentWords(a.id, a.name, now - since, work, act);
   if (noteNoticeOnce(a.id, 'silent_notice', words, since)) {
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
-    // t146: the notice names a task, so it is ABOUT that work row (the id is data held here, not read
-    // from the words); its card stands in the owner-notices list in these exact words (`silent_notice`).
-    void sendAlert(words, 'notice', { kind: 'broken-agent', aboutWorkId: newestOf(work)?.id, agentId: a.id });
+    // Its card stands in the owner-notices list in these exact words (`silent_notice`).
+    void sendAlert(words, 'notice', { kind: 'broken-agent', agentId: a.id });
   }
 }
 

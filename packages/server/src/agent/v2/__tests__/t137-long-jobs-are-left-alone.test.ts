@@ -397,7 +397,6 @@ import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { transition } from '../../../work/store.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
-import { pendingCirclingVerdict } from '../../../tracker/effort-governor.js';
 import { engineSources, SERVER_SRC } from './engine-sources.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -867,32 +866,6 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     expect(systemRowsOfTurn(1)).toEqual([]);
   });
 
-  it('the close-out gate still arms on a genuinely stale second task on the continuation, and never names the in-flight one', async () => {
-    seedInFlightTask();
-    await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
-    ownerWithdrawsTheAsk();   // round 3 (R-V333-8): see the helper
-    expect(continuationContext.has('primary')).toBe(true);
-    pendingWakeups.clear();
-    // Planted AFTER the park, so the checkpoint's tracker touch could not have reached it.
-    const stale = Date.now() - 40 * 60_000;
-    mockDb.current!.prepare(
-      `INSERT INTO work (id, agent_id, kind, requester, root_kind, root_id, state, intent,
-                         wakes, closes_thread, title, opened_at, updated_at)
-       VALUES ('w-dangler', 'primary', 'task', 'owner', 'tracker', 'w-dangler', 'claimed',
-               'action', 1, 0, 'the abandoned spreadsheet', ?, ?)`,
-    ).run(stale, stale);
-    callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 1, outputTokens: 1, stopReason: 'end_turn' });
-    await runV2Turn('primary');
-    const gate = messageRows().filter((m) => m.content.startsWith('[System: tracker check before this turn.'));
-    expect(gate).toHaveLength(1);
-    expect(gate[0].content).toContain('the abandoned spreadsheet');
-    // v3.5 text wave (orchestrator ruling; fix round 1 I-3): the facts, and nothing is closed for it; no close-out coaching.
-    expect(gate[0].content).toContain('nothing is closed for you');
-    expect(gate[0].content).not.toContain('the job continues');
-    expect(gate[0].content).not.toMatch(/close-out|abandoned work|KEEP GOING|wrap up|never closed/i);
-    expect(gate[0].content.indexOf('work_note(')).toBeLessThan(gate[0].content.indexOf('action="hand_in"'));
-    expect(gate[0].content).not.toContain('summarise the research folder');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -924,7 +897,7 @@ function shippedSources(): Array<{ rel: string; code: string }> {
 // the PM's verdict travels as a rider notice on the events lane (model-visible on the next turn —
 // proven against the real assembler in `t137-the-circling-verdict-reaches-the-agent.test.ts`).
 // ════════════════════════════════════════════════════════════════════════════════════════
-describe('t137 round 2: the 75-call checkpoint writes nothing to the owner and hands the verdict to the agent', () => {
+describe('t137 round 2: the 75-call checkpoint writes nothing to the owner', () => {
   async function seventyFiveReadsThenTheCap(): Promise<void> {
     let call = 0;
     callModelSpy.mockImplementation(async () => {
@@ -949,24 +922,6 @@ describe('t137 round 2: the 75-call checkpoint writes nothing to the owner and h
     expect(chatBroadcasts().filter((m) => m.role === 'system' && !(m.content ?? '').startsWith('[working-note]'))).toEqual([]);
   });
 
-  it('a pending circling verdict leaves as a PM-attributed events-lane notice, once, and the sweep sees it delivered', async () => {
-    seedInFlightTask();
-    writeTaskLog({ taskId: 'w-long-job', fromEntity: 'pm', entryKind: 'effort_review_intervene',
-      reason: 'the same three files were re-read with nothing new landing' });
-    expect(pendingCirclingVerdict('w-long-job')).not.toBeNull();
-
-    await seventyFiveReadsThenTheCap();
-
-    const rows = mockDb.current!.prepare(
-      `SELECT role, lane, origin_intent, content FROM messages WHERE agent_id = 'primary' AND content LIKE '%PM EFFORT REVIEW%'`,
-    ).all() as Array<{ role: string; lane: string; origin_intent: string; content: string }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ role: 'user', lane: 'events', origin_intent: 'agent_notice' });
-    expect(rows[0].content).toContain('AGENT NOTICE from PM');
-    expect(rows[0].content).toContain('summarise the research folder');
-    expect(pendingCirclingVerdict('w-long-job')).toBeNull();
-    expect(chatBroadcasts().some((m) => (m.content ?? '').includes('PM EFFORT REVIEW'))).toBe(false);
-  });
 });
 
 describe('t137 CENSUS: the park writes nothing, the cap and its setting are gone', () => {
@@ -998,22 +953,6 @@ describe('t137 CENSUS: the park writes nothing, the cap and its setting are gone
     // above is a fact about the code and not about a walk that read nothing.
     expect(sources.filter((f) => /\/prefill-throughput/.test(f.code)).map((f) => f.rel).sort())
       .toEqual(['packages/dashboard/src/lib/api.ts', 'packages/server/src/gateway/routes/config.ts']);
-  });
-
-  it('round 2: BOTH checkpoints hand the circling verdict over through the one door, and neither writes the owner a row', () => {
-    const code = (rel: string): string => stripComments(fs.readFileSync(path.join(SERVER_SRC, rel), 'utf8'));
-    const tb = code('agent/v2/steps/pre-call-gates/turn-budget.ts');
-    const loop = code('agent/v2/loop.ts');
-    // The tool-loop checkpoint's block: from the cap test to the continuation's own setTimeout.
-    const capBlock = loop.slice(loop.indexOf('loopCount >= MAX_TOOL_LOOPS'), loop.indexOf("getAgentRuntime().handleMessage(agentId, '')"));
-    expect(capBlock.length, 'the tool-loop checkpoint moved — re-point this census').toBeGreaterThan(200);
-    for (const [name, src] of [['turn-budget', tb], ['tool-loop', capBlock]] as const) {
-      expect((src.match(/deliverPendingCirclingVerdict\(agentId\)/g) ?? []).length, `${name} hands the verdict over once`).toBe(1);
-      expect(src.match(/insertMessage(IfAbsent)?\(|type: 'chat:message'/g) ?? [], `${name} writes the owner nothing`).toEqual([]);
-    }
-    expect((capBlock.match(/noteEngineCheckpoint\(agentId, 'tool-loop'\)/g) ?? []).length).toBe(1);
-    // The old carrier is gone everywhere it could be called from.
-    expect(shippedSources().filter((f) => /pendingCirclingVerdictParkLine/.test(f.code)).map((f) => f.rel)).toEqual([]);
   });
 
   it('the pause has exactly ONE production caller, and that caller passes the continuation fact', () => {

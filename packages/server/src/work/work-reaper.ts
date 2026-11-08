@@ -433,16 +433,25 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
     },
   },
   {
-    id: 'validation-escalation',
+    id: 'ladder',
     everyMs: 30_000,
     cadenceFrom:
-      'the 30s scheduler tick that hosted this sweep; the CLIFF is VALIDATION_ESCALATION_MIN = 5 min (scheduler/runner.ts), which the sweep applies itself — the tick is only how often it looks',
-    // It wakes the primary so the owner is asked about a row the validator never reached.
-    // Declared TRUE so the storm law can see it: this is the one moved sweep that speaks.
+      'the 30s scheduler tick the owner-escalation sweep ran on; each step\'s own clock is the worker\'s patience bound, which the ladder applies itself, so the tick is only how often it looks',
+    // It hints workers, wakes the PM and the main agent, and raises the owner's card.
     wakes: true,
     run: async () => {
-      const { sweepUnvalidatedTasksForUserEscalation } = await import('../scheduler/runner.js');
-      await sweepUnvalidatedTasksForUserEscalation();
+      const { runLadder } = await import('./done/ladder.js');
+      await runLadder();
+    },
+  },
+  {
+    id: 'answered-assign-tasks',
+    everyMs: 60_000,
+    cadenceFrom: 'the PM poke loop\'s 60s tick (POKE_INTERVAL_MS) that hosted this sweep; the rule is the reply on record, never a clock',
+    wakes: true,
+    run: async () => {
+      const { handInAnsweredAssignTasks } = await import('./done/hand-in.js');
+      handInAnsweredAssignTasks();
     },
   },
   {

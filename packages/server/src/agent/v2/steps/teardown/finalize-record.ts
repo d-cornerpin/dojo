@@ -433,52 +433,6 @@ export async function finalizeTurnRecord(
         } catch { /* best effort, like every arm of this boundary */ }
       }
     }
-    // ── UX-REPAIR ROUND 4 T19 (D3) — THE DELIVER LADDER'S MISSING DRIVE TICK ──
-    //
-    // A scheduled run that owes a person a message is steered by the RETURN VALUE of the
-    // model's own close attempt, so the ladder's count only ever moved when the model came
-    // back to the tool. It counts DISTINCT TURNS — measured, and that rule stays — but a model
-    // that stops calling the tool freezes it wherever it stands. The owner's box, 2026-08-10:
-    // three steers, all inside turn 4602, ledger reading `1 of 3`, `2 of 3`, `2 of 3`. The
-    // stand-down never ran, `RUN_STATUS_UNDELIVERED` was never written, and a generic idle
-    // reaper closed the run thirty minutes later with a sentence about the AGENT.
-    //
-    // A rung is a DRIVE — "a separate attempt, with a turn in between for the agent to act on
-    // the steer" — and a turn that ENDED having been told, and delivered nothing, IS that
-    // attempt. So the boundary spends it. Every refusal that keeps it honest lives with the
-    // authority (`work/occurrences.ts:advanceRunDeliverLadderAtTurnEnd`): an unsteered run
-    // never burns, a delivered turn never burns, and a turn already on the ledger records
-    // nothing. When the bound is reached the close goes through the ORDINARY run-complete
-    // flow, so the stand-down, the UNDELIVERED word, the owner surface and the schedule
-    // advance are the same ones every other close produces.
-    //
-    // It runs HERE, after `finalizeTurn`, because the delivery receipts this reads are written
-    // by the finalize step that has already run — the turn boundary is where a fact about a
-    // turn becomes readable (CT0's doctrine, carried).
-    if (turnCtx.root?.kind === 'occurrence') {
-      try {
-        const occurrenceId = turnCtx.root.id;
-        const { advanceRunDeliverLadderAtTurnEnd } = await import('../../../../work/occurrences.js');
-        const ladder = advanceRunDeliverLadderAtTurnEnd(occurrenceId, turnNumber);
-        if (ladder.spent) {
-          logger.info('v2: a run that owed a message ended a turn with nothing delivered; the deliver ladder spent a drive at the boundary', {
-            agentId, turnNumber, occurrenceId, standDownDue: ladder.standDownDue,
-          }, agentId);
-        }
-        if (ladder.standDownDue && ladder.taskId) {
-          await (await import('../../../tools/cat/measure-door.js')).remeasureTask(agentId, ladder.taskId);   // v3.5: judged on a fresh reading
-          const { onTaskRunComplete } = await import('../../../../scheduler/runner.js');
-          await onTaskRunComplete(
-            ladder.taskId, 'complete',
-            'the deliver ladder was spent across separate turns and nothing reached the person',
-          );
-        }
-      } catch (err) {
-        logger.warn('v2: the run-deliver ladder\'s turn-boundary advance failed (non-fatal)', {
-          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
-        }, agentId);
-      }
-    }
     // Ticket stamps (owner design 2026-07-22): the ONE stamping point. The
     // engine writes what it observed onto every ticket this turn's root
     // touches, so the model reads state instead of guessing it.

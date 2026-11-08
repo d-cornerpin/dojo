@@ -14,7 +14,7 @@
 import { isHealerAgent, isPrimaryAgent } from '../../../../config/platform.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../../../healer/approval-routing.js';
-import { CLOSING_WORK_OPS, SATISFYING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
+import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
 import { getSudoPolicy, isSudoHoldRequired } from '../../../brokers/sudo-policy.js';
 import { sudoHeldRefusal, sudoOwnerCardCopy } from '../../../brokers/sudo-copy.js';
@@ -57,19 +57,6 @@ export async function recordDispatchAndHold(
         },
       });
     }
-  }
-  // ── Close-out gate satisfaction (v2.5.46) ──
-  // If the agent is taking a qualifying work action this turn (status
-  // update, complete_step, note, close_project), disengage the close-out
-  // gate for the remainder of the turn. They can keep resolving the other
-  // dangling tasks but they're no longer forced to.
-  if (
-    state.danglingTaskIds.length > 0 &&
-    !state.closeOutGateSatisfied &&
-    SATISFYING_WORK_OPS.has(toolOpKey(tc.name, tc.arguments))
-  ) {
-    state = advance(state, { closeOutGateSatisfied: true });
-    logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
   }
   // Thrash-gate clear on any tracker transition. Any successful status
   // change (complete/blocked/paused/in_progress) is forward progress; the

@@ -1,9 +1,7 @@
 // v3.5 field fix 3, ranked fix #7: A REFUSED send_to_agent DOES NOT END THE A2A TURN.
 //
-// The owner's box (diagnosis Problem 3, bundle L48-49): the close-out gate refused the primary's
-// send_to_agent at .086 and the loop logged "A2A reply sent, exiting loop" at .087. Nothing was
-// sent. The exit read the model's EMITTED calls (`result.toolCalls`), so a refused send ended the
-// turn as if it had gone out, and the tracker call the gate asked for never got its turn.
+// The exit reads the calls that EXECUTED, never the model's emitted calls: a refused send does not
+// end the turn as if it had gone out.
 //
 // The runaway-send guard stays: a send that actually EXECUTED still ends the turn at once.
 
@@ -30,19 +28,6 @@ vi.mock('../../attempt-record.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   recordToolOutcome: () => 0,
 }));
-// The close-out gate's spine re-validation reads the database; here the danglers are live.
-vi.mock('../../../stale-work-ids.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../stale-work-ids.js')>();
-  const { CLOSE_OUT_WORK_OPS } = await vi.importActual<typeof import('../../../../../tools/work-verbs.js')>('../../../../../tools/work-verbs.js');
-  return {
-    ...actual,
-    closeOutGateDecision: (ids: readonly string[], satisfied: boolean, opKey: string) => (
-      ids.length === 0 || satisfied || CLOSE_OUT_WORK_OPS.has(opKey)
-        ? { live: [...ids], refuse: false }
-        : { live: [...ids], refuse: true }
-    ),
-  };
-});
 
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
 const fakeDb = {
@@ -112,13 +97,6 @@ beforeEach(() => {
 });
 
 describe('fix #7: only an executed send ends the A2A turn', () => {
-  it('THE FIELD SHAPE: the close-out gate refuses the send, and the turn goes on to the tracker call', async () => {
-    const out = await runExecute(stateWith({ danglingTaskIds: ['8e877863-aaaa'], closeOutGateSatisfied: false }), ctxFor([send()]));
-    expect(sendsExecuted()).toBe(0);
-    const slot = out.state.toolResults.find((r) => r.toolCallId === 'tc-send');
-    expect(slot?.content).toContain('Refused: engine tracker check.');
-    expect(out.directive, 'a refused send ended the turn as if it had been sent').not.toBe('exit');
-  });
 
   it('the per-recipient cap refusal does not end the turn either', async () => {
     const out = await runExecute(stateWith({ sendsPerAgentThisTurn: { pm: 5 } }), ctxFor([send()]));
@@ -136,7 +114,7 @@ describe('fix #7: only an executed send ends the A2A turn', () => {
 
   it('a tracker call and an executed send in one response: the tracker call runs and the send still ends the turn', async () => {
     const tracker = { id: 'tc-note', name: 'work_note', arguments: { task_id: '8e877863-aaaa', notes: 'continuing' } } as ToolCall;
-    const out = await runExecute(stateWith({ danglingTaskIds: ['8e877863-aaaa'] }), ctxFor([tracker, send()]));
+    const out = await runExecute(stateWith(), ctxFor([tracker, send()]));
     expect(sendsExecuted()).toBe(1);
     expect(out.directive).toBe('exit');
   });

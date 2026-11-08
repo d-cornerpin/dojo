@@ -84,15 +84,12 @@ describe('the ledger charge', () => {
     expect(ledger('only')).toEqual(['gmail:msg:ok-1', 'gmail:msg:ok-2']);
   });
 
-  it('REVIEW FOCUS 4: two claimed tasks — the most recently updated one is charged, the same pick as the effort meter', () => {
+  it('REVIEW FOCUS 4: two claimed tasks: the most recently updated one is charged', () => {
     seedTrackerTask(mockDb.current!, { id: 'older', agentId: AGENT, status: 'in_progress', updated_at: 1_700_000_000_000 });
     seedTrackerTask(mockDb.current!, { id: 'newer', agentId: AGENT, status: 'in_progress', updated_at: 1_700_000_500_000 });
     countTrackerWorkThisIteration(stateWith(CALLS, ['c3']), ctxFor(CALLS), roundOf(CALLS, ['c3']));
     expect(ledger('newer')).toEqual(['gmail:msg:ok-1', 'gmail:msg:ok-2']);
     expect(ledger('older')).toEqual([]);
-    const effort = (id: string) => (mockDb.current!.prepare('SELECT effort_calls AS n FROM work WHERE id = ?').get(id) as { n: number }).n;
-    expect(effort('newer')).toBeGreaterThan(0);
-    expect(effort('older')).toBe(0);
   });
 
   it('REVIEW FOCUS 4: the only task is paused — nothing is charged', () => {

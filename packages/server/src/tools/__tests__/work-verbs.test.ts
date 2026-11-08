@@ -34,7 +34,6 @@ import {
   CLOSING_WORK_OPS,
   PROGRESS_WORK_OPS,
   SATISFYING_WORK_OPS,
-  CLOSE_OUT_WORK_OPS,
   DISARMING_WORK_OPS,
   CLOSE_OPS_WITH_TASK_ID,
 } from '../work-verbs.js';
@@ -220,23 +219,11 @@ const CANARIES: Canary[] = [
     silent: [ 'tracker_get_status', 'tracker_list_active'],
   },
   {
-    behaviour: 'B3 pre-turn close-out gate SATISFACTION (disengages the gate for the rest of the turn)',
-    where: 'agent/v2/loop.ts via SATISFYING_WORK_OPS',
+    behaviour: 'B3 engaging with open work (the compile gate lets these through)',
+    where: 'agent/v2/compile-owed-gate.ts via SATISFYING_WORK_OPS',
     test: inSet(SATISFYING_WORK_OPS),
     fires: ['tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_close_project'],
-    // reads may PASS the gate but must not disengage it
     silent: ['tracker_get_status', 'tracker_list_active', 'tracker_edit_task'],
-  },
-  {
-    behaviour: 'B4 pre-turn close-out gate ALLOWLIST (what an agent with danglers may still call)',
-    where: 'agent/v2/loop.ts via CLOSE_OUT_WORK_OPS',
-    test: inSet(CLOSE_OUT_WORK_OPS),
-    fires: [
-      'tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_close_project',
-      'tracker_get_status', 'tracker_list_active', 'tracker_edit_task',
-      'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_resolve_missed_runs'
-    ],
-    silent: ['tracker_create_project', 'tracker_create_task', 'reminder_create', 'commitment_open', 'commitment_resolve'],
   },
   {
     behaviour: 'B5 multi-step floor DISARM (FN-9 / FA-T2 — the worker is tending its own work)',
@@ -384,7 +371,6 @@ describe('T8V — LIVENESS: every engine behaviour that matched a tool name stil
       ['CLOSING_WORK_OPS', CLOSING_WORK_OPS],
       ['PROGRESS_WORK_OPS', PROGRESS_WORK_OPS],
       ['SATISFYING_WORK_OPS', SATISFYING_WORK_OPS],
-      ['CLOSE_OUT_WORK_OPS', CLOSE_OUT_WORK_OPS],
       ['DISARMING_WORK_OPS', DISARMING_WORK_OPS],
       ['CLOSE_OPS_WITH_TASK_ID', CLOSE_OPS_WITH_TASK_ID],
       ['STRUCTURING_OPS', STRUCTURING_OPS],

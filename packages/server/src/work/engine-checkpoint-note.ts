@@ -52,9 +52,6 @@
 
 import { getDb } from '../db/connection.js';
 import { writeTaskLog } from '../tracker/task-log.js';
-import { pendingCirclingVerdict, EFFORT_REVIEW_DELTA_CALLS } from '../tracker/effort-governor.js';
-import { recordPoke } from './poke-ladder.js';
-import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
 import { servedOwnerMessageIds } from '../memory/served-ask.js';
@@ -145,97 +142,4 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
   }
 
   return targets.length;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T79 FIX WAVE, FINDING 2 — THE CIRCLING VERDICT IS HANDED OVER AT THE CHECKPOINT.
-//
-// THE DEFECT: the PM's circling verdict (`tracker/pm-agent.ts`'s `runEffortReview`) had
-// exactly ONE delivery path — the guarded poke sweep's fill-in, behind the `assigneeStatus
-// === 'working'` guard. A continuously-continuing agent is 'working' except for the ~0.5-2s a
-// checkpoint occupies, so the expected delivery latency was measured in HOURS.
-//
-// t137 ROUND 2 (R-V333-3, OR-LONG-JOBS) — WHERE IT TRAVELS NOW, AND WHY THE OLD CARRIER WENT.
-// Finding 2 put the line on the checkpoints' park rows. Those rows were role='system', which
-// the tail renderer never emits: the AGENT never read the verdict, the OWNER read it in his
-// chat, and the latch below was written anyway — cancelling the sweep's real delivery too. Both
-// park rows are deleted (the checkpoints are invisible housekeeping). The verdict now leaves as
-// a PM-attributed RIDER notice (`postAgentNotice`, intent `agent_notice` — a declared
-// `ENGINE_RIDER_INTENTS` member, so it can never drive a turn of its own): an events-lane row,
-// lifted into the agent's NEXT turn (the continuation the checkpoint queues), broadcast on the
-// inter-agent lane, never on the owner's chat. Both checkpoints call this one function.
-//
-// NO DOUBLE DELIVERY, EITHER DIRECTION: `pendingCirclingVerdict` is the SAME read the poke
-// sweep's guarded fill-in makes, and the latch (`recordPoke`, rung 2 — the marker
-// `circlingPokeAlreadyDelivered` reads) is written ONLY once the notice row exists. A failed
-// write leaves the verdict pending for the sweep rather than marking a delivery that did not
-// happen.
-//
-// SCOPE: the agent's own CLAIMED tasks (same predicate as `noteEngineCheckpoint`'s
-// `inProgress`), plus the title, to name the task in the notice.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/**
- * Hand one undelivered circling verdict on this agent's claimed work to the agent itself, as a
- * PM-attributed rider notice its next turn reads. Returns the notice row id, or `null` when
- * nothing was pending (the common case) or the hand-over failed (verdict left pending). Never
- * throws: a checkpoint is not the place to discover a broken read, and both callers park anyway.
- */
-export function deliverPendingCirclingVerdict(agentId: string): string | null {
-  try {
-    return handOverOneVerdict(agentId);
-  } catch {
-    return null;
-  }
-}
-
-function handOverOneVerdict(agentId: string): string | null {
-  const db = getDb();
-  const claimed = db.prepare(`
-    SELECT w.id AS id, w.title AS title FROM work w
-    WHERE ${taskScope('w')} AND w.agent_id = ?
-      AND w.state = 'claimed'
-      AND w.is_paused = 0 AND NOT ${heldExpr('w')}
-  `).all(agentId) as Array<{ id: string; title: string | null }>;
-
-  for (const task of claimed) {
-    const circling = pendingCirclingVerdict(task.id);
-    if (!circling) continue;
-    const title = task.title ?? '(untitled task)';
-    const brief = `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ repeated calls without advancing on "${title}" (${task.id})] ${circling.reason}`;
-    // t137 round 3 (review M4): the ROW is the delivery — it is what the next turn reads. A row
-    // already written for THIS verdict (a post whose broadcast threw after the insert answers
-    // null) counts as delivered, so the verdict is latched once and never handed over twice.
-    const at = (db.prepare('SELECT created_at AS at FROM work_events WHERE id = ?').get(circling.sinceEventId) as { at: number } | undefined)?.at;
-    const noticeId = at === undefined ? null : handToTheNextTurn(agentId, brief, at);
-    if (!noticeId) return null;
-    // `rung: 2` matches the sweep's own urgent rung for a circling verdict; the `poke_type`
-    // names this delivery's origin without changing what either reader checks.
-    recordPoke(task.id, 'engine', 2, 'checkpoint_circling_verdict', agentId);
-    return noticeId;
-  }
-  return null;
-}
-
-/** THE RIDER DOOR: `brief` to this agent's NEXT turn as a PM rider notice (above); the row id, or null if
- *  unwritten. The ROW is the delivery: one already written for this brief since `sinceMs` counts, so a caller
- *  latching on the answer latches once. Used by the circling verdict and the PM's check-in at a continued
- *  job's park (`tracker/pm-agent.ts`, v3.5 D1 fix round 4): both reach a still-active run, never inject into it. */
-export function handToTheNextTurn(agentId: string, brief: string, sinceMs: number): string | null {
-  return noticeRowFor(agentId, brief, sinceMs)
-    ?? postAgentNotice({ toAgentId: agentId, fromName: 'PM', selfIntro: false, intent: 'agent_notice', brief })
-    ?? noticeRowFor(agentId, brief, sinceMs);
-}
-
-/** The rider already written for this brief: same text (as `postAgentNotice` stores it), on this agent's
- *  events lane, no earlier than `sinceMs` floored to the second (`messages.created_at` is second-precise). */
-function noticeRowFor(agentId: string, brief: string, sinceMs: number): string | null {
-  const row = getDb().prepare(
-    `SELECT m.id AS id FROM messages m
-      WHERE m.agent_id = ? AND m.lane = 'events' AND m.origin_intent = 'agent_notice'
-        AND instr(m.content, ?) > 0
-        AND m.created_at >= ?
-      LIMIT 1`,
-  ).get(agentId, brief.replace(/\s+/g, ' ').trim(), Math.floor(sinceMs / 1000) * 1000) as { id: string } | undefined;
-  return row?.id ?? null;
 }

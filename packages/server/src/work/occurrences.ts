@@ -62,12 +62,8 @@ import type { WorkEventKind } from './event-kinds.js';
 // are its, and are called from inside this file's transactions (see `work/next-run.ts`).
 import { advanceScheduleOnClaim, restoreScheduleOnRelease } from './next-run.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
-import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
-import {
-  RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
-  nextRunDeliverRung, recordRunDeliverStandDown, recordRunDeliverSteer, runDriveCount,
-} from './run-deliver-drive.js';
+import { proofDelivery } from './done/proof.js';
 
 const logger = createLogger('occurrences');
 
@@ -218,257 +214,30 @@ export function releaseOccurrence(
   logger.info('occurrence released unfired', { workId, occurrenceId, reason });
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-1 CT2 — THE RUN'S OWN EVIDENCE PREDICATE.
-//
-// ── WHAT WAS THERE BEFORE, AND WHY IT COULD NOT REFUSE ANYTHING ──
-// `settleOccurrence`'s caller passed *the newest delivery by that agent since the run opened*, with one exclusion
-// (`engine-ack`) and no others. That function is correct for the job it was written for — a
-// TASK close, where an apprentice's a2a hand-off really is the delivery for that piece of work,
-// and its own docstring says so. It is the wrong question for a scheduled BRIEF, and the
-// measurement says how wrong: driven at `8a060c5` (behavioral run `bmslpj41gkx`), a real
-// "Tomorrow Brief" run closed `done` — owner status **complete** — on delivery `b57483d6`,
-// which is a `display_kind='tool-turn'` CHIP whose entire content is the `work_update(action=
-// "status", status="complete")` call itself. THE RUN WAS MARKED COMPLETE ON THE CHIP OF THE
-// CALL THAT MARKED IT COMPLETE. The real brief ("Tomorrow (Mon, Aug 10) is clear — no events on
-// any of your calendars.") existed one delivery earlier and was not what the run closed on.
-// Box-wide, 5,542 of 12,496 dashboard deliveries are chips, so this is not an edge.
-//
-// ── THE PREDICATE, and every narrowing is a negative control in the unit test ──
-// Six, and five of them are the ask authority's own doctrine asked of a RUN's window instead of
-// a TURN's. `ENGINE_SENT_TOOLS` and `NON_ANSWERING_DISPLAY_KINDS` are IMPORTED from
-// `work/ask-settlement.ts` rather than restated, for the reason that file gives for sharing
-// `NOT_A_TOOL_CHIP` between its own two arms: so the lanes cannot drift apart.
-//
-// ── AND THE SIXTH IS THE ONE CT0 PAID FOR: READ THE REPLY, NOT ONLY THE ROW ──
-// A `deliveries` row is a claim that something was sent. The message it points at is the
-// evidence of WHAT. A receipt whose message row exists and is blank is a send of nothing, and
-// the incident being closed here is precisely a run that looked settled from the row and was
-// silence to the person. A delivery with NO message row at all is ADMITTED, not refused: every
-// channel send records one that way (147 iMessage + 7 email on this box), and refusing those
-// would red the one lane where the owner most reliably does get his brief.
-// ════════════════════════════════════════════════════════════════════════════════
+/** The run word of a run that owed a person a message and reached nobody: not complete, with its reason
+ *  on the row (the run history shows its neutral badge). */
+export const RUN_STATUS_UNDELIVERED = 'undelivered';
 
-/** Deliveries that are not the agent supplying a result to a person: every line the engine writes
- *  (`ENGINE_SENT_TOOLS`), except its join relay, which hands the owner the compiled result itself. */
-const NON_DELIVERABLE_RUN_TOOLS = [...ENGINE_SENT_TOOLS].filter((t) => !ENGINE_JOIN_RELAY_TOOLS.has(t));
+/** A run that owes a message and delivered it, but was never handed in. */
+export interface RunReadyToClose { occurrenceId: string; taskId: string; deliveryId: string }
 
-/** Channels on which nothing reaches a PERSON. `a2a` is an apprentice hearing about it; `none`
- *  is the bookkeeping lane. Named rather than left to `outcome='delivered'` to filter, so the
- *  exclusion is a declaration and not an accident of another clause. */
-export const NON_OWNER_CHANNELS = new Set(['a2a', 'none']);
-
-/**
- * THE MESSAGE THIS RUN ACTUALLY SENT A PERSON, or null.
- *
- * Exported as a READ so a caller can ask the authority's own question without restating it —
- * `askAnswerEvidence`'s shape one lane over, and for the same reason: a second decider is the
- * disease this arc exists to cure. It decides nothing and writes nothing.
- *
- * The window is the RUN's own window (`opened_at` → now), floored to the second because
- * `deliveries.created_at` is `datetime('now')` and carries no milliseconds while
- * `work.opened_at` is epoch-ms; comparing at millisecond precision against a column that does
- * not have them manufactures false negatives inside the same second.
- */
-export function runDeliverableEvidence(
-  occurrenceId: string,
-): { id: string; tool: string; channel: string } | null {
-  const occ = getDb().prepare(
-    `SELECT agent_id, opened_at FROM work WHERE id = ? AND kind = ?`,
-  ).get(occurrenceId, OCCURRENCE_KIND) as { agent_id: string; opened_at: number } | undefined;
-  if (!occ) return null;
-  const tools = NON_DELIVERABLE_RUN_TOOLS;
-  const channels = [...NON_OWNER_CHANNELS];
-  const chipKinds = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
-  return (getDb().prepare(
-    `SELECT d.id AS id, d.tool AS tool, d.channel AS channel FROM deliveries d
-      WHERE d.agent_id = ? AND d.outcome = 'delivered'
-        AND unixepoch(d.created_at) >= ?
-        AND d.tool NOT IN (${tools.map(() => '?').join(', ')})
-        AND d.channel NOT IN (${channels.map(() => '?').join(', ')})
-        AND NOT EXISTS (SELECT 1 FROM messages m
-                         WHERE m.id = d.message_id AND m.display_kind IN (${chipKinds}))
-        AND NOT EXISTS (SELECT 1 FROM messages m
-                         WHERE m.id = d.message_id AND TRIM(COALESCE(m.content, '')) = '')
-      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
-  ).get(occ.agent_id, Math.floor(occ.opened_at / 1000), ...tools, ...channels) as
-    { id: string; tool: string; channel: string } | undefined) ?? null;
-}
-
-/** What a turn boundary did to the deliver ladder. `spent` is whether THIS turn's drive was
- *  newly recorded; `standDownDue` is whether the bound is now reached and the caller must run
- *  the honest close. */
-export interface RunLadderTurnEnd {
-  spent: boolean;
-  standDownDue: boolean;
-  taskId: string | null;
-}
-
-const NO_LADDER_MOVE: RunLadderTurnEnd = { spent: false, standDownDue: false, taskId: null };
-
-/**
- * ⚠ UX-REPAIR ROUND 4 T19 (D3) — THE DRIVE TICK THE LADDER NEVER HAD.
- *
- * `runDriveCount` counts DISTINCT TURNS and that rule is MEASURED, not designed: behavioral
- * run `bmslqef2w3r` had the floor model call `work_update(status="complete")` FOUR TIMES
- * INSIDE ONE TURN before it had spoken at all, and counting ROWS spent the whole ladder in
- * ten seconds. The unit is the turn, and it stays the turn.
- *
- * But the count only ever MOVED when the model attempted another close — the steer is the
- * tool's own return value — so a model that stops calling the tool freezes the ladder wherever
- * it stands. The owner's box, 2026-08-10: three steers, all inside turn 4602, ledger reading
- * `1 of 3`, `2 of 3`, `2 of 3`. Rung 3 was never reached, `recordRunDeliverStandDown` never
- * ran, `RUN_STATUS_UNDELIVERED` was never written, and the run sat `open` for thirty minutes
- * until a generic idle reaper closed it with a sentence about the AGENT.
- *
- * A rung is a DRIVE — *"a separate attempt, with a turn in between for the agent to act on the
- * steer"* — and a turn that ENDED having been told, and delivered nothing, is exactly that
- * attempt, whether or not the model came back to the tool. So the turn boundary spends it.
- *
- * ── THE FOUR REFUSALS, each one a requirement this cannot break ──
- *   * the run must ALREADY carry a steer. An unsteered run never burns a rung here, so the
- *     ladder still cannot start itself and `closeRunsThatDelivered`'s steered arm's premise stands;
- *   * the anti-burn rule is untouched: this records ONE row keyed on THIS turn, and a turn
- *     already on the ledger records nothing (the count is DISTINCT turns, so a repeat is free
- *     by construction as well as by this guard);
- *   * evidence wins: a turn that delivered is not an attempt that failed;
- *   * it DECIDES and never CLOSES. The caller performs the stand-down through the ordinary
- *     run-complete flow, so the schedule advance, the notices and the audit trail are the
- *     same ones every other close produces (`join-drive.ts`'s rule, carried).
- */
-export function advanceRunDeliverLadderAtTurnEnd(
-  occurrenceId: string, turnNumber: number | null | undefined,
-): RunLadderTurnEnd {
-  if (turnNumber == null) return NO_LADDER_MOVE;
-  const occ = getDb().prepare(
-    `SELECT state FROM work WHERE id = ? AND kind = ?`,
-  ).get(occurrenceId, OCCURRENCE_KIND) as { state: string } | undefined;
-  if (!occ || (occ.state !== 'open' && occ.state !== 'claimed')) return NO_LADDER_MOVE;
-
-  const owed = occurrenceOwesDeliverable(occurrenceId);
-  if (!owed.owes) return NO_LADDER_MOVE;
-  // Never STARTS the ladder — only advances one that the model's own close attempt began.
-  if (runDriveCount(occurrenceId, RUN_DELIVER_STEER_MARKER) === 0) return NO_LADDER_MOVE;
-  if (runDeliverableEvidence(occurrenceId)) return NO_LADDER_MOVE;
-
-  const alreadyThisTurn = (getDb().prepare(
-    `SELECT COUNT(*) AS n FROM work_events
-      WHERE work_id = ? AND kind = 'audit'
-        AND json_extract(payload, '$.marker') = ?
-        AND json_extract(payload, '$.turn_number') = ?`,
-  ).get(occurrenceId, RUN_DELIVER_STEER_MARKER, turnNumber) as { n: number }).n > 0;
-
-  let spent = false;
-  if (!alreadyThisTurn) {
-    const rung = nextRunDeliverRung(occurrenceId);
-    recordRunDeliverSteer(occurrenceId, {
-      attempt: rung.attempt, bound: rung.bound, taskId: owed.taskId ?? occurrenceId,
-      why: 'the turn ended with nothing user-visible sent, on a run that had already been steered',
-      turnNumber,
-    });
-    spent = true;
-  }
-  return {
-    spent,
-    standDownDue: nextRunDeliverRung(occurrenceId).rung === 'stand-down',
-    taskId: owed.taskId ?? null,
-  };
-}
-
-/** A run the delivery ledger says is finished, and whether anybody steered it. */
-export interface RunReadyToClose {
-  occurrenceId: string;
-  taskId: string;
-  deliveryId: string;
-  tool: string;
-  steered: boolean;
-}
-
-/**
- * ⚠ UX-REPAIR ROUND 4 T19 (D6) — THE COMPLEMENT OF THE VERIFY RUNG.
- *
- * The verify rung (`scheduler/runner.ts`) required a steer marker and its header states the clause as
- * load-bearing: *"the steer is the agent's own assertion that the work is finished, refused
- * only for want of evidence; without it this sweep would be closing runs nobody said were
- * done."* That worry is real and it is ANSWERED HERE rather than deleted: the complement case
- * — the model DELIVERS FIRST and never attempts a close at all — produces no marker, and the
- * deliverable authority's own predicate is STRONGER evidence than an assertion. A steer is the
- * agent SAYING it is finished; `runDeliverableEvidence` is the ledger showing the person got
- * something.
- *
- * Measured, driven, 2026-08-10 18:45Z: a one-shot reminder was delivered to the owner
- * (`agent-text`, a real `deliveries` row) and the run sat `open` for twelve minutes, was
- * refused `complete` twice for want of a pointer it already had, and was only resolved because
- * a PM poke dragged the model back. Absent that it meets the 30-minute idle reaper and a
- * perfectly delivered reminder is recorded failed.
- *
- * ⚠ AND THE ROW SET IS WHERE THE NARROWING LIVES, not in a second predicate. The sweep chooses
- * WHICH runs to ask about; `runDeliverableEvidence` is still the only thing that answers. The
- * one added clause is the turn boundary — an agent with a turn still in flight is mid-work,
- * and closing its run out from under it is the race the orphan sweep's own age guard exists to
- * avoid. CT0's doctrine, carried: the turn boundary is where a fact about a turn becomes
- * readable. A STEERED run keeps today's behaviour exactly — the model asked to close, so
- * there is nothing to race.
- */
+/** Open runs whose task owes a person a message, whose own turn has ended, and whose window holds that
+ *  message (`proofDelivery`, the engine's run rule): the scheduler closes them on it. */
 export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
   const rows = getDb().prepare(`
-    SELECT w.id AS occurrence_id, w.parent_id AS task_id,
-           EXISTS (SELECT 1 FROM work_events e
-                    WHERE e.work_id = w.id AND e.kind = 'audit'
-                      AND json_extract(e.payload, '$.marker') = ?) AS steered
-      FROM work w
-      JOIN work p ON p.id = w.parent_id
-     WHERE w.kind = ? AND w.state IN ('open','claimed')
-       AND p.task_kind IS NOT NULL
-  `).all(RUN_DELIVER_STEER_MARKER, OCCURRENCE_KIND) as
-    Array<{ occurrence_id: string; task_id: string; steered: number }>;
-
-  const out: RunReadyToClose[] = [];
-  for (const row of rows) {
-    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) continue;
-    if (!row.steered && runHasTurnInFlight(row.occurrence_id)) continue;
-    const evidence = runDeliverableEvidence(row.occurrence_id);
-    if (!evidence) continue;
-    out.push({
-      occurrenceId: row.occurrence_id, taskId: row.task_id,
-      deliveryId: evidence.id, tool: evidence.tool, steered: row.steered === 1,
-    });
-  }
-  return out;
+    SELECT w.id AS occurrence_id, w.parent_id AS task_id FROM work w JOIN work p ON p.id = w.parent_id
+     WHERE w.kind = ? AND w.state IN ('open','claimed') AND p.task_kind IS NOT NULL AND p.state <> 'handed_in'
+       AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.root_kind = w.kind AND t.root_id = w.id AND t.ended_at IS NULL)
+  `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string }>;
+  return rows.flatMap((row) => {
+    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) return [];
+    const deliveryId = proofDelivery(row.task_id, true);
+    return deliveryId ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId }] : [];
+  });
 }
-
-/**
- * Is THIS RUN's own turn still going? A `turns` row with no `ended_at` has not finished (the
- * column carries a CHECK pairing it with `exit_reason`, so there is no third state to read),
- * and `root_kind`/`root_id` are what the turn stamps to say which occurrence it is serving.
- *
- * ⚠ IT ASKS ABOUT THE RUN, NOT THE AGENT, AND THAT IS A DRIVEN CATCH. The first draft asked
- * "does this agent have any unended turn", which on a lived-in box is permanently TRUE: the
- * dev body carries 22 unended `turns` rows for one agent and 279 across seven, every one of
- * them a turn some crash or restart never closed. A guard keyed on that would have made the
- * whole unsteered arm dead on arrival — silently, which is the exact failure class this phase
- * exists to kill. Caught by the driven run (2026-08-10 19:43Z, occurrence `84b79c31`: the
- * reminder was delivered, the evidence was on the ledger, and the sweep skipped it).
- *
- * Scoped to the run, the predicate says what it means: do not close a run out from under the
- * turn that is serving it. An unended row on THIS occurrence still blocks — correctly, and
- * boundedly, because a run nobody is serving meets the idle reaper.
- */
-function runHasTurnInFlight(occurrenceId: string): boolean {
-  const hit = getDb().prepare(
-    `SELECT 1 AS ok FROM turns
-      WHERE root_kind = ? AND root_id = ? AND ended_at IS NULL LIMIT 1`,
-  ).get(OCCURRENCE_KIND, occurrenceId) as { ok: number } | undefined;
-  return hit !== undefined;
-}
-
-/** What `settleOccurrence` answers. `owed` is the arm CT2 adds: the run is NOT settled, nothing
- *  was transitioned, and the caller must steer rather than advance. */
-export type RunSettlementVerdict = 'settled' | 'owed';
 
 export interface RunSettlement {
-  verdict: RunSettlementVerdict;
-  /** The transition's own outcome — null on the `owed` arm, because nothing moved. */
+  /** The transition's own outcome. */
   outcome: WorkOutcome | null;
   /** The delivery the close points at, when one qualified. */
   deliveryId: string | null;
@@ -497,29 +266,11 @@ export interface RunSettlement {
  * record of "the schedule fired and nothing reached a person", and it keeps the phase's own
  * exit query (`state='open'` answers what is outstanding) free of spent occurrences.
  *
- * ⚠ SWEEP CORE-1 CT2 — AND YET THE OWNER STILL READ "COMPLETE", which is the whole incident.
- * G7 protected the ROW and nothing protected the WORD. The `occurrence_settled` event below
- * carried `run_status: 'complete'` UNCONDITIONALLY whenever the caller said so, and
- * `work/occurrence-runs.ts:runStatusOf` renders `abandoned` + that word as **complete** in the
- * owner's run history. `abandoned` is a state only a developer reads; `complete` is what he
- * saw on the morning nothing arrived. So the gate below is on the WORD as much as on the row:
- *
- *   the task is DECLARED deliverable-owing (`work/deliverable-declaration.ts`) — the only
- *   question asked, one column, never the run's prose — and the caller says `complete`:
- *     * a qualifying delivery exists   -> `done` on THAT delivery, whatever the caller passed;
- *     * none, ladder not spent          -> `owed`. NOTHING is transitioned and NOTHING is
- *                                          recorded complete. The caller steers the agent.
- *     * none, ladder spent              -> settled `abandoned` with the run's own word set to
- *                                          `undelivered`. The owner's history shows a run that
- *                                          is not complete, carrying the reason. Never a lie.
- *
- * A task that is NOT declared deliverable-owing is settled exactly as before, byte for byte:
- * a nightly backup owes nobody a message and this gate must not invent one for it.
- *
- * ⚠ THE CALLER NARROWS THE SCOPE; THE AUTHORITY DECIDES. For a declared run the `deliveryId`
- * argument is re-derived here rather than trusted, because the only thing that produces it
- * (`proofDelivery`) answers a deliberately wider question, CT0's rule for the join
- * arm's `deliveryId`, applied to the lane it belongs in.
+ * The run's WORD is gated as well as its row: a run whose task is DECLARED deliverable-owing
+ * (`work/deliverable-declaration.ts`) that closes `complete` or `failed` with no delivery (the caller's
+ * `deliveryId`, the run window's own delivery) is recorded `undelivered`, never complete, and the
+ * schedule moves on; the worker gets one hint (`scheduler/runner.ts`). A task that owes nobody a
+ * message is settled on the caller's word.
  */
 export function settleOccurrence(
   occurrenceId: string, runStatus: string, deliveryId: string | null, summary: string | null,
@@ -531,63 +282,13 @@ export function settleOccurrence(
   let effectiveDelivery = deliveryId;
   let gateNote: string | null = null;
   const left = runStatus === 'complete' ? runItemsLeft(occurrenceId) : null;   // v3.5: what the task's measure still lists
-  if (effectiveStatus === 'complete') {
-    const owed = occurrenceOwesDeliverable(occurrenceId);
-    if (owed.owes) {
-      const evidence = runDeliverableEvidence(occurrenceId);
-      if (evidence) {
-        effectiveDelivery = evidence.id;
-        gateNote = `delivered via ${evidence.tool} on ${evidence.channel}`;
-      } else {
-        const rung = nextRunDeliverRung(occurrenceId);
-        if (rung.rung === 'steer') {
-          return {
-            verdict: 'owed',
-            outcome: null,
-            deliveryId: null,
-            detail: `the run cannot be recorded complete: "${owed.taskKind}" work owes the person a `
-              + 'user-visible message and nothing was sent in this run\'s window '
-              + `(steer ${rung.attempt} of ${rung.bound})`,
-            runStatusRecorded: runStatus,
-          };
-        }
-        // The ladder is spent. The run is recorded UNDELIVERED — never complete.
-        recordRunDeliverStandDown(occurrenceId, {
-          steersSpent: rung.steersSpent, taskId: owed.taskId ?? occurrenceId,
-        });
-        effectiveStatus = RUN_STATUS_UNDELIVERED;
-        effectiveDelivery = null;
-        gateNote = `stood down after ${rung.steersSpent} steer(s) with nothing delivered`;
-      }
-    }
-  } else if (runStatus === 'failed') {
-    // ⚠ UX-REPAIR ROUND 4 T19 (D4) — THE `failed` CLOSE WALKED PAST THIS GATE, AND THAT IS
-    // HOW THE INCIDENT ENDED. `cleanupStaleRuns` is a stalled-agent safety net and it stays
-    // one: its 30-minute idle rule, its retry-next-cycle promise and its trigger are all
-    // untouched. What it may no longer do is choose the WORD. On 2026-08-10 it closed a
-    // reminder run `failed` with the note *"Auto-failed: assigned agent idle for 30+ minutes"*
-    // — true about the agent, silent about the owner, and rendered as a neutral badge behind
-    // two clicks in an expanded task detail. The owner's run history said the agent was idle
-    // for a morning his reminder never reached him.
-    //
-    // A run that was DECLARED deliverable-owing and reached nobody has exactly one honest
-    // word, and the platform already owns it: UNDELIVERED, with the stand-down on the row.
-    // The `failed` arm is NEVER refused (`owed` would leave a stalled run open for ever,
-    // which is the safety net's own failure mode) — it is RENAMED by the authority, which is
-    // what the gate above already does for `complete`. A run that DID deliver keeps the
-    // caller's `failed`: the run genuinely failed, and the word is about the run.
-    const owed = occurrenceOwesDeliverable(occurrenceId);
-    if (owed.owes && !runDeliverableEvidence(occurrenceId)) {
-      recordRunDeliverStandDown(occurrenceId, {
-        steersSpent: runDriveCount(occurrenceId, RUN_DELIVER_STEER_MARKER),
-        taskId: owed.taskId ?? occurrenceId,
-      });
-      effectiveStatus = RUN_STATUS_UNDELIVERED;
-      effectiveDelivery = null;
-      gateNote = 'the run ended without reaching the person it owed a message';
-    }
+  if ((runStatus === 'complete' || runStatus === 'failed') && !deliveryId && occurrenceOwesDeliverable(occurrenceId).owes) {
+    effectiveStatus = RUN_STATUS_UNDELIVERED;
+    gateNote = 'the run ended without reaching the person it owed a message';
+  } else if (runStatus === 'complete' && deliveryId && occurrenceOwesDeliverable(occurrenceId).owes) {
+    gateNote = 'delivered in its own window';
   }
-  // v3.5: AFTER the deliverable gate (owed is still refused, a spent ladder still UNDELIVERED with the alert); only a run it would record complete is INCOMPLETE.
+  // v3.5: AFTER the deliverable gate; only a run it would record complete is INCOMPLETE.
   if (left && effectiveStatus === 'complete') { effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null; gateNote = `${countOf(left.left, left.unit)} left by the task's measure`; }
 
   // T2: the settle and the run's own word are ONE unit. The event is the ONLY carrier
@@ -652,7 +353,6 @@ export function settleOccurrence(
   });
 
   return {
-    verdict: 'settled',
     outcome,
     deliveryId: effectiveDelivery,
     detail: gateNote ?? `run settled ${effectiveStatus}`,
@@ -663,7 +363,7 @@ export function settleOccurrence(
 /** `settleOccurrence`'s outcome for the many callers that only want "did the row move". Kept as
  *  a named helper rather than repeated as `s.outcome?.kind === 'applied'` at five call sites. */
 export function runSettleApplied(s: RunSettlement): boolean {
-  return s.verdict === 'settled' && s.outcome?.kind === 'applied';
+  return s.outcome?.kind === 'applied';
 }
 
 /**

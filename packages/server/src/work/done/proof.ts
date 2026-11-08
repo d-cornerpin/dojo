@@ -97,10 +97,10 @@ const FINDERS: Record<Found, Finder> = {
 
 /** The items of these kinds the worker's own rows prove for the task, each held to `checkProof`'s rule
  *  for a finished task. */
-function found(workId: string, kinds: readonly Found[]): ResolvedItem[] {
+function found(workId: string, kinds: readonly Found[], byEngine = false): ResolvedItem[] {
   const task = taskOf(workId);
   if (!task) return [];
-  const ctx: ProofContext = { task, asker: askerOf(workId), workerId: task.worker, outcome: 'finished' };
+  const ctx: ProofContext = { task, asker: askerOf(workId), workerId: task.worker, outcome: 'finished', byEngine };
   return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(task.openedAt)))
     .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok ? [r.item] : []; });
 }
@@ -109,8 +109,9 @@ function found(workId: string, kinds: readonly Found[]): ResolvedItem[] {
  *  ledger, receipts filed against the task, and the measure when it came down to 0. */
 export const proofFor = (workId: string): ResolvedItem[] => found(workId, ['delivery', 'file', 'receipt', 'measure']);
 
-/** The newest delivery to the asker on record for this task: what a close points at, or null. */
-export const proofDelivery = (workId: string): string | null => found(workId, ['delivery']).pop()?.ref ?? null;
+/** The newest delivery to the asker on record for this task: what a close points at, or null. `byEngine`:
+ *  the engine's own run close, where the delivery may go to whoever the schedule serves. */
+export const proofDelivery = (workId: string, byEngine = false): string | null => found(workId, ['delivery'], byEngine).pop()?.ref ?? null;
 
 /** What the engine itself may count for this task without a decider: a file or the measure at 0,
  *  never a line of text, which may be an ack. */

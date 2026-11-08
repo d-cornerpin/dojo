@@ -23,12 +23,11 @@ import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { courtesyJudged } from '../agent/v2/classifiers/inbound-routing.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { sanitizeForIMessage } from './imessage-sanitize.js';
-import { recordAtDoor, withOutbound, withOutboundAsync, withOutboundAsyncIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { recordAtDoor, withOutboundAsync, withOutboundAsyncIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
 import { runMessagesProgram, wasCutByTheStop, wasNeverStarted, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { inboundIMessageText } from '../tools/inbound-fences.js';
-import { recordPersonTold } from '../work/validation-drive.js';
-import { ownerCardFrame, ownerCardEnded, ownerCardStands } from './owner-card-frames.js';
+import { ownerCardFrame, ownerCardEnded } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
 import {
   type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord,
@@ -2074,14 +2073,6 @@ export function getApprovedSenders(): string[] {
   return getSafeSenders().map(s => s.address);
 }
 
-/** The door's told record (t146): from the delivery THIS scope wrote; a refusal is said, never thrown. */
-function toldAbout(workId: string, via: 'owner_notice' | 'owner_card'): void {
-  const deliveryId = currentOutboundDeliveryId();
-  if (!deliveryId) return;
-  const told = recordPersonTold(workId, { deliveryId, via });
-  if (told.kind === 'refused') logger.info('an owner notice about a task is not recorded as a tell', { workId, via, reason: told.reason });
-}
-
 /** A WARN `owner-notice` entry records why a text did not reach the phone (Vitals log view). */
 const ownerNoticeLog = createLogger('owner-notice');
 
@@ -2093,10 +2084,6 @@ const ownerNoticeLog = createLogger('owner-notice');
  * answers. `warning`/`info` reach neither (v2.3.19, owner: "I only want true blockers or true
  * issues ... to go to imessage"). Callers are ruled (10(a) + OR-V333-SET (3)) and pinned by
  * class in t138-every-owner-notice-has-a-class.test.ts; fix a wrong severity at the call site.
- * `aboutWorkId` (t146): a notice ABOUT a work row says so, and the door records that the owner
- * was told (`recordPersonTold`, via `owner_notice`) from the delivery its own scope wrote — so the
- * escalation ladder does not raise the same row with him again. The id is data the caller holds,
- * never read from the words.
  */
 /**
  * OR-AUDIT-ANSWERS (d), owner ruling: the Dojo's own texts to the owner are exactly these. Offline and back online
@@ -2107,7 +2094,7 @@ const ownerNoticeLog = createLogger('owner-notice');
 export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical', 'remote-address'] as const;
 export type PlatformTextKind = typeof PLATFORM_TEXT_KINDS[number];
 
-export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; card?: false; clears?: string; aboutWorkId?: string; cardKey?: string; agentId?: string }): Promise<void> {
+export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; card?: false; clears?: string; cardKey?: string; agentId?: string }): Promise<void> {
   try {
     if (!(PLATFORM_TEXT_KINDS as readonly string[]).includes(opts.kind)) {
       logger.warn('Alert refused: not one of the owner\'s platform texts', { kind: opts.kind });
@@ -2137,29 +2124,15 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
     // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
     // trigger it would put watchdog-class traffic inside that agent's own ledger. So the door
     // opens its OWN scope (t146: never the `IfAbsent` form, which folded a notice fired inside an
-    // agent's send into that send's row), and a told record reads this scope's row and no other.
+    // agent's send into that send's row).
     const sent = recipient !== null && await withOutboundAsync(
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
       async () => {
         const ok = await sendIMessage(recipient, fullMessage);
-        if (ok && opts.aboutWorkId) toldAbout(opts.aboutWorkId, 'owner_notice');
         return tellAgentOwnerAlertSent(opts.agentId, fullMessage, ok);   // the agent is told what went out
       },
     );
     if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up', card });
-    // t146 round 2: with no phone carrying it, the CARD is the owner told (t138's cards). It goes
-    // on the ledger as a platform dashboard delivery to the owner, and the tell is recorded from
-    // that row. A status line or an all-clear raises no card, so it records nothing. Round 3: only
-    // a LASTING card counts — one the owner-notices list re-derives, so he sees it on his next
-    // dashboard load; a card that was only a live frame may have reached nobody.
-    if (!sent && card === 'raised' && opts.aboutWorkId && ownerCardStands(scrubbed)) {
-      const workId = opts.aboutWorkId;
-      withOutbound({ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' }, () => {
-        if (recordAtDoor({ outcome: 'delivered', channel: 'dashboard', recipientId: 'owner' }).kind === 'applied') {
-          toldAbout(workId, 'owner_card');
-        }
-      });
-    }
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),

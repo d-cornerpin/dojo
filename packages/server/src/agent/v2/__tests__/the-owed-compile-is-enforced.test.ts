@@ -42,7 +42,7 @@ import {
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, recordJoinDrive,
 } from '../../../work/join-drive.js';
-import { CLOSE_OUT_WORK_OPS, SATISFYING_WORK_OPS, toolOpKey } from '../../../tools/work-verbs.js';
+import { SATISFYING_WORK_OPS, toolOpKey } from '../../../tools/work-verbs.js';
 import {
   COMPILE_OWED_ALLOWED_OPS, compileOwedAfterRedrive, stillCompileOwed, compileOwedGateDecision,
 } from '../compile-owed-gate.js';
@@ -180,34 +180,20 @@ describe('T47: the gate disarms the moment the join resolves, by any road', () =
 // THE ALLOWED SET, CLOSED AND NAMED — AND THE COLLISION WITH THE CLOSE-OUT GATE.
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('T47: the allowed set is closed, named, and cannot deadlock the close-out gate', () => {
-  it('it is exactly `send_to_agent` plus the tracker calls that SATISFY the close-out gate', () => {
+describe('T47: the allowed set is closed and named', () => {
+  it('it is exactly `send_to_agent` plus the tracker calls that engage with open work', () => {
     expect([...COMPILE_OWED_ALLOWED_OPS].sort())
       .toEqual([...new Set(['send_to_agent', ...SATISFYING_WORK_OPS])].sort());
   });
 
-  it('THE COLLISION: every call this gate allows is also allowed by the close-out gate, so a '
-    + 'turn armed by BOTH can always satisfy both', () => {
-    // The close-out gate demands a tracker call FIRST (its own text). If this gate refused
-    // those, a turn armed by both would have no legal move at all — the deadlock the plan
-    // required argued. The union is what makes it impossible.
-    for (const op of COMPILE_OWED_ALLOWED_OPS) {
-      if (op === 'send_to_agent') continue;
-      expect(CLOSE_OUT_WORK_OPS.has(op), `${op} must pass the close-out gate too`).toBe(true);
-      expect(SATISFYING_WORK_OPS.has(op), `${op} must SATISFY the close-out gate`).toBe(true);
-    }
-  });
-
-  it('S5\'S OWN CALLS ARE REFUSED — including the ones the close-out gate would wave through', () => {
+  it('S5\'S OWN CALLS ARE REFUSED', () => {
     const askId = seedCompileOwedJoin();
     spendARedrive(askId);
     for (const name of ['load_tool_docs', 'history_search', 'history_get', 'file_read', 'web_search']) {
       expect(compileOwedGateDecision([askId], false, toolOpKey(name), true).refuse,
         `${name} is what the model reached for instead of composing`).toBe(true);
     }
-    // `load_tool_docs` and the tracker READS are in the close-out gate's allowlist and are NOT
-    // in this one: reading a tool's schema is not composing the owner's reply.
-    expect(CLOSE_OUT_WORK_OPS.has('load_tool_docs')).toBe(true);
+    // Reading a tool's schema is not composing the owner's reply.
     expect(COMPILE_OWED_ALLOWED_OPS.has('load_tool_docs')).toBe(false);
     expect(compileOwedGateDecision([askId], false, toolOpKey('work_update', { action: 'get', id: 'x' }), true).refuse).toBe(true);
   });

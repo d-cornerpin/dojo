@@ -1566,26 +1566,6 @@ export const ALLOW: readonly AllowEntry[] = [
   "reason": "a scheduled run delivers to the task's owner; 'the user' there is the owner by design"
  },
  {
-  "file": "work/run-deliver-drive.ts",
-  "line": "+ `${p.taskKind ?? 'scheduled'} task — its whole point is a message the user actually reads — `",
-  "reason": "a scheduled run delivers to the task's owner; 'the user' there is the owner by design"
- },
- {
-  "file": "work/run-deliver-drive.ts",
-  "line": "+ `(or on the channel the user asked for). Then, in the response AFTER that, call `",
-  "reason": "a scheduled run delivers to the task's owner; 'the user' there is the owner by design"
- },
- {
-  "file": "work/run-deliver-drive.ts",
-  "line": "+ `so the user never sees it. The run closes on the message, not on this call.\\n\\n`",
-  "reason": "a scheduled run delivers to the task's owner; 'the user' there is the owner by design"
- },
- {
-  "file": "work/run-deliver-drive.ts",
-  "line": "+ `agent is not the user receiving it.\\n\\n`",
-  "reason": "a scheduled run delivers to the task's owner; 'the user' there is the owner by design"
- },
- {
   "file": "work/store.ts",
   "line": "'this ask predates its own agent\\'s session boundary, which is the user\\'s own line — the '",
   "reason": "a record or log string about the owner's Stop button or a ledger reason; not text the agent is told to say to anyone"

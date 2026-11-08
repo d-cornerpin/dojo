@@ -261,7 +261,6 @@ describe('§2 the family order is the declared table, and cannot drift from it',
       'a2a-handoff-floor',      // 29
       'a2a-missed-reply',       // 30
       'going-idle-in-progress', // 31 — was second, ranks ninth; the inversion this fixes
-      'tracker-closeout',       // 72
     ]);
   });
 

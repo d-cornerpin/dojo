@@ -55,7 +55,24 @@ let routerFloorName: (() => string | null) | null = null;
 /** Called once by `router/router-window.ts` at load: the name of the router's smallest model, or null. */
 export function registerRouterFloorName(read: () => string | null): void { routerFloorName = read; }
 /** The owner cards whose words can change while they stand are matched by their condition key (N42 r2). */
-export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') || key === 'embedding-switch' ? key : undefined);
+export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') || key.startsWith('stall:') || key === 'embedding-switch' ? key : undefined);
+/** A task the stall ladder brought to the owner (`work/done/ladder.ts`): one card per task per day. */
+export const stallKey = (workId: string): string => `stall:${workId}`;
+const STALL_TRIED: Record<string, string> = {
+  ladder_hint: 'a hint to its worker', ladder_pm: 'the project manager was told', review_miss: 'a project manager review with no verdict', ladder_decider: 'the main agent was asked to decide',
+};
+/** The stall card: what is stuck, since when, and what was tried; '' once the task is no longer waiting. */
+function stallWords(workId: string): string {
+  const db = getDb();
+  const w = db.prepare(`SELECT title, state, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), w.updated_at) AS since
+    FROM work w WHERE w.id = ? AND w.state IN ('claimed', 'sent_back', 'handed_in')`).get(workId) as { title: string | null; state: string; since: number } | undefined;
+  if (!w) return '';
+  const tried = db.prepare(`SELECT json_extract(payload, '$.entry_kind') AS k, COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND created_at >= ?
+    AND json_extract(payload, '$.entry_kind') IN (${Object.keys(STALL_TRIED).map((k) => `'${k}'`).join(', ')}) GROUP BY k`).all(workId, w.since) as Array<{ k: string; n: number }>;
+  const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : 'has not moved';
+  const triedWords = tried.length > 0 ? tried.map((t) => `${STALL_TRIED[t.k]}${t.n > 1 ? ` (${t.n} times)` : ''}`).join(', ') : 'nothing yet';
+  return `"${w.title ?? workId}" ${what} since ${new Date(w.since).toLocaleString()}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
+}
 /** t167: "the limit is reached" for one budget window. The budget key is `global_daily` or `agent_<id>`;
  *  the words never name an agent (the card is re-derived from the key alone). */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
@@ -144,6 +161,7 @@ export function wordsOf(key: string): string {
   const nameOf = (id: string): string =>
     (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
   return kind === 'stuck' ? stuckWords(nameOf(agentId))
+    : kind === 'stall' ? stallWords(agentId)
     : kind === 'nofit' ? (isAutoAgent(agentId) ? autoNoFitWords : noFitWords)(nameOf(agentId))
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
@@ -228,11 +246,12 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   // v3.5 field fix 3 (#9): STRIP the "fit not checked" standing rule (N7): that card is informational now, a toast
   // that leaves by itself, and is not re-derived on a reload.
   return rows.filter(({ key }) => wordsOf(key) !== '' && !isInformationalCondition(key)).filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
+    : key.startsWith('stall:') ? true
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama-too-old' || key === 'ollama-down' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('stall:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama-too-old' || key === 'ollama-down' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });
