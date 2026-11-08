@@ -52,10 +52,10 @@ vi.mock('../../agent/model.js', async () => {
   };
 });
 
-import { replaceUncondensedPlaceholders, writeUncondensedPlaceholders } from '../uncondensed-placeholder.js';
+import { replaceUncondensedPlaceholders, writeUncondensedPlaceholders } from '../out-of-view.js';
 import { checkAndCompact, leavingViewPass } from '../compaction.js';
 import { compactionIsBraked } from '../compaction-brakes.js';
-import { eligibleSummaryWriters, summaryWriterCandidates, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { eligibleSummaryWriters, summaryWriterCandidates, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { insertMessage } from '../message-store.js';
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
@@ -66,7 +66,7 @@ import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { stopAgent } from '../../agent/runtime.js';
 
 // t268 round 5: whether the small writer fits the box's memory is not this file's question.
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 vi.setConfig({ testTimeout: 20_000 });
 
 const AGENT = 'agent-t149-stop';

@@ -95,14 +95,14 @@ vi.mock('../../agent/model.js', async () => {
   };
 });
 
-import * as door_ from '../out-of-view-fold.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import * as door_ from '../out-of-view.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
-import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../out-of-view.js';
+import { replacePlaceholdersInBackground } from '../out-of-view.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { runMigrations } from '../../db/migrations.js';
 

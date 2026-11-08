@@ -55,7 +55,7 @@ vi.mock('../../../providers/anthropic-sdk.js', async (importOriginal) => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { assembleContext } from '../../../memory/assembler.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../../../memory/out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../memory/out-of-view.js';
 import { validateAtProviderBoundary, AssemblyValidationError, type ValidatedMessage } from '../../../memory/assembly-validation.js';
 import { collectMessageLaneIds } from '../../../memory/message-lane-tag.js';
 import { __resetBrakesForTests } from '../../../memory/compaction-brakes.js';
@@ -69,7 +69,6 @@ import { contractForModel } from '../../model-contract.js';
 import { resultReadHandlers } from '../../tools/cat/result-read.js';
 import * as coldImport1 from '../../../memory/window-starvation-card.js';
 import * as coldImport2 from '../full-context-wait.js';
-import * as coldImport3 from '../../../memory/forced-pass-progress.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -103,7 +102,6 @@ beforeEach(async () => {
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${reply.repeat(6)}`, turnNumber: t });
   }
   coldImport2.__resetFullContextWaitForTests();
-  coldImport3.__resetForcedPassProgressForTests();
 });
 afterEach(async () => {
   await Promise.race([withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }), new Promise((r) => setTimeout(r, 15_000))]);

@@ -33,7 +33,7 @@ const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: str
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
 // t268 round 5: ROOMY is the Dojo's small writer here; whether it fits the box's memory is not this file's question.
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
   isDreamerIgnored: vi.fn(() => false),
@@ -65,10 +65,10 @@ vi.mock('../../agent/model.js', () => ({
   getProviderCeilingTokens: () => null,
 }));
 
-import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view.js';
 import { checkAndCompact } from '../compaction.js';
 import { compactionIsBraked, __resetBrakesForTests } from '../compaction-brakes.js';
-import { __resetSummaryWriterHealthForTests, writerPassedOver, refuseWhatTheWriterCannotHold } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, writerPassedOver, refuseWhatTheWriterCannotHold } from '../writer.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { contextWindowPolicy, estimateTokens } from '../budget.js';

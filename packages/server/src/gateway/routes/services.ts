@@ -45,7 +45,7 @@ export function recordProviderSuccess(providerId: string, call?: { modelId?: str
   // recorded permanent failure, so it closes the breaker too. (The owner's manual
   // retry is the other way — `POST /api/services/providers/:id/clear-breaker`.)
   noteProviderSuccess(providerId);
-  writersMayBeBack(providerId, call);   // t268 breaker fix: an agent whose span waits on a writer there gets it re-armed
+  if (call?.purpose !== 'memory_summarize') clearOn({ kind: 'writer-answered', providerKey: providerId, modelId: call?.modelId });   // a summary call's own outcome speaks for itself
 }
 
 export function recordProviderError(providerId: string): void {
@@ -59,7 +59,7 @@ export function recordProviderError(providerId: string): void {
 }
 import { getProviderCredential } from '../../config/loader.js';
 import { noteProviderSuccess, clearProviderBreaker, openBreakers_readonly } from '../../providers/billing-breaker.js';
-import { writersMayBeBack } from '../../memory/writer-wait.js';
+import { clearOn } from '../../memory/writer.js';
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 
@@ -207,7 +207,7 @@ servicesRouter.get('/providers/health', async (c) => {
     } else {
       // For API providers, check if credential exists
       const credential = getProviderCredential(provider.id);
-      if (credential) writersMayBeBack(provider.id);   // t268 breaker fix: this check's poll is the re-test of a waiting writer nobody calls
+      if (credential) clearOn({ kind: 'writer-answered', providerKey: provider.id });   // this check's poll is the re-test of a waiting writer nobody calls
       const errorCount = providerErrorCounts.get(provider.id) ?? 0;
       const degraded = errorCount >= PROVIDER_DEGRADED_THRESHOLD;
       results.push({
@@ -335,7 +335,7 @@ servicesRouter.get('/providers/breakers', (c) => {
 servicesRouter.post('/providers/:id/clear-breaker', (c) => {
   const providerId = c.req.param('id');
   const wasOpen = clearProviderBreaker(providerId);
-  writersMayBeBack(providerId);   // t268 breaker fix: the owner's retry is a waiting summary writer's too
+  clearOn({ kind: 'writer-answered', providerKey: providerId });   // the owner's retry is a waiting summary writer's too
   logger.info('Provider breaker cleared from the dashboard', { providerId, wasOpen });
   return c.json({ ok: true, data: { providerId, wasOpen } });
 });

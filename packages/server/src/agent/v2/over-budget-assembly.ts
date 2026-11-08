@@ -16,7 +16,7 @@
 //     `refusedDial.condensed`). So the step waits for it to land, then parks the job through the
 //     existing full-context-wait door (`parkAfterForcedPass`, t211 D7b): ONE wake, whose turn is ONE
 //     re-assembly — or, when the compaction brake binds, the wake at the brake's expiry. Fix round 2:
-//     every forced pass records its outcome and always has a next step (`memory/forced-pass-progress.ts`),
+//     every forced pass records its outcome and always has a next step (`memory/compaction-brakes.ts`),
 //     so the rounds CONVERGE: a no-progress pass arms the brake (the park waits), a pass with nothing
 //     outside the protected part folds its oldest group, a throw is told once through the compaction
 //     card. Never the WINDOW_TOO_SMALL card, never an injury, never the "stuck" text.
@@ -28,7 +28,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { AssemblyValidationError } from '../../memory/assembly-validation.js';
-import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
+import { compactionBrakeMsLeft, lastForcedPass } from '../../memory/compaction-brakes.js';
 import { reportStarvedWindow } from '../../memory/window-starvation-card.js';
 import { createLogger } from '../../logger.js';
 import { AgentError } from '../errors.js';
@@ -65,19 +65,19 @@ export async function tryOverBudgetAssemblyRecovery(state: AgentTurnState, error
     if (((await condensed) as { lockBusy?: true } | undefined)?.lockBusy) { parkUntilCompactionLands(agentId, 'recovery-over-budget-assembly'); return true; }
     // The park tells a braked skip from a pass that ran: the pass itself recorded which (fix round 3); a pass
     // with nothing to fold lands before this step could have read the brake.
-    const { lastForcedPassThrew, lastForcedPassWasBraked } = await import('../../memory/forced-pass-progress.js');
-    const brakedBefore = condensed ? (lastForcedPassWasBraked(agentId) ?? brakedNow) : brakedNow;
+    const last = lastForcedPass(agentId);
+    const brakedBefore = condensed ? (last.braked ?? brakedNow) : brakedNow;
     // Fix round 3: the pass bought nothing (the brake is on) and did not throw: nothing left can shrink this
     // assembly. Fix round 4: "did not throw" is THIS pass's fact (the flag is per pass), so a throw on an
     // earlier round can never silence the stall. That is a genuine stall: reported once, with the refusal's own numbers, as a compaction defect
     // (`compaction-defect.ts`), and the park below keeps the existing "stuck" notice for it.
-    if (compactionBrakeMsLeft(agentId) !== null && !lastForcedPassThrew(agentId)) {
+    if (compactionBrakeMsLeft(agentId) !== null && !last.threw) {
       (await import('../../memory/compaction-defect.js')).reportCompactionDefect(agentId, 'nothing_left_to_shrink',
         { assembledTokens: refusal.refusedDial.tokenTotal, budgetTokens: refusal.refusedDial.budgetTokens }, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
     }
     logger.warn('over-budget assembly: the conversation outgrew the window; condensed, the next turn re-assembles', { agentId, turnNumber, modelId }, agentId);
     // Quiet only after a THROW (the compaction card tells the owner); a genuine stall keeps the existing "stuck" notice.
-    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore, { quiet: lastForcedPassThrew(agentId) });
+    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore, { quiet: last.threw });
     return true;
   }
 

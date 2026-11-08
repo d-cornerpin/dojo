@@ -8,8 +8,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('../local-standard.js', () => ({ retryStandardModelsIfMissing: vi.fn() }));
 vi.mock('../../db/connection.js', () => ({ getDb: () => { throw new Error('unused'); } }));
-vi.mock('../../memory/writer-wait.js', () => ({ writersMayBeBack: vi.fn() }));
-vi.mock('../../memory/writer-no-room.js', () => ({ freeMemoryMayBeReadable: vi.fn() }));
+vi.mock('../../memory/writer.js', () => ({ clearOn: vi.fn() }));
 
 import { getOllamaModelInfo } from '../ollama.js';
 

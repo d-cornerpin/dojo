@@ -169,10 +169,10 @@ describe('migration 901 on a lived-in box', () => {
     expect(one("SELECT value FROM config WHERE key = 'healer_mode'").value).toBe('monitor');
   });
 
-  it('10b. the decision model\'s shadow log and its unread records are gone; a refused span is kept', () => {
+  it('10b. the decision model\'s shadow log, its unread records and the old summary-writer wait records are gone', () => {
     expect(one("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'decision_shadow'")).toEqual({ n: 0 });
     expect(all("SELECT key FROM config WHERE key IN ('decision_switch.memory_shape.filler', 'decision_mode.inbound_routing.deliverable', 'decide_pace.m-decision', 'token_density.m-decision')")).toEqual([]);
-    expect(all("SELECT scope FROM healer_state WHERE scope LIKE 'summary%' ORDER BY scope")).toEqual([{ scope: 'summary_span_refused' }]);
+    expect(all("SELECT scope FROM healer_state WHERE scope LIKE 'summary%' ORDER BY scope")).toEqual([]);
     expect(all('PRAGMA table_info(summary_checks)').map((c) => c.name)).toEqual(['id', 'agent_id', 'writer_model_id', 'outcome', 'stated_current', 'created_at']);
   });
 

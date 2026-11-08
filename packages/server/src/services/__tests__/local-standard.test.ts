@@ -18,7 +18,7 @@ import {
   STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
 } from '../local-standard.js';
 import { getSystemModel } from '../../router/selector.js';
-import { summaryWriterCandidates } from '../../memory/summary-writer-health.js';
+import { summaryWriterCandidates } from '../../memory/writer.js';
 
 const ROLE_KEYS = ['healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model', 'imaginer_brain_model'];
 const db = (): Database.Database => mockDb.current!;

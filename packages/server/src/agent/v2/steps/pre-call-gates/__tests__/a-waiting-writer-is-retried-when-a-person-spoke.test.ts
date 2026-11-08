@@ -1,29 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t140 round 7 (round-6 re-review I1', ruling of round 7) — ONLY A PERSON'S FRESH MESSAGE TO THIS
-// AGENT RE-ARMS A WRITER THAT FAILED, AND ONLY FOR THIS AGENT.
-//
-// Round 6 re-armed every failed writer on any turn whose counterparty was a person — which is every
-// turn that is not agent-to-agent, scheduled turns, self-wakes and long-job continuations included —
-// and it re-armed them for every agent on the box. The reviewer's run: ten turn starts, two writers
-// answering empty, twenty paid calls. The real change signals are: a person's fresh message to THIS
-// agent (re-arms for this agent), the writer's provider answering any call, or the owner changing the
-// Settings writer.
-//
-// (Harness copied from round 6's t140-no-writer-answering-means-no-dial.test.ts. Its header follows.)
-//
-//
-// Round 5 let the background placeholder replacement try EVERY non-broken writer on EVERY gate run.
-// An empty answer never opens the billing breaker, so with placeholders present and the writers
-// answering empty, a tool loop paid every writer on every iteration: the reviewer measured 40
-// writer calls over ten gate runs where v3.3.2 made 4.
-//
-// The smart signal is the writer's health, not a count: a writer that failed is not dialled again —
-// by a turn or by the background — until something has changed. The change signals are real
-// events: a person starts a new turn, the owner picks another writer in Settings, or the writer
-// answers. While no writer is answering, the placeholders stay, labelled, and nothing is dialled.
-//
-// THE DOOR: `runPreCallGates`, as the driver calls it, on a migrated DB; the summariser is scripted.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A waiting writer is asked again when a person writes to this agent: the person's fresh message at the turn's first
+// gate frees its failed writers for this agent only. Turn starts that are not a person (self-wakes, continuations,
+// scheduled turns) free nothing, and one agent's person frees nothing for another. Driven through the real gate.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -42,11 +19,11 @@ vi.mock('../../../../../tools/tool-docs.js', async (importOriginal) => ({
 /** Every writer answers empty unless `answering` says otherwise; outcomes are recorded as the real wrapper does. */
 const summariser = vi.hoisted(() => ({ answering: false, calls: [] as string[] }));
 vi.mock('../../../../../memory/summarize.js', async () => {
-  const health = await import('../../../../../memory/summary-writer-health.js');
+  const health = await import('../../../../../memory/writer.js');
   return {
-    generateSummary: async (args: { modelId?: string; abortSignal?: AbortSignal }) => {
+    generateSummary: async (args: { agentId: string; modelId?: string; abortSignal?: AbortSignal }) => {
       summariser.calls.push(args.modelId ?? '?');
-      health.noteSummaryWriterOutcome(args.modelId, summariser.answering, args.abortSignal);
+      health.settleSummaryCall(summariser.answering ? { ok: true, text: 'a summary', tokenCount: 1 } : { ok: false, reason: 'no answer' }, args.agentId, args.modelId, args.abortSignal);
       return summariser.answering
         ? { ok: true, text: 'Earlier the crew counted the north dock.', tokenCount: 8 }
         : { ok: false, reason: 'summarizer returned empty text' };
@@ -69,9 +46,9 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
-import * as health from '../../../../../memory/summary-writer-health.js';
-const { __resetSummaryWriterHealthForTests, noteSummaryWriterOutcome } = health;
-import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/uncondensed-placeholder.js';
+import * as health from '../../../../../memory/writer.js';
+const { __resetSummaryWriterHealthForTests } = health;
+import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/out-of-view.js';
 import { advance, initState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
@@ -132,7 +109,7 @@ beforeEach(() => {
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
-describe('t140 round 7 — only a person\'s fresh message to this agent re-arms a failed writer', () => {
+describe('a waiting writer is retried when a person spoke', () => {
   it('the reviewer\'s probe: one person\'s message, then ten turn starts that are not (self-wakes, continuations, scheduled) — the base level of calls, not twenty', async () => {
     await gate(AGENT, 500, 1, true);                         // a person writes: each writer tried once
     const afterPerson = summariser.calls.length;
@@ -160,18 +137,4 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     expect(summariser.calls, 'nothing was dialled for an agent nobody wrote to').toEqual([]);
   });
 
-  it('t207: a SUMMARY answer from the writer\'s provider re-arms it (its provider is back); a chat answer does not', async () => {
-    await gate(AGENT, 800, 1, true);                         // both writers fail and are passed over
-    summariser.answering = true;
-    summariser.calls = [];
-    await gate(AGENT, 800, 2, false);                        // the next iteration, no person in between: still passed over
-    expect(summariser.calls, 'nothing is dialled until a summary call is answered').toEqual([]);
-    noteSummaryWriterOutcome(OWN, true);                     // a summary call on its provider answered
-    await gate(AGENT, 800, 3, false);
-    expect(summariser.calls[0], 'the writer whose provider answered is tried again').toBe(OWN);
-    expect(hasUncondensedPlaceholders(AGENT)).toBe(false);
-  });
-
-  // v3.5 field fix 3: the clause 'the owner changing the Settings writer re-arms it' is deleted with the setting it
-  // pinned (owner ruling: there is no summarization model setting).
 });

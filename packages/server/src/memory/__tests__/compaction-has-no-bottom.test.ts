@@ -961,7 +961,7 @@ describe('§6 the D3 line and the I3 card', () => {
    */
   it('⚠ I3: an unresolvable summary writer is carded once, and named', async () => {
     seedSummaries(8, 0, 6_000);
-    // The only enabled model loses its text capability, so `resolveSummaryWriterModel` finds none.
+    // The only enabled model loses its text capability, so `pickWriter` finds none.
     mockDb.current!.prepare("UPDATE models SET capabilities = '[\"embedding\"]' WHERE id = ?").run(MODEL_64K);
 
     const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });

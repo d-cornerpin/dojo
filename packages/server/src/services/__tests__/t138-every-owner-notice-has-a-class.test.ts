@@ -292,7 +292,7 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
   'agent/local-model-fit.ts': [
     { cls: 'informational', what: "a local model's memory fit could not be checked when it was picked", why: 'nothing to do: it is checked at the first load and refused then if it does not fit' },
   ],
-  'memory/catch-up-state.ts': [
+  'memory/out-of-view.ts': [
     { cls: 'progress', what: 'the agent is summarising its older memory in the background (shown at a turn on notes)', why: 'finishes on its own; replies are not held up' },
   ],
   'memory/embedding-switch.ts': [

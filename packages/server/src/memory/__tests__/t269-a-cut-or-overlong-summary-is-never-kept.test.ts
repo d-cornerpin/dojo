@@ -46,7 +46,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { summaryTargetTokens, summaryFacts } from '../summary-target.js';
 import { getDepthPrompt } from '../summarize.js';
-import { refuseWhatTheWriterCannotHold } from '../summary-writer-health.js';
+import { refuseWhatTheWriterCannotHold } from '../writer.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { estimateTokens } from '../budget.js';
 

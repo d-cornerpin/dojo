@@ -27,7 +27,7 @@
 //     its note, and if it throws or is cut, the first answer is kept when it passed its own checks.
 // Worst case: 4 writer calls per `writeWhole` (the first and its cut retry, the rewrite and its cut retry), each
 // over the source. PER SPAN: × 2 for the accuracy check's one rewrite (`writeThenCheck`), × the writers walked —
-// a pair is handed to each writer left for it once, a refusal recorded (`unwritable-span.ts`) — so at most
+// a pair is handed to each writer left for it once, a refusal recorded (`writer.ts`), so at most
 // 8 × (candidate writers) calls for one span, once per content and writer setting.
 //
 // Cache: summariser calls only; nothing here is in a prompt prefix.
@@ -109,7 +109,7 @@ export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
   if (firstTokens <= allowed && firstDropped.length === 0) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };
   // A MERGE that came out too long is `tooBig` like a cut one: its limit is 0.8 of ONE child, so a batch of n notes must
   // shrink to 0.8/n of its input, and a smaller group asks less of the writer. Every caller then halves the batch and
-  // records the refusal (`unwritable-span.ts`), so a pass reclaims what a pair can give and the same group is not
+  // records the refusal (`writer.ts`), so a pass reclaims what a pair can give and the same group is not
   // dialled again. A leaf's verdict (longer than its input) stays a plain refusal.
   const tooLong = (): SummaryResult => ({ ok: false, reason: merge ? 'the summary came out longer than it may be kept' : 'the summary came out longer than its input', ...(merge ? { tooBig: true as const } : {}) });
   const keepFirst = (why: string): SummaryResult => {

@@ -44,9 +44,9 @@ vi.mock('../../../memory/summarize.js', () => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { memoryRouter } from '../memory.js';
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../../../memory/uncondensed-placeholder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../../../memory/out-of-view.js';
 import { UNCONDENSED_PLACEHOLDER_HEAD } from '../../../memory/uncondensed-head.js';
-import { __resetSummaryWriterHealthForTests } from '../../../memory/summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../../../memory/writer.js';
 
 const AGENT = 'agent-t140-manual-memory';
 const MODEL = 'model-t140-manual-memory';

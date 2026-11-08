@@ -4,7 +4,7 @@
 //
 // A leaf module (the DB, the message store, the estimator — nothing from the compactor), so the
 // condenser can recognise a note and the leaf fold can supersede one without importing the
-// placeholder machinery in `uncondensed-placeholder.ts`.
+// placeholder machinery in `out-of-view.ts`.
 //
 //   · THE KIND (`summaries.kind = 'uncondensed'`) is what makes a row a note — never its text.
 //     Condensation never merges one: it would bury the note where its replacement cannot find it.

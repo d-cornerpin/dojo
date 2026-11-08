@@ -11,7 +11,7 @@
 // worker on a 65K window surrendered turns at "99–103%" of a number its model was never sent, and its
 // owner's message was then set aside as "poisoned". requirement preserved: "a call never goes out
 // bigger than its window" — owned by the assembler's token trim (it always fits the live tail to the
-// room it has), the engine's assembly door that folds what the trim took (`out-of-view-fold.ts`) and
+// room it has), the engine's assembly door that folds what the trim took (`out-of-view.ts`) and
 // the boundary that refuses an array the window cannot hold (`assembly-validation.ts`). "An over-full
 // view still condenses" (OR-COMPACT-1) — owned by the routine check below, on the gauge itself.
 //
@@ -34,8 +34,8 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext } from './index.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../../memory/catch-up-folder.js';
-import { noteAPersonSpoke } from '../../../../memory/summary-writer-health.js';
+import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../../memory/out-of-view.js';
+import { clearOn } from '../../../../memory/writer.js';
 
 const logger = createLogger('v2-loop');
 
@@ -58,7 +58,7 @@ export async function runContextGates(
   const contextWindow = lockedModelId ? agentTurnWindow(agentId, lockedModelId) : turnWindow;
 
   // t140 round 7: a person's FRESH message (the turn's trigger row) earns this agent's writers a retry.
-  if (state.loopCount === 1 && state.lastUserMessageId) noteAPersonSpoke(agentId);
+  if (state.loopCount === 1 && state.lastUserMessageId) clearOn({ kind: 'person-spoke', agentId });
   // t140 round 3: placeholders are replaced first, in the background, when a writer is answering.
   const replacing = replacePlaceholdersInBackground(agentId);
   // Round 5: an auto-routed iteration with nothing locked has no dialed model yet (header).
@@ -121,7 +121,7 @@ export async function condenseForTheDialedModel(args: {
  * folding exactly `leaving` (header: no clock, no cap). Measured for `dialedModelId`, WRITTEN by the
  * summary writer resolved from `writerModelId` in the background order (fix round 1, review I3;
  * round 5). A PRESSURE fold, ahead of need; rows an assembly already took out of view are folded by
- * the engine's assembly door instead (`out-of-view-fold.ts`). Returns whether one started.
+ * the engine's assembly door instead (`out-of-view.ts`). Returns whether one started.
  */
 function condenseLeavingInBackground(args: {
   agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView | null;

@@ -78,7 +78,7 @@ import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
 import { recoverFromError } from '../../../recovery.js';
 import { updateRateLimits } from '../../../../../router/rate-limits.js';
 import * as coldImport1 from '../../../../../router/rate-limits.js';
-import * as health from '../../../../../memory/summary-writer-health.js';
+import * as health from '../../../../../memory/writer.js';
 import * as coldImport2 from '../../../../../memory/window-starvation-card.js';
 
 const AGENT = 'agent-t140-tiny-light';
@@ -227,11 +227,11 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
   it('t207: the turn\'s call answers: a summary writer on that provider that had failed is STILL passed over', async () => {
     seed(false, { tinyOnRouter: false });
     health.__resetSummaryWriterHealthForTests();
-    health.noteSummaryWriterOutcome(ROOMY, false);                     // a summary call on its provider failed
-    expect(health.eligibleSummaryWriters(ROOMY), 'precondition: passed over').not.toContain(ROOMY);
+    health.markWaiting(AGENT, ROOMY, '', 'not-answering');                     // a summary call on its provider failed
+    expect(health.eligibleSummaryWriters(ROOMY, AGENT), 'precondition: passed over').not.toContain(ROOMY);
     const out = await callStep();
     expect(out.directive).toBe('proceed');
     expect(dialed).toEqual([ROOMY]);
-    expect(health.eligibleSummaryWriters(ROOMY), 'a chat answer does not re-arm a summary writer').not.toContain(ROOMY);
+    expect(health.eligibleSummaryWriters(ROOMY, AGENT), 'a chat answer does not re-arm a summary writer').not.toContain(ROOMY);
   });
 });

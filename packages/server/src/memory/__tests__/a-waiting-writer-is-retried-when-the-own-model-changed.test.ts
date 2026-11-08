@@ -1,17 +1,6 @@
-// t268 breaker fix, addition (ORCHESTRATOR RULING) — A CHANGE THE OWNER MAKES THAT CAN MAKE A WRITER RUNNABLE ENDS THE
-// WAIT: the Summarization pick changed, an agent's own model changed, its router's standard tier changed, a model
-// enabled, a provider saved or validated. Each wakes each waiting agent once; a change that frees no writer wakes none.
-// The doors are the REAL routes (`gateway/routes/config.ts`, `agents.ts`, `router.ts`). The rest of this header is the
-// first file's, whose harness this one shares:
-// · I-1: a forced pass with no writer of the agent's order able to run arms no brake (round 5), so the full-context park
-//   used to queue its wake at once: the woken turn met the same wall and parked again, the 1,216-wakes shape. The park
-//   now waits for its own event: a writer of the order able to run again. Never an immediate wake, never a clock.
-// · I-2: nothing retried a writer marked not answering unless a person wrote. Now any successful call to that model
-//   (the agent's own turn, another agent's) is the signal, for an agent whose span waits; other agents are untouched.
-// · Minor (c): free memory that cannot be read is UNKNOWN, and the small writer is not admitted on an unknown.
-// THE DOORS: the real `checkAndCompact`, the real `parkAfterForcedPass` (the forced-pass-then-park sequence of
-// `recovery.ts` and `over-budget-assembly.ts`), the real park and its timer wake, the real `recordProviderSuccess` that
-// every successful model call reaches (`agent/model.ts`). The writers, Ollama and the runtime's wake are scripted.
+// A waiting writer is asked again when the agent's own model changes (its model, or its router's standard tier), or
+// when the owner saves the down model's provider; each waiting agent wakes once, and a change that frees no writer
+// wakes none. The doors are the real routes; the writers, Ollama and the runtime's wake are scripted.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import os from 'node:os';
@@ -74,7 +63,7 @@ vi.mock('../../logger.js', async (importOriginal) => {
 import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { insertMessage } from '../message-store.js';
-import { noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { markWaiting, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { __resetBrakesForTests, compactionBrakeMsLeft } from '../compaction-brakes.js';
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
@@ -157,7 +146,7 @@ async function overBudgetTurn(agentId: string): Promise<void> {
 /** Both agents' spans wait: their writer (the own model) not answering, the small writer with no room; each parked. */
 async function bothWaiting(): Promise<void> {
   seed(AGENT); seed(OTHER);
-  noteSummaryWriterOutcome(OWN, false);
+  for (const a of [AGENT, OTHER]) markWaiting(a, OWN, '', 'not-answering');
   wakes.turn = overBudgetTurn;
   await overBudgetTurn(AGENT); await overBudgetTurn(OTHER);
   expect(parks.filter((p) => p.how === 'timer' && p.after).length, 'precondition: both parked on their writer').toBe(2);

@@ -155,15 +155,6 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts', 'memory/kept-row-view.ts']);   // v3.5 D18 r3: the same one cost function
   });
 
-  it('M3/I3 (round 2): ONE background PRESSURE-fold launcher, the gate\'s; ONE out-of-view door, used by the turn\'s assembly and the re-fit', () => {
-    expect(filesWith(/\bcondenseLeavingInBackground\(/)).toEqual([GATE_REL]);
-    // The re-fit's own background fold (fix round 1's M3) is gone: it folded above the floor only.
-    expect(filesWith(/\bfoldWhatTheRefitSetAside\b/)).toEqual([]);
-    expect(filesWith(/\bassembleWithNothingOutOfViewUnsummarised[<(]/)).toEqual([
-      `${ENGINE_STEPS_REL}/assemble/index.ts`, REFIT_REL, 'memory/out-of-view-fold.ts',
-    ]);
-  });
-
   it('I1: every fallback pick is re-fitted, the fit filter judges windows, and the budget redirect re-fits', () => {
     const call = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/model-call.ts`)!.code;
     expect(call).toMatch(/reassembleForFitIfNeeded\(\{\s*agentId, modelId: fallback\.modelId,/);
@@ -218,31 +209,6 @@ describe('t140 census, round 5 — no fixed number cuts a working writer or caps
     expect(filesWith(token)).toEqual([]);
   });
 
-  it('the turn\'s fold is bounded by the dialed model\'s own patience, and the background folds pass no cap and no clock', () => {
-    const door = FILES.find((f) => f.rel === 'memory/out-of-view-fold.ts')!.code;
-    expect(door).toMatch(/deadline: Date\.now\(\) \+ turnPatienceMs\(agentId, opts\.dialedModelId\)/);
-    expect(door).toMatch(/\{ cause: 'out-of-view', throughSeq, rowsLeaving: owed \}, \{ abortSignal: bound\.signal \}\);/);
-    expect(filesWith(/maxChunksPerRun/)).toEqual([]);   // round 6 (H3): the forced pass's cap went too
-    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
-    expect(gate).not.toMatch(/setTimeout\(/);
-    const ph = FILES.find((f) => f.rel === 'memory/uncondensed-placeholder.ts')!.code;
-    expect(ph).not.toMatch(/setTimeout\(/);
-    expect(ph).toMatch(/for \(const writer of eligibleSummaryWriters\(preferred, agentId\)\) \{/);   // round 6: answering writers only; round 7: for this agent
-  });
-});
-
-describe('t140 census, round 6 — writer health everywhere; a turn never waits on another compaction', () => {
-  it('there is one list of writers anything may dial, and the background has no list of its own', () => {
-    expect(filesWith(/\bbackgroundSummaryWriters\b/)).toEqual([]);
-    expect(filesWith(/\bnoteAPersonSpoke\(/)).toEqual([GATE_REL, 'memory/summary-writer-health.ts']);
-  });
-
-  it('the turn\'s fold takes the lock only if it is free, and never awaits another holder', () => {
-    const door = FILES.find((f) => f.rel === 'memory/out-of-view-fold.ts')!.code;
-    expect(door).toMatch(/withLock\(`compact:\$\{agentId\}`[\s\S]*?\}, \{ ifBusy: 'skip' \}\)/);
-    expect(door).not.toMatch(/ifBusy: 'wait'/);
-    expect(door).not.toMatch(/await finished/);
-  });
 });
 
 describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, not by numbers', () => {
@@ -250,14 +216,6 @@ describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, 
     expect(filesWith(token)).toEqual([]);
   });
 
-  it('every forced pass is given the turn\'s patience for the model it is condensing for', () => {
-    // t194: the gate's two emergency arms are DELETED (a full view is condensed, never surrendered), so
-    // the boundary's live-conversation refusal is the one engine door that forces a pass on the turn.
-    expect(filesWith(/\bforcedCompactionOptions\(/)).toEqual(['memory/assembly-validation.ts', 'memory/compaction-brakes.ts']);
-    const val = FILES.find((f) => f.rel === 'memory/assembly-validation.ts')!.code;
-    expect(val).toMatch(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(input\.agentId, input\.modelId\)\), dialedModelId: input\.modelId[, }]/);   // v3.5 D18 r2: + untilItFits (r4: waitIfBusy is gone; every forced pass waits)
-    expect(filesWith(/\bturnPatienceMs\(/)).toEqual(['memory/assembly-validation.ts', 'memory/out-of-view-fold.ts', 'memory/turn-patience.ts']);
-  });
 });
 
 describe('t140 census, round 6 (H2) — the router\'s own pick is passed over like a fallback', () => {
@@ -270,17 +228,6 @@ describe('t140 census, round 6 (H2) — the router\'s own pick is passed over li
     const step = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/index.ts`)!.code;
     expect(step).toMatch(/agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,/);
     expect(step).toMatch(/const called = await callWithRetryAndFallback\(state, pick, \{/);
-  });
-});
-
-describe('t140 census, round 7 — the change signals that re-arm a failed writer', () => {
-  it('a person\'s fresh message re-arms for THAT agent; a SUMMARY answer re-arms it (t207: no chat answer does); nothing else does', () => {
-    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
-    expect(gate).toMatch(/if \(state\.loopCount === 1 && state\.lastUserMessageId\) noteAPersonSpoke\(agentId\);/);
-    expect(filesWith(/\bnoteAPersonSpoke\(/)).toEqual([GATE_REL, 'memory/summary-writer-health.ts']);
-    expect(filesWith(/\bnoteProviderAnswered\b/), 'no "any call answered" door is left').toEqual([]);
-    const health = FILES.find((f) => f.rel === 'memory/summary-writer-health.ts')!.code;
-    expect(health, 't207: the in-process map of marks is gone; the mark is a persisted row').not.toMatch(/notAnsweringSince/);
   });
 });
 

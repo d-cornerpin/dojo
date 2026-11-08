@@ -42,7 +42,7 @@ const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: str
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
 // t268 round 5: CHEAP is the Dojo's small writer here; whether it fits the box's memory is not this file's question.
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
   isDreamerIgnored: vi.fn(() => false),
@@ -87,14 +87,14 @@ vi.mock('../../agent/model.js', async () => {
   };
 });
 
-import * as door_ from '../out-of-view-fold.js';
-import { __resetSummaryWriterHealthForTests, noteAPersonSpoke } from '../summary-writer-health.js';
+import * as door_ from '../out-of-view.js';
+import { __resetSummaryWriterHealthForTests, clearOn } from '../writer.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
-import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../out-of-view.js';
+import { replacePlaceholdersInBackground } from '../out-of-view.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
@@ -271,7 +271,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     writers.calls.length = 0;
     appendTurn(false);
     writeUncondensedPlaceholders(AGENT, (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ? AND seq < (SELECT MAX(seq) - 40 FROM messages WHERE agent_id = ?)').get(AGENT, AGENT) as { s: number }).s);
-    noteAPersonSpoke(AGENT);   // a person's new turn: the change that earns the writer another try
+    clearOn({ kind: 'person-spoke', agentId: AGENT });   // a person's new turn: the change that earns the writer another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(writers.calls[0], 'the background tried the agent\'s own writer first').toBe(OWN);
     writers.calls.length = 0;
@@ -316,7 +316,7 @@ describe('t140 round 5 — a writer that failed is used again the moment it answ
     expect(placeholders(), 'precondition: placeholder notes').toBeGreaterThan(0);
     writers.mode = {};
     expect(replacePlaceholdersInBackground(AGENT), 'no writer answering: nothing is dialled').toBe(false);
-    noteAPersonSpoke(AGENT);
+    clearOn({ kind: 'person-spoke', agentId: AGENT });
     expect(replacePlaceholdersInBackground(AGENT), 'a person spoke: the writer gets another try').toBe(true);
     for (let t = 0; t < 60 && backgroundDrains.has(AGENT); t++) await vi.advanceTimersByTimeAsync(1_000);
     expect(placeholders(), 'no note left: the writers answered and were used').toBe(0);

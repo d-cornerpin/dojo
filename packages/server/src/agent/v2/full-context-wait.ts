@@ -32,7 +32,7 @@
 // told afresh. A park stays invisible housekeeping: nothing is written to the agent's chat.
 //
 // t268 breaker fix: A PASS THAT WAITS FOR A WRITER (none of the agent's summary writers can run, so it arms no brake)
-// is its own condition: the wake is that wait ending (`memory/writer-wait.ts`: a writer of its order answering again,
+// is its own condition: the wake is that wait ending (`memory/writer.ts`: a writer of its order answering again,
 // re-tested, or a person writing). Never an immediate wake (the 1,216-wakes shape again), never a clock.
 //
 // requirement preserved: "emergency means first, not infinite, and never terminal" (compaction-brakes.ts,
@@ -42,8 +42,7 @@
 
 import { createLogger } from '../../logger.js';
 import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
-import { spanWaitsForAWriter } from '../../memory/summary-writer-health.js';
-import { whenAWriterCanRun } from '../../memory/writer-wait.js';
+import { spanWaitsForAWriter, whenAWriterCanRun } from '../../memory/writer.js';
 import { parkJob } from '../../work/job-continuation.js';
 import { whenLockFree } from '../../db/with-lock.js';
 import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';

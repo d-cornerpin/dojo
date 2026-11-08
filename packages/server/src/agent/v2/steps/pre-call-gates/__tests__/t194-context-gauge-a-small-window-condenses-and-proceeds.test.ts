@@ -64,7 +64,7 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { assembleContext } from '../../../../../memory/assembler.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../../../../../memory/out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../../../memory/out-of-view.js';
 import { estimateAssembledTokens, checkAndCompact } from '../../../../../memory/compaction.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';

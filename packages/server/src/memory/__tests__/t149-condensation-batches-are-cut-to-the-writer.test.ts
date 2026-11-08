@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
 // t268 round 5: whether the small writer fits the box's memory is not this file's question.
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 vi.mock('../../db/connection.js', () => ({
   getDb: () => {
     if (!mockDb.current) throw new Error('test DB not initialized');
@@ -42,7 +42,7 @@ import { rebuildContextItems } from '../compaction.js';
 import { createLeafSummary } from '../dag.js';
 import { insertMessage } from '../message-store.js';
 import { contextWindowPolicy, estimateTokens } from '../budget.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { stoppedAgents } from '../../agent/shared-state.js';

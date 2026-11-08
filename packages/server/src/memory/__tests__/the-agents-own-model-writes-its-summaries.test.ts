@@ -15,7 +15,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { summaryWriterCandidates, eligibleSummaryWriters, noteDidNotAnswerInTurn, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { summaryWriterCandidates, eligibleSummaryWriters, markWaiting, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { updateRateLimits, clearRateLimits } from '../../router/rate-limits.js';
 
@@ -46,7 +46,7 @@ describe("the agent's own model writes its summaries", () => {
   });
 
   it("the agent's model cannot be reached → the standard writer writes", () => {
-    noteDidNotAnswerInTurn('big-cloud');
+    markWaiting('agent-a', 'big-cloud', '', 'not-answering');
     expect(eligibleSummaryWriters('big-cloud', 'agent-a')[0]).toBe('std-writer');
   });
 
@@ -90,7 +90,7 @@ describe("the agent's own model writes its summaries", () => {
     // Fix round 5 (edited: the router's next tier followed): its own model is the ONE model the router's selection
     // gives a standard-tier request now; unreachable, the small writer is next, and nothing after it.
     it('that model unreachable: the small writer, and nothing after it', () => {
-      noteDidNotAnswerInTurn('std-tier');
+      markWaiting('agent-auto', 'std-tier', '', 'not-answering');
       expect(eligibleSummaryWriters('auto', 'agent-auto')).toEqual(['std-writer']);
     });
   });

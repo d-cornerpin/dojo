@@ -41,7 +41,7 @@ vi.mock('../../../../../memory/assembler.js', async (importOriginal) => {
     assembleContext: (...a: Parameters<typeof actual.assembleContext>) => { built.push(a[1]); return actual.assembleContext(...a); },
   };
 });
-vi.mock('../../../../../memory/out-of-view-fold.js', () => ({
+vi.mock('../../../../../memory/out-of-view.js', () => ({
   assembleWithNothingOutOfViewUnsummarised: async (_a: string, _w: number, build: () => Promise<unknown>) => build(),
 }));
 

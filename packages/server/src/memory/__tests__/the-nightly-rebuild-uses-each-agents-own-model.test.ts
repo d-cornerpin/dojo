@@ -20,7 +20,7 @@ vi.mock('../../vault/archive.js', () => ({
 }));
 // t268 breaker fix (edited): memory that cannot be read no longer counts as free, and this box's Ollama is not served
 // here; memory is not this file's question, so the fallback's room is held to "fits", as in the other writer files.
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 const writers = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string }> }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string; messages: Array<{ content: string }> }) => {
@@ -35,7 +35,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary } from '../dag.js';
 import { runSummaryRebuildBatch } from '../summary-rebuild.js';
-import { __resetSummaryWriterHealthForTests, noteDidNotAnswerInTurn } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, markWaiting } from '../writer.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -73,7 +73,7 @@ describe('the nightly rebuild writes each agent\'s summaries with that agent\'s 
   });
 
   it('an agent whose model cannot be reached: the small writer, for that agent only', async () => {
-    noteDidNotAnswerInTurn('own-two');
+    markWaiting('agent-two', 'own-two', '', 'not-answering');
     await runSummaryRebuildBatch();
     expect(writerFor('agent-one')).toEqual(['own-one']);
     expect(writerFor('agent-two')).toEqual(['std-writer']);

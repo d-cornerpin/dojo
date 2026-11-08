@@ -69,7 +69,7 @@ import { renderInstant } from '../message-stamp.js';
 import { runSummaryRebuildBatch } from '../summary-rebuild.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { archiveMessagesBeforeCompaction } from '../../vault/archive.js';
 

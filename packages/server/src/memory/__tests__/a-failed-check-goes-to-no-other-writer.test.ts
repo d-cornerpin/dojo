@@ -32,8 +32,8 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, hasUncondensedPlaceholders } from '../uncondensed-placeholder.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, hasUncondensedPlaceholders } from '../out-of-view.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { generateSummary } from '../summarize.js';
 
@@ -101,18 +101,15 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
     expect(writers.calls.length).toBeGreaterThan(0);
   });
 
-  it('fix round 4 (NB-9): refusals under an earlier writer setting are pruned; a span summarized after all leaves none', async () => {
-    const refused = (): string[] => (db().prepare("SELECT key FROM healer_state WHERE scope = 'summary_span_refused' ORDER BY key").all() as Array<{ key: string }>).map((r) => r.key);
-    // Re-review 2 S6: the key's middle part is the agent's OWN model (the owner's pick, what writes its summaries); a
-    // row recorded under an earlier own model is pruned by the next refusal, for this agent only.
-    db().prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('summary_span_refused', ?, 1)").run(`${AGENT}|writer-small|msg-7`);
+  it('each failed row waits under the agent\'s own model; a span summarized after all leaves none', async () => {
+    const refused = (): string[] => (db().prepare("SELECT key FROM healer_state WHERE scope = 'writer_wait.check-failed' ORDER BY key").all() as Array<{ key: string }>).map((r) => r.key);
     await generateSummary({ ...span, modelId: 'writer-small' });
-    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);   // the old own model's row is gone
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);
     await generateSummary({ ...span, spanIds: ['msg-9'], modelId: 'paid-own' });
     expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`, `${AGENT}|paid-own|msg-9`]);
     writers.fine.add('SPAN-B');
     await generateSummary({ ...span, content: rows('SPAN-B'), spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
-    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);   // summarized with a new row: none left for its own rows
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);
   });
 
   it('(iii) never blocks the newer placeholders of the agent: each span is its own', async () => {

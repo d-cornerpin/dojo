@@ -35,9 +35,9 @@ vi.mock('../../../../../tools/tool-docs.js', async (importOriginal) => ({
 /** The writer: answers after `slowMs` of (fake) time unless its call is aborted first. */
 const summariser = vi.hoisted(() => ({ slowMs: 0, calls: [] as string[] }));
 vi.mock('../../../../../memory/summarize.js', async () => {
-  const health = await import('../../../../../memory/summary-writer-health.js');
+  const health = await import('../../../../../memory/writer.js');
   return {
-    generateSummary: async (args: { modelId?: string; abortSignal?: AbortSignal }) => {
+    generateSummary: async (args: { agentId: string; modelId?: string; abortSignal?: AbortSignal }) => {
       summariser.calls.push(args.modelId ?? '?');
       const ok = await new Promise<boolean>((resolve) => {
         if (summariser.slowMs <= 0) { resolve(true); return; }
@@ -45,7 +45,7 @@ vi.mock('../../../../../memory/summarize.js', async () => {
         const cut = () => { clearTimeout(t); resolve(false); };
         if (args.abortSignal?.aborted) cut(); else args.abortSignal?.addEventListener('abort', cut, { once: true });
       });
-      health.noteSummaryWriterOutcome(args.modelId, ok, args.abortSignal);
+      health.settleSummaryCall(ok ? { ok: true, text: 'a summary', tokenCount: 1 } : { ok: false, reason: 'no answer' }, args.agentId, args.modelId, args.abortSignal);
       return ok
         ? { ok: true, text: `Earlier dock questions, part ${summariser.calls.length}, all answered.`, tokenCount: 9 }
         : { ok: false, reason: 'summarizer call was aborted before it finished' };
@@ -68,7 +68,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
-import { __resetSummaryWriterHealthForTests, noteSummaryWriterOutcome } from '../../../../../memory/summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, markWaiting, clearOn, providerOf } from '../../../../../memory/writer.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
@@ -176,7 +176,7 @@ describe('t140 round 5 — the routine background condense is never cut short by
   it('a writer that failed once is tried first again at a person\'s new turn — the change that earns it another try', async () => {
     seedAgent(32_000);
     seedRows(100, FULL_32K_BODY);
-    noteSummaryWriterOutcome(MODEL, false);   // it failed a moment ago
+    markWaiting(AGENT, MODEL, '', 'not-answering');   // it failed a moment ago
     await gate(32_000);
     await settleOnTheClock();
     expect(summariser.calls[0], 'the agent\'s own writer, first, in the background').toBe(MODEL);

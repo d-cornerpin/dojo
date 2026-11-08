@@ -433,7 +433,7 @@ export interface AssembledContext {
    * view — the token trim's front cut (`budgetFreshTail`) or the rows the horizon's bounded read
    * left unread, whichever reaches further. 0/absent when nothing left the view. Every unsummarised row at or
    * below it is out of view with no summary, which the engine's assembly door
-   * (`out-of-view-fold.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
+   * (`out-of-view.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
    * Read off the trim's own result, so the fold covers exactly what the trim took.
    */
   outOfViewThroughSeq?: number;
@@ -998,7 +998,7 @@ function viewOf(f: {
   // One trim block of growth ahead, at this tail's average group (t140's lead: the fold needs room to
   // finish before the cut). When a cut is coming, what leaves ahead of need is the trim's whole-block cut,
   // the front half. What its minimum-fit fallback takes beyond that (a giant newest row) reaches into the
-  // running turn, so it is the in-turn door's (`out-of-view-fold.ts`): exact, and no race with the turn.
+  // running turn, so it is the in-turn door's (`out-of-view.ts`): exact, and no race with the turn.
   const lead = groups.length > 0 ? block * (tailTokens / groups.length) : 0;
   let from = groups.length - 1;
   for (let i = groups.length - 2, used = costs[groups.length - 1] ?? 0; i >= 0 && used + costs[i] <= room / 2; i--) { used += costs[i]; from = i; }

@@ -1,22 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t269 fix round 1 (review I1) — A SPAN NO WRITER CAN WRITE WHOLE IS DIALLED A BOUNDED NUMBER OF TIMES,
-// THEN LEFT WHOLE AND MARKED, NEVER RE-DIALLED UNTIL ITS CONTENT CHANGES.
-//
-// The reviewer's probe: a depth-5 pair whose merge is always cut was dialled on EVERY forced pass
-// ([4,1,1,1,1]) with a `summariser_refused` defect each time; a single row cut twice was covered by a
-// placeholder note and re-dialled on every drain. The ruling:
-//   (a) a span is split further, down to single rows (a condensed pair down to its two notes, which are
-//       left whole); a single row that still cannot be summarised is kept verbatim behind the live view's
-//       kept-row pointer (D18, `kept-row-view.ts`) and MARKED, so it is not dialled again until its content
-//       changes — never a defect logged every pass.
-//
-// Bounded dial counts asserted below (one writer, as configured here):
-//   · a pair: 1 dial, then 0 on every later pass;
-//   · a batch of four: 1 + 2 (its halves) = 3, then 0;
-//   · a four-row placeholder: 1 + 2 + 4 = 7 (halves down to single rows), then 0.
-//
-// All fixture text is invented filler; no real conversation, agent or person appears here.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A writer that cannot hold a span waits for that span (its key is the rows' ids and contents), and is asked again
+// when the span changes: a pair is dialled once, a batch splits to its halves, a single row is kept whole behind its
+// pointer, and none is dialled again until a note or row changes, or the agent gets a writer that has not refused it.
+// Bounded dial counts with one writer: a pair 1; a batch of four 1 + 2; a four-row placeholder 1 + 2 + 4.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -50,8 +35,8 @@ const writer = vi.hoisted(() => ({
 vi.mock('../summarize.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../summarize.js')>()), generateSummary: writer.write }));
 
 // Imported FIRST: a module first loaded while the summariser's mock factory runs binds the unmocked writer.
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
-import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../out-of-view.js';
+import { replacePlaceholdersInBackground } from '../out-of-view.js';
 import { runMigrations } from '../../db/migrations.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { condenseUntilFits } from '../condense-until-fits.js';
@@ -59,7 +44,7 @@ import { rebuildContextItems } from '../compaction.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { insertMessage } from '../message-store.js';
 import { findToolResult } from '../kept-results.js';
-import { __resetSummaryWriterHealthForTests, noteSummaryWriterOutcome } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, markWaiting, clearOn, providerOf } from '../writer.js';
 import { condensableSummaries } from '../condense-until-fits.js';
 
 const AGENT = 'agent-t269-unwritable';
@@ -194,14 +179,14 @@ describe('t269 fix round 2: the mark is the writers\' verdict, and a change of w
   it('an outage: a writer passed over is never marked as refusing; when it answers again the span is tried, and merges', async () => {
     bigWriter();
     db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = ?").run(AGENT);   // the agent's own model: capable
-    noteSummaryWriterOutcome('m-big', false);   // …but not answering: not eligible, and nothing else can write
+    markWaiting(AGENT, 'm-big', '', 'not-answering');   // …but not answering: not eligible, and nothing else can write
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense();
     const afterOutage = writer.dials;
     await condense(); await condense();
     expect(writer.dials, 'the writer that refused is not dialled again over the same span').toBe(afterOutage);
     expect(parents()).toBe(0);
-    noteSummaryWriterOutcome('m-big', true);    // it answers again
+    clearOn({ kind: 'writer-answered', providerKey: providerOf('m-big'), summaryFor: AGENT });    // it answers again
     await condense();
     expect(parents(), 'tried by the writer that was out, and merged').toBe(1);
   });
@@ -236,7 +221,7 @@ describe('t269 N6 — an oversize placeholder is split when every ANSWERING writ
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-std', 'ollama-local', ?, ?, '[\"chat\"]', 131072, 0, 1)").run(STANDARD_WRITER_MODEL.tag, STANDARD_WRITER_MODEL.tag);
     db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = ?").run(AGENT);
     writer.capable.add('m-big');
-    noteSummaryWriterOutcome('m-big', false);   // the own model is out
+    markWaiting(AGENT, 'm-big', '', 'not-answering');   // the own model is out
     for (let t = 1; t <= 4; t += 1) insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `UNWRITABLE row ${t}: ${'filler words '.repeat(40)}`, turnNumber: t });
     const through = maxSeq();
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: 'ok', turnNumber: 9 });
@@ -244,7 +229,7 @@ describe('t269 N6 — an oversize placeholder is split when every ANSWERING writ
     await replaceUncondensedPlaceholders(AGENT);
     expect(writer.dials, 'the small writer: 1 + 2 + 4').toBe(7);
     expect(notes().map((s) => s.kind), 'split to single rows, none kept whole: the own model has not been asked').toEqual(['uncondensed', 'uncondensed', 'uncondensed', 'uncondensed']);
-    noteSummaryWriterOutcome('m-big', true);
+    clearOn({ kind: 'writer-answered', providerKey: providerOf('m-big'), summaryFor: AGENT });
     await replaceUncondensedPlaceholders(AGENT);
     expect(notes().map((s) => s.kind), 'the own model, back, writes each row').toEqual(['leaf', 'leaf', 'leaf', 'leaf']);
   });

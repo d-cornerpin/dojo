@@ -54,7 +54,7 @@ vi.mock('../../agent/model.js', () => ({
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { checkAndCompact, estimateAssembledTokens, leavingFromView } from '../compaction.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { getFreshTailCount } from '../budget.js';
 import { tailTrimBlockGroups } from '../tail-horizon.js';

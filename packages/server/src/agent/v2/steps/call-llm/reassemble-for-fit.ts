@@ -155,7 +155,7 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
   }, agentId);
   const [{ assembleContext }, { assembleWithNothingOutOfViewUnsummarised }] = await Promise.all([
     import('../../../../memory/assembler.js'),
-    import('../../../../memory/out-of-view-fold.js'),
+    import('../../../../memory/out-of-view.js'),
   ]);
   // t140 round 2 (re-review C1; replaces fix round 1's background M3 fold): a re-fit for a smaller
   // pick may take rows out of the view for THAT window — floor rows included — and they are folded

@@ -36,7 +36,7 @@ vi.mock('../../model.js', async (importOriginal) => ({
 
 /** Per turn: the window the assemble step sized the turn for, and what the assembler left out of view. */
 const turns = vi.hoisted(() => [] as Array<{ window: number; budget?: number; outOfView?: number }>);
-vi.mock('../../../memory/out-of-view-fold.js', () => ({
+vi.mock('../../../memory/out-of-view.js', () => ({
   assembleWithNothingOutOfViewUnsummarised: async (_a: string, window: number, build: () => Promise<{ allocation?: { budgetTokens: number }; outOfViewThroughSeq?: number }>) => {
     const built = await build();
     turns.push({ window, budget: built.allocation?.budgetTokens, outOfView: built.outOfViewThroughSeq ?? 0 });

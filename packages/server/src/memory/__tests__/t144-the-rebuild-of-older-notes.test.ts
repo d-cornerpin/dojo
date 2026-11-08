@@ -100,7 +100,7 @@ import { assembleContext } from '../assembler.js';
 import { runSummaryRebuildBatch } from '../summary-rebuild.js';
 import { runLegacyRebuildAtBoot } from '../legacy-rebuild-boot.js';
 import { subjectBatches } from '../summary-subject.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { activeRuns } from '../../agent/shared-state.js';
 import { setGlobalBudget } from '../../costs/budget.js';

@@ -96,7 +96,7 @@ import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { contextWindowPolicy, CONTEXT_THRESHOLD, getFreshTailCount } from '../budget.js';
 import { freshTailHorizon, rowsLeavingView } from '../tail-horizon.js';
 import { assembleContext } from '../assembler.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary } from '../dag.js';
 import { runMigrations } from '../../db/migrations.js';

@@ -37,9 +37,9 @@ import { recordCleanStock, countSummaryStock } from './summary-clean-stock.js';
 import {
   isNonConversationForSummary,
   buildLeafSummaryInput,
-  resolveSummaryWriterModel,
   NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
+import { pickWriter } from './writer.js';
 import { summaryTargetTokens, mergeTargetTokens } from './summary-target.js';
 import { modelCharsPerToken } from '../services/token-density.js';
 import {
@@ -430,7 +430,7 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
     const own = (agentId: string): string | undefined => (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
     const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length, stockScanned };
     for (const flag of flagged) {
-      const modelId = opts?.modelId ?? resolveSummaryWriterModel(flag.agentId, own(flag.agentId), { background: true });
+      const modelId = opts?.modelId ?? pickWriter(flag.agentId, own(flag.agentId));
       if (!modelId) { stats.skipped++; continue; }   // no writer answering for this agent: a later night
       try {
         const outcome = await rebuildOneSummary(flag, modelId);

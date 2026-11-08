@@ -29,8 +29,7 @@
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
-import { providerBreaker, type OpenBreaker } from '../providers/billing-breaker.js';
-import { catchUpFailureOver, withdrawCatchUpProgress } from './catch-up-state.js';
+import { writerBreaker } from './writer.js';
 
 const logger = createLogger('compaction-defect');
 
@@ -76,18 +75,6 @@ const REPAIRABLE_BY_THE_OWNER = new Set([
   // review I3: no enabled model can write a summary at all, so compaction cannot even start.
   'summary_writer_unresolvable',
 ]);
-
-/** The breaker on a summary-writer model's provider, read WITHOUT logging — the brake asks
- *  this on every braked turn, and a warn per turn is the toast spam, in the log. */
-export function writerBreaker(modelId: string | null | undefined): OpenBreaker | null {
-  if (!modelId) return null;
-  try {
-    const row = getDb().prepare('SELECT provider_id FROM models WHERE id = ?').get(modelId) as { provider_id?: string } | undefined;
-    return row?.provider_id ? providerBreaker(row.provider_id) : null;
-  } catch {
-    return null;
-  }
-}
 
 /** The card the owner gets, and the only compaction card that is left. v3.5 field fix 3 (owner ruling: there is no
  *  summarization model setting; each agent's own model writes its summaries): a FACT, short, naming the agent and
@@ -151,9 +138,8 @@ export function reportCompactionDefect(
   if (failures.has(agentId)) return null;   // one note, one card, per outage
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
-  // field fix Y r3 (F2); field fix 3 review L2: the work is not moving, whatever the stage, so the catch-up glyph ends
-  // (it comes back at a turn on notes once the failure is over, `catchUpFailureOver`).
-  withdrawCatchUpProgress(agentId);
+  // The work is not moving, whatever the stage, so the catch-up glyph ends (a later turn on notes shows it again).
+  void import('./out-of-view.js').then((m) => m.withdrawCatchUpProgress(agentId), () => undefined);   // loaded late: the door imports the compactor
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
   if (breaker) {
     logger.info('Compaction failure card suppressed: the provider breaker already told the owner', {
@@ -189,7 +175,6 @@ export function noteCompactionRecovered(agentId: string, tokensReclaimed: number
   const was = failures.get(agentId);
   if (!was) return;
   failures.delete(agentId);
-  catchUpFailureOver(agentId);
   logger.info('Compaction is working again — this pass reclaimed memory, and nothing had to be clicked', {
     wasFailingAt: was.stage, failingSince: was.since, tokensReclaimed,
   }, agentId);
@@ -198,7 +183,6 @@ export function noteCompactionRecovered(agentId: string, tokensReclaimed: number
 /** Drop the note without a recovery claim — a reset gave the agent a fresh start. */
 export function clearCompactionFailure(agentId: string): boolean {
   lastCardAt.delete(agentId);   // a reset is a fresh start for the card too
-  catchUpFailureOver(agentId);
   return failures.delete(agentId);
 }
 

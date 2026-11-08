@@ -58,16 +58,16 @@ vi.mock('../../../services/imessage-bridge.js', async (importOriginal) => ({
 }));
 vi.mock('../../../memory/compaction.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  // Fix round 2: the scripted pass RECORDS its outcome as the real one does (forced-pass-progress.ts and
+  // The scripted pass records its outcome as the real one does (the compaction door and
   // the brake), so a pass that bought nothing or threw arms the brake the park waits for.
   checkAndCompact: async (agentId: string) => {
-    return recordingForcedPass(agentId, async () => {
+    return (await compactionDoor(agentId, async () => {
       seen.condenses++;
       if (seen.condenseFails) throw new Error('the summary writer did not answer');
       const result = { leafCreated: seen.progress ? 1 : 0, condensedCreated: 0, tokensReclaimed: 0 };
       notePassOutcome(agentId, true, result);
       return result;
-    }, { measure: async () => ({ assembledTokens: 0, budgetTokens: 1 }) });
+    }, { measure: async () => ({ assembledTokens: 0, budgetTokens: 1 }) }))!;
   },
 }));
 vi.mock('../../../tools/tool-docs.js', async (importOriginal) => ({
@@ -86,11 +86,10 @@ import {
 } from '../../../memory/assembly-validation.js';
 import { contextWindowPolicy, estimateTokens } from '../../../memory/budget.js';
 import { __resetStarvedWindowsForTests } from '../../../memory/window-starvation-card.js';
-import { recordingForcedPass } from '../../../memory/forced-pass-progress.js';
+import { compactionDoor } from '../../../memory/compaction-brakes.js';
 import { notePassOutcome } from '../../../memory/compaction-brakes.js';
 import { noteModelsChanged } from '../honest-stop-lock.js';
 import * as coldImport1 from '../../../memory/compaction-brakes.js';
-import * as coldImport2 from '../../../memory/forced-pass-progress.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -119,7 +118,6 @@ beforeEach(async () => {
   seen.progress = true;
   seen.toolPayload = 0;
   coldImport1.__resetBrakesForTests();
-  coldImport2.__resetForcedPassProgressForTests();
   pendingWakeups.clear();
   __resetStarvedWindowsForTests();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });

@@ -17,7 +17,7 @@
 //     compaction lock — so the agent's cached prefix changes ONCE (G2), and until then the older note
 //     stays in view, labelled "older mixed notes", so there is never a gap.
 //   · NO COUNT (owner ruling 2026-10-13, no hard limits). The job works through every queued note,
-//     paced only by real signals: a summary writer answering (`summary-writer-health.ts`, which also
+//     paced only by real signals: a summary writer answering (`writer.ts`, which also
 //     honours the provider's breaker), the agent not mid-turn, and the money guardrail (`checkBudget`).
 //     A hung call is ended by its own transport's patience (t140); this module adds no clock.
 //   · NOTHING INVENTED. A note whose source rows are all gone becomes `lineage_lost` ("conversation
@@ -30,9 +30,9 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import type { Message } from '@dojo/shared';
 import {
-  buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems, resolveSummaryWriterModel,
-  NO_CONVERSATION_PLACEHOLDER,
+  buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems, NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
+import { pickWriter } from './writer.js';
 import { createLeafSummary, deleteSummary, getDescendantMessages, getSummary } from './dag.js';
 import { generateSummary, getDepthPrompt } from './summarize.js';
 import { estimateTokens } from './budget.js';
@@ -168,7 +168,7 @@ async function rebuildAgent(agentId: string, units: readonly Unit[], stats: Lega
   const own = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
   const ready: Unit[] = [];
   for (const unit of units) {
-    const writer = resolveSummaryWriterModel(agentId, own, { background: true });
+    const writer = pickWriter(agentId, own);
     if (!writer) { stats.waiting[agentId] = 'no summary writer is answering'; return; }
     const outcome = await stageUnit(unit, writer, stats);
     if (outcome === 'staged') ready.push(unit);

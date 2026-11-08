@@ -1,14 +1,7 @@
-// t268 breaker fix (ORCHESTRATOR RULING after re-review 3, I-1 / I-2) — A SPAN WAITING FOR A WRITER WAKES ONLY WHEN ONE
-// IS BACK.
-// · I-1: a forced pass with no writer of the agent's order able to run arms no brake (round 5), so the full-context park
-//   used to queue its wake at once: the woken turn met the same wall and parked again, the 1,216-wakes shape. The park
-//   now waits for its own event: a writer of the order able to run again. Never an immediate wake, never a clock.
-// · I-2: nothing retried a writer marked not answering unless a person wrote. Now any successful call to that model
-//   (the agent's own turn, another agent's) is the signal, for an agent whose span waits; other agents are untouched.
-// · Minor (c): free memory that cannot be read is UNKNOWN, and the small writer is not admitted on an unknown.
-// THE DOORS: the real `checkAndCompact`, the real `parkAfterForcedPass` (the forced-pass-then-park sequence of
-// `recovery.ts` and `over-budget-assembly.ts`), the real park and its timer wake, the real `recordProviderSuccess` that
-// every successful model call reaches (`agent/model.ts`). The writers, Ollama and the runtime's wake are scripted.
+// A waiting writer is asked again when one of its writers answers: a call to the agent's own model (any agent's turn)
+// frees it for an agent whose span waits, and its park wakes once; an agent not waiting stays passed over, and a
+// summary call answering at the wire is not the signal. A try that is cut again marks the writer again. Driven through
+// the real `checkAndCompact`, the real park and the real `recordProviderSuccess`; the writers and Ollama are scripted.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import os from 'node:os';
@@ -71,10 +64,9 @@ import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
 import { insertMessage } from '../message-store.js';
-import { eligibleSummaryWriters, writerPassedOver, noteSummaryWriterOutcome, noteDidNotAnswerInTurn, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { eligibleSummaryWriters, writerPassedOver, markWaiting, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { __resetBrakesForTests, compactionIsBraked, compactionBrakeMsLeft } from '../compaction-brakes.js';
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
-import { __resetWriterFallbackRoomForTests } from '../writer-fallback-room.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains, pendingWakeups } from '../../agent/shared-state.js';
 import { parkAfterForcedPass, __resetFullContextWaitForTests } from '../../agent/v2/full-context-wait.js';
@@ -101,7 +93,6 @@ beforeEach(() => {
   ollama.psOk = true; ollama.showOk = true;
   backgroundDrains.clear(); pendingWakeups.clear();
   __resetBrakesForTests(); __resetBreakersForTests(); __resetSummaryWriterHealthForTests(); __resetCompactionFailuresForTests(); __resetFullContextWaitForTests();
-  __resetWriterFallbackRoomForTests();   // the memory-free outage a prior test left is over; the next unread read is told afresh
   endJobCarry(AGENT); endJobCarry(OTHER);   // the job carry is process memory: a park's timer wake that never fired is spent, so a prior test's woken turn does not start here
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
@@ -211,7 +202,7 @@ describe('I-1: a span waiting for a writer parks on that writer coming back — 
 describe('I-2: its model answering re-arms the waiting agent\'s writer — for that agent only, and its ordinary work never parks', () => {
   it('the background fold waits without parking; the agent\'s own turn answering re-arms its writer for it; an agent not waiting stays passed over', async () => {
     seed(); seed(OTHER, 4);
-    noteSummaryWriterOutcome(OWN, false);   // its model stopped answering a summary call
+    markWaiting(AGENT, OWN, '', 'not-answering'); markWaiting(OTHER, OWN, '', 'not-answering');   // its model stopped answering a summary call
     await checkAndCompact(AGENT, OWN, 8_000, { force: true });   // the small writer has no room: the span waits
     const before = writers.calls.length;
     await checkAndCompact(AGENT, OWN, 8_000, { inTheBackground: true });
@@ -241,16 +232,15 @@ describe('I-2: its model answering re-arms the waiting agent\'s writer — for t
   });
 });
 
-// Re-review 4, N-1: a re-arm buys ONE try. A summary the in-turn fold's patience cuts (`out-of-view-fold.ts`, which
-// then calls `noteDidNotAnswerInTurn`) after a re-arm marks the writer again, so the next turns wait for a new signal.
-describe('N-1: a re-arm buys one try — a try cut by the turn\'s patience marks the writer again', () => {
+// A re-arm buys one try: a summary the in-turn fold's patience cuts marks the writer again (`out-of-view.ts`).
+describe('a re-arm buys one try: a try cut by the turn\'s patience marks the writer again', () => {
   it('re-armed → one timed-out try → passed over again; the next turns dial nothing until a new signal', async () => {
     seed();
     wakes.turn = overBudgetTurn;
     await overBudgetTurn();                                     // waiting, parked
     recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });   // re-armed for it: one try
     expect(eligibleSummaryWriters(OWN, AGENT)).toEqual([OWN]);
-    noteDidNotAnswerInTurn(OWN);                                // that try ran past the turn's patience
+    markWaiting(AGENT, OWN, '', 'not-answering');               // that try ran past the turn's patience
     expect(eligibleSummaryWriters(OWN, AGENT), 'the re-arm is spent').toEqual([]);
     await settle(1_300); await Promise.all(wakes.turns);       // the wake the re-arm earned
     const calls = writers.calls.length;
@@ -258,33 +248,5 @@ describe('N-1: a re-arm buys one try — a try cut by the turn\'s patience marks
     expect(writers.calls.length, 'no re-dial without a new signal').toBe(calls);
     recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });   // a new signal
     expect(eligibleSummaryWriters(OWN, AGENT)).toEqual([OWN]);
-  });
-});
-
-describe('minor (c): free memory that cannot be read is UNKNOWN — the small writer is not admitted', () => {
-  it('a failed /api/ps on a 32 GB box (where it would fit): refused, not dialled, logged once for the outage', async () => {
-    vi.spyOn(os, 'totalmem').mockImplementation(() => 32 * GIB);
-    ollama.psOk = false;
-    const a = await generateSummary({ content: 'r'.repeat(4_000), depth: 0, targetTokens: 1_000, agentId: AGENT, modelId: WRITER });
-    const b = await generateSummary({ content: 'r'.repeat(4_000), depth: 0, targetTokens: 1_000, agentId: OTHER, modelId: WRITER });
-    expect(a).toMatchObject({ ok: false, noRoom: true });
-    expect(b).toMatchObject({ ok: false, noRoom: true });
-    expect(writers.calls, 'never read as "all free"').toEqual([]);
-    expect(logLines.filter((l) => /cannot be read/.test(l.message)).length, 'once per outage').toBe(1);
-
-    // Ollama answers again: the read works, and the writer fits.
-    ollama.psOk = true;
-    await checkOllamaHealth('http://localhost:11434');
-    const c = await generateSummary({ content: 'r'.repeat(4_000), depth: 0, targetTokens: 1_000, agentId: AGENT, modelId: WRITER });
-    expect(c.ok).toBe(true);
-    expect(writers.calls).toEqual([WRITER]);
-  });
-
-  it('a failed /api/show for the writer: the same', async () => {
-    vi.spyOn(os, 'totalmem').mockImplementation(() => 32 * GIB);
-    ollama.showOk = false;
-    const a = await generateSummary({ content: 'r'.repeat(4_000), depth: 0, targetTokens: 1_000, agentId: AGENT, modelId: WRITER });
-    expect(a).toMatchObject({ ok: false, noRoom: true });
-    expect(writers.calls).toEqual([]);
   });
 });

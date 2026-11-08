@@ -30,12 +30,12 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
-import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { checkSummary } from '../summary-check.js';
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { CHARS_PER_TOKEN } from '../budget.js';
 import { unfenceExternal } from '../../tools/external-content.js';
-import { summaryCheckLine } from '../summary-check-ledger.js';
+import { summaryCheckLine } from '../summary-check.js';
 import { compileDiagnosticReport } from '../../healer/diagnostic.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 

@@ -28,7 +28,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
-import { endWaitsThatAreOver } from '../memory/writer-wait.js';
+import { clearOn } from '../memory/writer.js';
 
 const logger = createLogger('model-switch');
 
@@ -75,6 +75,6 @@ function insertModelSwitchNudge(agentId: string): void {
 export function sanitizeMessagesOnModelChange(agentId: string): { collapsed: number } {
   logger.info('Model change recorded (sanitization deferred to assembly time)', { agentId }, agentId);
   insertModelSwitchNudge(agentId);
-  endWaitsThatAreOver(agentId);   // t268 breaker fix: its new model may be the writer its waiting span needs (every model-change door calls this)
+  clearOn({ kind: 'own-model-changed', agentId });   // every model-change door calls this
   return { collapsed: 0 };
 }

@@ -1,8 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { withLock } from '../db/with-lock.js';
-import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, notePassOutcome,
-  summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1, re-aimed by OR-COMPACT-1
+import { MIN_COMPACTABLE_ROWS, compactionDoor, compactionIsBraked, foldOldestProtectedGroup, notePassOutcome,
+  summaryWriterUnavailable } from './compaction-brakes.js';
 import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
 import { cachedAssembledEstimate } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
@@ -17,9 +16,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS, type ContextView } from './assembler.js';
-import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver, spanWaitsForAWriter } from './summary-writer-health.js';
-import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
-import { foldOldestProtectedGroup, forcedPassDoor, finishedUnderTheLock } from './forced-pass-progress.js';
+import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter } from './writer.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -332,26 +329,6 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
   }
 }
 
-// ── Summary-writer model resolution ──
-//
-// Resolve which model WRITES summaries. It must be able to produce text:
-// media-generation (image/video/music) and embedding models all cost 0, so a
-// naive "cheapest enabled model" picked one of them and every summarization
-// call failed, the gap trigger then re-fires every turn forever (summaries
-// never get written). Precedence:
-//   1) the explicit Settings → compaction model, if enabled + text-capable
-//   2) the caller's preferred model (the agent's own), if it's text-capable
-//   3) the Dojo's small local writer — and nothing after it (t268 fix round 5: no "cheapest" floor)
-// Shared by checkAndCompact and the nightly summary rebuild. Returns null when none of them can run now.
-export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string, _opts?: { background?: boolean }): string | null {
-  // t140 round 3: the order above, passing over writers broken or not answering (`summary-writer-health.ts`). With
-  // none left nothing is dialled, background or forced (t268 round 5: the span waits, no brake, until one can run).
-  const all = summaryWriterCandidates(preferredModelId, agentId);
-  const pick = eligibleSummaryWriters(preferredModelId, agentId)[0] ?? null;
-  if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
-  return pick;
-}
-
 // ── Main Entry Point ──
 
 export interface CheckAndCompactOptions {
@@ -374,7 +351,7 @@ export interface CheckAndCompactOptions {
    * t140 fix round 1 (review I3): the model this call's pressure was measured for — the box
    * actually serving the turn, whose declared ceiling the trigger keys on. Absent, it is
    * `modelId`. It is kept APART from `modelId` because `modelId` is the summary WRITER's
-   * preference (`resolveSummaryWriterModel`): an auto-routed loop locked to an expensive routed
+   * preference (`pickWriter`): an auto-routed loop locked to an expensive routed
    * model must still have its summaries written by the owner's compaction model, else its own
    * (its router's standard pick), else the Dojo's small writer — nothing after (t268 round 5).
    */
@@ -421,11 +398,12 @@ export async function checkAndCompact(
   contextWindow: number,
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
+  const run = (): Promise<CompactionResult> => runCheckAndCompact(agentId, modelId, contextWindow, options);
   if (options?.force) {
     forcedPassAt.set(agentId, Date.now());
-    return forcedPassDoor(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options), { abortSignal: options.abortSignal, inTurn: options.inTurn, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } });
+    return (await compactionDoor(agentId, run, { abortSignal: options.abortSignal, inTurn: options.inTurn, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } }))!;
   }
-  const result = await withLock(`compact:${agentId}`, () => finishedUnderTheLock(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options)), { ifBusy: 'skip' });
+  const result = await compactionDoor(agentId, run);
   if (result === undefined) logger.info('Compaction skipped: another compaction is already running for this agent', {}, agentId);
   return result ?? NO_COMPACTION;
 }
@@ -442,9 +420,9 @@ async function runCheckAndCompact(
   // the pressure, not the box that will write the summary describing it.
   const turnModelId = options?.dialedModelId ?? modelId;
 
-  // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
+  // Resolve which model WRITES the summaries: the agent's own, else the small writer, else none can run now.
   {
-    const resolved = resolveSummaryWriterModel(agentId, modelId, { background: options?.inTheBackground });
+    const resolved = pickWriter(agentId, modelId);
     if (!resolved && (spanWaitsForAWriter(agentId) || options?.inTheBackground || summaryWriterCandidates(modelId, agentId).length > 0)) {   // the wait is recorded (breaker fix)
       logger.info('No summary writer can run now: the span waits for one, rows whole', {}, agentId);
       if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unavailable', modelId: summaryWriterCandidates(modelId, agentId)[0], waiting: true });   // t268 r5: told, never braked
@@ -578,10 +556,9 @@ async function runCheckAndCompact(
     // the trim): the trim already caps what it is sent, so a fold's yield is the demand it removes.
     const demand = (v: ContextView): number => v.summaryRawTokens + v.tailTokens;
     const tokensBefore = demand(view);
-    const leaf = await withCompactionActivity(agentId, () => leafWithWriterFallback(agentId, modelId,
+    const leaf = await withCompactionActivity(agentId, () => eachWriter(agentId, modelId,
       (writer, left) => runLeafCompaction(agentId, writer, contextWindow,
-        { abortSignal: options?.abortSignal, left, throughSeq: view.protectedFromSeq - 1, floorRows: 1 }), options?.abortSignal,
-      (left) => coverRowsStrandedBelowBoundary(agentId, left.fromSeq ?? 0)));
+        { abortSignal: options?.abortSignal, left, throughSeq: view.protectedFromSeq - 1, floorRows: 1 }), options?.abortSignal));
     const leafCreated = leaf.leafCreated;
     modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the condensation too
     // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
@@ -602,8 +579,10 @@ async function runCheckAndCompact(
     // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
     // the condenser named (if any) travels with the numbers, so a pass that ended over
     // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
-    const waiting = spanWaitsForAWriter(agentId);   // t268 round 5: with no writer able to run, the pass is a wait, never a brake
-    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore, waiting }, options?.abortSignal);
+    const waiting = spanWaitsForAWriter(agentId);   // with no writer able to run, the pass is a wait, never a brake
+    // A pass that bought almost nothing backs off instead of treadmilling (`lowYield`).
+    const lowYield = result.tokensReclaimed < 2000 && result.leafCreated <= 1;
+    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore, waiting, lowYield }, options?.abortSignal);
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -632,10 +611,6 @@ async function runCheckAndCompact(
       });
     }
 
-    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId) && !options?.abortSignal?.aborted && !waiting) {   // t168: a cancelled pass bought nothing because it was cut
-      // The run happened and bought almost nothing. Back off instead of treadmilling.
-      noteLowYield(agentId);
-    }
     logger.info('Compaction complete', result, agentId);
     return result;
   }
@@ -790,10 +765,9 @@ export async function leavingViewPass(
 
   const pass = (writer: string, left?: LeftBehind): Promise<number> => runLeafCompaction(agentId, writer, contextWindow,
     { abortSignal: options?.abortSignal, throughSeq: leaving.throughSeq, floorRows, left });
-  const cover = (left: LeftBehind): Promise<void> => coverRowsStrandedBelowBoundary(agentId, left.fromSeq ?? 0);
-  // The out-of-view door walks the writers itself; every other leaving-view pass hands on (t149 F4).
+  // The out-of-view door walks the writers itself; every other leaving-view pass hands on.
   const leafCreated = await withCompactionActivity(agentId, async () => outOfView
-    ? pass(modelId) : (await leafWithWriterFallback(agentId, modelId, pass, options?.abortSignal, cover)).leafCreated);
+    ? pass(modelId) : (await eachWriter(agentId, modelId, pass, options?.abortSignal)).leafCreated);
   rebuildContextItems(agentId);
   // T56 leg (b): the prefix has just been rewritten at the summaries lane, so this is the one
   // instant at which retiring reasoning and stubbing old tool results costs no cache reuse.
@@ -811,8 +785,27 @@ export async function leavingViewPass(
   return result;
 }
 
-// t140 round 3: the engine's out-of-view assembly door moved to `memory/out-of-view-fold.ts`, with
-// its own bound, a writer fallback and placeholders; it calls `leavingViewPass` below.
+/** What a leaf pass left behind: a row more than its writer holds, and where the covering of stranded rows starts. */
+interface LeftBehind { tooBig: boolean; fromSeq?: number }
+
+/** Run `pass` with `first`, then with each next eligible writer while the last one failed or left a row it could not
+ *  hold; after the last, the rows no writer took are covered by placeholder notes. A Stop hands nothing on. */
+async function eachWriter(agentId: string, first: string, pass: (writer: string, left: LeftBehind) => Promise<number>, abortSignal?: AbortSignal): Promise<{ leafCreated: number; writer: string }> {
+  const tried = new Set<string>();
+  const left: LeftBehind = { tooBig: false };
+  let writer = first;
+  let leafCreated = 0;
+  for (;;) {
+    tried.add(writer);
+    left.tooBig = false;
+    leafCreated += await pass(writer, left);
+    const next = abortSignal?.aborted || isStopFenced(agentId) || !(left.tooBig || writerPassedOver(writer, agentId)) ? undefined
+      : eligibleSummaryWriters(ownModel(agentId), agentId).find((w) => !tried.has(w));
+    if (!next) { await coverRowsStrandedBelowBoundary(agentId, left.fromSeq ?? 0); return { leafCreated, writer }; }
+    logger.info('The summary writer failed or could not hold a row; the next eligible writer takes the span at once', { from: writer, next }, agentId);
+    writer = next;
+  }
+}
 
 // ── T56 leg (b) — the age-out, and the boundary it may never cross ──────────────────────
 //
@@ -1217,7 +1210,7 @@ export async function runLeafCompaction(
 async function coverRowsStrandedBelowBoundary(agentId: string, fromSeq: number): Promise<void> {
   const { anchor, stranded } = rowsStrandedBelowBoundary(agentId, fromSeq);
   if (stranded === 0) return;
-  const covered = (await import('./uncondensed-placeholder.js')).writeUncondensedPlaceholders(agentId, anchor);
+  const covered = (await import('./out-of-view.js')).writeUncondensedPlaceholders(agentId, anchor);
   logger[covered > 0 ? 'warn' : 'error'](covered > 0 ? 'Rows were left below the summarised boundary; placeholder notes now stand in for them'
     : 'Rows were left below the summarised boundary and could NOT be covered (the vault archive was refused); they stay owed and the next fold retries', { stranded, covered, anchor }, agentId);
 }

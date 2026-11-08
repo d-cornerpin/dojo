@@ -36,9 +36,9 @@ vi.mock('../summarize.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
-import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
+import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../out-of-view.js';
 import { insertEmbeddingIfSourceAlive, embeddingSourceAliveSql } from '../embedding-sources.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { runBackfill } from '../backfill.js';
 import { findContaminatedSummaries } from '../summary-rebuild.js';
 import { sweepStoredSummaryObligations } from '../summary-obligations.js';
@@ -162,9 +162,9 @@ describe('t140 — census: every reader of summaries.kind has been reviewed for 
     const readers = files.filter((rel) => fs.readFileSync(path.join(SRC, rel), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1').split('\n').some((l) => RE.test(l)));
     expect(readers.sort()).toEqual([
-      'memory/backfill.ts', 'memory/catch-up-state.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
-      'memory/embedding-sources.ts', 'memory/kept-row-view.ts', 'memory/retrieval.ts', 'memory/summaries-lane.ts', 'memory/summary-rebuild.ts',
-      'memory/uncondensed-head.ts', 'memory/uncondensed-placeholder.ts',
+      'memory/backfill.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
+      'memory/embedding-sources.ts', 'memory/kept-row-view.ts', 'memory/out-of-view.ts', 'memory/retrieval.ts', 'memory/summaries-lane.ts', 'memory/summary-rebuild.ts',
+      'memory/uncondensed-head.ts',
     ]);
   });
 });

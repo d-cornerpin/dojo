@@ -1,318 +1,238 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE BRAKES WORK UNDER FORCE — AND THEY LET GO (v3.2.3 layer 1, re-aimed by OR-COMPACT-1)
+// The one brake between compaction passes, and the one record per agent of how its passes went.
 //
-// ── THE LOOP, TRACED (v3.2.3, and still the reason this file exists) ──
-// `compactionGate` puts an agent at `compact` (≥96% of the compressible budget) or
-// `block` (≥99%). The pre-call gate answers both by awaiting
-// `checkAndCompact(..., { force: true })`. Inside, THREE brakes existed — the
-// 15-minute low-yield backoff, the "outside-tail region too small" floor, and the
-// "nothing outside the fresh tail" no-op guard — and **every one of them was
-// `!force`-gated**. So in exactly the state that sets `force`, the platform had no
-// brake at all: the same pass ran on every prompt, for ever, because the gate
-// re-derives the same ratio from the same rows each turn.
-//
-// On the incident box that was ~4,000 uncompacted messages and ~86K tokens of existing
-// summaries against a 64K-window model, with the summary writer pointed at a provider
-// returning 402. Every prompt: full reactive cycle, one core pinned, dashboard and stop
-// dead with it (better-sqlite3 is synchronous), nothing reclaimed, no exit.
-//
-// ── WHAT THIS FILE IS, IN ONE SENTENCE ──
-// Emergency means FIRST, not INFINITE — and never TERMINAL.
-//
-//  1. A FORCED PASS IS BOUNDED BY THE TURN. `forcedCompactionOptions(turnPatienceMs)` aborts
-//     the pass when the owner's turn has waited as long as it already lets the dialed model
-//     take to start answering (t140 round 6, H3: this replaced a 3-minute clock and a 10-chunk
-//     cap). Inside that the pass does as much as it can and returns; the next turn continues
-//     if there is anything left to win.
-//  2. THE BACKOFF SETS EVEN ON FORCE. `notePassOutcome` records what a pass achieved, and
-//     a FORCED pass that reclaimed nothing arms the brake against everybody — including
-//     the next forced pass. That anti-thrash property is the whole of what survives from
-//     the first cut, and the owner kept it deliberately.
-//  3. AND THERE IS NO TERMINAL STATE. **OR-COMPACT-1** (owner, 2026-10-02: *"there is
-//     never a reason for compaction to end… an agent's memory can always compress"*). The
-//     first cut answered the incident with a latch called INCOMPRESSIBLE and a card
-//     telling the owner to archive the conversation or reset the session. The owner
-//     abolished both: a memory that will not shrink is a DEFECT to repair, not a state to
-//     live in. So what used to latch for ever now backs off for fifteen minutes and LETS
-//     GO — on the clock, on a reset, on a bigger window, on a shrunken history, and the
-//     moment the summary writer answers again. `memory/condense-until-fits.ts` makes the
-//     memory shrink; `memory/compaction-defect.ts` reports the stage that refused; this
-//     file is only the brake between passes.
-//
-// ⚠ WHAT IT DOES NOT DO: it does not lower a bound anybody declared, does not touch prompt
-// assembly (the cache-preservation tenet binds — no reordering, no prefix bytes), and does
-// not make the agent unusable. A backed-off agent keeps answering; it simply stops
-// re-running a cycle that just failed, until the facts move or the clock runs out.
-//
-// The wedge this resolves is the one `dag.ts`'s own note records ("context never shrank
-// and reactive compaction re-fired on every turn"); that note now points here.
-// ════════════════════════════════════════════════════════════════════════════
+// Compaction never ends: a memory that will not shrink is a defect to report (`compaction-defect.ts`), never a
+// state to live in. A pass that wins nothing backs off for a while and always lets go: on the clock, a session
+// reset, a model change, a shrunken history, or the summary writer's provider answering again. A forced pass is
+// bounded by the turn's patience, records its outcome on every return path, and a throw is told once.
 
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
+import { withLock } from '../db/with-lock.js';
+import { isStopFenced } from '../agent/shared-state.js';
+import { getMessagesOutsideFreshTail } from './store.js';
+import { getCompactedMessageIds } from './dag.js';
+import { spanWaitsForAWriter, writerBreaker } from './writer.js';
 import {
-  writerBreaker, reportCompactionDefect, noteCompactionRecovered, clearCompactionFailure,
-  __resetCompactionFailuresForTests, compactionFailureReason,
-  type CompactionFailure, type CompactionPassFacts,
+  reportCompactionDefect, noteCompactionRecovered, clearCompactionFailure, __resetCompactionFailuresForTests,
+  compactionFailureReason, type CompactionFailure, type CompactionPassFacts,
 } from './compaction-defect.js';
 
 const logger = createLogger('compaction-brakes');
 
-/** Unchanged from the code this replaces: a low-yield run backs off for 15 minutes. */
 export const LOW_YIELD_BACKOFF_MS = 15 * 60_000;
-/** Unchanged: fewer rows than this outside the fresh tail cannot reclaim meaningfully. */
+/** Fewer rows than this outside the fresh tail cannot reclaim meaningfully. */
 export const MIN_COMPACTABLE_ROWS = 6;
-
-/**
- * A pass reclaiming less than this counts as reclaiming nothing. The owner's own words for
- * the shape this number exists for: *"compaction SO much, saving like 16 tokens"*. 1,000 is
- * the figure the compaction divider already uses to decide a run was worth telling the user
- * about, and the same floor `condense-until-fits.ts` calls progress.
- */
+/** A pass reclaiming less than this counts as reclaiming nothing. */
 export const FORCED_YIELD_FLOOR_TOKENS = 1_000;
-const FLOOR_STAGES: ReadonlySet<string> = new Set(['nothing_left_to_condense']);   // t269: the lone-note floor is gone with the lone-note rewrite
+const FLOOR_STAGES: ReadonlySet<string> = new Set(['nothing_left_to_condense']);
 
+interface PassResult { leafCreated: number; condensedCreated: number; tokensReclaimed: number }
+/** What the door answers: the pass's counts, and when the lock was busy, which way that was settled. */
+export type DoorResult = PassResult & { lockBusy?: true; byRunningPass?: boolean };
 
-/**
- * THE BRAKE, AND WHAT IT REMEMBERS ABOUT WHY IT IS ON.
- *
- * `until` is the clock — a brake with no expiry is the terminal state OR-COMPACT-1
- * abolished. `bindsUnderForce` separates the two brakes the first cut conflated: a routine
- * low-yield skip still yields to a genuine 96% emergency, while a FORCED pass that already
- * ran and won nothing has earned the right to stop the next forced pass too.
- * `writerModelId` is set when the named cause was a dead summary writer, so the brake lets
- * go the instant that provider answers again (D4: no manual step). The three facts are the
- * HISTORY this brake is about: any of them moving makes it a different question.
- */
-interface Backoff {
-  until: number;
-  bindsUnderForce: boolean;
-  writerModelId: string | null;
-  seqAtArm: number;
-  sessionAtArm: string | null;
-  modelAtArm: string | null;
+/** One record per agent. `brake`: armed by a pass that won nothing, with the facts it was armed against (any of
+ *  them moving lets it go); `threw` / `braked`: what the last forced pass did; `finished`: passes under the lock. */
+interface PassRecord {
+  brake?: { until: number; bindsUnderForce: boolean; writerModelId: string | null; seq: number; session: string | null; model: string | null };
+  threw?: boolean;
+  braked?: boolean;
+  finished: number;
+  last?: PassResult;
 }
+const records = new Map<string, PassRecord>();
+const recordOf = (agentId: string): PassRecord => {
+  let r = records.get(agentId);
+  if (!r) records.set(agentId, r = { finished: 0 });
+  return r;
+};
 
-const backoffs = new Map<string, Backoff>();
+const progressed = (r: PassResult): boolean => r.leafCreated + r.condensedCreated > 0 || r.tokensReclaimed >= FORCED_YIELD_FLOOR_TOKENS;
 
-interface BrakeFacts { hi: number; session: string | null; model: string | null }
-
-/**
- * THE FACTS A BRAKE IS ABOUT, in one read. (v3.2.3 review M2, carried forward.)
- *
- * `seq` IS the messages rowid alias (T10). `session_started_at` is the boundary the
- * assembler reads from, so moving it is what a session reset actually DOES. `model_id`
- * carries the context window, so switching models changes the budget this was measured
- * against. Read ONLY when a brake is on — an unbraked agent pays nothing for this.
- */
-function brakeFacts(agentId: string): BrakeFacts {
+function brakeFacts(agentId: string): { seq: number; session: string | null; model: string | null } {
   try {
-    const row = getDb().prepare(
-      'SELECT (SELECT MAX(seq) FROM messages WHERE agent_id = a.id) AS hi,'
-      + ' a.session_started_at AS session, a.model_id AS model FROM agents a WHERE a.id = ?',
-    ).get(agentId) as { hi: number | null; session: string | null; model: string | null } | undefined;
-    return { hi: row?.hi ?? 0, session: row?.session ?? null, model: row?.model ?? null };
-  } catch {
-    return { hi: 0, session: null, model: null };
-  }
+    const row = getDb().prepare('SELECT (SELECT MAX(seq) FROM messages WHERE agent_id = a.id) AS seq, a.session_started_at AS session, a.model_id AS model FROM agents a WHERE a.id = ?')
+      .get(agentId) as { seq: number | null; session: string | null; model: string | null } | undefined;
+    return { seq: row?.seq ?? 0, session: row?.session ?? null, model: row?.model ?? null };
+  } catch { return { seq: 0, session: null, model: null }; }
 }
 
-/**
- * HAS THIS AGENT BEEN GIVEN ROOM SINCE THE BRAKE WENT ON? Three mechanisms, none of which
- * can rot: `model_id` is written at NINE sites and `session_started_at` at five, so a
- * release that depends on every door remembering to call a clear function is a release that
- * rots. Comparing the FACTS cannot: whichever door moved them, and whoever adds the tenth,
- * the brake sees a different question and lets go. A high-water mark that went DOWN counts
- * too — that is a purge or a trim, the most room an agent can gain.
- *
- * ⚠ OR-COMPACT-1 REMOVED A FOURTH ARM. The first cut also released on six NEW rows
- * (`MIN_COMPACTABLE_ROWS`), because a latch that never let go would otherwise be for ever.
- * The brake now expires on its own, and new rows are the CASE FOR compaction rather than
- * evidence the last refusal changed — so a growing history no longer buys a re-run every
- * six prompts, which is the treadmill the t87 review flagged as residual 3.
- */
-function roomGained(agentId: string, b: Backoff): string | null {
+/** The brake still on, after every way it lets go has been asked. */
+function liveBrake(agentId: string): NonNullable<PassRecord['brake']> | null {
+  const r = records.get(agentId);
+  const b = r?.brake;
+  if (!r || !b) return null;
   const now = brakeFacts(agentId);
-  if (now.session !== b.sessionAtArm) return 'session_reset';
-  if (now.model !== b.modelAtArm) return 'model_changed';
-  if (now.hi < b.seqAtArm) return 'history_shrank';
+  const why = b.until <= Date.now() ? 'backoff_expired'
+    : b.writerModelId && !writerBreaker(b.writerModelId) ? 'summary_writer_is_back'
+      : now.session !== b.session ? 'session_reset' : now.model !== b.model ? 'model_changed' : now.seq < b.seq ? 'history_shrank' : null;
+  if (!why) return b;
+  delete r.brake;
+  logger.info('Compaction backoff released: this agent may compact again', { why }, agentId);
   return null;
 }
 
-function releaseBrake(agentId: string, why: string): false {
-  backoffs.delete(agentId);
-  logger.info('Compaction backoff released: this agent may compact again', { why }, agentId);
-  return false;
-}
-
-/**
- * ARE THE BRAKES ON? The one predicate the compaction entry point asks, and the reason it
- * takes `force`: a brake armed by a FORCED pass that won nothing binds even under force
- * (that is the anti-thrash fix), while a routine low-yield backoff still yields to an
- * emergency — a real 96% with real rows to compact should act.
- *
- * ⚠ AND IT ALWAYS LETS GO. No arm of this function can return `true` for ever: the clock,
- * the three facts, and the summary writer coming back each end it. That property is
- * OR-COMPACT-1, enforced here rather than promised in a comment.
- */
+/** Is the brake on? A brake a forced pass armed binds the next forced pass too; a routine one yields to force. */
 export function compactionIsBraked(agentId: string, force: boolean): boolean {
   const b = liveBrake(agentId);
-  if (!b) return false;
-  if (force && !b.bindsUnderForce) return false;
+  if (!b || (force && !b.bindsUnderForce)) return false;
   logger.info('Compaction skipped: backing off after a pass that reclaimed nothing', {
-    force, bindsUnderForce: b.bindsUnderForce, msLeft: b.until - Date.now(),
-    failingStage: compactionFailureReason(agentId),
+    force, bindsUnderForce: b.bindsUnderForce, msLeft: b.until - Date.now(), failingStage: compactionFailureReason(agentId),
   }, agentId);
   return true;
 }
 
-/** THE BRAKE STILL ON, after every way it lets go has been asked (clock, writer back, the facts). */
-function liveBrake(agentId: string): Backoff | null {
-  const b = backoffs.get(agentId);
-  if (!b) return null;
-  if (b.until <= Date.now()) { releaseBrake(agentId, 'backoff_expired'); return null; }
-  // D4's "no manual step": the brake's own stated cause has gone away, so it is answering a
-  // question nobody is asking any more.
-  if (b.writerModelId && !writerBreaker(b.writerModelId)) { releaseBrake(agentId, 'summary_writer_is_back'); return null; }
-  const gained = roomGained(agentId, b);
-  if (gained) { releaseBrake(agentId, gained); return null; }
-  return b;
-}
-
-/** t168: ms until a FORCED pass can run again (the brake that binds an emergency), else null. The clock
- *  a surrendered turn's wake waits for (`full-context-wait.ts`); asked without the skip log line. */
+/** Ms until a forced pass can run again (the brake that binds an emergency), else null. */
 export function compactionBrakeMsLeft(agentId: string): number | null {
   const b = liveBrake(agentId);
   return b && b.bindsUnderForce ? Math.max(1, b.until - Date.now()) : null;
 }
 
 function armBackoff(agentId: string, bindsUnderForce: boolean, writerModelId: string | null): void {
-  const facts = brakeFacts(agentId);
-  const existing = backoffs.get(agentId);
-  backoffs.set(agentId, {
+  const r = recordOf(agentId);
+  r.brake = {
     until: Date.now() + LOW_YIELD_BACKOFF_MS,
-    // Once a forced pass has lost, a later routine loss must not weaken the brake.
-    bindsUnderForce: bindsUnderForce || !!existing?.bindsUnderForce,
-    writerModelId: writerModelId ?? existing?.writerModelId ?? null,
-    seqAtArm: facts.hi, sessionAtArm: facts.session, modelAtArm: facts.model,
-  });
-}
-
-/** The 15-minute brake, armed by the existing "too small to reclaim" floor. */
-export function noteLowYield(agentId: string): void {
-  armBackoff(agentId, false, null);
+    bindsUnderForce: bindsUnderForce || !!r.brake?.bindsUnderForce,
+    writerModelId: writerModelId ?? r.brake?.writerModelId ?? null,
+    ...brakeFacts(agentId),
+  };
 }
 
 /**
- * WHAT A PASS ACHIEVED — called after every full reactive cycle, forced or not.
- *
- * A pass that created nothing and reclaimed under the floor arms the 15-minute brake for
- * EVERY caller, and — when it was FORCED, i.e. the gate called this an emergency and the
- * emergency still produced nothing — arms it against the next forced pass too.
- *
- * A pass whose condensation stage NAMED a refusal reports the defect even when some other
- * stage won tokens, because a named refusal is a thing to repair (OR-COMPACT-1 part 3).
- *
- * Returns the failure note when this call created it, so the caller can stop.
+ * What a pass achieved, called after every pass. Progress lets the brake go (unless `facts.lowYield`: the pass ran
+ * and bought almost nothing, so the routine brake arms); winning nothing arms it, against the next forced pass too
+ * when this one was forced. A pass waiting for a writer is told, never braked; a cancelled pass is no outcome. A
+ * named refusal, or a pass still over budget, is reported as a defect. Returns the failure note this call created.
  */
 export function notePassOutcome(
-  agentId: string,
-  force: boolean,
-  result: { leafCreated: number; condensedCreated: number; tokensReclaimed: number },
-  facts?: CompactionPassFacts,
-  abortSignal?: AbortSignal,
+  agentId: string, force: boolean, result: PassResult, facts?: CompactionPassFacts & { lowYield?: boolean }, abortSignal?: AbortSignal,
 ): CompactionFailure | null {
   const created = result.leafCreated + result.condensedCreated;
   const wonNothing = created === 0 && result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS;
-  // t168: A PASS ITS CALLER CANCELLED (turn patience, Stop, teardown) DID NOT FAIL: what the summariser
-  // returned after the abort is the cancellation, not a refusal. Read off the signal, never a reason's words.
   const cancelled = abortSignal?.aborted === true;
   const stage = cancelled ? null : facts?.stage ?? null;
-  // ⚠ A PASS THAT WROTE PARENTS AND RECLAIMED NOTHING STILL GAINED NOTHING, and a clause
-  // caught it: a summariser that compresses nothing writes one parent per level, so `created`
-  // is not zero while the tokens go UP. Arming the force-binding brake on `wonNothing` alone
-  // let that agent re-run the whole climb on every prompt — the v3.2.3 thrash with a new
-  // engine behind it. `created === 0` keeps the routine drain safe (it legitimately writes
-  // summaries that reclaim nothing from the gate's total); a NAMED refusal is what makes a
-  // pass with rows to show still count as a pass that got nowhere.
-  const gainedNothing = result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS
-    && (created === 0 || stage !== null);
-  const overBudget = facts?.assembledTokens != null && facts.budgetTokens != null
-    && facts.assembledTokens > facts.budgetTokens;
-
+  // A summariser that compresses nothing writes one parent per level: rows created, tokens not won.
+  const gainedNothing = result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS && (created === 0 || stage !== null);
+  const overBudget = facts?.assembledTokens != null && facts.budgetTokens != null && facts.assembledTokens > facts.budgetTokens;
   if (!wonNothing && !stage) {
-    // Progress resets everything: a pass that won means the next pressure is real.
-    backoffs.delete(agentId);
+    delete recordOf(agentId).brake;
     noteCompactionRecovered(agentId, result.tokensReclaimed);
+    if (facts?.lowYield && !cancelled && !facts.waiting) armBackoff(agentId, false, null);
     return null;
   }
-  if (cancelled) return null;   // won nothing before it was cut: no evidence against the writer, so no backoff
-
-  if (!facts?.waiting) armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);   // t268 r5
-  // A low-yield pass no longer over budget has nothing to report (the brake is the whole answer),
-  // nor has one that stopped at its FLOOR under budget (t171: nothing refused, nothing to repair).
+  if (cancelled) return null;
+  if (!facts?.waiting) armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
   if ((!stage || FLOOR_STAGES.has(stage)) && !overBudget) return null;
   return reportCompactionDefect(agentId, stage ?? 'no_yield', facts, result);
 }
 
-/**
- * THE EXPLICIT CLEAR, for a door that knows it gave the agent room before the facts settle.
- * Called by `archiveAgentConversation` — the one function all six archive/new-session/reset
- * doors funnel through — so a reset gets its fresh start on the spot rather than on the next
- * brake check. Session resets and model switches are ALSO covered by the facts comparison in
- * `compactionIsBraked`, deliberately: this call is the fast path, that is the one that cannot rot.
- */
+/** A door that gave the agent room (an archive, a reset) clears the brake and the failure note at once. */
 export function clearCompactionBackoff(agentId: string): boolean {
-  const hadBrake = backoffs.delete(agentId);
+  const r = records.get(agentId);
+  const hadBrake = !!r?.brake;
+  if (r) delete r.brake;
   const hadNote = clearCompactionFailure(agentId);
   if (hadBrake || hadNote) logger.info('Compaction backoff cleared: this agent has room again', {}, agentId);
   return hadBrake || hadNote;
 }
 
-/**
- * IS THE SUMMARY WRITER DIALLABLE AT ALL? (layer 2c + layer 3, the two meeting)
- *
- * The incident's inner loop built a summariser prompt for every one of ~4,000 chunks —
- * scrub, condense, join, estimate — and THEN sent it to a provider that had been answering
- * 402 for a day. Construction is the expensive half and it is pure waste once the provider
- * is known dead, so this is asked BEFORE the build, at the top of each iteration: the 402
- * that opens the breaker stops the very next chunk.
- *
- * `false` when there is no provider row to judge — an unknown provider is dialled exactly
- * as before, because this predicate exists to stop a KNOWN wall, not to invent one.
- */
+/** Is the writer's provider known dead (its breaker open)? Asked before building a chunk that cannot be sent. */
 export function summaryWriterUnavailable(agentId: string, modelId: string | undefined): boolean {
   const open = writerBreaker(modelId);
-  if (!open) return false;
-  logger.warn('Summary writer unavailable: its provider is circuit-broken, no chunk will be built', {
-    modelId, providerId: open.providerId, reason: open.reason,
-  }, agentId);
-  return true;
+  if (open) logger.warn('Summary writer unavailable: its provider is circuit-broken, no chunk will be built', { modelId, providerId: open.providerId, reason: open.reason }, agentId);
+  return !!open;
 }
 
-/**
- * THE FORCED PASS'S OPTIONS — the whole of "emergency means FIRST, not INFINITE".
- *
- * Returns the option bag `checkAndCompact` already understands, so this module never imports
- * the compactor (no cycle, and the compactor keeps exactly one entry point). `turnPatienceMs` is
- * the caller's `memory/turn-patience.ts` answer for the model the turn dials: the pass is aborted
- * when the turn has waited that long, never by a number of this file's (t140 round 6, H3).
- */
-export function forcedCompactionOptions(turnPatienceMs: number): {
-  force: true; abortSignal: AbortSignal;
-} {
+/** A forced pass's options: aborted when the turn has waited as long as it lets the dialed model take to answer. */
+export function forcedCompactionOptions(turnPatienceMs: number): { force: true; abortSignal: AbortSignal } {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), turnPatienceMs);
-  // Never keep the process alive for a compaction deadline.
-  if (typeof (timer as unknown as { unref?: () => void }).unref === 'function') {
-    (timer as unknown as { unref: () => void }).unref();
-  }
+  (timer as unknown as { unref?: () => void }).unref?.();
   return { force: true, abortSignal: ctl.signal };
 }
 
-/** Test-only reset; the maps are per-process. Resets the failure notes with them, because a
- *  clause that cleared one and not the other would be testing half a state machine. */
+/** What the last forced pass did: threw (its park is told through the compaction card), or was skipped by the brake. */
+export const lastForcedPass = (agentId: string): { threw: boolean; braked?: boolean } =>
+  ({ threw: records.get(agentId)?.threw === true, braked: records.get(agentId)?.braked });
+
+/** Run one forced pass and record its outcome on every return path; a throw is recorded and still reaches the caller. */
+async function recordingForcedPass<T extends PassResult>(agentId: string, run: () => Promise<T>, opts: ForcedOpts): Promise<T> {
+  const r = recordOf(agentId);
+  const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
+  r.braked = brakedBefore;
+  try {
+    const result = await run();
+    if (!brakedBefore) r.threw = false;
+    if (progressed(result)) return result;
+    if (!brakedBefore && compactionBrakeMsLeft(agentId) === null && !opts.abortSignal?.aborted && !isStopFenced(agentId) && !spanWaitsForAWriter(agentId)) {
+      const facts = await opts.measure().catch(() => undefined);
+      const stalled = facts !== undefined && facts.assembledTokens > facts.budgetTokens;
+      logger.warn('a forced pass returned without recording what it bought; recorded now', { ...facts, stalled }, agentId);
+      notePassOutcome(agentId, true, result, { ...facts, stage: stalled ? 'nothing_left_to_shrink' : null });
+    }
+    return result;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error('a forced compaction pass threw', { error: detail }, agentId);
+    const again = r.threw === true;
+    r.threw = true;
+    notePassOutcome(agentId, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, again ? { stage: 'summariser_threw', detail } : undefined);
+    throw err;
+  }
+}
+
+/** With nothing left outside the protected recent part, a boundary refusal's pass folds that part's OLDEST whole
+ *  exchange (never the newest, which the agent is answering), so every round makes progress. */
+export async function foldOldestProtectedGroup(args: {
+  agentId: string; protectedFromSeq: number; condensed: PassResult; fold: (throughSeq: number) => Promise<number>;
+}): Promise<PassResult> {
+  const { agentId, protectedFromSeq, condensed } = args;
+  if (progressed(condensed)) return condensed;
+  const compacted = getCompactedMessageIds(agentId);
+  const { groupTail } = await import('./assembler.js');   // loaded late: the assembler reaches the model layer
+  const groups = groupTail(getMessagesOutsideFreshTail(agentId, 1).filter((m) => !compacted.has(m.id) && (m.rowid ?? 0) >= protectedFromSeq));
+  // The first group and every group after it up to the next row a person or peer sent: a view opens on a user row.
+  let end = 0;
+  while (end + 1 < groups.length && groups[end + 1].messages[0].role !== 'user') end++;
+  const oldest = groups.length > 1 ? groups.slice(0, end + 1).flatMap((g) => g.messages) : [];
+  const throughSeq = oldest.length > 0 ? oldest[oldest.length - 1].rowid ?? 0 : 0;
+  const result: PassResult = { leafCreated: throughSeq > 0 ? await args.fold(throughSeq) : 0, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
+  logger.info('forced pass: nothing outside the protected recent part; folded its oldest group', { throughSeq, leafCreated: result.leafCreated, groupsLeft: groups.length - 1 }, agentId);
+  notePassOutcome(agentId, true, result, { waiting: spanWaitsForAWriter(agentId) });
+  return result;
+}
+
+type ForcedOpts = { abortSignal?: AbortSignal; inTurn?: boolean; measure: () => Promise<{ assembledTokens: number; budgetTokens: number }> };
+
+/**
+ * The one door every compaction pass runs through, under the agent's lock. An unforced pass skips a busy lock. A
+ * forced pass inside a turn never waits on it: it answers `lockBusy` and its caller parks until that pass lands. The
+ * owner's forced pass waits, then runs its own unless the running pass made progress and the view now fits.
+ */
+export async function compactionDoor<T extends PassResult>(agentId: string, run: () => Promise<T>, opts?: ForcedOpts): Promise<(T & DoorResult) | undefined> {
+  const lock = `compact:${agentId}`;
+  const finish = async (pass: () => Promise<T>): Promise<T> => {
+    const result = await pass();
+    const r = recordOf(agentId);
+    r.finished += 1;
+    r.last = result;
+    return result;
+  };
+  if (!opts) return withLock(lock, () => finish(run), { ifBusy: 'skip' });
+  const own = (): Promise<T> => finish(() => recordingForcedPass(agentId, run, opts));
+  if (opts.inTurn) return (await withLock(lock, own, { ifBusy: 'skip' })) ?? { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0, lockBusy: true } as T & DoorResult;
+  const queuedAfter = recordOf(agentId).finished;
+  return withLock(lock, async (): Promise<T & DoorResult> => {
+    const r = recordOf(agentId);
+    const borrowed = r.finished > queuedAfter && r.last && progressed(r.last) ? r.last as T : null;
+    if (!borrowed) return own();
+    const facts = await opts.measure().catch(() => undefined);
+    if (facts && facts.assembledTokens <= facts.budgetTokens) return { ...borrowed, byRunningPass: true };
+    return { ...(await own()), byRunningPass: false };
+  }, { ifBusy: 'wait' });
+}
+
+/** Test-only reset of the records and the failure notes with them. */
 export function __resetBrakesForTests(): void {
-  backoffs.clear();
+  records.clear();
   __resetCompactionFailuresForTests();
 }

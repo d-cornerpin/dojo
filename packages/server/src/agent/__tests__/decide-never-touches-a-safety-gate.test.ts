@@ -65,7 +65,8 @@ const EXEMPT_EDGES: Array<{ from: string; to: string; why: string }> = [
   // The summary check (v3.5 B4, shipped before this census) consults the model about a SUMMARY. The gates reach it only
   // because they import the runtime that writes summaries; nothing it asks is a gate's input. Declared, not hidden.
   { from: 'memory/summarize.ts', to: 'memory/summary-check.ts', why: 'the one door every summary is written through asks the B4 summary check; a summary is not a gate\'s input.' },
-  { from: 'memory/out-of-view-fold.ts', to: 'memory/summary-check.ts', why: 'reads whether a summary was refused (a ledger read) from the B4 summary check; a summary is not a gate\'s input.' },
+  { from: 'memory/out-of-view.ts', to: 'memory/summary-check.ts', why: 'reads whether a summary was refused (a ledger read) from the B4 summary check; a summary is not a gate\'s input.' },
+  { from: 'healer/diagnostic.ts', to: 'memory/summary-check.ts', why: 'reads the summary check\'s running numbers (a table read) for the Healer report; it asks nothing.' },
 ];
 
 const strip = (text: string): string => text.replace(/^\s*(?:import|export)\s+type\s[^;]*?from\s+['"][^'"]+['"];?/gms, '');

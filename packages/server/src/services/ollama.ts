@@ -5,8 +5,7 @@
 import { createLogger } from '../logger.js';
 import { retryStandardModelsIfMissing } from './local-standard.js';
 import { getDb } from '../db/connection.js';
-import { writersMayBeBack } from '../memory/writer-wait.js';
-import { freeMemoryMayBeReadable } from '../memory/writer-no-room.js';
+import { clearOn } from '../memory/writer.js';
 
 const logger = createLogger('ollama');
 
@@ -214,13 +213,13 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
 }
 
 /** Ollama at `url` answered: its free memory may be readable again, and each Ollama provider there is a signal for a
- *  summary span waiting on a writer it serves (`memory/writer-wait.ts`). */
+ *  summary span waiting on a writer it serves (`memory/writer.ts`). */
 function ollamaAnswered(url: string): void {
-  freeMemoryMayBeReadable();
+  clearOn({ kind: 'memory-readable' });
   try {
     const norm = (u: string | null): string => (u ?? DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
     const rows = getDb().prepare("SELECT id, base_url FROM providers WHERE type = 'ollama'").all() as Array<{ id: string; base_url: string | null }>;
-    for (const r of rows) if (norm(r.base_url) === norm(url)) writersMayBeBack(r.id);
+    for (const r of rows) if (norm(r.base_url) === norm(url)) clearOn({ kind: 'writer-answered', providerKey: r.id });
   } catch { /* no database yet: nothing waits */ }
 }
 

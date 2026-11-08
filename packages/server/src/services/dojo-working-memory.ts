@@ -52,7 +52,7 @@ export async function decisionWindowTokens(): Promise<number> {
  * agent's FIXED model, or (fix round 4, N-E) it is placed in a router tier a standard-tier request walks and some
  * agent is auto-routed (fix round 3: an auto-routed agent writes with its router's standard-tier pick,
  * `summaryWriterCandidates`). A FALLBACK (an agent's model not answering) is not an assignment: it is sized to the
- * memory free when it runs (`memory/writer-fallback-room.ts`), never reserved.
+ * memory free when it runs (`memory/writer.ts`), never reserved.
  */
 export function writerAssignedSummaries(): boolean {
   const writerId = standardModelRowId('writer');

@@ -1,7 +1,7 @@
 // t144 — THE REAL SIGNALS THE NIGHTLY REBUILDS ARE PACED BY (owner ruling 2026-10-13: no hard limits).
 // Shared by the rebuild of older mixed notes and the contamination pass: the agent not mid-turn, the money
 // guardrail (`checkBudget`), and the one guard that keeps two rebuild runs from overlapping. A summary
-// writer answering is asked of `summary-writer-health.ts`, which honours the provider's breaker.
+// writer answering is asked of `writer.ts`, which honours the provider's breaker.
 
 import { getDb } from '../db/connection.js';
 import { checkBudget } from '../costs/budget.js';

@@ -32,11 +32,11 @@ vi.mock('../../../../../tools/tool-docs.js', async (importOriginal) => ({
 /** Every writer answers empty unless `answering` says otherwise; outcomes are recorded as the real wrapper does. */
 const summariser = vi.hoisted(() => ({ answering: false, calls: [] as string[] }));
 vi.mock('../../../../../memory/summarize.js', async () => {
-  const health = await import('../../../../../memory/summary-writer-health.js');
+  const health = await import('../../../../../memory/writer.js');
   return {
-    generateSummary: async (args: { modelId?: string; abortSignal?: AbortSignal }) => {
+    generateSummary: async (args: { agentId: string; modelId?: string; abortSignal?: AbortSignal }) => {
       summariser.calls.push(args.modelId ?? '?');
-      health.noteSummaryWriterOutcome(args.modelId, summariser.answering, args.abortSignal);
+      health.settleSummaryCall(summariser.answering ? { ok: true, text: 'a summary', tokenCount: 1 } : { ok: false, reason: 'no answer' }, args.agentId, args.modelId, args.abortSignal);
       return summariser.answering
         ? { ok: true, text: 'Earlier the crew counted the north dock.', tokenCount: 8 }
         : { ok: false, reason: 'summarizer returned empty text' };
@@ -58,8 +58,8 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
-import { __resetSummaryWriterHealthForTests, noteSummaryWriterOutcome } from '../../../../../memory/summary-writer-health.js';
-import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/uncondensed-placeholder.js';
+import { __resetSummaryWriterHealthForTests, markWaiting, clearOn, providerOf } from '../../../../../memory/writer.js';
+import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/out-of-view.js';
 import { advance, initState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
@@ -135,7 +135,7 @@ describe('t140 round 6 — no writer answering: the gate does not dial', () => {
     for (let i = 0; i < 600; i++) {
       insertMessage({ agentId: AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner', senderId: i % 2 === 0 ? 'owner' : null, content: `[more ${i}] Dock open? Yes.`, turnNumber: 30 + Math.floor(i / 2) });
     }
-    for (const w of WRITERS) noteSummaryWriterOutcome(w, false);   // every writer failed a moment ago
+    for (const w of WRITERS) markWaiting(AGENT, w, '', 'not-answering');   // every writer failed a moment ago
     await gate(600, 2);   // a tool-loop iteration: no person has spoken since
     expect(summariser.calls, 'no writer is answering, so nothing is dialled').toEqual([]);
   });

@@ -40,7 +40,7 @@ import { attachmentBrackets, defangExternalMarkers } from '../tools/external-con
  *  structured row (`msg:<message id>#<block index>`). */
 export const KEPT_ROW_PREFIX = 'msg:';
 /** t269 fix round 1 (I1): a summaries-lane note standing for ONE stored row no summary writer could write
- *  whole — the row as summary input shows it, pointered like a live row when long (`unwritable-span.ts`). */
+ *  whole: the row as summary input shows it, pointered like a live row when long (`writer.ts`). */
 export const KEPT_WHOLE_KIND = 'kept_whole';
 /** t269 fix round 2: the handle that reads a whole summaries-lane note the room could not show whole (`note:<id>`). */
 export const KEPT_NOTE_PREFIX = 'note:';

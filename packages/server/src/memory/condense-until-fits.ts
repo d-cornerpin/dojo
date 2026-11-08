@@ -85,7 +85,7 @@ import { UNCONDENSED_KIND } from './uncondensed-head.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
 import { mergeTargetTokens } from './summary-target.js';
 import { modelCharsPerToken } from '../services/token-density.js';
-import { recordRefusal, writersLeft, type SpanItem } from './unwritable-span.js';
+import { eligibleSummaryWriters, markWaiting, ownModel, spanKeyOf } from './writer.js';
 import { KEPT_WHOLE_KIND } from './kept-row-view.js';
 import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
@@ -209,8 +209,7 @@ export function condensableSummaries(agentId: string, opts: { modelId?: string; 
   for (const r of topLevelRows(agentId)) byDepth.set(r.depth, [...(byDepth.get(r.depth) ?? []), r]);
   const dialable = (batch: Summary[]): number => {
     if (batch.length < 2) return 0;
-    const span: SpanItem[] = batch.map((x) => ({ id: x.id, content: x.content }));
-    if (writersLeft(agentId, span, opts.modelId).length > 0) return batch.length;
+    if (eligibleSummaryWriters(ownModel(agentId), agentId, batch, opts.modelId).length > 0) return batch.length;
     return batch.length > 2 ? halves(batch).reduce((n, h) => n + dialable(h), 0) : 0;
   };
   // A batch is at most `minFanout` notes; with none given, one batch per conversation (halved as the loop halves).
@@ -265,8 +264,7 @@ async function condenseLevel(
     if (batch.length === 1) continue;
     // t269 fix rounds 1–2 (I1, N1): a writer is not dialled over a span it could not write whole; with no
     // writer left for it the span waits (a larger one is split, so its halves are tried in turn).
-    const span = batch.map((x) => ({ id: x.id, content: x.content }));
-    const writers = writersLeft(agentId, span, modelId);
+    const writers = eligibleSummaryWriters(ownModel(agentId), agentId, batch, modelId);
     if (writers.length === 0) { if (batch.length > 2) batches.unshift(...halves(batch)); continue; }
     if (summaryWriterUnavailable(agentId, modelId)) { stage = 'summary_writer_unavailable'; detail = modelId; break; }
     const shape = parentShape(batch);
@@ -284,7 +282,7 @@ async function condenseLevel(
         if (!summary.ok) answers.push(`${writer}: ${summary.reason}`);
         if (summary.ok || !summary.tooBig) break;
         if (summary.noRoom) continue;   // t268: that writer cannot run now (no memory free), not its verdict on this span
-        recordRefusal(agentId, writer, span);
+        markWaiting(agentId, writer, spanKeyOf(batch), 'cannot-hold');
       }
       if (!summary.ok && summary.stopped) { stage ??= 'bounded_without_progress'; detail ??= 'stopped by the owner'; break; }   // a Stop is a stop
       if (!summary.ok && summary.tooBig && !summary.noRoom) {   // t149: more than every writer tried holds (or cut twice): recorded, and a batch is halved

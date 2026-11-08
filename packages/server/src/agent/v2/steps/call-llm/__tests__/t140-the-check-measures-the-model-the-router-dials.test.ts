@@ -98,7 +98,7 @@ vi.mock('../../../../../providers/anthropic-sdk.js', async (importOriginal) => (
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { assembleContext } from '../../../../../memory/assembler.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../../../../../memory/out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../../../memory/out-of-view.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
 import { backgroundDrains } from '../../../../shared-state.js';

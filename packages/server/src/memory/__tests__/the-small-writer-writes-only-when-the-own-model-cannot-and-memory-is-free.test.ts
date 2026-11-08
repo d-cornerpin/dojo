@@ -1,12 +1,8 @@
-// t268 fix round 4 (N-B, N-C, orchestrator rulings) — THE SMALL WRITER'S FALLBACK, AS THE MEMORY REALLY IS.
-// · N-B: when the Dojo's small writer cannot fit even a summary in the memory free at that moment (on a 16 GB box,
-//   with the decision model's memory counted, it never can), it is refused once — never a span halved and asked again.
-//   Fix round 5: NOTHING comes after it in the order, so with no writer able to run the span waits (rows kept, nothing
-//   dialled, no brake) and is written once the agent's own model is reachable again.
-// · N-C: the free memory counts what the models loaded on Ollama REALLY hold — Ollama's own loaded size (`/api/ps`),
-//   their working memory included — never their weights alone.
-// THE DOOR: the real `checkAndCompact` on the real migration chain. The writers and Ollama are scripted;
-// os.totalmem is the test's; the decision model's row is disabled, so nothing here asks it.
+// The agent's own model writes its summaries; the Dojo's small writer writes only when the own model cannot and the
+// memory free holds a summary. With memory tight the small writer is refused once (never halved and asked again),
+// nothing after it is ever dialled, and the span waits with its rows whole until the own model is back. The free
+// memory counts what the models loaded on Ollama really hold. Driven through the real `checkAndCompact`; the writers
+// and Ollama are scripted, and the decision model answers nothing (its fetch is a 404).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import os from 'node:os';
@@ -44,9 +40,10 @@ import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
 import { insertMessage } from '../message-store.js';
-import { eligibleSummaryWriters, summaryWriterCandidates, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { writersMayBeBack } from '../writer-wait.js';
-import { resolveSummaryWriterModel, rebuildContextItems } from '../compaction.js';
+import { eligibleSummaryWriters, summaryWriterCandidates, markWaiting, clearOn, providerOf, __resetSummaryWriterHealthForTests } from '../writer.js';
+import { clearOn } from '../writer.js';
+import { rebuildContextItems } from '../compaction.js';
+import { pickWriter } from '../writer.js';
 import { createLeafSummary } from '../dag.js';
 import { condenseUntilFits } from '../condense-until-fits.js';
 import { __resetBrakesForTests, compactionIsBraked } from '../compaction-brakes.js';
@@ -130,7 +127,7 @@ describe('N-B: on a 16 GB box the small writer never fits a summary; it is refus
 
   // Fix round 5 (edited: this clause handed the batch to the next model in the order, which round 5 removed).
   it('a condensation batch on the small writer with no room: refused, and no other model is asked', async () => {
-    noteSummaryWriterOutcome(OWN, false);   // the agent's own model is not answering: the small writer is next
+    markWaiting(AGENT, OWN, '', 'not-answering');   // the agent's own model is not answering: the small writer is next
     const content = 'Earlier summary: the crew counted the depot. '.repeat(200);
     // t269: condensation hands a batch to each writer of the order itself (`condense-until-fits.ts`); the small
     // writer is the order's last, so its `noRoom` answer is the batch's (the pair walk this called is deleted).
@@ -153,10 +150,10 @@ describe('round 5: nothing after the small writer — never a cloud model the ow
     expect(messages(), 'rows kept whole').toBe(before);
     expect(ollama.tagsCalls, 'the small writer was sized once: no refused span halved and asked again').toBe(1);
     expect(eligibleSummaryWriters(OWN, AGENT), 'no writer can run: nothing to retry until something changes').toEqual([]);
-    expect(resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'the background fold waits').toBeNull();
+    expect(pickWriter(AGENT, OWN), 'the background fold waits').toBeNull();
     expect(compactionIsBraked(AGENT, true), 'a wait, not a failed pass: no brake').toBe(false);
     writers.unreachable.clear();
-    writersMayBeBack('p-own', { modelId: OWN, purpose: 'agent_turn' });   // breaker fix: its model answered a call (no person needed)
+    clearOn({ kind: 'writer-answered', providerKey: 'p-own', modelId: OWN });   // breaker fix: its model answered a call (no person needed)
     const calls = writers.calls.length;
     await checkAndCompact(AGENT, OWN, 8_000, { force: true });
     expect(realSummaries()).toBeGreaterThan(0);

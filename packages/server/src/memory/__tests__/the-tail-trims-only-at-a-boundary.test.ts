@@ -91,7 +91,7 @@ vi.mock('../../agent/model.js', () => ({
 }));
 
 import { assembleContext } from '../assembler.js';
-import { writersMayBeBack } from '../writer-wait.js';
+import { clearOn } from '../writer.js';
 import { insertMessage } from '../message-store.js';
 import {
   checkAndCompact, estimateAssembledTokens, leavingFromView,
@@ -185,7 +185,7 @@ function appendTurn(): void {
 
 /** Every routine pass that actually compacted, with the numbers it reported. t100 §7 reads
  *  `tokensReclaimed` out of here: the drain's cadence is decided by the LOW-YIELD BACKOFF
- *  (`compaction.ts`: `tokensReclaimed < 2000 && leafCreated <= 1` → `noteLowYield`), and that
+ *  (`compaction.ts`: `tokensReclaimed < 2000 && leafCreated <= 1` → `lowYield`), and that
  *  predicate is a question about the gate's OWN estimate. A probe that only counted
  *  discontinuities could see the cadence change and not know which number moved it. */
 const passLog: Array<{ turn: number; leafCreated: number; tokensReclaimed: number }> = [];
@@ -724,7 +724,7 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
     summariser.up = true;
     // t268 round 5 + breaker fix: a writer that failed is not dialled again until something changes; its model answering
     // a call is that change (what `recordProviderSuccess` hands on for every successful call, `agent/model.ts`).
-    writersMayBeBack('p', { modelId: MODEL, purpose: 'agent_turn' });
+    clearOn({ kind: 'writer-answered', providerKey: 'p', modelId: MODEL });
     const after = await driveRun({ turns: 25 });
     const deltas = runDeltas([...before.slice(-1), ...after]);
     const bad = discontinuities(deltas);

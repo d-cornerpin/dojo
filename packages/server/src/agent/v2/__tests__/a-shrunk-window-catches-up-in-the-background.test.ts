@@ -99,11 +99,11 @@ import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../steps/call-l
 import type { AssembleContext } from '../steps/assemble/index.js';
 import { getContextWindow } from '../../model.js';
 import { activeRuns, backgroundDrains } from '../../shared-state.js';
-import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../memory/catch-up-folder.js';
+import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../memory/out-of-view.js';
 import { __resetCompactionFailuresForTests, compactionFailureReason } from '../../../memory/compaction-defect.js';
-import { noteAPersonSpoke, noteSummaryWriterOutcome } from '../../../memory/summary-writer-health.js';
+import { clearOn, markWaiting, clearOn, providerOf } from '../../../memory/writer.js';
 import { scheduleLegacyRebuildAtBoot, BOOT_SETTLE_MS } from '../../../memory/legacy-rebuild-boot.js';
-import { __resetSummaryWriterHealthForTests } from '../../../memory/summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../../../memory/writer.js';
 import * as coldImport1 from '../../../router/rate-limits.js';
 import { engineFileContaining } from './engine-sources.js';
 
@@ -329,7 +329,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(placeholders(), 'the notes stand; nothing is lost').toBeGreaterThan(0);
     // The writers come back: the person's turn re-arms them, the folder finishes, nothing is left standing.
     calls.fail = false;
-    noteAPersonSpoke(AGENT);
+    clearOn({ kind: 'person-spoke', agentId: AGENT });
     replacePlaceholdersInBackground(AGENT);
     await folderDone();
     expect(placeholders()).toBe(0);
@@ -352,7 +352,7 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
 
   it('round 3 (F2): no writer at all — the owner gets the existing failure notice, never the catch-up card', async () => {
     seed('auto');
-    for (const m of [STANDARD, HEAVY, LIGHT]) noteSummaryWriterOutcome(m, false);   // every writer of its order failed: none can run now
+    for (const m of [STANDARD, HEAVY, LIGHT]) markWaiting(AGENT, m, '', 'not-answering');   // every writer of its order failed: none can run now
     await oneTurn('auto');
     expect(calls.log).toEqual(['reply']);
     expect(placeholders()).toBeGreaterThan(1);

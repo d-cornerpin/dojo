@@ -69,7 +69,7 @@ import { rowsLeavingView } from '../../../../../memory/tail-horizon.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
-import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/uncondensed-placeholder.js';
+import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/out-of-view.js';
 
 const AGENT = 'agent-t140-busy';
 const MODEL = 'm-t140-200k';

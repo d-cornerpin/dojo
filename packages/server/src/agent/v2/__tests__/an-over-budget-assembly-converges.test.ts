@@ -77,7 +77,6 @@ import { compactionFailureReason } from '../../../memory/compaction-defect.js';
 import { openTurnContext, endTurnContext } from '../../turn-context.js';
 import * as coldImport1 from '../../../memory/window-starvation-card.js';
 import * as coldImport2 from '../full-context-wait.js';
-import * as coldImport3 from '../../../memory/forced-pass-progress.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -114,7 +113,6 @@ async function seed(): Promise<void> {
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${reply.repeat(6)}`, turnNumber: t });
   }
   coldImport2.__resetFullContextWaitForTests();
-  coldImport3.__resetForcedPassProgressForTests();
 }
 afterEach(async () => {
   await Promise.race([withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }), new Promise((r) => setTimeout(r, 15_000))]);

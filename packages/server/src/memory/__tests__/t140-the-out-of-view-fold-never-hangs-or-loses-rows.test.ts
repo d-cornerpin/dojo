@@ -45,7 +45,7 @@ const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: str
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
 // t268 round 5: the fallback here is the Dojo's small writer; whether it fits the box's memory is not this file's question.
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 
 type Mode = 'ok' | 'hang' | 'empty' | '402';
 const writers = vi.hoisted(() => ({
@@ -102,23 +102,23 @@ vi.mock('../../agent/model.js', async () => {
 });
 
 import * as compaction from '../compaction.js';
-import * as door_ from '../out-of-view-fold.js';
-import { __resetSummaryWriterHealthForTests, noteAPersonSpoke } from '../summary-writer-health.js';
+import * as door_ from '../out-of-view.js';
+import { __resetSummaryWriterHealthForTests, clearOn } from '../writer.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
-import { __resetBrakesForTests, noteLowYield } from '../compaction-brakes.js';
+import { __resetBrakesForTests, notePassOutcome } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { withLock } from '../../db/with-lock.js';
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { classifyProviderError } from '../../agent/provider-error.js';
-import { replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
-import * as coldImport1 from '../uncondensed-placeholder.js';
+import { replaceUncondensedPlaceholders } from '../out-of-view.js';
+import * as coldImport1 from '../out-of-view.js';
 import { createLeafSummary } from '../dag.js';
 import { condenseUntilFits } from '../condense-until-fits.js';
 import { getArchiveHighWaterMark } from '../../vault/archive.js';
 import { recordPermanentFailure } from '../../providers/billing-breaker.js';
-import * as coldImport2 from '../summary-writer-health.js';
+import * as coldImport2 from '../writer.js';
 
 const AGENT = 'agent-t140-writer-down';
 /** The agent's own model — the first summary writer (no Settings choice is configured). */
@@ -247,10 +247,10 @@ describe('t140 round 3 — a failing writer is passed over for the next one, wit
       // …and a writer that FAILED (its own transport gave up, it answered empty, or 402) is not dialled
       // again — by a turn, or (round 6, R-V333-15) by the background — until something changes: a
       // person's new turn earns it another try. No clock decides it.
-      expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again').not.toBe(OWN);
-      expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'nor does the background').not.toBe(OWN);
-      noteAPersonSpoke(AGENT);
-      expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'a person spoke: it is tried again').toBe(OWN);
+      expect(coldImport2.pickWriter(AGENT, OWN), 'a turn does not wait on it again').not.toBe(OWN);
+      expect(coldImport2.pickWriter(AGENT, OWN), 'nor does the background').not.toBe(OWN);
+      clearOn({ kind: 'person-spoke', agentId: AGENT });
+      expect(coldImport2.pickWriter(AGENT, OWN), 'a person spoke: it is tried again').toBe(OWN);
     }, 5_000);
   }
 });
@@ -287,10 +287,10 @@ describe('t140 round 3 — recovery: a real summary replaces the placeholder, an
     seedACut();
     await door();
     expect(placeholders().length).toBeGreaterThan(0);
-    noteLowYield(AGENT);   // the brake a pressure pass would arm
+    notePassOutcome(AGENT, false, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });   // the brake a pressure pass would arm
     writers.mode = {};
     // The writers come back; a person's next turn is the change that earns them a retry (round 6).
-    noteAPersonSpoke(AGENT);
+    clearOn({ kind: 'person-spoke', agentId: AGENT });
     const ph = coldImport1 as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
     const replaced = await ph.replaceUncondensedPlaceholders(AGENT);
     expect(replaced).toBeGreaterThan(0);
@@ -318,7 +318,7 @@ describe('t140 round 3 — Stop during the fold', () => {
     expect(Date.now() - started, 'Stop ended the fold before the writer\'s own transport would have').toBeLessThan(writers.transportMs);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(failingCards()).toBe(0);
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a stopped call is not a failed writer').toBe(OWN);
+    expect(coldImport2.pickWriter(AGENT, OWN), 'a stopped call is not a failed writer').toBe(OWN);
   }, 5_000);
 });
 
@@ -342,7 +342,7 @@ describe('t140 round 3 (re-aimed field fix Y) — a backlog is folded in the bac
 describe('t140 round 3 — the brake and a busy lock', () => {
   it('the 15-minute brake does not block the out-of-view fold', async () => {
     seedACut();
-    noteLowYield(AGENT);
+    notePassOutcome(AGENT, false, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
     const ctx = await door();
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(writers.calls.length, 'the fold ran despite the brake').toBeGreaterThan(0);
@@ -400,8 +400,8 @@ const placeholderCoveredSeqs = (): number[] => (db().prepare(
     WHERE s.agent_id = ? AND s.kind = 'uncondensed'`,
 ).all(AGENT) as Array<{ seq: number }>).map((r) => r.seq);
 const coolAll = async (...ids: string[]) => {
-  const h = coldImport2 as unknown as { noteSummaryWriterOutcome: (m: string, ok: boolean) => void };
-  for (const id of ids) h.noteSummaryWriterOutcome(id, false);
+  const h = coldImport2;
+  for (const id of ids) h.markWaiting(AGENT, id, '', 'not-answering');
 };
 
 describe('t140 round 4 — F1: never two notes for one row', () => {
@@ -460,7 +460,7 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
     expect(writers.calls, 'the broken provider was dialed').not.toContain(OWN);
     expect(placeholders(), 'the next writer folded the rows').toEqual([]);
     // And every other path that asks for a writer (the pressure fold, the replacement) skips it too.
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a writer whose provider breaker is open is picked').not.toBe(OWN);
+    expect(coldImport2.pickWriter(AGENT, OWN), 'a writer whose provider breaker is open is picked').not.toBe(OWN);
   }, 5_000);
 
   it('R6 no writer left: placeholders, and the owner is told', async () => {
@@ -527,13 +527,13 @@ describe('t140 round 4 (re-aimed round 5) — F4: running past the turn\'s patie
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(placeholders().length, 'nobody answered inside the turn\'s patience').toBeGreaterThan(0);
     expect(failingCards(), 'slow is not failing').toBe(0);
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again until it answers').not.toBe(OWN);
+    expect(coldImport2.pickWriter(AGENT, OWN), 'a turn does not wait on it again until it answers').not.toBe(OWN);
     writers.calls = [];
-    noteAPersonSpoke(AGENT);   // round 6: the change that earns it another try
+    clearOn({ kind: 'person-spoke', agentId: AGENT });   // the change that earns it another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(placeholders()).toEqual([]);
     expect(writers.calls[0], 'the background used the agent\'s own writer, and nothing cut it').toBe(OWN);
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'it answered: turns use it again').toBe(OWN);
+    expect(coldImport2.pickWriter(AGENT, OWN), 'it answered: turns use it again').toBe(OWN);
   }, 20_000);
 });
 
@@ -595,7 +595,7 @@ describe('t140 round 4 — F1: a slow background fold holding the lock does not 
     const result = await background;
     expect(coverCounts()).toEqual([]);
     expect(result.leafCreated, 'the background fold was not cancelled: its summary landed').toBeTruthy();
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'the slow writer is not blamed').toBe(OWN);
+    expect(coldImport2.pickWriter(AGENT, OWN), 'the slow writer is not blamed').toBe(OWN);
     await replaceUncondensedPlaceholders(AGENT);
     expect(placeholders(), 'the real summaries came after').toEqual([]);
     expect(coverCounts(), 'one note per row throughout').toEqual([]);

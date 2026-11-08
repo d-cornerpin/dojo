@@ -93,7 +93,7 @@ vi.mock('../embeddings.js', () => ({
 }));
 const prefix = vi.hoisted(() => ({ toolPayloadTokens: 1000 }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => prefix.toolPayloadTokens }));
-vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));   // the small writer's free-memory gate: not this file's subject
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));   // the small writer's free-memory gate: not this file's subject
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
   isDreamerIgnored: vi.fn(() => false),
@@ -109,13 +109,13 @@ import { clearSecretsCache, setProviderCredential } from '../../config/loader.js
 import { clearClientCache } from '../../agent/model.js';
 import { insertMessage } from '../message-store.js';
 import { assembleContext } from '../assembler.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view.js';
 import { checkAndCompact, estimateAssembledTokens, leavingFromView, NO_CONVERSATION_PLACEHOLDER } from '../compaction.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
-import { replacePlaceholdersInBackground } from '../catch-up-folder.js';
+import { replacePlaceholdersInBackground } from '../out-of-view.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { estimateTokens } from '../budget.js';
 

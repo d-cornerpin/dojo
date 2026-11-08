@@ -38,7 +38,7 @@
 
 import { liveAddress } from '../../turn-address-live.js';
 import { assembleContext, type AssembledContext } from '../../../../memory/assembler.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/out-of-view-fold.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/out-of-view.js';
 import { buildAssemblyContext } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
@@ -263,7 +263,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   const modelId = routed.selection.modelId;
   const dialWindow = modelId === contextModelId ? contextWindow : agentTurnWindow(agentId, modelId);   // N42: one window for every pick
   // t140 round 2: the assembly this turn dials never leaves a row out of view without a summary —
-  // rows the trim took are folded (bounded, awaited) and the context assembled again (`out-of-view-fold.ts`).
+  // rows the trim took are folded (bounded, awaited) and the context assembled again (`out-of-view.ts`).
   const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, dialWindow,
     () => assembleContext(agentId, modelId, sharedTurnContext));
   // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──

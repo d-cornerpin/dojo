@@ -6,7 +6,7 @@
 // update-integrity standard). The nightly job stays the backstop.
 //
 // Field fix Y (orchestrator ruling, round 2): the boot's memory start also RESUMES every open catch-up
-// (`catch-up-state.ts`). Its card promises "this finishes on its own", and an update restarts the server,
+// (`out-of-view.ts`). Its card promises "this finishes on its own", and an update restarts the server,
 // so a catch-up must not wait for the agent's next turn: after the same settle, the background folder is
 // started for each agent whose record is open. It yields to live turns as always.
 
@@ -14,8 +14,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
 import { rebuildGuard } from './rebuild-signals.js';
-import { openCatchUps } from './catch-up-state.js';
-import { replacePlaceholdersInBackground } from './catch-up-folder.js';
+import { openCatchUps, replacePlaceholdersInBackground } from './out-of-view.js';
 
 const logger = createLogger('legacy-rebuild-boot');
 

@@ -56,7 +56,7 @@ vi.mock('../../providers/billing-breaker.js', async (importOriginal) => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
-import { FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER, __resetSummaryWriterHealthForTests } from '../writer.js';
 
 const AGENT = 'agent-t220-summary';
 const PROVIDER = 'prov-t220';
@@ -74,7 +74,7 @@ function seedBox(): void {
 }
 
 const marks = (): number =>
-  (mockDb.current!.prepare("SELECT COUNT(*) AS n FROM healer_state WHERE scope = 'summary_writer_not_answering'").get() as { n: number }).n;
+  (mockDb.current!.prepare("SELECT COUNT(*) AS n FROM healer_state WHERE scope = 'writer_wait.not-answering'").get() as { n: number }).n;
 const errorLines = (): LogLine[] => logLines.filter((l) => l.level === 'error');
 
 const summarise = (abortSignal?: AbortSignal) => generateSummary({

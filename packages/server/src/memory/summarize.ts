@@ -4,8 +4,8 @@ import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
-import { writeThenCheck, rewriteInstruction, refuseFallbackOverFreeMemory } from './summary-check.js';
-import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writer-health.js';
+import { writeThenCheck, rewriteInstruction } from './summary-check.js';
+import { settleSummaryCall, refuseWhatTheWriterCannotHold, refuseFallbackOverFreeMemory } from './writer.js';
 import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
@@ -185,7 +185,7 @@ ${contextBlock}`;
  */
 export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
-  | { ok: false; reason: string; stopped?: true; tooBig?: true; noRoom?: true; checkFailed?: true };   // see summary-writer-health.ts, writer-fallback-room.ts, summary-check.ts
+  | { ok: false; reason: string; stopped?: true; tooBig?: true; noRoom?: true; checkFailed?: true };   // see writer.ts, summary-check.ts
 
 /**
  * UX-REPAIR ROUND 6 T24 — AN EMPTY BODY IS A REFUSAL, and so is an aborted one.
@@ -214,9 +214,7 @@ function unusableOutput(text: string, abortSignal?: AbortSignal): string | null 
   return null;
 }
 
-/** t140 round 3: every summary call's outcome is recorded against its writer's provider, so a
- *  writer that timed out, answered empty or errored is passed over for a few minutes
- *  (`summary-writer-health.ts`). One wrapper rather than a line at each return below. */
+/** The one door: every summary call's outcome is settled against its writer (`writer.ts`), then checked. */
 export async function generateSummary(params: Parameters<typeof writeSummary>[0]): Promise<SummaryResult> {
   // v3.5 B4: written, then checked against its source before anything keeps it (`summary-check.ts`).
   return writeThenCheck(params, async (p) => settleSummaryCall(await writeSummary(p), p.agentId, p.modelId, p.abortSignal));
@@ -236,7 +234,7 @@ async function writeSummary(params: {
   abortSignal?: AbortSignal;
   checkFeedback?: string;   // v3.5 B4: the rewrite after a failed accuracy check names what failed
   spanIds?: readonly string[];   // v3.5: the rows summarised — a span whose check failed is known by them
-  spanOpen?: boolean;   // re-review 2 S6: the last chunk of a fold, still growing (see summary-check-ledger.ts spanHeld)
+  spanOpen?: boolean;   // the last chunk of a fold, still growing (see summary-check.ts writeThenCheck)
 }): Promise<SummaryResult> {
   const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal, checkFeedback } = params;
 
