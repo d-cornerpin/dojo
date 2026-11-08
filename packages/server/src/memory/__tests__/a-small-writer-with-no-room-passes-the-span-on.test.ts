@@ -6,7 +6,7 @@
 // · N-C: the free memory counts what the models loaded on Ollama REALLY hold — Ollama's own loaded size (`/api/ps`),
 //   their working memory included — never their weights alone.
 // THE DOOR: the real `checkAndCompact` on the real migration chain. The writers and Ollama are scripted;
-// os.totalmem is the test's; the decision check is held to the rule (nothing here asks the decision model).
+// os.totalmem is the test's; the decision model's row is disabled, so nothing here asks it.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import os from 'node:os';
@@ -91,8 +91,8 @@ beforeEach(() => {
   model.run(WRITER, 'ollama-local', STANDARD_WRITER_MODEL.tag, STANDARD_WRITER_MODEL.tag, '["chat"]', 262_144, 0);
   model.run('m-decision', 'ollama-local', STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag, '["decision"]', 262_144, 0);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'A worker agent', 'idle', ?, '{}')").run(AGENT, OWN);
-  // The decision model's derived tag exists (its window, 27,648 tokens, is reserved); the check is held to the rule.
-  db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_window', '27648'), ('decision_mode.summary_check.invented', 'rule'), ('decision_mode.summary_check.dropped', 'rule'), ('decision_mode.summary_check.stated_current', 'rule')").run();
+  // The decision model's derived tag exists (its window, 27,648 tokens, is reserved).
+  db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_window', '27648')").run();
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
     const p = new URL(url).pathname;
     if (p === '/api/tags') ollama.tagsCalls++;

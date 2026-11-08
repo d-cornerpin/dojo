@@ -260,10 +260,12 @@ UPDATE config SET value = 'monitor', updated_at = datetime('now') WHERE key = 'h
 -- 9. A file's link to the delivery that carried it had no reader.
 ALTER TABLE turn_artifacts DROP COLUMN delivery_id;
 
--- 10. The decision model's shadow log, switch records, pinned modes, learned pace and density, and its check versions had no reader.
+-- 10. The decision model's shadow log, switch records, pinned modes, learned pace and density, check versions and two unasked check columns had no reader.
 DROP TABLE IF EXISTS decision_shadow;
 DELETE FROM config WHERE key LIKE 'decision_switch.%' OR key LIKE 'decision_mode.%' OR key LIKE 'decide_pace.%' OR key LIKE 'token_density.%';
 DELETE FROM healer_state WHERE scope IN ('summary_check_version', 'summary_check_kept');
+ALTER TABLE summary_checks DROP COLUMN invented;
+ALTER TABLE summary_checks DROP COLUMN dropped;
 
 -- 11. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
 --     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.

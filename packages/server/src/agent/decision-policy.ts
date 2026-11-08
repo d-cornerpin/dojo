@@ -9,3 +9,6 @@ export const OWNER_ON_THE_MODEL: ReadonlySet<string> = new Set([
 
 /** Is `question` (`purpose/question`) answered by the decision model on this box? */
 export const onTheModel = (question: string): boolean => OWNER_ON_THE_MODEL.has(question) && getDecisionProvider() !== null;
+
+/** A yes/no answer reads as yes at this probability or above. */
+export const isYes = (probability: number): boolean => probability >= 0.5;

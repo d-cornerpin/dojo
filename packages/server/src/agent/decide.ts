@@ -13,16 +13,11 @@ import { decideCountedBytes, decideRequestBody, decideTimeoutMs, fencedState } f
 
 const logger = createLogger('decide');
 
-export type Question =
-  | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
-  | { type: 'choice'; instructions: string; criteria: Record<string, string | null> }
-  | { type: 'score'; instructions: string; criteria: string[] };
-export type Answer =
-  | { type: 'noul'; noul: number }
-  | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
-  | { type: 'score'; score: number; probabilities: Record<string, number>; confidence: number };
-/** `agentId`: the agent waiting on the answer, whose Stop cuts the call. `timeoutMs`: a caller's own clock, else the measured one. */
-export interface DecideOpts { purpose: string; agentId?: string; timeoutMs?: number; onFailure?: (failure: FailureClass) => void }
+/** A yes/no question; its answer is the probability of yes. */
+export interface Question { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
+export interface Answer { type: 'noul'; noul: number }
+/** `agentId`: the agent waiting on the answer, whose Stop cuts the call. */
+export interface DecideOpts { purpose: string; agentId?: string; onFailure?: (failure: FailureClass) => void }
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
 const MAX_QUESTIONS_PER_REQUEST = 64;
@@ -59,19 +54,11 @@ function inTurn<T>(stop: AbortSignal | null, work: () => Promise<T | null>): Pro
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const isProbs = (v: unknown): v is Record<string, number> =>
-  !!v && typeof v === 'object' && Object.values(v as Record<string, unknown>).every(isNum);
 
 /** One typed answer from the documented shape, or null when it is not that shape. */
-function typed(q: Question, a: unknown): Answer | null {
-  if (!a || typeof a !== 'object') return null;
-  const r = a as Record<string, unknown>;
-  if (q.type === 'noul') return isNum(r.noul) ? { type: 'noul', noul: r.noul } : null;
-  if (!isProbs(r.probabilities) || !isNum(r.confidence)) return null;
-  if (q.type === 'choice') {
-    return typeof r.choice === 'string' ? { type: 'choice', choice: r.choice, probabilities: r.probabilities, confidence: r.confidence } : null;
-  }
-  return isNum(r.score) ? { type: 'score', score: r.score, probabilities: r.probabilities, confidence: r.confidence } : null;
+function typed(a: unknown): Answer | null {
+  const noul = a && typeof a === 'object' ? (a as Record<string, unknown>).noul : undefined;
+  return isNum(noul) ? { type: 'noul', noul } : null;
 }
 
 export async function decide(
@@ -104,7 +91,7 @@ async function sent(
   try {
     const names = Object.keys(questions);
     const stateTokens = tokensAt(JSON.stringify(fencedState(state)).length, MEASURED_CHARS_PER_TOKEN);
-    const clock = AbortSignal.timeout(opts.timeoutMs ?? decideTimeoutMs(stateTokens, names.length, resident.has(provider.model)));
+    const clock = AbortSignal.timeout(decideTimeoutMs(stateTokens, names.length, resident.has(provider.model)));
     const cut = (): FailureClass | null => (clock.aborted ? 'timeout' : stop?.aborted ? 'stopped' : null);
     resident.delete(provider.model);   // until this call is answered
     const started = Date.now();
@@ -126,7 +113,7 @@ async function sent(
     }
     const answers: Record<string, Answer> = {};
     for (const name of names) {
-      const a = typed(questions[name], body.answers?.[name]);
+      const a = typed(body.answers?.[name]);
       if (!a) return fail('parse', opts, `no usable answer for ${name}`);
       answers[name] = a;
     }

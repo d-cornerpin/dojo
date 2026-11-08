@@ -19,7 +19,7 @@ const Q: Record<string, Question> = { q: { type: 'noul', instructions: 'q?' } };
 beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(mockDb.current); installDecisionModel(mockDb.current); });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
-describe('two concurrent decisions', () => {
+describe('one decision call in flight at a time', () => {
   it('the second is sent only after the first is answered, and both are answered', async () => {
     const events: string[] = [];
     const answer: Array<() => void> = [];

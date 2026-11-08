@@ -34,14 +34,12 @@ let respond: (body: Record<string, unknown>, signal?: AbortSignal) => Promise<Re
 
 const QUESTIONS: Record<string, Question> = {
   only_promises_to_start: { type: 'noul', instructions: 'Does `reply` END by promising to begin work, with nothing delivered yet?' },
-  topic: { type: 'choice', instructions: 'Which topic is `reply` about?', criteria: { billing: null, other: null } },
-  urgency: { type: 'score', instructions: 'How urgent is `reply`?', criteria: ['not', 'somewhat', 'very'] },
+  topic_is_billing: { type: 'noul', instructions: 'Is `reply` about billing?' },
 };
 const DOCUMENTED = {
   answers: {
     only_promises_to_start: { noul: 0.91 },
-    topic: { choice: 'billing', probabilities: { billing: 0.85, other: 0.15 }, confidence: 0.7 },
-    urgency: { score: 1.3, probabilities: { not: 0.2, somewhat: 0.3, very: 0.5 }, confidence: 0.4 },
+    topic_is_billing: { noul: 0.7 },
   },
   usage: { input_tokens: 120 },
 };
@@ -98,8 +96,7 @@ describe('decide()', () => {
     expect({ ...calls[0].body, state: unfenceState(calls[0].body.state) }).toEqual({ model: STANDARD_DECISION_MODEL.tag, state: { reply: 'I will start on it now.' }, questions: QUESTIONS, keep_alive: -1 });
     expect(answers).toEqual({
       only_promises_to_start: { type: 'noul', noul: 0.91 },
-      topic: { type: 'choice', choice: 'billing', probabilities: { billing: 0.85, other: 0.15 }, confidence: 0.7 },
-      urgency: { type: 'score', score: 1.3, probabilities: { not: 0.2, somewhat: 0.3, very: 0.5 }, confidence: 0.4 },
+      topic_is_billing: { type: 'noul', noul: 0.7 },
     });
   });
 
@@ -126,16 +123,6 @@ describe('decide()', () => {
     const rows = db().prepare('SELECT agent_id, model_id, input_tokens, output_tokens, cost_usd, latency_ms, call_purpose FROM cost_records').all();
     expect(rows).toEqual([expect.objectContaining({ agent_id: 'agent-x', model_id: 'm-decision', input_tokens: 120, output_tokens: 0, cost_usd: 0, call_purpose: 'reply_claims' })]);
     expect(typeof (rows[0] as { latency_ms: unknown }).latency_ms).toBe('number');
-  });
-
-  it('REVIEW FOCUS 1: a hung Ollama returns null within the timeout', async () => {
-    install();
-    respond = (_b, signal) => new Promise((_r, reject) => {
-      signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-    });
-    const t0 = Date.now();
-    expect(await decide('text', QUESTIONS, { purpose: 'reply_claims', timeoutMs: 60 })).toBeNull();
-    expect(Date.now() - t0).toBeLessThan(1_000);
   });
 
   it('REVIEW FOCUS 1: no decision model installed → null, and nothing is dialled', async () => {

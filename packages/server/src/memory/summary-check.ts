@@ -1,6 +1,4 @@
-// Every summary is checked against its source before it is kept (owner rulings: check each summary against the
-// decision model; redo bad summaries). Whoever wrote it, the decision model is asked whether it describes anything
-// as currently pending or owed (`generateSummary` is the one door every summary comes through):
+// Every summary (`generateSummary` is its one door) is checked by the decision model before it is kept: does it state anything as pending or owed?
 //   pass        kept as written;
 //   fail        rewritten once with the failure named, then checked again;
 //   fail again  not kept: the rows stay whole and a later pass tries again;
@@ -10,7 +8,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import type { Question } from '../agent/decide.js';
-import { onTheModel } from '../agent/decision-policy.js';
+import { isYes, onTheModel } from '../agent/decision-policy.js';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { sourceParts, checkPart } from './summary-check-parts.js';
@@ -28,7 +26,7 @@ const FEEDBACK = 'it described something as currently pending or owed';
 const KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** The model's probability that the summary states something pending (the highest over the source's parts), or
- *  null when any part went unanswered. A summary fails at 0.5 or above. */
+ *  null when any part went unanswered. */
 export async function checkSummary(sourceRows: string, summary: string, agentId: string): Promise<number | null> {
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), QUESTIONS, MEASURED_CHARS_PER_TOKEN);
   if (parts === null) {
@@ -39,7 +37,7 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
   let highest = 0;
   for (const [i, part] of parts.entries()) {
     for (const a of await checkPart(part, parts.length === 1 ? null : `${i + 1} of ${parts.length}`, summary, QUESTIONS, agentId)) {
-      if (a?.stated_current?.type !== 'noul') return null;
+      if (!a?.stated_current) return null;
       highest = Math.max(highest, a.stated_current.noul);
     }
   }
@@ -67,12 +65,12 @@ export async function keepOnlyIfChecked(
 ): Promise<SummaryResult> {
   if (!onTheModel(ON_THE_MODEL)) return written;
   const first = await checkSummary(source, written.text, agentId);
-  if (first === null || first < 0.5) { record(agentId, writer, first === null ? 'unavailable' : 'ok', first); return written; }
+  if (first === null || !isYes(first)) { record(agentId, writer, first === null ? 'unavailable' : 'ok', first); return written; }
 
   const again = await rewrite(FEEDBACK);
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
   const second = await checkSummary(source, again.text, agentId);
-  if (second === null || second < 0.5) { record(agentId, writer, second === null ? 'unavailable' : 'rewritten_ok', second); return again; }
+  if (second === null || !isYes(second)) { record(agentId, writer, second === null ? 'unavailable' : 'rewritten_ok', second); return again; }
 
   record(agentId, writer, 'not_kept', second);
   logger.warn('summary_check_failed the summary was not kept; the rows stay whole for a later pass', { writer, statedCurrent: second }, agentId);

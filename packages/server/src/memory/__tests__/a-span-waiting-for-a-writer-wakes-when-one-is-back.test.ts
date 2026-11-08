@@ -118,7 +118,7 @@ beforeEach(() => {
   model.run('m-decision', 'ollama-local', STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag, '["decision"]', 262_144, 0);
   const agent = db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'A worker agent', 'idle', ?, '{}')");
   agent.run(AGENT, OWN); agent.run(OTHER, OWN);
-  db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_window', '27648'), ('decision_mode.summary_check.invented', 'rule'), ('decision_mode.summary_check.dropped', 'rule'), ('decision_mode.summary_check.stated_current', 'rule')").run();
+  db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_window', '27648')").run();
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
     const p = new URL(url).pathname;
     if (p === '/api/tags') return Response.json({ models: [
