@@ -59,6 +59,11 @@ describe('nothing on the board asks the owner to validate', () => {
     expect(screen.getByRole('button', { name: 'Send back' })).toBeTruthy();
   });
 
+  it('never offers the owner "Couldn\'t be done", which only a worker\'s hand-in can say', () => {
+    panel(task('t1', 'in_progress'));
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).not.toContain("Couldn't be done");
+  });
+
   it('offers no decision on any other task', () => {
     for (const status of ['on_deck', 'in_progress', 'sent_back', 'complete'] as const) {
       const { unmount } = panel(task(`t-${status}`, status));

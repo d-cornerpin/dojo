@@ -11,6 +11,7 @@ interface TaskRunHistoryProps {
 const statusColors: Record<string, string> = {
   complete: 'glass-badge-teal',
   running: 'glass-badge-amber',
+  failed: 'glass-badge-coral',
   skipped: 'glass-badge-gray',
   // A run that ran and left items is not done and not an error; its label names what is left.
   incomplete: 'glass-badge-gray',

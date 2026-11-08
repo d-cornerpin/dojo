@@ -557,6 +557,9 @@ export interface ProjectDetail extends Project {
   taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; cancelled: number };
 }
 
+/** A Working task with no movement for this long is left quiet and labelled on the board. */
+export const DORMANT_MS = 14 * 24 * 60 * 60 * 1000;
+
 export interface Task {
   id: string;
   projectId: string | null;
@@ -608,6 +611,7 @@ export interface Task {
   kind: string | null;
   createdAt: string;
   updatedAt: string;
+  lastMovedAt: string;   // `taskMovedAtSql`, the task's own last movement
   completedAt: string | null;
   // Phase B.1 reasoning surface. Goal = what success looks like (set at
   // task creation), result = what the agent says it did, evidence = the

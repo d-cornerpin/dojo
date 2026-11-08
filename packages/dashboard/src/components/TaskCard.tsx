@@ -2,8 +2,9 @@ import { useState } from 'react';
 import type { Task } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
+import { DORMANT_MS } from '@dojo/shared';
 import { formatDateShort, formatShortDateTime, formatTimeSince, parseUtc } from '../lib/dates';
-import { terminalOutcomeLabel } from '../lib/task-status';
+import { HOLD_WORDS, terminalOutcomeLabel } from '../lib/task-status';
 
 interface TaskCardProps {
   task: Task;
@@ -19,7 +20,6 @@ const priorityLabels: Record<string, string> = {
 };
 
 // Instants arrive as Z-less UTC text; every read goes through `lib/dates.ts`.
-const DORMANT_MS = 14 * 24 * 60 * 60 * 1000;
 
 const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -69,7 +69,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
   // Paused and complete cards read as dimmed in the prototype.
   const isDim = isPaused || task.status === 'complete';
   const outcomeLabel = terminalOutcomeLabel(task.status);
-  const movedAt = parseUtc(task.updatedAt);
+  const movedAt = parseUtc(task.lastMovedAt);
   const isDormant = task.status === 'in_progress' && !task.hold && !!movedAt && Date.now() - movedAt.getTime() >= DORMANT_MS;
 
   // The repeat line (e.g. "Every weekday · 13 runs") sits in .kcard__sub.
@@ -104,12 +104,12 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
       {/* A held Working task: its hold and reason, with the resume time if set. */}
       {task.hold && (
         <div className="kcard__warn" title={task.holdReason ?? undefined}>
-          {isPaused ? 'Paused' : 'Blocked'}: {task.holdReason}
+          {HOLD_WORDS[task.hold]}: {task.holdReason}
           {isPaused && task.pausedUntil ? ` (until ${formatShortDateTime(task.pausedUntil)})` : ''}
         </div>
       )}
 
-      {isDormant && <div className="kcard__warn">No activity since {formatDateShort(task.updatedAt)}</div>}
+      {isDormant && <div className="kcard__warn">No activity since {formatDateShort(task.lastMovedAt)}</div>}
       {task.assigneeGone && <div className="kcard__warn">Agent no longer exists</div>}
 
       <div className="kcard__foot">

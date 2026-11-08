@@ -35,4 +35,9 @@ describe('a task whose agent is gone says so', () => {
     expect(getTask('t-ended')!.assigneeGone).toBe(true);
     expect(getTask('t-missing')!.assigneeGone).toBe(true);
   });
+
+  it('keys on the worker the ladder drives, not only the name shown', () => {
+    seedTrackerTask(mockDb.current!, { id: 't-handed', agentId: FXID.n1, assignee_agent: FXID.n2 });
+    expect(getTask('t-handed')).toMatchObject({ assignedToName: FX.n1, assigneeGone: true });
+  });
 });

@@ -27,6 +27,7 @@
 import type { WorkEventKind } from './event-kinds.js';
 import type { WorkState } from './store.js';
 import { TERMINAL_STATE_NAMES } from './terminal-states.js';
+import { taskMovedAtSql } from './task-freshness.js';
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 1 — VOCABULARY
@@ -296,6 +297,8 @@ export const taskRowColumns = (): string => `SELECT
   work.task_kind AS kind,
   ${msToText('work.opened_at')} AS created_at,
   ${msToText('work.updated_at')} AS updated_at,
+  ${msToText(taskMovedAtSql('work'))} AS last_moved_at,
+  COALESCE(work.assignee_agent, work.agent_id) AS worker_id,
   ${msToText('work.closed_at')} AS completed_at,
   work.goal AS goal,
   work.result AS result,

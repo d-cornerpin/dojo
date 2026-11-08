@@ -85,6 +85,8 @@ interface TaskRow {
   kind: string | null;
   created_at: string;
   updated_at: string;
+  last_moved_at: string;
+  worker_id: string | null;
   completed_at: string | null;
   goal: string | null;
   result: string | null;
@@ -116,12 +118,13 @@ function mapProjectRow(row: ProjectRow): Project {
   };
 }
 
-/** The assignee's name, and whether that agent is gone (missing or terminated), from one lookup. */
-function assigneeOf(agentId: string | null): { name: string | null; gone: boolean } {
-  if (!agentId) return { name: null, gone: false };
+/** The assignee's name, and whether the worker the ladder drives is gone (missing or terminated), from one lookup. */
+function assigneeOf(agentId: string | null, workerId: string | null): { name: string | null; gone: boolean } {
   try {
-    const agent = getDb().prepare('SELECT name, status FROM agents WHERE id = ?').get(agentId) as { name: string; status: string } | undefined;
-    return { name: agent?.name ?? agentId, gone: !agent || agent.status === 'terminated' };
+    const rows = getDb().prepare('SELECT id, name, status FROM agents WHERE id IN (?, ?)')
+      .all(agentId, workerId) as Array<{ id: string; name: string; status: string }>;
+    const worker = rows.find((r) => r.id === workerId);
+    return { name: agentId && (rows.find((r) => r.id === agentId)?.name ?? agentId), gone: !!workerId && (!worker || worker.status === 'terminated') };
   } catch {
     return { name: agentId, gone: false };
   }
@@ -135,7 +138,7 @@ function mapTaskRow(row: TaskRow): Task {
     dependsOn = [];
   }
 
-  const assignee = assigneeOf(row.assigned_to);
+  const assignee = assigneeOf(row.assigned_to, row.worker_id);
   return {
     id: row.id,
     projectId: row.project_id,
@@ -170,6 +173,7 @@ function mapTaskRow(row: TaskRow): Task {
     kind: row.kind ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    lastMovedAt: row.last_moved_at,
     completedAt: row.completed_at,
     goal: row.goal ?? null,
     result: row.result ?? null,

@@ -11,6 +11,7 @@
 // Left alone: an owner-paused task (its clock restarts when the pause lifts), a row whose worker no
 // longer exists, a Working row already idle 14 days when this box first ran the ladder, and a worker
 // (or main agent) in a live turn, which gets its step on a later sweep. A blocked hold is a stall.
+import { DORMANT_MS } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId, getPMAgentId } from '../../config/platform.js';
@@ -32,7 +33,6 @@ export const LADDER_ENTRY = { hint: 'ladder_hint', pm: 'ladder_pm', decider: 'la
 const OWNER_ASK = 'validation_escalated';
 const OWNER_FLOOR_MS = 15 * 60_000;
 const DAY_MS = 24 * 3_600_000;
-const QUIET_DAYS_MS = 14 * DAY_MS;
 const REFUSALS_BEFORE_PM = 3;
 
 /** Every engine hint the ladder sends, in one table. */
@@ -110,7 +110,7 @@ function candidates(now: number): string[] {
       WHERE ${taskScope('w')} AND w.state IN ('claimed', 'sent_back', 'handed_in')
         AND NOT ${heldExpr('w', 'paused')} AND w.is_paused = 0 AND (w.scheduled_start IS NULL OR w.scheduled_start <= ?)
         AND (w.state = 'handed_in' OR ${taskMovedAtSql('w')} >= ${LADDER_ANCHOR_SQL} - ?)`,
-  ).all(now, QUIET_DAYS_MS) as Array<{ id: string }>).map((r) => r.id);
+  ).all(now, DORMANT_MS) as Array<{ id: string }>).map((r) => r.id);
 }
 
 const busy = (agentId: string, workId: string): boolean => agentIsLive(agentId) || jobCarriedIds(agentId).includes(workId);

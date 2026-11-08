@@ -15,6 +15,8 @@ export const STATUS_WORDS: Record<TaskStatus, string> = {
   cancelled: 'Cancelled',
 };
 
+export const HOLD_WORDS: Record<NonNullable<Task['hold']>, string> = { paused: 'Paused', blocked: 'Blocked' };
+
 /** The columns the board renders, in order. */
 export const KANBAN_COLUMN_KEYS = [
   'on_deck', 'in_progress', 'handed_in', 'sent_back', 'complete', 'fallen',
@@ -31,7 +33,7 @@ const COLUMN_OF: Record<TaskStatus, KanbanColumnKey> = {
 
 /** Which column a task renders in; the Record type keeps it total over the status union. */
 export function columnKeyForStatus(status: TaskStatus | string): KanbanColumnKey | null {
-  return COLUMN_OF[status as TaskStatus] ?? null;
+  return Object.hasOwn(COLUMN_OF, status) ? COLUMN_OF[status as TaskStatus] : null;
 }
 
 /** The word on a Closed card, or null where the column header already says it. */

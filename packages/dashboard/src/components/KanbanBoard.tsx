@@ -99,13 +99,13 @@ const FINISHED_COLUMNS: ReadonlySet<KanbanColumnKey> = new Set<KanbanColumnKey>(
 interface ColumnDef {
   key: KanbanColumnKey;
   label: string;
-  /** The column title's color (Sent back shares Closed's amber); Open has none. */
-  flavor: '' | 'kcol--progress' | 'kcol--waiting' | 'kcol--complete' | 'kcol--closed';
+  /** The column title's color; Open has none. */
+  flavor: '' | 'kcol--progress' | 'kcol--purple' | 'kcol--complete' | 'kcol--amber';
 }
 
 const FLAVORS: Record<KanbanColumnKey, ColumnDef['flavor']> = {
-  on_deck: '', in_progress: 'kcol--progress', handed_in: 'kcol--waiting',
-  sent_back: 'kcol--closed', complete: 'kcol--complete', fallen: 'kcol--closed',
+  on_deck: '', in_progress: 'kcol--progress', handed_in: 'kcol--purple',
+  sent_back: 'kcol--amber', complete: 'kcol--complete', fallen: 'kcol--amber',
 };
 
 const columns: ColumnDef[] = KANBAN_COLUMN_KEYS.map((key) => ({ key, label: COLUMN_WORDS[key], flavor: FLAVORS[key] }));

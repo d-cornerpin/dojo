@@ -9,7 +9,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { cardMover } from './tracker-card-move';
 import { KanbanBoard } from '../components/KanbanBoard';
-import { STATUS_WORDS } from '../lib/task-status';
+import { HOLD_WORDS, STATUS_WORDS } from '../lib/task-status';
 import { TaskRunHistory } from '../components/TaskRunHistory';
 import { TaskScheduleForm, DEFAULT_SCHEDULE, type ScheduleConfig } from '../components/TaskScheduleForm';
 import { ModalShell } from '../components/ModalShell';
@@ -177,12 +177,10 @@ export const TaskDetailPanel = ({
             >
               <option value="on_deck">{STATUS_WORDS.on_deck}</option>
               <option value="in_progress">{STATUS_WORDS.in_progress}</option>
-              <option value="paused">Paused</option>
-              <option value="blocked">Blocked</option>
-              {task.status === 'handed_in' && <option value="handed_in" disabled>{STATUS_WORDS.handed_in}</option>}
-              {task.status === 'sent_back' && <option value="sent_back" disabled>{STATUS_WORDS.sent_back}</option>}
+              <option value="paused">{HOLD_WORDS.paused}</option>
+              <option value="blocked">{HOLD_WORDS.blocked}</option>
+              {(['handed_in', 'sent_back', 'fallen'] as string[]).includes(task.status) && <option value={task.status} disabled>{STATUS_WORDS[task.status]}</option>}
               <option value="complete">{STATUS_WORDS.complete}</option>
-              <option value="fallen">{STATUS_WORDS.fallen}</option>
               <option value="cancelled">{STATUS_WORDS.cancelled}</option>
             </select>
             {task.status === 'handed_in' && (
