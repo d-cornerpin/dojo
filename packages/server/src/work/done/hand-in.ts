@@ -15,6 +15,7 @@ import { ringValidationDoorbell } from '../validation-drive.js';
 import { transition, appendWorkEvent, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
 import { measuredItemsLeft } from '../measure-close-gate.js';
+import { PATIENCE_ENTRY } from '../../tracker/assignee-patience.js';
 import { checkProof, type HandInOutcome, type ProofItemInput, type ResolvedItem } from './proof.js';
 
 export type HandInBy = { kind: 'worker'; agentId: string } | { kind: 'engine'; onBehalfOf: string; because: string };
@@ -42,15 +43,30 @@ export function latestHandIn(workId: string): (HandInRecord & { eventId: number 
   return e ? { ...(JSON.parse(e.payload) as HandInRecord), eventId: e.id } : null;
 }
 
+class Rollback extends Error { constructor(readonly outcome: WorkOutcome) { super('rollback'); } }
+
 /** Run `fn` as one unit, rolled back whole when the transition inside it is not applied. */
 export function unitOrRollback(fn: () => WorkOutcome): WorkOutcome {
-  let out: WorkOutcome | null = null;
   try {
-    withUnit(() => { out = fn(); if (out.kind !== 'applied') throw new Error('rollback'); });
+    return withUnit(() => { const out = fn(); if (out.kind !== 'applied') throw new Rollback(out); return out; });
   } catch (err) {
-    if (out === null) throw err;
+    if (err instanceof Rollback) return err.outcome;
+    throw err;
   }
-  return out as unknown as WorkOutcome;
+}
+
+/** Every agent that worked this row: its worker now, every agent that handed it in, and every holder it
+ *  was moved away from. None of them decides it. */
+export function workersOf(workId: string): Set<string> {
+  const rows = getDb().prepare(
+    `SELECT actor AS a FROM work_events WHERE work_id = ? AND kind = 'handed_in' AND actor <> 'engine'
+     UNION SELECT json_extract(payload, '$.from_agent') FROM work_events
+      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?`,
+  ).all(workId, workId, PATIENCE_ENTRY.reassigned) as Array<{ a: string | null }>;
+  const out = new Set(rows.map((r) => r.a).filter((a): a is string => !!a));
+  const now = workerOf(workId);
+  if (now) out.add(now);
+  return out;
 }
 
 const label = (r: Pick<DoorRow, 'id' | 'title'>): string => `"${r.title ?? r.id}" [${r.id}]`;

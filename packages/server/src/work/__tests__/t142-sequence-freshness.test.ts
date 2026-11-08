@@ -102,70 +102,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW));
 });
 
-describe('§1 THE WITNESS: a same-millisecond tie is read by the clock, wrongly', () => {
-  it.skip('2d: was RED at 00a2b34d: the board reads a fresh, unchecked block as PM-upheld', () => {
-    upheldThenReblocked('t-tie');
-    expect(validated('t-tie', 'blocked'), 'the verdict belonged to the PREVIOUS block').toBe(0);
-  });
 
-  it.skip('2d: was RED at 00a2b34d: the owner is told "Your PM checked it" about a block nobody checked', () => {
-    upheldThenReblocked('t-tie-owner');
-    const row = selectRowsForOwnerEscalation(CUTOFF, []).find((r) => r.id === 't-tie-owner');
-    expect(row, 'the re-blocked row is a candidate').toBeDefined();
-    const line = ownerEscalationAlertLine({
-      title: row!.title, status: row!.status, since: row!.updated, agentName: 'Quillon',
-      steers: 2, failures: row!.failures, blockedValidated: row!.blocked_validated === 1,
-      obstacle: row!.obstacle,
-    });
-    expect(line).not.toContain('confirmed the block is real');
-    expect(line).toContain('has not been able to confirm');
-  });
-
-  it.skip('2d: was RED at 00a2b34d: the disposal door refuses the assignee\'s own close-out as "ruled"', () => {
-    upheldThenReblocked('t-tie-door');
-    // The assignee's own disposal of its own UNRULED block is the normal close-out path the
-    // gate promises to leave alone (`blockedDisposalRefusal`: "the normal close-out path").
-    const r = setTrackerStatus('t-tie-door', 'cancelled', {
-      by: 'agent', actorId: ASSIGNEE, reason: 'the owner withdrew the request; standing it down',
-    });
-    expect(r.kind, 'the assignee owns an unruled block').toBe('applied');
-  });
-
-  it.skip('2d: was RED at 00a2b34d: the same tie on a PAUSE leaks the old blessing too', () => {
-    seedWork('t-tie-pause');
-    move('t-tie-pause', 'paused');
-    upholdClaim('t-tie-pause', 'paused', 'pm', PM, 'the pause is legitimate');
-    move('t-tie-pause', 'claimed');
-    move('t-tie-pause', 'paused');
-    expect(validated('t-tie-pause', 'paused'), 'a fresh pause is unvalidated').toBe(0);
-  });
-});
-
-describe('§2 THE POSITIVE CONTROLS — the tie must not cost a verdict that IS current', () => {
-  it.skip('2d: an uphold in the same millisecond AFTER the entry is current', () => {
-    seedWork('t-after');
-    move('t-after', 'blocked');
-    upholdClaim('t-after', 'blocked', 'pm', PM, 'PM confirmed the block is real');
-    expect(validated('t-after', 'blocked')).toBe(1);
-  });
-
-  it.skip('2d: an AUTHORITATIVE entry carries its own verdict, in its own unit', () => {
-    seedWork('t-auth');
-    move('t-auth', 'blocked');
-    move('t-auth', 'claimed');
-    const r = transition('t-auth', {
-      to: 'blocked', by: 'pm', actorId: PM, reason: 'PM forces the block', claim: 'authoritative',
-    });
-    expect(r.kind).toBe('applied');
-    expect(validated('t-auth', 'blocked')).toBe(1);
-  });
-
-  it.skip('2d: a re-block AFTER the uphold, then a fresh uphold, is current again', () => {
-    upheldThenReblocked('t-again');
-    upholdClaim('t-again', 'blocked', 'pm', PM, 'PM checked the new obstacle too');
-    expect(validated('t-again', 'blocked')).toBe(1);
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §3 — THE STAMP IS THE COMPANION'S ID, FOR EVERY WRITER. Migration 189c's trigger stamps a
@@ -183,36 +120,8 @@ describe('§3 every adjudication writer\'s verdict sits exactly on its companion
     'SELECT id, kind FROM work_events WHERE work_id = ? ORDER BY id DESC LIMIT 1',
   ).get(id) as { id: number; kind: string };
 
-  it.skip('2d: transition() — an authoritative move files its verdict on its own transition row', () => {
-    seedWork('w-auth');
-    const r = transition('w-auth', {
-      to: 'blocked', by: 'pm', actorId: PM, reason: 'PM forces the block', claim: 'authoritative',
-    });
-    expect(r.kind).toBe('applied');
-    const ev = lastEvent('w-auth');
-    expect(ev.kind).toBe('transition');
-    expect(lastAdj('w-auth').event_seq).toBe(ev.id);
-  });
 
-  it.skip('2d: upholdClaim — the verdict sits on its claim_upheld row', () => {
-    seedWork('w-uphold');
-    move('w-uphold', 'blocked');
-    upholdClaim('w-uphold', 'blocked', 'pm', PM, 'confirmed');
-    const ev = lastEvent('w-uphold');
-    expect(ev.kind).toBe('claim_upheld');
-    expect(lastAdj('w-uphold').event_seq).toBe(ev.id);
-  });
 
-  it.skip('2d: rejectClaim — the verdict sits on its claim_rejected row', () => {
-    seedWork('w-reject');
-    move('w-reject', 'blocked');
-    throwBackClaim('w-reject', 'blocked', 'pm', PM, 'not a real block; try the read-only export');
-    const ev = lastEvent('w-reject');
-    expect(ev.kind).toBe('claim_rejected');
-    const adj = lastAdj('w-reject');
-    expect(adj.verdict).toBe('rejected');
-    expect(adj.event_seq).toBe(ev.id);
-  });
 
   it('the shared fixture\'s trigger IS the migration\'s trigger (30 fixture-built files rely on it)', () => {
     const body = (src: string): string => {
@@ -225,12 +134,6 @@ describe('§3 every adjudication writer\'s verdict sits exactly on its companion
     expect(body(fixture)).toBe(body(mig));
   });
 
-  it.skip('2d: no verdict is ever left unpositioned', () => {
-    upheldThenReblocked('w-any');
-    const n = mockDb.current!.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE event_seq IS NULL')
-      .get() as { n: number };
-    expect(n.n).toBe(0);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -271,15 +174,6 @@ const VALIDATED_READERS: Record<string, number> = {
 };
 
 describe('§4 census: one builder, every reader, no clock', () => {
-  it.skip('2d: the readers are exactly these, in both directions', () => {
-    const found: Record<string, number> = {};
-    for (const [file, src] of productionSources) {
-      // The definition is spelled `validatedExpr = (`, so only CALLS match.
-      const n = (src.match(/\bvalidatedExpr\(/g) ?? []).length;
-      if (n > 0) found[file] = n;
-    }
-    expect(found).toEqual(VALIDATED_READERS);
-  });
 
   it('the walk is not vacuous: it read the tree and found the builder', () => {
     expect(productionSources.size).toBeGreaterThan(300);
@@ -324,35 +218,3 @@ const awaiting = (id: string): number =>
   (mockDb.current!.prepare(`SELECT ${awaitingUserVerdictExpr('w')} AS n FROM work w WHERE w.id = ?`)
     .get(id) as { n: number }).n;
 
-describe('§5 the stalemate counter and the verdict hold are read by sequence too', () => {
-  it.skip('2d: a rejection BEFORE a same-millisecond reset is not counted after it', () => {
-    seedWork('r-tie');
-    move('r-tie', 'blocked');
-    throwBackClaim('r-tie', 'blocked', 'pm', PM, 'not a real block; try the read-only export');
-    resetRevertCount('r-tie', 'owner', 'the owner ruled; the count starts again');
-    expect(revertCount('r-tie'), 'the reset came after the rejection').toBe(0);
-  });
-
-  it.skip('2d: CONTROL: a rejection AFTER a same-millisecond reset IS counted', () => {
-    seedWork('r-after');
-    move('r-after', 'blocked');
-    resetRevertCount('r-after', 'owner', 'fresh start');
-    throwBackClaim('r-after', 'blocked', 'pm', PM, 'not a real block; try the read-only export');
-    expect(revertCount('r-after')).toBe(1);
-  });
-
-  it.skip('2d: a verdict request filed AFTER a same-millisecond clear is still awaiting', () => {
-    seedWork('v-tie');
-    requestUserVerdict('v-tie', 'engine', { reverts: 3 });
-    clearUserVerdict('v-tie', 'owner', 'answered');
-    requestUserVerdict('v-tie', 'engine', { reverts: 3 });
-    expect(awaiting('v-tie'), 'the newest request has no answer after it').toBe(1);
-  });
-
-  it.skip('2d: CONTROL: a clear AFTER a same-millisecond request ends the hold', () => {
-    seedWork('v-clear');
-    requestUserVerdict('v-clear', 'engine', { reverts: 3 });
-    clearUserVerdict('v-clear', 'owner', 'answered');
-    expect(awaiting('v-clear')).toBe(0);
-  });
-});

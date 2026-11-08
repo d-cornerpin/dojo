@@ -8,7 +8,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { appendWorkEvent } from '../../store.js';
-import { freshBoard, handedIn, call, stateOf, MAIN, TASK } from './helpers/decision-world.js';
+import { freshBoard, handedIn, call, stateOf, MAIN, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 /** The main agent's own task, past the PM: the owner decides it, and he was asked. */
@@ -64,6 +64,24 @@ describe('the owner decides by button or by his own words', () => {
     const r = await relay('yes, the report is fine');
     expect(r.isError).toBe(false);
     expect(stateOf()).toBe('done');
+  });
+
+  it('a worker relaying the owner\'s "Thanks" on its own open task is refused: there is no hand-in and no ask', async () => {
+    freshBoard();
+    ownerSays('Thanks');
+    for (const verdict of ['owner_done', 'approve']) {
+      const r = await call(WORKER, 'work_validate', { action: 'decide', task_id: TASK, verdict, reason: 'The owner said thanks', user_quote: 'Thanks' });
+      expect(r.isError).toBe(true);
+    }
+    expect(stateOf()).toBe('claimed');
+  });
+
+  it('the owner\'s relayed words never cancel or close a task outright; that is his dashboard button', async () => {
+    await ownersToDecide();
+    ownerSays('Cancel it.');
+    const r = await relay('Cancel it.', 'cancel');
+    expect(r.isError).toBe(true);
+    expect(stateOf()).toBe('handed_in');
   });
 
   it('cancel by an agent is refused', async () => {

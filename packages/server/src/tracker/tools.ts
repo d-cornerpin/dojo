@@ -159,11 +159,6 @@ export function repeatNumberError(value: unknown): string | null {
   return `Error: repeat_interval="${value}" must be a whole number of 1 or more (for example 1 for "every day"). Zero, negative or fractional numbers cannot repeat; the task would run once and stop.`;
 }
 
-/** Delivered work is never silently regenerated: a task with a hand-in waiting for a decision is decided,
- *  never retasked over it. */
-export function retaskWouldOverwriteDeliveredWork(state: string): boolean {
-  return state === 'handed_in';
-}
 
 // ── trackerCreateProject ──
 
@@ -2417,7 +2412,7 @@ export async function trackerRetask(
   if (task.status === 'cancelled') {
     return `Error: task "${task.title}" (${taskId}) is cancelled. Cancelled tasks cannot be retasked. Create a new task instead.`;
   }
-  if (retaskWouldOverwriteDeliveredWork(task.state)) {
+  if (task.state === 'handed_in') {   // delivered work is decided, never regenerated over
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is handed in and waits for a decision. Decide it instead: open its proof, then work_validate(action="decide", task_id="${taskId}", verdict="approve" or "send_back", reason).`;
   }
   if (!task.assigned_to) {

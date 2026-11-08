@@ -32,17 +32,8 @@ import { turnContext } from '../agent/turn-context.js';
 import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
-import {
-  transition, appendWorkEvent,
-  type Actor, type Claim, type WorkOutcome, type WorkState,
-} from './store.js';
-import {
-  statusToState, stateToStatus, TRACKER_ROOT_KIND, WORK_EVENT, validatedExpr, taskScope,
-  type TrackerStatus,
-} from './tracker-view.js';
-// t129's gate names the owner in its refusal. `config/platform.ts` is a leaf read of the
-// config row, so it adds no cycle to this module.
-import { getOwnerName } from '../config/platform.js';
+import { transition, appendWorkEvent, type Actor, type WorkOutcome, type WorkState } from './store.js';
+import { statusToState, stateToStatus, TRACKER_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
@@ -553,186 +544,12 @@ export function detachChildren(parentId: string): number {
 // 3 — STATUS, WHICH IS A TRANSITION
 // ════════════════════════════════════════════════════════════════════════════════
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t129 — THE BLOCKED-WORK DISPOSAL DOOR. (v3.3.2 blast run 4, clause P4; triage Lane D + S5)
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// ── WHAT IT REFUSES ──
-// A PRIMARY-role agent killed ANOTHER agent's PM-upheld blocked row with one
-// `work_update(action="status", status="cancelled")` and got `isError: false`: the row went
-// `abandoned`, still assigned to the victim, with `owner_rows_naming_it = 0`. The escalation
-// ladder was not slow — it was PRE-EMPTED, because the row left `blocked` before any steer
-// could be spent. The drive and the full clause list are in
-// `tracker/__tests__/blocked-work-is-the-owners-to-dispose.test.ts`.
-//
-// ── THE RULE, DERIVED FROM THE STANDING OWNER RULING ──
-// OR-PM-1v2: blocked/declined work *"is NOT reassignable by agents — it ESCALATES to the
-// user."* Disposal is strictly worse than the reassignment that ruling fences: the work does
-// not move, it VANISHES, and none of the three legitimate reasons it names (assignee
-// gone/deactivated · multi-agent coordination · user-requested) covers "an agent decided to
-// cancel it". THE DISPOSAL IS THE RULING THE ESCALATION EXISTS TO OBTAIN, so it belongs to the
-// person the escalation is addressed to. Nothing new is decided here; the ruling is read.
-//
-// The triage left exactly one point open — *"whether a PM-upheld block should be un-disposable
-// by ANY agent including the assignee until the owner rules"* — and the sentence above answers
-// it. So the predicate has two independent legs:
-//
-//   * a BYSTANDER (an actor that is not the assignee) may never dispose of a blocked row; and
-//   * NOBODY under a model's control may dispose of a PM-RULED one — the assignee included.
-//
-// An ORDINARY (unruled) block stays the assignee's to close out. The triage names that the
-// normal path and run-4's P5 depends on it, so it is deliberately untouched.
-//
-// ── ⚠ WHY THE GATE IS IN THIS FUNCTION, AND NOT WHERE IT FIRST LANDED ──
-// The first cut guarded `tracker/schema.ts`'s `setTaskStatus`/`setTaskStatusResult`. The
-// review census found a model-driven path BELOW that: `agent/spawner.ts` computes
-// `taskStatus = … : status === 'fallen' ? 'fallen' : …` and calls `setTrackerStatus` DIRECTLY
-// with `by: 'agent'`, so `complete_task(status="fallen")` still disposed of a PM-ruled blocked
-// row. Applying the same refusal at that site would have been a SECOND COPY of this
-// predicate, which is the drift class this whole fix round is about. This function's own
-// docstring already says what it is — *"The tracker's one status writer"* — so it is the one
-// place every tracker status writer crosses, and the gate is unbypassable from here by
-// construction rather than by enumeration. It is also still TRACKER-scoped, which was the
-// original argument for not putting it in `transition()`: that is the one writer of
-// `work.state` for every kind OR1 folded onto the table — asks, commitments, occurrences and
-// T4's join pieces, which are `kind='task'` too — and this is a ruling about the tracker's
-// two nouns only.
-//
-// ── TWO THINGS IT DELIBERATELY DOES NOT DO ──
-//   1. IT DOES NOT TOUCH RESOLVING FORWARD. Only TERMINAL targets reach the predicate, so any
-//      agent may still move a blocked row back to `in_progress`/`on_deck`/`paused` — that IS
-//      the resolution the block is waiting for, and it stays recorded like any transition.
-//   2. IT DOES NOT TOUCH `complete`. A `done` close is already two-key-fenced by
-//      `transition()`'s G9, ACTOR-INDEPENDENTLY: Key 2 needs the owner's `authoritative` claim
-//      or a SYSTEM_CLOSER, and no agent has either, so any agent's `complete` on a blocked row
-//      can only FILE a Key-1 close request — `[FILED]`, a `validation_requested` event, and
-//      the state does not move. If this gate swallowed `complete`, that recorded request —
-//      the useful half — would stop being written. The discriminator is the spine's own:
-//      terminal AND not `done`.
-//
-// Every AUTHORITATIVE door is unchanged by construction, because it carries
-// `claim: 'authoritative'`: the owner's dashboard PUT, the owner's verdict, and the PM's six
-// `work_validate` doors all pass it. `Actor` is a closed compiler-enforced union, so that is
-// provable from the type rather than from a caller census.
-
-/** The two disposals this gate is about: `cancelled`/`fallen` in the tracker's words. `done`
- *  is excluded on purpose — see note 2 above. */
-const BLOCKED_DISPOSALS: ReadonlySet<TrackerStatus> = new Set<TrackerStatus>(['cancelled', 'fallen']);
-
-/** Whose word a status change arrives under. An authority turns the key; `engine`, `healer`
- *  and `scheduler` are subsystems with their own fences (G6 makes the engine point at real
- *  evidence) and are not what this ruling is about. `agent` and `pm` are the two actors a
- *  MODEL drives, and the drive is theirs. */
-const MODEL_DRIVEN: ReadonlySet<string> = new Set(['agent', 'pm']);
-
-/**
- * The refusal, or `null` when this call is none of this gate's business.
- *
- * Returned rather than thrown, and in the same shape a `transition()` gate refuses in, so
- * every existing `if (!workSettled(r))` branch and `closeRefusalText`'s renderer read it with
- * no second code path.
- */
-function blockedDisposalRefusal(
-  id: string, status: TrackerStatus, input: SetStatusInput,
-): (WorkOutcome & { kind: 'refused' }) | null {
-  if (!BLOCKED_DISPOSALS.has(status)) return null;
-  // ⚠ t130 — THE OWNER'S AUTHORITY, NOT ANY AUTHORITATIVE-SHAPED CLAIM.
-  //
-  // This read `input.claim === 'authoritative'` alone, and run 5 of the blast caught what that
-  // let through: the acting PM calling, in its own turn, with its own authored reason,
-  //
-  //     work_validate { action: "override", approve: true, override_request_id: "…" }
-  //     → "[OK] override approved. Task a3dee56a forced to \"cancelled\"."
-  //
-  // ~35 s after the probe armed, on a PM-UPHELD blocked row, three orders of magnitude inside
-  // the 1200 s escalate floor. `tracker/tools.ts`'s override-approve door passes
-  // `claim: 'authoritative'` under a comment that says out loud what it is for — *"Force the
-  // status through (bypass engine hard gate)"* — so the claim was carrying TWO meanings and
-  // this gate read only one:
-  //
-  //   · "a human authority has ruled"  — the owner's door, which this exemption is FOR; and
-  //   · "the PM's override verb"       — a door a MODEL calls, whose stated purpose is
-  //                                      bypassing engine hard gates.
-  //
-  // Under OR-PM-1v2 the second is the destruction the ruling forbids: a model-driven override
-  // of a PM-upheld block, pre-escalation, is exactly the disposal that is supposed to reach
-  // the owner instead. It is the run-4 hole again, wearing the one hat the gate was told to
-  // trust — and t129's own §2 clause ("it is the claim that decides, not the name") was a
-  // GREEN TEST holding it open. Right abstraction for the owner; wrong for a verb a model can
-  // call. That clause is inverted now.
-  //
-  // BLAST RADIUS, verified door by door rather than inherited. Of the six `by:'pm'` +
-  // authoritative callers, only override-approve can name a disposal on a blocked row:
-  //   · reject-pause (`tools.ts:3733`), reject-close (`:4645`), reject-block (`:4796`) are
-  //     confined by their own ALLOWED_TARGETS to in_progress/on_deck/blocked, and retask
-  //     (`:3864`) to in_progress/on_deck — none is in `BLOCKED_DISPOSALS`;
-  //   · the Key-2 close (`:4487`) targets `complete`, which this gate deliberately leaves to
-  //     G9 (the triage's census of five did not name this one; it is unaffected for that
-  //     reason);
-  //   · the stale-A2A sweep (`pm-agent.ts:2545`) DOES target `fallen`, and is safe only
-  //     because its candidate query reads `t.state = 'on_deck'` — it never sees a blocked row.
-  //     Recorded because that is a property of its SELECT, not of this gate.
-  //   · override-approve (`:4931`) takes `req.requestedStatus` unconstrained. That is the hole.
-  // The OWNER's routes are untouched by construction: `gateway/routes/tracker.ts:452` and
-  // `:734` pass `by: 'owner'`, and so does the dashboard's bulk close (`:890`), which is the
-  // path that SHOULD dispose of these rows.
-  //
-  // ── AND THE EXEMPTION IS DELETED, NOT NARROWED. ──
-  // The prescribed one-line fix was `claim === 'authoritative' && by === 'owner'`. Measured:
-  // that line is DEAD CODE, and the mutant proved it — replacing it with `by === 'owner'`
-  // alone changed no test and no behaviour, because `Actor` is a closed union
-  // (`store.ts:61`: owner | pm | agent | engine | scheduler | healer), `MODEL_DRIVEN` is
-  // {agent, pm}, and so every actor the narrowed clause would have exempted is ALREADY
-  // exempted one line below by not being model-driven. Narrowing the claim check to the owner
-  // is therefore exactly equivalent to removing it — and only `owner` and `pm` may asssert the
-  // claim at all (`store.ts:AUTHORITIES`), with `pm` being the actor this fix exists to stop.
-  //
-  // So the rule is stated ONCE instead of twice: the gate is about actors a MODEL drives, and
-  // an authoritative-shaped claim buys such an actor nothing. Keeping both guards would mean
-  // two overlapping predicates for one fact, with the redundant one untestable — which is the
-  // drift class this lane has already been sent back for twice. The owner's exemption now
-  // rests on the single fact that the owner is not a model.
-  if (!MODEL_DRIVEN.has(input.by)) return null;
-
-  // ⚠ ONE QUESTION, ONE SOURCE. This used to be a hand-written `EXISTS` over `adjudications`
-  // that omitted `validatedExpr`'s freshness clause, and the consequence was measured: a row
-  // blocked -> upheld -> resolved forward -> blocked AGAIN on a fresh obstacle read as upheld
-  // (gate said 1, `validatedExpr` said 0), so ONE upheld block marked the row for life and
-  // refused the assignee's own ordinary close-out — breaking the very path this gate promises
-  // to leave alone, and P5's dependency with it. `excludeSystemClosers` is the single declared
-  // difference from the board's reading of the same rows; the argument for it is on
-  // `validatedExpr` itself.
-  const row = getDb().prepare(
-    `SELECT w.agent_id AS agent_id, w.state AS state,
-            ${validatedExpr('w', 'blocked', { excludeSystemClosers: true })} AS ruled
-       FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(id) as { agent_id: string; state: WorkState; ruled: number } | undefined;
-  // Not a tracker task, or gone: `transition()`'s G1 owns both answers and says them better.
-  if (!row || row.state !== 'blocked') return null;
-
-  const actorId = input.actorId ?? input.by;
-  const isAssignee = actorId === row.agent_id;
-  const ruled = row.ruled === 1;
-
-  if (isAssignee && !ruled) return null;   // the normal close-out path; P5 depends on it
-
-  const why = ruled
-    ? 'an authority has RULED on this block — the obstacle is confirmed real, '
-      + `so the disposal is ${getOwnerName()}'s call, not an agent's`
-    : "blocked work is not a bystander's to dispose of — it belongs to its assignee until "
-      + `${getOwnerName()} rules otherwise`;
-
-  return { kind: 'refused', workId: id, reason: 'blocked-disposal-not-the-actors', detail: why };
-}
-
-
 export interface SetStatusInput {
   by: Actor;
   actorId?: string | null;
   reason: string;
   evidenceRef?: string | null;
   resultDeliveryId?: string | null;
-  claim?: Claim;
   expectedState?: WorkState;
   claimedByTurn?: number | null;
   note?: string | null;
@@ -772,10 +589,8 @@ export function setTrackerStatus(
   const db = getDb();
   const to = statusToState(status);
 
-  // t129: the blocked-work disposal gate. HERE, and not one layer up in `tracker/schema.ts`,
-  // because this function is "the tracker's one status writer" and that is the only place
-  // every tracker status writer crosses — see the gate's own header below.
-  const disposal = blockedDisposalRefusal(id, status, input) ?? takeoverRefusal(id, to, input);   // t193 (dec 2)
+  // Another live agent's work is not reopened or moved on an agent's say-so (t193).
+  const disposal = takeoverRefusal(id, to, input);   // t193 (dec 2)
   if (disposal) {
     logger.warn(`status change refused (${disposal.reason})`, { workId: id, status, by: input.by, actorId: input.actorId });
     return disposal;
@@ -791,7 +606,6 @@ export function setTrackerStatus(
       reason: input.reason,
       evidenceRef: input.evidenceRef ?? null,
       resultDeliveryId: input.resultDeliveryId ?? null,
-      claim: input.claim,
       expectedState: input.expectedState,
       claimedByTurn: input.claimedByTurn ?? null,
       note: input.note ?? null,

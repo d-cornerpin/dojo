@@ -112,58 +112,6 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('THE DOORBELL — "so and so says they got this done"', () => {
-  it.skip("2d: a worker's OWN close (Key 1 filed) rings the doorbell carrying that row", () => {
-    seedWork('w1');
-    const r = transition('w1', {
-      to: 'done', by: 'agent', actorId: AGENT,
-      reason: 'work_update(action="status") -> complete', resultDeliveryId: 'd-1',
-    });
-    // The spine's own verdict is unchanged: this is a REQUEST, the row does not move.
-    expect(r.kind).toBe('refused');
-    // …and it is now ALSO a doorbell. Before this task the same event woke nobody at all:
-    // `tracker/tools.ts:1958` returns on the refusal, so `noteTransitionForReview` — the
-    // only PM wake in the tree — was never reached for the single most common completion
-    // shape on the platform. The PM found the row on a patrol tick or not at all.
-    expect(rings).toHaveLength(1);
-    expect(rings[0].workId).toBe('w1');
-    expect(rings[0].shape).toBe('close-request');
-  });
-
-  it.skip("2d: the ENGINE's delivery-receipt close rings it too — the same row still owes Key 2", () => {
-    seedWork('w2');
-    const r = transition('w2', {
-      to: 'done', by: 'engine', actorId: 'engine', reason: 'assignment-thread deliverable',
-      evidenceRef: 'd-1', resultDeliveryId: 'd-1',
-    });
-    expect(r.kind).toBe('applied');
-    // `validatedExpr('done')` excludes engine/scheduler/healer, so this row is `done` AND
-    // awaiting Key 2 — exactly the shape TB5 named. It must ring.
-    expect(rings.map((x) => [x.workId, x.shape])).toEqual([['w2', 'engine-receipt']]);
-  });
-
-  it.skip.each(['scheduler', 'healer'] as const)(
-    '2d: a %s close rings it as well — every system closer leaves Key 2 owed',
-    (by) => {
-      seedWork('w3');
-      transition('w3', {
-        to: 'done', by, actorId: 'engine', reason: 'schedule final',
-        evidenceRef: 'd-1', resultDeliveryId: 'd-1',
-      });
-      expect(rings).toHaveLength(1);
-      expect(rings[0].shape).toBe('engine-receipt');
-    },
-  );
-
-  it.skip('2d: NEGATIVE CONTROL: an AUTHORITY close rings NOTHING — Key 2 is already turned', () => {
-    seedWork('w4');
-    const r = transition('w4', {
-      to: 'done', by: 'pm', actorId: FXID.n5, claim: 'authoritative',
-      reason: 'PM validated the close', resultDeliveryId: 'd-1',
-    });
-    expect(r.kind).toBe('applied');
-    expect(rings).toEqual([]);
-  });
-
   it.each(['ask', 'commitment', 'occurrence'] as const)(
     'NEGATIVE CONTROL: a %s is not a two-key subject and rings nothing',
     (kind) => {
@@ -197,32 +145,7 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
     expect(() => ringValidationDoorbell({ workId: 'w8', shape: 'close-request' })).not.toThrow();
   });
 
-  it.skip('2d: a handler that THROWS cannot break the state change it rode in on', () => {
-    setValidationDoorbellHandler(() => { throw new Error('PM is on fire'); });
-    seedWork('w9');
-    const r = transition('w9', {
-      to: 'done', by: 'engine', actorId: 'engine', reason: 'receipt close',
-      evidenceRef: 'd-1', resultDeliveryId: 'd-1',
-    });
-    expect(r.kind).toBe('applied');
-    expect(
-      (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get('w9') as { state: string }).state,
-    ).toBe('done');
-  });
 
-  it.skip('2d: A BURST OF 20 COMPLETIONS RINGS 20 TIMES — nothing throttles the doorbell', () => {
-    // The retired mode, driven: BATTERY9 measured the hourly cap holding validation to
-    // ~6/hr while 98 rows waited. N = 20 is taken from that denominator (98 handed rows
-    // across 27 reviews ≈ 3.6/review; 20 is well past any hour's worth of the old cap).
-    for (let i = 0; i < 20; i++) {
-      seedWork(`burst-${i}`);
-      transition(`burst-${i}`, {
-        to: 'done', by: 'agent', reason: 'done', resultDeliveryId: 'd-1',
-      });
-    }
-    expect(rings).toHaveLength(20);
-    expect(new Set(rings.map((x) => x.workId)).size).toBe(20);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════

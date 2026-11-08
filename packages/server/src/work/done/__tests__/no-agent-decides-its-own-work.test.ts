@@ -7,7 +7,8 @@ vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-d
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-import { freshBoard, handedIn, call, stateOf, PM, MAIN, WORKER, TASK } from './helpers/decision-world.js';
+import { freshBoard, handedIn, call, stateOf, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
+import { whoDecides } from '../who-decides.js';
 import { doneDb } from './helpers/done-db.js';
 
 const openAll = async (agent: string): Promise<void> => {
@@ -54,6 +55,30 @@ describe('no agent decides its own work', () => {
     const r = await approve(MAIN);
     expect(r.isError).toBe(true);
     expect(r.content).toContain(`decided by ${PM}`);
+  });
+
+  it('a handed-in task is not moved to another agent', async () => {
+    freshBoard(MAIN);
+    await handedIn(MAIN);
+    const r = await call(MAIN, 'work_update', { action: 'reassign', task_id: TASK, assigned_to: OTHER, cause: 'coordination' });
+    expect(r.isError).toBe(true);
+    expect(r.content).toMatch(/handed in and waits for a decision/);
+  });
+
+  it('an agent that worked the task before moving it on never decides it: past the PM, the owner does', async () => {
+    freshBoard(MAIN);
+    expect((await call(MAIN, 'work_update', { action: 'reassign', task_id: TASK, assigned_to: WORKER, cause: 'coordination' })).isError).toBe(false);
+    await handedIn(WORKER);
+    for (const n of [1, 2]) {
+      doneDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'audit', ?, 'engine', ?)")
+        .run(TASK, JSON.stringify({ entry_kind: 'observation', action_taken: 'validation_review_miss', n }), Date.now());
+    }
+    expect(whoDecides(TASK)).toEqual({ kind: 'owner' });
+    await openAll(MAIN);
+    const r = await approve(MAIN);
+    expect(r.isError).toBe(true);
+    expect(r.content).toMatch(/your own work/);
+    expect(stateOf()).toBe('handed_in');
   });
 
   it('the PM approves another agent\'s task: Done, with the adjudication on record', async () => {

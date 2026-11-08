@@ -18,7 +18,6 @@ import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker, type Inbou
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
 import { normalizeQuote } from '../work/row-authority.js';
-import { turnContext } from '../agent/turn-context.js';
 
 interface Row {
   content: string; lane: string; channel: string; source_agent_id: string | null;
@@ -95,34 +94,15 @@ function ownerSaidSince(atMs: number, q: string): boolean {
 // "The owner decided" is accepted only when the owner's words really appear in the conversation: agents
 // must not close jobs on their own to get out of the work, so a relayed owner decision is checked here.
 //
-// Newer than the ask: the ask is the task's own `validation_escalated` event. With no ask on record, only the owner's message this turn
-// is answering counts, and the owner's later messages in the same conversation: never older history.
+// Newer than the ask: the ask is the task's own `validation_escalated` event; with no ask on record nothing verifies.
 export type OwnerQuoteProof = { ok: true } | { ok: false; why: string };
 
-export function ownerQuoteProof(taskId: string, agentId: string, quote: string): OwnerQuoteProof {
+export function ownerQuoteProof(taskId: string, quote: string): OwnerQuoteProof {
   const q = normalizeQuote(quote);
   if (!q) return { ok: false, why: 'no quote was given' };
   const at = askedAt(taskId, WORK_EVENT.validationEscalated);
-  if (at !== null) {
-    return ownerSaidSince(at, q)
-      ? { ok: true }
-      : { ok: false, why: 'the quote is not in any message the owner sent after being asked about this task' };
-  }
-  const root = turnContext(agentId)?.root;
-  if (!root || root.kind !== 'ask' || !root.sourceMessageId) {
-    return { ok: false, why: 'the owner was never asked about this task and this turn is not answering a message from the owner' };
-  }
-  const rootRow = getDb().prepare(
-    `SELECT ${ROW_COLS}, conversation_id, sent_at FROM messages WHERE id = ? AND ${PERSON_INBOUND}`,
-  ).get(root.sourceMessageId) as (Row & { conversation_id: string | null; sent_at: number }) | undefined;
-  if (!rootRow || ownerWords(rootRow, rootRow.sent_at) === null) {
-    return { ok: false, why: 'the message this turn is answering is not from the owner' };
-  }
-  const rows = getDb().prepare(
-    `SELECT ${ROW_COLS} FROM messages
-      WHERE ${PERSON_INBOUND} AND (id = ? OR (conversation_id IS ? AND sent_at >= ?))`,
-  ).all(root.sourceMessageId, rootRow.conversation_id, rootRow.sent_at) as Row[];
-  return saidIn(rows, q, rootRow.sent_at)
+  if (at === null) return { ok: false, why: 'the owner was never asked about this task' };
+  return ownerSaidSince(at, q)
     ? { ok: true }
-    : { ok: false, why: 'the quote is not in the owner\'s message this turn is answering' };
+    : { ok: false, why: 'the quote is not in any message the owner sent after being asked about this task' };
 }

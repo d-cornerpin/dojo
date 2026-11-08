@@ -238,7 +238,7 @@ const T266_BASELINE_CHARS = { work_open: 8405, work_update: 10180 };
 const AUDIT5_BASELINE_CHARS = { work_open: 8922, work_update: 10531 };
 // ── 901 (the one path to done): `hand_in` replaces complete_step and close_project; `outcome`, `proof`
 // and `note` replace `result`, `evidence`, `complete_all_runs` and `remainder`. work_open is unchanged.
-const H901_CHARS = { work_update: 8983 };
+const H901_CHARS = { work_update: 8981 };
 const PRE_AUDIT5_PROPERTIES = {
   tool: { type: 'string', enum: ['gmail_search', 'user_gmail_search'] },
   args: { type: 'object', properties: { query: { type: 'string' }, account: { type: 'string' } }, required: ['query'] },

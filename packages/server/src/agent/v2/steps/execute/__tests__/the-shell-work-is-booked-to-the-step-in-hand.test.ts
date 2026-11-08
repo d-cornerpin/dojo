@@ -82,11 +82,8 @@ describe('C5: the commands a turn runs are booked to the task it is working', ()
     expect(ledger('step-2')).toEqual([]);
   });
 
-  it.skip('2c: a task whose close is filed and pending is not the one being worked: later work goes to the open sibling', () => {
-    mockDb.current!.prepare(
-      `INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('step-1', 'validation_requested', ?, ?, ?)`,
-    ).run(JSON.stringify({ requested_state: 'done', from: 'claimed' }), AGENT, OPENED + 60_000);
-    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(OPENED + 60_000, 'step-1');   // the filing touched it last
+  it('a task handed in and waiting for its decision is not the one being worked: later work goes to the open sibling', () => {
+    mockDb.current!.prepare("UPDATE work SET state = 'handed_in', updated_at = ? WHERE id = ?").run(OPENED + 60_000, 'step-1');   // the hand-in touched it last
     expect(taskToCharge(AGENT)).toBe('step-2');
   });
 

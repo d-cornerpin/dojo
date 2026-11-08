@@ -25,6 +25,7 @@
 // commit flips each one to `it`.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { decide } from '../done/decide.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -765,19 +766,14 @@ const taskIdTitled = (title: string): string =>
     .get(title) as { id: string }).id;
 
 describe('t139 — backwards lifecycle: the list follows the request, never a stale one', () => {
-  it.skip('2c: ask -> cancel -> re-ask: the cancelled task leaves the list; the re-ask is linked to ITS row', async () => {
+  it('ask -> the owner cancels -> re-ask: the cancelled task leaves the list; the re-ask is linked to ITS row', async () => {
     const ask = 'Draft the newsletter intro, pull three photos from the event folder, and send me the draft.';
     ownerSays('msg-nl-1', ask);
     script([{ toolCalls: [openTask('wo-nl-1', 'Newsletter draft', 'A newsletter draft sent to the owner')] }, { content: 'On it.' }]);
     await runV2Turn(PRIMARY);
     const first = taskIdTitled('Newsletter draft');
 
-    ownerSays('msg-nl-cancel', 'Actually cancel that, I will do it myself.');
-    script([
-      { toolCalls: [call('wu-c', 'work_update', { action: 'status', task_id: first, status: 'cancelled', notes: 'Owner cancelled.' })] },
-      { content: 'Cancelled.' },
-    ]);
-    await runV2Turn(PRIMARY);
+    expect(decide({ workId: first, deciderAgentId: null, verdict: 'cancel', reason: 'I will do it myself' }).kind).toBe('decided');   // the owner's own cancel
     expect(openTasks().length).toBe(0);
     expect(await taskList()).not.toContain(ask);
 
@@ -822,16 +818,14 @@ describe('t139 — backwards lifecycle: the list follows the request, never a st
     expect(list).not.toContain('What are you working on right now?');
   });
 
-  it.skip('2c: ask again DAYS later (backdated rows): the new task carries the new row and its own date, never the old job', async () => {
+  it('ask again DAYS later (backdated rows): the new task carries the new row and its own date, never the old job', async () => {
     const ask = 'Make nine square headshots for the team page in the same soft studio style.';
     ownerSays('msg-sept', ask);
     script([{ toolCalls: [openTask('wo-sept', 'Headshots (September)', 'Headshots delivered')] }, { content: 'On it.' }]);
     await runV2Turn(PRIMARY);
     const oldId = taskIdTitled('Headshots (September)');
-    script([
-      { toolCalls: [call('wu-done', 'work_update', { action: 'status', task_id: oldId, status: 'cancelled', notes: 'Delivered by hand; closing.' })] },
-      { content: 'Closed.' },
-    ]);
+    expect(decide({ workId: oldId, deciderAgentId: null, verdict: 'cancel', reason: 'delivered by hand' }).kind).toBe('decided');   // the owner's own close
+    script([{ content: 'Glad you like them.' }]);
     ownerSays('msg-sept-close', 'Thanks, those are perfect.');
     await runV2Turn(PRIMARY);
     backdate(oldId, 'msg-sept', 21);

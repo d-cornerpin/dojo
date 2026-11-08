@@ -244,6 +244,7 @@ export type MoveCheck = { ok: true; facts: RowFacts; cause: MoveCause } | { ok: 
 export function checkMove(req: MoveRequest): MoveCheck {
   const f = rowFacts(req.taskId);
   if (!f || f.kind !== 'task') return { ok: false, text: `Error: task ${req.taskId} does not exist.` };
+  if (f.state === 'handed_in') return { ok: false, text: `Error: task "${f.title}" is handed in and waits for a decision; it is not moved until it is decided.` };
   const model = req.by === 'agent' || req.by === 'pm';
   if (model && isPMAgent(req.actorId)) {
     return {

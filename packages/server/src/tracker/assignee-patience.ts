@@ -214,6 +214,7 @@ export function recordReassignment(p: {
   appendWorkEvent(p.taskId, AUDIT_KIND, p.actor, {
     entry_kind: PATIENCE_ENTRY.reassigned,
     reason: p.reason,
+    from_agent: p.fromAgentId,
     action_taken: `reassigned ${p.fromAgentId ?? 'unassigned'} → `
       + `${p.toAgentId ?? p.toGroupId ?? 'unassigned'}`,
     note: `prior assignee last state: ${priorState}`,

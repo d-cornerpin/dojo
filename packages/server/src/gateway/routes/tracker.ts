@@ -498,6 +498,18 @@ trackerRouter.post('/tasks', async (c) => {
   }
 });
 
+/** The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`); any other
+ *  move is a plain status change. Null when it landed, else why not. */
+function ownerMoveRefusal(id: string, status: TrackerStatus): string | null {
+  if (status === 'complete' || status === 'cancelled' || status === 'fallen') {
+    const r = decide({ workId: id, deciderAgentId: null, verdict: status === 'complete' ? 'owner_done' : 'cancel', reason: `moved to ${status} on the dashboard task board` });
+    return r.kind === 'decided' ? null : r.text;
+  }
+  const { result } = setTaskStatusResult(id, status, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
+  if (workSettled(result)) return null;
+  return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
+}
+
 // PUT /tasks/:id — update task
 trackerRouter.put('/tasks/:id', async (c) => {
   const id = c.req.param('id');
@@ -576,19 +588,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
         });
       }
       if (statusUpdate) {
-        // The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`); any other
-        // move is a plain status change.
-        const closing = statusUpdate === 'complete' || statusUpdate === 'cancelled' || statusUpdate === 'fallen';
-        const refusal = closing
-          ? (() => {
-              const r = decide({ workId: id, deciderAgentId: null, verdict: statusUpdate === 'complete' ? 'owner_done' : 'cancel', reason: `moved to ${statusUpdate} on the dashboard task board` });
-              return r.kind === 'decided' ? null : r.text;
-            })()
-          : (() => {
-              const { result } = setTaskStatusResult(id, statusUpdate as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
-              if (workSettled(result)) return null;
-              return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
-            })();
+        const refusal = ownerMoveRefusal(id, statusUpdate as TrackerStatus);
         if (refusal) {
           return c.json({
             ok: false,

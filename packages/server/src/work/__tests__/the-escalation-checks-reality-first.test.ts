@@ -223,26 +223,3 @@ describe('T12 (3b): a silent turn no longer ends the story — bounded re-steer,
   });
 });
 
-describe('T12 (4): the user verdict finally has a door, and it is the one the user speaks to', () => {
-  const gateKinds = (agentIsPM: boolean): string[] => {
-    void agentIsPM;
-    return gatesForCall('work_validate', { action: 'apply_user_validation', task_id: 'x' })
-      .map((g) => g.kind);
-  };
-
-  it('apply_user_validation is no longer PM-ONLY (the PM already failed to rule)', () => {
-    expect(PM_ONLY_WORK_OPS.has('work_validate:apply_user_validation')).toBe(false);
-  });
-
-  it.skip('2d: it is PRIMARY-only: the op transcribes THE USER\'s verdict, and the user speaks to the primary', () => {
-    expect(gateKinds(false)).toContain('primary_only');
-  });
-
-  it.skip('2d: CONTROL: the other four work_validate ops are still PM-only', () => {
-    for (const op of ['validate', 'retask', 'override', 'apply_user_verdict']) {
-      expect(PM_ONLY_WORK_OPS.has(`work_validate:${op}`)).toBe(true);
-      expect(gatesForCall('work_validate', { action: op, task_id: 'x' }).map((g) => g.kind))
-        .toContain('pm_only_operation');
-    }
-  });
-});

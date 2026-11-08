@@ -554,7 +554,7 @@ function armDebouncedReview(taskId: string, why: string): void {
  * `deliverable_shown=false` — a constant, printed as if it were a fact about the work, in
  * the one message that is supposed to give the PM a real basis to decide. The live half of
  * that requirement is the retask backstop in `tracker/tools.ts`, which is now a tested
- * predicate (`retaskWouldOverwriteDeliveredWork`), and THAT is what protects delivered work.
+ * refusal of a retask on a handed-in task, and THAT is what protects delivered work.
  * requirement preserved: the PM is still told what each dangling task was for (its goal)
  * and still gets the receipts block below; nothing that varies per row was removed.
  *

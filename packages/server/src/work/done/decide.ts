@@ -2,17 +2,18 @@
 //   - approve / send_back decide a waiting hand-in. The caller is `whoDecides` (never the worker) or
 //     the owner. An agent approves only after opening every proof item (`open-proof.ts`); the owner
 //     is exempt. The reason is one line saying how the proof meets the goal, or what is missing.
-//   - owner_done / cancel are the owner's alone, from any open state.
-// The owner decides from the dashboard (decider null) or by his own words relayed by an agent,
-// verified against his messages (`ownerQuoteProof`). One unit: the adjudication, the `decided` event
-// and the transition with `claim: 'decided'`, which is the only claim that ends board work.
+//   - owner_done / cancel are the owner's alone, from the dashboard, from any open state.
+// The owner decides from the dashboard (decider null), or approves or sends back a hand-in he was
+// asked about by his own words relayed by an agent, verified against his messages (`ownerQuoteProof`).
+// One unit: the adjudication, the `decided` event and the transition with `claim: 'decided'`, which is
+// the only claim that ends board work.
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId } from '../../config/platform.js';
 import { ownerQuoteProof } from '../../tracker/owner-words.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
-import { latestHandIn, workerOf, unitOrRollback } from './hand-in.js';
+import { latestHandIn, workersOf, unitOrRollback } from './hand-in.js';
 import { openedEveryItem } from './open-proof.js';
 import { proofDelivery } from './proof.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
@@ -31,17 +32,45 @@ export interface DecideInput {
 export type DecideResult = { kind: 'decided'; to: WorkState; text: string } | { kind: 'refused'; text: string };
 
 const OWNER_ID = 'user';
+const VERDICTS: readonly Verdict[] = ['approve', 'send_back', 'cancel', 'owner_done'];
 const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
 
-/** Who is deciding: the owner (dashboard, or his verified words), or an agent. */
-function deciderOf(input: DecideInput): { owner: true } | { owner: false; agentId: string } | { refused: string } {
+/** The newest ask to the owner about this row since its newest hand-in, or 0 when there is none. */
+function ownerAskSinceHandIn(workId: string, handInId: number): number {
+  return (getDb().prepare(
+    "SELECT COALESCE(MAX(id), 0) AS id FROM work_events WHERE work_id = ? AND kind = 'validation_escalated' AND id > ?",
+  ).get(workId, handInId) as { id: number }).id;
+}
+
+type Who = { owner: true } | { owner: false; agentId: string };
+
+/** Who is deciding: the owner on the dashboard, or by his words relayed after he was asked about this
+ *  hand-in (approve or send back only), or an agent. */
+function deciderOf(input: DecideInput, state: WorkState): Who | { refused: string } {
   if (input.deciderAgentId === null) return { owner: true };
   if (input.ownerQuote === undefined || input.ownerQuote.trim() === '') return { owner: false, agentId: input.deciderAgentId };
-  const proof = ownerQuoteProof(input.workId, input.deciderAgentId, input.ownerQuote);
+  const handIn = state === 'handed_in' ? latestHandIn(input.workId) : null;
+  if (!handIn || !ownerAskSinceHandIn(input.workId, handIn.eventId) || (input.verdict !== 'approve' && input.verdict !== 'send_back')) {
+    return { refused: 'the owner\'s relayed words decide only a hand-in he was asked about, and only to approve or send it back. Nothing changed.' };
+  }
+  const proof = ownerQuoteProof(input.workId, input.ownerQuote);
   return proof.ok ? { owner: true } : { refused: `the owner's words could not be verified: ${proof.why}. Nothing changed.` };
 }
 
-/** Where a done row settles: the newest delivery the hand-in carries, else the newest on record, else a decision receipt. */
+/** Why this agent may not decide this hand-in, or null. */
+function agentRefusal(agentId: string, workId: string, name: string, verdict: Verdict): string | null {
+  if (workersOf(workId).has(agentId)) return `${name} is your own work; no agent decides work it worked or handed in.`;
+  const decider = whoDecides(workId);
+  if (decider?.kind !== 'agent' || decider.agentId !== agentId) {
+    return `${name} is not yours to decide; it is decided by ${decider?.kind === 'agent' ? decider.agentId : 'the owner'}.`;
+  }
+  const opened = verdict === 'approve' ? openedEveryItem(agentId, workId) : { ok: true as const };
+  return opened.ok ? null
+    : `open the proof before approving: work_validate(action="open_proof", task_id="${workId}", item=N) for item${opened.unopened.length === 1 ? '' : 's'} ${opened.unopened.join(', ')}.`;
+}
+
+/** Where a done row settles: the newest delivery the hand-in carries, else the newest on record, else a
+ *  decision receipt. Called inside the decision's unit, so a refused decision leaves no receipt. */
 function settleOn(workId: string, decider: string): string | null {
   const items = latestHandIn(workId)?.items ?? [];
   const delivered = items.filter((i) => i.kind === 'delivery').pop()?.ref ?? proofDelivery(workId);
@@ -50,33 +79,24 @@ function settleOn(workId: string, decider: string): string | null {
 
 /** THE DECISION (header). */
 export function decide(input: DecideInput): DecideResult {
+  if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
   const row = getDb().prepare(
     `SELECT id, title, state FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
   ).get(input.workId) as { id: string; title: string | null; state: WorkState } | undefined;
   if (!row) return refused(`there is no task or project ${input.workId} on the board.`);
   const name = `"${row.title ?? row.id}" [${row.id}]`;
-  const who = deciderOf(input);
+  const reason = input.reason.trim();
+  if (reason === '' || /[\r\n]/.test(reason)) return refused('a decision states its reason in one line.');
+  const who = deciderOf(input, row.state);
   if ('refused' in who) return refused(who.refused);
-  const reason = input.reason.replace(/\s+/g, ' ').trim();
-  if (reason === '') return refused('a decision states its reason in one line.');
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
     if (!who.owner) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {
     if (row.state !== 'handed_in') return refused(`${name} is ${row.state}, not handed in; there is nothing to decide.`);
-    if (!who.owner) {
-      const worker = workerOf(row.id);
-      const decider = whoDecides(row.id);
-      if (who.agentId === worker) return refused(`${name} is your own work; no agent decides its own work.`);
-      if (decider?.kind !== 'agent' || decider.agentId !== who.agentId) {
-        return refused(`${name} is not yours to decide; it is decided by ${decider?.kind === 'agent' ? decider.agentId : 'the owner'}.`);
-      }
-      const opened = input.verdict === 'approve' ? openedEveryItem(who.agentId, row.id) : { ok: true as const };
-      if (!opened.ok) {
-        return refused(`open the proof before approving: work_validate(action="open_proof", task_id="${row.id}", item=N) for item${opened.unopened.length === 1 ? '' : 's'} ${opened.unopened.join(', ')}.`);
-      }
-    }
+    const no = who.owner ? null : agentRefusal(who.agentId, row.id, name, input.verdict);
+    if (no) return refused(no);
   }
 
   const deciderId = who.owner ? OWNER_ID : who.agentId;
@@ -84,8 +104,8 @@ export function decide(input: DecideInput): DecideResult {
   const outcome = latestHandIn(row.id)?.outcome ?? 'finished';
   const to: WorkState = input.verdict === 'send_back' ? 'sent_back' : input.verdict === 'cancel' ? 'abandoned'
     : input.verdict === 'owner_done' || outcome === 'finished' ? 'done' : 'failed';
-  const resultDeliveryId = to === 'done' ? settleOn(row.id, deciderId) : null;
   const moved = unitOrRollback(() => {
+    const resultDeliveryId = to === 'done' ? settleOn(row.id, deciderId) : null;
     getDb().prepare(
       `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,

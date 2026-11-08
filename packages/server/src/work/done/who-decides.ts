@@ -1,12 +1,12 @@
 // WHO DECIDES a handed-in task: the PM. Once the PM has been asked twice since the hand-in and gave no
 // verdict, the main agent decides another agent's task and the owner decides the main agent's own. A
-// task the PM works is another agent's task to the PM, so the main agent decides it. Never the worker:
-// when the next decider would be the worker, the owner decides.
+// task the PM worked is decided by the main agent. Never an agent that worked it (`workersOf`): when the
+// next decider worked it, the owner decides.
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { VALIDATION_ATTEMPT_MARKERS } from '../validation-drive.js';
-import { workerOf } from './hand-in.js';
+import { workerOf, workersOf } from './hand-in.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 
@@ -25,10 +25,10 @@ function pmMissesSinceHandIn(workId: string): number {
 
 /** The decider for this row now; null when there is no such row. */
 export function whoDecides(workId: string): Decider | null {
-  const worker = workerOf(workId);
-  if (!worker) return null;
+  if (!workerOf(workId)) return null;
+  const worked = workersOf(workId);
   const pm = getPMAgentId();
-  if (worker !== pm && pmMissesSinceHandIn(workId) < PM_ASKS_BEFORE_ESCALATION) return { kind: 'agent', agentId: pm };
+  if (!worked.has(pm) && pmMissesSinceHandIn(workId) < PM_ASKS_BEFORE_ESCALATION) return { kind: 'agent', agentId: pm };
   const main = getPrimaryAgentId();
-  return worker === main ? { kind: 'owner' } : { kind: 'agent', agentId: main };
+  return worked.has(main) ? { kind: 'owner' } : { kind: 'agent', agentId: main };
 }

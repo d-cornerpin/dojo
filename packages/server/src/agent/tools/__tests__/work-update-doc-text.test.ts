@@ -15,7 +15,7 @@ describe('the work_update doc', () => {
 
   it('lists keeping on first and finishing last, and says a task left in progress stays yours', () => {
     const d = doc();
-    const head = d.indexOf('**action="status" — when each status applies:**');
+    const head = d.indexOf('**action="status", when each status applies:**');
     expect(head).toBeGreaterThan(-1);
     const keepOn = d.indexOf('1. **You will take the next action on this work**');
     const finished = d.indexOf('4. **You finished the task, or it cannot be done** → action="hand_in"');

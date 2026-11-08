@@ -11,11 +11,11 @@
     "list",
     "get"
    ],
-   "description": "Which update to perform. Omit and the engine infers it from the fields you passed (`status` \u2192 status, `assigned_to` \u2192 reassign, a `project_id` with a `reason` \u2192 close_project, editable fields \u2192 edit, a bare id \u2192 get, nothing \u2192 list)."
+   "description": "Which update to perform. Omit and the engine infers it from the fields you passed (`status` → status, `assigned_to` → reassign, a `project_id` with a `reason` → close_project, editable fields → edit, a bare id → get, nothing → list)."
   },
   "task_id": {
    "type": "string",
-   "description": "The task ID (full UUID or 8+ char prefix) of a task that ALREADY EXISTS \u2014 either an id `work_open` returned to you, or one listed by `work_update(action=\"list\")`. NEVER invent an id or pass a placeholder: if the task does not exist yet, call `work_open` to create it and use the id it returns. For action=\"complete_step\", the step you just completed."
+   "description": "The task ID (full UUID or 8+ char prefix) of a task that ALREADY EXISTS — either an id `work_open` returned to you, or one listed by `work_update(action=\"list\")`. NEVER invent an id or pass a placeholder: if the task does not exist yet, call `work_open` to create it and use the id it returns. For action=\"complete_step\", the step you just completed."
   },
   "project_id": {
    "type": "string",
@@ -98,6 +98,10 @@
     "disposition",
     "reason"
    ]
+  },
+  "hours": {
+   "type": "number",
+   "description": "action=\"activity\": how many hours back the window covers — e.g. 36 for \"since yesterday morning\", 168 for the past week. Omit for today so far (since local midnight). The result always states the window it actually measured, so check that line rather than assuming."
   }
  },
  "added": [
