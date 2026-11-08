@@ -113,7 +113,7 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
 /** A PM uphold is refused, with the facts and never a lean toward either verdict, unless the PM has been
  *  shown or has opened proof on record (`proofFor`), or the close named its remainder, or the asker's own
  *  later words are recorded on the task. An override approval is its own close claim, so it is checked
- *  whether or not a close request is filed. With nothing on record it is refused in every context. */
+ *  whether or not a close request is filed. It is refused in every context, a live PM turn or not. */
 function unbackedUpholdRefusal(pmAgentId: string, rawTaskId: string, opts: { override?: boolean } = {}): string | null {
   const r = resolveTaskId(rawTaskId);
   if (!r.ok) return null;   // the door gives its own error for an id it cannot find
@@ -121,7 +121,7 @@ function unbackedUpholdRefusal(pmAgentId: string, rawTaskId: string, opts: { ove
   if (!subject || remainderOnRecord(r.id) || readLaterMessages(r.id).some((m) => !!m.messageId && fromAsker(r.id, m.messageId))) return null;
   const proof = proofFor(r.id);
   if (proof.length > 0) {
-    if (!turnContext(pmAgentId) || proofSeen(pmAgentId, r.id, proof)) return null;
+    if (proofSeen(pmAgentId, r.id, proof)) return null;
     return `Refused: the proof on record has not been shown to you or opened since the close was filed:\n${proofLines(proof).map((l) => `  - ${l}`).join('\n')}\n`
       + 'Open it (the file, or history_get on the message) before ruling.';
   }

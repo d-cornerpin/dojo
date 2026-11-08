@@ -11,6 +11,7 @@
 // not read refuses the whole call before anything runs, and the refusal names, from the same map, the
 // operations that do read it. It replaces the one-off `assigned_to` guard on the status door.
 
+import { noteProofShown } from '../../../tracker/looked-at.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -159,6 +160,7 @@ describe('a PM verdict that carries a reason is applied, never refused', () => {
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES ('d-unread-1', ?, NULL, 'dashboard', 'dashboard', 'm-unread-1', 'delivered', datetime('now'))`,
     ).run(AGENT);
     appendWorkEvent(TASK, 'validation_requested', AGENT, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: 'd-unread-1' });
+    noteProofShown(TASK, ['d-unread-1']);   // the PM's review showed it the message
   };
   const state = (): string => (db().prepare('SELECT state FROM work WHERE id = ?').get(TASK) as { state: string }).state;
   const lastVerdict = (verdict: string): { note: string } | undefined =>

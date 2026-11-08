@@ -117,24 +117,26 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
 
 const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || tool.endsWith('-door');
 
-/** Is this delivery the start line of its turn: the worker's first delivery in that turn, followed by
- *  another in the same turn, or, once the turn has ended, a lone line the task's ask settled on some
- *  other line? Keyed to the delivery's own turn record, never to what the worker does afterwards. */
+/** Is this delivery the start line of its turn: never the line the task's ask settled on; otherwise the
+ *  worker's first line to the asker in that turn when another line to the asker follows, or, once the
+ *  turn has ended, a lone line when the ask settled on some other line? Keyed to the delivery's own turn
+ *  record, never to what the worker does afterwards. */
 function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null }): boolean {
-  if (d.turn_number === null) return false;
+  if (d.turn_number === null || ref === ctx.task.ask?.receipt) return false;
   const db = getDb();
-  // The worker's own lines only: never the engine's, never a tool chip or working note.
+  // The worker's own lines to the asker only: never the engine's, never a tool chip or working note.
   const lines = (db.prepare(
-    `SELECT d.id, d.tool FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id
+    `SELECT d.id, d.tool, d.channel, d.recipient_id, d.conversation_id FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id
       WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
         AND (m.display_kind IS NULL OR m.display_kind NOT IN (${NON_ANSWERING_DISPLAY_KINDS.map(() => '?').join(', ')}))
       ORDER BY d.created_at, d.rowid`,
-  ).all(d.agent_id, d.turn_number, ...NON_ANSWERING_DISPLAY_KINDS) as Array<{ id: string; tool: string }>)
-    .filter((r) => !isEngineTool(r.tool)).map((r) => r.id);
+  ).all(d.agent_id, d.turn_number, ...NON_ANSWERING_DISPLAY_KINDS) as
+    Array<{ id: string; tool: string; channel: string; recipient_id: string | null; conversation_id: string | null }>)
+    .filter((r) => !isEngineTool(r.tool) && deliveredToAsker(ctx.asker, r)).map((r) => r.id);
   if (lines[0] !== ref) return false;
   if (lines.length > 1) return true;
   const ended = db.prepare('SELECT ended_at FROM turns WHERE agent_id = ? AND turn_number = ?').get(d.agent_id, d.turn_number) as { ended_at: string | null } | undefined;
-  return !!ended?.ended_at && !!ctx.task.ask?.receipt && ref !== ctx.task.ask.receipt;
+  return !!ended?.ended_at && !!ctx.task.ask?.receipt;
 }
 
 /** The exit status an exec audit row records: 0, the code, or the reason it stopped. */

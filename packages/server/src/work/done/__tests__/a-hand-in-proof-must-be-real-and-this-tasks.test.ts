@@ -394,6 +394,28 @@ describe('a hand-in proof must be real and this task\'s', () => {
     expect(refusal(finished([{ kind: 'delivery', ref: 'd-lone' }]))).toMatch(/start line of its turn/);
   });
 
+  it('an answer to the asker followed by a hand-off to a helper in the same turn still counts', () => {
+    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered) VALUES (?, 11, 'user', 0)").run(WORKER);
+    delivery('d-ans', { text: 'The report: 12 sections, totals on page 3.' });
+    delivery('d-handoff', { channel: 'a2a', recipient: STRANGER, tool: 'send_to_agent', text: '[A2A:ASSIGN] Format the report tables.', at: Date.now() + 1000 });
+    doneDb().prepare("UPDATE deliveries SET turn_number = 11 WHERE id IN ('d-ans', 'd-handoff')").run();
+    expect(finished([{ kind: 'delivery', ref: 'd-ans' }]).ok).toBe(true);
+  });
+
+  it('the line the ask settled on is never a start line, whatever follows it in its turn', () => {
+    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered) VALUES (?, 12, 'user', 0)").run(WORKER);
+    delivery('d-settled', { text: 'The report: 12 sections, totals on page 3.' });
+    delivery('d-bubble', { text: 'Anything else on the report?', at: Date.now() + 1000 });
+    doneDb().prepare("UPDATE deliveries SET turn_number = 12 WHERE id IN ('d-settled', 'd-bubble')").run();
+    message('m-src2', { role: 'user', content: 'Write up the report?', at: openedAt - 1000 });
+    doneDb().prepare("UPDATE work SET source_message_id = 'm-src2' WHERE id = ?").run(TASK);
+    doneDb().prepare(
+      `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, result_delivery_id, opened_at, closed_at, updated_at)
+       VALUES ('ask:m-src2', 'ask', ?, 'owner', 'conv', 'm-src2', 'done', 'answer', 1, 0, 'd-settled', ?, ?, ?)`,
+    ).run(WORKER, openedAt, openedAt, openedAt);
+    expect(finished([{ kind: 'delivery', ref: 'd-settled' }]).ok).toBe(true);
+  });
+
   it('refuses a delivery with no text on record (unknown never counts)', () => {
     doneDb().prepare(
       `INSERT INTO deliveries (id, agent_id, tool, channel, outcome, created_at, updated_at)
