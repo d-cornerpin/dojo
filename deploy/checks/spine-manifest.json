@@ -507,8 +507,14 @@
       "table": "work",
       "column": "last_smell_flag",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "`last_smell_flag` is rendered on the dashboard. (This `why` used to open with `deliverable_shown`; PHASE-2 T10F dropped that column at migration `145`.) Readers at PHASE-2 T8b: tracker/pm-agent.ts, gateway/routes/tracker.ts, dashboard/lib/api.ts.",
-      "verifiedBy": "git grep -l 'last_smell_flag' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "No reader or writer remains: the hygiene panel that rendered it is gone. Migration 901 drops the column.",
+      "verifiedBy": "git grep -l 'last_smell_flag' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "debloat step 2f (migration 901 drops the column)",
+        "date": "2026-11-08",
+        "reason": "Its writers went in step 2d and its last readers (the hygiene route and panel) in step 2e; the column is dropped with the rest of 901 in step 2f."
+      }
     },
     {
       "id": "work.scheduled_start",

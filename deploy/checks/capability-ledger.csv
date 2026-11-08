@@ -442,7 +442,6 @@ route,GET /api/techniques/:id/files/*,packages/server/src/gateway/routes/techniq
 route,GET /api/techniques/:id/usage,packages/server/src/gateway/routes/techniques.ts:164,built,
 route,GET /api/techniques/:id/versions,packages/server/src/gateway/routes/techniques.ts:140,built,
 route,GET /api/techniques/:id/versions/:versionId,packages/server/src/gateway/routes/techniques.ts:147,built,
-route,GET /api/tracker/hygiene,packages/server/src/gateway/routes/tracker.ts:328,built,
 route,GET /api/tracker/override-requests,packages/server/src/gateway/routes/tracker.ts:497,built,
 route,GET /api/tracker/projects,packages/server/src/gateway/routes/tracker.ts:80,built,
 route,GET /api/tracker/projects/:id,packages/server/src/gateway/routes/tracker.ts:91,built,
