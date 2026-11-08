@@ -106,7 +106,7 @@ describe('the receipt is an honest record, not a claimed send', () => {
 
 describe('the receipt is invisible to every consumer of the ledger', () => {
   it('NEGATIVE CONTROL: the PM consult path does not see it as delivery evidence', () => {
-    // `tracker/delivery-evidence.ts:119` and `tracker/task-stamps.ts:66`, verbatim shape.
+    // `tracker/task-stamps.ts:66`, verbatim shape.
     recordOwnerCloseReceipt(W, 'the dashboard task board');
     const channels = mockDb.current!.prepare(
       `SELECT DISTINCT channel FROM deliveries WHERE agent_id = ? AND outcome = 'delivered'`,
@@ -192,7 +192,7 @@ describe('the enumeration the design rests on, re-derived rather than trusted', 
     //       which is exactly G7's own question, and the receipt is SUPPOSED to answer yes —
     //       that is the whole mechanism. It is not a leak: neither is a search, so no caller
     //       can DISCOVER the receipt through them; a caller has to already hold its id, and
-    //       the only resolver that hands ids out (`tracker-store.ts:deliveryForAgentSince`)
+    //       the only resolver that hands ids out (`work/done/proof.ts:proofFor`)
     //       filters `outcome='delivered'`.
     //   (c) PHASE-4 T4 — a POSITIVE enumeration of the attempted-but-undelivered outcomes
     //       (`outcome IN ('failed','suppressed','held')`), the claimed-delivery floor's

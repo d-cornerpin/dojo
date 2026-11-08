@@ -130,7 +130,7 @@ describe('a measured task is not complete while items remain', () => {
     expect(out.content).not.toMatch(/Refused|Error/);
     expect(readWork(id).measure_remaining).toBe(7);
     const notes = db().prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit'").all(id) as Array<{ payload: string }>;
-    expect(notes.some((n) => n.payload.includes('Remainder named at close: 7 messages skipped — 7 are calendar invites the owner said to leave'))).toBe(true);
+    expect(notes.some((n) => n.payload.includes('Remainder named at close: 7 messages skipped: 7 are calendar invites the owner said to leave'))).toBe(true);
   });
 
   it('a remainder with no real reason is still refused', async () => {

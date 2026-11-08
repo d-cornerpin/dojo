@@ -26,7 +26,6 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { keepLedgerShownFor } from '../../tracker/request-shown.js';
 import { seedTrackerTask } from './work-fixture.js';
 import { recordCallsTouched } from '../ledger-store.js';
 import { appendWorkEvent } from '../store.js';
@@ -45,7 +44,6 @@ const effectsOf = (name: string) => (name === 'shell' ? SHELL : name === 'file_w
 const db = (): Database.Database => mockDb.current!;
 
 beforeEach(() => {
-  keepLedgerShownFor(new Set());   // the shown pages are process memory: no clause inherits another's
   mockDb.current = new Database(':memory:');
   runMigrations();
   for (const id of [WORKER, PM]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
@@ -80,14 +78,13 @@ describe('H3: a command carrying a handed credential is stored, shown and record
     expect(text).not.toContain(SECRET);
   });
 
-  it('RECORDED: the verdict\'s evidence_ref and claim payload hold only the redacted form', () => {
+  it('RECORDED: the verdict\'s evidence_ref and claim payload never hold the credential', () => {
     runTheCall();
     appendWorkEvent(TASK, 'validation_requested', WORKER, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: null });
-    validationMeasureLines(TASK, 4000);   // the request the review showed: the record keeps that page
+    validationMeasureLines(TASK, 4000);   // the request the review showed
     openTurnContext(PM).turnNumber = 3;
     upholdClaim(TASK, 'done', 'pm', PM, 'x');
     const adj = db().prepare('SELECT evidence_ref FROM adjudications WHERE work_id = ?').get(TASK) as { evidence_ref: string };
-    expect(adj.evidence_ref).toContain('<redacted-credential');
     expect(adj.evidence_ref).not.toContain(SECRET);
     const ev = db().prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'claim_upheld'").get(TASK) as { payload: string };
     expect(ev.payload).not.toContain(SECRET);

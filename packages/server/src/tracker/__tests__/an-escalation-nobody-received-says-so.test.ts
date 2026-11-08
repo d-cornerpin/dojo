@@ -112,6 +112,9 @@ beforeEach(() => {
     role TEXT NOT NULL, content TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
   createWorkTable(db);
+  db.exec(`CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY, agent_id TEXT, tool TEXT, channel TEXT, recipient_id TEXT, recipient_display TEXT,
+    conversation_id TEXT, message_id TEXT, receipt_id TEXT, outcome TEXT, detail TEXT, created_at TEXT)`);
   db.exec(`CREATE TABLE IF NOT EXISTS work_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT NOT NULL, event TEXT NOT NULL,
     actor TEXT, detail TEXT, at INTEGER NOT NULL DEFAULT 0)`);

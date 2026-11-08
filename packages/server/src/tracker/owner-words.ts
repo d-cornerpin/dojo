@@ -38,7 +38,7 @@ function confirmedOwnerEmailWords(raw: string | null, askedAtMs: number): string
 }
 
 /** The owner's own words in this row, or null when the row is not the owner writing. */
-function ownerWords(m: Row, askedAtMs: number): string | null {
+export function ownerWords(m: Row, askedAtMs: number): string | null {
   if (m.channel === 'email') return confirmedOwnerEmailWords(m.inbound_meta, askedAtMs);
   const o = deriveOrigin({
     role: 'user', content: m.content, ...legacyOriginInputs(m.lane, m.channel),

@@ -1,9 +1,9 @@
-// PM-CANNOT-APPROVE C9: THE RETASK DOOR READS THE SAME ANSWER RECORD AS THE VALIDATE DOOR.
+// PM-CANNOT-APPROVE C9: THE RETASK DOOR READS THE SAME PROOF AS THE VALIDATE DOOR.
 //
 // On a lived-in box the retask door answered "has already had its work delivered to the user ...
 // bless the close" because a close was FILED, and two seconds later the validate door refused the
-// uphold because no delivered answer was on record. The PM could neither approve nor send the work
-// back. "Delivered" is now read from the one answer reader both doors use (`taskAnswerFor`).
+// uphold because nothing was on record. The PM could neither approve nor send the work back.
+// "Delivered" is now read from the one proof check both doors use (`work/done/proof.ts:proofFor`).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -26,21 +26,10 @@ vi.mock('../../agent/agent-notice.js', async (importOriginal) => ({
   redriveWithoutReply: async () => true,
 }));
 
-// The answer record, switched per clause: the ONE reader (`resolveTaskAnswerPointer`, behind
-// `taskAnswerFor`). Its own resolution has its own suite.
-const pointer = vi.hoisted(() => ({ on: null as null | { deliveryId: string; messageId: string | null } }));
-vi.mock('../delivery-evidence.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../delivery-evidence.js')>()),
-  resolveTaskAnswerPointer: () => (pointer.on
-    ? { ...pointer.on, basis: 'task-turn-answer', excerpt: 'The summary file is at /work/summary.md.', channel: 'dashboard', at: null }
-    : null),
-}));
-
 import { runMigrations } from '../../db/migrations.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { openTrackerProject, openTrackerTask } from '../../work/tracker-store.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { resetEmptyUpholdRefusals } from '../empty-uphold.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
 const WORKER = 'worker-agent';
@@ -76,8 +65,6 @@ const pendingClose = (t: string): number => (mockDb.current!.prepare(
 
 beforeEach(() => {
   seq = 0;
-  pointer.on = null;
-  resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
   for (const id of [WORKER, PM]) mockDb.current.prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
@@ -92,7 +79,7 @@ describe('C9: the retask door reads the same answer record as the validate door'
     fileClose(t);
     expect(pendingClose(t)).toBe(1);
     const v = await validate(t);
-    expect(v.content, 'the validate door: no delivered answer on record').toMatch(/No delivered answer is on record for it/);
+    expect(v.content, 'the validate door: nothing on record').toMatch(/^Refused: nothing on record shows this work/);
     const r = await retask(t);
     expect(r.content, r.content).toMatch(/^\[OK\] Retasked/);
     expect(r.content).toMatch(/no delivered answer was on record, so nothing delivered was overwritten/);
@@ -103,7 +90,11 @@ describe('C9: the retask door reads the same answer record as the validate door'
   it('CONTROL: a filed close WITH a delivered answer on record is still protected from a silent retask', async () => {
     const t = newTask();
     fileClose(t);
-    pointer.on = { deliveryId: 'deliv-aa11bb22', messageId: 'msg-aa11bb22' };
+    const at = Date.now();
+    mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES ('msg-aa11bb22', ?, 'owner', 'assistant', ?, ?, ?)`)
+      .run(WORKER, 'The quiet-day line: no reports today, nothing needs you.', at, at);
+    mockDb.current!.prepare(`INSERT INTO deliveries (id, agent_id, tool, channel, message_id, outcome, created_at)
+      VALUES ('deliv-aa11bb22', ?, 'dashboard', 'dashboard', 'msg-aa11bb22', 'delivered', datetime('now', '+1 second'))`).run(WORKER);
     const r = await retask(t);
     expect(r.content).toMatch(/has already had its work delivered to the user/);
     expect(r.content).toMatch(/allow_regenerate=true/);

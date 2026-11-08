@@ -66,7 +66,6 @@ import { runMigrations } from '../../db/migrations.js';
 import { transition } from '../store.js';
 import { validatedExpr, taskScope } from '../tracker-view.js';
 import { upholdClaim } from '../tracker-store.js';
-import { deliveryForAgentSince } from '../tracker-store.js';
 import {
   selectRowsForOwnerEscalation,
   setValidationDoorbellHandler,
@@ -296,16 +295,6 @@ describe('§2 an unrelated sentence does not count as telling the owner', () => 
     // The row, and the ask it exists to satisfy (T11's edge).
     seedWork('t-sweep', { state: 'blocked', source_message_id: 'msg-about-this-row' });
     age('t-sweep');
-  });
-
-  it('THE MEASURED DEFECT: an unrelated delivery retires the escalation under the OLD read', () => {
-    // The primary woke and published a vendor-email bulletin — a real owner-facing delivery,
-    // rooted at a DIFFERENT ask.
-    seedDelivery({ id: 'd-email', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-some-vendor-email' });
-
-    expect(deliveryForAgentSince(PRIMARY, STEER_AT),
-      'the old agent-scoped read sees it and calls the escalation fired',
-    ).toBe('d-email');
   });
 
   // t146: four clauses that tested only the turn-root read `deliveryAboutWorkSince` went with

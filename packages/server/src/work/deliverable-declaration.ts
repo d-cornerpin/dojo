@@ -139,7 +139,7 @@ const DELIVERABLE_RULES: ReadonlyArray<{ shape: string; rule: string; re: RegExp
  * `hasSchedule` is a REQUIRED narrowing, not a convenience: this whole mechanism is about the
  * closing of scheduled RUNS. An ordinary one-shot task that happens to say "send me the file"
  * is settled by the ask/task lane, which has its own evidence discipline (`work/ask-settlement.
- * ts`, `work/tracker-store.ts:deliveryForTaskClose`), and adding a second opinion about it here
+ * ts`, `work/done/proof.ts:proofDelivery`), and adding a second opinion about it here
  * would be the two-deciders disease this arc exists to cure.
  */
 export function declaredDeliverableShape(def: {

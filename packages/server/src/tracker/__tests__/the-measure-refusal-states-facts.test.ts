@@ -1,8 +1,5 @@
-// v3.5 field fix 3, review round 4 (e): the measured-close refusal states facts and never coaches
-// a close. `remainderGate` (tracker/measure-gate.ts) offered "or close it with
-// work_update(action="status", status="complete", …)" / "or close again with …" as a menu option in
-// engine text: close-coaching, which product law ("Finishing, not closing") calls a defect.
-
+// The measured-close refusal (`remainderRefusal`, tracker/measure-gate.ts) states facts and never
+// coaches a close: no "close it with" or "close again with" menu (product law, "Finishing, not closing").
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -20,7 +17,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 
 import { runMigrations } from '../../db/migrations.js';
 import { openTrackerTask } from '../../work/tracker-store.js';
-import { remainderGate } from '../measure-gate.js';
+import { remainderRefusal } from '../measure-gate.js';
 
 const AGENT = 'agent-measured';
 
@@ -41,7 +38,7 @@ describe('the measured-close refusal states facts only', () => {
       });
       mockDb.current!.prepare(`UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 7, measure_at = ? WHERE id = ?`)
         .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), id);
-      const text = remainderGate(id, {}, 'status="complete"', takesRemainder) ?? '';
+      const text = remainderRefusal(id, AGENT, {}, 'status="complete"', takesRemainder) ?? '';
       expect(text).toContain('still returns 7 messages');
       expect(text).toMatch(/the PM sees that count/i);
       expect(text).not.toMatch(/close it with|close again with/);

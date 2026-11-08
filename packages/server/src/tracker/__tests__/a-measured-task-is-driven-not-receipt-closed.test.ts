@@ -66,19 +66,6 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
 
-const { evidence } = vi.hoisted(() => ({ evidence: { on: false } }));
-vi.mock('../delivery-evidence.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../delivery-evidence.js')>()),
-  // A TANGIBLE handover on record, answered before any check-in: strike 1 and strike 2's premise.
-  findDeliveryEvidenceForTask: (taskId: string) => (evidence.on
-    ? { turnNumber: 7, answeredAt: '2020-01-01 00:00:00', artifacts: ['/tmp/report.md'], deliveredVia: ['dashboard'], taskId } as never
-    : null),
-  // Field fix 3 review round 3: the poke's handover is the task's record, which the mocked
-  // evidence above stands for (a delivered file). An ESM mock of one export does not reach the
-  // module's own internal call, so the record is stated here with the same premise.
-  taskWorkOnRecord: () => (evidence.on ? 'delivered file(s): /tmp/report.md' : null),
-}));
-
 import { runMigrations } from '../../db/migrations.js';
 
 // Each clause boots the real module graph and runs the full migration chain; an import cost, not
@@ -152,6 +139,14 @@ function claimedTask(id: string, title: string, atMs: number, measuredLeft: numb
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), measuredLeft, atMs, id);
   }
 }
+/** The work the engine can count (`engineProof`): a file the helper wrote for the task, still on disk. */
+function wroteFile(taskId: string, atMs: number): void {
+  const report = path.join(HOME, `${taskId}.md`);
+  fs.writeFileSync(report, 'The one-page report.');
+  db().prepare(
+    `INSERT INTO audit_log (id, agent_id, action_type, target, result, created_at) VALUES (?, 'helper', 'file_write', ?, 'success', ?)`,
+  ).run(`a-${taskId}`, report, sqlTime(atMs));
+}
 const closeLogged = (taskId: string): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND payload LIKE '%delivery-receipt close%'",
 ).get(taskId) as { n: number }).n;
@@ -159,9 +154,9 @@ const closeLogged = (taskId: string): number => (db().prepare(
 describe('fix round 3 (NB2): a delivered measured task with items left is driven, never receipt-closed', () => {
   it('two cycles of the ladder: it climbs to escalation, never sends a close-out poke, never logs a close', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    evidence.on = true;
     const now = Date.now();
     claimedTask('task-m', 'the mailbox sweep', now - 6 * MIN, 12);
+    wroteFile('task-m', now - 5 * MIN);
     for (const m of [0, 10, 25, 31, 47, 62, 80, 95]) await sweepAt(now + m * MIN);
     const sent = checkIns('task-m').join('\n---\n');
     expect(sent).not.toMatch(/DELIVERY ON RECORD|Do NOT redo the work/);
@@ -173,18 +168,18 @@ describe('fix round 3 (NB2): a delivered measured task with items left is driven
 
   it('CONTROL: the same evidence on an unmeasured task still gets the close-out steer (strike 1)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    evidence.on = true;
     const now = Date.now();
     claimedTask('task-u', 'the one-page report', now - 6 * MIN, null);
+    wroteFile('task-u', now - 5 * MIN);
     await sweepAt(now);
     expect(checkIns('task-u').join('\n')).toMatch(/DELIVERY ON RECORD/);
   });
 
   it('CONTROL: a measured task at zero is still receipt-closed at strike 2 as before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    evidence.on = true;
     const now = Date.now();
     claimedTask('task-z', 'the finished sweep', now - 6 * MIN, 0);
+    wroteFile('task-z', now - 5 * MIN);
     for (const m of [0, 10, 25]) await sweepAt(now + m * MIN);
     expect(checkIns('task-z').join('\n')).toMatch(/DELIVERY ON RECORD/);
     expect(closeLogged('task-z')).toBeGreaterThan(0);

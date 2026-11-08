@@ -1,23 +1,6 @@
-// PHASE-2 T5 — THE TWO PHASE-1 §7 DEBTS, CLOSED WITH READERS.
-//
-// The exit summary handed Phase 2 two columns and said plainly that half-closing them —
-// writing a column nothing reads — is the failure mode to avoid:
-//
-//   deliveries.receipt_id      44 rows / 0 populated. Phase 2 owes the WRITE **and** a reader.
-//                              The fuzzy join it replaces is outbound-ledger.ts's
-//                              `agent_id + turn_number + tool ORDER BY created_at DESC LIMIT 1`
-//                              — three columns guessing at a link that now exists.
-//
-//   turn_artifacts.delivery_id 325 rows / 0 populated, zero production references of ANY kind.
-//                              Phase 2 owes the write and either a reader or a written reason
-//                              there is none. There IS one: `delivery-evidence.ts` can close a
-//                              task by itself off "artifacts were handed over", and it was
-//                              reading `delivered_at IS NOT NULL` — which means "the queue was
-//                              drained", not "the user got it". A drained queue whose delivery
-//                              FAILED is exactly the false evidence that consult must not act on.
-//
-// Both readers are load-bearing: one quotes the agent's own last message back to it, the other
-// can make the engine close a task. Each has a negative control.
+// deliveries.receipt_id is the link from a delivery to its receipt: the agent's own last message is
+// quoted back to it through that link (`recentDeliveriesToConversation`), never through the old fuzzy
+// `agent_id + turn_number + tool` join, which stays only for rows written before the link existed.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -31,7 +14,6 @@ vi.mock('../../../db/connection.js', () => ({
 }));
 
 import { recentDeliveriesToConversation } from '../outbound-ledger.js';
-import { findDeliveryEvidenceForTask } from '../../../tracker/delivery-evidence.js';
 
 const AGENT = 'agent-1';
 
@@ -129,59 +111,5 @@ describe('deliveries.receipt_id is READ, not merely written', () => {
     seedDelivery({ receipt_id: null });
     const d = recentDeliveriesToConversation(AGENT, 'conv-im', 24, 1)[0] ?? null;
     expect(d!.sentText).toBe('legacy text');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// 2. turn_artifacts.delivery_id — the reader is the task-close evidence consult
-// ════════════════════════════════════════════════════════════════════════
-
-import { createWorkTable, seedTrackerTask, ms } from '../../../work/__tests__/work-fixture.js';
-
-const TASK = 'task-1';
-const ASK = 'msg-ask-1';
-
-function seedTaskAndAnsweredTurn(): void {
-  createWorkTable(mockDb.current!);
-  seedTrackerTask(mockDb.current!, {
-    id: TASK, agentId: AGENT, status: 'in_progress',
-    source_message_id: ASK, origin_conv_key: 'owner',
-    opened_at: ms('2026-07-28 07:15:34'),
-  });
-  mockDb.current!.prepare(
-    `INSERT INTO turns VALUES (?, 100, 'answered', 1, '2026-07-28 07:16:00', '2026-07-28 07:16:30', 'msg-answer', ?, NULL)`,
-  ).run(AGENT, ASK);
-}
-
-function seedArtifact(id: string, deliveryId: string | null): void {
-  mockDb.current!.prepare(
-    `INSERT INTO turn_artifacts VALUES (?, ?, 100, '/tmp/report.md', '{"filename":"report.md"}', '2026-07-28 07:16:20', ?)`,
-  ).run(id, AGENT, deliveryId);
-}
-
-describe('turn_artifacts.delivery_id decides whether an artifact is EVIDENCE', () => {
-  it('POSITIVE: an artifact linked to a DELIVERED delivery counts as handed over', () => {
-    seedTaskAndAnsweredTurn();
-    seedDelivery({ id: 'd-ok', turn_number: 100, channel: 'dashboard', outcome: 'delivered' });
-    seedArtifact('a-1', 'd-ok');
-    const ev = findDeliveryEvidenceForTask(TASK)!;
-    expect(ev.artifacts).toEqual(['report.md']);
-  });
-
-  it('NEGATIVE CONTROL: an artifact whose delivery FAILED is not evidence the user got it', () => {
-    // The whole point of the column. `delivered_at` says the queue drained; only the
-    // delivery says a person received it. This consult can CLOSE A TASK on its own.
-    seedTaskAndAnsweredTurn();
-    seedDelivery({ id: 'd-bad', turn_number: 100, channel: 'imessage', outcome: 'failed' });
-    seedArtifact('a-2', 'd-bad');
-    const ev = findDeliveryEvidenceForTask(TASK)!;
-    expect(ev.artifacts).toEqual([]);
-  });
-
-  it('LEGACY: an artifact with no link falls back to delivered_at (325 pre-T5 rows)', () => {
-    seedTaskAndAnsweredTurn();
-    seedArtifact('a-3', null);
-    const ev = findDeliveryEvidenceForTask(TASK)!;
-    expect(ev.artifacts).toEqual(['report.md']);
   });
 });

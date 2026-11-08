@@ -286,7 +286,7 @@ export const alreadyDeliveredReceiptExpr = (a: string): string =>
 //     door raised IS the owner told; the card is a platform dashboard delivery to the owner.
 // The record is SELF-VERIFYING rather than trusting: it refuses a delivery that does not
 // exist, did not succeed, or did not cross a door to a person (`a2a`, `none`, `engine-ack` —
-// the same three narrowings `deliveryForAgentSince` has always applied), and the readers
+// a delivery to a person), and the readers
 // below re-check `outcome = 'delivered'` at read time, because an outbound scope may
 // downgrade its row to `failed` after the first crossing (`agent/v2/outbound.ts:settle`).
 //
@@ -312,8 +312,7 @@ export type PersonToldOutcome =
   };
 
 /** Channels a delivery can cross without reaching a person, and the one tool that is the
- *  engine saying "on it" rather than the work arriving. Carried verbatim from
- *  `work/tracker-store.ts:deliveryForAgentSince`'s narrowings. */
+ *  engine saying "on it" rather than the work arriving. */
 const NOT_A_PERSON_CHANNELS: readonly string[] = ['a2a', 'none'];
 const NOT_A_PERSON_TOOL = 'engine-ack';
 

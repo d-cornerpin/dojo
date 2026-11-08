@@ -1,27 +1,16 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// K35 — THE PM'S VERDICT SAYS WHAT IT ACTUALLY LOOKED AT.
+// K35: THE PM'S VERDICT SAYS WHAT IT ACTUALLY LOOKED AT.
 //
-// An uphold used to read "PM validated the close against the goal" whether the PM had read the
-// task and opened the files or had read nothing. The PM's own tool calls this turn (the
-// `messages` rows) are the complete record of its reading, so the verdict now carries them:
-// `adjudications.evidence_ref` and the claim event hold the record, the uphold note is
-// "PM validated: <what it read>", and the card (the audit trail the dashboard renders) shows the
-// line under a rejection too.
+// An uphold used to read "PM validated the close against the goal" whether the PM had read the task
+// and opened the files or had read nothing. The PM's own tool calls (the `messages` rows) are the
+// complete record of its reading, so the verdict carries them: `adjudications.evidence_ref` and the
+// claim event hold the record, the uphold note is "PM validated: <what it read>", and the card shows
+// the line under a rejection too. The window is every PM read since the close was filed.
 //
-// v3.5 FIELD FIX 3 (#5, #6b), after the owner's box upheld a file-creation task whose record said
-// "looked at nothing":
-//   * the record also names what the close request itself carried (the measure and its remainder,
-//     the ledger, the evidence lines, the delivered answer, the owner's words), and every read the PM
-//     made on the row since the close was filed, not only in the ruling turn;
-//   * an uphold with NOTHING structural behind it is no longer a verdict that "still stands": the
-//     PM's door refuses it once per review, with the facts, and the next ruling after a read stands.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// And the PM's door refuses an uphold that nothing on record backs: no proof (the one proof check,
+// `work/done/proof.ts`), no remainder named at the close, no owner's words recorded on the task.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', async () => {
@@ -38,43 +27,15 @@ vi.mock('../../db/connection.js', async () => {
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 
-// The closeout-miss request is delivered through the transport; here it lands as the PM's inbound row,
-// on the thread the builder chose, in the PM's current turn (`inbound.turn`).
-const inbound = vi.hoisted(() => ({ turn: 7, to: 'pm-agent', from: 'worker-agent' }));
-vi.mock('../../agent/a2a-transport.js', () => ({
-  deliverA2AMessage: async (e: { threadId: string; payload: string }) => {
-    const { getDb } = await import('../../db/connection.js');
-    const at = Date.now();
-    getDb().prepare(
-      `INSERT INTO messages (id, agent_id, lane, role, content, turn_number, source_agent_id, a2a_thread_id, created_at, sent_at) VALUES (?, ?, 'a2a', 'user', ?, ?, ?, ?, ?, ?)`,
-    ).run(`in-${e.threadId}`, inbound.to, e.payload, inbound.turn, inbound.from, e.threadId, at, at);
-    return { delivered: true, threadId: e.threadId };
-  },
-}));
-
-// The delivered-answer pointer the request prints, switched per clause (its resolution has its own suite).
-const pointer = vi.hoisted(() => ({ on: null as null | { deliveryId: string; messageId: string | null } }));
-vi.mock('../delivery-evidence.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../delivery-evidence.js')>()),
-  resolveTaskAnswerPointer: () => (pointer.on
-    ? { ...pointer.on, basis: 'task-turn-answer', excerpt: 'The summary file is at /work/summary.md.', channel: 'dashboard', at: null }
-    : null),
-}));
-
 import { runMigrations } from '../../db/migrations.js';
-import { keepLedgerShownFor, noteAnswerShown } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
-import { recordTouched, setMeasure, recordMeasured } from '../../work/ledger-store.js';
+import { setMeasure, recordMeasured } from '../../work/ledger-store.js';
 import { validationMeasureLines } from '../job-loop-facts.js';
 import { writeTaskLog } from '../task-log.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { resetEmptyUpholdRefusals, emptyUpholdRefusalsHeld } from '../empty-uphold.js';
-import { rowReadNames as namesOf, readsBoundToRow } from '../looked-at.js';
 import { openTrackerProject, openTrackerTask, setTrackerStatus, upholdClaim, throwBackClaim } from '../../work/tracker-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { listTaskLog } from '../task-log.js';
-import { escalateCloseoutMissToPM } from '../pm-agent.js';
-import { clearPlatformConfigCache } from '../../config/platform.js';
 
 const WORKER = 'worker-agent';
 const PM = 'pm-agent';
@@ -110,10 +71,7 @@ const eventPayload = (t: string, kind: string): Record<string, unknown> =>
   JSON.parse((mockDb.current!.prepare('SELECT payload FROM work_events WHERE work_id = ? AND kind = ? ORDER BY id DESC').get(t, kind) as { payload: string }).payload);
 
 beforeEach(() => {
-  keepLedgerShownFor(new Set());   // the shown pages are process memory: no clause inherits another's
   msgSeq = 0;
-  pointer.on = null;
-  resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
   for (const id of [WORKER, PM]) mockDb.current.prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
@@ -198,48 +156,6 @@ describe('only a read that succeeded counts', () => {
   });
 });
 
-describe('the receipts the request showed', () => {
-  const WORKER_RECEIPT = (id: string, task: string | null): void => {
-    mockDb.current!.prepare(
-      `INSERT INTO tool_receipts (id, agent_id, tool, tier, verified, basis, provider_id, task_id, created_at, updated_at, turn_number)
-       VALUES (?, ?, 'gmail_label', 1, 1, 'provider-id', ?, ?, datetime('now'), datetime('now'), 3)`,
-    ).run(id, WORKER, `prov-${id}`, task);
-  };
-  const escalate = (t: string): Promise<void> => escalateCloseoutMissToPM({ agentId: WORKER, danglingTaskIds: [t], agentText: 'done', source: 'pre-turn-gate' });
-
-  beforeEach(() => {
-    mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_id', ?)").run(PM);
-    clearPlatformConfigCache();
-    inbound.turn = TURN;
-  });
-
-  it('counts the receipts filed against the task that the request printed, from the rows, not from the text', async () => {
-    const t = newTask();
-    WORKER_RECEIPT('r1', t); WORKER_RECEIPT('r2', t);
-    WORKER_RECEIPT('r3', null);   // the assignee's unstamped receipt: printed, but not this task's
-    await escalate(t);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(2);
-    expect(adj(t, 'upheld').note).toBe('PM validated: 2 receipts shown');
-  });
-
-  it('a request the PM was shown in an earlier turn is not this turn\'s', async () => {
-    const t = newTask();
-    WORKER_RECEIPT('r1', t);
-    inbound.turn = TURN - 1;
-    await escalate(t);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(0);
-  });
-
-  it('a task with no receipts shows none', async () => {
-    const t = newTask();
-    await escalate(t);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(0);
-  });
-});
-
 describe('a rejection and a key-two close record it too', () => {
   it('a reject keeps the PM\'s reason as its note and carries the same record; the card shows the line under it', () => {
     const t = newTask();
@@ -286,10 +202,14 @@ describe('only a live PM turn adds the record', () => {
 function fileClose(t: string, at = Date.now() + (++msgSeq), deliveryId: string | null = null): void {
   appendWorkEvent(t, 'validation_requested', WORKER, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: deliveryId }, at);
 }
-function seedDelivery(id: string): string {
+/** The worker's message to the owner on the dashboard; by default only a status claim, which is never proof. */
+function seedDelivery(id: string, text = 'Done, please validate.'): string {
+  const at = Date.now();
+  mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES (?, ?, 'owner', 'assistant', ?, ?, ?)`)
+    .run(`dm-${id}`, WORKER, text, at, at);
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'delivered', datetime('now'))`,
-  ).run(id, WORKER);
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES (?, ?, NULL, 'dashboard', 'dashboard', ?, 'delivered', datetime('now'))`,
+  ).run(id, WORKER, `dm-${id}`);
   return id;
 }
 /** The PM's own door: `work_validate(action="validate", kind="complete")`, as the model calls it. */
@@ -302,75 +222,6 @@ async function validate(t: string, valid: boolean, extra: Record<string, unknown
   return { content: String(out.content), isError: !!out.isError };
 }
 const upheld = (t: string): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM adjudications WHERE work_id = ? AND verdict = 'upheld'`).get(t) as { n: number }).n;
-const setTurn = (n: number): void => { openTurnContext(PM).turnNumber = n; };
-const db = (): Database.Database => mockDb.current!;
-
-describe('#5: the verdict records what the close request itself carried', () => {
-  it('a filed close with a measure at 0, a ledger, evidence, a delivered answer and the owner\'s words: all of it is on the record', () => {
-    const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 12, measure_remaining = 0, evidence_json = ? WHERE id = ?').run(
-      JSON.stringify({ tool: 'gmail_search', args: { query: 'label:Inbox' }, unit: 'messages' }),
-      JSON.stringify([{ kind: 'file', claim: 'summary written', pointer: '/work/summary.md' }, { kind: 'note', claim: 'checked the totals' }]), t);
-    recordTouched(t, 'file_write', ['file:/work/summary.md']);
-    recordTouched(t, 'exec', ['cmd:mkdir -p /work'], Date.now(), 'exit 0');
-    pointer.on = { deliveryId: 'deliv-abcdef12', messageId: 'msg-answer' };
-    say('user', 'the owner asked for the summary');
-    mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES ('owner-msg-1', ?, 'owner', 'user', 'make it one page', ?, ?)`).run(WORKER, Date.now(), Date.now());
-    writeTaskLog({ taskId: t, fromEntity: 'engine', entryKind: 'newer_instruction', reason: 'owner-msg-1' });
-    fileClose(t);
-    validationMeasureLines(t, 2000);   // the request the review put in front of the PM
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    const ref = JSON.parse(adj(t, 'upheld').evidence_ref!);
-    expect(ref.measure).toEqual({ remaining: 0, initial: 12, named: null });
-    expect(ref.ledger).toEqual({ touched: 1, commands: 1, files: ['/work/summary.md'], sends: [], commandsRun: [{ command: 'mkdir -p /work', status: 'exit 0' }], notListed: 0 });
-    expect(ref.evidence).toEqual(['[file] summary written @ /work/summary.md', '[note] checked the totals']);
-    expect(ref.deliveredAnswer).toBe('deliv-abcdef12');
-    expect(ref.ownerWords).toEqual(['owner-msg-1']);
-    expect(adj(t, 'upheld').note).toBe('PM validated: measure 0 remaining, ledger 1 item touched and 1 command run, 2 evidence lines, delivered answer deliv-ab, owner words 1 message');
-  });
-
-  it('a measure with a remainder the worker named says so', () => {
-    const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 25, measure_remaining = 7 WHERE id = ?').run(
-      JSON.stringify({ tool: 'gmail_search', args: { query: 'label:Inbox' }, unit: 'messages' }), t);
-    writeTaskLog({ taskId: t, fromEntity: `agent:${WORKER}`, entryKind: 'observation', note: 'Remainder named at close: 7 are invites the owner said to leave' });
-    fileClose(t);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).measure).toEqual({ remaining: 7, initial: 25, named: '7 are invites the owner said to leave' });
-    expect(adj(t, 'upheld').note).toBe('PM validated: measure 7 remaining (remainder named)');
-  });
-
-  it('no close filed (a verdict outside the request): nothing from a request is claimed', () => {
-    const t = newTask();
-    recordTouched(t, 'file_write', ['file:/work/summary.md']);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    const ref = JSON.parse(adj(t, 'upheld').evidence_ref!);
-    expect(ref.ledger).toBeUndefined();
-    expect(adj(t, 'upheld').note).toBe('PM validated: looked at nothing');
-  });
-});
-
-describe('review M1: the verdict records the ledger the request SHOWED, bounded the same way', () => {
-  it('a 500-command task: the record holds the counts and exactly the entries the request listed', () => {
-    const t = newTask();
-    for (let i = 0; i < 500; i += 1) recordTouched(t, 'exec', [`cmd:ls /work/part-${i}`], Date.now() + i, 'exit 0');
-    fileClose(t);
-    const shown = validationMeasureLines(t, 300);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    const ledger = JSON.parse(adj(t, 'upheld').evidence_ref!).ledger as { commands: number; commandsRun: unknown[]; notListed: number };
-    expect(ledger.commands).toBe(500);
-    expect(ledger.commandsRun.length).toBe(shown.split('command run:').length - 1);
-    expect(ledger.commandsRun.length + ledger.notListed).toBe(500);
-    expect(ledger.commandsRun.length).toBeLessThan(500);
-  });
-  it('a verdict with no request shown in this process records the counts only, never a fresh unbounded list', () => {
-    const t = newTask();
-    for (let i = 0; i < 50; i += 1) recordTouched(t, 'exec', [`cmd:ls /work/p-${i}`], Date.now() + i, 'exit 0');
-    fileClose(t);
-    upholdClaim(t, 'done', 'pm', PM, 'x');
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).ledger).toEqual({ touched: 0, commands: 50 });
-  });
-});
 
 describe('#5: the PM\'s reads on the row since the close was filed count, not only this turn\'s', () => {
   it('a read in the turn before the ruling, after the close was filed, is on the record; one from before the filing is not', () => {
@@ -387,149 +238,38 @@ describe('#5: the PM\'s reads on the row since the close was filed count, not on
   });
 });
 
-describe('#6b: an uphold with nothing structural behind it is refused at the PM\'s door', () => {
+describe('an uphold that nothing on record backs is refused at the PM\'s door', () => {
   it('nothing on record: refused, with the facts only; nothing is upheld and the close stays filed', async () => {
     const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([{ kind: 'file', claim: 'made the folder', pointer: '/work/out' }]), t);
     fileClose(t, undefined, seedDelivery('deliv-0011aabb'));
     const r = await validate(t, true);
     expect(r.isError).toBe(true);
     expect(r.content).toBe(
-      'Refused: nothing on record shows this work. The ledger for this task is empty (no files written, no commands run, no items touched). '
-      + 'No measure is set. No delivered answer is on record for it. '
-      + 'Nothing of the work itself has been read since the close was filed. '
-      + 'The worker\'s evidence names: /work/out. '
-      + 'Read the work (the files or the messages it names) before ruling.');
+      'Refused: nothing on record shows this work. No file the worker wrote, message to the asker, confirmed receipt '
+      + 'or measure at 0 is on record for it, no remainder was named, and no owner\'s words are recorded. '
+      + 'There is nothing to open that shows the work was done.');
     expect(r.content).not.toMatch(/valid=true|approve|uphold it|or else|will be/i);   // facts, never coaching or a threat
     expect(upheld(t)).toBe(0);
   });
 
-  it('M3(a): a plain retry in the same review does NOT pass; the refusal holds until this row\'s work is read', async () => {
+  it('a real message to the owner on record backs the close in one review', async () => {
     const t = newTask();
-    fileClose(t, undefined, seedDelivery('deliv-1'));
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record shows this work/);
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record shows this work/);
-    expect(upheld(t)).toBe(0);
-  });
-
-  it('NO LOOP: a read of what this row names, after the refusal, lets the uphold stand (in this review or the next)', async () => {
-    const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([{ kind: 'file', claim: 'wrote the summary', pointer: '/work/out/summary.md' }]), t);
-    fileClose(t, undefined, seedDelivery('deliv-2'));
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-    setTurn(TURN + 1);
-    call('file_read', { path: '/work/out/summary.md' }, TURN + 1);   // the file the evidence names
-    const r = await validate(t, true);
-    expect(r.content).not.toMatch(/^Refused: nothing on record/);
-    expect(upheld(t)).toBe(1);
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).files).toEqual(['/work/out/summary.md']);
-  });
-
-  it('NO LOOP: a read made BEFORE the refusal does not release it; one made after does', async () => {
-    const t = newTask();
-    recordTouched(t, 'file_write', ['file:/work/x.md']);
-    db().prepare('DELETE FROM work_ledger WHERE work_id = ?').run(t);   // the record is empty again
-    mockDb.current!.prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([{ kind: 'file', claim: 'x', pointer: '/work/x.md' }]), t);
-    fileClose(t, undefined, seedDelivery('deliv-2b'));
-    call('file_read', { path: '/work/elsewhere.md' });   // not this row's work: no backing
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-    call('file_read', { path: '/work/x.md' });
-    expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
-  });
-
-  it('M3(b): an unrelated read backs nothing; a read binds only to what THIS row names', async () => {
-    const a = newTask();
-    const b = newTask();
-    mockDb.current!.prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([{ kind: 'file', claim: 'a', pointer: '/work/a/report.md' }]), a);
-    fileClose(a, undefined, seedDelivery('deliv-a'));
-    fileClose(b, undefined, seedDelivery('deliv-b'));
-    call('file_read', { path: '/work/a/report.md' });   // row A's work, read in the batch review
-    expect((await validate(a, true)).content).not.toMatch(/^Refused: nothing on record/);
-    expect((await validate(b, true)).content).toMatch(/^Refused: nothing on record/);   // A's read does not back B
-  });
-
-  it('M3(b): a read of a message the delivered answer or the owner\'s words name is bound to the row', async () => {
-    const t = newTask();
-    fileClose(t, undefined, seedDelivery('deliv-m'));
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-    call('history_get', { id: 'unrelated-msg' });
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-    expect(namesOf(t)).toBeDefined();
-  });
-
-  it('R7: a folder the evidence names is not a licence for every read under it', async () => {
-    const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([{ kind: 'file', claim: 'made the folder', pointer: '/work/out' }]), t);
-    fileClose(t, undefined, seedDelivery('deliv-r7'));
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-    call('file_read', { path: '/work/out/anything.md' });
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-  });
-
-  it('L4: a refusal is forgotten once the row is settled (here, by a reject)', async () => {
-    const t = newTask();
-    fileClose(t);
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-    expect(emptyUpholdRefusalsHeld()).toBe(1);
-    await validate(t, false, { reject_reason: 'no file was written; write the summary and resubmit' });
-    const other = newTask();
-    fileClose(other);
-    await validate(other, true);   // any later call prunes the settled row
-    expect(emptyUpholdRefusalsHeld()).toBe(1);
-  });
-
-  it('a normal, real close upholds in ONE review: a delivered answer the request showed the PM', async () => {
-    const t = newTask();
-    fileClose(t, undefined, seedDelivery('deliv-3'));
-    pointer.on = { deliveryId: 'deliv-3', messageId: null };
-    noteAnswerShown(t, 'deliv-3');   // the review's request printed this answer's excerpt (pm-agent's delivered line)
+    fileClose(t, undefined, seedDelivery('deliv-real', 'The quarterly summary is filed: revenue 412, costs 300.'));
     expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
     expect(upheld(t)).toBe(1);
   });
 
-  it('audit #5: the worker\'s delivered line ALONE (never shown to the PM) does not back an uphold', async () => {
-    const t = newTask();
-    fileClose(t, undefined, seedDelivery('deliv-3b'));
-    pointer.on = { deliveryId: 'deliv-3b', messageId: 'msg-progress' };   // e.g. a line the request never put in front of the PM
-    const r = await validate(t, true);
-    expect(r.content).toMatch(/^Refused: nothing on record/);
-    expect(r.content).toContain('The delivered answer on record (message msg-prog) has not been shown to you in a review.');
-    expect(upheld(t)).toBe(0);
-    call('history_get', { id: 'msg-progress' });   // reading it is a read of this row's work
-    expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
-  });
-
-  it('audit #5: an answer shown for a DIFFERENT delivery than the one on record does not back it', async () => {
-    const t = newTask();
-    fileClose(t, undefined, seedDelivery('deliv-3c'));
-    pointer.on = { deliveryId: 'deliv-3c', messageId: null };
-    noteAnswerShown(t, 'deliv-older');
-    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
-  });
-
-  it('the review records which answer its request showed, where it prints the delivered line', () => {
-    const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../pm-agent.ts'), 'utf8');
-    expect(src).toMatch(/noteAnswerShown\(cTask\.id, answerPointer\.deliveryId\)/);
-  });
-
-  it('a normal, real close upholds in ONE review: a ledger with the files the work wrote', async () => {
-    const t = newTask();
-    recordTouched(t, 'file_write', ['file:/work/summary.md']);
-    fileClose(t, undefined, seedDelivery('deliv-4'));
-    expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
-    expect(upheld(t)).toBe(1);
-  });
-
-  it('re-review 2 (S2): a measure that read 0 from the start (it never counted anything) does NOT back the close', async () => {
+  it('a measure that read 0 from the start (it never counted anything) does NOT back the close', async () => {
     const t = newTask();
     mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 0, measure_remaining = 0 WHERE id = ?').run(
       JSON.stringify({ tool: 'file_list', args: { path: '/work/wrong-folder', pattern: '*.pdf' }, unit: 'files' }), t);
+    recordMeasured(t, { ok: true, count: 0 }, Date.now());
     fileClose(t, undefined, seedDelivery('deliv-z0'));
     expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record/);
     expect(upheld(t)).toBe(0);
   });
 
-  it('re-review 3 (M4): the remaining files sit in an UNREADABLE folder, so a 0 is no reading: no backing, and the folder is named', async () => {
+  it('the remaining files sit in an UNREADABLE folder, so a 0 is no reading: no backing, and the folder is named', async () => {
     const t = newTask();
     const m = { tool: 'file_list', args: { path: '/work/inbox', pattern: '**/*.pdf' }, unit: 'files' } as const;
     setMeasure(t, m as never, { ok: true, count: 6 }, Date.now() - 60_000);
@@ -543,16 +283,17 @@ describe('#6b: an uphold with nothing structural behind it is refused at the PM\
     expect(upheld(t)).toBe(0);
   });
 
-  it('a measure that reads 0 backs the close', async () => {
+  it('a measure that came down to 0 backs the close', async () => {
     const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 3, measure_remaining = 0 WHERE id = ?').run(
+    mockDb.current!.prepare('UPDATE work SET measure_json = ?, measure_initial = 3, measure_remaining = 3 WHERE id = ?').run(
       JSON.stringify({ tool: 'gmail_search', args: { query: 'label:Inbox' }, unit: 'messages' }), t);
-    fileClose(t, undefined, seedDelivery('deliv-5'));
+    recordMeasured(t, { ok: true, count: 0 }, Date.now());
+    fileClose(t, undefined, seedDelivery('deliv-5', 'All 3 inbox messages are labelled.'));
     expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
     expect(upheld(t)).toBe(1);
   });
 
-  it('a read of the task record alone is the worker\'s own account, not a read of the work', async () => {
+  it('a read of the task record alone is the worker\'s own account, not the work', async () => {
     const t = newTask();
     fileClose(t, undefined, seedDelivery('deliv-6'));
     call('work_update', { action: 'get', task_id: t });
@@ -563,7 +304,7 @@ describe('#6b: an uphold with nothing structural behind it is refused at the PM\
     const t = newTask();
     mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES ('owner-msg-2', ?, 'owner', 'user', 'go with the slabs', ?, ?)`).run(WORKER, Date.now(), Date.now());
     writeTaskLog({ taskId: t, fromEntity: 'engine', entryKind: 'newer_instruction', reason: 'owner-msg-2' });
-    fileClose(t, undefined, seedDelivery('deliv-7'));
+    fileClose(t, undefined, seedDelivery('deliv-7', 'Settled: the base is slabs, as you chose.'));
     expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
     expect(upheld(t)).toBe(1);
   });
@@ -574,60 +315,5 @@ describe('#6b: an uphold with nothing structural behind it is refused at the PM\
     const r = await validate(t, false, { reject_reason: 'no file was written; write the summary and resubmit' });
     expect(r.content).not.toMatch(/^Refused: nothing on record/);
     expect((mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM adjudications WHERE work_id = ? AND verdict = 'rejected'`).get(t) as { n: number }).n).toBe(1);
-  });
-
-  it('the prompt-only rule it replaces is gone from the request text (one way to do it)', async () => {
-    const { unvalidatedCompleteText } = await import('../validation-request.js');
-    const text = unvalidatedCompleteText(newTask(), { title: 't', agentName: 'w', goal: null, result: null, priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '' });
-    expect(text).not.toContain('With no such record and nothing touched, reject it');
-  });
-});
-
-// Review round 2 (R7): a read binds only to the specific files, paths and messages the row's record names.
-describe('R7: readsBoundToRow is specific', () => {
-  const reads = (files: string[], messages: string[] = []) => ({ tasks: [], activity: [], files, messages, results: [], vault: [], failed: [], receiptsShown: 0 });
-  it('a command naming ~/ or a home folder does not make every read under it the row\'s work', () => {
-    const t = newTask();
-    recordTouched(t, 'shell', ['cmd:ls ~/'], Date.now(), 'exit 0');
-    recordTouched(t, 'shell', ['cmd:cat /Users/someone/notes.md'], Date.now(), 'exit 0');
-    recordTouched(t, 'shell', ['cmd:ls -la /Users/someone'], Date.now(), 'exit 0');
-    expect(readsBoundToRow(reads(['/Users/someone/Desktop/private.md']), t)).toBe(false);   // a home folder named by a command
-    expect(readsBoundToRow(reads(['~/Documents/other.md']), t)).toBe(false);
-    expect(readsBoundToRow(reads(['/Users/someone/other.md']), t)).toBe(false);
-    expect(readsBoundToRow(reads(['/Users/someone/notes.md']), t)).toBe(true);   // the specific file it named
-  });
-  it('a directory counts only where the row\'s own ledger WROTE, and only for files inside it', () => {
-    const t = newTask();
-    recordTouched(t, 'file_write', ['file:/work/out/a.md']);
-    expect(readsBoundToRow(reads(['/work/out/a.md']), t)).toBe(true);
-    expect(readsBoundToRow(reads(['/work/out/b.md']), t)).toBe(true);     // a file in the folder the work wrote into
-    expect(readsBoundToRow(reads(['/work/out']), t)).toBe(false);         // the folder itself is not a file inside it
-    expect(readsBoundToRow(reads(['/work/other/c.md']), t)).toBe(false);
-    expect(readsBoundToRow(reads(['/work']), t)).toBe(false);
-  });
-  it('an evidence pointer binds that exact file or message, nothing under it', () => {
-    const t = newTask();
-    mockDb.current!.prepare('UPDATE work SET evidence_json = ? WHERE id = ?').run(JSON.stringify([
-      { kind: 'file', claim: 'x', pointer: '/work' }, { kind: 'file', claim: 'y', pointer: '/work/report.md' }, { kind: 'message', claim: 'z', pointer: 'msg-proof-1' },
-    ]), t);
-    expect(readsBoundToRow(reads(['/work/report.md']), t)).toBe(true);
-    expect(readsBoundToRow(reads(['/work/elsewhere.md']), t)).toBe(false);
-    expect(readsBoundToRow(reads([], ['msg-proof-1']), t)).toBe(true);
-    expect(readsBoundToRow(reads([], ['msg-other']), t)).toBe(false);
-  });
-});
-
-// Review round 2, R3 (RULED): the validation request showing the ledger page and the answer excerpt IS the
-// PM reading the record. A non-empty record upholds in one review with no extra read.
-describe('R3 (ruled): a non-empty record upholds in one review with no extra read', () => {
-  it('a ledger with commands and a delivered answer: the first uphold stands, no read made', async () => {
-    const t = newTask();
-    recordTouched(t, 'exec', ['cmd:mkdir -p /work/out'], Date.now(), 'exit 0');
-    pointer.on = { deliveryId: 'deliv-r3', messageId: null };
-    fileClose(t, undefined, seedDelivery('deliv-r3'));
-    const r = await validate(t, true);
-    expect(r.content).not.toMatch(/^Refused/);
-    expect(upheld(t)).toBe(1);
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).files).toEqual([]);   // nothing was opened, and none was needed
   });
 });

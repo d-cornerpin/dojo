@@ -19,8 +19,9 @@ import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import {
-  setTrackerStatus, patchWork, appendWorkNotes, deliveryForTaskClose,
+  setTrackerStatus, patchWork, appendWorkNotes,
 } from '../work/tracker-store.js';
+import { proofDelivery } from '../work/done/proof.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -867,7 +868,7 @@ export async function completeAgent(
     const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
       by: 'agent', actorId: agentId,
       reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,
-      resultDeliveryId: taskStatus === 'complete' ? deliveryForTaskClose(resolvedTaskId) : null,
+      resultDeliveryId: taskStatus === 'complete' ? proofDelivery(resolvedTaskId) : null,
     });
     if (!workSettled(closeRes)) {
       logger.warn('completeAgent: task close refused by the work gate',
@@ -947,7 +948,7 @@ export async function completeAgent(
       // the gate. The engine is the one drawing that inference, so it says so and points at
       // the delivery (G6). A non-complete disposition is not a two-key subject and keeps the
       // actor it always had.
-      const inheritedDelivery = disposition === 'complete' ? deliveryForTaskClose(dt.id) : null;
+      const inheritedDelivery = disposition === 'complete' ? proofDelivery(dt.id) : null;
       const dRes = setTrackerStatus(dt.id, disposition, {
         by: disposition === 'complete' ? 'engine' : 'agent', actorId: agentId,
         reason: sameWork

@@ -90,6 +90,7 @@ function applySchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS deliveries (
       id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT,
       conversation_id TEXT, message_id TEXT, channel TEXT, turn_number INTEGER,
+      recipient_id TEXT, recipient_display TEXT, receipt_id TEXT, detail TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT
     );
@@ -297,22 +298,24 @@ import { fileAssignDeliverableCloseRequest } from '../tools.js';
 const THREAD = 'thr-t118-assign-1';
 const ASSIGN_TASK = 'task-t118-assign-1';
 
-/** The delivery receipt the close is filed FROM. Must be newer than the task's `opened_at`
- *  (the fixture seeds 1700000000000) and carry a parseable text timestamp. */
+const ASSIGNER = 'assigner-agent';
+
+/** The deliverable the assignee handed back to the agent that assigned the work: the receipt the close
+ *  is filed FROM. Newer than the task's `opened_at` (the fixture seeds 1700000000000). */
 function seedDelivery(agentId: string): void {
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, outcome, tool, channel, conversation_id,
+    `INSERT INTO deliveries (id, agent_id, outcome, tool, channel, recipient_id, detail, conversation_id,
                              message_id, turn_number, created_at, updated_at)
-     VALUES (?, ?, 'delivered', 'a2a_send', 'a2a', NULL, NULL, NULL,
+     VALUES (?, ?, 'delivered', 'a2a_send', 'a2a', ?, 'A2A DELIVERABLE', NULL, NULL, NULL,
              datetime('now'), datetime('now'))`,
-  ).run(`del-${agentId}-1`, agentId);
+  ).run(`del-${agentId}-1`, agentId, ASSIGNER);
 }
 
 describe('§3 an A2A deliverable that quotes a handed credential never lands in `result`', () => {
   it('RED BEFORE THE FIX: the assignee\'s deliverable text is redacted on the close bind', async () => {
     seedTrackerTask(mockDb.current!, {
       id: ASSIGN_TASK, title: 'Pull the ledger', status: 'in_progress',
-      agentId: AGENT, a2a_thread_id: THREAD,
+      agentId: AGENT, createdBy: ASSIGNER, a2a_thread_id: THREAD,
     });
     seedDelivery(AGENT);
     noteHandedCredentialValues(AGENT, [FAKE_TOKEN]);
@@ -336,7 +339,7 @@ describe('§3 an A2A deliverable that quotes a handed credential never lands in 
   it('WHAT THE FIX MAY NOT COST: an ordinary deliverable is stored verbatim', async () => {
     seedTrackerTask(mockDb.current!, {
       id: ASSIGN_TASK, title: 'Pull the ledger', status: 'in_progress',
-      agentId: AGENT, a2a_thread_id: THREAD,
+      agentId: AGENT, createdBy: ASSIGNER, a2a_thread_id: THREAD,
     });
     seedDelivery(AGENT);
 

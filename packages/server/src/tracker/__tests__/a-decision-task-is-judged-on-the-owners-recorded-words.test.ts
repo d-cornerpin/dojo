@@ -1,9 +1,8 @@
-// The t153 shape: a task whose deliverable is a decision (no file, no effectful call). The owner settled
-// it in a LATER message; the turn that served it closed the task with the decision in its notes. The PM's
-// validation request must carry the owner's recorded words (the engine's newer-instruction link), so the
-// close is judged on that record, not on the agent's prose. With no such record and nothing touched, the
-// engine refuses the uphold at the PM's door (v3.5 field fix 3, #6b: `a-verdict-names-what-the-pm-read`);
-// the request no longer carries that rule as prompt text.
+// A task whose deliverable is a decision (no file, no effectful call). The owner settled it in a LATER
+// message; the turn that served it closed the task with the decision in its notes. The PM's validation
+// request must carry the owner's recorded words (the engine's newer-instruction link), so the close is
+// judged on that record, not on the agent's prose. With no such record and no proof, the engine refuses
+// the uphold at the PM's door; the request does not carry that rule as prompt text.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -23,11 +22,11 @@ vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessa
 import { runMigrations } from '../../db/migrations.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { writeTaskLog } from '../task-log.js';
-import { unvalidatedCompleteText } from '../validation-request.js';
+import { unvalidatedCompleteText } from '../pm-agent.js';
 
 const db = (): Database.Database => mockDb.current!;
 const TASK = 'task-decision-base';
-const parts = (): import('../validation-request.js').ValidationRequestParts => ({
+const parts = (): Parameters<typeof unvalidatedCompleteText>[1] => ({
   title: 'Plan the base', agentName: 'Helper', goal: 'the base type is chosen', result: 'The owner chose a timber frame on slabs.',
   priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '    (no evidence array)',
 });

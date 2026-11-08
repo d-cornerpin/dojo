@@ -1,20 +1,13 @@
-// v3.5 field fix 3, ranked fix #1 (G7 close floor) and #2 (the refusal states facts), as
-// corrected by the review round (H1, H2, M2).
+// A task answered in turn N closes on that answer in a later turn.
 //
-// THE FIELD SHAPE (diagnosis Problem 3): turn 6559 did a four-step project and answered the owner
-// on the dashboard; the ask closed on that answer. The primary then tried to close steps 2-4 in
-// LATER turns (A2A turns from the PM), and every close was refused "needs a delivery" and the
-// agent was coached to send the result again. The engine held the receipt the whole time.
+// THE FIELD SHAPE: a turn did a four-step project and answered the owner on the dashboard; the ask
+// closed on that answer. The primary then tried to close steps 2-4 in LATER turns (A2A turns from the
+// PM), and every close was refused "needs a delivery". The engine held the receipt the whole time.
 //
-// THE REVIEW'S CORRECTION (H1): an ask also settles on a model-written final "On it, I've opened
-// the steps" line, so "the ask's receipt" alone is not "the task's answer". Owner law: an ack
-// never closes a task; the start ack AND the completion are both required. The one definition
-// (`resolveTaskAnswerPointer`) takes the first line that reached the asking thread after the
-// task opened as the start ack, and only a later line as the completion. The negative control
-// below settles the ask on an ack line through the REAL settlement authority.
-//
-// H2: only the worker's own close doors fall back to the answer; `deliveryForTaskClose`, shared
-// by the scheduler's closes and the PM's strike-2, is exactly as on base.
+// Owner law: an ack never closes a task. The close points at the newest message to the asker that the
+// one proof check accepts (`work/done/proof.ts:proofDelivery`): never the engine's marked start ack,
+// never a bare status claim ("Done."), never a line from before the task was opened. A text line is the
+// worker's to file on, for the PM; the engine itself never reads one as delivered work.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -36,10 +29,10 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { deliveryForTaskClose, openTrackerProject, openTrackerTask, stampTicket } from '../../work/tracker-store.js';
+import { openTrackerProject, openTrackerTask, stampTicket } from '../../work/tracker-store.js';
 import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../work/store.js';
 import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
-import { resolveTaskAnswerPointer, taskWorkOnRecord } from '../delivery-evidence.js';
+import { engineProofLine, proofDelivery } from '../../work/done/proof.js';
 import { trackerCompleteStep, trackerGetStatus, trackerUpdateStatus } from '../tools.js';
 
 const AGENT = 'agent-primary';
@@ -131,7 +124,7 @@ beforeEach(() => {
   d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
 });
 
-describe('fix #1: a task answered in turn N closes on that answer in a later turn (worker doors only)', () => {
+describe('a task answered in turn N closes on that answer in a later turn', () => {
   it('THE FIELD SHAPE: ack, work, answer on the dashboard in turn N; complete_step in an A2A turn N+1 files Key 1 on the answer', () => {
     const askId = seedOwnerAsk('msg-ask');
     stampClaimingTurn(askId, ASK_TURN);
@@ -145,8 +138,8 @@ describe('fix #1: a task answered in turn N closes on that answer in a later tur
     const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
     expect(out, out).toMatch(/^\[FILED\]/);
     expect(closeRequest(steps[1])?.result_delivery_id).toBe('b2b026a7');
-    // M2: the request the PM reads names the same delivery the close filed on.
-    expect(resolveTaskAnswerPointer(steps[1])?.deliveryId).toBe('b2b026a7');
+    // The request the PM reads names the same delivery the close filed on.
+    expect(proofDelivery(steps[1])).toBe('b2b026a7');
   });
 
   it('work_update status="complete" (the other worker door) files on the same answer', () => {
@@ -173,7 +166,7 @@ describe('fix #1: a task answered in turn N closes on that answer in a later tur
     endTurnAndSettle(askId, 'msg-ask-st', line('d-ans-st', 'Tidied: two files moved.', ASK_TURN));
     db().prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?').run(ASK_TURN, 'msg-ask-st');
     stampAnswered(t);
-    expect(resolveTaskAnswerPointer(t)?.deliveryId).toBe('d-ans-st');
+    expect(proofDelivery(t)).toBe('d-ans-st');
   });
 });
 
@@ -182,7 +175,7 @@ const markAck = (deliveryId: string): void => {
   db().prepare("UPDATE messages SET origin_intent = 'engine_start_ack' WHERE id = ?").run(`m-${deliveryId}`);
 };
 
-describe('review H1 / round 4: an ack never closes a task; a text line is the worker\'s to file on, for the PM', () => {
+describe('an ack never closes a task; a text line is the worker\'s to file on, for the PM', () => {
   it('NEGATIVE CONTROL, driven: the MARKED start ack is the turn\'s only line; no receipt, the later close is refused, nothing reads as delivered', () => {
     const askId = seedOwnerAsk('msg-ask-ack');
     stampClaimingTurn(askId, ASK_TURN);
@@ -194,8 +187,8 @@ describe('review H1 / round 4: an ack never closes a task; a text line is the wo
     for (const s of steps) stampAnswered(s);
     laterA2ATurn();
 
-    expect(resolveTaskAnswerPointer(steps[1])).toBeNull();
-    expect(taskWorkOnRecord(steps[1], null)).toBeNull();
+    expect(proofDelivery(steps[1])).toBeNull();
+    expect(engineProofLine(steps[1])).toBeNull();
     const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
     expect(out).toMatch(/^Error:/);
     expect(out).toMatch(/No completion for this task has reached the owner yet/);
@@ -215,7 +208,7 @@ describe('review H1 / round 4: an ack never closes a task; a text line is the wo
     expect(askRow(askId).result_delivery_id).toBe('d-progress');
     laterA2ATurn();
     // The engine never reads a text line as delivered work.
-    expect(taskWorkOnRecord(steps[1], null)).toBeNull();
+    expect(engineProofLine(steps[1])).toBeNull();
     expect(trackerGetStatus(AGENT, { taskId: steps[1] })).not.toContain('ALREADY DELIVERED');
     // The worker's own close files Key 1 on the line the owner read; the PM judges it.
     const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
@@ -233,7 +226,7 @@ describe('review H1 / round 4: an ack never closes a task; a text line is the wo
     const steps = seedSteps('msg-ask-r2');
     endTurnAndSettle(askId, 'msg-ask-r2', line('d-booked-r2', 'Booked: a table for four on Friday at 7pm, confirmation 4471.', ASK_TURN));
     laterA2ATurn();
-    expect(resolveTaskAnswerPointer(steps[0])?.deliveryId).toBe('d-booked-r2');
+    expect(proofDelivery(steps[0])).toBe('d-booked-r2');
     const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
     expect(out, out).toMatch(/^\[FILED\]/);
     expect(out).not.toMatch(/No completion|nothing has reached/i);
@@ -241,28 +234,27 @@ describe('review H1 / round 4: an ack never closes a task; a text line is the wo
   });
 });
 
-describe('review H2: every other close door is exactly as on base', () => {
-  it('the shared deliveryForTaskClose (scheduler closes, PM strike-2) finds nothing in a later turn, as on base', () => {
+describe('every close door reads the one proof check', () => {
+  it('a bare "Done." to the owner is a status claim, never the task\'s delivery', () => {
     const askId = seedOwnerAsk('msg-ask-h2');
     stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask-h2');
     line('d-ack-h2', 'On it.', ASK_TURN);
     endTurnAndSettle(askId, 'msg-ask-h2', line('d-ans-h2', 'Done.', ASK_TURN));
     laterA2ATurn();
-    expect(resolveTaskAnswerPointer(steps[0])?.deliveryId).toBe('d-ans-h2');
-    expect(deliveryForTaskClose(steps[0])).toBeNull();
+    expect(proofDelivery(steps[0])).toBeNull();
   });
 
-  it('a delivery in the close\'s own turn still resolves from the shared helper (base behaviour)', () => {
+  it('a delivery in the close\'s own turn resolves', () => {
     seedOwnerAsk('msg-ask-own');
     const steps = seedSteps('msg-ask-own');
     laterA2ATurn();
     line('d-now', 'the follow-up result', ASK_TURN + 1);
-    expect(deliveryForTaskClose(steps[2])).toBe('d-now');
+    expect(proofDelivery(steps[2])).toBe('d-now');
   });
 });
 
-describe('fix #2: the G7 refusal states facts, never coaching', () => {
+describe('the G7 refusal states facts, never coaching', () => {
   it('with nothing on record: no completion has reached the owner, and no "send it first" order', () => {
     const askId = seedOwnerAsk('msg-ask-none');
     stampClaimingTurn(askId, ASK_TURN);

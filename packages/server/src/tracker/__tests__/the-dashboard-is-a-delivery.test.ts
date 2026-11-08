@@ -176,24 +176,4 @@ describe('the tangibility rule survives verbatim', () => {
     expect(isTangibleDeliverySummary('')).toBe(false);
     expect(isTangibleDeliverySummary('via imessage')).toBe(true);
   });
-
-  it('every consumer of the finished-work predicate asks the ONE helper', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    // The ENGINE's two consumers (the close-out gate's evidence consult and the strike-0
-    // same-turn close) live inside step packages that PHASE-6 moves, so the corpus is the
-    // shared engine derivation, never a path — `guard-corpus-census`'s rule.
-    const { engineText } = await import('../../agent/v2/__tests__/engine-sources.js');
-    const engine = engineText();
-    expect((engine.match(/isTangibleDeliverySummary/g) ?? []).length,
-      'the close-out gate AND the strike-0 close both ask the helper').toBeGreaterThanOrEqual(2);
-    // The tool door is not a step package and is read directly. Since field fix 3 review round 2
-    // its task-level "delivered" readings ask the one task-level helper (`taskWorkOnRecord`,
-    // the ack-order rule), never the per-turn summary.
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const tools = fs.readFileSync(path.resolve(here, '../tools.ts'), 'utf8');
-    expect(tools).toContain('taskWorkOnRecord');
-    expect(tools).not.toContain('isTangibleDeliverySummary');
-  });
 });

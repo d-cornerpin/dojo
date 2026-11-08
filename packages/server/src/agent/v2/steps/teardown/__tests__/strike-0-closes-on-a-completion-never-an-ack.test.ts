@@ -7,7 +7,8 @@
 // engine-closing every step ("Found three tables; I will book one next").
 //
 // THE RULING (binding, round 4): done is measured, never declared. The engine's own closes count
-// only what the engine can count: a delivered FILE, or a measure that reads 0. A line of text never
+// only what the engine can count (`work/done/proof.ts:engineProof`): a file the worker wrote for the
+// task, or a measure that came down to 0. A line of text never
 // closes a task by the engine, on any channel. A text answer is the WORKER's to close on, filed for
 // the PM (OR-FIELD3(b), `tracker/tools.ts`).
 //
@@ -177,20 +178,26 @@ describe('(b) a real text completion is the WORKER\'s to close on, never the eng
 });
 
 describe('(c) what the engine can count still closes them', () => {
-  it('a delivered file artifact closes both tasks', async () => {
+  it('a file the worker wrote during the turn closes both tasks', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     const only = line('d-file-line', 'dashboard', conv, 'Here is the confirmation.');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const file = path.join(process.env.DOJO_HOME ?? '/tmp', 'confirmation.txt');
+    fs.writeFileSync(file, 'Confirmation 4471: a table for four on Friday at 7pm.');
     db().prepare(
-      `INSERT INTO turn_artifacts (agent_id, turn_number, kind, path, delivered_at) VALUES (?, ?, 'file', '/tmp/confirmation.pdf', datetime('now'))`,
-    ).run(AGENT, TURN);
+      `INSERT INTO audit_log (id, agent_id, action_type, target, result) VALUES ('a-file', ?, 'file_write', ?, 'success')`,
+    ).run(AGENT, file);
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
     expect(states(tasks)).toEqual(['done', 'done']);
   });
 
   it('a measured task whose measure reads 0 closes; its unmeasured sibling stays open', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
-    db().prepare(`UPDATE work SET measure_json = ?, measure_initial = 12, measure_remaining = 0, measure_at = ? WHERE id = ?`)
+    db().prepare(`UPDATE work SET measure_json = ?, measure_initial = 12, measure_remaining = 12, measure_at = ? WHERE id = ?`)
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), tasks[0]);
+    const { recordMeasured } = await import('../../../../../work/ledger-store.js');
+    recordMeasured(tasks[0], { ok: true, count: 0 }, Date.now());
     const only = line('d-swept', 'dashboard', conv, 'The inbox is clear.');
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
     expect(states(tasks)).toEqual(['done', 'claimed']);

@@ -1,12 +1,10 @@
-// THE C4 LOOPHOLE (v3.5 field fix 3, follow-up): A SEND TO THE PM IS NEVER WORK ON THE RECORD.
+// A SEND TO THE PM IS NEVER WORK ON THE RECORD.
 //
 // The owner's ruling: "The entire point was to have the PM verify so that agents weren't just closing
-// jobs on their own to get out of doing the work." C4 made a verified send to another agent count as
-// work on the task's record, and so a worker could satisfy the record check by telling the PM it was
-// finished. A send counts only when it DELIVERS THE WORK to the party the task serves (its requester,
-// or an agent the task names). A send to the PM, to the task's validator or to any service agent never
-// counts unless the record shows that agent asked for the work, and a send whose only content is a
-// status claim about the task never counts.
+// jobs on their own to get out of doing the work." A send to another agent is proof only when it HANDS
+// THE WORK to the agent that asked for the task (`work/done/asker.ts`), with an answer or deliverable
+// intent and more than a status claim. A send to the PM, a service agent or any other agent never
+// counts unless the record shows that agent asked for the work, and its receipt is never proof either.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -29,15 +27,12 @@ vi.mock('../../agent/a2a-transport.js', () => ({ deliverA2AMessage: async () => 
 
 import { runMigrations } from '../../db/migrations.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
-import { keepLedgerShownFor, noteAnswerShown } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { recordCallsTouched } from '../../work/ledger-store.js';
 import { effectsFor } from '../../agent/tools/registry.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { resetEmptyUpholdRefusals } from '../empty-uphold.js';
-import { resolveTaskAnswerPointer } from '../delivery-evidence.js';
-import * as pmAgent from '../pm-agent.js';
-import { isStatusClaimOnly } from '../../work/send-counts-as-work.js';
+import { proofDelivery } from '../../work/done/proof.js';
+import { isStatusClaimOnly } from '../../work/done/proof-kinds.js';
 import { openTrackerProject, openTrackerTask } from '../../work/tracker-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
@@ -118,9 +113,7 @@ async function closeBySayingDoneToThePM(payload = 'done'): Promise<string> {
 }
 
 beforeEach(() => {
-  keepLedgerShownFor(new Set());
   n = 0;
-  resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
   for (const id of [WORKER, PM, REQUESTER, BYSTANDER, HEALER]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
@@ -136,7 +129,7 @@ describe('the loophole: a worker that only tells the PM it is done has nothing o
   it('NEGATIVE CONTROL: "done" to the PM and nothing else; the close is refused for nothing on record, and stays refused after the PM reads that message', async () => {
     const t = await closeBySayingDoneToThePM();
     expect(ledgerSends(t)).toBe(0);
-    expect(resolveTaskAnswerPointer(t)).toBeNull();
+    expect(proofDelivery(t)).toBeNull();
     expect(await validate(t)).toMatch(REFUSED);
     const msg = (db().prepare(`SELECT message_id AS m FROM deliveries WHERE agent_id = ? AND recipient_id = ?`).get(WORKER, PM) as { m: string }).m;
     pmRead('history_get', { id: msg });
@@ -183,22 +176,21 @@ describe('a real answer to the agent that asked for the task still counts', () =
     expect(upheld(t)).toBe(1);
   });
 
-  it('the same answer, named by the close, is the task\'s delivered answer', () => {
+  it('the same answer is the task\'s delivery to its asker', () => {
     const t = newTask();
     const s = send(REQUESTER, 'ANSWER', 'The export holds 412 rows.');
     fileClose(t, s.delivery);
-    expect(resolveTaskAnswerPointer(t)?.deliveryId).toBe(s.delivery);
-    noteAnswerShown(t, s.delivery);
+    expect(proofDelivery(t)).toBe(s.delivery);
   });
 
-  it('an agent the task names (the recipient) is served too: "Send other-helper the row count"', async () => {
+  it('NEGATIVE CONTROL: a send to an agent the task only names is not a delivery to the asker, and its receipt is no proof either', async () => {
     const t = newTask(WORKER, `Send ${BYSTANDER} the row count of the export`);
     const payload = 'The export holds 412 rows.';
     const s = send(BYSTANDER, 'DELIVERABLE', payload);
     charge(t, s, BYSTANDER, 'DELIVERABLE', payload);
     fileClose(t, s.delivery);
-    expect(ledgerSends(t)).toBe(1);
-    expect(await validate(t)).not.toMatch(REFUSED);
+    expect(proofDelivery(t)).toBeNull();
+    expect(await validate(t)).toMatch(REFUSED);
   });
 });
 
@@ -212,15 +204,6 @@ describe('a status claim is told from content by the words alone', () => {
   });
 });
 
-describe('the review names each answer basis truthfully', () => {
-  it('a scheduled run\'s delivery and the close\'s own delivery are not called "this task\'s own answered turn"', () => {
-    const labels = (pmAgent as unknown as { ANSWER_BASIS_LABEL?: Record<string, string> }).ANSWER_BASIS_LABEL;
-    expect(labels?.['run-delivery']).toBe('the delivery this scheduled run settled on');
-    expect(labels?.['close-request-delivery']).toBe('the delivery the worker named when it filed this close');
-    expect(labels?.['task-turn-answer']).toBe('this task\'s own answered turn');
-  });
-});
-
 describe('when the PM asked for the work, the answer to the PM is the work (the PM still judges it)', () => {
   const ANSWER = 'The export holds 4,212 rows; 37 have no owner and are listed in the attached query result.';
   it('a substantive answer to a PM that asked by record counts as work on record', async () => {
@@ -229,7 +212,7 @@ describe('when the PM asked for the work, the answer to the PM is the work (the 
     charge(t, s, PM, 'ANSWER', ANSWER);
     fileClose(t, s.delivery);
     expect(ledgerSends(t)).toBe(1);
-    expect(resolveTaskAnswerPointer(t)).not.toBeNull();
+    expect(proofDelivery(t)).toBe(s.delivery);
   });
   it('NEGATIVE CONTROL: the same PM-asked task, but only "done" sent to the PM, is refused for nothing on record', async () => {
     const t = newTask(PM, 'Find how many rows the export holds');

@@ -25,7 +25,7 @@ import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { setMeasure, recordMeasured, recordTouched } from '../../work/ledger-store.js';
 import { recordNamedRemainder } from '../measure-gate.js';
 import { validationMeasureLines } from '../job-loop-facts.js';
-import { unvalidatedCompleteText } from '../validation-request.js';
+import { unvalidatedCompleteText } from '../pm-agent.js';
 import { estimateTokens } from '../../memory/budget.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -54,8 +54,8 @@ describe('E1: the Measure line, in its four shapes', () => {
   it('items left with a remainder the worker named: the count and the worker\'s own words', async () => {
     setMeasure(TASK, MEASURE, { ok: true, count: 25 }, T0 - 60_000);
     recordMeasured(TASK, { ok: true, count: 7 }, T0);
-    recordNamedRemainder('helper', TASK, 'Remainder named at close: 7 messages skipped — 7 are calendar invites the owner said to leave');
-    expect(await lines()).toContain('\n  Measure: gmail_search "label:Sweep-1": 7 remaining of 25 at start (measured 2026-10-24 12:04 UTC) — named by the worker: 7 messages skipped — 7 are calendar invites the owner said to leave\n');
+    recordNamedRemainder('helper', TASK, 'Remainder named at close: 7 messages skipped: 7 are calendar invites the owner said to leave');
+    expect(await lines()).toContain('\n  Measure: gmail_search "label:Sweep-1": 7 remaining of 25 at start (measured 2026-10-24 12:04 UTC) — named by the worker: 7 messages skipped: 7 are calendar invites the owner said to leave\n');
   });
 
   it('the provider failed at close: says so, with the last good reading', async () => {
@@ -165,7 +165,7 @@ describe('E1: an unparsable measure is never "none set"', () => {
 });
 
 describe('E1: the request text itself, from the real assembly', () => {
-  const parts = (): import('../validation-request.js').ValidationRequestParts => ({
+  const parts = (): Parameters<typeof unvalidatedCompleteText>[1] => ({
     title: 'the mailbox sweep', agentName: 'Worker', goal: 'no message carries the label', result: 'done',
     priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '    1. [receipt] cleared @ x',
   });
@@ -175,14 +175,16 @@ describe('E1: the request text itself, from the real assembly', () => {
     recordTouched(TASK, 'gmail_label', ['a', 'b']);
     const text = unvalidatedCompleteText(TASK, parts());
     const at = (needle: string): number => { const i = text.indexOf(needle); expect(i, needle).toBeGreaterThan(-1); return i; };
-    const order = ['UNVALIDATED_COMPLETE: "the mailbox sweep"', '\n  Goal: no message carries the label\n', '\n  Result: done\n', '\n  Evidence:\n    1. [receipt] cleared @ x\n  Measure: gmail_search "label:Sweep-1": 0 remaining of 25 at start',
-      '\n  Ledger: 2 items touched (gmail_label 2)\n  Owner words recorded on this task: none\n  Priority=normal, revert_count=0.\n  Read the file/audit log/output referenced in evidence BEFORE validating'].map(at);
+    const order = ['UNVALIDATED_COMPLETE: "the mailbox sweep"', '\n  Goal: no message carries the label\n', '\n  Result: done\n',
+      '\n  Evidence (the worker\'s own words):\n    1. [receipt] cleared @ x\n  Proof on record: none (no file, message to the asker, confirmed receipt or measure at 0).\n',
+      '\n  Measure: gmail_search "label:Sweep-1": 0 remaining of 25 at start',
+      '\n  Ledger: 2 items touched (gmail_label 2)\n  Owner words recorded on this task: none\n  Priority=normal, revert_count=0.\n  Open the proof above BEFORE validating'].map(at);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
   it('states how a measured and an unmeasured close are judged, and the real escalation route', async () => {
     const text = unvalidatedCompleteText(TASK, parts());
-    expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the ledger and receipts above, not the result text. A task whose job is a decision (nothing to file or send) is delivered when the owner\'s recorded words or the recorded answer above settle it; the agent\'s own notes quoting the owner do not count.');
-    expect(text).not.toContain('With no such record and nothing touched');   // v3.5 field fix 3 (#6b): the engine refuses at the PM's door instead
+    expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the proof on record above, not the result text. A task whose job is a decision (nothing to file or send) is delivered when the owner\'s recorded words above settle it; the agent\'s own notes quoting the owner do not count.');
+    expect(text).not.toContain('With no such record and nothing touched');   // the engine refuses at the PM's door instead
     expect(text).not.toContain('the same escalation you use for a block');
     expect(text).toContain(`task_id="${TASK}", valid=true)`);
     expect(text).toContain('target_status="in_progress") when it does not.');

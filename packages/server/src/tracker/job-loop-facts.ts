@@ -10,7 +10,6 @@ import { getDb } from '../db/connection.js';
 import { ledgerLastNewItemAt, ledgerNewItemsSince, ledgerTotals } from '../work/ledger-store.js';
 import { ledgerListing, type LedgerWorkEntry } from '../work/ledger-read.js';
 import { layOutInRoom } from '../memory/other-threads-room.js';
-import { noteLedgerShown } from './request-shown.js';
 import { lastTurnEnd } from '../work/job-momentum.js';
 import { parseMeasure, describeMeasure } from '../work/measure.js';
 import { listTaskLog } from './task-log.js';
@@ -106,19 +105,7 @@ export function validationMeasureLines(taskId: string, roomTokens?: number): str
     if (e.kind === 'send') return `\n    sent: ${e.what ? `to ${e.what} ` : ''}(${e.tool})`;
     return `\n    command run: ${commandShown(e.what)} (${e.tool}, ${e.status ?? 'exit unknown'})`;
   };
-  let listed = entries.length;
-  const out = layOutInRoom(entries.length, roomTokens, (n) => {
-    listed = n;
-    return head + entries.slice(0, n).map(lineOf).join('') + notListedLine(entries.slice(n));
-  });
-  const page = entries.slice(0, listed);
-  noteLedgerShown(taskId, {
-    files: page.filter((e) => e.kind === 'file').map((e) => e.what),
-    sends: page.filter((e) => e.kind === 'send').map((e) => ({ tool: e.tool, to: e.what || null })),
-    commandsRun: page.filter((e) => e.kind === 'command').map((e) => ({ command: commandShown(e.what), status: e.status })),
-    notListed: entries.length - listed,
-  });
-  return out;
+  return layOutInRoom(entries.length, roomTokens, (n) => head + entries.slice(0, n).map(lineOf).join('') + notListedLine(entries.slice(n)));
 }
 
 const commandsRun = (n: number): string => `${fmt(n)} ${n === 1 ? 'command' : 'commands'} run`;

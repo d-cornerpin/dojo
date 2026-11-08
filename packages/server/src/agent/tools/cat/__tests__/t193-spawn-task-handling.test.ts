@@ -70,7 +70,7 @@ beforeEach(() => {
       id TEXT PRIMARY KEY, name TEXT, created_by TEXT,
       created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
     );
-    CREATE TABLE audit_log (
+    CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY, agent_id TEXT, action_type TEXT, target TEXT, result TEXT, detail TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );

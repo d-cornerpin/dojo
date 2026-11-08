@@ -14,7 +14,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
+import { findTaskOriginChain, renderTaskOriginChain } from './origin-chain.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';

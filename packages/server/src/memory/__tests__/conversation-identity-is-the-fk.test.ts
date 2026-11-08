@@ -123,9 +123,8 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
 
   it('the answered-in-this-conversation edge scopes on conversation_id', () => {
     const s = stripComments(src('packages/server/src/agent/v2/answered-edge.ts'));
-    // `turns.conv_key` is a DIFFERENT column on a DIFFERENT table and is NOT in scope —
-    // `work.origin_conv_key` still joins to it (tracker/delivery-evidence.ts). The clause
-    // therefore pins the messages-side read only.
+    // `turns.conv_key` is a DIFFERENT column on a DIFFERENT table and is NOT in scope. The
+    // clause therefore pins the messages-side read only.
     expect(s).not.toMatch(/m1\.conv_key/);
     expect(s).toMatch(/m1\.conversation_id = \?/);
   });
@@ -270,10 +269,8 @@ describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () =
 describe('T10I — NEGATIVE CONTROLS: the four conv_key columns that are NOT in scope stay', () => {
   // Without these, every clause above could be satisfied by deleting the wrong thing. These
   // four columns are on OTHER tables, are read by live joins, and this task does not touch
-  // them (`work.origin_conv_key` <-> `turns.conv_key` is the delivery-evidence join).
-  it('work.origin_conv_key still exists and is still written (t143 round 3, I1: delivery evidence no longer joins it to turns.conv_key — a task is tied to a turn only by the turn\'s trigger)', () => {
-    expect(stripComments(src('packages/server/src/tracker/delivery-evidence.ts')))
-      .not.toMatch(/conv_key IS NOT NULL AND conv_key = \?/);
+  // them.
+  it('work.origin_conv_key still exists and is still written', () => {
     expect(stripComments(src('packages/server/src/work/tracker-store.ts'))).toMatch(/origin\.convKey/);
   });
   it('turns.conv_key is still recorded', () => {

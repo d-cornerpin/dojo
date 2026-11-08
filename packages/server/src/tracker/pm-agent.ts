@@ -1,10 +1,9 @@
-import { closeoutReceipts } from './closeout-receipts.js';
-import { unvalidatedCompleteText } from './validation-request.js';
-import { keepLedgerShownFor, noteAnswerShown } from './request-shown.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
-import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens } from './job-loop-facts.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens, validationMeasureLines } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer, taskWorkOnRecord, type TaskAnswerPointer } from './delivery-evidence.js';
+import { engineProof, proofDelivery, proofFor, proofLines } from '../work/done/proof.js';
+import { heldDeliveryLine } from './owed-delivery.js';
+import { readLaterMessages } from '../memory/task-list-words.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { getBoxTimeZone } from '../scheduler/engine.js';
@@ -19,7 +18,7 @@ import {
   awaitingUserVerdictExpr, unvalidatedCloseExpr, unvalidatedPauseExpr, unvalidatedBlockExpr,
   stampColumns, closeRequestFiledExpr,
 } from '../work/tracker-view.js';
-import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
+import { patchWork, setTrackerStatus } from '../work/tracker-store.js';
 import { noteUnsettled } from '../work/store.js';
 import { listOverrideRequests, PENDING_OVERRIDE_COUNT_SQL } from '../work/override-requests.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
@@ -65,14 +64,49 @@ import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './e
 import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 
-/** Where a delivered answer on record came from, said truthfully for each recorded basis
- *  (`TaskAnswerPointer.basis` in `delivery-evidence.ts`). */
-export const ANSWER_BASIS_LABEL: Record<TaskAnswerPointer['basis'], string> = {
-  'parent-ask-receipt': 'the receipt the engine recorded for the request this task exists for',
-  'task-turn-answer': 'this task\'s own answered turn',
-  'run-delivery': 'the delivery this scheduled run settled on',
-  'close-request-delivery': 'the delivery the worker named when it filed this close',
-};
+/** The proof on record for a task (`proofFor`), as an indented list under `head`, or '' when there is none. */
+function proofBlock(taskId: string, head: string): string {
+  const lines = proofLines(proofFor(taskId));
+  return lines.length > 0 ? `${head}\n${lines.map((l) => `    - ${l}`).join('\n')}\n` : '';
+}
+
+const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
+
+/** The owner's later words the engine recorded against this task: what a decision-type close is judged on. */
+function ownerWordsLines(taskId: string): string {
+  const laters = readLaterMessages(taskId);
+  if (laters.length === 0) return '\n  Owner words recorded on this task: none';
+  const shown = laters.map((m) => {
+    const id = (m.messageId ?? '').slice(0, 8);
+    if (m.words === null) return `    message ${id}: no longer stored`;
+    const flat = m.words.replace(/\s+/g, ' ').trim();
+    const cut = flat.length > OWNER_WORDS_EXCERPT_CHARS ? `${flat.slice(0, OWNER_WORDS_EXCERPT_CHARS)}… (history_get(id="${m.messageId}") returns it whole)` : flat;
+    return `    message ${id}: "${cut}"`;
+  });
+  return `\n  Owner words recorded on this task (sent while it was open; the turn that answered them touched it):\n${shown.join('\n')}`;
+}
+
+/** The PM's UNVALIDATED_COMPLETE request: the record the close is judged on, never a lean toward either verdict. */
+export function unvalidatedCompleteText(taskId: string, p: {
+  title: string; agentName: string; goal: string | null; result: string | null; priority: string; revertCount: number;
+  headExtras: string; evidenceBlock: string; ledgerRoomTokens?: number;
+}): string {
+  const proof = proofBlock(taskId, '  Proof on record (the engine resolved each item):')
+    || '  Proof on record: none (no file, message to the asker, confirmed receipt or measure at 0).\n';
+  return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) closed by ${p.agentName}, awaiting your validation.${p.headExtras}\n`
+    + `  Goal: ${p.goal ?? '(no goal recorded, pre-migration row)'}\n`
+    + `  Result: ${p.result ?? '(none)'}\n`
+    + `  Evidence (the worker's own words):\n${p.evidenceBlock}\n${proof}`
+    + `${validationMeasureLines(taskId, p.ledgerRoomTokens)}${heldDeliveryLine(taskId)}${ownerWordsLines(taskId)}\n`
+    + `  Priority=${p.priority}, revert_count=${p.revertCount}.\n`
+    + `  Open the proof above BEFORE validating (skepticism rule); the worker's own message is its account, not the work. `
+    + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true) when the work demonstrably matches the goal. `
+    + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=false, reject_reason="...", target_status="in_progress") when it does not. `
+    + `A measured task: validate when the measure reads 0, or when the named remainder's reason holds against the goal; reject and state the count when it does not; `
+    + `when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker's reason. `
+    + `An unmeasured task: judge the proof on record above, not the result text. `
+    + `A task whose job is a decision (nothing to file or send) is delivered when the owner's recorded words above settle it; the agent's own notes quoting the owner do not count.`;
+}
 
 const logger = createLogger('pm-agent');
 
@@ -592,9 +626,8 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   const sourceLabel = ctx.source === 'idle-hardcap' ? 'idle-with-in_progress hardcap' : 'pre-turn close-out gate';
 
-  // K35: what the request shows is counted as it is built, and kept with the trail entry beside the thread it rides.
   const threadId = uuidv4();
-  const { block: receiptsBlock, shown } = closeoutReceipts(rows, ctx.agentId);
+  const proofOnRecord = rows.map((r) => proofBlock(r.id, `  ${r.id.slice(0, 8)}:`)).join('');
   try {
     const { writeTaskLog } = await import('./task-log.js');
     for (const r of rows) {
@@ -605,7 +638,7 @@ export async function escalateCloseoutMissToPM(ctx: {
         actionTaken: `escalated to PM via ${sourceLabel}`,
         reason: 'agent produced user-facing text without calling work_update(action="status"); the reply was shown to the user and the task remains in_progress pending PM review',
         note: ctx.agentText.slice(0, 4000),
-        evidenceJson: JSON.stringify({ thread_id: threadId, receipts_shown: shown[r.id] ?? 0 }),
+        evidenceJson: JSON.stringify({ thread_id: threadId }),
       });
     }
   } catch (err) {
@@ -631,13 +664,13 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Dangling task(s) (still in_progress):\n${taskLines}\n\n` +
     `What the agent said to the user (shown in chat this turn):\n` +
     `> ${truncatedSaid.split('\n').join('\n> ')}\n\n` +
-    receiptsBlock +
+    (proofOnRecord ? `Proof on record (the engine resolved each item; read these BEFORE deciding):\n${proofOnRecord}\n` : '') +
     `Trigger: ${sourceLabel}\n\n` +
     `Your verbs:\n` +
     `  (a) work_validate(action="retask", task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"${stalled !== null ? `; for the stalled task, ${stalledRetaskExample(stalled)}` : ''}). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
     `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing: it stays in_progress and your check-ins keep it moving. If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
-    `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick work_update(action="get") / file check / etc.) that the goal is met (for a measured task: its measure reads 0, or the agent named the remainder) and the agent just forgot to close the tracker.\n\n` +
+    `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the proof on record above + what the agent said + a quick work_update(action="get") / file check / etc.) that the goal is met (for a measured task: its measure reads 0, or the agent named the remainder) and the agent just forgot to close the tracker.\n\n` +
     `**A side effect that already ran is never re-run.** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
     `or an exec that hit a live external API, that action already happened; re-running it would duplicate it (double email, ` +
@@ -1993,7 +2026,6 @@ async function runPMReview(): Promise<void> {
       .slice(0, 3)
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
-  keepLedgerShownFor(new Set(unvalidatedCompleteRows.map((r) => r.id)));   // review M1: the shown pages live only while a row awaits its verdict
   for (const cTask of unvalidatedCompleteRows) {
     // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
     // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/
@@ -2084,25 +2116,6 @@ async function runPMReview(): Promise<void> {
         + `what its calls touched, any remainder it named, the receipts): validate it, reject it naming `
         + `what is missing, or get more info. Do this one now.`
       : '';
-    // UX-REPAIR round 2 T11 — THE DEREFERENCEABLE POINTER, finally in the payload that demands
-    // one. `resolveTaskAnswerPointer` reads the ask's own recorded receipt (via T11's task→ask
-    // edge) or the task's answered turn; it returns null rather than anything inferred, so a
-    // row with nothing behind it reads exactly as it does today. See its header for why the
-    // review could not do this before: the PM's ~40 `history_search` calls on S4 were searching
-    // lanes the answer does not live in, because the payload gave it nothing to open.
-    const answerPointer = resolveTaskAnswerPointer(cTask.id);
-    // Audit #5: the answer backs an uphold only once a request has put its excerpt in front of the PM.
-    if (answerPointer) noteAnswerShown(cTask.id, answerPointer.deliveryId);
-    const deliveredLine = answerPointer
-      ? `\n  📄 DELIVERED ANSWER ON RECORD (${ANSWER_BASIS_LABEL[answerPointer.basis]}`
-        + `${answerPointer.channel ? `, via ${answerPointer.channel}` : ''}`
-        + `${answerPointer.at ? `, ${answerPointer.at} UTC` : ''}`
-        + `; delivery ${answerPointer.deliveryId.slice(0, 8)}`
-        + `${answerPointer.messageId ? `, message ${answerPointer.messageId.slice(0, 8)}` : ''}):\n`
-        + `    "${answerPointer.excerpt}"\n`
-        + `  This IS the dereference — compare it against the goal and rule. `
-        + `Use history_get on the message id above if you need the whole thing.`
-      : '';
     // Not shown to the model — it is the ordering fact, and prose about it would only invite
     // the validator to treat a stubborn row as suspect. Logged instead, below.
     void cTask.attempts_recorded;
@@ -2111,7 +2124,7 @@ async function runPMReview(): Promise<void> {
       owes: 'uphold the close or reject it naming what is missing',
       text: unvalidatedCompleteText(cTask.id, {
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
-        headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}${deliveredLine}`,
+        headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}`,
         ledgerRoomTokens: reviewLedgerRoomTokens(pmBudgetTokens, unvalidatedCompleteRows.length),
       }),
     });
@@ -2802,44 +2815,19 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // DEAD assignee stays the reaper's (`stuck-thresholds.ts`, the 75-minute heartbeat cliff);
     // a rung that tried to inherit that would be rebuilding (1) with a different name.
 
-    // ── Delivery-evidence consult (2026-07-22 production incident) ──
-    // Before driving the WORK, check the engine's own records: did an
-    // answered turn on this task's originating conversation already happen
-    // since the task existed? If yes, the honest problem is a missing
-    // CLOSE-OUT, not stalled work, and a blind drive re-fires the whole job
-    // (the yacht search was fully redone live). Strike 1: the poke becomes an
-    // evidence-carrying close steer. Strike 2 (a poke was already sent after
-    // the evidence existed and the status still lies): the engine closes the
-    // task itself, complete, with the receipt basis recorded, and the normal
-    // validation flow takes it from there. Engine-enforced, not nudged: the
-    // neutral nudge was tried live and the floor model paused the task.
-    // v3.5: a measured task whose measure still shows items left is not done, whatever was delivered:
-    // no close-out steer, no receipt close; the ordinary ladder drives it (`work/measure-close-gate.ts`).
-    const deliveryEvidence = task.status === 'in_progress' && !leftAlone && measuredItemsLeft(task.id) === 0 ? findDeliveryEvidenceForTask(task.id) : null;
-    // Strike 2 requires a TANGIBLE handover on record (artifact or channel
-    // delivery), not just an answered reply: the engine only ever closes a
-    // task on evidence it can point at. Text-only deliveries keep getting
-    // the close steer every rung instead (the model closes; the engine
-    // never guesses).
-    // `deliveredVia` is a DISTINCT read of `deliveries` inside `findDeliveryEvidenceForTask`
-    // (delivery-evidence.ts), so strike 2's tangible-handover test reads the delivery ledger
-    // directly — T8c item 1's requirement, verified rather than rebuilt.
-    // v3.5 field fix 3, review rounds 3-4: the handover is what the engine can count
-    // (`taskWorkOnRecord`: a delivered file, or a measure at 0). `deliveredVia` counted any
-    // channel line, so an "On it" read as a handover here and strike 2 could close on it.
-    const workOnRecord = deliveryEvidence ? taskWorkOnRecord(task.id, null) : null;
-    const tangibleHandover = !!workOnRecord;
-    // The poke's instant is epoch ms now (`work_events.created_at`); the evidence's is the
-    // `turns` table's TEXT instant. Compare as numbers, never as strings of different shapes.
-    const evidenceAtMs = deliveryEvidence
-      ? Date.parse(/[TZ]/.test(deliveryEvidence.answeredAt) ? deliveryEvidence.answeredAt : `${deliveryEvidence.answeredAt}Z`)
-      : NaN;
-    if (deliveryEvidence && tangibleHandover && lastPoke && !Number.isNaN(evidenceAtMs)
-        && lastPoke.sentAtMs >= evidenceAtMs) {
+    // ── Work on record ──
+    // Before driving the work, check what the engine itself can count for it (`engineProof`: a file the
+    // worker wrote, a measure at 0). Strike 1: the poke says what is on record instead of re-driving the
+    // whole job. Strike 2 (a poke was already sent after that proof existed and the status still says
+    // in_progress): the engine closes the task itself with the basis recorded, and the normal validation
+    // takes it from there. A measured task with items left is never closed here.
+    const proof = task.status === 'in_progress' && !leftAlone && measuredItemsLeft(task.id) === 0 ? engineProof(task.id) : [];
+    const workOnRecord = proof.length > 0 ? proofLines(proof).join('; ') : null;
+    const provedAtMs = Math.max(...proof.map((i) => (i.kind === 'file' ? Date.parse(String(i.facts.mtime)) : Number(i.facts.at))));
+    if (workOnRecord && lastPoke && lastPoke.sentAtMs >= provedAtMs) {
       const db = getDb();
-      const basis = `engine close on delivery receipt: ${renderDeliveryEvidence(deliveryEvidence)}; a close steer was already sent (${new Date(lastPoke.sentAtMs).toISOString().replace('T', ' ').slice(0, 19)} UTC) and the status still said in_progress`;
-      // Strike 2 closes on a delivery RECEIPT, so the receipt is what G7 is handed.
-      const strike2Delivery = deliveryForTaskClose(task.id);
+      const basis = `engine close on the work on record: ${workOnRecord}; a close steer was already sent (${new Date(lastPoke.sentAtMs).toISOString().replace('T', ' ').slice(0, 19)} UTC) and the status still said in_progress`;
+      const strike2Delivery = proofDelivery(task.id);
       const s2 = setTrackerStatus(task.id, 'complete', {
         by: strike2Delivery ? 'engine' : 'pm', actorId: 'engine',
         evidenceRef: strike2Delivery, resultDeliveryId: strike2Delivery,
@@ -2849,7 +2837,7 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
         logger.warn('strike-2 engine close refused by the work gate', { taskId: task.id, result: s2 });
       } else {
         const cur = db.prepare('SELECT result FROM work WHERE id = ?').get(task.id) as { result: string | null } | undefined;
-        if (!cur?.result) noteUnsettled(patchWork(task.id, { result: `Delivered (engine-recorded): ${renderDeliveryEvidence(deliveryEvidence)}` }), 'pm: delivery evidence recorded on the poke sweep', { taskId: task.id });
+        if (!cur?.result) noteUnsettled(patchWork(task.id, { result: `Delivered (engine-recorded): ${workOnRecord}` }), 'pm: work on record noted on the poke sweep', { taskId: task.id });
       }
       void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
         taskId: task.id,
@@ -2862,7 +2850,7 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
       }));
       recordRemediation(task.id, 'engine', 'strike-2 engine close on delivery receipt');
       logger.warn('PM drive: delivered-but-unclosed task engine-closed on receipt basis (strike 2)', {
-        taskId: task.id, title: task.title, turnNumber: deliveryEvidence.turnNumber,
+        taskId: task.id, title: task.title,
       });
       broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType: 'receipt_close' } });
       continue;
@@ -2873,7 +2861,7 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // assignee IS the primary, the assignee is re-driven instead, in words addressed to it (t143 round 5; t261).
     const escalateToAssignee = pokeType === 'escalate_primary' && (primaryId === task.assignedTo
       || !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId)));
-    const basePokeMessage = deliveryEvidence && tangibleHandover
+    const basePokeMessage = workOnRecord
       // Review round 3: facts only, never close-coaching (product law, "Finishing, not closing").
       ? `DELIVERY ON RECORD: task "${task.title}" (${task.id}) still says in_progress, and the engine's own records show ${workOnRecord}. ` +
         `If something remains, say what in a work_note and continue. ` +

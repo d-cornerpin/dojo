@@ -1,11 +1,9 @@
-// v3.5 field fix 3, review round 3: THE PM'S FIRST-STRIKE POKE READS THE TASK'S RECORD, AND STATES FACTS.
+// THE PM'S FIRST-STRIKE POKE READS THE TASK'S RECORD, AND STATES FACTS.
 //
-// `checkInOn` (tracker/pm-agent.ts) turned the poke into "DELIVERY ON RECORD ... close it with
-// work_update(... complete ...)" whenever the task's answered turn had ANY channel line on record
-// (`deliveredVia`), and strike 2 then engine-closed the task. An iMessage "On it" was enough.
-// Owner law: an ack never closes a task, and close-coaching in engine text is a defect. The
-// handover is now `taskWorkOnRecord` (a delivered file, or the task's answer under the ack-order
-// rule), and the steer states what is on record without telling the agent to close.
+// Owner law: an ack never closes a task, and close-coaching in engine text is a defect. The poke says
+// "DELIVERY ON RECORD" only for what the engine can count (`engineProof`: a file the worker wrote, a
+// measure at 0), never for a text line on any channel, and it states what is on record without telling
+// the agent to close.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -73,16 +71,6 @@ vi.mock('node:child_process', async (importOriginal) => {
   const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
-
-// The PM sweep's gate: an answered turn on the task's origin, idle since. Only its CHANNEL line is
-// on record here (`deliveredVia: ['imessage']`, no artifact): the shape of an iMessage "On it".
-const { evidence } = vi.hoisted(() => ({ evidence: { on: false } }));
-vi.mock('../delivery-evidence.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../delivery-evidence.js')>()),
-  findDeliveryEvidenceForTask: (taskId: string) => (evidence.on
-    ? { turnNumber: 7, answeredAt: '2020-01-01 00:00:00', artifacts: [], deliveredVia: ['imessage'], answerMessageId: null, taskId } as never
-    : null),
-}));
 
 import { runMigrations } from '../../db/migrations.js';
 
@@ -165,7 +153,6 @@ const closeLogged = (taskId: string): number => (db().prepare(
 describe('review round 3: the first-strike poke never treats an ack as a handover, and never coaches a close', () => {
   it('THE RED: only an iMessage line on record: no DELIVERY ON RECORD steer, no receipt close, across strikes', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    evidence.on = true;
     const now = Date.now();
     claimedTask('task-ack', 'book the table', now - 6 * MIN, null);
     for (const m of [0, 10, 25]) await sweepAt(now + m * MIN);
@@ -176,7 +163,6 @@ describe('review round 3: the first-strike poke never treats an ack as a handove
 
   it('STRIKE-2 TWIN (round 4): a TEXT answer on record (the ask settled on it) never earns the steer or an engine close', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    evidence.on = true;
     const now = Date.now();
     claimedTask('task-text', 'book the table', now - 6 * MIN, null);
     db().prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-t', 'helper', 'dashboard', 'owner')`).run();
@@ -198,18 +184,14 @@ describe('review round 3: the first-strike poke never treats an ack as a handove
 
   it('CONTROL: a delivered file on record still gets the steer, stated as facts with no "close it"', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    evidence.on = true;
     const now = Date.now();
     claimedTask('task-file', 'write the report', now - 6 * MIN, null);
-    // The real record taskWorkOnRecord reads: the answered turn on the task's origin, with a file.
-    db().prepare("UPDATE work SET source_message_id = 'msg-file' WHERE id = 'task-file'").run();
+    // What the engine can count (`engineProof`): a file the worker wrote during the task, still on disk.
+    const report = path.join(HOME, 'report.md');
+    fs.writeFileSync(report, 'The quarterly report, 12 sections.');
     db().prepare(
-      `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, source_message_id, answered, started_at, ended_at, exit_reason)
-       VALUES ('helper', 7, 'user', 'conv', 'msg-file', 1, ?, ?, 'answered')`,
-    ).run(sqlTime(now - 5 * MIN), sqlTime(now - 5 * MIN));
-    db().prepare(
-      `INSERT INTO turn_artifacts (agent_id, turn_number, kind, path, delivered_at) VALUES ('helper', 7, 'file', '/tmp/report.md', ?)`,
-    ).run(sqlTime(now - 5 * MIN));
+      `INSERT INTO audit_log (id, agent_id, action_type, target, result, created_at) VALUES ('a-file', 'helper', 'file_write', ?, 'success', ?)`,
+    ).run(report, sqlTime(now - 5 * MIN));
     await sweepAt(now);
     const sent = checkIns('task-file').join('\n');
     expect(sent).toMatch(/DELIVERY ON RECORD/);

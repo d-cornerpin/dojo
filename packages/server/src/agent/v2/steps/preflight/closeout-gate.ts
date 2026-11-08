@@ -23,7 +23,7 @@ import type { Database } from 'better-sqlite3';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { taskScope, stampColumns, closeRequestFiledExpr } from '../../../../work/tracker-view.js';
+import { taskScope, closeRequestFiledExpr } from '../../../../work/tracker-view.js';
 import { taskMovedAtSql, jobCarriedIds } from '../../../../work/task-freshness.js';
 import { readMeasureFacts, formatMeasureLine } from '../../../../work/measure-view.js';
 import { advance } from '../../state.js';
@@ -163,27 +163,17 @@ export async function runCloseoutGate(
       // engine's own records show the work was answered/delivered, the gate
       // says so and names the right disposition instead of offering a menu.
       try {
-        // v3.5 field fix 3 (review rounds 1-4): asked of what the engine can count
-        // (`taskWorkOnRecord`: a delivered file, or a measure at 0). Before, the live join's
-        // `deliveredVia` arm listed a task whose only line was "On it".
-        const { taskWorkOnRecord } = await import('../../../../tracker/delivery-evidence.js');
+        // Only what the engine can count (a file the worker wrote, a measure at 0): a bare reply is often
+        // an ack on a task legitimately waiting, on every channel, so it is never evidence here.
+        const { engineProofLine } = await import('../../../../work/done/proof.js');
         const evidenced: string[] = [];
         for (const r of inProgressDanglers) {
-          // Stamps first (mig 124), the task's record as backfill for pre-stamp rows.
-          const st = db.prepare(
-            `SELECT w.id AS id, ${stampColumns('w')} FROM work w WHERE w.id = ?`,
-          ).get(r.id) as import('../../../../tracker/task-stamps.js').TaskStampFields | undefined;
-          // Tangibility rule (battery catch 2026-07-22): a bare reply is often an ack on a task
-          // legitimately waiting, and pushing CLOSE on it forged a wrong close. Review round 2
-          // (ruled): that holds on EVERY channel, so the stamp's channel is not evidence here;
-          // only a delivered file or a measure at 0 is.
-          const rec = taskWorkOnRecord(r.id, st ?? null);
+          const rec = engineProofLine(r.id);
           if (rec) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${rec}`);
         }
         if (evidenced.length > 0) {
           sections.push(
-            `The engine's records show a delivery for these, on their own conversations:\n${evidenced.join('\n')}\n` +
-            // Review round 2: facts, not close-coaching (product law, "Finishing, not closing").
+            `The engine's records show work on record for these:\n${evidenced.join('\n')}\n` +
             `If something remains, say what in a work_note and continue. ` +
             `Do not redo or re-deliver what was already delivered.`
           );

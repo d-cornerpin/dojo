@@ -1,0 +1,82 @@
+// Who asked for a task, by the engine's own record, and whether a delivery or an inbound message is
+// that asker's:
+//   - an agent asker is the task's `requester_id` (requester 'agent', another agent than the worker): a
+//     delivery reaches it on the a2a lane addressed to that id, and its message carries that id as sender;
+//   - a person asker is identified by the message the task (or its project) exists for: that message's
+//     conversation and its channel sender;
+//   - when the person is the owner (no source message from anyone else, or one the owner wrote), the
+//     owner's own surfaces count too: the dashboard, voice, and each channel's owner rule (`isOwnerOn`).
+// Anything else is not the asker, so the label "the worker's own message to the asker" stays true.
+import { getDb } from '../../db/connection.js';
+import { ownerWords } from '../../tracker/owner-words.js';
+import { isOwnerOn } from '../../services/owner-on.js';
+import { addressesMatch } from '../../services/safe-senders.js';
+
+export type Asker =
+  | { kind: 'agent'; id: string | null; sourceMessageId: string | null }
+  | { kind: 'person'; owner: boolean; sourceMessageId: string | null; conversationId: string | null; channel: string | null; senderId: string | null };
+
+interface SourceRow {
+  id: string; content: string; lane: string; channel: string; source_agent_id: string | null; a2a_thread_id: string | null;
+  a2a_intent: string | null; a2a_requires_response: number | null; inbound_meta: string | null; origin_intent: string | null;
+  conversation_id: string | null; sender_id: string | null; sent_at: number;
+}
+export type SourceRowLike = Omit<SourceRow, 'id' | 'conversation_id' | 'sent_at'>;
+
+/** The task's asker. */
+export function askerOf(taskId: string): Asker {
+  const db = getDb();
+  const w = db.prepare(
+    `SELECT w.agent_id, w.requester, w.requester_id, COALESCE(w.source_message_id, p.source_message_id) AS src
+       FROM work w LEFT JOIN work p ON p.id = w.parent_id WHERE w.id = ?`,
+  ).get(taskId) as { agent_id: string; requester: string; requester_id: string | null; src: string | null } | undefined;
+  if (!w) return { kind: 'agent', id: null, sourceMessageId: null };
+  const requester = w.requester === 'agent' ? agentIdOf(w.requester_id) : null;
+  // A task an agent opened for itself was asked for by whoever sent the message it exists for.
+  if (requester && requester !== w.agent_id) return { kind: 'agent', id: requester, sourceMessageId: w.src };
+  const m = w.src ? db.prepare(
+    `SELECT id, content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
+            origin_intent, conversation_id, sender_id, sent_at
+       FROM messages WHERE id = ? AND role = 'user'`,
+  ).get(w.src) as SourceRow | undefined : undefined;
+  if (m?.source_agent_id && m.source_agent_id !== w.agent_id) return { kind: 'agent', id: m.source_agent_id, sourceMessageId: m.id };
+  if (!m || m.source_agent_id) return { kind: 'person', owner: true, sourceMessageId: w.src, conversationId: null, channel: null, senderId: null };
+  return {
+    kind: 'person', owner: ownerWords(m, m.sent_at) !== null, sourceMessageId: m.id,
+    conversationId: m.conversation_id, channel: m.channel, senderId: m.sender_id,
+  };
+}
+
+/** An agent reference (id or name, as `send_to_agent` takes it) to the agent's id; the reference itself when unknown. */
+function agentIdOf(ref: string | null): string | null {
+  if (!ref) return null;
+  const r = getDb().prepare('SELECT id FROM agents WHERE id = ? OR name = ? COLLATE NOCASE ORDER BY (id = ?) DESC LIMIT 1')
+    .get(ref, ref, ref) as { id: string } | undefined;
+  return r?.id ?? ref;
+}
+
+/** Is this delivery addressed to the asker? */
+export function deliveredToAsker(
+  a: Asker, d: { channel: string; recipient_id: string | null; conversation_id: string | null },
+): boolean {
+  if (a.kind === 'agent') return d.channel === 'a2a' && a.id !== null && agentIdOf(d.recipient_id) === a.id;
+  if (d.channel === 'a2a' || d.channel === 'none') return false;
+  if (a.conversationId && d.conversation_id === a.conversationId) return true;
+  if (a.senderId && d.recipient_id && d.channel === a.channel && addressesMatch(a.senderId, d.recipient_id)) return true;
+  if (!a.owner) return false;
+  return d.channel === 'dashboard' || d.channel === 'voice' || (!!d.recipient_id && isOwnerOn(d.channel, d.recipient_id));
+}
+
+/** Does a send to these agents (ids or names) reach the task's asker? Every recipient must be the agent that asked. */
+export function sendReachesAsker(taskId: string, recipients: readonly string[]): boolean {
+  const a = askerOf(taskId);
+  return a.kind === 'agent' && a.id !== null && recipients.length > 0 && recipients.every((r) => agentIdOf(r) === a.id);
+}
+
+/** Is this inbound message (role user, in the worker's store) from the asker? */
+export function writtenByAsker(a: Asker, m: SourceRowLike, openedAt: number): boolean {
+  if (a.kind === 'agent') return a.id !== null && m.source_agent_id === a.id;
+  if (m.source_agent_id !== null) return false;
+  if (a.senderId && m.sender_id && m.channel === a.channel && addressesMatch(a.senderId, m.sender_id)) return true;
+  return a.owner && ownerWords(m, openedAt) !== null;
+}

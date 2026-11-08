@@ -61,9 +61,11 @@ function applySchema(db: Database.Database): void {
     -- reporting). Widening the fixture is the honest fix, exactly as the note above records
     -- for the same class — a narrow twin that drifts from the real schema is worse than none.
     CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER,
-      turn_number INTEGER
+      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, channel TEXT,
+      created_at INTEGER, turn_number INTEGER, message_id TEXT, receipt_id TEXT,
+      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT
     );
+    CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT);
     -- PHASE-2 T10F: the task_runs fixture DDL is GONE with the table. A run is an
     -- occurrence work row now, and createWorkTable above already declares it, including
     -- ux_work_occurrence, so this suite's runs are subject to the same exactly-once

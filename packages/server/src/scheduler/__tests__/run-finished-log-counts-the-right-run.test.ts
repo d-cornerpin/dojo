@@ -57,9 +57,11 @@ function applySchema(db: Database.Database): void {
     -- heads-up path runs through the single writer whose INSERT names the whole
     -- messages spine. A narrow fixture makes those paths silently skip.
     CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER,
-      turn_number INTEGER
+      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, channel TEXT,
+      created_at INTEGER, turn_number INTEGER, message_id TEXT, receipt_id TEXT,
+      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT
     );
+    CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE messages (
       seq INTEGER PRIMARY KEY,
       id TEXT NOT NULL UNIQUE,

@@ -37,9 +37,8 @@ import { runCloseoutFloors } from '../closeout-floors.js';
 import { bumpProactiveSendStreak, getProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from '../../../proactive-budget.js';
 import { openTrackerProject, openTrackerTask } from '../../../../../work/tracker-store.js';
 import { appendWorkEvent } from '../../../../../work/store.js';
-import { unvalidatedCompleteText } from '../../../../../tracker/validation-request.js';
+import { unvalidatedCompleteText } from '../../../../../tracker/pm-agent.js';
 import { trackerHandlers } from '../../../../../agent/tools/cat/tracker.js';
-import { resetEmptyUpholdRefusals } from '../../../../../tracker/empty-uphold.js';
 import { openTurnContext, endTurnContext } from '../../../../../agent/turn-context.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
@@ -91,7 +90,6 @@ beforeEach(() => {
   for (const id of [HELPER, MAIN, PM]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
   turnStartMs = Date.now() - 30_000;
   for (let i = 0; i < PROACTIVE_SEND_DEMOTE_THRESHOLD; i++) bumpProactiveSendStreak(HELPER);   // the streak the live check had
-  resetEmptyUpholdRefusals();
 });
 afterEach(() => { endTurnContext(PM); mockDb.current?.close(); mockDb.current = null; });
 

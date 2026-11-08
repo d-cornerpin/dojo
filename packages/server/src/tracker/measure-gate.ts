@@ -1,5 +1,5 @@
-// v3.5 DONE IS MEASURED — the tracker's side of a task's measure: storing one that was set, and
-// the REMAINDER RULE at the close door.
+// The tracker's side of a task's measure: storing one that was set, and the remainder rule at the close
+// doors (items left are closed only with a named remainder the one proof check accepts).
 //
 // The I/O half (parsing the wire value, the agent's grants, counting) is async and lives at the
 // door that has the awaits (`agent/tools/cat/measure-door.ts`); the close doors here are
@@ -11,13 +11,11 @@ import { ledgerTotals, setMeasure } from '../work/ledger-store.js';
 import { writeTaskLog } from './task-log.js';
 import { resolveTaskId, formatResolveError } from './schema.js';
 import { taskWriteRefusal } from '../work/row-authority.js';
+import { checkProof } from '../work/done/proof.js';
+import { readAuditTrail } from '../work/audit-trail.js';
 
 /** A measure the async door validated and read once, handed to the synchronous creator. */
 export interface MeasureReading { measure: Measure; count: MeasureCount; at: number }
-
-/** The minimum length of a named remainder's reason: the same floor the paused and blocked doors
- *  apply to their reasons (`tracker/tools.ts`, MIN_PAUSE_NOTES_LEN / MIN_BLOCKED_NOTES_LEN). */
-const MIN_REMAINDER_REASON_LEN = 15;
 
 /** Store a measure on a task and say what it reads now (one line for the OK text). */
 export function applyMeasureToTask(taskId: string, r: MeasureReading): string {
@@ -50,43 +48,50 @@ function closeFacts(taskId: string): { measure: Measure; initial: number | null;
   return { measure: parsed.measure, initial: row.measure_initial, left: row.measure_remaining };
 }
 
-/** The remainder this close names, when it names one properly: `skipped` or `blocked`, with a reason. */
-function namedRemainder(args: Record<string, unknown>): { disposition: string; reason: string } | null {
+/** The remainder this close names, when the proof check accepts it as a remainder item: `skipped` or
+ *  `blocked`, with a reason. */
+function namedRemainder(taskId: string, agentId: string, left: string, args: Record<string, unknown>): { disposition: string; reason: string } | null {
   const rem = args.remainder as { disposition?: unknown; reason?: unknown } | undefined;
-  const reason = typeof rem?.reason === 'string' ? rem.reason.trim() : '';
-  return (rem?.disposition === 'skipped' || rem?.disposition === 'blocked') && reason.length >= MIN_REMAINDER_REASON_LEN
-    ? { disposition: rem.disposition, reason } : null;
+  if (rem?.disposition !== 'skipped' && rem?.disposition !== 'blocked') return null;
+  const reason = typeof rem.reason === 'string' ? rem.reason.trim() : '';
+  const proof = checkProof(taskId, agentId, 'cant_be_done', [{ kind: 'remainder', ref: `${left} ${rem.disposition}`, facts: { reason } }]);
+  return proof.ok ? { disposition: rem.disposition, reason } : null;
 }
 
 /**
- * THE remainder judgement, the one function every door that marks a task complete asks (fix round 1,
- * orchestrator ruling): items left and not named are refused. Null = the close may proceed. It writes
- * nothing; a named remainder is recorded by the door once the close has landed (`namedRemainderNote`).
- * `takesRemainder` is false at a door that has no `remainder` argument (the schedule door), whose
- * refusal therefore names the door that does.
+ * The remainder rule every door that marks a measured task complete asks: items left and not named are
+ * refused. Null = the close may proceed. It writes nothing; a named remainder is recorded by the door
+ * once the close has landed (`namedRemainderNote`). `takesRemainder` is false at a door that has no
+ * `remainder` argument (the schedule door), whose refusal therefore names the door that does.
  */
-export function remainderGate(taskId: string, args: Record<string, unknown>, door = 'status="complete"', takesRemainder = true): string | null {
+export function remainderRefusal(
+  taskId: string, agentId: string, args: Record<string, unknown>, door = 'status="complete"', takesRemainder = true,
+): string | null {
   const f = closeFacts(taskId);
-  if (!f || (takesRemainder && namedRemainder(args))) return null;
+  if (!f || (takesRemainder && namedRemainder(taskId, agentId, `${f.left} ${f.measure.unit}`, args))) return null;
   const { unit } = f.measure;
   const named = `remainder={disposition:"skipped", reason:"<why these ${f.left} are left>"}`;
   return (
     `Refused: ${door} on a measured task. Its measure (${describeMeasure(f.measure)}) still returns ${f.left} ${unit} ` +
     `(${f.initial ?? '?'} when the task started; ${ledgerTotals(taskId).touched} touched so far). The task is not done. ` +
-    // v3.5 field fix 3 review round 4: FACTS, NOT CLOSE-COACHING (product law, "Finishing, not
-    // closing"). It offered "close again with" / "close it with work_update(... complete ...)" as a
-    // menu option. It now states what the measure says and what a remainder is.
     `What the measure lists is what remains. Items that genuinely cannot or should not be done are a remainder: ` +
     `${named}${takesRemainder ? '' : ' (taken by work_update(action="status"), not by this door)'}; ` +
     `blocked work is status="blocked" with the reason. The PM sees that count and your reason.`
   );
 }
 
+const REMAINDER_NOTE = 'Remainder named at close:';
+
 /** The note a close that named its remainder leaves on the task's record, once it has landed. */
-export function namedRemainderNote(taskId: string, args: Record<string, unknown>): string | null {
+export function namedRemainderNote(taskId: string, agentId: string, args: Record<string, unknown>): string | null {
   const f = closeFacts(taskId);
-  const rem = f ? namedRemainder(args) : null;
-  return f && rem ? `Remainder named at close: ${f.left} ${f.measure.unit} ${rem.disposition} — ${rem.reason}` : null;
+  const rem = f ? namedRemainder(taskId, agentId, `${f.left} ${f.measure.unit}`, args) : null;
+  return f && rem ? `${REMAINDER_NOTE} ${f.left} ${f.measure.unit} ${rem.disposition}: ${rem.reason}` : null;
+}
+
+/** Did a close on this task name its remainder (the note above is on its record)? */
+export function remainderOnRecord(taskId: string): boolean {
+  return readAuditTrail(taskId, { kinds: ['observation'] }).some((e) => (e.note ?? '').startsWith(REMAINDER_NOTE));
 }
 
 export function recordNamedRemainder(agentId: string, taskId: string, note: string): void {

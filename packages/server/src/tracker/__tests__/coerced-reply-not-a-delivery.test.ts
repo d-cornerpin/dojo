@@ -40,7 +40,7 @@ vi.mock('../../db/connection.js', () => ({
   },
 }));
 
-import { engineText, engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 
 import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
@@ -126,32 +126,6 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     // The finished-work predicate the close-out gate uses is still FALSE.
     const enginesaysFinished = t.last_answered_turn !== null && !!t.last_delivery_summary;
     expect(enginesaysFinished).toBe(false);
-  });
-
-  it('the close-out gate really does require BOTH halves (conformance)', () => {
-    // PHASE-6 GUARD-AUDIT: the close-out gate's evidence consult is inside the driver's
-    // body and moves with its tranche. Its requirement is "the ENGINE requires both
-    // halves", never "loop.ts contains this string", so the corpus is the engine.
-    //
-    // ⚠ UX-REPAIR ROUND 4 T19 (D7) — THE MATCHED FORM MOVED AND THE CLAUSE GOT STRICTER.
-    // `last_delivery_summary` being non-null used to BE the tangibility question. It no longer
-    // is: the summary now also NAMES a dashboard-or-voice-only bubble, because stamping
-    // `(no delivery recorded)` on the owner's primary channel was a false negative the model
-    // read in the same tool result as an ALREADY-DELIVERED assertion. The tangibility standard
-    // itself (battery catch 2026-07-22) is unchanged and is now a DECLARED predicate with one
-    // owner, so this clause pins two things where it used to pin one: both halves are still
-    // required, AND the second half is asked of `isTangibleDeliverySummary` rather than of a
-    // truthiness check any future edit could quietly widen.
-    //
-    // v3.5 field fix 3 review round 2 (ruled: an ack never counts as completion on any channel):
-    // the close-out gate's consult now asks the one task-level helper, whose stamp half requires
-    // an answered turn AND a delivered FILE; a channel line counts only as the task's answer under
-    // the ack-order rule. Both halves are still required, at the helper.
-    expect(engineText()).toMatch(/taskWorkOnRecord\(r\.id, st \?\? null\)/);
-    const evidence = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../delivery-evidence.ts'), 'utf8');
-    expect(evidence).toMatch(/stamp\.last_answered_turn !== null && stamp\.last_delivery_summary\?\.startsWith\('file '\)/);
-    // and no consumer of the finished-work question may go back to reading the raw column
-    expect(engineText()).not.toMatch(/last_answered_turn !== null && !?!?st\.last_delivery_summary\b/);
   });
 
   it("the SAME turn under outcome 'answered' does stamp — so the brake is what withholds it", () => {

@@ -397,7 +397,7 @@ describe('§2 the owner disposes; the PM escalates', () => {
     // replaced it.
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-nm001', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+       VALUES ('del-nm001', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
     const actors = [
       { by: 'owner' as const, claim: 'authoritative' as const, ev: null },
@@ -489,7 +489,7 @@ describe('§3 resolving forward is what agents do with a block', () => {
     // this gate's business — so the row gets one, and the clause then measures G9.
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-0001', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+       VALUES ('del-0001', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
     const out = trackerUpdateStatus(VICTIM, {
@@ -825,7 +825,7 @@ describe('§8 the direct setTrackerStatus path is gated too', () => {
     // refuse this move is the disposal gate. It does not.
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-eng01', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+       VALUES ('del-eng01', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
     const r = setTrackerStatus(TASK, 'fallen', {
       by: 'engine', actorId: 'engine', reason: 'the run was reaped', evidenceRef: 'del-eng01',
@@ -846,7 +846,7 @@ describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves no
     seedBlockedRow({ upheld: true });
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-0002', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+       VALUES ('del-0002', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
     // G7 resolves the delivery against the ROW's agent (`deliveryForTaskClose` reads
     // `work.agent_id`), not against whoever is calling — so it belongs to the assignee even
@@ -872,7 +872,7 @@ describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves no
     seedBlockedRow({ upheld: false });
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-0003', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+       VALUES ('del-0003', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
     const out = trackerUpdateStatus(PRIMARY, {

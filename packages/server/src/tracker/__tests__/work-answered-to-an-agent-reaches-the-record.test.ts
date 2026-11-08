@@ -1,22 +1,12 @@
-// C4 (PM-CANNOT-APPROVE.md, v3.5 field fix 3 evidence round): REAL WORK DONE AS AN ANSWER TO ANOTHER
-// AGENT, OR BY READING, REACHES THE RECORD THE PM READS.
+// C4 (PM-CANNOT-APPROVE.md): REAL WORK DONE AS AN ANSWER TO ANOTHER AGENT REACHES THE RECORD THE PM READS.
 //
-// Measured on the owner's box: three of the main agent's tasks were real work, answered to the PM
-// itself over agent-to-agent mail (`send_to_agent`, the engine's VERIFIED receipt on record, task id
-// NULL) plus read-only lookups, then closed from a later turn. The PM's door refused the uphold five
-// times ("ledger empty, no delivered answer"), and the rows closed three hours later through the
-// override door, which skips the check. Three gaps in the record:
-//   * the ledger dropped a send whose recipient is another agent (`tools/item-keys.ts`);
-//   * the send's receipt carried no task id (only the close gate, in its own turn, stamped one);
-//   * the answer resolver never read the delivery the worker's own close request named;
-// and reads were never on the record at all.
-//
-// What must stay true: nothing the engine did not see is counted. A send with no verified receipt, a
-// tool-call row the close happened to point at, and a read the PM has not repeated back nothing.
-//
-// The follow-up ruling (the C4 loophole): a send counts only when it delivers the work to the party the
-// task serves. The answer here goes to the agent that asked for the task; the same answer to the PM
-// itself (the owner's-box shape) is never work (`a-send-to-the-pm-is-never-work-on-record.test.ts`).
+// Measured on the owner's box: three of the main agent's tasks were real work, answered over agent-to-
+// agent mail (`send_to_agent`, the engine's verified receipt on record), then closed from a later turn,
+// and the PM's door refused the uphold for "nothing on record". The answer to the agent that asked for
+// the task is a delivery to the asker, and the one proof check (`work/done/proof.ts`) finds it whatever
+// the close pointed at. What must stay true: nothing the engine did not see is counted. A send that did
+// not land, a tool-call chip and the engine's own lines are never proof. Reads are the worker's process,
+// not proof; the answer they produced is.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -38,14 +28,11 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/a2a-transport.js', () => ({ deliverA2AMessage: async () => ({ delivered: true, threadId: 't' }) }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { keepLedgerShownFor, noteAnswerShown } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
 import { recordCallsTouched } from '../../work/ledger-store.js';
 import { effectsFor } from '../../agent/tools/registry.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { resetEmptyUpholdRefusals } from '../empty-uphold.js';
-import { resolveTaskAnswerPointer } from '../delivery-evidence.js';
-import { workerReadsLines } from '../validation-request.js';
+import { proofDelivery } from '../../work/done/proof.js';
 import { openTrackerProject, openTrackerTask } from '../../work/tracker-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
@@ -89,16 +76,21 @@ function charge(taskId: string, calls: Array<{ id: string; name: string; argumen
 function fileClose(t: string, deliveryId: string): void {
   appendWorkEvent(t, 'validation_requested', WORKER, { requested_state: 'done', reason: 'complete', from: 'claimed', result_delivery_id: deliveryId }, Date.now() + (++n));
 }
-/** A delivery row, with the message it carried. */
-function delivery(id: string, message: { id: string; content: string; displayKind?: string } | null, channel = 'dashboard'): string {
+/** A delivery row, with the message it carried: on the a2a lane to the requesting agent unless the channel says otherwise. */
+function delivery(id: string, message: { id: string; content: string; displayKind?: string } | null,
+  o: { channel?: string; outcome?: string; receiptId?: string } = {}): string {
+  const channel = o.channel ?? 'a2a';
   if (message) {
-    db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, display_kind, turn_number, created_at, sent_at) VALUES (?, ?, 'owner', 'assistant', ?, ?, 1794, ?, ?)`)
-      .run(message.id, WORKER, message.content, message.displayKind ?? 'agent-text', Date.now() + (++n), Date.now() + n);
+    db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, display_kind, turn_number, created_at, sent_at) VALUES (?, ?, ?, 'assistant', ?, ?, 1794, ?, ?)`)
+      .run(message.id, WORKER, channel === 'a2a' ? 'a2a' : 'owner', message.content, message.displayKind ?? 'agent-text', Date.now() + (++n), Date.now() + n);
   }
-  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES (?, ?, 1794, ?, ?, ?, 'delivered', datetime('now'))`)
-    .run(id, WORKER, channel === 'a2a' ? 'send_to_agent' : 'dashboard', channel, message?.id ?? null);
+  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, message_id, receipt_id, detail, outcome, created_at)
+    VALUES (?, ?, 1794, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
+    .run(id, WORKER, channel === 'a2a' ? 'send_to_agent' : 'dashboard', channel, channel === 'a2a' ? REQUESTER : null, message?.id ?? null,
+      o.receiptId ?? null, channel === 'a2a' ? 'A2A ANSWER' : null, o.outcome ?? 'delivered');
   return id;
 }
+const ANSWER = 'The cancel is refused on blocked work; the decider is the owner.';
 function pmRead(name: string, input: object): void {
   const id = `pm_${++n}`;
   const at = Date.now() + n;
@@ -119,9 +111,7 @@ const upheld = (t: string): number => (db().prepare(`SELECT COUNT(*) AS c FROM a
 const REFUSED = /^Refused: nothing on record/;
 
 beforeEach(() => {
-  keepLedgerShownFor(new Set());
   n = 0;
-  resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
   for (const id of [WORKER, PM, REQUESTER]) db().prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
@@ -130,80 +120,38 @@ beforeEach(() => {
 });
 afterEach(() => { endTurnContext(PM); mockDb.current?.close(); mockDb.current = null; });
 
-describe('C4: an answer sent to another agent, on the engine\'s verified receipt, is on the record', () => {
+describe('C4: an answer sent to the agent that asked, on the engine\'s verified receipt, is on the record', () => {
   it('the answer to the requesting agent a turn before the close backs the uphold; the receipt is tied to the task', async () => {
     const t = newTask();
-    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });
+    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER });
     receipt(send, true);
-    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' } }]);
+    delivery('d-answer', { id: 'm-answer', content: ANSWER }, { receiptId: `rcpt-${send}` });
+    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER } }]);
     // The close's own delivery on the box was the tool-call row of the close itself (a chip, not an answer).
     fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
+    expect(proofDelivery(t)).toBe('d-answer');
     expect(await validate(t)).not.toMatch(REFUSED);
     expect(upheld(t)).toBe(1);
     expect((db().prepare('SELECT task_id FROM tool_receipts WHERE call_id = ?').get(send) as { task_id: string }).task_id).toBe(t);
   });
 
-  it('NEGATIVE CONTROL: a send with no verified receipt (it did not land) is not counted, and the uphold is refused', async () => {
+  it('NEGATIVE CONTROL: a send that did not land is not counted, and the uphold is refused', async () => {
     const t = newTask();
-    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });
+    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER });
     receipt(send, false);
-    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' } }]);
-    const bare = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' });   // no receipt at all
-    charge(t, [{ id: bare, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: 'The cancel is refused on blocked work; the decider is the owner.' } }]);
+    delivery('d-failed', { id: 'm-failed', content: ANSWER }, { outcome: 'failed', receiptId: `rcpt-${send}` });
+    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER } }]);
     fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
     expect(await validate(t)).toMatch(REFUSED);
     expect(upheld(t)).toBe(0);
   });
-});
 
-describe('C4: the delivery the worker\'s own close named is read as its answer', () => {
-  it('a real delivered line on the close is the task\'s answer; shown to the PM, it backs the uphold', async () => {
-    const t = newTask();
-    fileClose(t, delivery('d-answer', { id: 'm-answer', content: 'The disposal path: only the owner can cancel blocked work.' }));
-    const p = resolveTaskAnswerPointer(t);
-    expect(p?.deliveryId).toBe('d-answer');
-    expect(p?.basis).toBe('close-request-delivery');
-    noteAnswerShown(t, 'd-answer');   // the review printed it
-    expect(await validate(t)).not.toMatch(REFUSED);
-  });
-
-  it('NEGATIVE CONTROL: the close pointing at a tool-call row, or at a channel send with no message, names no answer', () => {
+  it('NEGATIVE CONTROL: a tool-call chip, or a line to someone who did not ask, is never the answer', () => {
     const a = newTask();
     fileClose(a, delivery('d-chip', { id: 'm-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
-    expect(resolveTaskAnswerPointer(a)).toBeNull();
+    expect(proofDelivery(a)).toBeNull();
     const b = newTask();
-    fileClose(b, delivery('d-bare', null));
-    expect(resolveTaskAnswerPointer(b)).toBeNull();
-  });
-});
-
-describe('C4: a read counts the way the PM can verify it, by reading the same thing', () => {
-  function readOnlyJob(): string {
-    const t = newTask();
-    appendWorkEvent(t, 'claim_turn', 'engine', { turn_number: WORK_TURN });
-    workerCall('file_read', { path: '/fixtures/export.csv' });
-    workerCall('vault_get', { entry_id: 'vault-entry-0730' }, false);   // a failed read read nothing
-    fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
-    return t;
-  }
-
-  it('the request names what the worker read, and only the reads that succeeded', () => {
-    const t = readOnlyJob();
-    expect(workerReadsLines(t)).toBe('\n  Read by the worker while working it (open the same to check it): file /fixtures/export.csv');
-  });
-
-  it('NEGATIVE CONTROL: the worker\'s read alone backs nothing; the PM\'s own read of the same file does', async () => {
-    const t = readOnlyJob();
-    expect(await validate(t)).toMatch(REFUSED);
-    pmRead('file_read', { path: '/fixtures/export.csv' });
-    expect(await validate(t)).not.toMatch(REFUSED);
-    expect(upheld(t)).toBe(1);
-  });
-
-  it('NEGATIVE CONTROL: a read the worker made that FAILED is not something the PM can bind to', async () => {
-    const t = readOnlyJob();
-    expect(await validate(t)).toMatch(REFUSED);
-    pmRead('vault_get', { entry_id: 'vault-entry-0730' });
-    expect(await validate(t)).toMatch(REFUSED);
+    fileClose(b, delivery('d-owner', { id: 'm-owner', content: ANSWER }, { channel: 'dashboard' }));
+    expect(proofDelivery(b)).toBeNull();
   });
 });

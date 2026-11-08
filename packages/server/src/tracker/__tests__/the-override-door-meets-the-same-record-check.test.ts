@@ -34,22 +34,10 @@ vi.mock('../../agent/a2a-transport.js', () => ({
   },
 }));
 
-// The delivered-answer pointer, held at "none" so "nothing on record" is exactly that (its resolution has its own suite).
-const pointer = vi.hoisted(() => ({ on: null as null | { deliveryId: string; messageId: string | null } }));
-vi.mock('../delivery-evidence.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../delivery-evidence.js')>()),
-  resolveTaskAnswerPointer: () => (pointer.on
-    ? { ...pointer.on, basis: 'task-turn-answer', excerpt: 'The summary file is at /work/summary.md.', channel: 'dashboard', at: null }
-    : null),
-}));
-
 import { runMigrations } from '../../db/migrations.js';
-import { keepLedgerShownFor } from '../request-shown.js';
 import { appendWorkEvent } from '../../work/store.js';
-import { recordTouched } from '../../work/ledger-store.js';
 import { openTrackerProject, openTrackerTask } from '../../work/tracker-store.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { resetEmptyUpholdRefusals } from '../empty-uphold.js';
 import { fileOverrideRequest, findOverrideRequest } from '../../work/override-requests.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
@@ -66,10 +54,7 @@ function newTask(): string {
   });
 }
 beforeEach(() => {
-  keepLedgerShownFor(new Set());   // the shown pages are process memory: no clause inherits another's
   msgSeq = 0;
-  pointer.on = null;
-  resetEmptyUpholdRefusals();
   mockDb.current = new Database(':memory:');
   runMigrations();
   for (const id of [WORKER, PM]) mockDb.current.prepare("INSERT INTO agents (id, name, classification) VALUES (?, ?, 'apprentice')").run(id, id);
@@ -81,10 +66,14 @@ afterEach(() => { endTurnContext(PM); mockDb.current?.close(); mockDb.current = 
 function fileClose(t: string, deliveryId: string | null = null): void {
   appendWorkEvent(t, 'validation_requested', WORKER, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: deliveryId }, Date.now() + (++msgSeq));
 }
-function seedDelivery(id: string): string {
+/** The worker's message to the owner on the dashboard; by default only a status claim, which is never proof. */
+function seedDelivery(id: string, text = 'Done, please validate.'): string {
+  const at = Date.now() + 1000;
+  mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES (?, ?, 'owner', 'assistant', ?, ?, ?)`)
+    .run(`m-${id}`, WORKER, text, at, at);
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'delivered', datetime('now', '+1 second'))`,
-  ).run(id, WORKER);
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES (?, ?, NULL, 'dashboard', 'dashboard', ?, 'delivered', datetime('now', '+1 second'))`,
+  ).run(id, WORKER, `m-${id}`);
   return id;
 }
 async function door(key: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
@@ -124,10 +113,9 @@ describe('C7: an override that approves a close meets the same record check as v
     expect(stateOf(t)).not.toBe('done');
   });
 
-  it('an override approve the record backs (the ledger shows the work) goes through', async () => {
+  it('an override approve the record backs (the worker\'s message to the owner carries the work) goes through', async () => {
     const t = newTask();
-    recordTouched(t, 'file_write', ['file:/work/summary.md']);
-    fileClose(t, seedDelivery('deliv-ov-2'));
+    fileClose(t, seedDelivery('deliv-ov-2', 'The quarterly summary: revenue 412, costs 300, filed under Reports.'));
     const r = await override(askOverride(t), true);
     expect(r.content, r.content).toMatch(/^\[OK\] override approved/);
     expect(stateOf(t)).toBe('done');

@@ -124,9 +124,9 @@ describe('§3 one reader of "who is the owner on iMessage"', () => {
     expect(filesMatching(/\bisOwnerIMessageRecipient\s*\(/).map((f) => f.slice(f.lastIndexOf('/') + 1)))
       // v3.5 K33: the SMS door and the inbound-fence builders (live calls) ask the same rule (is this
       // the owner, whose words are not fenced); fix round 4: so does the attachment fence (an MMS from
-      // the owner's own number is his, as its text is); 3.5: so does the send note (is the recipient the
-      // owner, i.e. the person an owner turn is talking to), never by display name.
-      .toEqual(['attachment-fence.ts', 'send-recipient.ts', 'refusal-gates.ts', 'safe-senders.ts', 'inbound-fences.ts', 'sms-inbound.ts', 'validation-drive.ts']);
+      // the owner's own number is his, as its text is); 3.5: so does the per-channel owner rule
+      // (`services/owner-on.ts`, which the send note and the proof check's asker rule ask), never by display name.
+      .toEqual(['attachment-fence.ts', 'refusal-gates.ts', 'owner-on.ts', 'safe-senders.ts', 'inbound-fences.ts', 'sms-inbound.ts', 'validation-drive.ts']);
     expect(filesMatching(/\bownerIMessageRecord\s*\(/)).toEqual(['services/imessage-bridge.ts', 'services/safe-senders.ts']);
   });
 

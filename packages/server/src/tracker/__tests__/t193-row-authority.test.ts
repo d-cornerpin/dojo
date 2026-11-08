@@ -299,8 +299,8 @@ describe("dec 2 the main agent cannot cancel or reopen a live agent's work unles
   it('CONTROL: a close-out stays open — the main agent\'s `complete` files a Key-1 request', () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, createdBy: MAIN });
     mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome) VALUES ('del-0001', ?, 1, 'send_message', 'chat', 'delivered')`,
-    ).run(WORKER);
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, detail, outcome) VALUES ('del-0001', ?, 1, 'send_to_agent', 'a2a', ?, 'A2A ANSWER', 'delivered')`,
+    ).run(WORKER, MAIN);
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(WORKER);
     const out = trackerUpdateStatus(MAIN, {
       taskId: TASK, status: 'complete', result: 'the ledger ties out', evidence: [{ kind: 'claim', claim: 'reconciled all lines' }],
@@ -404,7 +404,7 @@ describe('dec 27 complete_step needs the same result and evidence as complete', 
     // A delivery is on record, so the only thing that can refuse this is the editor rule (at
     // v3.3.3 the bystander's close was FILED as a Key-1 request on another agent's work).
     mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome) VALUES ('del-0002', ?, 1, 'send_message', 'chat', 'delivered')`,
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome) VALUES ('del-0002', ?, 1, 'send_message', 'dashboard', 'delivered')`,
     ).run(WORKER);
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(WORKER);
     const out = trackerCompleteStep(PEER, {

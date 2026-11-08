@@ -12,7 +12,7 @@ import { redactHandedCredentials } from '../credentials/secret-values.js';
 import {
   taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
-  pendingCloseRequestExpr, closeRequestFiledExpr, closeRequestDeliveryExpr,
+  pendingCloseRequestExpr, closeRequestFiledExpr,
   statusToState, stateToStatus, type TrackerStatus,
   stampColumns,
   engineScaffoldScope,
@@ -25,14 +25,14 @@ import {
 } from '../work/override-requests.js';
 import {
   patchWork, setTrackerStatus, upholdClaim, throwBackClaim, resetRevertCount,
-  requestUserVerdict, clearUserVerdict, deliveryForTaskClose, deliveryForCompletedChildren,
+  requestUserVerdict, clearUserVerdict, deliveryForCompletedChildren,
 } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
-import { findTaskOriginChain, renderTaskOriginChain, resolveTaskAnswerPointer, taskWorkOnRecord } from './delivery-evidence.js';
-import { taskAnswerFor } from './looked-at.js';
+import { findTaskOriginChain, renderTaskOriginChain } from './origin-chain.js';
+import { engineProofLine, proofDelivery, proofFor } from '../work/done/proof.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
@@ -59,11 +59,10 @@ import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask 
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
 import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import { planOfProject } from '../work/plan-store.js';
-import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
+import { applyMeasureToTask, remainderRefusal, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
 import { ownerQuoteProof } from './owner-words.js';   // v3.5: an owner verdict is applied only from the owner's own words
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
-import { closeFiledRefusal } from './close-filed-guard.js';
 import { finishedScheduleRefusal, isScheduledRecurring as isScheduledRecurringRow, setsASchedule } from './finished-task-schedule.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
@@ -89,7 +88,6 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { turnContext, getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
-import { resolveEvidencePointer } from './evidence-pointers.js';
 import { insertEngineEventIfAbsent, insertMessageIfAbsent } from '../memory/message-store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
@@ -299,14 +297,19 @@ export interface RetaskProtectionFacts {
    */
   closeRequestPending: boolean;
   /**
-   * PM-CANNOT-APPROVE C9: WHETHER AN ANSWER IS ACTUALLY ON RECORD, from the one reader the
-   * validate door's record check uses (`looked-at.ts:taskAnswerFor`). A filed close is a CLAIM
+   * PM-CANNOT-APPROVE C9: WHETHER PROOF IS ACTUALLY ON RECORD, from the one proof check
+   * (`work/done/proof.ts:proofFor`), the reader the validate door uses. A filed close is a CLAIM
    * that the work was delivered, not the delivery: on a lived-in box this door told the PM
    * "already delivered to the user" two seconds before the validate door refused the same row
    * because no delivered answer was on record, so the PM could neither approve nor send it back.
    */
   answerDelivered: boolean;
 }
+
+/** A pause or block verdict never answers a worker's filed close: the row has moved past that question. */
+const closeFiledText = (title: string, taskId: string): string =>
+  `Error: task "${title}" (${taskId.slice(0, 8)}) has filed a CLOSE REQUEST; a pause or block verdict would drop it unjudged. `
+  + `Judge the close instead: work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true|false).`;
 
 /**
  * Is this row's work already in the user's hands?
@@ -411,7 +414,7 @@ export async function fileAssignDeliverableCloseRequest(
 
   // Same sanctioned Key-1 landing as every agent-request close: unvalidated — which on the
   // spine means "no upheld adjudication yet", the state the PM's key still turns.
-  const handoffDelivery = deliveryForTaskClose(task.id);
+  const handoffDelivery = proofDelivery(task.id);
   if (!handoffDelivery) {
     logger.info('assign-deliverable close skipped: no delivery on the ledger for this work', { taskId: task.id }, senderAgentId);
     return false;
@@ -520,10 +523,9 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
   // person channel was iMessage, so it texted the owner about engine plumbing. The engine
   // detects and the agent speaks: the refusal says what is on record and nothing else.
   if (r.reason === 'done-requires-delivery' || r.reason === 'delivery-unresolved') {
-    const answer = resolveTaskAnswerPointer(taskId);
+    const answer = proofFor(taskId).filter((i) => i.kind === 'delivery').pop();
     const fact = answer
-      ? `An answer for this task is on record (delivery ${answer.deliveryId.slice(0, 8)}` +
-        `${answer.channel ? `, via ${answer.channel}` : ''}${answer.at ? `, ${answer.at} UTC` : ''}).`
+      ? `A message to the asker is on record (delivery ${answer.ref.slice(0, 8)}, via ${answer.facts.channel}, ${answer.facts.at} UTC).`
       : `No completion for this task has reached the owner yet.`;
     return `Error: "${wanted}" was not recorded for task ${taskId.slice(0, 8)}: a task closes on a delivery. ${fact}`;
   }
@@ -1645,29 +1647,6 @@ function closeEvidenceGate(agentId: string, taskId: string, args: Record<string,
       normEvidence.push({ ...e, kind: 'claim', claim: `${claim}${note}` });
     }
   }
-  // ── C6, the filing half: every pointer names a real record ──
-  // Each pointer the worker gave is resolved now, by the engine's own rows (`evidence-pointers.ts`), and
-  // the result is stored beside it as the entry's `ref`, so the PM's read of what it names binds to the
-  // row. A pointer that names nothing (prose around no id, an id the worker holds no record of, a
-  // relative path) is refused here, naming the pointer. The `evidence` parameter's description is
-  // cached prompt prefix and is not changed: this refusal is the only guidance.
-  for (let i = 0; i < normEvidence.length; i++) {
-    const e = normEvidence[i];
-    if (e.pointer === undefined || e.pointer === null) continue;
-    const pointer = typeof e.pointer === 'string' ? e.pointer.trim() : '';
-    const refs = pointer ? resolveEvidencePointer(agentId, pointer) : [];
-    if (refs.length === 0) {
-      const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] pointer resolved to nothing`);
-      return (
-        `Error: evidence[${i}].pointer ${JSON.stringify(typeof e.pointer === 'string' ? e.pointer : String(e.pointer))} resolved to nothing. ` +
-        `A pointer must name a real delivery, message, file or receipt id: the delivery, message or receipt id a tool printed ` +
-        `(the full id or its first 8 characters), or the absolute path of a file. Words around no id name nothing. ` +
-        `Fix that pointer, or leave pointer out of that entry and say it in the claim.${breaker}`
-      );
-    }
-    normEvidence[i] = { ...e, pointer, ref: refs.length === 1 ? refs[0] : refs };
-  }
-
   // ── C26 receipt gate ──
   // A turn that ran a tier-1/2 (machine-verifiable) send tool must produce a
   // verified receipt to close as complete. This makes Layer 1 a REAL gate
@@ -1701,8 +1680,7 @@ function closeEvidenceGate(agentId: string, taskId: string, args: Record<string,
   for (const r of receiptRows) {
     const label = r.verified === 1 ? 'verified' : 'unverified';
     const idPart = r.provider_id ? `, id ${r.provider_id}` : '';
-    const refs = resolveEvidencePointer(agentId, r.id);
-    evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id, ...(refs.length === 1 ? { ref: refs[0] } : {}) });
+    evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id });
   }
 
   // Persist result + (augmented) evidence on the task row for PM to read.
@@ -1927,7 +1905,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // Structure only. Engine never inspects evidence content; that is PM's job.
     // t193 (dec 27): ONE gate for both close doors — `complete_step` calls it too.
     if (status === 'complete') {   // v3.5: the measure binds the PM's own close too; the evidence gate does not
-      const refused = (callerIsPM ? null : closeEvidenceGate(agentId, taskId, args)) ?? remainderGate(taskId, args);
+      const refused = (callerIsPM ? null : closeEvidenceGate(agentId, taskId, args)) ?? remainderRefusal(taskId, agentId, args);
       if (refused) return refused;
     }
 
@@ -1953,7 +1931,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // "I did them all internally, please close the loop" path.
     if (status === 'complete' && isScheduledRecurring && (args.complete_all_runs as boolean) === true) {
       const notes = args.notes as string | undefined;
-      const allRunsDelivery = deliveryForTaskClose(taskId);
+      const allRunsDelivery = proofDelivery(taskId);
       const allRunsRes = setTrackerStatus(taskId, 'complete', {
         by: 'agent', actorId: agentId, resultDeliveryId: allRunsDelivery,
         reason: 'agent asserts every run is done; the schedule stops here',
@@ -2154,11 +2132,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
         reason: `work_update(action="status") -> ${String(statusUpdate)}`,
-        // v3.5 field fix 3 (#1, review H2): ONLY the worker's own close falls back to the task's
-        // recorded answer. Every other close door keeps the turn-floor receipt alone.
-        resultDeliveryId: statusUpdate === 'complete'
-          ? (deliveryForTaskClose(taskId) ?? (callerIsPM ? null : resolveTaskAnswerPointer(taskId)?.deliveryId ?? null))
-          : null,
+        resultDeliveryId: statusUpdate === 'complete' ? proofDelivery(taskId) : null,
         pausedUntilMs: updates.pausedUntil !== undefined ? tsToMs(updates.pausedUntil as string | null) : undefined,
         // The tool path is the one that stops the schedule with the status (updateTask's
         // own rule); the engine's ball-is-with-the-owner pause deliberately does not.
@@ -2981,12 +2955,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           if (ruling) parts.push(ruling);
         }
         if (task.status === 'in_progress') {
-          // Tangibility rule (battery catch 2026-07-22): the ALREADY-DELIVERED
-          // block requires a recorded handover, never a bare reply.
-          // v3.5 field fix 3 (review H1): asked of THE task's record (`taskWorkOnRecord`), so a
-          // dashboard line that was only the start ack never reads as delivered. Before, the
-          // live join's `deliveredVia` arm coached a close on any dashboard bubble.
-          const evLine = taskWorkOnRecord(task.id, getTaskStampFields(task.id) ?? null);
+          // Only what the engine can count (`engineProofLine`), never a bare reply: it may be the start ack.
+          const evLine = engineProofLine(task.id);
           if (evLine) {
             parts.push(
               // Review round 2: facts, not close-coaching (product law, "Finishing, not closing").
@@ -3155,9 +3125,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
               parts.push(`      ^ state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
             }
             {
-              // v3.5 field fix 3 (review H1, round 2): THE task's record, never a bare line on any
-              // channel, and facts only: what is on record, not an order to close it.
-              const rec = taskWorkOnRecord(tid, st ?? null);
+              const rec = engineProofLine(tid);
               if (rec) {
                 parts.push(`      ^ ENGINE RECORD: appears already delivered (${rec}); do not redo it.`);
               }
@@ -3547,7 +3515,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 
     // t193 (owner decision 27): the same result + evidence as `complete`, through the same gate;
     // the step's notes are recorded as the status door records them (a Key-1 filing drops them).
-    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"') ?? remainderGate(taskId, args, 'action="complete_step"');
+    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"') ?? remainderRefusal(taskId, agentId, args, 'action="complete_step"');
     if (stepRefused) return stepRefused;
     if (notes && notes.trim()) {
       writeTaskLog({
@@ -3557,9 +3525,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     }
 
     // Mark current task as complete
-    // v3.5 field fix 3 (#1, review H2): the worker's own close, so it falls back to THE task's
-    // answer (`resolveTaskAnswerPointer`) when its own turn delivered nothing.
-    const stepDelivery = deliveryForTaskClose(taskId) ?? resolveTaskAnswerPointer(taskId)?.deliveryId ?? null;
+    const stepDelivery = proofDelivery(taskId);
     const stepRes = setTrackerStatus(taskId, 'complete', {
       by: 'agent', actorId: agentId, resultDeliveryId: stepDelivery,
       reason: 'work_update(action="complete_step"): the step is finished',
@@ -3842,10 +3808,8 @@ export async function trackerValidatePause(
   if (task.status !== 'paused') {
     return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "paused". Nothing to validate.`;
   }
+  if (task.close_request_filed === 1) return closeFiledText(task.title, taskId);
 
-  // T21 — DEFENCE IN DEPTH (bless and reject alike, see close-filed-guard.ts).
-  const closeFiled = closeFiledRefusal(task, taskId, 'pause');
-  if (closeFiled) return closeFiled;
   if (args.valid) {
     upholdClaim(taskId, 'paused', 'pm', pmAgentId, 'PM confirmed the pause is a real wait condition');
     writeTaskLog({
@@ -3988,9 +3952,9 @@ export async function trackerRetask(
   // delivered work genuinely misses the goal and a fresh pass is warranted). This
   // keys on the neutral fact marker, never on a completion flag, so it protects the
   // artifact without pretending the task closed.
-  // PM-CANNOT-APPROVE C9: "delivered" is read from the answer record, the same reader the
-  // validate door's record check uses, never inferred from a close having been filed.
-  const answerOnRecord = taskAnswerFor(taskId) !== null;
+  // "Delivered" is read from the one proof check, the reader the validate door uses, never inferred
+  // from a close having been filed.
+  const answerOnRecord = proofFor(taskId).length > 0;
   const closeFiled = (task.status === 'complete' && task.complete_validated !== 1) || task.close_request_pending === 1;
   const closeFiledUndelivered = closeFiled && !answerOnRecord;
   if (retaskIsRefused({
@@ -4102,10 +4066,10 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   }
 
   if (markComplete) {
-    { const no = remainderGate(taskId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }   // v3.5
+    { const no = remainderRefusal(taskId, agentId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }
     // Stop the schedule AND mark the task as complete (terminal state)
     const schedDoneRes = setTrackerStatus(taskId, 'complete', {
-      by: 'agent', actorId: agentId, resultDeliveryId: deliveryForTaskClose(taskId),
+      by: 'agent', actorId: agentId, resultDeliveryId: proofDelivery(taskId),
       reason: 'schedule stopped and the work marked complete',
     });
     if (!workSettled(schedDoneRes)) {
@@ -4615,14 +4579,13 @@ export async function trackerValidateComplete(
            w.repeat_interval AS repeat_interval, w.schedule_status AS schedule_status, ${msToText('w.next_run_at')} AS next_run_at,
            ${validatedExpr('w', 'done')} AS complete_validated,
            ${closeRequestFiledExpr('w')} AS close_request_filed,
-           ${closeRequestDeliveryExpr('w')} AS close_request_delivery,
            w.result AS result, w.evidence_json AS evidence_json, w.goal AS goal
     FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     priority: string; project_id: string | null; repeat_interval: number | null; schedule_status: string;
     next_run_at: string | null; complete_validated: number;
-    close_request_filed: number; close_request_delivery: string | null;
+    close_request_filed: number;
     result: string | null; evidence_json: string | null; goal: string | null;
   } | undefined;
 
@@ -4662,12 +4625,10 @@ export async function trackerValidateComplete(
     // When the worker's close was a Key-1 request the row never left `in_progress`, so
     // blessing it IS the transition — `claim: 'authoritative'` files the upheld adjudication
     // in the same transaction, which is what migration `139`'s trigger requires and what the
-    // `complete_validated = 1` assignment used to imitate. It closes against the delivery the
-    // WORKER pointed at, not a freshly resolved one, so the receipt the PM blessed is the
-    // receipt on the row. Everything below this block then runs on exactly the state it
-    // always ran on, which is why this is an insert rather than a rewrite.
+    // `complete_validated = 1` assignment used to imitate. It closes against the newest delivery
+    // to the asker on record (`proofDelivery`).
     if (keyOneOnly) {
-      const closeDelivery = task.close_request_delivery ?? deliveryForTaskClose(taskId);
+      const closeDelivery = proofDelivery(taskId);
       const keyTwo = setTrackerStatus(taskId, 'complete', {
         by: 'pm', actorId: pmAgentId, claim: 'authoritative',
         resultDeliveryId: closeDelivery,
@@ -4960,8 +4921,7 @@ export async function trackerValidateBlocked(
   if (task.blocked_validated === 1) {
     return `Error: task "${task.title}" (${taskId}) is already blocked_validated=1. No-op.`;
   }
-  const closeFiledBlock = closeFiledRefusal(task, taskId, 'block');
-  if (closeFiledBlock) return closeFiledBlock;
+  if (task.close_request_filed === 1) return closeFiledText(task.title, taskId);
 
   if (args.valid) {
     upholdClaim(taskId, 'blocked', 'pm', pmAgentId, 'PM confirmed the block is real');
@@ -5180,7 +5140,7 @@ export async function trackerOverride(
     const ov = setTaskStatusResult(req.taskId, req.requestedStatus as TrackerStatus, {
       by: 'pm', actorId: pmAgentId, claim: 'authoritative',
       reason: `PM approved override request ${req.id}: ${reason}`,
-      resultDeliveryId: req.requestedStatus === 'complete' ? deliveryForTaskClose(req.taskId) : null,
+      resultDeliveryId: req.requestedStatus === 'complete' ? proofDelivery(req.taskId) : null,
     });
     if (!workSettled(ov.result)) {
       // The override request stays PENDING on purpose: it has not been answered, and
@@ -5386,7 +5346,7 @@ export async function trackerApplyUserVerdict(
   const verdict = setTaskStatusResult(taskId, status as TrackerStatus, {
     by: 'owner', actorId: 'user', claim: 'authoritative',
     reason: `owner's verdict: ${userQuote.slice(0, 200)}${[args.reason, args.feedback].filter(Boolean).map((x) => `; ${x}`).join('')}`,
-    resultDeliveryId: status === 'complete' ? deliveryForTaskClose(taskId) : null,
+    resultDeliveryId: status === 'complete' ? proofDelivery(taskId) : null,
   });
   if (!workSettled(verdict.result)) return closeRefusalText(taskId, verdict.result, status);
   if (!verdict.task) return `Error: task ${taskId} was deleted before user verdict could land.`;

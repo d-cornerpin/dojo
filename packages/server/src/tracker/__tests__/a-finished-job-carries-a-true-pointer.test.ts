@@ -1,23 +1,12 @@
-// UX-REPAIR ROUND 2 / T11 — A FINISHED JOB CARRIES A TRUE POINTER TO ITS ANSWER.
+// A FINISHED JOB CARRIES A TRUE POINTER TO ITS ANSWER.
 //
-// ── THE FOUR BROKEN LINKS (investigation-round2.md §2, measured on the live box) ──
-//  1. `deliveryForTaskClose` resolved "the newest delivery by this agent since the task
-//     opened". On S4 (2026-08-10) the task opened 06:11:11 and the close was filed 06:15:14,
-//     so the newest delivery in that span was the 06:11:16 acknowledgement — *"On it — I've
-//     handed Squarespace to one helper and WordPress to another"* — recorded as the task's
-//     `result_delivery_id`. `tool <> 'engine-ack'` did not catch it because the ack was
-//     MODEL-authored on the dashboard and is indistinguishable at the ledger from an answer.
-//  2. The compiled rundown (`8eb0439c`) carried `root_kind=''`/`root_id=''` — turn 4555 was a
-//     bare wake with no subject — so no reverse lookup could find it either.
-//  3. The Key-2 review payload selects only the `work` row's own prose (`pm-agent.ts:1441`),
-//     while the same payload orders the PM to "Read the file/audit log/output referenced in
-//     evidence". 7 `validation_review_miss` rows and ~40 `history_search` calls followed.
-//  4. `PM-SOUL.md:66` tells the PM to use `vault_get`; the gate never allowed it.
+// The close points at the newest message to the asker the one proof check accepts
+// (`work/done/proof.ts:proofDelivery`), never one sent before the task was opened, and the review shows
+// that message labelled as the worker's own (design 5b). Also pinned here: the task-to-ask edge is
+// stamped at create, and the PM's gate allows the `vault_get` its soul names and nothing more.
 //
-// requirement preserved (G7, `work/store.ts:301-317`): a close that really did deliver in its
-// own turn still resolves its receipt, so a legitimate close is never turned into a
-// `done-requires-delivery` refusal. That control is the second clause below and it is the one
-// that bounds this narrowing.
+// requirement preserved (G7, `work/store.ts`): a close that really did deliver still resolves its
+// receipt, so a legitimate close is never turned into a `done-requires-delivery` refusal.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -39,9 +28,9 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { deliveryForTaskClose, openTrackerTask } from '../../work/tracker-store.js';
+import { openTrackerTask } from '../../work/tracker-store.js';
 import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../work/store.js';
-import { resolveTaskAnswerPointer } from '../delivery-evidence.js';
+import { proofDelivery, proofFor, proofLines } from '../../work/done/proof.js';
 import { pmMayCall, PM_ALLOWED_TOOLS } from '../pm-agent.js';
 
 const AGENT = 'harnessbot';
@@ -90,46 +79,36 @@ beforeEach(() => {
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
 });
 
-describe('T11 (1): an acknowledgement from an earlier turn can no longer be a close receipt', () => {
-  it('THE S4 FIXTURE: the "On it — I\'ve handed…" ack from the delegating turn is NOT picked', () => {
+describe('the close receipt is a message to the asker made during the task', () => {
+  it('an acknowledgement delivered before the task was opened is NOT picked', () => {
     seedTurn(4552);
-    seedMessage('msg-ack', "On it — I've handed Squarespace to one helper and WordPress to another to dig into.", 4552);
+    seedMessage('msg-ack', "On it, I've handed Squarespace to one helper and WordPress to another to dig into.", 4552);
     seedDelivery('a133f5e1', { turn: 4552, messageId: 'msg-ack' });
+    mockDb.current!.prepare("UPDATE deliveries SET created_at = datetime('now', '-60 seconds') WHERE id = 'a133f5e1'").run();
     const taskId = seedTask('task-s4');
-    // the close is filed on turn 4553 — the agent is on 4553 now
     seedTurn(4553);
-    expect(deliveryForTaskClose(taskId)).toBeNull();
+    expect(proofDelivery(taskId)).toBeNull();
   });
 
-  it('G7 CONTROL: a close that really did deliver in its own turn still resolves its receipt', () => {
+  it('G7 CONTROL: a close that really did deliver resolves its receipt', () => {
     seedTurn(4552);
     const taskId = seedTask('task-same-turn');
     seedMessage('msg-answer', 'Here is the combined rundown: Squarespace $276/yr…', 4552);
     seedDelivery('d-answer', { turn: 4552, messageId: 'msg-answer' });
-    expect(deliveryForTaskClose(taskId)).toBe('d-answer');
+    expect(proofDelivery(taskId)).toBe('d-answer');
   });
 
-  it('a delivery from a LATER turn still resolves (the answer arriving after the close request)', () => {
+  it('a delivery from a LATER turn resolves (the answer arriving after the close request)', () => {
     seedTurn(4552);
     const taskId = seedTask('task-later');
     seedTurn(4555);
     seedMessage('msg-rundown', 'the combined rundown', 4555);
     seedDelivery('8eb0439c', { turn: 4555, messageId: 'msg-rundown' });
-    expect(deliveryForTaskClose(taskId)).toBe('8eb0439c');
-  });
-
-  it('a delivery with NO turn stamp is still eligible (1,372 of 14,810 rows on the live box)', () => {
-    // The narrowing only removes deliveries we can PROVE belong to an earlier turn. An
-    // unstamped delivery — the a2a hand-off, an alert, an owner-close — is unchanged.
-    seedTurn(4552);
-    const taskId = seedTask('task-null-turn');
-    seedTurn(4553);
-    seedDelivery('d-unstamped', { turn: null, tool: 'send_to_agent' });
-    expect(deliveryForTaskClose(taskId)).toBe('d-unstamped');
+    expect(proofDelivery(taskId)).toBe('8eb0439c');
   });
 });
 
-describe('T11 (3): the task→ask edge is stamped at create', () => {
+describe('the task→ask edge is stamped at create', () => {
   it('a task opened on a turn holding a claimed ask records that ask\'s source message', () => {
     mockDb.current!.prepare(
       `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at)
@@ -168,7 +147,7 @@ describe('T11 (3): the task→ask edge is stamped at create', () => {
   });
 });
 
-describe('T11 (4): the review payload can resolve a dereferenceable pointer', () => {
+describe('the review can show the answer it points at', () => {
   it('the pointer is the ANSWER, not the ack, and it carries an excerpt', () => {
     mockDb.current!.prepare(
       `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at)
@@ -185,7 +164,7 @@ describe('T11 (4): the review payload can resolve a dereferenceable pointer', ()
     const taskId = seedTask('task-pointed');
 
     // the ack, and then the real rundown three turns later
-    seedMessage('msg-ack', "On it — I've handed Squarespace to one helper…", 4552);
+    seedMessage('msg-ack', "On it, I've handed Squarespace to one helper…", 4552);
     seedDelivery('a133f5e1', { turn: 4552, messageId: 'msg-ack' });
     seedTurn(4555, { answerMessageId: 'msg-rundown' });
     seedMessage('msg-rundown', 'Squarespace is $276/yr all-in; WordPress needs separate hosting. My pick: Squarespace.', 4555);
@@ -193,20 +172,19 @@ describe('T11 (4): the review payload can resolve a dereferenceable pointer', ()
     // the ask settles on the rundown, exactly as `compile_resolved` records it
     mockDb.current!.prepare(`UPDATE work SET result_delivery_id = ? WHERE id = ?`).run('8eb0439c', askId);
 
-    const p = resolveTaskAnswerPointer(taskId);
-    expect(p).not.toBeNull();
-    expect(p!.deliveryId).toBe('8eb0439c');
-    expect(p!.excerpt).toContain('Squarespace is $276/yr');
-    expect(p!.excerpt).not.toContain("On it —");
+    expect(proofDelivery(taskId)).toBe('8eb0439c');
+    const lines = proofLines(proofFor(taskId));
+    expect(lines[lines.length - 1]).toContain('Squarespace is $276/yr');
+    expect(lines.every((l) => l.startsWith("the worker's own message to the asker: "))).toBe(true);
   });
 
   it('CONTROL: nothing delivered yet resolves to null rather than to something confidently wrong', () => {
     const taskId = seedTask('task-nothing');
-    expect(resolveTaskAnswerPointer(taskId)).toBeNull();
+    expect(proofDelivery(taskId)).toBeNull();
   });
 });
 
-describe('T11 (5): the PM gate matches the prompt that names the tool', () => {
+describe('the PM gate matches the prompt that names the tool', () => {
   it('vault_get is callable by the PM (PM-SOUL.md:66 names it)', () => {
     expect(pmMayCall('vault_get')).toBe(true);
     expect(PM_ALLOWED_TOOLS).toContain('vault_get');

@@ -110,7 +110,8 @@ function applyToolsSchema(db: Database.Database): void {
     );
     CREATE TABLE IF NOT EXISTS deliveries (
       id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at TEXT,
-      turn_number INTEGER
+      turn_number INTEGER, channel TEXT, recipient_id TEXT, recipient_display TEXT, conversation_id TEXT,
+      message_id TEXT, receipt_id TEXT, detail TEXT
     );
     CREATE TABLE IF NOT EXISTS messages (
       seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL,

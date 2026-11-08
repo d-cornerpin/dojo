@@ -222,8 +222,7 @@ export function releaseOccurrence(
 // SWEEP CORE-1 CT2 — THE RUN'S OWN EVIDENCE PREDICATE.
 //
 // ── WHAT WAS THERE BEFORE, AND WHY IT COULD NOT REFUSE ANYTHING ──
-// `settleOccurrence`'s caller passed whatever `work/tracker-store.ts:deliveryForAgentSince`
-// returned: *the newest delivery by that agent since the run opened*, with one exclusion
+// `settleOccurrence`'s caller passed *the newest delivery by that agent since the run opened*, with one exclusion
 // (`engine-ack`) and no others. That function is correct for the job it was written for — a
 // TASK close, where an apprentice's a2a hand-off really is the delivery for that piece of work,
 // and its own docstring says so. It is the wrong question for a scheduled BRIEF, and the
@@ -527,7 +526,7 @@ export interface RunSettlement {
  *
  * ⚠ THE CALLER NARROWS THE SCOPE; THE AUTHORITY DECIDES. For a declared run the `deliveryId`
  * argument is re-derived here rather than trusted, because the only thing that produces it
- * (`deliveryForAgentSince`) answers a deliberately wider question — CT0's rule for the join
+ * (`proofDelivery`) answers a deliberately wider question, CT0's rule for the join
  * arm's `deliveryId`, applied to the lane it belongs in.
  */
 export function settleOccurrence(

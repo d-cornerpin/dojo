@@ -32,8 +32,9 @@ import {
   overrideRollup as overrideRollupSince, type OverrideStatus,
 } from '../../work/override-requests.js';
 import {
-  deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
+  deleteTrackerRow, deliveryForCompletedChildren,
 } from '../../work/tracker-store.js';
+import { proofDelivery } from '../../work/done/proof.js';
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordOwnerCloseReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
@@ -459,7 +460,7 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
       const updated = setTaskStatus(req.taskId, req.requestedStatus as TrackerStatus, {
         by: 'owner', actorId: 'user', claim: 'authoritative',
         reason: `owner approved override request ${id}: ${reason}`,
-        resultDeliveryId: req.requestedStatus === 'complete' ? deliveryForTaskClose(req.taskId) : null,
+        resultDeliveryId: req.requestedStatus === 'complete' ? proofDelivery(req.taskId) : null,
       });
       if (!updated) return c.json({ ok: false, error: 'task vanished before override could be applied' }, 500);
       resetRevertCount(req.taskId, 'user', `override ${id} approved`);
@@ -754,7 +755,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           by: 'owner', actorId: 'user', claim: 'authoritative',
           reason: 'dashboard PUT /tracker/tasks/:id',
           resultDeliveryId: statusUpdate === 'complete'
-            ? (deliveryForTaskClose(id) ?? deliveryIdOf(recordOwnerCloseReceipt(id, 'the dashboard task board')))
+            ? (proofDelivery(id) ?? deliveryIdOf(recordOwnerCloseReceipt(id, 'the dashboard task board')))
             : null,
         });
         if (!workSettled(result)) {

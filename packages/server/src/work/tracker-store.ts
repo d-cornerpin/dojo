@@ -854,62 +854,6 @@ export function deliveryForCompletedChildren(projectId: string): string | null {
   return r?.id ?? null;
 }
 
-/**
- * The delivery a TASK's close points at when the closer is the agent that did the work.
- *
- * The newest recorded delivery by that agent since the work opened. The `a2a` lane is
- * INCLUDED here, unlike `terminalDeliveryForTurn`'s owner-facing question: an apprentice
- * hands its result to the agent that spawned it, and that hand-off IS the delivery for that
- * piece of work. `engine-ack` is excluded for the reason it is excluded everywhere else —
- * the engine saying "on it" is not the work arriving.
- *
- * Null when the agent delivered nothing, and the close is then refused by G7. That refusal
- * is the phase's central requirement, not a failure of this function.
- */
-export function deliveryForAgentSince(
-  agentId: string, sinceMs: number, notBeforeTurn?: number | null,
-): string | null {
-  const floor = notBeforeTurn ?? null;
-  const r = getDb().prepare(
-    `SELECT id FROM deliveries
-      WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack'
-        AND CAST(strftime('%s', created_at) AS INTEGER) * 1000 >= ?
-        AND (@floor IS NULL OR turn_number IS NULL OR turn_number >= @floor)
-      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-  ).get(agentId, sinceMs, { floor }) as { id: string } | undefined;
-  return r?.id ?? null;
-}
-
-/**
- * The same question asked of a work row: its own agent, its own opening instant — AND NOT
- * BEFORE THE CLOSE REQUEST'S OWN TURN (UX-REPAIR round 2 T11).
- *
- * ── WHAT THE OLD WINDOW ADMITTED, measured (investigation-round2.md §2) ──
- * "The newest delivery by this agent since the task opened" spans every turn between. On S4
- * (2026-08-10) the task opened 06:11:11 and the close was filed 06:15:14, so the newest
- * delivery in the window was the 06:11:16 line *"On it — I've handed Squarespace to one helper
- * and WordPress to another"* — which became the task's recorded `result_delivery_id`. The
- * `tool <> 'engine-ack'` exclusion could not catch it: that ack was MODEL-authored on the
- * dashboard and is indistinguishable at the ledger from a real answer. The PM was then told to
- * dereference a pointer that named an acknowledgement.
- *
- * ── THE NARROWING, AND WHY IT IS THIS ONE ──
- * A close request is filed FROM a turn, so the turn is the boundary the ledger already
- * records: a delivery this agent made on an EARLIER turn is, by construction, not what this
- * close is reporting. Nothing else is removed — a delivery from the close's own turn (the
- * ordinary "answered then closed" shape, and G7's requirement) resolves exactly as before, a
- * LATER delivery still resolves, and a delivery with no turn stamp at all (1,372 of 14,810
- * rows on the live box: alerts, a2a hand-offs, owner-closes) is untouched, because "unknown
- * turn" is not "earlier turn". None → null, which is the true answer: nothing has delivered
- * this yet, and G7's refusal is the correct outcome rather than a false receipt.
- */
-export function deliveryForTaskClose(workId: string): string | null {
-  const w = getDb().prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
-    .get(workId) as { agent_id: string; opened_at: number } | undefined;
-  if (!w) return null;
-  return deliveryForAgentSince(w.agent_id, w.opened_at, currentTurnNumber(w.agent_id) || null);
-}
-
 // ⟨TOMBSTONE⟩ `deliveryAboutWorkSince` lived here (t124): "has a person been told about THIS
 // row since the first steer?", answered from the turn's recorded root (`ask` / `occurrence`).
 // t142 replaced its only caller — the escalation sweep's `spokeSince` branch — with the told

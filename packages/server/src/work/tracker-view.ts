@@ -454,14 +454,6 @@ export const workingTaskOrder = (a: string): string =>
   `${pendingCloseRequestExpr(a)} ASC, ${a}.updated_at DESC, `
   + `CASE WHEN ${a}.step_number IS NULL THEN 1 ELSE 0 END ASC, ${a}.step_number ASC, ${a}.rowid DESC`;
 
-/** The delivery the Key-1 request pointed at, so the validator closes against the receipt the
- *  worker actually had rather than resolving a fresh one. */
-export const closeRequestDeliveryExpr = (a: string): string =>
-  `(SELECT json_extract(e.payload, '$.result_delivery_id') FROM work_events e`
-  + ` WHERE e.work_id = ${a}.id AND e.kind = 'validation_requested'`
-  + `   AND json_extract(e.payload, '$.requested_state') = 'done'`
-  + ` ORDER BY e.id DESC LIMIT 1)`;
-
 /** Event kinds this file and `tracker-store.ts` agree on. Declared once so a typo cannot make
  *  a writer and a reader disagree silently — the failure mode research 03 catalogued. */
 export const WORK_EVENT = {

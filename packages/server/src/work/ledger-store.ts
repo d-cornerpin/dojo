@@ -14,7 +14,8 @@
 import { getDb } from '../db/connection.js';
 import { itemKeysOf, sendRecipientsOf, agentSendRecipientsOf, COMMAND_KEY, SEND_KEY } from '../tools/item-keys.js';
 import { IS_ITEM } from './ledger-read.js';
-import { agentSendCountsAsWork } from './send-counts-as-work.js';
+import { sendReachesAsker } from './done/asker.js';
+import { handsOverWork, isStatusClaimOnly } from './done/proof-kinds.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 // The ledger's readers live in the leaf `ledger-read.ts` (the verdict record reads them from a module the
 // spine imports, so they must not pull this file's provider imports); re-exported here for the callers.
@@ -108,20 +109,16 @@ export function recordCallsTouched(
       // with the recipient(s) its arguments name (redacted like every other entry).
       const to = sendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []);
       if (to !== undefined) recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), to ? safe(to.join(', ')) : null);
-      // C4: a send to another agent is one delivery on the ledger too, but only on the engine's own
-      // VERIFIED receipt for this exact call (the transport's persisted peer message): the record never
-      // counts a send that did not land, and never one the model only claimed.
-      // The C4 loophole (owner ruling: the PM verifies so a worker cannot close a job on its own say-so):
-      // the send counts only when it delivers the work to the party the task serves, never a send to the
-      // PM, the task's validator or a service agent, and never one that only claims a status
-      // (`work/send-counts-as-work.ts`).
+      // A send to another agent is one delivery on the ledger too, on the engine's own VERIFIED receipt
+      // for this exact call, and only when it hands the work to the agent that asked for it with more than
+      // a status claim: a "done" to the PM is never work on the record (`work/done/asker.ts`).
       const peers = to === undefined ? agentSendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []) : undefined;
       const a = tc.arguments ?? {};
-      if (peers !== undefined && verifiedReceiptFor(tc.id, agentId) && agentSendCountsAsWork(workId, {
-        recipients: typeof a.group_id === 'string' && a.group_id.trim() ? [] : peers,
-        intent: typeof a.intent === 'string' ? a.intent : null,
-        text: typeof a.payload === 'string' ? a.payload : null,
-      })) {
+      const payload = typeof a.payload === 'string' ? a.payload : '';
+      const toGroup = typeof a.group_id === 'string' && a.group_id.trim() !== '';
+      if (peers !== undefined && !toGroup && handsOverWork(typeof a.intent === 'string' ? a.intent : null)
+        && verifiedReceiptFor(tc.id, agentId) && sendReachesAsker(workId, peers)
+        && !isStatusClaimOnly(payload, { id: workId, title: titleOf(workId) })) {
         recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), safe(`agent ${peers.join(', ') || 'unnamed'}`), tc.id);
       }
       stampCallReceipts(tc.id, agentId, workId);
@@ -135,6 +132,9 @@ export function recordCallsTouched(
 }
 
 /** The engine's verified receipt for one call (`tool_receipts.call_id`, written by the tool's executor). */
+const titleOf = (workId: string): string | null =>
+  (getDb().prepare('SELECT title FROM work WHERE id = ?').get(workId) as { title: string | null } | undefined)?.title ?? null;
+
 function verifiedReceiptFor(callId: string, agentId: string): boolean {
   return !!getDb().prepare('SELECT 1 FROM tool_receipts WHERE call_id = ? AND agent_id = ? AND verified = 1 LIMIT 1').get(callId, agentId);
 }

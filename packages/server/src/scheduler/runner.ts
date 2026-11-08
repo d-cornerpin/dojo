@@ -24,9 +24,9 @@ import {
 import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-requests.js';
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts,
-  recordValidationEscalation, deliveryForTaskClose,
-  deliveryForAgentSince,
+  recordValidationEscalation,
 } from '../work/tracker-store.js';
+import { proofDelivery } from '../work/done/proof.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
@@ -1168,7 +1168,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // recompute next_run_at (the P-5 run-counter inflation class), so it bails as a no-op.
   const occRow = db.prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
     .get(runId) as { agent_id: string; opened_at: number } | undefined;
-  const delivered = occRow ? deliveryForAgentSince(occRow.agent_id, occRow.opened_at) : null;
+  const delivered = occRow ? proofDelivery(runId) : null;
   const settled = settleOccurrence(runId, status, delivered, summary);
 
   // ── SWEEP CORE-1 CT2 — THE RUN OWES A MESSAGE AND NONE WAS SENT. ──
@@ -1433,7 +1433,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     logger.warn('Scheduler: final run failed; task marked fallen (not complete) and owner notified', { taskId, runId, status });
   } else {
     // No more runs: mark everything as completed
-    const finalDelivery = deliveryForTaskClose(taskId);
+    const finalDelivery = proofDelivery(taskId);
     const finalRes = withUnit(() => {
       const res = setTrackerStatus(taskId, 'complete', {
         by: finalDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
@@ -1901,7 +1901,7 @@ function recoverMissingNextRun(taskId: string): void {
       taskId, title: task.title, nextRun,
     });
   } else {
-    const recDelivery = deliveryForTaskClose(taskId);
+    const recDelivery = proofDelivery(taskId);
     const recRes = setTrackerStatus(taskId, 'complete', {
       by: recDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
       resultDeliveryId: recDelivery,
@@ -1986,7 +1986,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
     }), 'scheduler: stuck recurring task reset onto its next occurrence', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
-    const frDelivery = deliveryForTaskClose(taskId);
+    const frDelivery = proofDelivery(taskId);
     const frRes = setTrackerStatus(taskId, 'complete', {
       by: frDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
       resultDeliveryId: frDelivery,

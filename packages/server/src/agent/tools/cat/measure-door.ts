@@ -7,13 +7,12 @@
 import { getDb } from '../../../db/connection.js';
 import { parseMeasure, countMeasure, type Measure, type MeasureCount } from '../../../work/measure.js';
 import { recordMeasured } from '../../../work/ledger-store.js';
-import { editMeasure, namedRemainderNote, recordNamedRemainder, measuredOpenTasksOf, type MeasureReading } from '../../../tracker/measure-gate.js';
+import { editMeasure, namedRemainderNote, recordNamedRemainder, measuredOpenTasksOf, remainderRefusal, type MeasureReading } from '../../../tracker/measure-gate.js';
 import { resolveTaskId, resolveProjectId } from '../../../tracker/schema.js';
 import { claimedTasksOf } from '../../../tracker/claimed-tasks.js';
 import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
 import { withNamedRemainder } from '../../../work/measure-close-gate.js';
 import { resolveAgentTaskId } from '../../agent-task.js';
-import { remainderGate } from '../../../tracker/measure-gate.js';
 import { pendingCloseRequestExpr } from '../../../work/tracker-view.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
@@ -89,7 +88,7 @@ const lastTransitionId = (taskId: string): number => (getDb().prepare(
  *  only once the close has LANDED (the task or its run moved), never on a close refused later. */
 export async function closeWithMeasure(agentId: string, taskId: string | null, args: Record<string, unknown>, close: () => string): Promise<string> {
   await remeasureTask(agentId, taskId);
-  const note = taskId ? namedRemainderNote(taskId, args) : null;
+  const note = taskId ? namedRemainderNote(taskId, agentId, args) : null;
   const mark = note && taskId ? lastTransitionId(taskId) : 0;
   // A named remainder is honoured by the status writer for exactly this synchronous close.
   const content = note && taskId ? withNamedRemainder(taskId, close) : close();
@@ -141,5 +140,5 @@ export async function completeTaskRefusal(agentId: string): Promise<string | nul
     .get(taskId) as { state: string; pending: number } | undefined;
   if (!row || row.pending === 1 || !['claimed', 'on_deck'].includes(row.state)) return null;
   await remeasureTask(agentId, taskId);
-  return remainderGate(taskId, {}, 'complete_task(status="complete")', false);
+  return remainderRefusal(taskId, agentId, {}, 'complete_task(status="complete")', false);
 }

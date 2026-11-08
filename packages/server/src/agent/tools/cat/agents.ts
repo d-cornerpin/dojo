@@ -39,7 +39,8 @@ import { mismatchWarning } from '../assignment-capability.js';
 import { coerceNumberArg } from '../pagination.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
-import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
+import { patchWork, setTrackerStatus } from '../../../work/tracker-store.js';
+import { proofDelivery } from '../../../work/done/proof.js';
 import { noteUnsettled } from '../../../work/store.js';
 import { skipOpenOccurrencesAsComplete } from '../../../work/occurrences.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
@@ -1694,7 +1695,7 @@ export const agentsHandlers: ToolHandlerMap = {
         // tracker row is a Key-1 request, so keeping `by: 'agent'` would leave every
         // orphaned task open with a request nobody will validate. G6 still makes the
         // engine point at the delivery, and with nothing on the ledger G7 still refuses.
-        const orphanDelivery = deliveryForTaskClose(t.id);
+        const orphanDelivery = proofDelivery(t.id);
         const r = setTrackerStatus(t.id, 'complete', {
           by: 'engine', actorId: agentId,
           reason: 'the group this task belonged to was deleted and its members terminated',

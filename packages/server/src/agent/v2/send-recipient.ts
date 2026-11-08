@@ -20,11 +20,10 @@ import { turnContext } from '../turn-context.js';
 import { outboundChannelForTool, outboundRecipientForTool } from './outbound.js';
 import { describeAddressee, deliveryLabel, type TurnAddress } from './turn-address.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
-import { addressesMatch, isOwnerIMessageRecipient } from '../../services/safe-senders.js';
+import { addressesMatch } from '../../services/safe-senders.js';
+import { isOwnerOn } from '../../services/owner-on.js';
 import { getSafeSenders } from '../../services/imessage-bridge.js';
 import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
-import { ownerEmailAddresses } from '../../services/owner-email-addresses.js';
-import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { currentLiveAddress } from './turn-address-live.js';
 
 /** The send tools whose recipient is a plain argument, with the argument names that carry it. */
@@ -91,17 +90,6 @@ function sameAsAddressee(addr: TurnAddress, channel: string, recipient: string):
   if (addr.senderId && addressesMatch(addr.senderId, recipient)) return true;
   // The owner has no address of their own on the dashboard: each channel's own owner rule decides, never a name.
   return addr.isOwner && isOwnerOn(channel, recipient);
-}
-
-/** One function, dispatching by channel: email by the owner's connected user mailboxes, the rest by the one phone/iMessage owner rule. */
-export function isOwnerOn(channel: string, recipient: string): boolean {
-  try {
-    if (channel === 'email') {
-      const [clean] = ownerEmailAddresses([recipient]);
-      return !!clean && ownerMailboxes().some((m) => m.address === clean);
-    }
-    return isOwnerIMessageRecipient(recipient);
-  } catch { return false; }
 }
 
 /**

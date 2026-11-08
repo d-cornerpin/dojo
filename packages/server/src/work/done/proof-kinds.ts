@@ -1,0 +1,243 @@
+// How each kind of proof item resolves, for `work/done/proof.ts`. Every item is a reference to a row
+// the engine itself wrote; it is real only when that row exists, was made by the worker, and was made
+// at or after the task was opened. Prose never resolves: a remainder is the one named item, and only
+// for "can't be done". What the row holds is copied into the item's facts, so a later reader shows
+// the proof as it stood when it was checked.
+import { getDb } from '../../db/connection.js';
+import { measureReadsZero } from '../measure-close-gate.js';
+import { ENGINE_SENT_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
+import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
+import { deliveredToAsker, writtenByAsker, type Asker } from './asker.js';
+import { fileFacts } from './file-facts.js';
+
+export type HandInOutcome = 'finished' | 'cant_be_done';
+export type ProofKind = 'file' | 'delivery' | 'command' | 'receipt' | 'measure' | 'remainder' | 'failure' | 'withdrawal';
+type Facts = Record<string, string | number>;
+
+/** A proof item as the worker names it: a kind, a reference the engine resolves, and for a remainder its `reason`. */
+export interface ProofItemInput { kind: ProofKind; ref: string; facts?: { reason?: string } }
+/** A proof item as the engine resolved it: what it found at the reference. */
+export interface ResolvedItem { kind: ProofKind; ref: string; label: string; facts: Facts }
+
+export interface ProofTask { id: string; title: string | null; openedAt: number }
+export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome }
+export type Resolution = { ok: true; item: ResolvedItem } | { ok: false; why: string };
+
+/** The label every reader shows for each kind. A delivery is the worker's own message, never "the answer". */
+export const PROOF_LABELS: Record<ProofKind, string> = {
+  file: 'a file the worker wrote during the task',
+  delivery: "the worker's own message to the asker",
+  command: 'a command the worker ran',
+  receipt: "an outside action's receipt",
+  measure: "the task's measure",
+  remainder: 'what was left undone, and why',
+  failure: 'a failed attempt',
+  withdrawal: "the asker's message",
+};
+const CANT_BE_DONE_ONLY: ReadonlySet<ProofKind> = new Set(['remainder', 'failure', 'withdrawal']);
+/** The shortest reason a remainder may give. */
+export const MIN_REASON = 15;
+
+/** Words a bare status claim is made of. Anything else (and the task's own title and ids) is content. */
+const STATUS_WORDS = new Set([
+  'done', 'finished', 'finish', 'complete', 'completed', 'completion', 'closed', 'close', 'closing', 'wrapped', 'wrap',
+  'up', 'all', 'set', 'ok', 'okay', 'ready', 'review', 'validation', 'validate', 'validated', 'verify', 'verified',
+  'please', 'pls', 'task', 'tasks', 'job', 'work', 'step', 'item', 'it', 'its', 'this', 'that', 'the', 'a', 'an', 'is',
+  'was', 'has', 'have', 'had', 'been', 'are', 'now', 'i', 'im', 'ive', 'we', 'me', 'my', 'our', 'as', 'for', 'to',
+  'of', 'on', 'with', 'and', 'so', 'just', 'marked', 'mark', 'handled', 'sorted', 'taken', 'care', 'fixed',
+  'resolved', 'delivered', 'sent', 'submitted', 'filed', 'status', 'update', 'thanks', 'thank', 'you', 'request',
+  'requested', 'confirm', 'confirmed', 'success', 'successfully', 'successful', 'good', 'go', 'your', 'pm', 'hey',
+  'hi', 'hello', 'fyi', 'note', 'over', 'back', 'here', 'there', 'yours', 'awaiting', 'waiting', 'key', 'id',
+  'today', 'already', 'should', 'be', 'can', 'will', 'out', 'off', 'per', 'via', 'from', 'by', 'at', 'in',
+  'answer', 'deliverable', 'reply', 'replied', 'answered', 'everything', 'left', 'more',
+  'kind', 'reason', 'result', 'results', 'outcome', 'state', 'progress', 'percent', 'fully', 'totally', 'really',
+]);
+
+/** Is this text nothing but a status claim about the task ("done", "task abc12345 is complete, please
+ *  validate")? Empty text is one too. A number, or any word outside the status words, is content. */
+export function isStatusClaimOnly(text: string, task: { id: string; title?: string | null } | null = null): boolean {
+  const norm = (x: string): string => x.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9-]+/g, ' ').trim();
+  let t = ` ${norm(text.replace(/^(?:\s*\[[^\]]*\])+/, '')).replace(/\b[0-9a-f]{8}[0-9a-f-]*\b/g, ' ')} `;
+  const title = norm(task?.title ?? '');
+  if (title) t = t.split(` ${title} `).join(' ');
+  return (t.match(/[a-z0-9]+/g) ?? []).every((w) => !/[0-9]/.test(w) && STATUS_WORDS.has(w));
+}
+
+/** Does a message to another agent with this A2A intent hand over the work? Only ANSWER, DELIVERABLE and
+ *  COMPLETE do; FYI, STATUS, QUESTION, ASSIGN, BLOCK and FAIL never. */
+export const handsOverWork = (intent: string | null | undefined): boolean => ['ANSWER', 'DELIVERABLE', 'COMPLETE'].includes((intent ?? '').toUpperCase());
+/** The A2A intent a stored line or delivery detail carries ("[A2A:ANSWER ...", "A2A ANSWER"). */
+const intentOf = (text: string | null): string | null => /^\s*\[?A2A[:\s]([A-Z]+)/.exec(text ?? '')?.[1] ?? null;
+
+/** `datetime('now')` text (UTC, whole seconds) to epoch ms; NaN when it does not parse. */
+export function sqlTimeMs(text: string): number {
+  return /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(text) ? Date.parse(`${text.replace(' ', 'T')}Z`) : Date.parse(text);
+}
+/** The second the task was opened in: second-resolution rows written in that second count as after it. */
+export const openedFloor = (task: ProofTask): number => Math.floor(task.openedAt / 1000) * 1000;
+const excerpt = (text: string | null | undefined): string => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+const claim = (ctx: ProofContext, text: string): boolean => isStatusClaimOnly(text, { id: ctx.task.id, title: ctx.task.title });
+
+function ownRow(ctx: ProofContext, agentId: string, atMs: number): string | null {
+  if (agentId !== ctx.workerId) return 'was not made by the worker';
+  if (!(atMs >= openedFloor(ctx.task))) return 'was made before the task was opened';
+  return null;
+}
+
+type Resolver = (ctx: ProofContext, ref: string, input: ProofItemInput) => Facts | string;
+
+function delivery(ctx: ProofContext, ref: string): Facts | string {
+  const d = getDb().prepare(
+    `SELECT d.agent_id, d.tool, d.channel, d.recipient_id, d.recipient_display, d.conversation_id, d.outcome, d.created_at, d.detail,
+            m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text
+       FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
+      WHERE d.id = ?`,
+  ).get(ref) as { agent_id: string; tool: string; channel: string; recipient_id: string | null; detail: string | null;
+    display_kind: string | null; origin_intent: string | null; recipient_display: string | null; conversation_id: string | null;
+    outcome: string; created_at: string; text: string | null } | undefined;
+  if (!d) return '';
+  if (d.outcome !== 'delivered') return `was not delivered (its outcome is ${d.outcome})`;
+  if (ENGINE_SENT_TOOLS.has(d.tool) || d.tool.endsWith('-door') || d.origin_intent === START_ACK_ORIGIN_INTENT) {
+    return "is the engine's own line or acknowledgement, not the worker's message";
+  }
+  if ((NON_ANSWERING_DISPLAY_KINDS as readonly string[]).includes(d.display_kind ?? '')) return 'is a tool chip or working note, not a message';
+  const own = ownRow(ctx, d.agent_id, sqlTimeMs(d.created_at));
+  if (own) return own;
+  if (!deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
+  if (d.channel === 'a2a' && !handsOverWork(intentOf(d.detail) ?? intentOf(d.text))) return 'does not hand over the work (its intent is not an answer or a deliverable)';
+  if (d.text !== null && claim(ctx, d.text)) return 'is only a status claim, which is never proof';
+  return { channel: d.channel, recipient: d.recipient_display ?? d.recipient_id ?? 'the owner', at: d.created_at, excerpt: excerpt(d.text) };
+}
+
+/** The exit status an exec audit row records: 0, the code, or the reason it stopped. */
+function exitOf(result: string, detail: string | null): number | string {
+  if (result === 'success') return 0;
+  const code = /^exit (\d+)/.exec(detail ?? '');
+  return code ? Number(code[1]) : result === 'denied' ? 'refused before it ran' : (detail ?? 'failed').split(' | ')[0];
+}
+
+function command(ctx: ProofContext, ref: string): Facts | string {
+  const a = getDb().prepare(
+    "SELECT agent_id, target, result, detail, created_at FROM audit_log WHERE id = ? AND action_type = 'exec'",
+  ).get(ref) as { agent_id: string; target: string | null; result: string; detail: string | null; created_at: string } | undefined;
+  if (!a) return '';
+  const own = ownRow(ctx, a.agent_id, sqlTimeMs(a.created_at));
+  if (own) return own;
+  const exit = exitOf(a.result, a.detail);
+  if (ctx.outcome === 'finished' && exit !== 0) return `did not succeed (exit ${exit}), so it cannot prove a finished task`;
+  return { command: a.target ?? '', exit, output: excerpt(a.detail), at: a.created_at };
+}
+
+interface ReceiptRow { agent_id: string; tool: string; verified: number; basis: string; recipient: string | null; detail: string | null; created_at: string }
+const receiptRow = (ref: string): ReceiptRow | undefined => getDb().prepare(
+  'SELECT agent_id, tool, verified, basis, recipient, detail, created_at FROM tool_receipts WHERE id = ?',
+).get(ref) as ReceiptRow | undefined;
+
+/** The error a receipt's detail JSON carries, or ''. */
+function receiptError(detail: string | null): string {
+  try {
+    const e = (JSON.parse(detail ?? '{}') as { error?: unknown }).error;
+    return e === undefined || e === null || e === '' || e === false ? '' : excerpt(typeof e === 'string' ? e : JSON.stringify(e));
+  } catch { return ''; }
+}
+
+/** Messages to other agents are judged as deliveries (to the asker, handing over the work), never as receipts. */
+const AGENT_SEND_TOOLS: ReadonlySet<string> = new Set(['send_to_agent', 'broadcast_to_group']);
+
+function receipt(ctx: ProofContext, ref: string): Facts | string {
+  const r = receiptRow(ref);
+  if (!r) return '';
+  if (AGENT_SEND_TOOLS.has(r.tool)) return 'is a message to another agent, which proves the work only as a delivery to the asker';
+  const own = ownRow(ctx, r.agent_id, sqlTimeMs(r.created_at));
+  if (own) return own;
+  if (ctx.outcome === 'finished' && r.verified !== 1) return 'was not confirmed by the provider, so it cannot prove a finished task';
+  const error = receiptError(r.detail);
+  return { tool: r.tool, verified: r.verified, basis: r.basis, recipient: r.recipient ?? '', at: r.created_at, ...(error ? { error } : {}) };
+}
+
+function measure(ctx: ProofContext, ref: string): Facts | string {
+  if (!/^\d+$/.test(ref)) return '';
+  const db = getDb();
+  const ev = db.prepare("SELECT id, created_at FROM work_events WHERE id = ? AND work_id = ? AND kind = 'measured'")
+    .get(Number(ref), ctx.task.id) as { id: number; created_at: number } | undefined;
+  if (!ev) return '';
+  const newest = db.prepare("SELECT MAX(id) AS id FROM work_events WHERE work_id = ? AND kind = 'measured'").get(ctx.task.id) as { id: number };
+  if (newest.id !== ev.id) return `is not the task's newest reading (that is ${newest.id})`;
+  if (ev.created_at < ctx.task.openedAt) return 'was made before the task was opened';
+  const w = db.prepare('SELECT measure_json, measure_initial, measure_remaining FROM work WHERE id = ?').get(ctx.task.id) as
+    { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null };
+  let unit = 'items';
+  try { unit = String((JSON.parse(w.measure_json ?? '{}') as { unit?: string }).unit ?? 'items'); } catch { /* the count is the fact */ }
+  if (ctx.outcome === 'finished' && !measureReadsZero(ctx.task.id)) {
+    return `does not read 0 (${w.measure_remaining ?? 'no reading'} ${unit} left, from ${w.measure_initial ?? 'no reading'})`;
+  }
+  return { unit, left: w.measure_remaining ?? -1, initial: w.measure_initial ?? -1, at: ev.created_at };
+}
+
+function remainder(ctx: ProofContext, ref: string, input: ProofItemInput): Facts | string {
+  const reason = (input.facts?.reason ?? '').trim();
+  if (claim(ctx, ref)) return 'does not name what was left undone';
+  if (reason.length < MIN_REASON || claim(ctx, reason)) return `needs a reason of at least ${MIN_REASON} characters saying why it was left`;
+  return { reason };
+}
+
+function failure(ctx: ProofContext, ref: string): Facts | string {
+  const a = getDb().prepare('SELECT agent_id, action_type, target, result, detail, created_at FROM audit_log WHERE id = ?')
+    .get(ref) as { agent_id: string; action_type: string; target: string | null; result: string; detail: string | null; created_at: string } | undefined;
+  if (a) {
+    if (a.result !== 'denied' && a.result !== 'error') return 'did not fail';
+    return ownRow(ctx, a.agent_id, sqlTimeMs(a.created_at))
+      ?? { source: 'audit', action: a.action_type, target: a.target ?? '', result: a.result, error: excerpt(a.detail), at: a.created_at };
+  }
+  const r = receiptRow(ref);
+  if (!r) return '';
+  const error = receiptError(r.detail);
+  if (!error) return 'carries no error';
+  return ownRow(ctx, r.agent_id, sqlTimeMs(r.created_at)) ?? { source: 'receipt', action: r.tool, target: r.recipient ?? '', error, at: r.created_at };
+}
+
+/** The asker's own message after the task was opened. Its wording is never judged here: the decider
+ *  opens it and decides whether it withdraws the work. */
+function withdrawal(ctx: ProofContext, ref: string): Facts | string {
+  const m = getDb().prepare(
+    `SELECT agent_id, role, content, lane, channel, sender_id, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
+            inbound_meta, origin_intent, created_at FROM messages WHERE id = ?`,
+  ).get(ref) as { agent_id: string; role: string; content: string; lane: string; channel: string; sender_id: string | null;
+    source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
+    inbound_meta: string | null; origin_intent: string | null; created_at: number } | undefined;
+  if (!m) return '';
+  if (m.agent_id !== ctx.workerId || m.role !== 'user') return 'is not a message the worker received';
+  if (ctx.asker.sourceMessageId === ref) return 'is the request the task was opened for';
+  if (!(m.created_at > ctx.task.openedAt)) return 'was written before the task was opened';
+  if (!writtenByAsker(ctx.asker, m, ctx.task.openedAt)) return 'is not from the asker';
+  if (!m.content.trim()) return 'is empty';
+  return { from: m.source_agent_id ?? m.sender_id ?? 'the owner', at: m.created_at, excerpt: excerpt(m.content) };
+}
+
+function file(ctx: ProofContext, ref: string): Facts | string {
+  const w = getDb().prepare(
+    `SELECT MAX(created_at) AS at FROM audit_log
+      WHERE action_type = 'file_write' AND result = 'success' AND agent_id = ? AND target = ?`,
+  ).get(ctx.workerId, ref) as { at: string | null };
+  if (!w.at) return 'is a file the worker never wrote';
+  if (!(sqlTimeMs(w.at) >= openedFloor(ctx.task))) return 'was written before the task was opened';
+  const f = fileFacts(ctx.workerId, ref);
+  return f.ok ? { ...f.facts } : f.why;
+}
+
+const RESOLVERS: Record<ProofKind, Resolver> = { file, delivery, command, receipt, measure, remainder, failure, withdrawal };
+
+/** Resolve one item against its row, or say plainly why it does not resolve. */
+export function resolveItem(ctx: ProofContext, input: ProofItemInput): Resolution {
+  const ref = (input.ref ?? '').trim();
+  if (!Object.hasOwn(RESOLVERS, input.kind)) return { ok: false, why: 'is not a kind of proof the Dojo knows' };
+  if (CANT_BE_DONE_ONLY.has(input.kind) && ctx.outcome !== 'cant_be_done') return { ok: false, why: "is only for a can't be done hand-in" };
+  if (!ref) return { ok: false, why: 'names nothing' };
+  const out = RESOLVERS[input.kind](ctx, ref, input);
+  if (out === '') {
+    return { ok: false, why: /\s/.test(ref)
+      ? 'is free text, not a record: a status claim or a description is never proof'
+      : `does not resolve to any ${input.kind} record` };
+  }
+  return typeof out === 'string' ? { ok: false, why: out } : { ok: true, item: { kind: input.kind, ref, label: PROOF_LABELS[input.kind], facts: out } };
+}

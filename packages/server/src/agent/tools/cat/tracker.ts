@@ -44,7 +44,11 @@ import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
-import { emptyUpholdRefusal } from '../../../tracker/empty-uphold.js';
+import { proofFor } from '../../../work/done/proof.js';
+import { remainderOnRecord } from '../../../tracker/measure-gate.js';
+import { readLaterMessages } from '../../../memory/task-list-words.js';
+import { heldDeliveryLine } from '../../../tracker/owed-delivery.js';
+import { unvalidatedCloseExpr } from '../../../work/tracker-view.js';
 import { findOverrideRequest } from '../../../work/override-requests.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, repeatNumberError, trackerUpdateStatus,
@@ -102,6 +106,20 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
   }
   if (nums.size === 0) return '__INVALID__';
   return [...nums].sort((a, b) => a - b).join(',');
+}
+
+/** An uphold that nothing on record backs is refused with the facts, never a lean toward either verdict:
+ *  no proof (`proofFor`), no remainder named at the close, and no owner's words recorded on the task. An
+ *  override approval is its own close claim, so it is checked whether or not a close request is filed. */
+function unbackedUpholdRefusal(rawTaskId: string, opts: { override?: boolean } = {}): string | null {
+  const r = resolveTaskId(rawTaskId);
+  if (!r.ok) return null;   // the door gives its own error for an id it cannot find
+  const subject = getDb().prepare(`SELECT 1 AS y FROM work w WHERE w.id = ?${opts.override ? '' : ` AND ${unvalidatedCloseExpr('w')}`}`).get(r.id);
+  if (!subject || proofFor(r.id).length > 0 || remainderOnRecord(r.id) || readLaterMessages(r.id).length > 0) return null;
+  const held = heldDeliveryLine(r.id).replace(/^\n\s*/, '');
+  return 'Refused: nothing on record shows this work. No file the worker wrote, message to the asker, confirmed receipt '
+    + `or measure at 0 is on record for it, no remainder was named, and no owner's words are recorded. ${held ? `${held} ` : ''}`
+    + 'There is nothing to open that shows the work was done.';
 }
 
 const tableOfHandlers: ToolHandlerMap = {
@@ -786,8 +804,7 @@ const tableOfHandlers: ToolHandlerMap = {
     };
     if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
     else if (vkind === 'complete') {
-      // v3.5 field fix 3 (#6b): an uphold nothing on record backs is refused once per review, with the facts.
-      const refusal = vp.valid ? emptyUpholdRefusal(agentId, vp.task_id) : null;
+      const refusal = vp.valid ? unbackedUpholdRefusal(vp.task_id) : null;
       if (refusal) return { content: refusal, isError: true };
       content = await trackerMod.trackerValidateComplete(agentId, vp);
     }
@@ -843,7 +860,7 @@ const tableOfHandlers: ToolHandlerMap = {
     if (args.approve === true) {
       const req = findOverrideRequest(String(args.override_request_id).trim());
       if (req && req.status === 'pending' && isCompleteStatus(req.requestedStatus)) {
-        const refusal = emptyUpholdRefusal(agentId, req.taskId, { override: true });
+        const refusal = unbackedUpholdRefusal(req.taskId, { override: true });
         if (refusal) return { content: refusal, isError: true };
       }
     }
