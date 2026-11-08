@@ -289,9 +289,6 @@ const CARD_CLASSES: readonly CardClass[] = ['action', 'informational', 'progress
 
 /** Every `ownerCardFrame(` and `ownerProgressFrame('start'` call, in source order within its file. */
 const CARD_CENSUS: Record<string, CardSite[]> = {
-  'agent/decision-switch.ts': [
-    { cls: 'informational', what: 'the decision model now answers a question itself', why: 'nothing to do: if it gets worse the Dojo goes back to the rule by itself' },
-  ],
   'agent/local-model-fit.ts': [
     { cls: 'informational', what: "a local model's memory fit could not be checked when it was picked", why: 'nothing to do: it is checked at the first load and refused then if it does not fit' },
   ],

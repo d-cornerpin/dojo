@@ -13,15 +13,15 @@ import { kvBytesPerTokenOf } from './kv-bytes.js';
 import { STANDARD_WRITER_MODEL, STANDARD_DECISION_MODEL, standardModelRowId } from './local-standard.js';
 import { utilityDial, utilityNumCtx, utilityOutputCap, MIN_UTILITY_NUM_CTX } from '../agent/utility-dial.js';
 import { CHARS_PER_TOKEN } from '../memory/budget.js';
-import { writerCharsPerToken } from './token-density.js';
+import { MEASURED_CHARS_PER_TOKEN } from './token-density.js';
 import { standardTierModels } from '../router/tier-chain.js';
 
 /** The window, in tokens, of the Dojo writer's largest job (a leaf summary: its chunk plus its output),
  *  sized by the same `utilityNumCtx` the call itself is sized by. */
-export async function writerJobWindowTokens(configuredNumCtx: number | null, charsPerToken = writerCharsPerToken()): Promise<number> {
+export async function writerJobWindowTokens(configuredNumCtx: number | null): Promise<number> {
   const { getLeafChunkTokens, getLeafTargetTokens } = await import('../memory/compaction.js');
-  // t268 ruling 3: the chunk's characters (counted in the stored /4 dialect) are read at this box's density.
-  return utilityNumCtx({ inputChars: getLeafChunkTokens() * CHARS_PER_TOKEN, configuredNumCtx, charsPerToken,
+  // The chunk's characters (counted in the stored /4 dialect) are read at the writer's measured density.
+  return utilityNumCtx({ inputChars: getLeafChunkTokens() * CHARS_PER_TOKEN, configuredNumCtx, charsPerToken: MEASURED_CHARS_PER_TOKEN,
     outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, getLeafTargetTokens()) });
 }
 

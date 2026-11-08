@@ -1,5 +1,3 @@
-// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
-// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // v3.5 fix round 1 (B4, I-B4-1) — A SUMMARY THAT FAILS ITS CHECK AFTER THE ONE REWRITE IS NOT SENT TO ANY
 // OTHER WRITER. A failed check is a verdict on this span, not a writer that stopped answering, so the
 // placeholder replacer must not walk on to the next writer (it ended on the agent's own paid model).
@@ -61,7 +59,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (_u: string, init?: { body?: string }) => {
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
     const bad = state.summary.includes('PENDING') ? 0.93 : 0.04;
-    return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: 0.05 }, stated_current: { noul: bad } } });
+    return Response.json({ answers: { stated_current: { noul: bad } } });
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });

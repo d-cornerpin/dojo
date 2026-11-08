@@ -1,11 +1,7 @@
-// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
-// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
-// v3.5 B4, OWNER RULING 2026-10-20: "Check each summary against the decision model." Whoever writes a summary, the
-// decision model reads it against the rows it summarizes before the engine replaces those rows with it.
-// OR-AUDIT-ANSWERS (c) (owner, rulings audit #12): a failing summary is rewritten by the agent's own model before it is
-// kept, the check acts without waiting for measured accuracy, and no card is sent (the old "change the summarization
-// model" encouragement is gone with that setting). The writer is scripted; every
-// /v1/systemone call is a scripted fetch.
+// Owner rulings "Check each summary against the decision model" and "Redo bad summaries": whoever writes a summary,
+// the decision model reads it against the rows it summarizes before the engine replaces those rows with it, a failing
+// summary is rewritten once by the agent's own model, and no card is sent. The writer is scripted; every
+// /v1/systemone call is a scripted fetch (PENDING fails the check).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -35,13 +31,12 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { passMark, checkSummary } from '../summary-check.js';
+import { checkSummary } from '../summary-check.js';
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { CHARS_PER_TOKEN } from '../budget.js';
 import { unfenceExternal } from '../../tools/external-content.js';
 import { summaryCheckLine } from '../summary-check-ledger.js';
-import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
-import { getDecisionScoreItems } from '../../agent/decision-policy.js';
+import { compileDiagnosticReport } from '../../healer/diagnostic.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-summary-check';
@@ -65,12 +60,11 @@ beforeEach(() => {
   }
   // The decision model: a summary carrying PENDING describes work as still owed (the one question that acts).
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
-    if (url.endsWith('/api/ps')) return Response.json({ models: [] });   // t268: decide() sizes its timeout; not a decision
     decisions.asked++;
     if (!decisions.up) throw new Error('fetch failed: ECONNREFUSED');
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
     const pending = state.summary.includes('PENDING') ? 0.93 : 0.04;
-    return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: 0.06 }, stated_current: { noul: pending } } });
+    return Response.json({ answers: { stated_current: { noul: pending } } });
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });  
@@ -114,13 +108,13 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
   });
 
-  it('OR-AUDIT-ANSWERS (c): failures, isolated or repeating, on one writer or two, send no card', async () => {
+  it('failures, isolated or repeating, on one writer or two, send no card', async () => {
     writer.outputs = ['fine', 'PENDING a.', 'PENDING b.', 'PENDING c.', 'PENDING d.', 'PENDING e.', 'PENDING f.'];
     await write(); await write(); await write(); await write('writer-large');
     expect(cards.list).toEqual([]);
   });
 
-  it('I-B4-1: a summary that failed twice says so on its result, so no caller walks it to another writer', async () => {
+  it('a summary that failed twice says so on its result, so no caller walks it to another writer', async () => {
     writer.outputs = ['PENDING one.', 'PENDING two.'];
     const r = await write();
     expect(r.ok === false && r.checkFailed).toBe(true);
@@ -130,11 +124,11 @@ describe('a summary is checked against its source before it is kept', () => {
     writer.outputs = ['fine', 'PENDING x.', 'better', 'PENDING y.', 'PENDING z.'];
     await write(); await write(); await write();
     expect(summaryCheckLine()).toBe('Summary check (kept window): 3 checked, 1 kept as written, 1 kept after one rewrite, 1 left the rows whole, 0 unchecked (decision model unavailable).');
-    expect(getDecisionScoreItems()[0].detail).toContain('Summary check (kept window): 3 checked');
+    expect(compileDiagnosticReport().items.find((i) => i.code === 'summary_check')?.detail).toContain('Summary check (kept window): 3 checked');
   });
 });
 
-describe('NB-4: a source larger than the decision model\'s window is checked in parts, never cut', () => {
+describe('a source larger than the decision model\'s window is checked in parts, never cut', () => {
   it('every part fits the window with the summary; the parts together are the whole source; the verdicts combine', async () => {
     const seen: Array<{ rows: string; part?: string; sent: number }> = [];
     let open = 0; let most = 0;
@@ -147,68 +141,25 @@ describe('NB-4: a source larger than the decision model\'s window is checked in 
       open++; most = Math.max(most, open);
       await new Promise((r) => setTimeout(r, 5));
       open--;
-      // "dropped" is true of exactly one part (it holds a request the summary left out): the whole check fails on it.
-      return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: state.source_rows.includes('DROPPED-REQUEST') ? 0.9 : 0.05 }, stated_current: { noul: 0.05 } } });
+      // The summary reads as pending beside exactly one part: the whole check fails on it.
+      return Response.json({ answers: { stated_current: { noul: state.source_rows.includes('PENDING-PART') ? 0.9 : 0.05 } } });
     }));
     const window = await decisionWindowTokens();
     const row = (i: number): string => `[USER · the owner] row ${i} ${'x'.repeat(1000)}`;
-    const rows = Array.from({ length: Math.ceil((window * CHARS_PER_TOKEN * 2.5) / 1000) }, (_, i) => (i === 7 ? `${row(i)} DROPPED-REQUEST` : row(i)));
+    const rows = Array.from({ length: Math.ceil((window * CHARS_PER_TOKEN * 2.5) / 1000) }, (_, i) => (i === 7 ? `${row(i)} PENDING-PART` : row(i)));
     const source = rows.join('\n\n---\n\n');
     const r = await checkSummary(source, 'A plain summary.', AGENT);
     expect(seen.length).toBeGreaterThanOrEqual(3);
     for (const s of seen) expect(s.sent).toBeLessThan(window * CHARS_PER_TOKEN);
     expect(seen.map((s) => s.rows).join('\n---\n')).toBe(source);   // nothing was cut
     expect(seen.map((s) => s.part)).toEqual(seen.map((_, i) => `${i + 1} of ${seen.length}`));
-    expect(r.ok).toBe(false);
-    expect(r.dropped).toBe(0.9);
-    expect(most).toBe(1);   // fix round 5 (NB4-6): one part after another, never all at once against one clock
+    expect(r).toBe(0.9);
+    expect(most).toBe(1);   // one part after another, never all at once against one clock
   });
 
   it('a source that fits is asked once, whole, as before', async () => {
     const r = await checkSummary(SOURCE, 'The owner asked for the offsite budget.', AGENT);
     expect(decisions.asked).toBe(1);
-    expect(r.ok).toBe(true);
-  });
-});
-
-describe('I-B4-3: the pass mark', () => {
-  it('with no recorded data it is the binary decision boundary, 0.5', () => {
-    expect(passMark('invented')).toBe(0.5);
-  });
-
-  it('calibrated from recorded summary_check rows, and never a mark that fails everything', () => {
-    // Every recorded summary was in truth FINE, and the model's least-right decile is [0.0, 0.1]: the old
-    // "bottom of the weakest band" would have made the mark 0, failing every summary for ever.
-    for (const [i, p] of [0.02, 0.03, 0.05, 0.08, 0.6].entries()) {
-      recordShadow({ purpose: 'summary_check', question: 'invented', turnId: `c${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: p } });
-      recordTruth(`c${i}`, 'invented', false, 'test');
-    }
-    const mark = passMark('invented');
-    expect(mark).toBeGreaterThan(0.08);   // every truly fine one passes
-    expect(mark).toBeLessThanOrEqual(1);
-  });
-
-  it('N6: every recorded probability at 1.0 does not throw; the mark is 0.5', () => {
-    for (let i = 0; i < 3; i++) {
-      recordShadow({ purpose: 'summary_check', question: 'stated_current', turnId: `s${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: 1 } });
-      recordTruth(`s${i}`, 'stated_current', true, 'test');
-    }
-    expect(passMark('stated_current')).toBe(0.5);
-  });
-
-  it('with a clear separation in the record, the mark sits between the fine and the wrong', () => {
-    for (const [i, [p, bad]] of ([[0.1, false], [0.2, false], [0.35, true], [0.4, true]] as const).entries()) {
-      recordShadow({ purpose: 'summary_check', question: 'dropped', turnId: `d${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: p } });
-      recordTruth(`d${i}`, 'dropped', bad, 'test');
-    }
-    const mark = passMark('dropped');
-    expect(mark).toBeGreaterThan(0.2);
-    expect(mark).toBeLessThanOrEqual(0.35);
-  });
-
-  it('every check is recorded in the shadow log, so the record can grow', async () => {
-    writer.outputs = ['The owner asked for the offsite budget.'];
-    await write();
-    expect(db().prepare("SELECT COUNT(*) AS n FROM decision_shadow WHERE purpose = 'summary_check'").get()).toEqual({ n: 3 });
+    expect(r).toBe(0.04);
   });
 });

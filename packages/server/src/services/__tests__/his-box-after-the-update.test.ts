@@ -36,7 +36,7 @@ import path from 'node:path';
 import { ollamaRestartSettled } from '../ollama-model-limit.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { ollamaAtLeast } from '../ollama-version.js';
-import { announceDecidedSwitches, switchRecord } from '../../agent/decision-switch.js';
+import { onTheModel } from '../../agent/decision-policy.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { configRouter } from '../../gateway/routes/config.js';
@@ -73,11 +73,10 @@ async function expectSettingsTellTheTruth(): Promise<void> {
   expect(!!getDecisionProvider()).toBe(ollama.installed.has(DECISION));
 }
 
-/** The update's first boot, as `index.ts` runs it: the start hook (Ollama upkeep + the install once per version), then the four judgments. */
+/** The update's first boot, as `index.ts` runs it: the start hook (Ollama upkeep + the install once per version). */
 async function updateFirstBoot(): Promise<void> {
   await ensureStandardModelsAtBoot();
   await ollamaRestartSettled(); await standardInstallSettled();
-  announceDecidedSwitches();
 }
 
 beforeEach(async () => {
@@ -122,8 +121,8 @@ describe('his box, upgraded from 3.4.1', () => {
     expect(standardModelRowId('decision')).not.toBeNull();
     await expectSettingsTellTheTruth();
     expect((await settings()).note).toMatch(/^Both standard models are installed/);
-    // The four judgments the product puts on the model are recorded, and none of them was told as his choice
-    expect(switchRecord('inbound_routing', 'simple_chat')?.state).toBe('model');
+    // The judgments the owner put on the model now answer on it, and none of them was told as his choice
+    expect(onTheModel('inbound_routing/simple_chat')).toBe(true);
     expect(frames.list.map((f) => f.error ?? '').join('\n')).not.toMatch(/You chose/);
   });
 

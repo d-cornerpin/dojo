@@ -1,8 +1,9 @@
 -- 901: one path to done. Classifies every board task and project from its old records, rebuilds
 -- work_events (the hand-in and decision kinds) and work (the hold columns, the board-state CHECK,
 -- the dead columns gone), maps each row to the new states with history appended and no wake, drops
--- the retired sensei switches and the dead turn_artifacts link, and aborts unless every assertion
--- holds. The counts per class land in config.task_done_upgrade_last.
+-- the retired sensei switches, the dead turn_artifacts link and the decision model's unread records,
+-- and aborts unless every assertion holds.
+-- The counts per class land in config.task_done_upgrade_last.
 -- REQUIRES-COLUMN: work.status_before_pause
 
 CREATE TEMP TABLE _td_now AS SELECT CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) AS ms;
@@ -259,7 +260,12 @@ UPDATE config SET value = 'monitor', updated_at = datetime('now') WHERE key = 'h
 -- 9. A file's link to the delivery that carried it had no reader.
 ALTER TABLE turn_artifacts DROP COLUMN delivery_id;
 
--- 10. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
+-- 10. The decision model's shadow log, switch records, pinned modes, learned pace and density, and its check versions had no reader.
+DROP TABLE IF EXISTS decision_shadow;
+DELETE FROM config WHERE key LIKE 'decision_switch.%' OR key LIKE 'decision_mode.%' OR key LIKE 'decide_pace.%' OR key LIKE 'token_density.%';
+DELETE FROM healer_state WHERE scope IN ('summary_check_version', 'summary_check_kept');
+
+-- 11. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
 --     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.
 CREATE TEMP TABLE _td_assert (name TEXT PRIMARY KEY, ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _td_assert (name, ok) VALUES
@@ -290,7 +296,7 @@ INSERT INTO _td_assert (name, ok) VALUES
    (SELECT COUNT(*) FROM (SELECT class, n FROM _td_before EXCEPT
       SELECT m.class, COUNT(*) FROM _td_map m JOIN work w ON w.id = m.id AND w.state = m.to_state AND w.hold_kind IS m.hold_kind GROUP BY m.class)) = 0);
 
--- 11. The report, read once by the boot log.
+-- 12. The report, read once by the boot log.
 INSERT INTO config (key, value) VALUES ('task_done_upgrade_last', json_object(
   'at', (SELECT ms FROM _td_now),
   'classes', (SELECT json_group_object(class, n) FROM _td_before),

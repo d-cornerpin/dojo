@@ -1,9 +1,7 @@
 // ════════════════════════════════════════
-// The Dreamer's filler rule (spec A21): "is this message conversational filler?" — moved out of
-// `vault/maintenance.ts` with its patterns so the decision model can be asked alongside it (v3.5 C3) without a
-// 2,000-line file growing. The rule is exactly what it was. This module imports no decision code: during a
-// triage pass (`beginFillerPass` … `settleFiller`, `memory/shape-judgment.ts`) it only NOTES which short messages
-// the rule judged and what it said, and applies the verdicts the pass settled — none in `rule` and `shadow` mode.
+// The Dreamer's filler rule: "is this message conversational filler?". This module imports no decision code:
+// during a triage pass (`beginFillerPass` … `settleFiller`, `memory/shape-judgment.ts`) it only NOTES which short
+// messages the rule judged and what it said, and applies the verdicts the decision model gave in the pass before.
 // ════════════════════════════════════════
 
 // Conversational filler, acknowledgments. Drop the whole message if its

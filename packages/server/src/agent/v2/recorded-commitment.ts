@@ -153,12 +153,11 @@ export interface UncommittedPromiseInput {
   openedWorkThisTurn: () => readonly string[];
   /** t179: titles of the agent's board work still open from EARLIER turns. Absent: not consulted. */
   openBoardTitles?: () => readonly string[];
-  claimInText?: (rule: RecordedCommitmentClaim) => RecordedCommitmentClaim;   // v3.5 C1: the decision model's narrowing (`reply-claims.ts`)
 }
 
 /** The floor's whole decision. A stand-down carries its REASON so a red says which arm answered. */
 export function decideUncommittedPromise(input: UncommittedPromiseInput): UncommittedPromiseDecision {
-  const claim = (input.claimInText ?? ((c) => c))(detectRecordedCommitmentClaim({ responseText: input.responseText }));
+  const claim = detectRecordedCommitmentClaim({ responseText: input.responseText });
   if (!claim.claimed) return { fires: false, reason: 'no-claim-in-text' };
 
   const succeeded = (name: string): boolean => input.toolResultsThisTurn.some((r) => r.name === name && r.isError !== true);

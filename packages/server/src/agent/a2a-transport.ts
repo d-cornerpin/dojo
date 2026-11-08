@@ -627,7 +627,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       envelope.intent === 'FYI' &&
       targetIsPrimary &&
       senderIsSubAgent &&
-      await (await import('./v2/classifiers/inbound-routing.js')).deliverableJudged(target.id, envelope.fromAgent, envelope.payload, payloadLooksDeliverable(envelope.payload))
+      await (await import('./v2/classifiers/inbound-routing.js')).deliverableJudged(target.id, envelope.payload, payloadLooksDeliverable(envelope.payload))
     ) {
       effectiveIntent = 'DELIVERABLE';
       autoPromotedFromFyi = true;

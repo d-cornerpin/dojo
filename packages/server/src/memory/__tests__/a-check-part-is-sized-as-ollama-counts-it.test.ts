@@ -55,10 +55,10 @@ describe('the summary check over a source larger than one request', () => {
   it('a condensed summary over four long notes: every part is accepted and the verdict is recorded', async () => {
     const source = notes(4, 15_000);
     const summary = `Summary of the background notes in this span. ${'note1 '.repeat(1300)}`;
-    const c = await checkSummary(source, summary, AGENT, { background: true });
+    const c = await checkSummary(source, summary, AGENT);
     expect(refused).toEqual([]);
     expect(answered).toBeGreaterThan(1);   // it did need parts
-    expect(c.answers).not.toBeNull();
+    expect(c).not.toBeNull();
   });
 });
 
@@ -70,7 +70,7 @@ describe('decide() refuses, before dialling, a request Ollama would refuse', () 
     const bodyOf = (n: number): number => Buffer.byteLength(decideRequestBody(STANDARD_DECISION_MODEL.tag, { x: 'a'.repeat(n) }, Q));
     const x = 'a'.repeat(65_530 - bodyOf(0));
     expect(bodyOf(x.length)).toBe(65_530);
-    const r = await decide({ x }, Q, { purpose: 'sized_test', background: true, patienceMs: 5_000, onFailure: (f) => failures.push(f) });
+    const r = await decide({ x }, Q, { purpose: 'sized_test', onFailure: (f) => failures.push(f) });
     expect(r).toBeNull();
     expect(refused).toEqual([]);
     expect(failures).toEqual(['too_large']);

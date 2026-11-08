@@ -1,17 +1,12 @@
-// ════════════════════════════════════════════════════════════════════════════
-// v3.5 B4, fix round 4 (NB-4) — THE SUMMARY CHECK OVER A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW
-// (split from `summary-check.ts`): its parts, and the parts' verdicts as one.
-// ════════════════════════════════════════════════════════════════════════════
+// The summary check over a source larger than the decision model's window: the source in parts, never cut.
 
-import { MAX_DECISION_BODY_BYTES, decide, type Answer, type DecideOpts, type FailureClass, type Question } from '../agent/decide.js';
+import { MAX_DECISION_BODY_BYTES, decide, type Answer, type Question } from '../agent/decide.js';
 import { decideCountedBytes, fencedState } from '../agent/decide-sizing.js';
 import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
-// ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──
-// The window is `decisionWindowTokens()` — the derived tag's real window, the number the memory fit sets aside.
-// t268 ruling 2: a part fits that window counted at this box's density (`charsPerToken`, B5 measured ~2.5, not
-// 4) less the template slack every window carries (`NUM_CTX_MARGIN_TOKENS`), AND Ollama's 64 KiB body limit
-// (measured: HTTP 413), counted as Ollama counts them (`decideCountedBytes`; proof-fix P). A part is as many whole rows (the `---`
+// A part fits the decision model's window (the number the memory fit sets aside) counted at its measured density
+// less the template slack every window carries (`NUM_CTX_MARGIN_TOKENS`), AND Ollama's 64 KiB body limit, counted as
+// Ollama counts them (`decideCountedBytes`). A part is as many whole rows (the `---`
 // lines the callers join rows with) as fit beside the summary and the questions; a single row larger than that
 // is split by characters. Joined back with the same separator, the parts are exactly the source.
 const ROW_SEPARATOR = '\n---\n';
@@ -43,7 +38,7 @@ export function sourceParts(
     // One row larger than the room: split by characters (the longest slice that fits both), the last slice carried on.
     let rest = piece;
     while (!fits(rest.length, bodyBytes(rest))) {
-      // Fix round 1 (M-1): not even one character fits the bytes left: no parts (recorded unavailable), never a spin.
+      // Not even one character fits the bytes left: no parts (recorded unavailable), never a spin.
       if (bodyBytes(rest.slice(0, 1)) > byteRoom || bodyBytes(rest.slice(0, 2)) > byteRoom && /[\uD800-\uDBFF]/.test(rest[0])) return null;
       let n = Math.min(rest.length, charRoom);
       while (bodyBytes(rest.slice(0, n)) > byteRoom) n = Math.max(1, Math.min(n - 1, Math.floor((n * byteRoom) / bodyBytes(rest.slice(0, n)))));
@@ -58,27 +53,7 @@ export function sourceParts(
 }
 
 /**
- * The parts' verdicts as one (fix round 5, NB4-6: stated, not implied).
- *   · "dropped" and "stated_current": the HIGHEST part score. A request any one part holds and the summary left
- *     out was left out; a "pending" claim is in the summary whichever part is beside it. One part judged so fails
- *     the summary — that is the intent.
- *   · "invented" (the summary says what the source does not): the LOWEST part score. One part judging a claim
- *     invented does NOT fail the summary, because the claim may come from another part; it fails only when every
- *     part judges it invented. The known cost: a summary that draws on several parts can read as invented to each
- *     of them and fail. That is the safe direction (the rows stay whole, never a wrong record), and it is rare —
- *     leaf chunks are sized to the window, so a check in parts happens only at its edge.
- *   · any part unanswered → the whole check is unanswered (kept and logged 'unavailable', like a down model).
- */
-export function combineParts(answers: Array<Record<string, Answer> | null>): Record<string, Answer> | null {
-  if (answers.some((a) => a === null)) return null;
-  // Only the questions asked (fix round 1, M-3: a question held to the rule is not asked at all).
-  const asked = Object.keys(answers[0]!);
-  const noul = (q: string): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));
-  return Object.fromEntries(asked.map((q) => [q, { type: 'noul', noul: q === 'invented' ? Math.min(...noul(q)) : Math.max(...noul(q)) } as Answer]));
-}
-
-/**
- * A part the decision model refused as too large, in two (proof-fix S): at the row divider nearest its middle, else by
+ * A part the decision model refused as too large, in two: at the row divider nearest its middle, else by
  * characters (never between the two halves of one character). Joined back with the divider the halves are exactly the
  * part. Null when it is a single character: nothing smaller exists, so the splitting ends there.
  */
@@ -94,24 +69,23 @@ export function halvePart(part: string): [string, string] | null {
 }
 
 /**
- * One part through decide(), and (proof-fix S) a part the model refuses as too large (its HTTP 413, or the pre-send
+ * One part through decide(), and a part the model refuses as too large (its HTTP 413, or the pre-send
  * count) is split in two and the pieces are checked, each through decide() as any part is. A piece nothing smaller
  * exists for is unanswered, as ever. The splitting ends by itself: every piece is shorter than the part it came from,
  * and one unanswered piece makes the part unanswered, so the other is not asked.
  */
 export async function checkPart(
-  part: string, label: string | null, summary: string, questions: Record<string, Question>,
-  opts: (state: unknown, onFailure: (f: FailureClass) => void) => DecideOpts,
+  part: string, label: string | null, summary: string, questions: Record<string, Question>, agentId: string,
 ): Promise<Array<Record<string, Answer> | null>> {
   const s = label === null ? { source_rows: part, summary } : { source_rows: part, summary, source_part: label };
   let tooLarge = false;
-  const got = await decide(s, questions, opts(s, (f) => { tooLarge = f === 'too_large'; }));
+  const got = await decide(s, questions, { purpose: 'summary_check', agentId, onFailure: (f) => { tooLarge = f === 'too_large'; } });
   // Measured stop: when the request is too large even with NO source in it, the source is not what is too big.
   const emptied = { ...s, source_rows: '' };
   const halves = got === null && tooLarge && decideCountedBytes(emptied, questions) <= MAX_DECISION_BODY_BYTES ? halvePart(part) : null;
   if (!halves) return [got];
   const base = label ?? '1 of 1';
-  const first = await checkPart(halves[0], `${base}, first half`, summary, questions, opts);
+  const first = await checkPart(halves[0], `${base}, first half`, summary, questions, agentId);
   if (first.includes(null)) return first;
-  return [...first, ...await checkPart(halves[1], `${base}, second half`, summary, questions, opts)];
+  return [...first, ...await checkPart(halves[1], `${base}, second half`, summary, questions, agentId)];
 }

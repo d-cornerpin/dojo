@@ -1,8 +1,7 @@
-// proof-fix S — A PART THE DECISION MODEL REFUSES AS TOO LARGE IS SPLIT FURTHER, SO THE CHECK COMPLETES.
-// A later Ollama may count a request differently from the 93-byte rule proof-fix P measured (0.40.13). This fake
-// door refuses above a threshold that is NOT that rule (here: JSON(state) + JSON(questions) > 24,000 bytes, with
-// HTTP 413). Before the fix the refused part made the whole check `unavailable`; now the part is halved and its
-// pieces are checked. No real model is asked.
+// A PART THE DECISION MODEL REFUSES AS TOO LARGE IS SPLIT FURTHER, SO THE CHECK COMPLETES.
+// A later Ollama may count a request differently from the measured 93-byte rule. This fake door refuses above a
+// threshold that is NOT that rule (here: JSON(state) + JSON(questions) > 24,000 bytes, with HTTP 413); the refused
+// part is halved and its pieces are checked. No real model is asked.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -48,28 +47,22 @@ const rows = (n: number, chars: number): string => Array.from({ length: n }, (_,
 
 describe('a part the model refuses as too large is split and its pieces are checked', () => {
   it('a source with no row divider: the refused part is halved until accepted, and the verdict is recorded', async () => {
-    const c = await checkSummary(notes(4, 15_000), `Summary of the notes. ${'note1 '.repeat(200)}`, AGENT, { background: true });
+    const c = await checkSummary(notes(4, 15_000), `Summary of the notes. ${'note1 '.repeat(200)}`, AGENT);
     expect(refused.length).toBeGreaterThan(0);   // the model did refuse a part
     expect(answered).toBeGreaterThan(1);
-    expect(c.answers).not.toBeNull();
-    expect(c.answers!.invented).toMatchObject({ noul: 0.05 });
+    expect(c).toBe(0.05);
   });
 
   it('a source of whole rows: the same,', async () => {
-    const c = await checkSummary(rows(8, 9_000), 'A short summary.', AGENT, { background: true });
+    const c = await checkSummary(rows(8, 9_000), 'A short summary.', AGENT);
     expect(refused.length).toBeGreaterThan(0);
-    expect(c.answers).not.toBeNull();
-  });
-
-  it('a waited check (an agent asks) is split the same way', async () => {
-    const c = await checkSummary(notes(3, 15_000), 'A short summary.', AGENT);
-    expect(c.answers).not.toBeNull();
+    expect(c).not.toBeNull();
   });
 
   it('a piece that cannot be split smaller is recorded unavailable as before, and the splitting ends', async () => {
     always413 = true;
-    const c = await checkSummary(notes(2, 3_000), 'A short summary.', AGENT, { background: true });
-    expect(c.answers).toBeNull();
+    const c = await checkSummary(notes(2, 3_000), 'A short summary.', AGENT);
+    expect(c).toBeNull();
     expect(refused.length).toBeGreaterThan(0);
     expect(refused.length).toBeGreaterThan(3);   // it split down (today: one call per part, then unavailable)
     expect(refused.length).toBeLessThan(40);
@@ -78,22 +71,18 @@ describe('a part the model refuses as too large is split and its pieces are chec
 
 describe('splitting a refused part by characters', () => {
   it('never cuts between the two halves of one character: a source of emoji is checked and answered', async () => {
-    const c = await checkSummary('\u{1F600}'.repeat(14_000), 'A short summary.', AGENT, { background: true });
+    const c = await checkSummary('\u{1F600}'.repeat(14_000), 'A short summary.', AGENT);
     expect(refused.length).toBeGreaterThan(0);
-    expect(c.answers).not.toBeNull();
+    expect(c).not.toBeNull();
   });
 });
 
 describe('the split stops where the source is not what is too large', () => {
-  it('a summary that alone is over 64 KiB: one ask, no splitting (checkSummary never gets here: sourceParts finds no room)', async () => {
+  it('a summary that alone is over 64 KiB: refused before sending, no splitting (checkSummary never gets here: sourceParts finds no room)', async () => {
     const Q = { yes: { type: 'noul', instructions: 'Is it so?' } } as const;
-    let asks = 0;
-    const got = await checkPart('line one\n---\nline two', null, 'x'.repeat(70_000), Q, (_s, onFailure) => {
-      asks++;
-      return { purpose: 'sized_test', background: true, patienceMs: 5_000, onFailure };
-    });
+    const got = await checkPart('line one\n---\nline two', null, 'x'.repeat(70_000), Q, AGENT);
     expect(got).toEqual([null]);
-    expect(asks).toBe(1);
+    expect([refused.length, answered]).toEqual([0, 0]);
   });
 });
 

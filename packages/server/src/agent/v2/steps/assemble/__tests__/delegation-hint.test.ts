@@ -176,7 +176,7 @@ function runInject(text: string) {
   const mctx = {} as Record<string, unknown>;
   const messages: unknown[] = [];
   return injectDelegationHintAndAttachments(makeState(), {
-    turnCtx: {},
+
     agentId: 'harnessbot',
     turnNumber: 7,
     counterparty: { kind: 'user' } as never,

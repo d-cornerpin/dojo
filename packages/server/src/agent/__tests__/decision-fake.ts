@@ -1,8 +1,7 @@
-// Test kit for the lanes that ask the decision model alongside a rule (v3.5 Part C). Never a real model: the
-// decision provider is a row in an in-memory DB and every /v1/systemone request is a scripted fetch.
+// Test kit for the judgments the decision model answers. Never a real model: the decision provider is a row in an
+// in-memory DB and every /v1/systemone request is a scripted fetch.
 import type Database from 'better-sqlite3';
 import { vi } from 'vitest';
-import { recordShadow, recordTruth } from '../decision-shadow.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 export interface DecisionCall { questions: string[]; state: unknown }
@@ -33,33 +32,3 @@ export function scriptDecisions(answer: (name: string, state: unknown) => Record
 }
 
 export const yes = (p = 0.95): Record<string, unknown> => ({ noul: p });
-
-/**
- * Simulate the MEASURED accuracy that flips a yes/no question to `model` under B3's policy: 60 judged rows the
- * model answers right with confidence (30 true at 0.95, 30 false at 0.04) against a rule that always says false,
- * plus 8 near-coin-flip rows at 0.55 that make the 0.5–0.6 decile the model's weak band. Nothing is mocked: the real
- * score and the real policy read these rows.
- */
-export function proveNoul(purpose: string, question: string): void {
-  const seed = (i: number, truth: boolean, p: number): void => {
-    const turnId = `proof-${purpose}-${question}-${i}`;
-    recordShadow({ purpose, question, turnId, ruleSaid: false, modelSaid: { type: 'noul', noul: p } });
-    recordTruth(turnId, question, truth, 'test: measured accuracy');
-  };
-  for (let i = 0; i < 30; i++) { seed(i, true, 0.95); seed(100 + i, false, 0.04); }
-  for (let i = 0; i < 8; i++) seed(200 + i, i % 2 === 0, 0.55);
-}
-
-/**
- * The same for a `choice` question: the model names the truth (confidence 0.9) on 60 rows while the rule always says
- * `ruleAlways`, plus 6 rows at confidence 0.35 where it is right half the time (the 0.3–0.4 decile is its weak band).
- */
-export function proveChoice(purpose: string, question: string, truths: string[], ruleAlways: string): void {
-  const seed = (i: number, truth: string, said: string, confidence: number): void => {
-    const turnId = `proof-${purpose}-${question}-${i}`;
-    recordShadow({ purpose, question, turnId, ruleSaid: ruleAlways, modelSaid: { type: 'choice', choice: said, probabilities: { [said]: confidence }, confidence } });
-    recordTruth(turnId, question, truth, 'test: measured accuracy');
-  };
-  for (let i = 0; i < 60; i++) { const t = truths[i % truths.length]; seed(i, t, t, 0.9); }
-  for (let i = 0; i < 6; i++) { const t = truths[i % truths.length]; seed(100 + i, t, i % 2 === 0 ? t : `not-${t}`, 0.35); }
-}

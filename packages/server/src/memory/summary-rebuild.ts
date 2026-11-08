@@ -270,7 +270,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     }
     input = buildLeafInput(msgs);
     spanIds = msgs.map((m) => m.id);   // the check's key: this summary's own span (t268 fix round 2)
-    if (input.trim().length === 0 || !await (await import('./shape-judgment.js')).spanWorthJudged(flag.agentId, flag.id, input, proseChars(input) >= MIN_PROSE_CHARS)) {   // v3.5 C3: the model is asked alongside the 120-character floor
+    if (input.trim().length === 0 || proseChars(input) < MIN_PROSE_CHARS) {
       // Everything in the span is plumbing/tool traffic. Same deterministic
       // placeholder the live path writes for all-noise chunks. The raw rows
       // still exist in the messages table, so nothing is lost.

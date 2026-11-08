@@ -33,7 +33,8 @@
 // Cache: this decides summariser OUTPUT size. It is in no prompt prefix.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { CHARS_PER_TOKEN, effectiveDivisor, SUMMARY_SHARE } from './budget.js';
+import { CHARS_PER_TOKEN, SUMMARY_SHARE } from './budget.js';
+import { tokensAt } from '../services/token-density.js';
 import { laneLimit } from './lanes.js';
 import { newestNoteRoomTokens } from './summaries-lane.js';
 
@@ -94,9 +95,6 @@ export function leafKeepCap(contentBudgetTokens: number, label = 'conversation u
   return Math.max(1, Math.floor(tokensAt(roomChars, charsPerToken) / TARGET_SLACK));
 }
 
-/** Tokens of `text` at a writer's density (`services/token-density.ts`, t268: its own measured median; never above
- *  the stored-row dialect's 4, `effectiveDivisor`). Absent: the dialect itself. */
-export const tokensAt = (chars: number, charsPerToken?: number): number => Math.ceil(Math.max(0, chars) / effectiveDivisor(charsPerToken));
 export const textTokens = (text: string, charsPerToken?: number): number => tokensAt(text.length, charsPerToken);
 
 /** The ask for a MERGE of `peers` notes (header): what may be kept of it, TARGET_SLACK × ask, is (1 − share)

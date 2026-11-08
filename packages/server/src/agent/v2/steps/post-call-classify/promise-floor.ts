@@ -20,7 +20,6 @@ import { persistEngineSteer } from '../../engine-steer.js';
 // RC-19 door, which owns the enqueue and the durable row.
 import { steerFired } from '../../steer-queue.js';
 import { isForwardPromiseReply, isStandingPromiseReply, standingStateClaimSentence } from '../../ack-copy.js';
-import { replyClaim, replyClaimOf } from '../../reply-claims.js';   // v3.5 C1: a recognizer is the RULE; a proven decision model answers instead
 import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -122,9 +121,9 @@ export function runPromiseFloor(
   // its exemption is a READ rather than a write — the same receipts-not-prose rule pointed the
   // other way. "I checked the tracker just now" is not a check. Both promise classes keep
   // precedence, so every case the floor already fired on keeps its exact steer.
-  const forwardPromise = replyClaim(ctx, 'only_promises_to_start', isForwardPromiseReply(persistedContent));
-  const standingPromise = !forwardPromise && replyClaim(ctx, 'standing_promise', isStandingPromiseReply(persistedContent));
-  const standingStateClaim = !forwardPromise && !standingPromise ? replyClaimOf(ctx, 'asserts_board_state', standingStateClaimSentence(persistedContent), persistedContent ?? '') : null;
+  const forwardPromise = isForwardPromiseReply(persistedContent);
+  const standingPromise = !forwardPromise && isStandingPromiseReply(persistedContent);
+  const standingStateClaim = !forwardPromise && !standingPromise ? standingStateClaimSentence(persistedContent) : null;
   if (
     counterparty.kind === 'user' &&
     !isEngineTurn &&

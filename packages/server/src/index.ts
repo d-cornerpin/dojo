@@ -1000,7 +1000,7 @@ async function main(): Promise<void> {
   {
     void (async () => {
       try {
-        void import('./agent/decision-ask.js').catch((err) => logger.error('the decision seam could not be installed; every judgment stays with its rule', { error: err instanceof Error ? err.message : String(err) })); void import('./services/local-standard.js').then((m) => m.ensureStandardModelsAtBoot()).then(() => import('./agent/decision-switch.js')).then((m) => m.announceDecidedSwitches()).catch((err) => logger.warn('the product-decided judgments were not recorded', { error: err instanceof Error ? err.message : String(err) }));   // a download must not hold the backfill
+        void import('./agent/decision-ask.js').catch((err) => logger.error('the decision seam could not be installed; every judgment stays with its rule', { error: err instanceof Error ? err.message : String(err) })); void import('./services/local-standard.js').then((m) => m.ensureStandardModelsAtBoot()).catch((err) => logger.warn('the standard models were not ensured at boot', { error: err instanceof Error ? err.message : String(err) }));   // a download must not hold the backfill
         const { backfillRecommendedNumCtx } = await import('./services/num-ctx-calculator.js');
         await backfillRecommendedNumCtx();
       } catch (err) {

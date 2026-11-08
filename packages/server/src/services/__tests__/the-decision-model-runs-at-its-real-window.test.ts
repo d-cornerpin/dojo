@@ -16,7 +16,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { ensureStandardModels, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
 import { decisionWindowTokens, writerJobWindowTokens } from '../dojo-working-memory.js';
-import { B5_MEASURED_CHARS_PER_TOKEN } from '../token-density.js';
+import { MEASURED_CHARS_PER_TOKEN } from '../token-density.js';
 import { decide, type Question } from '../../agent/decide.js';
 import { checkSummary } from '../../memory/summary-check.js';
 import { unfenceExternal } from '../../tools/external-content.js';
@@ -56,7 +56,7 @@ beforeEach(() => {
       const bytes = Buffer.byteLength(init?.body ?? '');
       ollama.asked.push({ model: String(body.model), bytes, keys: Object.keys(body), state: body.state as Record<string, string> });
       if (bytes > 64 * 1024) return new Response('text and schema must not exceed 64 KiB', { status: 413 });
-      return Response.json({ answers: { invented: { noul: 0.1 }, dropped: { noul: 0.1 }, stated_current: { noul: 0.1 }, q: { noul: 0.2 } }, usage: { input_tokens: 10 } });
+      return Response.json({ answers: { stated_current: { noul: 0.1 }, q: { noul: 0.2 } }, usage: { input_tokens: 10 } });
     }
     return new Response('no route', { status: 404 });
   }));
@@ -73,9 +73,9 @@ describe('install makes the decision model\'s window real', () => {
     expect(made).toMatchObject({ model: STANDARD_DECISION_MODEL.windowTag, from: STANDARD_DECISION_MODEL.tag });
     expect(await decisionWindowTokens()).toBe(made.parameters.num_ctx);   // one number: the tag, the fit, the sizing
     // A full 64 KiB body at this box's density fits it; it is no larger than the writer's job (the check's text).
-    expect(made.parameters.num_ctx).toBeGreaterThanOrEqual(Math.ceil(64 * 1024 / B5_MEASURED_CHARS_PER_TOKEN));
+    expect(made.parameters.num_ctx).toBeGreaterThanOrEqual(Math.ceil(64 * 1024 / MEASURED_CHARS_PER_TOKEN));
     expect(made.parameters.num_ctx).toBeLessThanOrEqual(await writerJobWindowTokens(null));
-    await decide({ reply: 'Is it done?' }, Q, { purpose: 'probe', patienceMs: 60_000 });
+    await decide({ reply: 'Is it done?' }, Q, { purpose: 'probe' });
     expect(ollama.asked.map((a) => a.model)).toEqual([STANDARD_DECISION_MODEL.windowTag]);
   });
 
@@ -94,7 +94,7 @@ describe('install makes the decision model\'s window real', () => {
     ollama.createOk = false;
     await ensureStandardModels();
     expect(await decisionWindowTokens()).toBe(8_192);
-    await decide({ reply: 'x' }, Q, { purpose: 'probe', patienceMs: 60_000 });
+    await decide({ reply: 'x' }, Q, { purpose: 'probe' });
     expect(ollama.asked.map((a) => a.model)).toEqual([STANDARD_DECISION_MODEL.tag]);
     ollama.createOk = true;
     await ensureStandardModels();
@@ -105,10 +105,10 @@ describe('install makes the decision model\'s window real', () => {
 describe('decide()\'s requests fit that window and Ollama\'s 64 KiB body', () => {
   it('sends no num_ctx (Ollama ignores it), and never dials a body over 64 KiB', async () => {
     await ensureStandardModels();
-    await decide({ reply: 'x' }, Q, { purpose: 'probe', patienceMs: 60_000 });
+    await decide({ reply: 'x' }, Q, { purpose: 'probe' });
     expect(ollama.asked[0].keys).toEqual(['model', 'state', 'questions', 'keep_alive']);
     ollama.asked.length = 0;
-    expect(await decide({ reply: 'y'.repeat(70_000) }, Q, { purpose: 'probe', patienceMs: 60_000 })).toBeNull();
+    expect(await decide({ reply: 'y'.repeat(70_000) }, Q, { purpose: 'probe' })).toBeNull();
     expect(ollama.asked).toHaveLength(0);
   });
 
@@ -123,7 +123,7 @@ describe('decide()\'s requests fit that window and Ollama\'s 64 KiB body', () =>
     for (const a of ollama.asked) {
       expect(a.bytes).toBeLessThanOrEqual(64 * 1024);
       const chars = Object.values(a.state).reduce((n, v) => n + v.length, 0);
-      expect(chars / B5_MEASURED_CHARS_PER_TOKEN).toBeLessThan(window);
+      expect(chars / MEASURED_CHARS_PER_TOKEN).toBeLessThan(window);
     }
     expect(ollama.asked.map((a) => unfenceExternal(a.state.source_rows)).join('\n---\n')).toBe(source);
   });

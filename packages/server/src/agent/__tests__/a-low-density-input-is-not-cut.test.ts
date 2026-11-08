@@ -1,5 +1,5 @@
-// t268 ruling 3 — THE WRITER'S WINDOW COUNTS TOKENS AT THIS BOX'S MEASURED DENSITY, NOT AT 4 CHARACTERS.
-// B5 (`overhaul-plans/v35-writer-measure.md`): this box's traffic averages about 2.5 characters per token, so a
+// THE WRITER'S WINDOW COUNTS TOKENS AT ITS MEASURED DENSITY, NOT AT 4 CHARACTERS.
+// Measured: this traffic averages about 2.5 characters per token on the Dojo's own models, so a
 // window sized at 4 undercounts by ~1.6x; in 21 of 300 writes Ollama cut the prompt to half the window and the
 // writer lost its instructions and the start of the conversation. The stub below is an Ollama that counts the
 // prompt at 2.48 characters per token (B5's measured median) and cuts an over-window prompt the way B5 saw
@@ -29,7 +29,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache } from '../model.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
-import { B5_MEASURED_CHARS_PER_TOKEN, modelCharsPerToken, recordDensitySample } from '../../services/token-density.js';
+import { MEASURED_CHARS_PER_TOKEN, modelCharsPerToken } from '../../services/token-density.js';
 import { writerJobWindowTokens } from '../../services/dojo-working-memory.js';
 import { getLeafChunkTokens } from '../../memory/compaction.js';
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
@@ -89,58 +89,22 @@ const providerReadings = (): unknown =>
   mockDb.current!.prepare("SELECT measured_chars_per_token_prose AS prose, measured_chars_per_token AS dense FROM providers WHERE id = 'local-ollama'").get();
 
 describe('a long low-density input reaches the writer whole', () => {
-  it('on a box that has not measured itself, the window is sized at B5\'s measured density, and nothing is cut', async () => {
-    expect(modelCharsPerToken('m-std-writer')).toBe(B5_MEASURED_CHARS_PER_TOKEN);
+  it('the Dojo\'s writer\'s window is sized at its measured density, and nothing is cut', async () => {
+    expect(modelCharsPerToken('m-std-writer')).toBe(MEASURED_CHARS_PER_TOKEN);
     await summarize(CHUNK_CHARS);
     expect(seen).toHaveLength(1);
     expect(seen[0].numCtx).toBeGreaterThanOrEqual(seen[0].promptTokens);
     expect(seen[0].evaluated, 'the B5 failure shape: half the window cut').toBe(seen[0].promptTokens);
   });
 
-  // Fix round 1 (I-3): the figure is THIS MODEL's (its tokenizer), a median of recent calls, and it never feeds
-  // the provider's shared readings that local agents' turn estimates spend.
-  it('a call teaches THIS model its density from Ollama\'s prompt_eval_count; the provider\'s shared readings are untouched', async () => {
-    await summarize(CHUNK_CHARS);
-    expect(modelCharsPerToken('m-std-writer')).toBeCloseTo(CHUNK_CHARS / Math.ceil(CHUNK_CHARS / TRUE_CHARS_PER_TOKEN), 2);
-    expect(providerReadings()).toEqual({ prose: null, dense: null });
-  });
-
-  it('a robust central figure: one dense call does not move it; a box that IS denser does, and its next window grows', async () => {
-    await summarize(CHUNK_CHARS); await summarize(CHUNK_CHARS);
-    // Denser calls small enough for their window's output slack to hold (a larger one is cut, and a cut is not a sample).
-    tokenizer.cpt = 1.6; await summarize(12_000);
-    expect(modelCharsPerToken('m-std-writer')).toBeCloseTo(TRUE_CHARS_PER_TOKEN, 1);   // the median, not the minimum
-    tokenizer.cpt = 2.0; await summarize(12_000); await summarize(12_000);
-    expect(modelCharsPerToken('m-std-writer')).toBeCloseTo(2.0, 1);
-    seen.length = 0;
-    await summarize(CHUNK_CHARS);
-    expect(seen[0].numCtx).toBeGreaterThanOrEqual(CHUNK_CHARS / 2.0);
-  });
-
-  it('another model\'s calls never size this one, and a model B5 did not measure keeps 4 until it measures itself', async () => {
+  it('a model the Dojo did not measure is counted at the stored-row dialect\'s 4', () => {
     mockDb.current!.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
       VALUES ('m-agent-local', 'local-ollama', 'Agent local', 'agent-local:8b', '["chat"]', 131072, 8192, 1, datetime('now'), datetime('now'))`).run();
     expect(modelCharsPerToken('m-agent-local')).toBe(CHARS_PER_TOKEN);
-    tokenizer.cpt = 3.5;
-    await summarize(CHUNK_CHARS, 'm-agent-local');
-    expect(modelCharsPerToken('m-agent-local')).toBeCloseTo(3.5, 1);
-    expect(modelCharsPerToken('m-std-writer')).toBe(B5_MEASURED_CHARS_PER_TOKEN);
-  });
-
-  it('a prompt Ollama cut (B5\'s shape: window / 2 + 2) is not a sample', async () => {
-    tokenizer.cpt = 1.2;   // denser than the window was sized for: the stub cuts it
-    await summarize(CHUNK_CHARS);
-    expect(seen[0].evaluated).toBeLessThan(seen[0].promptTokens);
-    expect(modelCharsPerToken('m-std-writer')).toBe(B5_MEASURED_CHARS_PER_TOKEN);
-  });
-
-  it('a reading above the asserted 4 never shrinks a window below today\'s', () => {
-    for (let i = 0; i < 3; i++) recordDensitySample('m-std-writer', 60_000, 10_000);   // 6.0 chars per token
-    expect(modelCharsPerToken('m-std-writer')).toBe(CHARS_PER_TOKEN);
   });
 
   it('A4\'s reserve: the writer\'s job window holds a whole leaf chunk at the measured density', async () => {
     const window = await writerJobWindowTokens(null);
-    expect(window).toBeGreaterThanOrEqual(Math.ceil(CHUNK_CHARS / B5_MEASURED_CHARS_PER_TOKEN));
+    expect(window).toBeGreaterThanOrEqual(Math.ceil(CHUNK_CHARS / MEASURED_CHARS_PER_TOKEN));
   });
 });

@@ -26,11 +26,13 @@ import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { holdAndSteer } from './closeout-floors.js';
-import { DECLINE_OPENER_RE, replyClaim } from '../../reply-claims.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
+
+/** A reply that OPENS with an unambiguous self-decline. */
+const DECLINE_OPENER_RE = /^\s*[`*_>]*\s*(?:no\s+(?:reply|response)\s+(?:needed|necessary|required|warranted)\b|no\s+need\s+to\s+(?:reply|respond)\b|nothing\s+(?:to\s+)?(?:reply|respond|to\s+say)\b|i(?:'|’)?ll\s+hold\s+off\s+(?:on\s+)?repl|i\s+(?:won(?:'|’)?t|will\s+not|am\s+not\s+going\s+to)\s+(?:reply|respond)\b)/i;
 
 /** The no-reply sentinel, the decline-as-prose variant, and the ghosted-ask ladder. */
 export async function runNoReply(
@@ -95,8 +97,6 @@ export async function runNoReply(
   // no-reply, not a message to anyone, suppress + don't route, same as the
   // sentinel. Conservative: leading phrase only, no tool calls, so it never
   // swallows a substantive reply that merely mentions "no reply" mid-sentence.
-  // v3.5 C1: the rule is `reply-claims.ts`'s DECLINE_OPENER_RE. A suppression has no ledger row behind it, so
-  // the decision model, once proven, may take a rule hit away (its documented false positive) and never add one.
   const declineRead =
     persistedContent !== null &&
     result.toolCalls.length === 0 &&
@@ -109,7 +109,7 @@ export async function runNoReply(
     // ask. A bare [no-reply] (the agent's explicit, whole-message choice) is still
     // honored for chatter-prevention; only the FUZZY prose-decline is guarded.
     !triggerRow &&
-    DECLINE_OPENER_RE.test(persistedContent) && replyClaim(ctx, 'declines_to_reply', true);
+    DECLINE_OPENER_RE.test(persistedContent);
 
   // Field fix 3 audit round (#11): a prose decline was nulled as a no-reply on the rule's word list.
   // Now the agent is told how its line reads and decides: [no-reply] is its choice to make, and the

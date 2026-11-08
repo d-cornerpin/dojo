@@ -198,8 +198,7 @@ export async function recoverFromError(
   const agentId = state.agentId;
   // PHASE-4 T5: what the provider actually said, read ONCE and handed to every step below.
   // The model layer attaches it when it raises; anything else is classified here.
-  const facts = (await (await import('../provider-error-judgment.js')).judgeProviderError(   // v3.5 C3: the decision model is asked alongside, where the words were all there was
-    error instanceof AgentError && error.provider ? error.provider : classifyProviderError(error), fullErrText, agentId)).facts;
+  const facts = error instanceof AgentError && error.provider ? error.provider : classifyProviderError(error);
 
   // 0. Rate limit / overloaded that the background decay retry manager already
   //    owns (FA-A1). When the model layer hit a 429/529 on a PINNED model (not

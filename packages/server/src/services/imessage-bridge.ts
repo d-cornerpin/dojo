@@ -20,7 +20,7 @@ import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertMessageIfAbsent, sweepById, type NewMessage } from '../memory/message-store.js';
 import { replaceAskTitleFromModel } from '../work/ask-title.js';
-import { courtesyJudged } from '../agent/v2/classifiers/inbound-routing.js';
+import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { sanitizeForIMessage } from './imessage-sanitize.js';
 import { recordAtDoor, withOutboundAsync, withOutboundAsyncIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
@@ -1134,7 +1134,7 @@ export async function processInboundIMessage(
       wakeAgent &&
       !!senderRecord?.is_agent &&
       !!cleanedText &&
-      await courtesyJudged(primaryId, msgId, cleanedText);
+      isContentFreeCourtesy(cleanedText);
 
     if (dampCourtesy && senderRecord) {
       const markerId = uuidv4();

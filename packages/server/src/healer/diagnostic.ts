@@ -13,7 +13,7 @@
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
-import { getDecisionScoreItems } from '../agent/decision-policy.js';
+import { summaryCheckLine } from '../memory/summary-check-ledger.js';
 import { HEALER_WORKING_STUCK_MINUTES, DORMANT_THRESHOLD_DAYS } from '../agent/stuck-thresholds.js';
 // SWEEP CORE-2 item 2: the ONE budget owner and the ONE spend reader. See getBudgetStatus.
 import { getBudgets } from '../costs/budget.js';
@@ -871,6 +871,12 @@ function getModelName(modelId: string): string {
   } catch { return modelId; }
 }
 
+/** The summary check's running numbers, when anything was checked. */
+function summaryCheckItems(): DiagnosticItem[] {
+  const line = summaryCheckLine();
+  return line ? [{ severity: 'info', code: 'summary_check', title: 'The summary check', detail: line }] : [];
+}
+
 // ── Main Compiler ──
 
 export function compileDiagnosticReport(): DiagnosticReport {
@@ -890,7 +896,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...collect('budget', () => capItemsShowingOmissions(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
     ...collect('update check', () => capItemsShowingOmissions(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
     ...collect('automatic rollback', () => capItemsShowingOmissions(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback')),
-    ...collect('decision scores', () => getDecisionScoreItems()),   // v3.5: one line per question the decision model shadows (uncapped: the owner reads every one)
+    ...collect('summary check', () => summaryCheckItems()),
   ];
 
   // Sort: critical first, then warning, then info

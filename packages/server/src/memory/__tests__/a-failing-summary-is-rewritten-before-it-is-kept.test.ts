@@ -1,13 +1,8 @@
-// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
-// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
-// ════════════════════════════════════════════════════════════════════════════════════════
-// OR-AUDIT-ANSWERS (c), owner ruling on rulings audit #12, "Redo bad summaries": a summary that fails the accuracy
-// check is rewritten by the agent's own model before it is kept, and no card is shown. The check is taken out of
-// shadow for this: it acts on its verdict whatever the decision policy's mode. It never loops: when the rewrite also
-// fails, the rows stay whole behind the existing placeholder path and that span is tried again only on the next real
-// signal (new rows join it, or its writer changes). No timers, no counts.
-// The writer is scripted; every /v1/systemone call is a scripted fetch (INVENTED fails "invented").
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Owner rulings "Check each summary against the decision model" and "Redo bad summaries": a summary the decision model
+// reads as describing something as currently pending or owed is rewritten once by the agent's own model before it is
+// kept, and no card is shown. It never loops: when the rewrite also fails, the rows stay whole and that span is tried
+// again only on the next real signal (new rows join it, or its writer changes). The writer and the decision model are
+// scripted (PENDING fails the check).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -31,7 +26,6 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
-import { modeFor } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-redo-check';
@@ -47,27 +41,20 @@ beforeEach(() => {
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://127.0.0.1:47131', 'none', 1)").run();
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('m-decision', 'ollama-local', ?, ?, '["decision"]', 1)`).run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('writer-small', 'ollama-local', 'w', 'w', '["chat"]', 32000, 1)`).run();
-  // The decision model: INVENTED → the "invented" question fails; PENDING → "stated_current" fails.
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
-    return Response.json({ answers: {
-      invented: { noul: state.summary.includes('INVENTED') ? 0.93 : 0.04 },
-      dropped: { noul: 0.06 },
-      stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 },
-    } });
+    return Response.json({ answers: { stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 } } });
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });  
 
 let span = 0;
 const write = (spanIds?: string[]) => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds });
-const checks = (): Array<{ outcome: string; invented: number | null }> =>
-  db().prepare('SELECT outcome, invented FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; invented: number | null }>;
+const checks = (): Array<{ outcome: string }> => db().prepare('SELECT outcome FROM summary_checks ORDER BY id').all() as Array<{ outcome: string }>;
 
 
 describe('a summary that fails the accuracy check is rewritten before it is kept (no proof needed, no card)', () => {
-  it('the policy still reads shadow (nothing measured); the check acts anyway', async () => {
-    expect(modeFor('summary_check', 'stated_current')).toBe('shadow');
+  it('a failing summary is rewritten once, and the rewrite that passes is kept', async () => {
     writer.outputs = ['PENDING: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent is drafting it.'];
     const r = await write(['m-1', 'm-2']);
     expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget; the agent is drafting it.' });

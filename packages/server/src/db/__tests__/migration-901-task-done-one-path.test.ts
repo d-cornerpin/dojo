@@ -169,6 +169,12 @@ describe('migration 901 on a lived-in box', () => {
     expect(one("SELECT value FROM config WHERE key = 'healer_mode'").value).toBe('monitor');
   });
 
+  it('10b. the decision model\'s shadow log and its unread records are gone; a refused span is kept', () => {
+    expect(one("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'decision_shadow'")).toEqual({ n: 0 });
+    expect(all("SELECT key FROM config WHERE key IN ('decision_switch.memory_shape.filler', 'decision_mode.inbound_routing.deliverable', 'decide_pace.m-decision', 'token_density.m-decision')")).toEqual([]);
+    expect(all("SELECT scope FROM healer_state WHERE scope LIKE 'summary%' ORDER BY scope")).toEqual([{ scope: 'summary_span_refused' }]);
+  });
+
   it('11. a fresh install applies the whole chain on an empty database', () => {
     freshDoneDb();
     runMigrations();

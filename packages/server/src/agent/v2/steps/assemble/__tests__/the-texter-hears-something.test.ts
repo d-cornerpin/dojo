@@ -52,11 +52,11 @@ vi.mock('../../../../../config/platform.js', () => ({
 }));
 
 const decision = { multistep: false, name: null as string | null, source: 'heuristic_single', heuristic: { signals: [] } };
-// v3.5 C2: the step asks the routing seam (which wraps `detectMultistep` and asks the decision model beside it); this
-// unit pins what the step does with the DECISION, so the seam answers with the scripted one.
-vi.mock('../../../classifiers/inbound-routing.js', () => ({
+// This unit pins what the step does with the DECISION, so the classifier answers with the scripted one.
+vi.mock('../../../classifiers/multistep.js', async (original) => ({
+  ...await original<typeof import('../../../classifiers/multistep.js')>(),
   getMultistepConfig: () => ({ enabled: true, model: null, baseUrl: '', timeoutMs: 5000 }),
-  detectMultistepJudged: async () => decision,
+  detectMultistep: async () => decision,
 }));
 
 const infos: Array<{ msg: string }> = [];

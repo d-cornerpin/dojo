@@ -20,7 +20,7 @@
 import { createLogger } from '../logger.js';
 import { standardModelRowId } from '../services/local-standard.js';
 import { writerAssignedSummaries } from '../services/dojo-working-memory.js';
-import { writerCharsPerToken } from '../services/token-density.js';
+import { MEASURED_CHARS_PER_TOKEN } from '../services/token-density.js';
 import { utilityDial, utilityNumCtx, utilityOutputCap } from '../agent/utility-dial.js';
 import { noteWriterHadNoRoom, writerHadNoRoom } from './writer-no-room.js';
 import type { SummaryResult } from './summarize.js';
@@ -44,7 +44,7 @@ export async function refuseFallbackOverFreeMemory(
     return NO_ROOM;
   }
   unreadable = false;
-  const windowFor = (inputChars: number): number => utilityNumCtx({ inputChars, charsPerToken: writerCharsPerToken(),
+  const windowFor = (inputChars: number): number => utilityNumCtx({ inputChars, charsPerToken: MEASURED_CHARS_PER_TOKEN,
     outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, targetTokens), configuredNumCtx: null });
   const need = windowFor(systemPrompt.length + content.length);
   if (need <= free) return null;

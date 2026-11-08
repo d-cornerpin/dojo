@@ -10,7 +10,6 @@ import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getE
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 import { obligationShape } from '../work/obligation-memory.js';
 import { detectCredentialContent } from './credential-gate.js';
-import { entryShape } from '../memory/shape-judgment.js';
 
 /** The kinds a saved fact may have. The agent tool and the dashboard check against this one list. */
 export const VAULT_ENTRY_TYPES: readonly string[] = ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'];
@@ -216,8 +215,7 @@ export async function executeVaultRemember(
   // every non-obsolete vault entry on the dev box was run through it, and the only refusals
   // were the three defect lines themselves (corpus and result pinned in
   // `work/__tests__/obligation-memory.test.ts` §1, false positives: 0).
-  const shape = entryShape(agentId, content);   // v3.5 C3: the decision model is asked alongside the three shape rules
-  const obligationMarker = await shape.obligation(obligationShape(content));
+  const obligationMarker = obligationShape(content);
   if (obligationMarker) {
     return (
       `Refused: this reads as an OBLIGATION rather than a memory (matched: ${obligationMarker}). ` +
@@ -263,7 +261,7 @@ export async function executeVaultRemember(
   // Measured on CONTENT only (the engine date prefix is added AFTER this gate,
   // and future citation metadata rides free - FU-2).
   const exemptFromCompression =
-    verbatim || agentId === OWNER_VAULT_AGENT_ID || await shape.standing(standingAsWritten);
+    verbatim || agentId === OWNER_VAULT_AGENT_ID || standingAsWritten;
   if (!exemptFromCompression) {
     const cap = VAULT_ENTRY_CHAR_CAPS[type] ?? DEFAULT_ENTRY_CHAR_CAP;
     if (content.length > cap) {
@@ -276,7 +274,7 @@ export async function executeVaultRemember(
       );
     }
     const terminators = countSentenceTerminators(content);
-    if (await shape.prose(isProseShaped(content, cap, terminators))) {
+    if (isProseShaped(content, cap, terminators)) {
       return (
         `Reads like narrative prose for a [${type}] vault entry (${terminators} sentences). ` +
         `Vault entries are one telegraphic line, not a story. Rewrite it as a single compressed line: lead with the noun, ` +

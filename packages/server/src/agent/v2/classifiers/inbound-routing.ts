@@ -1,107 +1,32 @@
-// ════════════════════════════════════════════════════════════════════════════
-// v3.5 C2 — INBOUND ROUTING, ASKED ALONGSIDE THE RULES (spec A11–A15).
-//
-// Five judgments about a message that has just arrived, each still decided by its rule:
-//   simple_chat  (A12)  is it a simple conversational ask?          rule: `complexityClassifier`
-//   multi_step   (A13)  is it more than two actions or deliverables? rule: the heuristic, then the system model's JSON chat call
-//   delegates    (A14)  did the person hand the work to the agent's own agents?   rule: the delegation grammar
-//   pleasantry   (A11)  is an agent's iMessage nothing but a pleasantry?           rule: the whole-message pleasantry list
-//   deliverable  (A15)  is a sub-agent's FYI really a finished deliverable?         rule: URL, or completion word + artefact
-//
-// A12–A14 are about the same message on the same turn, so ONE `decide()` call (memoised on the turn's context)
-// answers all three; A11 and A15 are single questions asked where they arise. In `rule` and `shadow` mode every
-// function here returns its rule's answer and the multistep chat-JSON call is NOT removed (owner ruling): the
-// model's answer is logged beside it. Only in `model` mode does the model's verdict replace the rule's, and
-// only when it sits outside the question's measured weak band; inside the band, today's behaviour stands and
-// the heuristic (and, for multistep, the chat call) is still the fallback. A15 wakes the primary, so it takes
-// the strictest reading of the band.
-// TRUTH: none of the five has a trustworthy production signal (each answer causes what follows it), so each stays
-// with its rule in production and is scored only offline. The ruling, per question: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
-// ════════════════════════════════════════════════════════════════════════════
+// The two judgments about an arrived message the decision model answers, each falling to its rule:
+//   simple_chat   is it a simple conversational ask?                      rule: `complexityClassifier`
+//   deliverable   is a sub-agent's FYI a finished deliverable (it wakes the primary)?   rule: the caller's
 
 import type { Question } from '../../decide.js';
-import { judgment, subjectKey, type Judgment } from '../../decision-hooks.js';
+import { judgment } from '../../decision-hooks.js';
 import { complexityClassifier } from './complexity.js';
-import { isContentFreeCourtesy, isEngineAckLine } from './inbound-courtesy.js';
-import {
-  detectMultistep, getMultistepConfig, looksLikeEngineMessage, userExplicitlyAsksToCreateTracker,
-  multistepHeuristic, type MultistepConfig, type MultistepDecision,
-} from './multistep.js';
 
-export { getMultistepConfig };
+const SIMPLE_CHAT: Question = { type: 'noul', instructions: 'Is `message` a simple conversational ask: a greeting, thanks, an acknowledgement, or a one-line question or request that needs no plan?' };
+const DELIVERABLE: Question = { type: 'noul', instructions: 'Does `message` announce that a finished piece of work (a document, post, link, file or result) is ready for someone to receive?' };
 
-export const INBOUND_ROUTING_PURPOSE = 'inbound_routing';
-
-const QUESTIONS: Record<string, Question> = {
-  simple_chat: { type: 'noul', instructions: 'Is `message` a simple conversational ask: a greeting, thanks, an acknowledgement, or a one-line question or request that needs no plan?' },
-  multi_step: { type: 'noul', instructions: 'Does `message` ask for more than two distinct actions or deliverables?' },
-  delegates: { type: 'noul', instructions: 'Does `message` tell the assistant to hand the work to one of its own agents, helpers or team?' },
-  pleasantry: { type: 'noul', instructions: 'Is `message` nothing but a pleasantry, thanks or sign-off that carries no request, question or information?' },
-  deliverable: { type: 'noul', instructions: 'Does `message` announce that a finished piece of work (a document, post, link, file or result) is ready for someone to receive?' },
-};
-/** The questions this purpose asks (the truth-ruling census reads them). */
-export const INBOUND_ROUTING_QUESTION_NAMES: readonly string[] = Object.keys(QUESTIONS);
-const only = (...names: string[]): Record<string, Question> => Object.fromEntries(names.map((n) => [n, QUESTIONS[n]]));
-
-/**
- * The turn's one routing judgment (A12–A14): the first site to report starts the call, the rest join it. Its subject
- * is the message that started the turn (an ask's trigger row, else the turn's root), so every assemble loop, retry
- * or continuation of that turn is the same subject; only a turn with neither is keyed by what was said.
- */
-function routing(turnCtx: object, agentId: string, message: string): Judgment {
-  const root = (turnCtx as { root?: { sourceMessageId?: string | null; id?: string } | null }).root;
-  const subject = root?.sourceMessageId ?? root?.id ?? subjectKey(agentId, message);
-  return judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, subject, state: { message }, questions: only('simple_chat', 'multi_step', 'delegates') }, turnCtx);
+async function yesNo(question: string, agentId: string, message: string, asked: Question, rule: boolean): Promise<boolean> {
+  return (await judgment(question, { agentId, state: { message }, questions: { asked } }))?.asked ?? rule;
 }
 
-/** A12 — is this turn a quick conversational ask? */
-export async function isConversational(turnCtx: object, agentId: string, message: string): Promise<boolean> {
-  const rule = complexityClassifier(message).complexity === 'simple';
-  if (!message.trim()) return rule;
-  const said = await routing(turnCtx, agentId, message).alongside('simple_chat', rule);
-  return typeof said === 'boolean' ? said : rule;
-}
+/** Each turn is judged once, however many times it is assembled. */
+const conversational = new WeakMap<object, Promise<boolean>>();
 
-/** A14 — did the person route the work to the agent's own agents? `rule` is the grammar's answer. */
-export async function delegatesJudged(turnCtx: object, agentId: string, message: string, rule: boolean): Promise<boolean> {
-  const said = await routing(turnCtx, agentId, message).alongside('delegates', rule);
-  return typeof said === 'boolean' ? said : rule;
-}
-
-/**
- * A13 — `detectMultistep`, with the decision model asked alongside. In `model` mode the model's verdict stands in
- * for the rule's chat call (that call is skipped); inside the weak band the rule runs exactly as before.
- */
-export async function detectMultistepJudged(
-  turnCtx: object, query: string, agentId: string, config: MultistepConfig = getMultistepConfig(),
-): Promise<MultistepDecision> {
-  // The three early returns of `detectMultistep` are not judgments (off, an engine message, an explicit request).
-  const judgeable = config.enabled && !!agentId && !looksLikeEngineMessage(query) && !userExplicitlyAsksToCreateTracker(query);
-  if (!judgeable) return detectMultistep(query, agentId, config);
-  const say = routing(turnCtx, agentId, query);
-  if (say.modeOf('multi_step') === 'model') {
-    const heuristic = multistepHeuristic(query);
-    // The rule that remains is the heuristic floor: the chat call is what the model replaces.
-    const verdict = await say.alongside('multi_step', heuristic.decision === 'definitely_multi');
-    if (typeof verdict === 'boolean') return { multistep: verdict, name: null, source: verdict ? 'decision_multi' : 'decision_single', heuristic };
-    return detectMultistep(query, agentId, config);
+/** Is this turn a quick conversational ask? */
+export function isConversational(turnCtx: object, agentId: string, message: string): Promise<boolean> {
+  let said = conversational.get(turnCtx);
+  if (!said) {
+    const rule = complexityClassifier(message).complexity === 'simple';
+    said = message.trim() ? yesNo('inbound_routing/simple_chat', agentId, message, SIMPLE_CHAT, rule) : Promise.resolve(rule);
+    conversational.set(turnCtx, said);
   }
-  const rule = detectMultistep(query, agentId, config);
-  void say.alongside('multi_step', rule.then((d) => d.multistep, () => null));
-  return rule;
+  return said;
 }
 
-/** A11 — is an AGENT's iMessage (`subject`: its message row) nothing but a pleasantry, so no turn is taken? Our own ack lines never ask. */
-export async function courtesyJudged(agentId: string, subject: string, text: string): Promise<boolean> {
-  const rule = isContentFreeCourtesy(text);
-  if (isEngineAckLine(text)) return rule;
-  const said = await judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, subject, state: { message: text }, questions: only('pleasantry') }).alongside('pleasantry', rule);
-  return typeof said === 'boolean' ? said : rule;
-}
-
-/** A15 — is a sub-agent's FYI to the primary really a deliverable (so it wakes the primary)? STRICTEST reading of the band. */
-export async function deliverableJudged(agentId: string, from: string, payload: string, rule: boolean): Promise<boolean> {
-  const said = await judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, subject: subjectKey(from, agentId, payload), state: { message: payload }, questions: only('deliverable') })
-    .alongside('deliverable', rule, { strict: true });
-  return typeof said === 'boolean' ? said : rule;
-}
+/** Is a sub-agent's FYI to the primary really a deliverable, so it wakes the primary? */
+export const deliverableJudged = (agentId: string, payload: string, rule: boolean): Promise<boolean> =>
+  yesNo('inbound_routing/deliverable', agentId, payload, DELIVERABLE, rule);

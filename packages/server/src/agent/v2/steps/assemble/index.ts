@@ -352,7 +352,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   });
 
   await injectDelegationHintAndAttachments(state, {
-    turnCtx, agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages, roomTokens: ctx.allocation?.budgetTokens,
+    agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages, roomTokens: ctx.allocation?.budgetTokens,
   });
 
   const steer = runSteerCheckpoint(withHandBackFacts(state, turnCtx, agentId, turnNumber), {

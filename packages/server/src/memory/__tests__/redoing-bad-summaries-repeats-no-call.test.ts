@@ -1,5 +1,3 @@
-// Summary-check round (owner ruling 1): only "stated_current" acts, so the failing fixture is PENDING (a summary that
-// describes work as still owed); an INVENTED summary would now be a shadow verdict that decides nothing.
 // ════════════════════════════════════════════════════════════════════════════════════════
 // Re-review 2, S6: THE COST OF REDOING BAD SUMMARIES. With the check acting (OR-AUDIT-ANSWERS (c)), a failing span
 // costs four model calls (write, check, rewrite, check). A span that failed twice was held only until new rows joined
@@ -37,7 +35,6 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
-import { modeFor } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-s6-cost';
@@ -56,23 +53,17 @@ beforeEach(() => {
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('writer-other', 'ollama-local', 'o', 'o', '["chat"]', 32000, 1)`).run();
   decisionCalls.n = 0;
   db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES (?, 'A', 'writer-small', 'idle', '{}')").run(AGENT);
-  // The decision model: INVENTED → the "invented" question fails; PENDING → "stated_current" fails.
+  // The decision model: PENDING fails the check.
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
     if (String(_url).endsWith('/v1/systemone')) decisionCalls.n += 1;
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
-    return Response.json({ answers: {
-      invented: { noul: state.summary.includes('INVENTED') ? 0.93 : 0.04 },
-      dropped: { noul: 0.06 },
-      stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 },
-    } });
+    return Response.json({ answers: { stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 } } });
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });  
 
 let span = 0;
 const write = (spanIds?: string[]) => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds });
-const checks = (): Array<{ outcome: string; invented: number | null }> =>
-  db().prepare('SELECT outcome, invented FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; invented: number | null }>;
 
 
 

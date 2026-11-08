@@ -10,15 +10,14 @@
 //      IMPORTS only: the engine files ask the decision model at run time through the registry `agent/decision-hooks.ts`
 //      (which imports nothing), and an import walk cannot see a registry call. Section 5 closes that gap.
 //      Six edges are declared, not hidden (EXEMPT_EDGES, each argued): `decision-window.ts` imports the measured
-//      request-size CONSTANT from `decide.ts` (a number, never a call); the two doors into the B4 summary check and the
-//      three into the reply-claim floors' module (each consults the model about a summary or a reply, neither of which
-//      is a gate's input). A new edge must be argued there.
-//   2. DIRECT: no gate file imports any module that asks (the judgment modules, the shadow log, the policy, the hooks).
+//      request-size CONSTANT from `decide.ts` (a number, never a call), and the two doors into the summary check (it
+//      consults the model about a summary, which is no gate's input). A new edge must be argued there.
+//   2. DIRECT: no gate file imports any module that asks (the judgment modules, the policy, the hooks).
 //   3. THE LEAF: `decision-hooks.ts` imports nothing of the engine; `decision-ask.ts` is imported only by the server's boot.
 //   5. THE REGISTRY: the files that import `decision-hooks.ts` (the only run-time door to the model) are pinned by exact
 //      list, so a new importer is a visible edit here; no gate file is one, and the modules a gate reaches that import
 //      one are pinned too (DOORS, argued): a new door fails until it is argued.
-//   4. BEHAVIOUR: with a decision model installed and every judged question proven, the pure gates answer exactly as
+//   4. BEHAVIOUR: with a decision model installed, the pure gates answer exactly as
 //      they always did and no `/v1/systemone` request is made.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -34,13 +33,11 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { decisionAsksSettled } from '../decision-ask.js';
-import { installDecisionModel, proveNoul, scriptDecisions, yes } from './decision-fake.js';
+import '../decision-ask.js';
+import { installDecisionModel, scriptDecisions, yes } from './decision-fake.js';
 import { detectCredentialContent } from '../../vault/credential-gate.js';
 import { isPrivateAddress } from '../net-guard.js';
 import { isSudoLine, mentionsPrivilegeToken } from '../brokers/sudo-policy.js';
-import { INBOUND_ROUTING_PURPOSE } from '../v2/classifiers/inbound-routing.js';
-import { MEMORY_SHAPE_PURPOSE } from '../../memory/shape-judgment.js';
 import { ENGINE_STEPS_REL } from '../v2/__tests__/engine-sources.js';
 
 const SRC = fileURLToPath(new URL('../../', import.meta.url));
@@ -61,18 +58,13 @@ const GATES: Record<string, string[]> = {
 /** The decision code: what a gate must not reach. */
 const SINKS = new Set(['agent/decide.ts', 'agent/decision-ask.ts']);
 /** Modules that ASK (a gate must not import one even indirectly, and not at all directly). New judgment modules join by name. */
-const ASKERS = /(^|\/)(decide|decision-ask|decision-hooks|decision-policy|decision-shadow|decision-provider|inbound-routing|shape-judgment|provider-error-judgment|reply-claims|summary-check[\w-]*)\.ts$/;
+const ASKERS = /(^|\/)(decide|decision-ask|decision-hooks|decision-policy|decision-provider|inbound-routing|shape-judgment|reply-claims|summary-check[\w-]*)\.ts$/;
 /** Edges the walk does not follow, each argued. */
 const EXEMPT_EDGES: Array<{ from: string; to: string; why: string }> = [
   { from: 'services/decision-window.ts', to: 'agent/decide.ts', why: 'imports MAX_DECISION_BODY_BYTES, a measured byte constant (the 64 KiB limit of one request); it never calls decide(), and a number cannot consult a model.' },
   // The summary check (v3.5 B4, shipped before this census) consults the model about a SUMMARY. The gates reach it only
   // because they import the runtime that writes summaries; nothing it asks is a gate's input. Declared, not hidden.
   { from: 'memory/summarize.ts', to: 'memory/summary-check.ts', why: 'the one door every summary is written through asks the B4 summary check; a summary is not a gate\'s input.' },
-  // The reply-claim floors (v3.5 C1) ask the model what the agent's own REPLY claims. They run after a model call, inside
-  // the runtime the gates also import; a reply is never a gate's input (the ledger still decides what was sent or saved).
-  ...['reply-floors', 'no-reply', 'promise-floor'].map((f) => ({
-    from: `${ENGINE_STEPS_REL}/post-call-classify/${f}.ts`, to: 'agent/v2/reply-claims.ts', why: 'the nine reply-claim floors; a reply is no gate\'s input and the ledger still decides.',
-  })),
   { from: 'memory/out-of-view-fold.ts', to: 'memory/summary-check.ts', why: 'reads whether a summary was refused (a ledger read) from the B4 summary check; a summary is not a gate\'s input.' },
 ];
 
@@ -113,7 +105,7 @@ describe('the gate files exist and are the ones named', () => {
   });
   it('the sinks and the asker pattern match the real modules (a rename cannot blind the census)', () => {
     for (const f of SINKS) expect(fs.existsSync(path.join(SRC, f)), f).toBe(true);
-    for (const f of ['agent/decision-hooks.ts', 'agent/decision-policy.ts', 'agent/decision-shadow.ts', 'agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts', 'agent/provider-error-judgment.ts']) {
+    for (const f of ['agent/decision-hooks.ts', 'agent/decision-policy.ts', 'agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts']) {
       expect(fs.existsSync(path.join(SRC, f)), f).toBe(true);
       expect(ASKERS.test(f), f).toBe(true);
     }
@@ -148,7 +140,7 @@ describe('3. the leaf stays a leaf and the real seam is installed only by the bo
     expect(importsOf(path.join(SRC, 'agent/decision-hooks.ts'))).toEqual([]);
   });
   it('the modules that pair a rule with the decision model import the leaf, never `decide` or `decision-ask`', () => {
-    for (const f of ['agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts', 'agent/provider-error-judgment.ts']) {
+    for (const f of ['agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts']) {
       expect(importsOf(path.join(SRC, f)).map(rel).filter((r) => SINKS.has(r)), f).toEqual([]);
     }
   });
@@ -159,24 +151,19 @@ describe('3. the leaf stays a leaf and the real seam is installed only by the bo
 
 /** Every module that imports the registry `decision-hooks.ts` (the run-time door to the decision model), pinned. */
 const HOOK_IMPORTERS = [
-  'agent/decision-ask.ts', 'agent/provider-error-judgment.ts', 'agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts',
+  'agent/decision-ask.ts', 'agent/v2/classifiers/inbound-routing.ts', 'agent/v2/reply-claims.ts', 'memory/shape-judgment.ts',
 ];
 /**
  * Modules a gate reaches by import that themselves import a hook importer. Each is imported by the gate's neighbours for
- * delivery, writing or recovery, not for judging a gate's input: the A2A transport and the iMessage bridge deliver
- * messages (their routing questions only choose a route), the assemble steps build the next prompt, recovery names an
- * error's class for the retry cascade, and the memory writers shape notes and summaries. None decides a gate.
+ * delivery or upkeep, not for judging a gate's input: the A2A transport delivers messages (its routing question only
+ * chooses a route), the assemble step builds the next prompt, the reply floors read what a reply claims (the ledger still
+ * decides what was sent), and the Dreamer's upkeep triages filler. None decides a gate.
  */
 const DOORS = [
   'agent/a2a-transport.ts > agent/v2/classifiers/inbound-routing.ts',
-  'agent/v2/recovery.ts > agent/provider-error-judgment.ts',
-  'agent/v2/steps/assemble/delegation-and-attachments.ts > agent/v2/classifiers/inbound-routing.ts',
   'agent/v2/steps/assemble/index.ts > agent/v2/classifiers/inbound-routing.ts',
-  'agent/v2/steps/assemble/multistep-detection.ts > agent/v2/classifiers/inbound-routing.ts',
-  'memory/summary-rebuild.ts > memory/shape-judgment.ts',
-  'services/imessage-bridge.ts > agent/v2/classifiers/inbound-routing.ts',
+  `${ENGINE_STEPS_REL}/post-call-classify/reply-floors.ts > agent/v2/reply-claims.ts`,
   'vault/maintenance.ts > memory/shape-judgment.ts',
-  'vault/tools.ts > memory/shape-judgment.ts',
 ];
 const productionFiles = (dir = SRC): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
   e.isDirectory() ? (e.name === '__tests__' || e.name === 'node_modules' ? [] : productionFiles(path.join(dir, e.name)))
@@ -216,15 +203,13 @@ describe('5. the registry: the one run-time door to the decision model', () => {
   });
 });
 
-describe('4. a decision model installed and every judged question proven changes no gate\'s answer and is never called', () => {
+describe('4. a decision model installed changes no gate\'s answer and is never called', () => {
   beforeEach(() => {
     mockDb.current = new Database(':memory:');
     runMigrations(mockDb.current);
     installDecisionModel(mockDb.current);
-    for (const q of ['simple_chat', 'multi_step', 'delegates', 'pleasantry', 'deliverable']) proveNoul(INBOUND_ROUTING_PURPOSE, q);
-    for (const q of ['standing_instruction', 'prose_shaped', 'obligation', 'filler', 'worth_summary']) proveNoul(MEMORY_SHAPE_PURPOSE, q);
   });
-  afterEach(async () => { await decisionAsksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+  afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
   it('the credential patterns, the net guard\'s private ranges and the sudo detectors', () => {
     const calls = scriptDecisions(() => yes(0.0));   // a model that would wave everything through

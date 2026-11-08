@@ -189,5 +189,11 @@ export function seedLivedInBox(now = Date.now()): Record<string, string[]> {
     doneDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, 'true')").run(k);
   }
   doneDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('healer_mode', 'off')").run();
+  // The decision model's unread records.
+  doneDb().prepare("INSERT INTO decision_shadow (purpose, question, turn_id, rule_said, created_at) VALUES ('inbound_routing', 'multi_step', 'x', 'false', 1)").run();
+  for (const k of ['decision_switch.memory_shape.filler', 'decision_mode.inbound_routing.deliverable', 'decide_pace.m-decision', 'token_density.m-decision']) {
+    doneDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, '[]')").run(k);
+  }
+  doneDb().prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('summary_check_version', 'k', 1), ('summary_check_kept', 'k', 1), ('summary_span_refused', 'k', 1)").run();
   return ids;
 }
