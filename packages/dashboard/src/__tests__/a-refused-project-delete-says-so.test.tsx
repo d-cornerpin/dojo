@@ -101,9 +101,6 @@ beforeEach(() => {
     ],
   } as never);
   m.getAgents.mockResolvedValue({ ok: true, data: [] } as never);
-  // Failure keeps the hygiene panel unrendered; the permissive `[]` would
-  // crash it (it reads named fields off its data).
-  m.getTrackerHygiene.mockResolvedValue({ ok: false, error: 'x' } as never);
   m.getTasks.mockImplementation((filter) =>
     Promise.resolve({
       ok: true,

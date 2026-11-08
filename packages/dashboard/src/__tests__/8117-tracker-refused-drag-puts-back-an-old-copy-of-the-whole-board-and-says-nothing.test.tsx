@@ -69,7 +69,6 @@ beforeEach(() => {
   const m = mocked();
   m.getProjects.mockResolvedValue({ ok: true, data: [{ id: 'p1', title: 'Alpha', status: 'active' }] } as never);
   m.getAgents.mockResolvedValue({ ok: true, data: [] } as never);
-  m.getTrackerHygiene.mockResolvedValue({ ok: false, error: 'x' } as never);
   m.getTasks.mockResolvedValue({ ok: true, data: [A, B] } as never);
 });
 afterEach(() => { vi.clearAllMocks(); });
@@ -84,16 +83,16 @@ describe('a refused card move', () => {
     const cols = () => Array.from(container.querySelectorAll('.kcol')) as HTMLElement[];
     const colOf = (label: string) => cols().find((c) => c.textContent?.includes(label))!;
 
-    fireEvent.drop(colOf('In Progress'), { dataTransfer: { getData: () => 'tA' } });
-    await waitFor(() => expect(colOf('In Progress').textContent).toContain('Card A'));
+    fireEvent.drop(colOf('Working'), { dataTransfer: { getData: () => 'tA' } });
+    await waitFor(() => expect(colOf('Working').textContent).toContain('Card A'));
 
     act(() => { emitFrame('tracker:task_updated', { data: { ...B, title: 'Card B new title' } }); });
     await screen.findByText('Card B new title');
 
     await act(async () => { answer({ ok: false, error: 'not allowed' }); });
 
-    await waitFor(() => expect(colOf('On Deck').textContent).toContain('Card A'));
-    expect(colOf('In Progress').textContent).not.toContain('Card A');
+    await waitFor(() => expect(colOf('Open').textContent).toContain('Card A'));
+    expect(colOf('Working').textContent).not.toContain('Card A');
     expect(screen.getByText('Card B new title')).toBeTruthy();
     expect(screen.queryByText('Card B old title')).toBeNull();
     expect(toastStub.current!.calls).toContainEqual({ level: 'error', message: 'not allowed' });

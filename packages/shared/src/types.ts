@@ -562,9 +562,7 @@ export interface Task {
   projectId: string | null;
   title: string;
   description: string | null;
-  /** T18: `cancelled` is the second TERMINAL outcome (spine `abandoned`), distinct from
-   *  `fallen`. It renders in the same board column with its own word — see
-   *  `dashboard/src/lib/task-status.ts`, which owns that rule. */
+  /** Wire keys; the words the owner reads are in `dashboard/src/lib/task-status.ts`. */
   status: 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'fallen' | 'cancelled';
   /** Working (or Open) work on standby, with its reason. A hold is not a status: the task still
    *  finishes by being handed in and decided. */
@@ -572,6 +570,8 @@ export interface Task {
   holdReason: string | null;
   assignedTo: string | null;
   assignedToName: string | null;
+  /** The assignee id names no agent, or a terminated one. */
+  assigneeGone: boolean;
   createdBy: string;
   priority: 'high' | 'normal' | 'low';
   stepNumber: number | null;
@@ -609,11 +609,6 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
-  // 1 = PM (or user) has blessed the close. 0 = awaiting validation.
-  completeValidated: 0 | 1;
-  // 5-minute escalation: timestamp when the engine asked the user about
-  // an unvalidated transition. NULL until the sweep fires.
-  validationEscalatedAt: string | null;
   // Phase B.1 reasoning surface. Goal = what success looks like (set at
   // task creation), result = what the agent says it did, evidence = the
   // claims/files/tool-call refs the agent offered to back it up.

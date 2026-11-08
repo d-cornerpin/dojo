@@ -23,8 +23,8 @@
 // THE ONE REAL REASON FOR THE FOLD IS ANSWERED, NOT DELETED. `tracker/schema.ts:381-386`
 // (commit `632cadd`) records it: "the board only renders the six legacy task statuses … storing
 // a literal 'cancelled' on a task would make it disappear from the board." That constraint is
-// real and §4 is its test: a cancelled row is VISIBLE, in the terminal column, labelled with
-// its own word. The board is fixed first; only then does the word become storable.
+// real and the dashboard's `the-board-shows-six-columns-with-the-owners-words` is its test: a
+// cancelled row is visible, in the Closed column, labelled with its own word. The board is fixed first; only then does the word become storable.
 //
 // SCOPE NOTE, honest: existing `failed` rows are NOT migrated. The four July FX.n4 rows the
 // round-3 investigation examined were genuine failures and stay `fallen`/Failed.
@@ -70,9 +70,6 @@ import { trackerUpdateStatus, trackerListActive } from '../tools.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { statusToState, stateToStatus } from '../../work/tracker-view.js';
 import { isTerminalTaskStatus } from '../../agent/tool-helpers.js';
-import {
-  columnKeyForStatus, terminalOutcomeLabel, KANBAN_COLUMN_KEYS,
-} from '../../../../dashboard/src/lib/task-status';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'a1';
@@ -214,30 +211,3 @@ describe('§3 terminality is not a list of two words any more', () => {
 // test is the record of that decision. What T18 fixes is the LABEL those rows carry when they
 // are read (the board, the detail page, the tool's own vocabulary), not their absence here.
 // ════════════════════════════════════════════════════════════════════════════════════════
-
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — THE BOARD. This is the constraint `632cadd` recorded, and it is the reason the fold
-// existed: a literal "cancelled" USED to vanish from the kanban. It does not any more.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§4 a cancelled row is visible on the board, with its own word', () => {
-  it('THE NO-VANISHING TEST: cancelled resolves to a real column', () => {
-    const col = columnKeyForStatus('cancelled');
-    expect(col, 'a cancelled task in NO column is the exact bug 632cadd avoided').not.toBeNull();
-    expect(KANBAN_COLUMN_KEYS).toContain(col!);
-  });
-
-  it('cancelled and fallen share ONE column and are labelled differently', () => {
-    expect(columnKeyForStatus('cancelled')).toBe(columnKeyForStatus('fallen'));
-    expect(terminalOutcomeLabel('fallen')).toBe('Failed');
-    expect(terminalOutcomeLabel('cancelled')).toBe('Cancelled');
-    expect(terminalOutcomeLabel('complete')).toBeNull();
-  });
-
-  it('every other status still resolves to its own column, unchanged', () => {
-    for (const s of ['on_deck', 'in_progress', 'complete', 'fallen'] as const) {
-      expect(columnKeyForStatus(s), s).toBe(s === 'cancelled' ? 'fallen' : s);
-    }
-  });
-});

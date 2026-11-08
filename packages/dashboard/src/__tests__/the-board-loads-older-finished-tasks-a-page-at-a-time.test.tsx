@@ -1,6 +1,6 @@
 // v3.5 field fix 3, re-review 2 S4: the board loads its FINISHED tasks a page at a time.
 //
-// The server pages the finished columns (Complete, Fallen / Cancelled) newest first and says whether an
+// The server pages the finished columns (Done, Closed) newest first and says whether an
 // older page exists (`closedHasOlder`). The board shows what it was given and, when there is more, the
 // existing small button (`btn btn--sm`) at the foot of those columns asks for the page before, with the
 // cursor of the oldest finished task it holds. Nothing older is ever fetched unasked.
@@ -48,7 +48,6 @@ beforeEach(() => {
   const m = mocked();
   m.getProjects.mockResolvedValue({ ok: true, data: [{ id: 'p1', title: 'Alpha', status: 'active' }] } as never);
   m.getAgents.mockResolvedValue({ ok: true, data: [] } as never);
-  m.getTrackerHygiene.mockResolvedValue({ ok: false, error: 'x' } as never);
 });
 afterEach(() => { vi.clearAllMocks(); });
 

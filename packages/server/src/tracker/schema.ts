@@ -86,8 +86,6 @@ interface TaskRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
-  complete_validated: number;
-  validation_escalated_at: string | null;
   goal: string | null;
   result: string | null;
   evidence_json: string | null;
@@ -118,14 +116,14 @@ function mapProjectRow(row: ProjectRow): Project {
   };
 }
 
-function resolveAgentName(agentId: string | null): string | null {
-  if (!agentId) return null;
+/** The assignee's name, and whether that agent is gone (missing or terminated), from one lookup. */
+function assigneeOf(agentId: string | null): { name: string | null; gone: boolean } {
+  if (!agentId) return { name: null, gone: false };
   try {
-    const db = getDb();
-    const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-    return agent?.name ?? agentId;
+    const agent = getDb().prepare('SELECT name, status FROM agents WHERE id = ?').get(agentId) as { name: string; status: string } | undefined;
+    return { name: agent?.name ?? agentId, gone: !agent || agent.status === 'terminated' };
   } catch {
-    return agentId;
+    return { name: agentId, gone: false };
   }
 }
 
@@ -137,6 +135,7 @@ function mapTaskRow(row: TaskRow): Task {
     dependsOn = [];
   }
 
+  const assignee = assigneeOf(row.assigned_to);
   return {
     id: row.id,
     projectId: row.project_id,
@@ -146,7 +145,8 @@ function mapTaskRow(row: TaskRow): Task {
     hold: row.hold_kind ?? null,
     holdReason: row.hold_reason ?? null,
     assignedTo: row.assigned_to,
-    assignedToName: resolveAgentName(row.assigned_to),
+    assignedToName: assignee.name,
+    assigneeGone: assignee.gone,
     createdBy: row.created_by,
     priority: row.priority as Task['priority'],
     stepNumber: row.step_number,
@@ -171,8 +171,6 @@ function mapTaskRow(row: TaskRow): Task {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
-    completeValidated: (row.complete_validated ? 1 : 0) as 0 | 1,
-    validationEscalatedAt: row.validation_escalated_at ?? null,
     goal: row.goal ?? null,
     result: row.result ?? null,
     evidence: parseEvidence(row.evidence_json),

@@ -59,7 +59,6 @@ const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 30
 
 beforeEach(() => {
   resetFrames();
-  mocked().getTrackerHygiene.mockResolvedValue({ ok: false, error: 'x' });
 });
 afterEach(() => { vi.clearAllMocks(); });
 

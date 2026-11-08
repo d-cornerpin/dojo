@@ -8,10 +8,8 @@
 // The trail is ONE event kind, `audit`, with the entry's own kind inside the payload. That is
 // the load-bearing decision and the migration's header carries the full argument: the trail's
 // entry kinds collide BY NAME with spine event kinds (`transition`, `poke`,
-// `user_verdict_request`) and several of those names are read by LIVE PREDICATES
-// (`lastEntryInto` inside `validatedExpr`, `awaitingUserVerdictExpr`, the poke ladder). An
-// audit line must not be able to answer a predicate that decides whether work counts as
-// validated. `kind='audit'` is read here and nowhere else, which is what makes that safe.
+// `user_verdict_request`), so an audit line must never answer a predicate over spine events.
+// `kind='audit'` is read here and nowhere else, which is what makes that safe.
 
 import { getDb } from '../db/connection.js';
 import type { WorkEventKind } from './event-kinds.js';

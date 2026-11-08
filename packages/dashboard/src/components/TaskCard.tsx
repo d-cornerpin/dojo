@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { Task } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
-import { formatShortDateTime, formatTimeSince } from '../lib/dates';
+import { formatDateShort, formatShortDateTime, formatTimeSince, parseUtc } from '../lib/dates';
 import { terminalOutcomeLabel } from '../lib/task-status';
 
 interface TaskCardProps {
@@ -18,10 +18,8 @@ const priorityLabels: Record<string, string> = {
   low: 'Low',
 };
 
-// `next_run_at`, `paused_until` and `updated_at` all arrive as Z-LESS UTC text (`msToText`,
-// `work/tracker-view.ts:189`). Both formatters live in `lib/dates.ts` and parse through
-// `parseUtc`; parsing them with a bare `new Date()` read them as local time and put every
-// "Next:" line on this card off by the box's UTC offset (UX-REPAIR T9).
+// Instants arrive as Z-less UTC text; every read goes through `lib/dates.ts`.
+const DORMANT_MS = 14 * 24 * 60 * 60 * 1000;
 
 const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -64,17 +62,15 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
     setConfirmDelete(false);
   };
 
-  // Only show the "actively being worked on" animation when the assigned
-  // agent is ACTUALLY working right now — not just because the task status
-  // is in_progress (which can persist after the agent finishes or errors).
+  // The working animation shows only while the assigned agent is in a turn right now.
   const isActive = task.status === 'in_progress' && !!agentIsWorking;
   const isBlocked = task.hold === 'blocked';
   const isPaused = task.hold === 'paused';
   // Paused and complete cards read as dimmed in the prototype.
   const isDim = isPaused || task.status === 'complete';
   const outcomeLabel = terminalOutcomeLabel(task.status);
-
-  const awaitingValidation = task.status === 'complete' && task.completeValidated === 0;
+  const movedAt = parseUtc(task.updatedAt);
+  const isDormant = task.status === 'in_progress' && !task.hold && !!movedAt && Date.now() - movedAt.getTime() >= DORMANT_MS;
 
   // The repeat line (e.g. "Every weekday · 13 runs") sits in .kcard__sub.
   let repeatLine: string | null = null;
@@ -94,10 +90,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
         <span className="pill pill--norm">{priorityLabel}</span>
       </div>
 
-      {/* T18: the terminal column holds two OUTCOMES — failed, and cancelled by choice — so
-          the card says which one it is. Without this the shared column would be the old
-          mislabel wearing a different hat. `terminalOutcomeLabel` returns null for every
-          status whose column header already says it. */}
+      {/* A Closed card says whether it could not be done or was cancelled. */}
       {outcomeLabel && <div className="kcard__sub">{outcomeLabel}</div>}
 
       {/* Next-run line, only when waiting on a schedule and not paused. */}
@@ -116,19 +109,8 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
         </div>
       )}
 
-      {/* Awaiting-validation warning. Disappears the moment PM (or the user) validates. */}
-      {awaitingValidation && (
-        <div
-          className="kcard__warn"
-          title={
-            task.validationEscalatedAt
-              ? `Awaiting validation since ${task.updatedAt}. Engine has asked the user.`
-              : `Awaiting validation by PM since ${task.updatedAt}.`
-          }
-        >
-          {'⚠'} Awaiting validation
-        </div>
-      )}
+      {isDormant && <div className="kcard__warn">No activity since {formatDateShort(task.updatedAt)}</div>}
+      {task.assigneeGone && <div className="kcard__warn">Agent no longer exists</div>}
 
       <div className="kcard__foot">
         {task.assignedTo ? (

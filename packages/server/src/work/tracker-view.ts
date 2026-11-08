@@ -195,59 +195,8 @@ export function tsToMs(text: string | null | undefined): number | null {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 4 — THE TWO-KEY FACTS, WHICH ARE NOW ROWS
+// 4: HAND-IN, WORKING ORDER AND THE ROW'S OWN EVENTS
 // ════════════════════════════════════════════════════════════════════════════════
-//
-// `legacy_tasks` carried eight columns for the two-key contract: three `*_validated` flags,
-// `revert_count`, `awaiting_user_verdict` + `user_verdict_requested_at`, and
-// `validation_escalated_at` + `validation_thread_id`. Migration `137` deliberately did NOT
-// move them (T8a report §2.3b): research 19 §1c makes them `adjudications` rows, and
-// `work/store.ts` already writes that table — the verdict is a ROW, the count is a COUNT.
-//
-// The expressions below are that re-expression, and they are MECHANICAL: same fact, same
-// answer, different store. The POLICY that changes what the facts MEAN — the two-key trigger
-// as migration `138`, the ladder rekey — is T8c's and is not here.
-
-/**
- * WHERE this row last entered a state, as a position on its own event log: the
- * `work_events.id` of the newest `transition` whose `to` is that state, or NULL when the log
- * holds none (a row born in the state, or migrated without its history).
- *
- * ── t142: AN ID, NOT AN INSTANT ──
- * ⟨TOMBSTONE⟩ This was `MAX(e.created_at)` and every caller compared it against another
- * table's clock. A millisecond tie then read in the wrong direction (a verdict filed for the
- * PREVIOUS episode counted for the new one), which `work/override-requests.ts` had already
- * written down as the law this codebase keeps relearning: "Ordering is by `work_events.id`,
- * never by `created_at` … a sequence exists here, so a clock is the wrong instrument."
- * requirement preserved: "the newest entry into this state" is the same row it always was;
- * only the unit it is returned in changed, and every caller compares in that unit.
- *
- * `stateSql` is a SQL expression, so a caller can ask about a literal state (`'blocked'`) or
- * about the row's CURRENT state (`w.state`).
- */
-export const lastEntryEventIdExpr = (a: string, stateSql: string): string =>
-  `(SELECT MAX(e.id) FROM work_events e`
-  + ` WHERE e.work_id = ${a}.id AND e.kind = 'transition'`
-  + `   AND json_extract(e.payload, '$.to') = ${stateSql})`;
-
-/**
- * The system closers, mirrored from `store.ts:SYSTEM_CLOSERS` as SQL. Kept as a literal
- * rather than imported-and-joined because this is a SQL fragment, and a drift between the
- * two lists is caught by `__tests__/two-key-completion.test.ts`, which asserts the roles
- * `transition()` actually stamps.
- */
-const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
-
-/**
- * `<state>_validated`: 1 when an authority upheld the CURRENT claim, scoped on the event log to at or
- * after the row last entered that state (`adjudications.event_seq`, migration 189c). For `done` a
- * system closer's receipt is not a verdict, so those roles are excluded.
- */
-export const validatedExpr = (a: string, state: WorkState): string =>
-  `(CASE WHEN EXISTS (SELECT 1 FROM adjudications adj`
-  + ` WHERE adj.work_id = ${a}.id AND adj.claim_state = '${state}' AND adj.verdict = 'upheld'`
-  + (state === 'done' ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
-  + `   AND adj.event_seq >= COALESCE(${lastEntryEventIdExpr(a, `'${state}'`)}, 0)) THEN 1 ELSE 0 END)`;
 
 /** Board work handed in and waiting for its decision (`work/done/`), as 1/0. */
 export const handedInExpr = (a: string): string => `(CASE WHEN ${a}.state = 'handed_in' THEN 1 ELSE 0 END)`;
@@ -284,11 +233,6 @@ export const WORK_EVENT = {
 
 const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
   `(SELECT MAX(e.${col}) FROM work_events e WHERE e.work_id = ${a}.id AND e.kind = '${kind}')`;
-
-/** `validation_escalated_at`: the newest owner ask's instant (the stall ladder's card), for DISPLAY
- *  (the dashboard's "user has been asked" label). */
-export const validationEscalatedAtExpr = (a: string): string =>
-  msToText(lastEvent(a, WORK_EVENT.validationEscalated));
 
 /** `revert_count` — a COUNT of thrown-back claims since the last reset, never a maintained
  *  integer. `work/store.ts:revertCount()` is the same count without the reset window; this
@@ -353,8 +297,6 @@ export const taskRowColumns = (): string => `SELECT
   ${msToText('work.opened_at')} AS created_at,
   ${msToText('work.updated_at')} AS updated_at,
   ${msToText('work.closed_at')} AS completed_at,
-  ${validatedExpr('work', 'done')} AS complete_validated,
-  ${validationEscalatedAtExpr('work')} AS validation_escalated_at,
   work.goal AS goal,
   work.result AS result,
   work.evidence_json AS evidence_json

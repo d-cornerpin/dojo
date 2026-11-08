@@ -1226,24 +1226,6 @@ export const decideTask = async (
   });
 };
 
-// Phase D: tracker hygiene + telemetry.
-export interface TrackerHygiene {
-  validateOutcomes: Array<{ from_entity: string; rejects: number; validates: number }>;
-  smellFlags: Array<{ category: string; count: number }>;
-  elevated: Array<{
-    id8: string;
-    title: string;
-    status: string;
-    revert_count: number;
-    last_smell_flag: string | null;
-  }>;
-  pmCost: Array<{ modelId: string | null; calls: number; cost_24h: number | null }>;
-}
-
-export const getTrackerHygiene = async (): Promise<ApiResponse<TrackerHygiene>> => {
-  return request<TrackerHygiene>(`/tracker/hygiene`);
-};
-
 export const createTask = async (data: CreateTaskRequest): Promise<ApiResponse<{ taskId: string }>> => {
   return request<{ taskId: string }>('/tracker/tasks', {
     method: 'POST',

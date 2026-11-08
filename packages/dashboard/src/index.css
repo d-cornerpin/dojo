@@ -3712,9 +3712,9 @@
 .dojo3-stage .kcol__head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; padding: 0 3px; }
 .dojo3-stage .kcol__title { font: 600 13px/1 var(--dojo3-font-ui); color: var(--dojo3-ink); }
 .dojo3-stage .kcol--progress .kcol__title { color: var(--dojo3-indigo); }
-.dojo3-stage .kcol--paused   .kcol__title { color: var(--dojo3-purple); }
+.dojo3-stage .kcol--waiting  .kcol__title { color: var(--dojo3-purple); }
 .dojo3-stage .kcol--complete .kcol__title { color: var(--dojo3-green-ink); }
-.dojo3-stage .kcol--blocked  .kcol__title { color: var(--dojo3-amber-deep); }
+.dojo3-stage .kcol--closed   .kcol__title { color: var(--dojo3-amber-deep); }
 .dojo3-stage .kcol__count { font: 500 9.5px/1 var(--dojo3-font-mono); padding: 3px 7px; border-radius: 999px; background: rgba(255,252,246,.5); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22); color: var(--dojo3-ink-3); }
 .dojo3-stage .kcard { padding: 12px 13px; }
 .dojo3-stage .kcard + .kcard { margin-top: 10px; }

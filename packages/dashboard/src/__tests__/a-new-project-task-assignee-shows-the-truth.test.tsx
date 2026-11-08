@@ -109,7 +109,6 @@ beforeEach(() => {
     data: [{ id: 'a1', name: 'Helper', status: 'idle', agentType: 'standard' }],
   } as never);
   mocked().getTasks.mockResolvedValue({ ok: true, data: [] } as never);
-  mocked().getTrackerHygiene.mockResolvedValue({ ok: false, error: 'x' } as never);
   mocked().createProject.mockResolvedValue({ ok: true, data: { projectId: 'p', taskIds: [] } } as never);
 });
 afterEach(() => { vi.clearAllMocks(); });

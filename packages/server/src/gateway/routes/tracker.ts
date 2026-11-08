@@ -1,10 +1,7 @@
 import { Hono } from 'hono';
 import { createProject, getProject, listProjects, createTask, getTask, listTasksPage, updateTask, closeProjectAndOpenTasks, resolveTaskId, formatResolveError, setTaskStatusResult, broadcastTaskSettled } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
-import {
-  taskScope, projectScope, revertCountExpr,
-  STATE_TO_STATUS_SQL, type TrackerStatus,
-} from '../../work/tracker-view.js';
+import { taskScope, projectScope, type TrackerStatus } from '../../work/tracker-view.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../../work/next-run.js';
 import { armScheduleOnOwnerSave } from '../../tracker/finished-task-schedule.js';
@@ -18,7 +15,7 @@ import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
-import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
+import { getPrimaryAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
 import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('tracker-routes');
@@ -289,101 +286,6 @@ trackerRouter.get('/tasks/:id/log', async (c) => {
   }
 });
 
-// GET /hygiene — Phase D: tracker hygiene + telemetry summary.
-// Aggregates validate rates by entity, smell-flag frequency, override counts,
-// revert counts, and recent gaming signals. Dashboard renders this as a panel.
-trackerRouter.get('/hygiene', async (c) => {
-  try {
-    const { getDb } = await import('../../db/connection.js');
-    const db = getDb();
-
-    // Validation outcomes per adjudicator (rejects vs blesses) over the last 7 days.
-    // PHASE-2 T10G: read from `adjudications`, the verdict record itself. The old statement
-    // inferred these rates by string-matching `action_taken LIKE '%valid=true%'` on trail rows
-    // labelled `transition` — the mislabel RULING 10 named (migration `146` has the numbers).
-    const validateOutcomes = db.prepare(`
-      SELECT by_agent AS from_entity,
-             SUM(CASE WHEN verdict = 'rejected' THEN 1 ELSE 0 END) as rejects,
-             SUM(CASE WHEN verdict = 'upheld' THEN 1 ELSE 0 END) as validates
-      FROM adjudications
-      WHERE created_at > (unixepoch('now') - 7 * 86400) * 1000
-      GROUP BY by_agent
-    `).all() as Array<{ from_entity: string; rejects: number; validates: number }>;
-
-    // Smell flag counts by reason category (rough cluster) over last 7 days.
-    const smellFlags = db.prepare(`
-      SELECT
-        CASE
-          WHEN reason LIKE '%poke%' THEN 'poke-dodge'
-          WHEN reason LIKE '%thrash%' THEN 'pause-resume thrash'
-          ELSE 'other'
-        END as category,
-        COUNT(*) as count
-      FROM (SELECT json_extract(payload, '$.reason') AS reason FROM work_events
-             WHERE kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'smell_flag'
-               AND created_at > (unixepoch('now') - 7 * 86400) * 1000)
-      GROUP BY category
-    `).all() as Array<{ category: string; count: number }>;
-
-    // Tasks currently elevated: high revert_count or awaiting verdict.
-    const elevated = db.prepare(`
-      SELECT substr(w.id, 1, 8) as id8, w.title AS title,
-             ${STATE_TO_STATUS_SQL('w.state')} AS status,
-             ${revertCountExpr('w')} AS revert_count,
-             w.last_smell_flag AS last_smell_flag
-      FROM work w
-      WHERE ${taskScope('w')}
-        AND (${revertCountExpr('w')} >= 2 OR w.last_smell_flag IS NOT NULL)
-      ORDER BY revert_count DESC, w.updated_at DESC
-      LIMIT 20
-    `).all();
-
-    // Per-model PM-call cost over last 24h (Phase D cost telemetry).
-    // audit_log.target stores the model name on model_call rows. PM agent
-    // id is config-driven (default 'pm', user-customizable via setup) —
-    // don't hardcode a specific user's PM id here.
-    //
-    // THE COMPARISON IS AGAINST THE RAW COLUMN, NOT A FUNCTION OF IT (t112, 2026-10-05).
-    // This read used to ask `datetime(created_at) > datetime('now','-1 day')`. Wrapping the
-    // indexed column makes that leg NON-SARGABLE: `idx_audit_log_agent_created
-    // (agent_id, created_at)` can seek the agent, then SQLite evaluates `datetime()` on every
-    // one of that agent's rows instead of seeking into a 24h window of them — so the cost
-    // grows with the PM's whole history rather than with one day of it. MEASURED by
-    // `db/__tests__/the-hot-audit-reads-take-their-index.test.ts` on a 200,000-row fixture:
-    // 13.6-18.5 ms/call wrapped against ~0 sargable, and the plan loses `created_at>?`.
-    //
-    // The wrapper bought nothing. Every one of the seven writers that INSERT into this table
-    // supplies `datetime('now')`, i.e. `YYYY-MM-DD HH:MM:SS`, which is already
-    // lexicographically ordered — so a direct text compare against a bound in that same
-    // format answers the identical question. That identity is asserted, not assumed: the
-    // clause file above runs both spellings over the fixture and requires equal rows.
-    const pmCost = db.prepare(`
-      SELECT target as modelId,
-             COUNT(*) as calls,
-             ROUND(COALESCE(SUM(cost), 0), 4) as cost_24h
-      FROM audit_log
-      WHERE agent_id = ?
-        AND action_type = 'model_call'
-        AND created_at > datetime('now', '-1 day')
-      GROUP BY target
-    `).all(getPMAgentId());
-
-    return c.json({
-      ok: true,
-      data: {
-        validateOutcomes,
-        smellFlags,
-        elevated,
-        pmCost,
-      },
-    });
-  } catch (err) {
-    logger.error('GET /hygiene failed', { error: err instanceof Error ? err.message : String(err) });
-    return c.json({ ok: false, error: 'failed to compute hygiene metrics' }, 500);
-  }
-});
-
-
 // POST /tasks — create standalone task
 trackerRouter.post('/tasks', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -577,9 +479,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
     }
 
     if (Object.keys(updates).length > 0) {
-      // Snapshot prior status BEFORE updateTask so the transition entry
-      // is accurate. User dashboard transitions auto-validate the new
-      // status (user is the ultimate authority — Q5).
+      // Snapshot the prior status before the write so the transition entry is accurate.
       const prior = getTask(id);
       const fromStatus = prior?.status ?? null;
       const { status: statusUpdate, ...columnUpdates } = updates;

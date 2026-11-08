@@ -5,11 +5,11 @@ import type { WsEvent, TrackerTaskUpdatedEvent, TrackerProjectUpdatedEvent } fro
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
 import { isEnterNotComposing } from '../lib/enter-key';
-import { formatUsd } from '../lib/money';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { cardMover } from './tracker-card-move';
 import { KanbanBoard } from '../components/KanbanBoard';
+import { STATUS_WORDS } from '../lib/task-status';
 import { TaskRunHistory } from '../components/TaskRunHistory';
 import { TaskScheduleForm, DEFAULT_SCHEDULE, type ScheduleConfig } from '../components/TaskScheduleForm';
 import { ModalShell } from '../components/ModalShell';
@@ -123,10 +123,7 @@ export const TaskDetailPanel = ({
             </div>
           )}
 
-          {/* Validation context (Phase B.1). Goal / result / evidence are
-              what the PM agent (and a user reviewing manually) read when
-              deciding whether to validate. Showing them here so the human
-              has the same information the PM sees. */}
+          {/* Goal, result and evidence: what a decider reads before deciding. */}
           {(task.goal || task.result || task.evidence.length > 0) && (
             <div className="space-y-3 glass-nested rounded-lg p-3 border border-ui/10">
               {task.goal && (
@@ -178,13 +175,15 @@ export const TaskDetailPanel = ({
               disabled={saving}
               className="glass-select w-full"
             >
-              <option value="on_deck">Pending</option>
-              <option value="in_progress">In Progress</option>
+              <option value="on_deck">{STATUS_WORDS.on_deck}</option>
+              <option value="in_progress">{STATUS_WORDS.in_progress}</option>
               <option value="paused">Paused</option>
-              <option value="complete">Complete</option>
               <option value="blocked">Blocked</option>
-              <option value="fallen">Failed</option>
-              <option value="cancelled">Cancelled</option>
+              {task.status === 'handed_in' && <option value="handed_in" disabled>{STATUS_WORDS.handed_in}</option>}
+              {task.status === 'sent_back' && <option value="sent_back" disabled>{STATUS_WORDS.sent_back}</option>}
+              <option value="complete">{STATUS_WORDS.complete}</option>
+              <option value="fallen">{STATUS_WORDS.fallen}</option>
+              <option value="cancelled">{STATUS_WORDS.cancelled}</option>
             </select>
             {task.status === 'handed_in' && (
               <div className="mt-2 glass-nested rounded-lg p-2 border border-cp-amber/30">
@@ -321,13 +320,8 @@ export const TaskDetailPanel = ({
                     transition: 'text-cp-teal',
                     observation: 'text-ui/80',
                     reject: 'text-cp-coral',
-                    override: 'text-cp-amber',
-                    smell_flag: 'text-cp-coral',
                     user_verdict_request: 'text-cp-amber',
                     user_verdict_applied: 'text-cp-teal',
-                    // UX-REPAIR T40: a filed close is Key 1 and only Key 1 — the row does not
-                    // move, so nothing in this log used to show for the whole pending window.
-                    validation_requested: 'text-cp-amber',
                     auto_sweep: 'text-ui/55',
                     legacy_note: 'text-ui/55',
                   };
@@ -576,140 +570,6 @@ const CreateProjectModal = ({
 
 // ── Main Tracker Component ──
 
-// ── Tracker hygiene + telemetry (Phase D, Wordy Mode only) ──
-// Renders rolled-up validate rates, smell flag counts, override rollup,
-// elevated tasks, and PM cost-per-model. Lets the owner see at a glance
-// whether the system is healthy or something needs attention.
-const HygienePanel = ({
-  hygiene,
-  expanded,
-  onToggle,
-  onTaskClick,
-}: {
-  hygiene: api.TrackerHygiene;
-  expanded: boolean;
-  onToggle: () => void;
-  onTaskClick: (id8: string) => void;
-}) => {
-  // One-glance summary numbers for the collapsed header row.
-  const totalValidates = hygiene.validateOutcomes.reduce((s, v) => s + v.validates, 0);
-  const totalRejects = hygiene.validateOutcomes.reduce((s, v) => s + v.rejects, 0);
-  const totalSmells = hygiene.smellFlags.reduce((s, v) => s + v.count, 0);
-  const elevatedCount = hygiene.elevated.length;
-  const totalPmCost = hygiene.pmCost.reduce((s, p) => s + (p.cost_24h ?? 0), 0);
-
-  return (
-    <div className="tile tile--ok anim" style={{ marginBottom: 16, '--ci': '0ms' } as React.CSSProperties}>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="hygiene"
-        style={{ margin: 0, padding: 0, width: '100%', background: 'transparent', border: 0, cursor: 'pointer' }}
-        aria-expanded={expanded}
-      >
-        <span className="hygiene__title">
-          <span style={{ display: 'inline-block', transition: 'transform .2s ease', transform: expanded ? 'rotate(90deg)' : 'none' }}>{'▶'}</span>
-          Tracker Hygiene
-        </span>
-        <div className="hygiene__stats">
-          <span><b className="ok">{totalValidates}</b> blessed</span>
-          {totalRejects > 0 && <span><b className="bad">{totalRejects}</b> rejected</span>}
-          {totalSmells > 0 && <span><b className="warn">{totalSmells}</b> smell</span>}
-          {elevatedCount > 0 && <span><b className="warn">{elevatedCount}</b> elevated</span>}
-          {totalPmCost > 0 && <span>{formatUsd(totalPmCost)}/24h</span>}
-        </div>
-      </button>
-
-      {!expanded ? null : (
-      <div className="px-4 pb-4" style={{ marginTop: 14 }}>
-      <div className="text-xs text-ui/55 mb-2">7-day window</div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        <div className="glass-nested rounded-lg p-3">
-          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">Validate outcomes</div>
-          {hygiene.validateOutcomes.length === 0 ? (
-            <div className="text-xs text-ui/55 italic">none yet</div>
-          ) : (
-            <div className="space-y-1">
-              {hygiene.validateOutcomes.map((v) => (
-                <div key={v.from_entity} className="text-xs">
-                  <span className="text-ui font-medium">{v.from_entity}:</span>{' '}
-                  <span className="text-cp-teal">{v.validates} blessed</span>{' / '}
-                  <span className="text-cp-coral">{v.rejects} rejected</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="glass-nested rounded-lg p-3">
-          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">Smell flags</div>
-          {hygiene.smellFlags.length === 0 ? (
-            <div className="text-xs text-ui/55 italic">none</div>
-          ) : (
-            <div className="space-y-1">
-              {hygiene.smellFlags.map((s) => (
-                <div key={s.category} className="text-xs">
-                  <span className="text-cp-amber font-medium">{s.category}:</span>{' '}
-                  <span className="text-ui/80">{s.count}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="glass-nested rounded-lg p-3">
-          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">PM cost (24h)</div>
-          {hygiene.pmCost.length === 0 ? (
-            <div className="text-xs text-ui/55 italic">no PM model calls</div>
-          ) : (
-            <div className="space-y-1">
-              {hygiene.pmCost.map((p) => (
-                <div key={p.modelId ?? 'unknown'} className="text-xs">
-                  <span className="text-ui font-medium">{p.modelId ?? 'unknown'}:</span>{' '}
-                  <span className="text-ui/80">{p.calls} calls</span>{' / '}
-                  <span className="text-cp-amber">{formatUsd(p.cost_24h ?? 0)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="glass-nested rounded-lg p-3 md:col-span-2 lg:col-span-2">
-          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">
-            Elevated tasks ({hygiene.elevated.length})
-          </div>
-          {hygiene.elevated.length === 0 ? (
-            <div className="text-xs text-ui/55 italic">no tasks need attention</div>
-          ) : (
-            <div className="space-y-1 max-h-32 overflow-y-auto">
-              {hygiene.elevated.map((t) => (
-                <button
-                  key={t.id8}
-                  type="button"
-                  onClick={() => onTaskClick(t.id8)}
-                  className="text-xs text-left w-full hover:bg-ui/5 rounded px-1 py-0.5"
-                >
-                  <span className="text-ui/55">{t.id8}</span>{' '}
-                  <span className="text-ui font-medium underline-offset-2 hover:underline">{t.title}</span>{' '}
-                  <span className="text-ui/70">[{t.status}]</span>
-                  {t.revert_count > 0 && (
-                    <span className="ml-2 text-cp-coral">↺{t.revert_count}</span>
-                  )}
-                  {t.last_smell_flag && (
-                    <div className="text-ui/55 italic ml-3 text-[10px]">{t.last_smell_flag}</div>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      </div>
-      )}
-    </div>
-  );
-};
-
 export const Tracker = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -723,22 +583,6 @@ export const Tracker = () => {
   const [closeProjectModalOpen, setCloseProjectModalOpen] = useState(false);
   const { subscribe, reconnectCount } = useWebSocket();
   const toast = useToast();
-
-  // The hygiene panel is a tracker-page concern and always visible here.
-  const [hygiene, setHygiene] = useState<api.TrackerHygiene | null>(null);
-  const [hygieneExpanded, setHygieneExpanded] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    const loadHygiene = () => {
-      api.getTrackerHygiene().then((res) => {
-        if (cancelled) return;
-        if (res.ok) setHygiene(res.data);
-      });
-    };
-    loadHygiene();
-    const interval = setInterval(loadHygiene, 30_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
 
   // Switching projects while a load is in flight would otherwise let the old
   // fetch answer last and redraw the board for a project that was left. Each
@@ -879,20 +723,6 @@ export const Tracker = () => {
         </div>
       </header>
       {loadError && <div className="note--warn">Could not load the tasks: {loadError}</div>}
-
-      {/* Phase D: tracker hygiene + telemetry banner. Collapsed by default;
-          click to expand. */}
-      {hygiene && (
-        <HygienePanel
-          hygiene={hygiene}
-          expanded={hygieneExpanded}
-          onToggle={() => setHygieneExpanded((v) => !v)}
-          onTaskClick={(id8) => {
-            const match = tasks.find((t) => t.id.startsWith(id8));
-            if (match) setSelectedTaskId(match.id);
-          }}
-        />
-      )}
 
       {/* Toolbar: project filter. Dropdown lists active projects only;
           closed/cancelled ones live in history, not the working view. */}

@@ -71,10 +71,6 @@ const task = {
   assignedTo: null,
   assignedToName: null,
   assignedToGroup: null,
-  completeValidated: 1,
-  pauseValidated: 1,
-  blockedValidated: 1,
-  validationEscalatedAt: null,
   updatedAt: '2026-10-30T00:00:00Z',
 } as unknown as Task;
 

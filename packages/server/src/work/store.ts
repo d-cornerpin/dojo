@@ -311,12 +311,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   const terminal = isTerminal(input.to);
   let eventId = 0;
 
-  // ONE instant for the whole transaction. Two `Date.now()` readings a millisecond apart is
-  // the defect class this phase has now hit three times (the poke ladder's window, the
-  // scheduler's occurrence CAS): the adjudication below is filed BEFORE the UPDATE — it has
-  // to be, the trigger is BEFORE UPDATE and reads the row it is about to allow — and
-  // `validatedExpr` scopes the verdict to "at or after the row entered the state". A
-  // one-millisecond drift between the two writes reads back as an UNVALIDATED close.
+  // One instant for the whole transaction: the adjudication below is filed before the UPDATE
+  // (the BEFORE UPDATE trigger reads it), and both writes carry the same time.
   const at = now();
 
   withUnit(() => {

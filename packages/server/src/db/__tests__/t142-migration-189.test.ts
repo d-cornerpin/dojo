@@ -239,15 +239,6 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
     expect((db.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE event_seq IS NULL').get() as { n: number }).n).toBe(0);
   });
 
-  it('THE POINT: the tie row now reads unvalidated by the sequence, and the auth row validated', async () => {
-    upgradeTo(M189C);
-    const { validatedExpr } = await import('../../work/tracker-view.js');
-    const v = (id: string) => (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`).get(id) as { v: number }).v;
-    expect(v('w-tie')).toBe(0);
-    expect(v('w-auth')).toBe(1);
-    expect(v('w-uphold')).toBe(1);
-  });
-
   it('the trigger stamps a NEW verdict with the id the next event receives — past the tail gap', () => {
     upgradeTo(M189C);
     const seqNow = (db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'work_events'`).get() as { seq: number }).seq;
@@ -410,23 +401,5 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
     const reblocked = carried.find((c) => c.work_id === 'd-reblocked')!;
     expect(reblocked.created_at, 'same instant as the stamp it carries').toBe(T0 + 101);
     expect(JSON.parse(reblocked.payload)).toMatchObject({ thread_id: 'conv-owner', carried_from: origStamp });
-  });
-
-  it('M1: a companion-less verdict filed before a later re-entry reads UNVALIDATED, as base read it', async () => {
-    const { validatedExpr } = await import('../../work/tracker-view.js');
-    const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-orphan'`).get() as { v: number }).v;
-    expect(v).toBe(0);
-  });
-
-  it('N1: an orphan verdict is not parked on 189d\'s CARRY row (new id, old instant)', async () => {
-    const { validatedExpr } = await import('../../work/tracker-view.js');
-    const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-carry-orphan'`).get() as { v: number }).v;
-    expect(v, 'the re-entry at +604 was never upheld; clock-base read it unvalidated').toBe(0);
-  });
-
-  it('M1: an orphan upheld verdict is not parked on a later REJECTION\'s row', async () => {
-    const { validatedExpr } = await import('../../work/tracker-view.js');
-    const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-orphan-rej'`).get() as { v: number }).v;
-    expect(v, 'the re-entry at +450 was never upheld').toBe(0);
   });
 });

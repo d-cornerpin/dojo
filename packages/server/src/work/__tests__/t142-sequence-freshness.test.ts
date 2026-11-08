@@ -21,7 +21,7 @@
 // millisecond — the tie is the fixture, stated, not raced.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -51,7 +51,7 @@ import { transition } from '../store.js';
 import {
   upholdClaim, setTrackerStatus, throwBackClaim, resetRevertCount, requestUserVerdict, clearUserVerdict,
 } from '../tracker-store.js';
-import { validatedExpr, taskScope, revertCountExpr, awaitingUserVerdictExpr } from '../tracker-view.js';
+import { revertCountExpr, awaitingUserVerdictExpr } from '../tracker-view.js';
 import { selectRowsForOwnerEscalation, ownerEscalationAlertLine } from '../validation-drive.js';
 
 const ASSIGNEE = 'quillon';
@@ -77,12 +77,6 @@ function move(id: string, to: 'blocked' | 'claimed' | 'paused', extra: Record<st
   });
   expect(r.kind, `${id} -> ${to}`).toBe('applied');
 }
-
-/** The board's / PM's reading of the row, through the one builder every reader calls. */
-const validated = (id: string, state: 'blocked' | 'paused' | 'done'): number =>
-  (mockDb.current!.prepare(
-    `SELECT ${validatedExpr('w', state)} AS v FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(id) as { v: number }).v;
 
 /** blocked -> PM upholds -> resolved forward -> blocked AGAIN, all in one millisecond. */
 function upheldThenReblocked(id: string): void {
@@ -136,67 +130,7 @@ describe('§3 every adjudication writer\'s verdict sits exactly on its companion
 
 });
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — THE CENSUS. Every `<state>_validated` reader in production goes through the ONE
-// builder, so the conversion is one place; this pins the set of readers BOTH ways (a new
-// reader, or a lost one, changes the count and a reviewer has to look), and pins that no
-// production SQL compares an adjudication's CLOCK any more. Comments are stripped first, so
-// prose describing a call is never counted as one (G4).
-// ════════════════════════════════════════════════════════════════════════════════════════
-
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-const productionSources = new Map<string, string>();
-beforeAll(() => {
-  const walk = (dir: string): void => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fp = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'migrations') continue;
-        walk(fp);
-      } else if (e.name.endsWith('.ts')) {
-        productionSources.set(path.relative(SRC, fp).split(path.sep).join('/'),
-          stripComments(fs.readFileSync(fp, 'utf8')));
-      }
-    }
-  };
-  walk(SRC);
-});
-
-/** The `<state>_validated` readers at the t142 head, by file. Every one calls the builder. */
-const VALIDATED_READERS: Record<string, number> = {
-  'tracker/tools.ts': 7,
-  'work/tracker-store.ts': 1,
-  'work/tracker-view.ts': 6,   // proof-fix V: pm-agent's four hand-written blocked clauses became unvalidatedBlockExpr
-  'work/validation-drive.ts': 2,
-};
-
-describe('§4 census: one builder, every reader, no clock', () => {
-
-  it('the walk is not vacuous: it read the tree and found the builder', () => {
-    expect(productionSources.size).toBeGreaterThan(300);
-    expect(productionSources.get('work/tracker-view.ts')).toContain('export const validatedExpr = (');
-  });
-
-  it('no production SQL compares an adjudication by its clock', () => {
-    const hits: string[] = [];
-    for (const [file, src] of productionSources) {
-      if (/\badj\w*\.created_at\s*(>=|<=|>|<|=)/.test(src)
-        || /(>=|<=|>|<)\s*\w*adj\w*\.created_at\b/.test(src)) hits.push(file);
-    }
-    expect(hits).toEqual([]);
-  });
-
-  it('THE APPLICATION, not the prose: the built clause compares event_seq to an event id', () => {
-    const sql = validatedExpr('w', 'done');
-    expect(sql).toContain("adj.event_seq >= COALESCE((SELECT MAX(e.id) FROM work_events e");
-    expect(sql).toContain(`json_extract(e.payload, '$.to') = 'done'`);
-    expect(sql, 'no clock anywhere in the freshness clause').not.toMatch(/created_at/);
-    expect(sql, 'a system closer\'s receipt is not a verdict').toContain('NOT IN');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §5 — THE CENSUS FOUND TWO MORE CLOCKS IN THE SAME FILE, SAME LAW. Neither is a

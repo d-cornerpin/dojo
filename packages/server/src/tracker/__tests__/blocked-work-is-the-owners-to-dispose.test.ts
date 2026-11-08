@@ -104,7 +104,6 @@ import { trackerUpdateStatus, trackerOverride } from '../tools.js';
 import { setTaskStatusResult, updateTask } from '../schema.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { upholdClaim, setTrackerStatus } from '../../work/tracker-store.js';
-import { validatedExpr } from '../../work/tracker-view.js';
 import { AUDIT_KIND } from '../../work/audit-trail.js';
 import { PATIENCE_ENTRY } from '../assignee-patience.js';
 

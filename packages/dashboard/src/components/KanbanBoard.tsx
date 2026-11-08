@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react';
 import type { Task } from '@dojo/shared';
 import { TaskCard } from './TaskCard';
-import { columnKeyForStatus, type KanbanColumnKey } from '../lib/task-status';
+import { columnKeyForStatus, COLUMN_WORDS, KANBAN_COLUMN_KEYS, type KanbanColumnKey } from '../lib/task-status';
 
 // Subtle horizontal scrollbar rendered ABOVE the board. The board itself hides
 // its native scrollbar (scrollbar-width: none), and a native one would sit at
@@ -89,7 +89,7 @@ interface KanbanBoardProps {
   onTaskClick: (taskId: string) => void;
   onStatusChange: (taskId: string, newStatus: Task['status']) => void;
   onTaskDeleted?: () => void;
-  /** Re-review 2 (S4): the server holds older finished tasks; the finished columns offer the page before. */
+  /** The server pages older finished tasks; the finished columns offer the page before. */
   onShowOlderFinished?: () => void;
 }
 
@@ -99,23 +99,16 @@ const FINISHED_COLUMNS: ReadonlySet<KanbanColumnKey> = new Set<KanbanColumnKey>(
 interface ColumnDef {
   key: KanbanColumnKey;
   label: string;
-  // Prototype kcol flavor modifier. On Deck has no flavor (the plain .kcol);
-  // the others map onto the four prototype colors.
-  flavor: '' | 'kcol--progress' | 'kcol--paused' | 'kcol--complete' | 'kcol--blocked';
+  /** The column title's color (Sent back shares Closed's amber); Open has none. */
+  flavor: '' | 'kcol--progress' | 'kcol--waiting' | 'kcol--complete' | 'kcol--closed';
 }
 
-const columns: ColumnDef[] = [
-  { key: 'on_deck', label: 'On Deck', flavor: '' },
-  { key: 'in_progress', label: 'In Progress', flavor: 'kcol--progress' },
-  { key: 'handed_in', label: 'Handed in', flavor: 'kcol--paused' },
-  { key: 'sent_back', label: 'Sent back', flavor: 'kcol--blocked' },
-  { key: 'complete', label: 'Complete', flavor: 'kcol--complete' },
-  // T18: this column holds BOTH terminal outcomes — a task that failed and one the owner
-  // cancelled. It is one column with two words on the cards rather than a seventh column,
-  // because the whole reason `cancelled` was folded into `fallen` for a year is that a
-  // status with no column rendered NOWHERE. `columnKeyForStatus` owns that mapping.
-  { key: 'fallen', label: 'Fallen / Cancelled', flavor: 'kcol--blocked' },
-];
+const FLAVORS: Record<KanbanColumnKey, ColumnDef['flavor']> = {
+  on_deck: '', in_progress: 'kcol--progress', handed_in: 'kcol--waiting',
+  sent_back: 'kcol--closed', complete: 'kcol--complete', fallen: 'kcol--closed',
+};
+
+const columns: ColumnDef[] = KANBAN_COLUMN_KEYS.map((key) => ({ key, label: COLUMN_WORDS[key], flavor: FLAVORS[key] }));
 
 const KanbanColumn = ({
   column,
@@ -226,16 +219,8 @@ const DraggableTaskCard = ({
   );
 };
 
-// v2.7.9 — per-column chronological sort.
-//
-//   on_deck     → soonest-to-run at top (asc next_run_at, fallback scheduled_start, fallback created_at).
-//                 Nulls sink to the bottom in each tier so unscheduled tasks
-//                 don't shove scheduled ones around.
-//   in_progress → earliest-started at top (asc updated_at — updated_at flips
-//                 to the transition time when status becomes in_progress).
-//   complete    → latest-completed at top (desc completed_at, fallback updated_at).
-//   fallen      → not specified by user; left on the existing desc updated_at
-//                 default for visual consistency.
+// Per-column order: Open soonest-to-run first, Working and the waiting columns oldest first,
+// Done latest-completed first, Closed newest first.
 type Cmp = (a: Task, b: Task) => number;
 
 const NULL_TAIL = '￿'; // any real ISO timestamp sorts BEFORE this string.
