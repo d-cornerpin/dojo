@@ -35,6 +35,8 @@ import { writeTaskLog } from '../task-log.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { openTrackerProject, openTrackerTask, setTrackerStatus, upholdClaim, throwBackClaim } from '../../work/tracker-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { unvalidatedCompleteText } from '../pm-agent.js';
+import { noteProofShown } from '../looked-at.js';
 import { listTaskLog } from '../task-log.js';
 
 const WORKER = 'worker-agent';
@@ -212,6 +214,10 @@ function seedDelivery(id: string, text = 'Done, please validate.'): string {
   ).run(id, WORKER, `dm-${id}`);
   return id;
 }
+/** The PM's review request for the row: what it prints is what the PM was shown. */
+const review = (t: string): string => unvalidatedCompleteText(t, {
+  title: 't', agentName: 'w', goal: null, result: null, priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '',
+});
 /** The PM's own door: `work_validate(action="validate", kind="complete")`, as the model calls it. */
 async function validate(t: string, valid: boolean, extra: Record<string, unknown> = {}): Promise<{ content: string; isError: boolean }> {
   const out = await trackerHandlers['work_validate:validate']({
@@ -245,18 +251,50 @@ describe('an uphold that nothing on record backs is refused at the PM\'s door', 
     const r = await validate(t, true);
     expect(r.isError).toBe(true);
     expect(r.content).toBe(
-      'Refused: nothing on record shows this work. No file the worker wrote, message to the asker, confirmed receipt '
-      + 'or measure at 0 is on record for it, no remainder was named, and no owner\'s words are recorded. '
+      'Refused: nothing on record shows this work. No file the worker wrote for it, message to the asker, confirmed receipt '
+      + 'or measure at 0 is on record, no remainder was named, and the asker\'s own later words are not recorded. '
       + 'There is nothing to open that shows the work was done.');
     expect(r.content).not.toMatch(/valid=true|approve|uphold it|or else|will be/i);   // facts, never coaching or a threat
     expect(upheld(t)).toBe(0);
   });
 
-  it('a real message to the owner on record backs the close in one review', async () => {
+  it('R3: a real message to the owner, shown to the PM by the review, backs the close in one review', async () => {
     const t = newTask();
     fileClose(t, undefined, seedDelivery('deliv-real', 'The quarterly summary is filed: revenue 412, costs 300.'));
-    expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
+    review(t);
+    expect((await validate(t, true)).content).not.toMatch(/^Refused/);
     expect(upheld(t)).toBe(1);
+    // K35: the verdict records the proof the close was judged on.
+    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).proof).toEqual(['delivery deliv-real']);
+  });
+
+  it('OR-FIELD3(d) / M3(a): proof never shown and never opened is refused, naming it, and a plain retry is refused again', async () => {
+    const t = newTask();
+    fileClose(t, undefined, seedDelivery('deliv-unseen', 'The quarterly summary is filed: revenue 412, costs 300.'));
+    const first = await validate(t, true);
+    expect(first.content).toMatch(/^Refused: the proof on record has not been shown to you or opened/);
+    expect(first.content).toContain('revenue 412');
+    expect((await validate(t, true)).content).toMatch(/^Refused: the proof on record has not been shown/);
+    expect(upheld(t)).toBe(0);
+  });
+
+  it('NO LOOP: once the PM opens the delivered message, the uphold stands', async () => {
+    const t = newTask();
+    fileClose(t, undefined, seedDelivery('deliv-open', 'The quarterly summary is filed: revenue 412, costs 300.'));
+    expect((await validate(t, true)).content).toMatch(/^Refused/);
+    call('history_get', { id: 'dm-deliv-open' });
+    expect((await validate(t, true)).content).not.toMatch(/^Refused/);
+    expect(upheld(t)).toBe(1);
+  });
+
+  it('M3(b): an unrelated read backs nothing; audit #5: a review that showed a DIFFERENT delivery backs nothing', async () => {
+    const t = newTask();
+    fileClose(t, undefined, seedDelivery('deliv-x', 'The quarterly summary is filed: revenue 412, costs 300.'));
+    call('history_get', { id: 'some-other-message' });
+    call('file_read', { path: '/work/unrelated.md' });
+    noteProofShown(t, ['deliv-older']);
+    expect((await validate(t, true)).content).toMatch(/^Refused: the proof on record has not been shown/);
+    expect(upheld(t)).toBe(0);
   });
 
   it('a measure that read 0 from the start (it never counted anything) does NOT back the close', async () => {
@@ -289,7 +327,8 @@ describe('an uphold that nothing on record backs is refused at the PM\'s door', 
       JSON.stringify({ tool: 'gmail_search', args: { query: 'label:Inbox' }, unit: 'messages' }), t);
     recordMeasured(t, { ok: true, count: 0 }, Date.now());
     fileClose(t, undefined, seedDelivery('deliv-5', 'All 3 inbox messages are labelled.'));
-    expect((await validate(t, true)).content).not.toMatch(/^Refused: nothing on record/);
+    review(t);
+    expect((await validate(t, true)).content).not.toMatch(/^Refused/);
     expect(upheld(t)).toBe(1);
   });
 

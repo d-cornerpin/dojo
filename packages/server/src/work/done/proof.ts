@@ -10,7 +10,7 @@
 // Neither judges whether the proof meets the goal: a decider does that after opening it.
 import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
-import { PROOF_LABELS, resolveItem, type HandInOutcome, type ProofContext, type ProofItemInput, type ProofKind, type ResolvedItem } from './proof-kinds.js';
+import { PROOF_LABELS, resolveItem, type HandInOutcome, type ProofContext, type ProofItemInput, type ProofKind, type ProofTask, type ResolvedItem } from './proof-kinds.js';
 import { askerOf } from './asker.js';
 
 export type { HandInOutcome, ProofItemInput, ProofKind, ResolvedItem } from './proof-kinds.js';
@@ -20,10 +20,14 @@ const FINISHED_KINDS: ReadonlySet<ProofKind> = new Set(['file', 'delivery', 'com
 const CANT_BE_DONE_KINDS: ReadonlySet<ProofKind> = new Set(['failure', 'remainder', 'withdrawal']);
 
 /** The task as the rules read it, with the agent working it; null when there is no such row. */
-function taskOf(workId: string): { id: string; title: string | null; openedAt: number; worker: string } | null {
-  const w = getDb().prepare('SELECT id, title, opened_at, agent_id FROM work WHERE id = ?').get(workId) as
-    { id: string; title: string | null; opened_at: number; agent_id: string } | undefined;
-  return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id } : null;
+function taskOf(workId: string): (ProofTask & { worker: string }) | null {
+  const w = getDb().prepare(
+    `SELECT w.id, w.title, w.opened_at, w.agent_id, w.origin_turn,
+            (SELECT a.result_delivery_id FROM work a WHERE a.kind = 'ask'
+              AND a.id = 'ask:' || COALESCE(w.source_message_id, p.source_message_id)) AS ask_receipt
+       FROM work w LEFT JOIN work p ON p.id = w.parent_id WHERE w.id = ?`,
+  ).get(workId) as { id: string; title: string | null; opened_at: number; agent_id: string; origin_turn: number | null; ask_receipt: string | null } | undefined;
+  return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id, originTurn: w.origin_turn, askReceipt: w.ask_receipt } : null;
 }
 
 /** Does this resolved item show the attempt failed (for a "can't be done")? */
@@ -77,10 +81,9 @@ const FINDERS: Record<Found, Finder> = {
     `SELECT id FROM deliveries WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack' AND created_at >= ?
       ORDER BY created_at, rowid`,
   ).all(worker, floor) as Array<{ id: string }>).map((d) => ({ kind: 'delivery', ref: d.id })),
-  file: (_w, worker, floor) => (getDb().prepare(
-    `SELECT target FROM audit_log WHERE agent_id = ? AND action_type = 'file_write' AND result = 'success'
-        AND target IS NOT NULL AND created_at >= ? GROUP BY target ORDER BY MAX(created_at), target`,
-  ).all(worker, floor) as Array<{ target: string }>).map((f) => ({ kind: 'file', ref: f.target })),
+  file: (workId) => (getDb().prepare(
+    "SELECT substr(item_key, 6) AS path FROM work_ledger WHERE work_id = ? AND item_key LIKE 'file:%' ORDER BY last_at, item_key",
+  ).all(workId) as Array<{ path: string }>).map((f) => ({ kind: 'file', ref: f.path })),
   receipt: (workId, worker) => (getDb().prepare('SELECT id FROM tool_receipts WHERE task_id = ? AND agent_id = ? ORDER BY created_at, rowid')
     .all(workId, worker) as Array<{ id: string }>).map((r) => ({ kind: 'receipt', ref: r.id })),
   measure: (workId) => {
@@ -102,8 +105,8 @@ function found(workId: string, kinds: readonly Found[]): ResolvedItem[] {
     .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok ? [r.item] : []; });
 }
 
-/** THE engine's finder: deliveries to the asker, files the worker wrote, receipts filed against the
- *  task, and the measure when it came down to 0. */
+/** THE engine's finder: deliveries to the asker, files the worker wrote that were charged to this task's
+ *  ledger, receipts filed against the task, and the measure when it came down to 0. */
 export const proofFor = (workId: string): ResolvedItem[] => found(workId, ['delivery', 'file', 'receipt', 'measure']);
 
 /** The newest delivery to the asker on record for this task: what a close points at, or null. */

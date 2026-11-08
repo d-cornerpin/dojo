@@ -130,6 +130,7 @@ describe('C4: an answer sent to the agent that asked, on the engine\'s verified 
     // The close's own delivery on the box was the tool-call row of the close itself (a chip, not an answer).
     fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
     expect(proofDelivery(t)).toBe('d-answer');
+    pmRead('history_get', { id: 'm-answer' });   // the PM opens the answer it upholds on
     expect(await validate(t)).not.toMatch(REFUSED);
     expect(upheld(t)).toBe(1);
     expect((db().prepare('SELECT task_id FROM tool_receipts WHERE call_id = ?').get(send) as { task_id: string }).task_id).toBe(t);

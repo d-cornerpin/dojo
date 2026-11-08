@@ -309,6 +309,9 @@ function seedDelivery(agentId: string): void {
      VALUES (?, ?, 'delivered', 'a2a_send', 'a2a', ?, 'A2A DELIVERABLE', NULL, NULL, NULL,
              datetime('now'), datetime('now'))`,
   ).run(`del-${agentId}-1`, agentId, ASSIGNER);
+  mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES (?, ?, 'send_to_agent', 'Reconciled 212 rows against the ledger.')`)
+    .run(`r-${agentId}-1`, agentId);
+  mockDb.current!.prepare('UPDATE deliveries SET receipt_id = ? WHERE id = ?').run(`r-${agentId}-1`, `del-${agentId}-1`);
 }
 
 describe('§3 an A2A deliverable that quotes a handed credential never lands in `result`', () => {

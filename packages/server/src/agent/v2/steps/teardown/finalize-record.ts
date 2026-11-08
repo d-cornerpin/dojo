@@ -515,8 +515,8 @@ export async function finalizeTurnRecord(
         const { composeTurnDeliverySummary } = await import('../../../../tracker/task-stamps.js');
         const { engineProofLine } = await import('../../../../work/done/proof.js');
         const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
-        // The engine closes only on what it can count (`engineProofLine`: a file the worker wrote for
-        // the task, or a measure at 0). A line of text never closes a task by the engine, on any channel.
+        // The engine closes only on what it can count (`engineProofLine`: a file write charged to the
+        // task's ledger, or a measure that came down to 0). A line of text never closes a task by the engine.
         const turnDelivery = terminalDeliveryForTurn(agentId, turnNumber);
         if (turnDelivery) {
           const sameTurnOpen = db.prepare(

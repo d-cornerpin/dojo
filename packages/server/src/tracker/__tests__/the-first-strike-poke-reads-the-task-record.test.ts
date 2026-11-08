@@ -186,12 +186,14 @@ describe('review round 3: the first-strike poke never treats an ack as a handove
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-file', 'write the report', now - 6 * MIN, null);
-    // What the engine can count (`engineProof`): a file the worker wrote during the task, still on disk.
+    // What the engine can count (`engineProof`): a file the worker wrote, charged to this task, still on disk.
     const report = path.join(HOME, 'report.md');
     fs.writeFileSync(report, 'The quarterly report, 12 sections.');
     db().prepare(
       `INSERT INTO audit_log (id, agent_id, action_type, target, result, created_at) VALUES ('a-file', 'helper', 'file_write', ?, 'success', ?)`,
     ).run(report, sqlTime(now - 5 * MIN));
+    db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES ('task-file', ?, 'file_write', ?, ?)`)
+      .run(`file:${report}`, now - 5 * MIN, now - 5 * MIN);
     await sweepAt(now);
     const sent = checkIns('task-file').join('\n');
     expect(sent).toMatch(/DELIVERY ON RECORD/);

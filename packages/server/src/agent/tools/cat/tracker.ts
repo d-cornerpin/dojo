@@ -44,7 +44,9 @@ import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
-import { proofFor } from '../../../work/done/proof.js';
+import { proofFor, proofLines } from '../../../work/done/proof.js';
+import { fromAsker } from '../../../work/done/asker.js';
+import { proofSeen } from '../../../tracker/looked-at.js';
 import { remainderOnRecord } from '../../../tracker/measure-gate.js';
 import { readLaterMessages } from '../../../memory/task-list-words.js';
 import { heldDeliveryLine } from '../../../tracker/owed-delivery.js';
@@ -108,17 +110,24 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
   return [...nums].sort((a, b) => a - b).join(',');
 }
 
-/** An uphold that nothing on record backs is refused with the facts, never a lean toward either verdict:
- *  no proof (`proofFor`), no remainder named at the close, and no owner's words recorded on the task. An
- *  override approval is its own close claim, so it is checked whether or not a close request is filed. */
-function unbackedUpholdRefusal(rawTaskId: string, opts: { override?: boolean } = {}): string | null {
+/** A PM uphold is refused, with the facts and never a lean toward either verdict, unless the PM has been
+ *  shown or has opened proof on record (`proofFor`), or the close named its remainder, or the asker's own
+ *  later words are recorded on the task. An override approval is its own close claim, so it is checked
+ *  whether or not a close request is filed. Outside a live PM turn nothing is checked. */
+function unbackedUpholdRefusal(pmAgentId: string, rawTaskId: string, opts: { override?: boolean } = {}): string | null {
   const r = resolveTaskId(rawTaskId);
-  if (!r.ok) return null;   // the door gives its own error for an id it cannot find
+  if (!r.ok || !turnContext(pmAgentId)) return null;   // the door gives its own error for an id it cannot find
   const subject = getDb().prepare(`SELECT 1 AS y FROM work w WHERE w.id = ?${opts.override ? '' : ` AND ${unvalidatedCloseExpr('w')}`}`).get(r.id);
-  if (!subject || proofFor(r.id).length > 0 || remainderOnRecord(r.id) || readLaterMessages(r.id).length > 0) return null;
+  if (!subject || remainderOnRecord(r.id) || readLaterMessages(r.id).some((m) => !!m.messageId && fromAsker(r.id, m.messageId))) return null;
+  const proof = proofFor(r.id);
+  if (proofSeen(pmAgentId, r.id, proof)) return null;
+  if (proof.length > 0) {
+    return `Refused: the proof on record has not been shown to you or opened since the close was filed:\n${proofLines(proof).map((l) => `  - ${l}`).join('\n')}\n`
+      + 'Open it (the file, or history_get on the message) before ruling.';
+  }
   const held = heldDeliveryLine(r.id).replace(/^\n\s*/, '');
-  return 'Refused: nothing on record shows this work. No file the worker wrote, message to the asker, confirmed receipt '
-    + `or measure at 0 is on record for it, no remainder was named, and no owner's words are recorded. ${held ? `${held} ` : ''}`
+  return 'Refused: nothing on record shows this work. No file the worker wrote for it, message to the asker, confirmed receipt '
+    + `or measure at 0 is on record, no remainder was named, and the asker's own later words are not recorded. ${held ? `${held} ` : ''}`
     + 'There is nothing to open that shows the work was done.';
 }
 
@@ -804,7 +813,7 @@ const tableOfHandlers: ToolHandlerMap = {
     };
     if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
     else if (vkind === 'complete') {
-      const refusal = vp.valid ? unbackedUpholdRefusal(vp.task_id) : null;
+      const refusal = vp.valid ? unbackedUpholdRefusal(agentId, vp.task_id) : null;
       if (refusal) return { content: refusal, isError: true };
       content = await trackerMod.trackerValidateComplete(agentId, vp);
     }
@@ -860,7 +869,7 @@ const tableOfHandlers: ToolHandlerMap = {
     if (args.approve === true) {
       const req = findOverrideRequest(String(args.override_request_id).trim());
       if (req && req.status === 'pending' && isCompleteStatus(req.requestedStatus)) {
-        const refusal = unbackedUpholdRefusal(req.taskId, { override: true });
+        const refusal = unbackedUpholdRefusal(agentId, req.taskId, { override: true });
         if (refusal) return { content: refusal, isError: true };
       }
     }

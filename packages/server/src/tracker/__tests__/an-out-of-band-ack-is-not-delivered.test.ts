@@ -50,12 +50,14 @@ function seedAskAndTask(): { askId: string; taskId: string } {
 }
 
 /** An iMessage line the agent sent, as the out-of-band door records it (no message row). */
-function imessage(id: string): string {
+function imessage(id: string, text = 'Booked: a table for four on Friday at 7pm.'): string {
   clock += 2;
+  db().prepare(`INSERT INTO tool_receipts (id, agent_id, tool, tier, verified, basis, sent_text) VALUES (?, ?, 'imessage_send', 3, 0, 'exit-code', ?)`)
+    .run(`r-${id}`, AGENT, text);
   db().prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-     VALUES (?, ?, ?, 'imessage_send', 'imessage', ?, NULL, 'delivered', datetime('now', ?))`,
-  ).run(id, AGENT, TURN, CONV, `+${clock} seconds`);
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, receipt_id, outcome, created_at)
+     VALUES (?, ?, ?, 'imessage_send', 'imessage', ?, NULL, ?, 'delivered', datetime('now', ?))`,
+  ).run(id, AGENT, TURN, CONV, `r-${id}`, `+${clock} seconds`);
   return id;
 }
 

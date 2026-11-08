@@ -12,7 +12,7 @@ import { redactHandedCredentials } from '../credentials/secret-values.js';
 import {
   taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
-  pendingCloseRequestExpr, closeRequestFiledExpr,
+  pendingCloseRequestExpr, closeRequestFiledExpr, closeRequestDeliveryExpr,
   statusToState, stateToStatus, type TrackerStatus,
   stampColumns,
   engineScaffoldScope,
@@ -297,11 +297,9 @@ export interface RetaskProtectionFacts {
    */
   closeRequestPending: boolean;
   /**
-   * PM-CANNOT-APPROVE C9: WHETHER PROOF IS ACTUALLY ON RECORD, from the one proof check
-   * (`work/done/proof.ts:proofFor`), the reader the validate door uses. A filed close is a CLAIM
-   * that the work was delivered, not the delivery: on a lived-in box this door told the PM
-   * "already delivered to the user" two seconds before the validate door refused the same row
-   * because no delivered answer was on record, so the PM could neither approve nor send it back.
+   * Whether proof is actually on record, from the one proof check (`work/done/proof.ts:proofFor`),
+   * the reader the validate door uses. A filed close is a claim that the work was delivered, not
+   * the delivery, so retask protection never rests on a close having been filed.
    */
   answerDelivered: boolean;
 }
@@ -4579,13 +4577,14 @@ export async function trackerValidateComplete(
            w.repeat_interval AS repeat_interval, w.schedule_status AS schedule_status, ${msToText('w.next_run_at')} AS next_run_at,
            ${validatedExpr('w', 'done')} AS complete_validated,
            ${closeRequestFiledExpr('w')} AS close_request_filed,
+           ${closeRequestDeliveryExpr('w')} AS close_request_delivery,
            w.result AS result, w.evidence_json AS evidence_json, w.goal AS goal
     FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     priority: string; project_id: string | null; repeat_interval: number | null; schedule_status: string;
     next_run_at: string | null; complete_validated: number;
-    close_request_filed: number;
+    close_request_filed: number; close_request_delivery: string | null;
     result: string | null; evidence_json: string | null; goal: string | null;
   } | undefined;
 
@@ -4625,10 +4624,10 @@ export async function trackerValidateComplete(
     // When the worker's close was a Key-1 request the row never left `in_progress`, so
     // blessing it IS the transition — `claim: 'authoritative'` files the upheld adjudication
     // in the same transaction, which is what migration `139`'s trigger requires and what the
-    // `complete_validated = 1` assignment used to imitate. It closes against the newest delivery
-    // to the asker on record (`proofDelivery`).
+    // `complete_validated = 1` assignment used to imitate. It closes against the delivery the
+    // worker's close named when it was filed, never one looked up at verdict time.
     if (keyOneOnly) {
-      const closeDelivery = proofDelivery(taskId);
+      const closeDelivery = task.close_request_delivery;
       const keyTwo = setTrackerStatus(taskId, 'complete', {
         by: 'pm', actorId: pmAgentId, claim: 'authoritative',
         resultDeliveryId: closeDelivery,

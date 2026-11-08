@@ -172,6 +172,7 @@ describe('a real answer to the agent that asked for the task still counts', () =
     charge(t, s, REQUESTER, 'ANSWER', payload);
     fileClose(t, s.delivery);
     expect(ledgerSends(t)).toBe(1);
+    pmRead('history_get', { id: s.message });   // the PM opens the answer it upholds on
     expect(await validate(t)).not.toMatch(REFUSED);
     expect(upheld(t)).toBe(1);
   });

@@ -9,11 +9,14 @@ import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { workOperation } from '../tools/work-verbs.js';
+import { proofFor, type ResolvedItem } from '../work/done/proof.js';
 
 export interface LookedAt {
   tasks: string[]; activity: string[]; files: string[]; messages: string[]; results: string[]; vault: string[];
   /** Reads that failed or were refused, by their id / path / query. */
   failed: string[];
+  /** The proof on record when the PM ruled (`proofFor`), as "<kind> <ref>": what the close was judged on. */
+  proof?: string[];
 }
 
 type Row = { content: string };
@@ -96,6 +99,28 @@ function readsIn(pmAgentId: string, w: ReadWindow): LookedAt {
   return l;
 }
 
+/** The proof each review put in front of the PM, by task: process memory, so after a restart the PM opens it itself. */
+const proofShown = new Map<string, Set<string>>();
+
+/** The review showed the PM these proof items for the task (replaces what an earlier review showed). */
+export function noteProofShown(taskId: string, refs: readonly string[]): void { proofShown.set(taskId, new Set(refs)); }
+/** Forget every task not still awaiting a verdict. */
+export function keepProofShownFor(pending: ReadonlySet<string>): void {
+  for (const id of [...proofShown.keys()]) if (!pending.has(id)) proofShown.delete(id);
+}
+
+/** Has the PM been shown one of these items by a review, or opened one (the file, or the delivered message)
+ *  since the close was filed? A read of something else binds nothing. */
+export function proofSeen(pmAgentId: string, taskId: string, items: readonly ResolvedItem[]): boolean {
+  const shown = proofShown.get(taskId);
+  if (items.some((i) => shown?.has(i.ref))) return true;
+  const ctx = turnContext(pmAgentId);
+  if (!ctx || items.length === 0) return false;
+  const l = lookedAtThisTurn(pmAgentId, ctx.turnNumber ?? currentTurnNumber(pmAgentId), taskId);
+  const opened = (id: string): boolean => !!id && [...l.messages, ...l.results].some((m) => m === id || (m.length >= 8 && id.startsWith(m)));
+  return items.some((i) => (i.kind === 'file' && l.files.includes(String(i.facts.path))) || (i.kind === 'delivery' && opened(String(i.facts.message))));
+}
+
 /** A task id as the tools accept it: the full id or its 8-character prefix, never anything shorter. */
 const matchesWork = (workId: string, given: string): boolean => given.length >= 8 && workId.startsWith(given);
 
@@ -116,6 +141,7 @@ export function lookedAtLine(l: LookedAt, workId?: string): string {
   if (l.results.length) parts.push(`re-read ${n(l.results.length, 'tool result', 'tool results')}`);
   if (l.vault.length) parts.push(`consulted the vault ${n(l.vault.length, 'time', 'times')}`);
   if (l.failed.length) parts.push(`tried to read ${l.failed.join(', ')} (failed)`);
+  if (l.proof?.length) parts.push(`${n(l.proof.length, 'proof item', 'proof items')} on record`);
   return parts.length ? parts.join(', ') : 'looked at nothing';
 }
 
@@ -151,7 +177,7 @@ export function pmVerdictRecord(by: string, byId: string, workId: string): Verdi
     const ctx = turnContext(byId);
     if (!ctx) return undefined;
     const turn = ctx.turnNumber ?? currentTurnNumber(byId);
-    const looked = lookedAtThisTurn(byId, turn, workId);
+    const looked: LookedAt = { ...lookedAtThisTurn(byId, turn, workId), proof: proofFor(workId).map((i) => `${i.kind} ${i.ref}`) };
     const summary = lookedAtLine(looked, workId);
     const reason = reasonGiven(byId, turn, workId);
     const looked_at = { ...looked, summary, ...(reason ? { reason } : {}) };

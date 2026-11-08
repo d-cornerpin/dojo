@@ -399,6 +399,8 @@ describe('§2 the owner disposes; the PM escalates', () => {
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
        VALUES ('del-nm001', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-nm001', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-nm001' WHERE id = 'del-nm001'`).run();
     const actors = [
       { by: 'owner' as const, claim: 'authoritative' as const, ev: null },
       { by: 'engine' as const, claim: undefined, ev: 'del-nm001' },
@@ -491,6 +493,8 @@ describe('§3 resolving forward is what agents do with a block', () => {
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
        VALUES ('del-0001', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0001', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0001' WHERE id = 'del-0001'`).run();
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
     const out = trackerUpdateStatus(VICTIM, {
       taskId: TASK, status: 'complete', notes: 'done anyway',
@@ -827,6 +831,8 @@ describe('§8 the direct setTrackerStatus path is gated too', () => {
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
        VALUES ('del-eng01', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-eng01', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-eng01' WHERE id = 'del-eng01'`).run();
     const r = setTrackerStatus(TASK, 'fallen', {
       by: 'engine', actorId: 'engine', reason: 'the run was reaped', evidenceRef: 'del-eng01',
     });
@@ -848,6 +854,8 @@ describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves no
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
        VALUES ('del-0002', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0002', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0002' WHERE id = 'del-0002'`).run();
     // G7 resolves the delivery against the ROW's agent (`deliveryForTaskClose` reads
     // `work.agent_id`), not against whoever is calling — so it belongs to the assignee even
     // when the bystander is the one filing. G7 is satisfied first so the clause measures G9.
@@ -874,6 +882,8 @@ describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves no
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
        VALUES ('del-0003', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
     ).run(VICTIM);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0003', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0003' WHERE id = 'del-0003'`).run();
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
     const out = trackerUpdateStatus(PRIMARY, {
       taskId: TASK, status: 'complete', notes: 'finished it for her',

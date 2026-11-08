@@ -49,8 +49,11 @@ const keyOnes = (id: string): number => (db().prepare(
 ).get(id) as { n: number }).n;
 /** A result that reached the person — what a close points at (`deliveryForTaskClose`). */
 const seedDelivery = (): void => {
-  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at)
-    VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'conv-owner', 'delivered', datetime('now', '+1 second'))`).run(`d-${Math.random()}`, AGENT);
+  const id = `d-${Math.random()}`;
+  db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES (?, ?, 'owner', 'assistant', 'The labelled messages are listed in the summary.', ?, ?)`)
+    .run(`m-${id}`, AGENT, Date.now(), Date.now());
+  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
+    VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'conv-owner', ?, 'delivered', datetime('now', '+1 second'))`).run(id, AGENT, `m-${id}`);
 };
 const settle = async (): Promise<void> => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };   // eslint-disable-line no-await-in-loop
 

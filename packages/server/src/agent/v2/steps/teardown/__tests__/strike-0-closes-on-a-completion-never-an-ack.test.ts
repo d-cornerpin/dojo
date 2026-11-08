@@ -178,7 +178,7 @@ describe('(b) a real text completion is the WORKER\'s to close on, never the eng
 });
 
 describe('(c) what the engine can count still closes them', () => {
-  it('a file the worker wrote during the turn closes both tasks', async () => {
+  it('a file the worker wrote, charged to one task, closes that task and only that one', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     const only = line('d-file-line', 'dashboard', conv, 'Here is the confirmation.');
     const fs = await import('node:fs');
@@ -188,8 +188,10 @@ describe('(c) what the engine can count still closes them', () => {
     db().prepare(
       `INSERT INTO audit_log (id, agent_id, action_type, target, result) VALUES ('a-file', ?, 'file_write', ?, 'success')`,
     ).run(AGENT, file);
+    db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`)
+      .run(tasks[0], `file:${file}`, Date.now(), Date.now());
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
-    expect(states(tasks)).toEqual(['done', 'done']);
+    expect(states(tasks)).toEqual(['done', 'claimed']);
   });
 
   it('a measured task whose measure reads 0 closes; its unmeasured sibling stays open', async () => {

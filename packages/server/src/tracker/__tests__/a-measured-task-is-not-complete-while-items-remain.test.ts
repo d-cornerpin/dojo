@@ -58,8 +58,11 @@ const taskIdFrom = (out: Out): string => {
 
 /** A result that reached the person — what a one-shot close points at (`deliveryForTaskClose`). */
 function seedDelivery(): void {
-  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at)
-    VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'conv-owner', 'delivered', datetime('now', '+1 second'))`).run(`d-${Math.random()}`, AGENT);
+  const id = `d-${Math.random()}`;
+  db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES (?, ?, 'owner', 'assistant', 'The labelled messages are listed in the summary.', ?, ?)`)
+    .run(`m-${id}`, AGENT, Date.now(), Date.now());
+  db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
+    VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'conv-owner', ?, 'delivered', datetime('now', '+1 second'))`).run(id, AGENT, `m-${id}`);
 }
 
 async function openMeasured(initial: number, extra: Record<string, unknown> = {}): Promise<string> {

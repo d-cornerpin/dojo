@@ -301,6 +301,8 @@ describe("dec 2 the main agent cannot cancel or reopen a live agent's work unles
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, detail, outcome) VALUES ('del-0001', ?, 1, 'send_to_agent', 'a2a', ?, 'A2A ANSWER', 'delivered')`,
     ).run(WORKER, MAIN);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0001', ?, 'send_to_agent', 'The ledger ties out for the quarter.')`).run(WORKER);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0001' WHERE id = 'del-0001'`).run();
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(WORKER);
     const out = trackerUpdateStatus(MAIN, {
       taskId: TASK, status: 'complete', result: 'the ledger ties out', evidence: [{ kind: 'claim', claim: 'reconciled all lines' }],
@@ -406,6 +408,8 @@ describe('dec 27 complete_step needs the same result and evidence as complete', 
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome) VALUES ('del-0002', ?, 1, 'send_message', 'dashboard', 'delivered')`,
     ).run(WORKER);
+    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0002', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(WORKER);
+    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0002' WHERE id = 'del-0002'`).run();
     mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(WORKER);
     const out = trackerCompleteStep(PEER, {
       taskId: TASK, result: 'done', evidence: [{ kind: 'claim', claim: 'did it' }],

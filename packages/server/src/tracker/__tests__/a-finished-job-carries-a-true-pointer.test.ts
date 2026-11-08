@@ -90,6 +90,20 @@ describe('the close receipt is a message to the asker made during the task', () 
     expect(proofDelivery(taskId)).toBeNull();
   });
 
+  it('THE S4 SHAPE: "On it, I\'ve handed Squarespace to a helper" from the turn that opened the task is NOT picked; the later rundown is', () => {
+    seedTurn(4552);
+    const taskId = seedTask('task-s4-open');
+    mockDb.current!.prepare('UPDATE work SET origin_turn = 4552 WHERE id = ?').run(taskId);
+    seedMessage('msg-ack-s4', "On it, I've handed Squarespace to one helper and WordPress to another to dig into.", 4552);
+    seedDelivery('a133f5e2', { turn: 4552, messageId: 'msg-ack-s4' });
+    seedTurn(4553);
+    expect(proofDelivery(taskId)).toBeNull();
+    seedTurn(4555);
+    seedMessage('msg-rundown-s4', 'Squarespace is $276/yr all-in; WordPress needs separate hosting.', 4555);
+    seedDelivery('8eb0439d', { turn: 4555, messageId: 'msg-rundown-s4', offsetSeconds: 10 });
+    expect(proofDelivery(taskId)).toBe('8eb0439d');
+  });
+
   it('G7 CONTROL: a close that really did deliver resolves its receipt', () => {
     seedTurn(4552);
     const taskId = seedTask('task-same-turn');

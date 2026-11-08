@@ -2,6 +2,7 @@ import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens, validationMeasureLines } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { engineProof, proofDelivery, proofFor, proofLines } from '../work/done/proof.js';
+import { keepProofShownFor, noteProofShown } from './looked-at.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -64,9 +65,12 @@ import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './e
 import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 
-/** The proof on record for a task (`proofFor`), as an indented list under `head`, or '' when there is none. */
+/** The proof on record for a task (`proofFor`), as an indented list under `head`, or '' when there is none.
+ *  What it lists is recorded as shown to the PM (`noteProofShown`): this text is only ever sent to the PM. */
 function proofBlock(taskId: string, head: string): string {
-  const lines = proofLines(proofFor(taskId));
+  const proof = proofFor(taskId);
+  noteProofShown(taskId, proof.map((i) => i.ref));
+  const lines = proofLines(proof);
   return lines.length > 0 ? `${head}\n${lines.map((l) => `    - ${l}`).join('\n')}\n` : '';
 }
 
@@ -2026,6 +2030,7 @@ async function runPMReview(): Promise<void> {
       .slice(0, 3)
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
+  keepProofShownFor(new Set(unvalidatedCompleteRows.map((r) => r.id)));
   for (const cTask of unvalidatedCompleteRows) {
     // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
     // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/

@@ -9,6 +9,7 @@ import { ENGINE_SENT_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlemen
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
 import { deliveredToAsker, writtenByAsker, type Asker } from './asker.js';
 import { fileFacts } from './file-facts.js';
+import { currentTurnNumber } from '../../agent/v2/turn-record.js';
 
 export type HandInOutcome = 'finished' | 'cant_be_done';
 export type ProofKind = 'file' | 'delivery' | 'command' | 'receipt' | 'measure' | 'remainder' | 'failure' | 'withdrawal';
@@ -19,7 +20,9 @@ export interface ProofItemInput { kind: ProofKind; ref: string; facts?: { reason
 /** A proof item as the engine resolved it: what it found at the reference. */
 export interface ResolvedItem { kind: ProofKind; ref: string; label: string; facts: Facts }
 
-export interface ProofTask { id: string; title: string | null; openedAt: number }
+/** `originTurn`: the turn that opened the task. `askReceipt`: the delivery the ask settlement recorded
+ *  for the message the task exists for (the engine's own reading of which line answered it). */
+export interface ProofTask { id: string; title: string | null; openedAt: number; originTurn: number | null; askReceipt: string | null }
 export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome }
 export type Resolution = { ok: true; item: ResolvedItem } | { ok: false; why: string };
 
@@ -89,10 +92,11 @@ type Resolver = (ctx: ProofContext, ref: string, input: ProofItemInput) => Facts
 function delivery(ctx: ProofContext, ref: string): Facts | string {
   const d = getDb().prepare(
     `SELECT d.agent_id, d.tool, d.channel, d.recipient_id, d.recipient_display, d.conversation_id, d.outcome, d.created_at, d.detail,
-            m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text
+            d.turn_number, d.message_id, m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text
        FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
       WHERE d.id = ?`,
   ).get(ref) as { agent_id: string; tool: string; channel: string; recipient_id: string | null; detail: string | null;
+    turn_number: number | null; message_id: string | null;
     display_kind: string | null; origin_intent: string | null; recipient_display: string | null; conversation_id: string | null;
     outcome: string; created_at: string; text: string | null } | undefined;
   if (!d) return '';
@@ -105,8 +109,16 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
   if (own) return own;
   if (!deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
   if (d.channel === 'a2a' && !handsOverWork(intentOf(d.detail) ?? intentOf(d.text))) return 'does not hand over the work (its intent is not an answer or a deliverable)';
-  if (d.text !== null && claim(ctx, d.text)) return 'is only a status claim, which is never proof';
-  return { channel: d.channel, recipient: d.recipient_display ?? d.recipient_id ?? 'the owner', at: d.created_at, excerpt: excerpt(d.text) };
+  if (d.text === null) return 'carries no text on record, so it shows no work';
+  if (claim(ctx, d.text)) return 'is only a status claim, which is never proof';
+  // Once the turn that opened the task is over, a line from it is the task's start line ("On it, I've
+  // handed it to a helper"), unless the ask settlement recorded that very line as the answer.
+  if (ctx.task.originTurn !== null && d.turn_number === ctx.task.originTurn && ref !== ctx.task.askReceipt
+    && currentTurnNumber(ctx.workerId) > ctx.task.originTurn) {
+    return 'is a line from the turn that opened the task, not its answer';
+  }
+  return { channel: d.channel, recipient: d.recipient_display ?? d.recipient_id ?? 'the owner', at: d.created_at,
+    message: d.message_id ?? '', excerpt: excerpt(d.text) };
 }
 
 /** The exit status an exec audit row records: 0, the code, or the reason it stopped. */

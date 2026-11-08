@@ -73,6 +73,16 @@ export function sendReachesAsker(taskId: string, recipients: readonly string[]):
   return a.kind === 'agent' && a.id !== null && recipients.length > 0 && recipients.every((r) => agentIdOf(r) === a.id);
 }
 
+/** Was this stored message written by the task's asker (the asker's own words, never the worker's)? */
+export function fromAsker(taskId: string, messageId: string): boolean {
+  const m = getDb().prepare(
+    `SELECT content, lane, channel, sender_id, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
+            inbound_meta, origin_intent, role FROM messages WHERE id = ?`,
+  ).get(messageId) as (SourceRowLike & { role: string }) | undefined;
+  const opened = getDb().prepare('SELECT opened_at FROM work WHERE id = ?').get(taskId) as { opened_at: number } | undefined;
+  return !!m && !!opened && m.role === 'user' && writtenByAsker(askerOf(taskId), m, opened.opened_at);
+}
+
 /** Is this inbound message (role user, in the worker's store) from the asker? */
 export function writtenByAsker(a: Asker, m: SourceRowLike, openedAt: number): boolean {
   if (a.kind === 'agent') return a.id !== null && m.source_agent_id === a.id;

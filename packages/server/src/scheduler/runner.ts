@@ -33,7 +33,7 @@ import { workSettled, noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
-  sweepTerminatedAgentOccurrences, runsReadyToCloseOnDelivery,
+  sweepTerminatedAgentOccurrences, runsReadyToCloseOnDelivery, runDeliverableEvidence,
 } from '../work/occurrences.js';
 // SWEEP CORE-1 CT2 — the deliverable declaration and the steer-to-deliver ladder's verify rung.
 import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
@@ -1168,7 +1168,9 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // recompute next_run_at (the P-5 run-counter inflation class), so it bails as a no-op.
   const occRow = db.prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
     .get(runId) as { agent_id: string; opened_at: number } | undefined;
-  const delivered = occRow ? proofDelivery(runId) : null;
+  // The run's own deliverable rule (`runDeliverableEvidence`): a run is judged on what it delivered to the
+  // person its schedule serves, whoever that is, never on the asker rule a task's proof uses.
+  const delivered = occRow ? runDeliverableEvidence(runId)?.id ?? null : null;
   const settled = settleOccurrence(runId, status, delivered, summary);
 
   // ── SWEEP CORE-1 CT2 — THE RUN OWES A MESSAGE AND NONE WAS SENT. ──
@@ -1433,7 +1435,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     logger.warn('Scheduler: final run failed; task marked fallen (not complete) and owner notified', { taskId, runId, status });
   } else {
     // No more runs: mark everything as completed
-    const finalDelivery = proofDelivery(taskId);
+    const finalDelivery = delivered;
     const finalRes = withUnit(() => {
       const res = setTrackerStatus(taskId, 'complete', {
         by: finalDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',

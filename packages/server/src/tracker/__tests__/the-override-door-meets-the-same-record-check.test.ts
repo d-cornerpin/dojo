@@ -76,6 +76,14 @@ function seedDelivery(id: string, text = 'Done, please validate.'): string {
   ).run(id, WORKER, `m-${id}`);
   return id;
 }
+/** The PM's own history_get of a message, with the result the engine stored for it. */
+function pmOpens(messageId: string): void {
+  const at = Date.now() + (++msgSeq);
+  mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES (?, ?, 'a2a', 'assistant', ?, ?, ?, ?)`)
+    .run(`pa-${msgSeq}`, PM, JSON.stringify([{ type: 'tool_use', id: `c-${msgSeq}`, name: 'history_get', input: { id: messageId } }]), TURN, at, at);
+  mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES (?, ?, 'owner', 'tool', ?, ?, ?, ?)`)
+    .run(`pr-${msgSeq}`, PM, JSON.stringify([{ type: 'tool_result', tool_use_id: `c-${msgSeq}`, content: 'the message', is_error: false }]), TURN, at, at);
+}
 async function door(key: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
   const out = await trackerHandlers[key]({
     agentId: PM, name: 'work_validate', callId: `v${++msgSeq}`, args,
@@ -116,6 +124,7 @@ describe('C7: an override that approves a close meets the same record check as v
   it('an override approve the record backs (the worker\'s message to the owner carries the work) goes through', async () => {
     const t = newTask();
     fileClose(t, seedDelivery('deliv-ov-2', 'The quarterly summary: revenue 412, costs 300, filed under Reports.'));
+    pmOpens('m-deliv-ov-2');
     const r = await override(askOverride(t), true);
     expect(r.content, r.content).toMatch(/^\[OK\] override approved/);
     expect(stateOf(t)).toBe('done');

@@ -80,6 +80,12 @@ function writeFile(name: string, body: string): string {
   return p;
 }
 
+/** The engine's ledger charge of a file write to a task (`work/ledger-store.ts`). */
+function charge(workId: string, file: string): void {
+  doneDb().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`)
+    .run(workId, `file:${file}`, Date.now(), Date.now());
+}
+
 function askedByAgent(): void {
   doneDb().prepare("UPDATE work SET requester = 'agent', requester_id = ? WHERE id = ?").run(ASKER_AGENT, TASK);
 }
@@ -350,10 +356,42 @@ describe('a hand-in proof must be real and this task\'s', () => {
     audit('a-before', { target: oldFile, at: since - 20_000 });
     const newFile = writeFile('new.md', 'this task\'s work');
     audit('a-new', { target: newFile });
-    audit('a-gone', { target: path.join(path.dirname(newFile), 'deleted-since.md') });
+    const gone = path.join(path.dirname(newFile), 'deleted-since.md');
+    audit('a-gone', { target: gone });
+    const otherTasks = writeFile('other-task.md', 'another task\'s work');
+    audit('a-other', { target: otherTasks });
+    for (const [work, file] of [[TASK, newFile], [TASK, gone], [OTHER_TASK, otherTasks]]) charge(work, file);
     expect(proofFor(TASK).map((i) => ({ kind: i.kind, ref: i.ref }))).toEqual([
       { kind: 'delivery', ref: 'd-new' },
       { kind: 'file', ref: newFile },
     ]);
+  });
+
+  it('once the turn that opened the task is over, its line is the start line, never the answer, unless the ask settled on it', () => {
+    doneDb().prepare('UPDATE work SET origin_turn = 7 WHERE id = ?').run(TASK);
+    delivery('d-ack', { text: "On it, I've handed the report to a helper to write up." });
+    doneDb().prepare("UPDATE deliveries SET turn_number = 7 WHERE id = 'd-ack'").run();
+    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered) VALUES (?, 7, 'user', 0)").run(WORKER);
+    expect(finished([{ kind: 'delivery', ref: 'd-ack' }]).ok, 'a close in that same turn reads its own line').toBe(true);
+    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered) VALUES (?, 9, 'user', 0)").run(WORKER);
+    expect(refusal(finished([{ kind: 'delivery', ref: 'd-ack' }]))).toMatch(/turn that opened the task, not its answer/);
+    delivery('d-later', { text: 'The report: 12 sections, totals on page 3.' });
+    doneDb().prepare("UPDATE deliveries SET turn_number = 9 WHERE id = 'd-later'").run();
+    expect(finished([{ kind: 'delivery', ref: 'd-later' }]).ok).toBe(true);
+    message('m-src', { role: 'user', content: 'Write up the report?', at: openedAt - 1000 });
+    doneDb().prepare("UPDATE work SET source_message_id = 'm-src' WHERE id = ?").run(TASK);
+    doneDb().prepare(
+      `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, result_delivery_id, opened_at, closed_at, updated_at)
+       VALUES ('ask:m-src', 'ask', ?, 'owner', 'conv', 'm-src', 'done', 'answer', 1, 0, 'd-ack', ?, ?, ?)`,
+    ).run(WORKER, openedAt, openedAt, openedAt);
+    expect(finished([{ kind: 'delivery', ref: 'd-ack' }]).ok).toBe(true);
+  });
+
+  it('refuses a delivery with no text on record (unknown never counts)', () => {
+    doneDb().prepare(
+      `INSERT INTO deliveries (id, agent_id, tool, channel, outcome, created_at, updated_at)
+       VALUES ('d-bare', ?, 'dashboard', 'dashboard', 'delivered', ?, ?)`,
+    ).run(WORKER, sqlTime(Date.now()), sqlTime(Date.now()));
+    expect(refusal(finished([{ kind: 'delivery', ref: 'd-bare' }]))).toMatch(/no text on record/);
   });
 });

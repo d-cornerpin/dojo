@@ -139,13 +139,15 @@ function claimedTask(id: string, title: string, atMs: number, measuredLeft: numb
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), measuredLeft, atMs, id);
   }
 }
-/** The work the engine can count (`engineProof`): a file the helper wrote for the task, still on disk. */
+/** The work the engine can count (`engineProof`): a file the helper wrote, charged to the task's ledger, still on disk. */
 function wroteFile(taskId: string, atMs: number): void {
   const report = path.join(HOME, `${taskId}.md`);
   fs.writeFileSync(report, 'The one-page report.');
   db().prepare(
     `INSERT INTO audit_log (id, agent_id, action_type, target, result, created_at) VALUES (?, 'helper', 'file_write', ?, 'success', ?)`,
   ).run(`a-${taskId}`, report, sqlTime(atMs));
+  db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`)
+    .run(taskId, `file:${report}`, atMs, atMs);
 }
 const closeLogged = (taskId: string): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND payload LIKE '%delivery-receipt close%'",
