@@ -8,8 +8,9 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRo
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { decide } from '../decide.js';
+import { closeProjectAndOpenTasks } from '../../../tracker/schema.js';
 import { deriveProjectState } from '../project-state.js';
-import { freshBoard, handedIn, call, stateOf, PM, WORKER, TASK } from './helpers/decision-world.js';
+import { freshBoard, handedIn, call, stateOf, eventCount, PM, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 const PROJECT = 'proj-derived';
@@ -70,5 +71,19 @@ describe('a project is derived from its tasks', () => {
     doneDb().prepare('UPDATE work SET parent_id = NULL WHERE id = ?').run(TASK);
     expect(deriveProjectState(PROJECT)).toBeNull();
     expect(stateOf(PROJECT)).toBe('open');
+  });
+
+  it('the owner\'s cancel of a project cancels its open tasks, each by its own decision', async () => {
+    freshBoard();
+    underAProject();
+    const at = Date.now() - 60_000;
+    doneDb().prepare(
+      `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+       VALUES ('sib-open', 'task', ?, ?, 'owner', 'tracker', 'sib-open', 'open', 'task', 1, 0, 'a second task', ?, ?)`,
+    ).run(PROJECT, WORKER, at, at);
+    const r = closeProjectAndOpenTasks({ projectId: PROJECT, taskStatus: 'cancelled', reason: 'The launch is off' });
+    expect(r).toMatchObject({ tasksClosed: 2, refused: 0, projectClosed: true });
+    expect([stateOf(PROJECT), stateOf(), stateOf('sib-open')]).toEqual(['abandoned', 'abandoned', 'abandoned']);
+    expect([eventCount('decided'), eventCount('decided', 'sib-open')]).toEqual([1, 1]);
   });
 });

@@ -10,8 +10,8 @@
 // The owner decides from the dashboard (decider null), or approves or sends back a hand-in he was
 // asked about by his own words relayed by an agent, verified against his messages (`ownerQuoteProof`).
 // One unit per row (`applyDecision`): the adjudication, the `decided` event and the transition with
-// `claim: 'decided'`, then the decision's effects (`effects.ts`). A can't-be-done project closes each of
-// its open tasks the same way.
+// `claim: 'decided'`, then the decision's effects (`effects.ts`). A project that ends closes each of its
+// open tasks the same way.
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId } from '../../config/platform.js';
 import { ownerQuoteProof } from '../../tracker/owner-words.js';
@@ -35,7 +35,8 @@ export interface DecideInput {
   /** The owner's own words, when an agent relays his decision. */
   ownerQuote?: string;
 }
-export type DecideResult = { kind: 'decided'; to: WorkState; text: string } | { kind: 'refused'; text: string };
+/** `unclosed`: a project's open tasks that did not close with it. */
+export type DecideResult = { kind: 'decided'; to: WorkState; text: string; unclosed: string[] } | { kind: 'refused'; text: string };
 
 const VERDICTS: readonly Verdict[] = ['approve', 'send_back', 'cancel', 'owner_done'];
 const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
@@ -134,12 +135,18 @@ export function decide(input: DecideInput): DecideResult {
   const moved = applyDecision(row.id, row.state, to, p);
   if (moved.kind !== 'applied') return refused(`${name} could not move to ${to}: ${moved.detail}.`);
   if (input.verdict === 'owner_done') recordOwnerRemainder(row.id);
-  if (to === 'failed') {
+  const unclosed: string[] = [];
+  if (isTerminal(to)) {
     const open = getDb().prepare(
       `SELECT w.id, w.state FROM work w WHERE w.parent_id = ? AND ${taskScope('w')} AND w.state NOT IN ('done','failed','abandoned')`,
     ).all(row.id) as Array<{ id: string; state: WorkState }>;
-    for (const t of open) applyDecision(t.id, t.state, 'failed', { ...p, reason: `closed with its project: ${reason}`, outcome: 'cant_be_done', run: false });
+    for (const t of open) {
+      const child = applyDecision(t.id, t.state, to, { ...p, reason: `closed with its project: ${reason}`, outcome: to === 'done' ? 'finished' : 'cant_be_done', run: false });
+      if (child.kind !== 'applied') unclosed.push(t.id);
+      else if (input.verdict === 'owner_done') recordOwnerRemainder(t.id);
+    }
   }
   const words: Partial<Record<WorkState, string>> = { done: 'Done', failed: "Closed: couldn't be done", sent_back: 'Sent back to its worker', abandoned: 'Cancelled', open: 'decided for this run; the schedule goes on' };
-  return { kind: 'decided', to, text: `Decided: ${name} is ${words[to]}. Reason: ${reason}` };
+  const left = unclosed.length > 0 ? ` Not closed with it: ${unclosed.join(', ')}.` : '';
+  return { kind: 'decided', to, unclosed, text: `Decided: ${name} is ${words[to]}. Reason: ${reason}${left}` };
 }

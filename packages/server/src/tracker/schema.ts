@@ -348,9 +348,8 @@ export function listProjects(filter?: { status?: string }): Project[] {
 }
 
 /**
- * The owner closes a project and every still-open task on it from the dashboard: each row is his
- * decision (`work/done/decide.ts`, owner_done or cancel). Returns counts and every row that did not
- * close, so the caller reports what is still open.
+ * The owner closes a project from the dashboard: his decision (`work/done/decide.ts`, owner_done or
+ * cancel) closes its still-open tasks with it. Returns counts and every row that did not close.
  */
 export function closeProjectAndOpenTasks(params: {
   projectId: string;
@@ -362,19 +361,13 @@ export function closeProjectAndOpenTasks(params: {
   const tasks = getDb()
     .prepare(`SELECT work.id AS id, work.state AS state FROM work WHERE ${TASK_WHERE} AND work.parent_id = ?`)
     .all(projectId) as Array<{ id: string; state: string }>;
-  let tasksClosed = 0;
-  let alreadyClosed = 0;
-  const unsettled: Array<{ workId: string; text: string }> = [];
-  for (const t of tasks) {
-    if (isTerminalName(t.state)) { alreadyClosed++; continue; }
-    const r = decide({ workId: t.id, deciderAgentId: null, verdict, reason: `closed with its project: ${reason}` });
-    if (r.kind === 'decided') tasksClosed++;
-    else unsettled.push({ workId: t.id, text: r.text });
-  }
-  // Its tasks may already have settled the project (a project is derived from its tasks).
+  const alreadyClosed = tasks.filter((t) => isTerminalName(t.state)).length;
+  // The decision closes the project's open tasks with it; a project its tasks already settled is closed.
   const settled = isTerminalName((getDb().prepare('SELECT state FROM work WHERE id = ?').get(projectId) as { state: string } | undefined)?.state ?? '');
   const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
-  if (pr && pr.kind !== 'decided') unsettled.push({ workId: projectId, text: pr.text });
+  const unsettled = pr?.kind === 'refused' ? [{ workId: projectId, text: pr.text }]
+    : (pr?.unclosed ?? []).map((workId) => ({ workId, text: 'did not close with its project' }));
+  const tasksClosed = pr?.kind === 'decided' ? tasks.length - alreadyClosed - pr.unclosed.length : 0;
   logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
   // Broadcast updated tasks + project so the dashboard repaints.

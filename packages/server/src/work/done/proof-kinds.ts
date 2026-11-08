@@ -5,7 +5,7 @@
 // the proof as it stood when it was checked.
 import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
-import { ENGINE_SENT_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
+import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
 import { deliveredToAsker, writtenByAsker, type Asker } from './asker.js';
 import { fileFacts } from './file-facts.js';
@@ -22,8 +22,9 @@ export interface ResolvedItem { kind: ProofKind; ref: string; label: string; fac
 /** `ask`: the ask the task exists for, when it has one, with the delivery its settlement recorded (the
  *  engine's own reading of which line answered it). */
 export interface ProofTask { id: string; title: string | null; openedAt: number; ask: { receipt: string | null } | null }
-/** `byEngine`: the engine files this hand-in for its worker, and the engine's own delivery for the work
- *  (a relay, a scheduled run's line to whoever it serves) is the worker of record's delivery. */
+/** `byEngine`: the engine files this hand-in for its worker. The delivery it cites may then go to whoever
+ *  the work serves (a scheduled run's line to a third party), and may be the engine's own join relay of
+ *  the work; every other engine line stays refused. */
 export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome; byEngine?: boolean }
 export type Resolution = { ok: true; item: ResolvedItem } | { ok: false; why: string };
 
@@ -102,7 +103,7 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
     outcome: string; created_at: string; text: string | null } | undefined;
   if (!d) return '';
   if (d.outcome !== 'delivered') return `was not delivered (its outcome is ${d.outcome})`;
-  if (d.origin_intent === START_ACK_ORIGIN_INTENT || (isEngineTool(d.tool) && !ctx.byEngine)) {
+  if (d.origin_intent === START_ACK_ORIGIN_INTENT || (isEngineTool(d.tool) && !(ctx.byEngine && ENGINE_JOIN_RELAY_TOOLS.has(d.tool)))) {
     return "is the engine's own line or acknowledgement, not the worker's message";
   }
   if ((NON_ANSWERING_DISPLAY_KINDS as readonly string[]).includes(d.display_kind ?? '')) return 'is a tool chip or working note, not a message';

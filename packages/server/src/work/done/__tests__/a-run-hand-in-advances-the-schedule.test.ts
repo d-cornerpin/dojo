@@ -11,6 +11,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { onTaskRunComplete, cleanupStaleRuns } from '../../../scheduler/runner.js';
 import { dueScope } from '../../tracker-view.js';
 import { latestHandIn } from '../record.js';
+import { engineHandIn } from '../hand-in.js';
 import { freshBoard, deliveredToOwner, call, stateOf, eventCount, PM, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
@@ -68,6 +69,20 @@ describe('a run hand-in advances the schedule', () => {
     ).run(WORKER);
     expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
     expect(latestHandIn(TASK)).toMatchObject({ outcome: 'finished', items: [expect.objectContaining({ kind: 'delivery', ref: 'dlv-third' })] });
+  });
+
+  it.each(['busy-ack', 'imessage-door'])('an engine hand-in of a run citing an engine %s line in the run window is refused', async (tool) => {
+    freshBoard();
+    aRunInFlight('run-1', Date.now() - 30_000);
+    const at = Math.floor(Date.now() / 1000) * 1000;
+    doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at) VALUES ('m-eng', ?, 'owner', 'assistant', 'I am busy right now and will reply soon.', 1, ?, ?)").run(WORKER, at, at);
+    doneDb().prepare(
+      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at)
+       VALUES ('dlv-eng', ?, ?, 'imessage', 'friend@example.com', 'm-eng', 'delivered', datetime('now'), datetime('now'))`,
+    ).run(WORKER, tool);
+    const r = engineHandIn(TASK, 'the run finished', { outcome: 'finished', items: [{ kind: 'delivery', ref: 'dlv-eng' }], scope: 'run' });
+    expect(r.kind).toBe('refused');
+    expect(stateOf()).toBe('claimed');
   });
 
   it('a handed-in run whose next run went missing is left alone by the recovery sweep', async () => {

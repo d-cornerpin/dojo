@@ -62,7 +62,7 @@ import type { WorkEventKind } from './event-kinds.js';
 // are its, and are called from inside this file's transactions (see `work/next-run.ts`).
 import { advanceScheduleOnClaim, restoreScheduleOnRelease } from './next-run.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
-import { NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
+import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import {
   RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
@@ -236,7 +236,7 @@ export function releaseOccurrence(
 //
 // ── THE PREDICATE, and every narrowing is a negative control in the unit test ──
 // Six, and five of them are the ask authority's own doctrine asked of a RUN's window instead of
-// a TURN's. `NON_ANSWERING_DELIVERY_TOOLS` and `NON_ANSWERING_DISPLAY_KINDS` are IMPORTED from
+// a TURN's. `ENGINE_SENT_TOOLS` and `NON_ANSWERING_DISPLAY_KINDS` are IMPORTED from
 // `work/ask-settlement.ts` rather than restated, for the reason that file gives for sharing
 // `NOT_A_TOOL_CHIP` between its own two arms: so the lanes cannot drift apart.
 //
@@ -249,17 +249,9 @@ export function releaseOccurrence(
 // would red the one lane where the owner most reliably does get his brief.
 // ════════════════════════════════════════════════════════════════════════════════
 
-/** Deliveries that are not the agent supplying a result to a person. Two imported (the
- *  start-ack doctrine), two added by MEASUREMENT on this box with their populations stated:
- *  `alert` (1140/1140 carry no message row — the PLATFORM's own owner-alert voice, not the
- *  agent's work) and `a2a-join-failed` (3/3 — the engine saying no answer is coming, the exact
- *  opposite of a deliverable; `ask-settlement.ts` keeps it out of `ENGINE_JOIN_RELAY_TOOLS` for
- *  the same stated reason). `a2a-join-relay` is deliberately ADMITTED: when the engine hands a
- *  delegated job's COMPILED answer to the owner, the owner really did receive the result, and
- *  TB13's correction is kept whole here exactly as CT0 kept it whole in the ask lane. */
-export const NON_DELIVERABLE_RUN_TOOLS = new Set([
-  ...NON_ANSWERING_DELIVERY_TOOLS, 'alert', 'a2a-join-failed',
-]);
+/** Deliveries that are not the agent supplying a result to a person: every line the engine writes
+ *  (`ENGINE_SENT_TOOLS`), except its join relay, which hands the owner the compiled result itself. */
+const NON_DELIVERABLE_RUN_TOOLS = [...ENGINE_SENT_TOOLS].filter((t) => !ENGINE_JOIN_RELAY_TOOLS.has(t));
 
 /** Channels on which nothing reaches a PERSON. `a2a` is an apprentice hearing about it; `none`
  *  is the bookkeeping lane. Named rather than left to `outcome='delivered'` to filter, so the
@@ -285,7 +277,7 @@ export function runDeliverableEvidence(
     `SELECT agent_id, opened_at FROM work WHERE id = ? AND kind = ?`,
   ).get(occurrenceId, OCCURRENCE_KIND) as { agent_id: string; opened_at: number } | undefined;
   if (!occ) return null;
-  const tools = [...NON_DELIVERABLE_RUN_TOOLS];
+  const tools = NON_DELIVERABLE_RUN_TOOLS;
   const channels = [...NON_OWNER_CHANNELS];
   const chipKinds = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
   return (getDb().prepare(
