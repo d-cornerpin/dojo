@@ -144,7 +144,7 @@ const seedWork = (p: { id: string; owner: string; requester: string; state?: str
                       schedule_json, next_run_at, sequence)
     VALUES (?, 'task', ?, ?, 'agent', ?, 'legacy', 'legacy', ?, 'FYI', 0, 0, 'a chore', ?, ?,
             '{"every":"day"}', ?, 0)
-  `).run(p.id, p.parent ?? null, p.owner, p.requester, p.state ?? 'on_deck', NOW, NOW, NOW + 86_400_000);
+  `).run(p.id, p.parent ?? null, p.owner, p.requester, p.state ?? 'open', NOW, NOW, NOW + 86_400_000);
   db().prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at)
                 VALUES (?, 'opened', '{}', 'owner', ?)`).run(p.id, NOW);
   db().prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at)
@@ -286,14 +286,14 @@ describe('create -> schedule -> purge -> re-create the same name', () => {
     expect(byName).toEqual([{ at: 'agents.name', rows: 1 }]);
   });
 
-  it('⚠ the scheduler polls an empty on_deck — no timer is armed for the agent that left', async () => {
+  it('⚠ the scheduler polls an empty Open: no timer is armed for the agent that left', async () => {
     seedTheWholeLife();
-    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'on_deck' AND agent_id = ?", OLD_ID)).toBe(2);
+    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'open' AND next_run_at IS NOT NULL AND agent_id = ?", OLD_ID)).toBe(2);
 
     await purge(OLD_ID);
     seedAgent(NEW_ID, SHARED_NAME, 'idle');
 
-    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'on_deck'")).toBe(0);
+    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'open' AND next_run_at IS NOT NULL AND agent_id = ?", OLD_ID)).toBe(0);
     expect(n('SELECT COUNT(*) AS n FROM work WHERE agent_id = ?', NEW_ID)).toBe(0);
   });
 

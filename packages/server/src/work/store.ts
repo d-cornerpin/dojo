@@ -87,7 +87,7 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
 const REOPENERS: readonly Actor[] = ['owner', 'pm', 'engine'];
 
 /** Board work: the tracker's tasks and projects, never a join piece of an ask. The same scope as
- *  migration 139's `two_key_completion` trigger, so the gate and the constraint never disagree. */
+ *  the `board_done_needs_decision` trigger, so the gate and the constraint never disagree. */
 const isBoardWork = (row: Pick<WorkRow, 'kind' | 'root_kind'>): boolean =>
   (row.kind === 'task' || row.kind === 'project') && row.root_kind !== 'a2a_thread';
 

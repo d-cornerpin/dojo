@@ -247,7 +247,7 @@ const seedWork = (id: string, kind: string, parent: string | null, agent = 'a-do
   db().prepare(`
     INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent,
                       wakes, closes_thread, title, opened_at, updated_at, sequence)
-    VALUES (?, ?, ?, ?, 'owner', 'legacy', 'legacy', 'on_deck', 'FYI', 0, 0, 'a chore', ?, ?, 0)
+    VALUES (?, ?, ?, ?, 'owner', 'legacy', 'legacy', 'open', 'FYI', 0, 0, 'a chore', ?, ?, 0)
   `).run(id, kind, parent, agent, NOW, NOW);
 };
 

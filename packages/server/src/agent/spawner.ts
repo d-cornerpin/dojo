@@ -18,9 +18,7 @@ import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
-import { patchWork } from '../work/tracker-store.js';
 import { setHold, heldExpr } from '../work/done/hold.js';
-import { noteUnsettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -783,7 +781,6 @@ export async function completeAgent(
 
   // The task was handed in by complete_task before this ran (`completeTaskHandIn`); a block holds it.
   if (resolvedTaskId) {
-    noteUnsettled(patchWork(resolvedTaskId, { completion_summary: summary }), 'completeAgent: completion summary recorded', { taskId: resolvedTaskId });
     if (status === 'blocked') {
       const held = setHold(resolvedTaskId, 'blocked', summary.split('\n')[0] || `apprentice "${agent.name}" is blocked`, agentId);
       if (!held.ok) logger.warn('completeAgent: block refused', { agentId, taskId: resolvedTaskId, why: held.why }, agentId);

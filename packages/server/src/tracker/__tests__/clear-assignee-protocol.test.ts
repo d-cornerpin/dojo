@@ -51,7 +51,7 @@ function seedTask(id: string, agentId: string, assignee: string | null): void {
     INSERT INTO work (id, kind, agent_id, assignee_agent, requester, requester_id,
                       root_kind, root_id, state, intent, wakes, closes_thread,
                       title, opened_at, updated_at, provenance)
-    VALUES (?, 'task', ?, ?, 'owner', 'owner', 'tracker', ?, 'on_deck', 'tracker', 0, 0,
+    VALUES (?, 'task', ?, ?, 'owner', 'owner', 'tracker', ?, 'open', 'tracker', 0, 0,
             'a task', ?, ?, 'live')
   `).run(id, agentId, assignee, id, T, T);
 }

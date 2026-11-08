@@ -159,11 +159,9 @@ describe('the healer mode door', () => {
     }
   });
 
-  it('has no off switch (no sensei agent can be turned off): off is refused, and a stored off reads as monitor', async () => {
-    setConfig('healer_mode', 'off');
+  it('has no off switch (no sensei agent can be turned off): off is refused', async () => {
     expect((await healerRouter.request('/config', json('POST', { healerMode: 'off' }))).status).toBe(400);
-    const res = await healerRouter.request('/config');
-    expect(((await res.json()) as { data: { healerMode: string } }).data.healerMode).toBe('monitor');
+    expect(getConfig('healer_mode')).toBeUndefined();
   });
 
   it('is not mode-checked when the mode is not being changed', async () => {

@@ -227,7 +227,7 @@ describe('G7 — done means DELIVERED', () => {
 describe('G8 — two-key is a type, not a source scan', () => {
 
   it('a NON-terminal move needs no second key — blocked/paused are not settlements', () => {
-    seedWork('w1', { state: 'claimed' });
+    seedWork('w1', { kind: 'ask', state: 'claimed' });
     const r = transition('w1', {
       to: 'blocked', by: 'agent', reason: 'waiting on the API key', claim: 'requests-validation',
     });

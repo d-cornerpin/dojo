@@ -197,7 +197,7 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
   { path: 'work.kind',                kind: 'enum',      source: 'work.kind',
     members: ['ask', 'task', 'project', 'occurrence', 'commitment'] },
   { path: 'work.state',               kind: 'enum',      source: 'work.state',
-    members: ['open', 'claimed', 'done', 'failed', 'abandoned', 'paused', 'blocked', 'on_deck'] },
+    members: ['open', 'claimed', 'handed_in', 'sent_back', 'done', 'failed', 'abandoned', 'blocked'] },
   { path: 'work.age_minutes',         kind: 'count',     source: 'now - work.created_at' },
   // ── the settings that shape a turn ──
   { path: 'settings.provider_kind',   kind: 'enum',      source: 'providers.type',

@@ -50,7 +50,7 @@ export async function onTaskComplete(
   // the completion summary) to judge the result, in case the sub-agent's
   // description drifted mid-task — is preserved WITHOUT the dump: (a) the brief
   // AGENT NOTICE tells the parent the delegate finished; (b) the tracker task row
-  // durably carries original_description + completion_summary for review; (c) the
+  // durably carries original_description and its hand-in for review; (c) the
   // full completion detail (summary + results + stats) is on the agent bus
   // (sendAgentMessage) for deliberate pull. Nothing is surfaced into the parent's
   // live conversation or dashboard chat here. Kept as a documented seam rather

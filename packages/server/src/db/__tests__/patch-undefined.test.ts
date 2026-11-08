@@ -141,9 +141,9 @@ describe('M7 — patchWork', () => {
 
   it('touch:false still suppresses the clock on a real assignment', () => {
     seedWork('w1');
-    patchWork('w1', { last_smell_flag: 'stale' }, { touch: false });
+    patchWork('w1', { notes: 'stale' }, { touch: false });
     const row = workRow('w1');
-    expect(row.last_smell_flag).toBe('stale');
+    expect(row.notes).toBe('stale');
     expect(row.updated_at).toBe(T);
   });
 });

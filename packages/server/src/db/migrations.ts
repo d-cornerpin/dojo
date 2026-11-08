@@ -269,7 +269,10 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
       db.pragma('foreign_keys = ON');
       throw err;
     }
-    logger.info(`Migration applied: ${file}`, { ms: Date.now() - started });
+    // The one-path upgrade reports what it mapped, per class, on the line that says it ran.
+    const mapped = file === '901_task_done_one_path.sql'
+      ? (db.prepare("SELECT value FROM config WHERE key = 'task_done_upgrade_last'").get() as { value: string } | undefined)?.value : undefined;
+    logger.info(`Migration applied: ${file}`, { ms: Date.now() - started, ...(mapped ? { mapped: JSON.parse(mapped) } : {}) });
   }
   if (pending.length > 0) {
     logger.info('Migration chain complete', {

@@ -217,7 +217,7 @@ export function getHealerConfig(): {
   return {
     modelId: modelRow?.value ?? null,
     healerTime: timeRow?.value ?? '04:00',
-    healerMode: modeRow?.value === 'off' ? 'monitor' : (modeRow?.value as HealerMode) ?? 'active',   // the retired 'off' reads as monitor
+    healerMode: (modeRow?.value as HealerMode | undefined) ?? 'active',
     providerSharedWithPrimary,
     primaryProviderName,
     healerProviderName,

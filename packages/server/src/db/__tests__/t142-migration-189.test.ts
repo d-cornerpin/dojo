@@ -289,8 +289,8 @@ describe('vintage B — an older box (at 159) takes 160..189c in one upgrade', (
   const before = snapshotEvents(db);
 
   it('the rest of the chain, 189 and 189c apply in order on the same body', () => {
-    for (const f of FILES) {
-      if (f <= '159_owed_interrupt_event_kind.sql') continue;
+    for (const f of FILES) {   // up to the bridge: 901 appends its own upgrade history (its own test)
+      if (f <= '159_owed_interrupt_event_kind.sql' || f >= '901') continue;
       applyFile(db, f);
     }
     expect(db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(M189C)).toBeDefined();

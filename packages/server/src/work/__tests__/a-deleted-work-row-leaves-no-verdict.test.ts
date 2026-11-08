@@ -118,7 +118,7 @@ const seedSchedule = (id: string): void => {
     INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                       wakes, closes_thread, title, opened_at, updated_at,
                       schedule_json, next_run_at, sequence)
-    VALUES (?, 'task', 'a1', 'schedule', 'legacy', 'legacy', 'on_deck', 'FYI', 0, 0,
+    VALUES (?, 'task', 'a1', 'schedule', 'legacy', 'legacy', 'open', 'FYI', 0, 0,
             'a recurring chore', ?, ?, '{"every":"day"}', ?, 0)
   `).run(id, NOW, NOW, NOW + 86_400_000);
 };

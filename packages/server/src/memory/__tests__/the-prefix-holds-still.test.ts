@@ -161,13 +161,10 @@ function seedActiveTask(): void {
   const db = mockDb.current!;
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
-                       wakes, closes_thread, title, description, priority, opened_at, updated_at,
-                       last_answered_turn, last_answered_at, last_delivery_summary)
+                       wakes, closes_thread, title, description, priority, opened_at, updated_at)
      VALUES ('task-aaaaaaaa', 'task', ?, 'owner', 'tracker', 'task-aaaaaaaa', 'claimed', 'tracker',
-             0, 0, 'Rewire the porch light', 'the description', 'normal', ?, ?, 7, ?,
-             'sent by sms to ${FX.n11}')`,
-  ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000,
-    new Date(DAY_ONE - 600_000).toISOString().replace('T', ' ').slice(0, 19));
+             0, 0, 'Rewire the porch light', 'the description', 'normal', ?, ?)`,
+  ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000);
   // The stamp line the lane renders is DERIVED from `work_events` (tracker-view
   // `stampColumns`), so the row alone renders "no engine activity yet" and the clock tick
   // this clause is about never appears. The event is what puts `relAgo(...)` on the page.

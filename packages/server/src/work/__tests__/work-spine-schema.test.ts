@@ -146,7 +146,7 @@ describe('every CHECK bites', () => {
     refuses(baseRow({ state: 'abandoned', closed_at: null }), /closed_at IS NOT NULL/);
     refuses(baseRow({ state: 'open', closed_at: OPENED }), /closed_at IS NOT NULL/);
     expect(() => insertWork(baseRow({ state: 'failed', closed_at: OPENED }))).not.toThrow();
-    expect(() => insertWork(baseRow({ state: 'paused', closed_at: null }))).not.toThrow();
+    expect(() => insertWork(baseRow({ state: 'claimed', closed_at: null }))).not.toThrow();
   });
 
   it('a project may not have a parent', () => {
@@ -167,9 +167,11 @@ describe('every CHECK bites', () => {
     refuses(baseRow({ state: 'in_progress' }), /state IN/);
     refuses(baseRow({ state: 'complete' }), /state IN/);
     refuses(baseRow({ state: 'fallen' }), /state IN/);
-    for (const s of ['open', 'claimed', 'paused', 'blocked', 'on_deck']) {
+    for (const s of ['open', 'claimed', 'handed_in', 'sent_back']) {
       expect(() => insertWork(baseRow({ state: s }))).not.toThrow();
     }
+    for (const s of ['paused', 'blocked', 'on_deck']) refuses(baseRow({ state: s }), /kind NOT IN \('task','project'\)/);
+    expect(() => insertWork(baseRow({ kind: 'ask', state: 'blocked' }))).not.toThrow();
   });
 
   it('requester is one of four, and it is required', () => {

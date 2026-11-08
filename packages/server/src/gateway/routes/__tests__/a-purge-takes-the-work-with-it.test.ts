@@ -8,7 +8,7 @@
 // PART 0 rider 1: a work row stays readable after its agent is gone), so NOTHING deleted those
 // rows: not the door, and not the database. Every purge on every box left the agent's work behind.
 //
-// The sharp end is `on_deck`. That is the state `scheduler/runner.ts`'s 30-second poll selects on,
+// The sharp end is `open`. That is the state `scheduler/runner.ts`'s 30-second poll selects on,
 // so an orphan in it is a timer still armed for an agent that cannot run — and the two such rows
 // the backlog entry reported had, by the time this was worked, already been FIRED or abandoned
 // rather than sitting stuck. That is why the clauses below seed a scheduled row specifically AND
@@ -101,7 +101,7 @@ const seedAgent = (id: string, status = 'terminated'): void => {
 
 /**
  * One work row, with the columns `135_work_spine.sql` makes NOT NULL. `sched` turns it into the
- * schedulable shape the defect was reported against: state `on_deck` with a future `next_run_at`.
+ * schedulable shape the defect was reported against: state `open` with a future `next_run_at`.
  */
 const seedWork = (p: {
   id: string; agentId: string; kind?: string; state?: string; parentId?: string | null; sched?: boolean;
@@ -141,10 +141,10 @@ afterEach(() => {
 describe('the purge door sweeps the work spine', () => {
   it('a terminated agent with a SCHEDULED work row loses it', async () => {
     seedAgent('doomed');
-    seedWork({ id: 'w-sched', agentId: 'doomed', state: 'on_deck', sched: true });
+    seedWork({ id: 'w-sched', agentId: 'doomed', state: 'open', sched: true });
 
     expect(workIds('doomed')).toEqual(['w-sched']);
-    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'on_deck'")).toBe(1);
+    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'open' AND next_run_at IS NOT NULL")).toBe(1);
 
     const res = await purge('doomed');
     expect(res.status).toBe(200);
@@ -152,7 +152,7 @@ describe('the purge door sweeps the work spine', () => {
     expect(workIds('doomed')).toEqual([]);
     expect(n('SELECT COUNT(*) AS n FROM agents WHERE id = ?', 'doomed')).toBe(0);
     // The state the scheduler polls is empty, which is the user-visible half.
-    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'on_deck'")).toBe(0);
+    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'open' AND next_run_at IS NOT NULL")).toBe(0);
     // And the events went with the row rather than becoming orphans of their own.
     expect(n('SELECT COUNT(*) AS n FROM work_events WHERE work_id = ?', 'w-sched')).toBe(0);
     expect(fkViolations()).toEqual([]);
@@ -210,8 +210,8 @@ describe('the purge door sweeps the work spine', () => {
   it('NEGATIVE CONTROL — another agent keeps every one of its rows', async () => {
     seedAgent('doomed');
     seedAgent('keeper', 'idle');
-    seedWork({ id: 'w-doomed', agentId: 'doomed', state: 'on_deck', sched: true });
-    seedWork({ id: 'w-keeper-1', agentId: 'keeper', state: 'on_deck', sched: true });
+    seedWork({ id: 'w-doomed', agentId: 'doomed', state: 'open', sched: true });
+    seedWork({ id: 'w-keeper-1', agentId: 'keeper', state: 'open', sched: true });
     seedWork({ id: 'w-keeper-2', agentId: 'keeper' });
 
     expect((await purge('doomed')).status).toBe(200);
@@ -219,12 +219,12 @@ describe('the purge door sweeps the work spine', () => {
     expect(workIds('keeper')).toEqual(['w-keeper-1', 'w-keeper-2']);
     expect(n('SELECT COUNT(*) AS n FROM work_events WHERE work_id LIKE ?', 'w-keeper-%')).toBe(2);
     expect(n('SELECT COUNT(*) AS n FROM agents WHERE id = ?', 'keeper')).toBe(1);
-    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'on_deck'")).toBe(1);
+    expect(n("SELECT COUNT(*) AS n FROM work WHERE state = 'open' AND next_run_at IS NOT NULL")).toBe(1);
   });
 
   it('NEGATIVE CONTROL — the gates still hold: a LIVE agent is refused and keeps its work', async () => {
     seedAgent('alive', 'idle');
-    seedWork({ id: 'w-alive', agentId: 'alive', state: 'on_deck', sched: true });
+    seedWork({ id: 'w-alive', agentId: 'alive', state: 'open', sched: true });
 
     const res = await purge('alive');
     expect(res.status).toBe(400);

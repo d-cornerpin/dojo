@@ -53,13 +53,9 @@ export type EffectVerification = {
 };
 
 
-/** One column of a table, as the schema reports it. */
-function columnOf(db: Db, table: string, column: string):
-{ type: string; notnull: number; dflt_value: string | null } | undefined {
-  const cols = db.prepare(`PRAGMA table_info("${table}")`).all() as
-    Array<{ name: string; type: string; notnull: number; dflt_value: string | null }>;
-  return cols.find(c => c.name === column);
-}
+/** Does the table have this column? */
+const hasColumn = (db: Db, table: string, column: string): boolean =>
+  !!db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column);
 
 /**
  * Divergences adjudicated by their EFFECT. One entry today; see `EffectVerification` for why
@@ -69,8 +65,8 @@ export const EFFECT_VERIFIED: readonly EffectVerification[] = [
   {
     file: '165_work_effort_meter.sql',
     since: '2026-10-05',
-    effect: '`work.effort_calls` and `work.effort_reviewed_calls` both exist, INTEGER, '
-      + 'NOT NULL, DEFAULT 0 — which is the whole of what this file executes.',
+    effect: 'The two columns this file adds, `work.effort_calls` and `work.effort_reviewed_calls`, '
+      + 'are dropped by 901, so nothing this file executed is left in the schema.',
     whyNotHashed: 'The file has ONE commit in this repository\'s entire history, and the '
       + 'recorded checksum matches neither it nor any other version — so the bytes that ran '
       + 'were an uncommitted working-tree draft that exists nowhere and cannot be diffed. A '
@@ -82,17 +78,9 @@ export const EFFECT_VERIFIED: readonly EffectVerification[] = [
       + 're-measured on every boot instead of asserted once by a human.',
     verify: (db: Db): boolean => {
       try {
-        for (const name of ['effort_calls', 'effort_reviewed_calls']) {
-          const col = columnOf(db, 'work', name);
-          if (!col) return false;
-          if (col.type.toUpperCase() !== 'INTEGER') return false;
-          if (col.notnull !== 1) return false;
-          if ((col.dflt_value ?? '').trim() !== '0') return false;
-        }
-        return true;
+        return !hasColumn(db, 'work', 'effort_calls') && !hasColumn(db, 'work', 'effort_reviewed_calls');
       } catch {
-        // A throw is NOT a pass. The loud direction is the safe one.
-        return false;
+        return false;   // a throw is not a pass
       }
     },
   },

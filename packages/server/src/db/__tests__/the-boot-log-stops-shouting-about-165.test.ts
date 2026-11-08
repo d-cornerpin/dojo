@@ -64,15 +64,10 @@ let db: Database.Database;
 beforeEach(() => {
   spoken.length = 0;
   db = new Database(':memory:');
-  // The dev box's shape: 165's two columns PRESENT, because 165 did run — that is exactly
-  // why its divergence is unactionable and why the ERROR line was noise.
+  // The dev box's shape after 901: 165's two columns are gone, so its divergence changes nothing.
   db.exec(`
     CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT);
-    CREATE TABLE work (
-      id TEXT PRIMARY KEY,
-      effort_calls INTEGER NOT NULL DEFAULT 0,
-      effort_reviewed_calls INTEGER NOT NULL DEFAULT 0
-    );
+    CREATE TABLE work (id TEXT PRIMARY KEY);
   `);
   ensureMigrationChecksumColumn(db);
 });
@@ -146,9 +141,9 @@ describe('2. a NEW divergence nobody has examined', () => {
   });
 });
 
-describe('3. 165 with its effect MISSING', () => {
+describe('3. 165 with its columns still in the schema', () => {
   it('⚠ is loud again, and says the SCHEMA is wrong rather than that two hashes differ', () => {
-    db.exec('DROP TABLE work; CREATE TABLE work (id TEXT PRIMARY KEY)');
+    db.exec('DROP TABLE work; CREATE TABLE work (id TEXT PRIMARY KEY, effort_calls INTEGER NOT NULL DEFAULT 0)');
     recordTheRecordedDivergences();
     reportMigrationChecksums(db, read);
     const loud = errors();

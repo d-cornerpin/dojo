@@ -44,7 +44,7 @@ import { autoResolveStaleMissedRunPauses } from '../runner.js';
 import { decide } from '../../work/done/decide.js';
 import { REAPER_KINDS } from '../../work/work-reaper.js';
 import { openTrackerTask } from '../../work/tracker-store.js';
-import { transition } from '../../work/store.js';
+import { setHold } from '../../work/done/hold.js';
 
 const AGENT = 'agent-worker';
 const HOURS_13 = 13 * 3600_000;
@@ -74,7 +74,7 @@ const count = (state: string): number => (db().prepare(`SELECT COUNT(*) AS n FRO
 /** A recurring task the scheduler paused for missed runs `pausedMsAgo` ago, with the agent's notice on record. */
 function missedRunsPause(pausedMsAgo: number): string {
   const id = seedTask('water the plants');
-  db().prepare(`UPDATE work SET state = 'paused', is_paused = 1, missed_runs_paused_at = ?, repeat_interval = 1, repeat_unit = 'days',
+  db().prepare(`UPDATE work SET is_paused = 1, missed_runs_paused_at = ?, repeat_interval = 1, repeat_unit = 'days',
       next_run_at = ?, scheduled_start = ? WHERE id = ?`).run(Date.now() - pausedMsAgo, Date.now() - 3 * 86_400_000, Date.now() - 10 * 86_400_000, id);
   return id;
 }
@@ -97,12 +97,12 @@ describe('the hourly sweeps keep work records', () => {
   it('THE RED: sixty blocked and sixty finished tasks are all still there after every reaper kind runs', async () => {
     for (let i = 0; i < 60; i++) {
       const b = seedTask(`blocked ${i}`);
-      expect(transition(b, { to: 'blocked', by: 'owner', actorId: 'owner', reason: 'waiting' }).kind).toBe('applied');
+      expect(setHold(b, 'blocked', 'waiting', 'owner').ok).toBe(true);
       const c = seedTask(`finished ${i}`);
       finish(c, 'abandoned');
     }
     for (const k of REAPER_KINDS.filter((x) => /prune/.test(x.id))) await k.run();
-    expect(count('blocked')).toBe(60);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task' AND hold_kind = 'blocked'").get() as { n: number }).n).toBe(60);
     expect(count('abandoned')).toBe(60);
   });
 });

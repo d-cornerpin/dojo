@@ -10,7 +10,7 @@
 //
 // BODY A  a fresh install        — applies against empty tables, deletes nothing, chain completes
 // BODY B  a LIVED-IN body        — the orphans go; every row belonging to a LIVE agent stays,
-//                                  byte-for-byte, in every state including `on_deck`
+//                                  byte-for-byte, in every state including a waiting timer
 // BODY C  RE-RUN                 — idempotent by its PREDICATE, not by the `_migrations` marker
 // BODY D  THE REFERENCES         — no dangling reference survives: `PRAGMA foreign_key_check` is
 //                                  clean with FKs back ON, parents and children both go, and a
@@ -127,21 +127,21 @@ const seedWork = (p: {
 /**
  * A body that has been in use: one live agent with work in four states, and the wreckage of two
  * agents that were purged before the door learned to sweep — including a parent/child pair, an
- * adjudication, a technique built by a vanished agent's project, and an `on_deck` timer.
+ * adjudication, a technique built by a vanished agent's project, and a waiting timer.
  */
 const fillLivedIn = (): void => {
   seedProvider();
   seedAgent(FXID.n4);
   seedWork({ id: 'live-open', agentId: FXID.n4 });
-  seedWork({ id: 'live-deck', agentId: FXID.n4, state: 'on_deck', sched: true });
-  seedWork({ id: 'live-paused', agentId: FXID.n4, state: 'paused' });
+  seedWork({ id: 'live-deck', agentId: FXID.n4, state: 'open', sched: true });
+  seedWork({ id: 'live-paused', agentId: FXID.n4, state: 'claimed' });
   seedWork({ id: 'live-proj', agentId: FXID.n4, kind: 'project' });
   seedWork({ id: 'live-child', agentId: FXID.n4, parentId: 'live-proj' });
 
   // `ghost-a` and `ghost-b` are NOT inserted into `agents` — that is the whole fixture.
   seedWork({ id: 'orphan-proj', agentId: 'ghost-a', kind: 'project' });
   seedWork({ id: 'orphan-child', agentId: 'ghost-a', parentId: 'orphan-proj' });
-  seedWork({ id: 'orphan-deck', agentId: 'ghost-a', state: 'on_deck', sched: true });
+  seedWork({ id: 'orphan-deck', agentId: 'ghost-a', state: 'open', sched: true });
   seedWork({ id: 'orphan-claimed', agentId: 'ghost-b', state: 'claimed' });
 
   db().prepare(`
@@ -200,13 +200,13 @@ describe('BODY B — a lived-in body: the orphans go, the live rows stay', () =>
       .toEqual(liveBefore);
   });
 
-  it('keeps the LIVE `on_deck` timer, which is the state the scheduler polls', () => {
+  it('keeps the LIVE waiting timer the scheduler polls', () => {
     fillLivedIn();
     rewindTo171();
     apply();
 
     const deck = db().prepare(
-      "SELECT id, agent_id, next_run_at FROM work WHERE state = 'on_deck'",
+      "SELECT id, agent_id, next_run_at FROM work WHERE state = 'open' AND next_run_at IS NOT NULL",
     ).all() as Array<{ id: string; agent_id: string; next_run_at: number }>;
     expect(deck).toHaveLength(1);
     expect(deck[0].id).toBe('live-deck');
@@ -326,7 +326,7 @@ describe('NEGATIVE CONTROL — a body with no orphans is untouched', () => {
     seedProvider();
     seedAgent(FXID.n4);
     seedWork({ id: 'live-open', agentId: FXID.n4 });
-    seedWork({ id: 'live-deck', agentId: FXID.n4, state: 'on_deck', sched: true });
+    seedWork({ id: 'live-deck', agentId: FXID.n4, state: 'open', sched: true });
     rewindTo171();
 
     const work = db().prepare('SELECT * FROM work ORDER BY id').all();

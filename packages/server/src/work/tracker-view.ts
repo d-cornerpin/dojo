@@ -71,17 +71,10 @@ export function stateToStatus(state: string): TrackerStatus {
   return STATE_TO_STATUS[state as WorkState] ?? 'on_deck';
 }
 
-/** Both directions as SQL, for the predicates and projections that cannot round-trip
+/** The same mapping as SQL, for the predicates and projections that cannot round-trip
  *  through TypeScript (a `WHERE status = 'complete'` inside a bigger statement). */
 export const STATE_TO_STATUS_SQL = (col: string): string =>
-  `CASE ${col}`
-  + ` WHEN 'claimed' THEN 'in_progress'`
-  + ` WHEN 'done' THEN 'complete'`
-  + ` WHEN 'failed' THEN 'fallen'`
-  + ` WHEN 'open' THEN 'on_deck'`
-  + ` WHEN 'blocked' THEN 'in_progress'`
-  + ` WHEN 'abandoned' THEN 'cancelled'`
-  + ` ELSE ${col} END`;
+  `CASE ${col}${Object.entries(STATE_TO_STATUS).map(([st, status]) => ` WHEN '${st}' THEN '${status}'`).join('')} ELSE ${col} END`;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 2 — SCOPE: which `work` rows are the tracker's

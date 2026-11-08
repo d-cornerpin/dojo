@@ -205,7 +205,6 @@ describe('§1 the tracker doors redact every prose column they bind', () => {
 
     patchWork(id, {
       notes: `agent note: the value I used was ${FAKE_A}`,
-      completion_summary: `finished using ${FAKE_A}`,
       result: `done with ${FAKE_A}`,
       evidence_json: JSON.stringify([{ kind: 'claim', claim: `used ${FAKE_A}`, pointer: 'p' }]),
     });

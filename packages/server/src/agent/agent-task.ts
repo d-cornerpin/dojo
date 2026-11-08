@@ -17,9 +17,7 @@ export function resolveAgentTaskId(agentId: string, link?: string | null): strin
     const candidates = db.prepare(`
       SELECT w.id AS id FROM work w
        WHERE ${taskScope('w')} AND w.agent_id = ?
-         AND (w.state IN ('open','claimed')
-              OR (w.state = 'done'
-                  AND (w.completion_summary IS NULL OR w.completion_summary = '')))
+         AND w.state IN ('open','claimed')
     `).all(agentId) as Array<{ id: string }>;
     if (candidates.length === 1) {
       resolvedTaskId = candidates[0].id;

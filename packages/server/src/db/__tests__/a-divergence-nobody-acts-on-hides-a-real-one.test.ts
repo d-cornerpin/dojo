@@ -24,7 +24,7 @@
 // The question a reader of the ERROR line actually has is not "which bytes ran" — it is "is
 // this database's schema the one the repo describes". 165's entire executable body is two
 // `ALTER TABLE work ADD COLUMN … INTEGER NOT NULL DEFAULT 0` statements, so that question is
-// fully expressible as a schema check. `EFFECT_VERIFIED` does exactly that, and the check runs
+// fully expressible as a schema check, and 901 drops both columns. `EFFECT_VERIFIED` checks they are gone, and the check runs
 // against the live database on every boot rather than being asserted once by a human.
 //
 // Which makes it a STRONGER warrant than the hash entries, not a weaker one — and it cannot
@@ -79,16 +79,12 @@ const actionable = (findings: MigrationChecksumFinding[]): MigrationChecksumFind
 
 let db: Database.Database;
 
-/** A body with the `work` columns 165 creates, and a `_migrations` table to populate. */
+/** A body as 901 leaves it (`work` without the two columns 165 added), and a `_migrations` table. */
 beforeEach(() => {
   db = new Database(':memory:');
   db.exec(`
     CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT);
-    CREATE TABLE work (
-      id TEXT PRIMARY KEY,
-      effort_calls INTEGER NOT NULL DEFAULT 0,
-      effort_reviewed_calls INTEGER NOT NULL DEFAULT 0
-    );
+    CREATE TABLE work (id TEXT PRIMARY KEY);
   `);
   ensureMigrationChecksumColumn(db);
 });
@@ -216,8 +212,8 @@ describe('⚠ the alarm still fires on anything that has not been examined', () 
     expect(loud[0].effectVerified).toBeUndefined();
   });
 
-  it('⚠ 165 with its effect MISSING is actionable again — the check is not a rubber stamp', () => {
-    db.exec('DROP TABLE work; CREATE TABLE work (id TEXT PRIMARY KEY)');
+  it('⚠ 165 with its columns still in the schema is actionable again: the check is not a rubber stamp', () => {
+    db.exec('DROP TABLE work; CREATE TABLE work (id TEXT PRIMARY KEY, effort_calls INTEGER NOT NULL DEFAULT 0)');
     recordTheFive();
 
     const audit = auditMigrationChecksums(db, read);
@@ -245,16 +241,13 @@ describe('the effect check is strict on every attribute it claims', () => {
   const verify = (): boolean =>
     EFFECT_VERIFIED.find(e => e.file === '165_work_effort_meter.sql')!.verify(db);
 
-  it('passes on the shape 165 actually produces', () => {
+  it('passes on the shape 901 leaves', () => {
     expect(verify()).toBe(true);
   });
 
   it.each([
-    ['a missing column', 'CREATE TABLE work (id TEXT PRIMARY KEY, effort_calls INTEGER NOT NULL DEFAULT 0)'],
-    ['the wrong type', 'CREATE TABLE work (id TEXT, effort_calls TEXT NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
-    ['a nullable column', 'CREATE TABLE work (id TEXT, effort_calls INTEGER DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
-    ['the wrong default', 'CREATE TABLE work (id TEXT, effort_calls INTEGER NOT NULL DEFAULT 7, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
-    ['no `work` table at all', 'CREATE TABLE unrelated (id TEXT)'],
+    ['effort_calls still there', 'CREATE TABLE work (id TEXT PRIMARY KEY, effort_calls INTEGER NOT NULL DEFAULT 0)'],
+    ['effort_reviewed_calls still there', 'CREATE TABLE work (id TEXT, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
   ])('⚠ fails on %s', (_label, ddl) => {
     db.exec('DROP TABLE work');
     db.exec(ddl);
