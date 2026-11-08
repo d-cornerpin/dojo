@@ -31,7 +31,7 @@ import { readMarker } from '../update-state.js';
 import { taskScope, msToText } from '../work/tracker-view.js';
 // SWEEP CORE-2 item 3 — "what counts as orphaned" has ONE definition, shared with the
 // version-gap reconciliation pass that looks for the same two shapes on a different clock.
-import { ORPHANED_TASK_WHERE, ORPHANED_TASK_JOIN, ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
+import { ORPHANED_TASK_WHERE, ORPHANED_TASK_JOIN } from '../tracker/version-gap-reconcile.js';
 
 const logger = createLogger('healer-diagnostic');
 
@@ -354,30 +354,6 @@ function getTrackerHealth(): DiagnosticItem[] {
       detail: `${task.agent_name} was shut down but this task is still assigned to them. It needs to be reassigned to someone else.`,
       agentId: task.assigned_to,
       agentName: task.agent_name,
-    });
-  }
-
-  // Projects where EVERY task is complete but the project is still active.
-  // D-K (owner decision): a project that ran out of open tasks but has at
-  // least one FALLEN task is deliberately left open for attention, it is NOT
-  // an orphan to be closed. So the predicate is `status != 'complete'` (a
-  // fallen task counts as "not done"), matching fixOrphanedProject. This is
-  // what stops the Healer from re-detecting and re-offering to close a
-  // fallen-containing project on every cycle (no infinite re-detect loop).
-  // Same single-sourcing as the task predicate above — and the D-K reasoning the comment
-  // block states lives WITH the predicate now, in `tracker/version-gap-reconcile.ts`.
-  const orphanedProjects = db.prepare(`
-    SELECT p.id, p.title
-    FROM work p
-    WHERE ${ORPHANED_PROJECT_WHERE('p')}
-  `).all() as Array<{ id: string; title: string }>;
-
-  for (const project of orphanedProjects) {
-    items.push({
-      severity: 'info',
-      code: 'ORPHANED_PROJECT',
-      title: `"${project.title}" is finished but wasn't closed out`,
-      detail: `Every task in this project is complete, but the project itself is still marked as active. It just needs to be marked complete.`,
     });
   }
 

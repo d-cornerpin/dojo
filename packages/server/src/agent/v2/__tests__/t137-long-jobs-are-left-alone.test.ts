@@ -395,7 +395,6 @@ import {
 import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { unvalidatedPauseExpr } from '../../../work/tracker-view.js';
 import { transition } from '../../../work/store.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
 import { pendingCirclingVerdict } from '../../../tracker/effort-governor.js';
@@ -579,8 +578,6 @@ const chatBroadcasts = (): Array<{ role?: string; content?: string }> =>
 const systemRowsOfTurn = (turn: number): string[] =>
   messageRows().filter((m) => m.role === 'system' && m.turn_number === turn).map((m) => m.content);
 
-const pmPauseQueue = (): number =>
-  (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work w WHERE ${unvalidatedPauseExpr('w')}`).get() as { n: number }).n;
 
 const taskLogFor = (id: string): Array<{ entry_kind: string; to_status: string | null; from_entity: string }> =>
   mockDb.current!.prepare(
@@ -638,7 +635,7 @@ describe('t137 (c): a 15-minute park writes nothing to the owner\'s chat', () =>
 // "vague pause" reject (#9) had nothing to judge but this engine-made pause.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 (b): a parked turn never moves its task to "paused, waiting on the owner"', () => {
-  it.skip('2c: two parks of a read-only job that spoke to the owner: the task stays claimed, the PM has nothing to reject', async () => {
+  it('two parks of a read-only job that spoke to the owner: the task stays claimed, the PM has nothing to reject', async () => {
     seedInFlightTask();
     // The owner's ask turn: a working line beside the first read, then the 15-minute park.
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
@@ -662,7 +659,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(pauseDriveWorkWaitingOnOwnerSpy).toHaveBeenCalledTimes(2);
 
     // Nothing for the PM to judge, nothing rejected, nothing reverted, no stalemate.
-    expect(pmPauseQueue()).toBe(0);
+    expect(mockDb.current!.prepare("SELECT hold_kind FROM work WHERE id = 'w-long-job'").get(), 'nothing holds the task').toEqual({ hold_kind: null });
     const log = taskLogFor('w-long-job');
     expect(log.filter((e) => e.to_status === 'paused')).toEqual([]);
     expect(mockDb.current!.prepare(
@@ -870,7 +867,7 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     expect(systemRowsOfTurn(1)).toEqual([]);
   });
 
-  it.skip('2c: the close-out gate still arms on a genuinely stale second task on the continuation, and never names the in-flight one', async () => {
+  it('the close-out gate still arms on a genuinely stale second task on the continuation, and never names the in-flight one', async () => {
     seedInFlightTask();
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
     ownerWithdrawsTheAsk();   // round 3 (R-V333-8): see the helper
@@ -893,7 +890,7 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     expect(gate[0].content).toContain('nothing is closed for you');
     expect(gate[0].content).not.toContain('the job continues');
     expect(gate[0].content).not.toMatch(/close-out|abandoned work|KEEP GOING|wrap up|never closed/i);
-    expect(gate[0].content.indexOf('work_note(')).toBeLessThan(gate[0].content.indexOf('status="complete"'));
+    expect(gate[0].content.indexOf('work_note(')).toBeLessThan(gate[0].content.indexOf('action="hand_in"'));
     expect(gate[0].content).not.toContain('summarise the research folder');
   });
 });

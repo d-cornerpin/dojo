@@ -371,8 +371,10 @@ export function closeProjectAndOpenTasks(params: {
     if (r.kind === 'decided') tasksClosed++;
     else unsettled.push({ workId: t.id, text: r.text });
   }
-  const pr = decide({ workId: projectId, deciderAgentId: null, verdict, reason });
-  if (pr.kind !== 'decided') unsettled.push({ workId: projectId, text: pr.text });
+  // Its tasks may already have settled the project (a project is derived from its tasks).
+  const settled = isTerminalName((getDb().prepare('SELECT state FROM work WHERE id = ?').get(projectId) as { state: string } | undefined)?.state ?? '');
+  const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  if (pr && pr.kind !== 'decided') unsettled.push({ workId: projectId, text: pr.text });
   logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
   // Broadcast updated tasks + project so the dashboard repaints.
@@ -387,7 +389,7 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: pr.kind === 'decided' };
+  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: settled || pr?.kind === 'decided' };
 }
 
 export function updateProject(

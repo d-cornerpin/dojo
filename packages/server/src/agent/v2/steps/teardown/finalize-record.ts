@@ -25,8 +25,7 @@ import { setAnswerMessageId } from '../../../../memory/message-store.js';
 import { clearUntrackedWorkAcrossTurnsForConversation, continuationContext } from '../../../turn-state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
-import { setTrackerStatus, patchWork } from '../../../../work/tracker-store.js';
-import { appendWorkEvent, claimingTurnOf, joinState, noteUnsettled } from '../../../../work/store.js';
+import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/store.js';
 import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
 import { assembledContextAsks } from '../../counterparty.js';
 import {
@@ -501,65 +500,18 @@ export async function finalizeTurnRecord(
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
-    // Strike-0 receipt close (2026-07-22, the boundary wrap-up in its final
-    // form): a task CREATED THIS TURN whose turn is ending answered with a
-    // TANGIBLE delivery on record is finished work whose bookkeeping the
-    // model forgot; the no-re-prompt rule (v3.1.10) forbids steering it
-    // back, so the ENGINE does the mechanical close right here with the
-    // receipt basis, exactly the strike-2 close without the wait. Scope is
-    // deliberately narrow: origin_turn = THIS turn only (multi-turn tasks
-    // ride the ladder), answered outcome, recorded handover, still open.
-    // complete_validated stays 0: the validation key still turns.
-    if (answerRow) {
+    // A task opened this turn whose turn answered with a delivery, and which the engine can count as
+    // finished (a file charged to it, or its measure at 0), is finished work whose form the model forgot:
+    // delivered work is never steered back, so the engine hands it in for its worker on its records.
+    if (answerRow && terminalDeliveryForTurn(agentId, turnNumber)) {
       try {
-        const { composeTurnDeliverySummary } = await import('../../../../tracker/task-stamps.js');
-        const { engineProofLine } = await import('../../../../work/done/proof.js');
-        const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
-        // The engine closes only on what it can count (`engineProofLine`: a file write charged to the
-        // task's ledger, or a measure that came down to 0). A line of text never closes a task by the engine.
-        const turnDelivery = terminalDeliveryForTurn(agentId, turnNumber);
-        if (turnDelivery) {
-          const sameTurnOpen = db.prepare(
-            `SELECT w.id AS id, w.title AS title FROM work w
-              WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ?
-                AND w.state = 'claimed' AND w.is_paused = 0`,
-          ).all(agentId, turnNumber) as Array<{ id: string; title: string }>;
-          // The receipt this close is made of (the turn's terminal delivery) is what G7 requires,
-          // so the engine's strike-0 close points at the thing the person actually received.
-          for (const t of sameTurnOpen) {
-            if (!engineProofLine(t.id)) continue;
-            const strike0Delivery = turnDelivery;
-            const r0 = setTrackerStatus(t.id, 'complete', {
-              by: strike0Delivery ? 'engine' : 'agent', actorId: agentId,
-              evidenceRef: strike0Delivery,
-              resultDeliveryId: strike0Delivery,
-              expectedState: 'claimed',
-              reason: 'delivery-receipt close (strike 0, same-turn boundary)',
-            });
-            if (r0.kind !== 'applied') {
-              logger.warn('strike-0 receipt close refused by the work gate', { taskId: t.id, result: r0 }, agentId);
-              continue;
-            }
-            // `result` only when the row does not already carry one — the old statement's
-            // COALESCE(NULLIF(result, ''), ?), kept as a read-then-patch because the patch
-            // API takes values, not expressions.
-            const cur = db.prepare('SELECT result FROM work WHERE id = ?').get(t.id) as { result: string | null } | undefined;
-            if (!cur?.result) {
-              noteUnsettled(patchWork(t.id, { result: `Delivered (engine-recorded at the turn boundary): ${strike0Summary}` }), 'engine: strike-0 delivery recorded at the turn boundary', { taskId: t.id });
-            }
-            void import('../../../../tracker/task-log.js').then(({ writeTaskLog }) => writeTaskLog({
-              taskId: t.id,
-              fromEntity: 'engine',
-              entryKind: 'observation',
-              fromStatus: 'in_progress',
-              toStatus: 'complete',
-              actionTaken: 'delivery-receipt close (strike 0, same-turn boundary)',
-              reason: `turn ${turnNumber} created this task, answered, and delivered (${strike0Summary}); closed at the boundary on the engine's own receipts`,
-            }));
-            logger.info('strike-0 receipt close: same-turn task closed at the boundary on delivery receipts', {
-              agentId, turnNumber, taskId: t.id, title: t.title.slice(0, 80),
-            }, agentId);
-          }
+        const { engineHandIn } = await import('../../../../work/done/hand-in.js');
+        const { engineProof } = await import('../../../../work/done/proof.js');
+        const sameTurnOpen = db.prepare(
+          `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ? AND w.state = 'claimed' AND w.is_paused = 0`,
+        ).all(agentId, turnNumber) as Array<{ id: string }>;
+        for (const t of sameTurnOpen) {
+          if (engineProof(t.id).length > 0) engineHandIn(t.id, `turn ${turnNumber} opened this task and delivered it`, { outcome: 'finished' });
         }
       } catch { /* best effort; the ladder remains the backup */ }
     }

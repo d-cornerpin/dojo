@@ -62,7 +62,7 @@ import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../wo
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
   joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
-  releaseScaffoldCardsAfterRelay,
+  scaffoldCardsOfRelay,
   type JoinDriveDecision,
 } from '../work/join-drive.js';
 import { joinWakeFooter } from './a2a-join-footer.js';   // t196
@@ -75,6 +75,9 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall, ChannelKind } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
+import { taskScope } from '../work/tracker-view.js';
+import { proofDelivery } from '../work/done/proof.js';
+import { engineHandIn } from '../work/done/hand-in.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
 import type { ReplyDestination } from './v2/reply-destination.js';
@@ -969,7 +972,20 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
   }
 
-  // 2c: an assignee's terminal success reply on its assignment thread becomes an engine hand-in here.
+  // An assignee's success reply on its assignment thread hands the assigned task in for it, on that
+  // delivery (the weakest model delivers on the thread and skips the form). An applied hand-off is not a
+  // delivery: the sender passed the work on.
+  if (!handOffReport?.applied && (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE')) {
+    try {
+      const assigned = getDb().prepare(
+        `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state = 'claimed' AND w.repeat_interval IS NULL LIMIT 1`,
+      ).get(threadId, envelope.fromAgent) as { id: string } | undefined;
+      const delivery = assigned ? proofDelivery(assigned.id) : null;
+      if (assigned && delivery) engineHandIn(assigned.id, 'the assignee delivered the work on its assignment thread', { outcome: 'finished', items: [{ kind: 'delivery', ref: delivery }] });
+    } catch (err) {
+      logger.warn('assignment-thread hand-in failed (non-fatal)', { threadId: threadShort, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted
@@ -2266,18 +2282,9 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
             agentId, deliveryId, basis: 'engine-relay',
             reason: 'the engine shipped the landed pieces to the owner itself',
           }), 'a2a: join settled on the engine relay of the landed pieces', join.id);
-          // ── UX-REPAIR ROUND 14 T66 — THE WALK REACHES THE MODEL'S OWN CARD ──
-          // The disarm above discharges the ASK and the compile duty. Measured on
-          // `ask:64b85330`: it left task `708985b4` "Combine anniversary dinner plan and deliver
-          // to Yorvak" — the card the model opened on turn 4985, which is `join_redrive 1/3` for
-          // this very ask — sitting `blocked` and PM-upheld over work the engine had finished.
-          // The tie, the honest bound and every collision are argued at the function.
-          const released = releaseScaffoldCardsAfterRelay({ workId: join.id, agentId, deliveryId });
-          if (released.length > 0) {
-            logger.info('compile drive: the relay discharged the cards the model had opened for the same job', {
-              agentId, work: join.id, deliveryId,
-              cards: released.map((r) => ({ id: r.id, from: r.from, title: r.title })),
-            });
+          // The cards the model opened for this same job are handed in for it: the owner has the result.
+          for (const card of scaffoldCardsOfRelay(join.id, agentId)) {
+            engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${deliveryId.slice(0, 8)})`);
           }
         } else {
           logger.warn('compile drive: the engine relay of the landed pieces recorded no delivery', {

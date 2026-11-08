@@ -33,9 +33,10 @@ import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, type Actor, type WorkOutcome, type WorkState } from './store.js';
-import { statusToState, TRACKER_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
+import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
+import { isSystemServiceAgent } from '../config/platform.js';
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
 // leaf (imports only the DB connection), so importing it here creates no cycle with the
 // CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
@@ -315,6 +316,10 @@ function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   return ask?.root_id ?? null;
 }
 
+/** A service agent's task opened by itself or by the engine is its own housekeeping, not board work. */
+const opensAsHousekeeping = (worker: string, requester: string): boolean =>
+  isSystemServiceAgent(worker) && (requester === worker || requester === 'engine');
+
 export function openTrackerTask(p: OpenTrackerTaskInput): string {
   const db = getDb();
   const id = p.id ?? uuidv4();
@@ -338,7 +343,8 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
     `).run(
       id, p.projectId ?? null, p.assignedTo ?? p.createdBy, p.assignedTo ?? null,
-      requesterOf(p.createdBy), p.createdBy, p.rootKind ?? TRACKER_ROOT_KIND, id,
+      requesterOf(p.createdBy), p.createdBy,
+      p.rootKind ?? (opensAsHousekeeping(p.assignedTo ?? p.createdBy, p.createdBy) ? SERVICE_ROOT_KIND : TRACKER_ROOT_KIND), id,
       statusToState(p.status ?? 'in_progress'),
       // t118: the door's redaction, on the four prose columns this insert binds, keyed to
       // the assignee AND the creator (an A2A ASSIGN row is created by the sender whose

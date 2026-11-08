@@ -16,20 +16,18 @@ import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2
 import { getDb } from '../db/connection.js';
 import { VALIDATION_ESCALATION_MIN } from './validation-clock.js';
 import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
-import { withUnit } from '../db/unit.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
-  handedInExpr,
 } from '../work/tracker-view.js';
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts,
   recordValidationEscalation,
 } from '../work/tracker-store.js';
-import { proofDelivery } from '../work/done/proof.js';
+import { engineHandIn } from '../work/done/hand-in.js';
 import { clearHold, heldExpr } from '../work/done/hold.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
-import { workSettled, noteUnsettled } from '../work/store.js';
+import { noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
@@ -1157,167 +1155,52 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       : calculateNextRun(scheduledTask);
   }
 
-  // D8 (owner-approved tracker change, the ONLY one): a one-shot task whose final
-  // run FAILED must not be auto-marked complete. "Remind me at 3pm" that was never
-  // spoken used to end as schedule_status='completed' / status='complete', reading
-  // as done in the tracker with the owner never told. The failed no-next-run case
-  // now lands on the tracker's EXISTING failed convention, status='fallen'
-  // (migration 012: failed -> fallen; the dashboard counts 'fallen' as failed and
-  // the PM treats it as terminal, so there is no re-fire and no PM churn), with
-  // schedule_status='completed' still recording that the schedule itself has no
-  // more runs. The owner is told two ways: a plain-language owner-facing NOTICE
-  // (postAgentNotice, role='user' origin_kind='engine') to the primary so its model
-  // sees the failure and surfaces it to the owner in its own voice, PLUS an
-  // assigned-agent awareness notice via the same path so the assigned agent can
-  // relay/follow up. Phase 0.1 dead-channel demolition: this used to be a bare
-  // role='system' chat row (dropped by the model-message builder, so the primary's
-  // model never saw it and could never relay it, e.g. via iMessage when the owner is
-  // away). Recurring tasks and successful one-shots are byte-for-byte unchanged.
+  // The run is handed in for its worker: a run of a live schedule with scope `run` (the next run is never
+  // held for a decision), the last run with scope `schedule`. A final run that failed is handed in as
+  // can't be done, and the owner is told at once through the primary.
   const failedFinalRun = !nextRun && status === 'failed';
+  const because = nextRun
+    ? `scheduled run #${task.run_count as number} finished (${status}); the next run is at ${nextRun}`
+    : `the final scheduled run #${task.run_count as number} ${failedFinalRun ? 'failed' : `finished (${status})`}${summary ? `: ${summary.slice(0, 200)}` : ''}`;
+  const handed = engineHandIn(taskId, because, { scope: nextRun ? 'run' : 'schedule', outcome: failedFinalRun ? 'cant_be_done' : undefined });
+  if (handed.kind !== 'handed_in') logger.info('Scheduler: the run was not handed in', { taskId, runId, why: handed.text.slice(0, 200) });
+  writeTaskLog({
+    taskId, fromEntity: 'scheduler', entryKind: 'transition', fromStatus: 'in_progress', toStatus: 'handed_in',
+    actionTaken: nextRun ? `scheduler ran #${task.run_count as number}, next at ${nextRun}` : `scheduler ran final run #${task.run_count as number}, no more runs`,
+    reason: `run finished with status=${status}`, note: summary || null,
+  });
 
-  // Phase B.0/B.1: audit the per-run completion with whatever
-  // result_summary the scheduler/agent provided. For terminal closes
-  // the validation flow still expects result+evidence on the task row;
-  // per-run completions here are scheduler bookkeeping, not user-facing
-  // closes.
-  try {
-    const { writeTaskLog } = await import('../tracker/task-log.js');
-    writeTaskLog({
-      taskId,
-      fromEntity: 'scheduler',
-      entryKind: 'transition',
-      fromStatus: 'in_progress',
-      toStatus: nextRun ? 'on_deck' : (failedFinalRun ? 'fallen' : 'complete'),
-      // The counter was bumped above (bumpWorkAttempts) before the row was
-      // re-read, so run_count already counts THIS run: log it as read, or the
-      // owner reads every run one past the number the fire line gave it.
-      actionTaken: nextRun
-        ? `scheduler ran #${task.run_count as number}, next at ${nextRun}`
-        : (failedFinalRun
-            ? `scheduler ran final run #${task.run_count as number}, run FAILED, task marked fallen (not complete) and owner notified`
-            : `scheduler ran final run #${task.run_count as number}, no more runs`),
-      reason: `run finished with status=${status}`,
-      note: summary || null,
-    });
-  } catch (err) {
-    logger.warn('scheduler: writeTaskLog on run-complete failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
-  }
-
-  // ── UX-REPAIR ROUND 6 T26 — THE CADENCE RESET IS ALSO A BOOKKEEPING MOVE ──
-  //
-  // Same rule as `forceResetStuckRecurringTask`'s guard, at the OTHER site that moves a
-  // running recurring row back to `on_deck`. A worker that filed `complete_all_runs` is asking
-  // for the SCHEDULE to stop; sending the row to `on_deck` while that request is outstanding
-  // hands the row back to the cadence while its stop awaits a verdict. (The request itself stays
-  // visible from any non-terminal state, `handedInExpr`.) It stays `claimed`, in front
-  // of the validator, until Key 2 rules; if the close is REFUSED the request is answered, the
-  // hold in `dueScope` lifts, and the next tick resumes the cadence with the refusal on the
-  // row's own ledger.
-  const stopPending = (getDb().prepare(
-    `SELECT ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`,
-  ).get(taskId) as { pending: number } | undefined)?.pending === 1;
-
-  if (nextRun && stopPending) {
-    // The next occurrence is still computed and stored — a refusal must find a live cadence
-    // to resume — but the row does NOT leave the validator's queue.
+  if (nextRun) {
     noteUnsettled(setNextRun(taskId, {
-      at: tsToMs(nextRun),
-      alongside: { last_run_at: tsToMs(now) },
-      reason: 'a run finished while a close request was pending; the cadence is recorded but the row stays with the validator',
-    }), 'scheduler: run finished with a close request pending', { taskId });
-    logger.info('Scheduler: run finished with a stop filed — the row stays claimed for the validator instead of rejoining its cadence', {
-      taskId, nextRun,
-    });
-  } else if (nextRun) {
-    // Recurring: set next run, go back to waiting, reset task status to on_deck
-    // T2: the tracker state and the schedule columns describe ONE event — this run
-    // finished and the next one is due at T. Split across two transactions they could
-    // disagree, and a schedule that says `waiting` while the board still says the task is
-    // running is exactly the "sleeping project" class Phase 2 closed from the other side.
-    withUnit(() => {
-      noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
-        by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
-      }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
-      noteUnsettled(setNextRun(taskId, {
-        at: tsToMs(nextRun),
-        alongside: { schedule_status: 'waiting', last_run_at: tsToMs(now) },
-        reason: 'a run finished and the schedule has another occurrence',
-      }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
-    });
-  } else if (failedFinalRun) {
-    // D8: final run failed, keep the failure VISIBLE (see block comment above).
-    withUnit(() => {
-      noteUnsettled(setTrackerStatus(taskId, 'fallen', {
-        by: 'scheduler', actorId: 'scheduler', reason: 'the final scheduled run failed',
-      }), 'scheduler: final run failed', { taskId });
-      noteUnsettled(patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) }), 'scheduler: final run failed, schedule completed', { taskId });
-    });
-      retireEngineEventsForTask(taskId, 'task_fallen');
+      at: tsToMs(nextRun), alongside: { schedule_status: 'waiting', last_run_at: tsToMs(now) },
+      reason: 'a run finished and the schedule has another occurrence',
+    }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
+  } else {
+    noteUnsettled(patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) }), 'scheduler: no more runs, schedule completed', { taskId });
+  }
+  if (failedFinalRun) {
+    retireEngineEventsForTask(taskId, 'task_fallen');
     try {
       const title = String(task.title ?? 'untitled task');
       const noun = (task.kind as string | null) === 'reminder' ? 'reminder' : 'task';
-
-      // Dead-channel demolition (Phase 0.1): deliver the owner-facing failure note as
-      // a model-VISIBLE awareness NOTICE (role='user' origin_kind='engine'), the same
-      // idiom alertMissedRuns uses, NOT a bare role='system' row. role='system' rows
-      // are stripped by the model-context builder, so a note posted that way never
-      // reached the primary's model and could never be relayed to the owner (e.g. via
-      // imessage_send when the owner is away). As a NOTICE the primary sees it and
-      // surfaces the failure to the owner in its own voice. Plain language for a
-      // non-technical owner, naming the task and its scheduled time. Note text unchanged.
+      // A model-visible notice to the primary, which tells the owner in its own voice, and one to the worker.
       const when = (task.scheduled_start as string | null) ?? (task.anchor_time as string | null);
       const ownerMsg =
         `${OWNER_ALERT_HEADS_UP_PREFIX} a scheduled ${noun}, "${title}"${when ? ` (set for ${when})` : ''}, failed on its final attempt and was not delivered. ` +
         `Nothing more is scheduled for it, so it will not try again. Let me know if you want me to set it up again.`;
       const primaryId = getPrimaryAgentId();
-      postAgentNotice({
-        toAgentId: primaryId,
-        fromName: 'Scheduler',
-        selfIntro: false,
-        intent: 'schedule_run_failed_owner',
-        brief: ownerMsg,
-      });
-      // Wake the primary so it sees the failure NOTICE and relays it to the owner this
-      // turn instead of waiting for an unrelated trigger. Best-effort: the notice is
-      // already persisted in the awareness lane and surfaces on the next assembled
-      // context regardless. Copies the alertMissedRuns wake idiom above.
+      postAgentNotice({ toAgentId: primaryId, fromName: 'Scheduler', selfIntro: false, intent: 'schedule_run_failed_owner', brief: ownerMsg });
       try {
-        const runtime = getAgentRuntime();
-        runtime.handleMessage(primaryId, '[scheduler: failed-run owner note pending]').catch((err) => {
-          logger.warn('scheduler: failed-final-run owner note wake failed', {
-            taskId, error: err instanceof Error ? err.message : String(err),
-          });
+        getAgentRuntime().handleMessage(primaryId, '[scheduler: failed-run owner note pending]').catch((err) => {
+          logger.warn('scheduler: failed-final-run owner note wake failed', { taskId, error: err instanceof Error ? err.message : String(err) });
         });
-      } catch { /* runtime not ready, notice is in the store, read next time */ }
-
-      // Keep the assigned-agent awareness notice so the assigned agent (which may
-      // own the follow-up) still learns the delivery failed and can relay.
+      } catch { /* runtime not ready, the notice is in the store, read next time */ }
       postAgentNotice({
-        toAgentId: (task.assigned_to as string | null) ?? getPrimaryAgentId(),
-        fromName: 'Scheduler',
-        selfIntro: false,
-        intent: 'schedule_run_failed',
-        brief: `I could not deliver a scheduled ${noun}: ${title.slice(0, 100)}`,
+        toAgentId: (task.assigned_to as string | null) ?? primaryId, fromName: 'Scheduler', selfIntro: false,
+        intent: 'schedule_run_failed', brief: `I could not deliver a scheduled ${noun}: ${title.slice(0, 100)}`,
       });
     } catch (err) {
       logger.warn('scheduler: failed-final-run owner notice failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
-    }
-    // 2c: the project roll-up runs at the decision.
-    logger.warn('Scheduler: final run failed; task marked fallen (not complete) and owner notified', { taskId, runId, status });
-  } else {
-    // No more runs: mark everything as completed
-    const finalDelivery = delivered;
-    const finalRes = withUnit(() => {
-      const res = setTrackerStatus(taskId, 'complete', {
-        by: finalDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
-        resultDeliveryId: finalDelivery,
-        reason: 'the schedule ran out of occurrences and the last run succeeded',
-      });
-      noteUnsettled(patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) }), 'scheduler: occurrences ran out, schedule completed', { taskId });
-      return res;
-    });
-    if (!workSettled(finalRes)) {
-      logger.warn('Scheduler: final-run close refused by the work gate', { taskId, result: finalRes });
     }
   }
 
@@ -1740,7 +1623,7 @@ export function cleanupStaleRuns(): void {
  *
  * If calculateNextRun returns a future time, restore the schedule. If
  * it returns null (config is genuinely uncomputable or all runs are in
- * the past with no future slot), mark the task complete so it stops
+ * the past with no future slot), hand it in for its worker so it stops
  * being a zombie.
  */
 function recoverMissingNextRun(taskId: string): void {
@@ -1774,19 +1657,9 @@ function recoverMissingNextRun(taskId: string): void {
       taskId, title: task.title, nextRun,
     });
   } else {
-    const recDelivery = proofDelivery(taskId);
-    const recRes = setTrackerStatus(taskId, 'complete', {
-      by: recDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
-      resultDeliveryId: recDelivery,
-      reason: 'a recurring task with no recoverable next run is finished',
-    });
-    if (!workSettled(recRes)) {
-      logger.warn('Scheduler: recovery close refused by the work gate', { taskId, result: recRes });
-    }
+    engineHandIn(taskId, 'the schedule has no run left to fire: its repeat config yields no future occurrence', { scope: 'schedule' });
     noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: missing next_run_at had no future occurrence, schedule completed', { taskId });
-    logger.warn('Scheduler: recurring task had no recoverable next run, marked complete', {
-      taskId, title: task.title,
-    });
+    logger.warn('Scheduler: recurring task had no recoverable next run; handed in for its worker', { taskId, title: task.title });
   }
 
   // Re-broadcast the fresh FULL task row so the kanban card reflects the
@@ -1818,33 +1691,6 @@ export function forceResetStuckRecurringTask(taskId: string): void {
   if (task.status !== 'in_progress') return;
   if (!task.repeat_interval) return;
 
-  // ── UX-REPAIR ROUND 6 T26 — A ROW WITH A FILED CLOSE IS NOT A STUCK ROW ──
-  //
-  // This function's premise is "structurally stuck: in_progress with no productive way out".
-  // A row whose worker has filed `complete_all_runs` looks identical from the outside and is
-  // the exact opposite: it is unmoved ON PURPOSE, because the two-key wall (migration 139)
-  // will not let a worker close its own work, and it is waiting for the validator.
-  //
-  // MEASURED, dev body 2026-08-10: event 22628 filed the stop on the duplicate weather task
-  // at 23:09:10 ("agent asserts every run is done; the schedule stops here"); five seconds
-  // later this function wrote event 22630, `claimed→on_deck`, "this run is failed; the
-  // schedule rejoins at its next occurrence". That transition is what buried the request, and
-  // four minutes after it the row's occurrence was skipped as an orphan (22632) — a run
-  // recorded failed beside an answer that had already been delivered.
-  //
-  // Guarded HERE rather than at the three callers (the stale/stuck sweep, going-idle's
-  // recurring-dangler pass, tracker-closeout's) because it is this function's own
-  // precondition, and a precondition stated once cannot be forgotten by the fourth caller.
-  const heldForValidation = db.prepare(
-    `SELECT ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`,
-  ).get(taskId) as { pending: number } | undefined;
-  if (heldForValidation?.pending === 1) {
-    logger.info('Scheduler: force-reset SKIPPED — a close request is pending on this row; it is a validation subject, not a stuck row', {
-      taskId, title: task.title,
-    });
-    return;
-  }
-
   const scheduledTask = scheduledTaskFromRow(task);
 
   const nextRun = calculateNextRun(scheduledTask);
@@ -1859,17 +1705,9 @@ export function forceResetStuckRecurringTask(taskId: string): void {
     }), 'scheduler: stuck recurring task reset onto its next occurrence', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
-    const frDelivery = proofDelivery(taskId);
-    const frRes = setTrackerStatus(taskId, 'complete', {
-      by: frDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
-      resultDeliveryId: frDelivery,
-      reason: 'stuck recurring task has no future runs left',
-    });
-    // v3.5: say what happened. A refused close (a measure with items left) leaves the task open, and
-    // a schedule already recorded `completed` is not patched again (no false movement every retry).
+    engineHandIn(taskId, 'the stuck recurring task has no future run left', { scope: 'schedule' });
     if (task.schedule_status !== 'completed') noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: stuck recurring task had no next occurrence, schedule completed', { taskId });
-    if (workSettled(frRes)) logger.warn('Scheduler: force-reset stuck recurring task — no future runs, marked complete', { taskId, title: task.title });
-    else logger.warn('Scheduler: force-reset stuck recurring task — no future runs; its close was refused by the work gate, the task stays open', { taskId, title: task.title, result: frRes });
+    logger.warn('Scheduler: force-reset stuck recurring task with no future runs; handed in for its worker', { taskId, title: task.title });
   }
 
   // Re-broadcast the fresh FULL task row so the kanban card reflects the

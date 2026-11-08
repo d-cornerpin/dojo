@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR ROUND 14 / T66 — THE RELAY CLOSES THE MODEL'S OWN SCAFFOLD CARD.
+// UX-REPAIR ROUND 14 / T66: THE RELAY HANDS IN THE MODEL'S OWN SCAFFOLD CARD (never sets it done).
 //
 // ── THE MEASURED SHAPE (round 14; every row re-read off the dev body by W47) ─────────────
 // `ask:64b85330-f08c-49ba-930a-7d2238711015` ("Anniversary dinner outing and at-home backup")
@@ -53,7 +53,7 @@ vi.mock('../../memory/embeddings.js', () => ({
 }));
 vi.mock('../../config/platform.js', () => ({
   isPrimaryAgent: () => false, isPMAgent: () => false, isHealerAgent: () => false,
-  isDreamerAgent: () => false, getOwnerName: () => 'Owner', getPrimaryAgentId: () => 'primary',
+  isDreamerAgent: () => false, isSystemServiceAgent: () => false, getOwnerName: () => 'Owner', getPrimaryAgentId: () => 'primary',
 }));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn(async () => {}) }) }));
 
@@ -190,7 +190,7 @@ beforeEach(() => {
 // ── RED → GREEN ─────────────────────────────────────────────────────────────────────────
 
 describe('T66: the disarm walk reaches the card the model opened for the same job', () => {
-  it.skip('2c: RED→GREEN: the blocked "combine and deliver" card closes on the relay\'s own receipt', async () => {
+  it('RED→GREEN: the blocked "combine and deliver" card is handed in by the engine, with no decision', async () => {
     const askId = seedTwoPieceJoin();
     // The card is opened on the FIRST redrive's turn, which is the measured shape: the engine
     // put the owed compile back in front of the model and the model wrote itself a card instead.
@@ -207,40 +207,23 @@ describe('T66: the disarm walk reaches the card the model opened for the same jo
     expect(workRow(askId).state, 'premise: the ask closed on the relay').toBe('done');
     expect(drivenTurns(askId), 'premise: the tie exists — the card\'s origin turn is one the ladder drove')
       .toContain(CLAIM_TURN + 1);
-
-    const after = workRow(card);
-    expect(after.state, 'the card the model opened for this job is discharged, not left blocked').toBe('done');
-    // The receipt is the relay's OWN delivery — the same one the ask closed on, which is what
-    // makes the close honest and what the two-key gate is satisfied by.
-    expect(after.result_delivery_id).toBe(workRow(askId).result_delivery_id);
+    expect(workRow(card).state, 'the card is handed in, not left blocked and not set done').toBe('handed_in');
+    expect(handInsOf(card)).toEqual([{ actor: 'engine', note: expect.stringMatching(/the engine relayed the compiled result/) }]);
+    expect(mockDb.current!.prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = 'decided'").get(card)).toEqual({ c: 0 });
   });
 
-  it.skip('2c: the close states its reason on the card\'s own ledger, in the engine\'s name', async () => {
-    const askId = seedTwoPieceJoin();
-    advanceTurnTo(CLAIM_TURN + 1);
-    const card = modelCard({ title: 'Combine and deliver', originTurn: CLAIM_TURN + 1, state: 'blocked' });
-    await driveToTheRelay(askId);
-
-    const transitions = (mockDb.current!.prepare(
-      `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id`,
-    ).all(card) as Array<{ payload: string }>)
-      .map((r) => JSON.parse(r.payload) as { to: string; by: string; reason: string });
-    const close = transitions.find((t) => t.to === 'done');
-    expect(close).toBeDefined();
-    expect(close!.by).toBe('engine');
-    expect(close!.reason).toMatch(/the engine delivered the compiled result/);
-    expect(close!.reason).toMatch(/purpose is discharged/);
-  });
-
-  it.skip('2c: a card that was never blocked, just never finished, is discharged too', async () => {
+  it('a card that was never blocked, just never finished, is handed in too', async () => {
     const askId = seedTwoPieceJoin();
     advanceTurnTo(CLAIM_TURN + 1);
     const card = modelCard({ title: 'Combine the two plans', originTurn: CLAIM_TURN + 1 });
-    expect(workRow(card).state, 'premise: open, and never blocked').not.toBe('done');
     await driveToTheRelay(askId);
-    expect(workRow(card).state).toBe('done');
+    expect(workRow(card).state).toBe('handed_in');
   });
 });
+
+const handInsOf = (id: string): Array<{ actor: string; note: string }> => (mockDb.current!.prepare(
+  "SELECT actor, json_extract(payload, '$.note') AS note FROM work_events WHERE work_id = ? AND kind = 'handed_in'",
+).all(id) as Array<{ actor: string; note: string }>);
 
 // ── CONTROLS ────────────────────────────────────────────────────────────────────────────
 
@@ -295,19 +278,15 @@ describe('T66 CONTROLS — the walk reaches the tie and nothing else', () => {
     expect(pieces.map((p) => p.state)).toEqual(['done', 'done']);
   });
 
-  it('A SECOND PASS closes nothing twice — the already-terminal card is left alone', async () => {
+  it('A SECOND PASS hands in nothing twice: the handed-in card is left alone', async () => {
     const askId = seedTwoPieceJoin();
     advanceTurnTo(CLAIM_TURN + 1);
     const card = modelCard({ title: 'Combine and deliver', originTurn: CLAIM_TURN + 1, state: 'blocked' });
     await driveToTheRelay(askId);
-    const closes = (): number => (mockDb.current!.prepare(
-      `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'transition'
-          AND json_extract(payload,'$.to') = 'done'`,
-    ).get(card) as { n: number }).n;
-    const firstCount = closes();
+    const firstCount = handInsOf(card).length;
     await drive();
     await drive();
-    expect(closes(), 'one close, however many passes the sweep makes').toBe(firstCount);
+    expect(handInsOf(card).length, 'one hand-in, however many passes the sweep makes').toBe(firstCount);
   });
 
   it('NO RELAY, NO RELEASE: while the redrives still have room the card is left for the model', async () => {

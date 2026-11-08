@@ -7,9 +7,10 @@
 import { getDb } from '../../../db/connection.js';
 import { parseMeasure, countMeasure, type Measure, type MeasureCount } from '../../../work/measure.js';
 import { recordMeasured } from '../../../work/ledger-store.js';
-import { editMeasure, remainderRefusal, type MeasureReading } from '../../../tracker/measure-gate.js';
+import { editMeasure, type MeasureReading } from '../../../tracker/measure-gate.js';
 import { resolveAgentTaskId } from '../../agent-task.js';
-import { handedInExpr } from '../../../work/tracker-view.js';
+import { handIn } from '../../../work/done/hand-in.js';
+import { proofFor } from '../../../work/done/proof.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
 
@@ -83,15 +84,19 @@ export async function editWithMeasure(
   return { content: hasFields ? `${content}\n${m.line}` : `[OK] task_id=${String(args.task_id)}\n\n${m.line}`, isError: false };
 }
 
-/** complete_task(status="complete"), before the agent is ended: its task is re-read and judged like
- *  any close. A task already closed, or carrying a close request (it crossed a door that judged it),
- *  is not judged again. complete_task takes no remainder, so the refusal names the door that does. */
-export async function completeTaskRefusal(agentId: string): Promise<string | null> {
+/** complete_task, before the agent is ended: the agent hands its task in on the proof on record (its
+ *  measure re-read first), finished or, for fallen, can't be done. Refused, the agent is not ended and is
+ *  told why. Work already handed in or closed is not handed in again. */
+export async function completeTaskHandIn(agentId: string, status: 'complete' | 'fallen', summary: string): Promise<string | null> {
   const taskId = resolveAgentTaskId(agentId);
   if (!taskId) return null;
-  const row = getDb().prepare(`SELECT w.state AS state, ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`)
-    .get(taskId) as { state: string; pending: number } | undefined;
-  if (!row || row.pending === 1 || !['claimed', 'open'].includes(row.state)) return null;
+  const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(taskId) as { state: string } | undefined;
+  if (!row || !['open', 'claimed', 'sent_back'].includes(row.state)) return null;
   await remeasureTask(agentId, taskId);
-  return remainderRefusal(taskId, 'complete_task(status="complete")');
+  const r = handIn({
+    workId: taskId, by: { kind: 'worker', agentId }, outcome: status === 'complete' ? 'finished' : 'cant_be_done',
+    items: proofFor(taskId).map(({ kind, ref }) => ({ kind, ref })), note: summary,
+  });
+  return r.kind === 'handed_in' ? null
+    : `${r.text}\nYou are not ended. Hand the task in yourself with work_update(action="hand_in", task_id="${taskId}", outcome, proof, note), then call complete_task again.`;
 }

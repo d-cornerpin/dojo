@@ -6,7 +6,7 @@
 //     receipt or the measure at 0; "can't be done" needs a failure, a remainder, the asker's withdrawal,
 //     a command that did not exit 0 or a receipt carrying an error. Prose and status claims never resolve.
 //   - `proofFor` is the engine's own finder: the items the worker's rows show for the task, each held
-//     to the same rule. A scheduled task is judged on its current run, never on the ask that set it up.
+//     to the same rule. A scheduled task is judged on its current run, never on an earlier one.
 // Neither judges whether the proof meets the goal: a decider does that after opening it.
 import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
@@ -19,11 +19,12 @@ export type ProofRefusal = { index: number; why: string };
 const FINISHED_KINDS: ReadonlySet<ProofKind> = new Set(['file', 'delivery', 'command', 'receipt', 'measure']);
 const CANT_BE_DONE_KINDS: ReadonlySet<ProofKind> = new Set(['failure', 'remainder', 'withdrawal']);
 
-/** The task as the rules read it, with the agent working it; null when there is no such row. */
+/** The task as the rules read it, with the agent working it; null when there is no such row. A
+ *  scheduled task opens at its newest run, so one run's proof never counts for another. */
 function taskOf(workId: string): (ProofTask & { worker: string }) | null {
   const w = getDb().prepare(
-    `SELECT w.id, w.title, w.opened_at, w.agent_id,
-            a.id AS ask_id, a.result_delivery_id AS ask_receipt
+    `SELECT w.id, w.title, MAX(w.opened_at, COALESCE((SELECT MAX(r.opened_at) FROM work r WHERE r.parent_id = w.id AND r.kind = 'occurrence'), 0)) AS opened_at,
+            w.agent_id, a.id AS ask_id, a.result_delivery_id AS ask_receipt
        FROM work w LEFT JOIN work p ON p.id = w.parent_id
        LEFT JOIN work a ON a.kind = 'ask' AND a.id = 'ask:' || COALESCE(w.source_message_id, p.source_message_id)
       WHERE w.id = ?`,
@@ -95,14 +96,12 @@ const FINDERS: Record<Found, Finder> = {
 };
 
 /** The items of these kinds the worker's own rows prove for the task, each held to `checkProof`'s rule
- *  for a finished task. A scheduled task counts from its newest run, never from the ask that set it up. */
+ *  for a finished task. */
 function found(workId: string, kinds: readonly Found[]): ResolvedItem[] {
   const task = taskOf(workId);
   if (!task) return [];
-  const run = getDb().prepare("SELECT MAX(opened_at) AS at FROM work WHERE parent_id = ? AND kind = 'occurrence'").get(workId) as { at: number | null };
-  const since = Math.max(task.openedAt, run.at ?? 0);
-  const ctx: ProofContext = { task: { ...task, openedAt: since }, asker: askerOf(workId), workerId: task.worker, outcome: 'finished' };
-  return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(since)))
+  const ctx: ProofContext = { task, asker: askerOf(workId), workerId: task.worker, outcome: 'finished' };
+  return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(task.openedAt)))
     .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok ? [r.item] : []; });
 }
 

@@ -68,6 +68,7 @@ vi.mock('../notify.js', () => ({
   claimAssignmentNoticeForTerminalTask: () => false,
 }));
 vi.mock('../../config/platform.js', () => ({
+  isSystemServiceAgent: () => false,
   getPrimaryAgentId: () => 'primary',
   isPrimaryAgent: (id: string) => id === 'primary',
   getPMAgentId: () => 'pm',

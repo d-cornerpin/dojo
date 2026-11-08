@@ -3,6 +3,8 @@
 //     the owner. An agent approves only after opening every proof item (`open-proof.ts`); the owner
 //     is exempt. The reason is one line saying how the proof meets the goal, or what is missing.
 //   - owner_done / cancel are the owner's alone, from the dashboard, from any open state.
+//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns the row
+//     to Open for its next run, and a send-back is a hint to the worker.
 // The owner decides from the dashboard (decider null), or approves or sends back a hand-in he was
 // asked about by his own words relayed by an agent, verified against his messages (`ownerQuoteProof`).
 // One unit: the adjudication, the `decided` event and the transition with `claim: 'decided'`, which is
@@ -13,11 +15,12 @@ import { ownerQuoteProof } from '../../tracker/owner-words.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
-import { latestHandIn, workersOf, unitOrRollback } from './hand-in.js';
+import { latestHandIn, workersOf, unitOrRollback, recordAdjudication } from './record.js';
 import { openedEveryItem } from './open-proof.js';
 import { proofDelivery } from './proof.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
 import { whoDecides } from './who-decides.js';
+import { onDecided } from './effects.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
 export interface DecideInput {
@@ -101,17 +104,17 @@ export function decide(input: DecideInput): DecideResult {
 
   const deciderId = who.owner ? OWNER_ID : who.agentId;
   const by: Actor = who.owner ? 'owner' : deciderId === getPMAgentId() ? 'pm' : 'agent';
-  const outcome = latestHandIn(row.id)?.outcome ?? 'finished';
-  const to: WorkState = input.verdict === 'send_back' ? 'sent_back' : input.verdict === 'cancel' ? 'abandoned'
+  const last = row.state === 'handed_in' ? latestHandIn(row.id) : null;
+  const outcome = last?.outcome ?? 'finished';
+  const run = last?.scope === 'run' && (input.verdict === 'approve' || input.verdict === 'send_back');
+  const to: WorkState = run ? 'open' : input.verdict === 'send_back' ? 'sent_back' : input.verdict === 'cancel' ? 'abandoned'
     : input.verdict === 'owner_done' || outcome === 'finished' ? 'done' : 'failed';
+  let decisionId = 0;
   const moved = unitOrRollback(() => {
     const resultDeliveryId = to === 'done' ? settleOn(row.id, deciderId) : null;
-    getDb().prepare(
-      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(row.id, to === 'sent_back' ? (outcome === 'finished' ? 'done' : 'failed') : to, to === 'sent_back' ? 'rejected' : 'upheld',
-      deciderId, resultDeliveryId, reason, Date.now());
-    appendWorkEvent(row.id, 'decided', deciderId, { verdict: input.verdict, reason, to });
+    const rejected = input.verdict === 'send_back';
+    recordAdjudication(row.id, rejected || run ? (outcome === 'finished' ? 'done' : 'failed') : to, deciderId, resultDeliveryId, reason, rejected ? 'rejected' : 'upheld');
+    decisionId = appendWorkEvent(row.id, 'decided', deciderId, { verdict: input.verdict, reason, to });
     return transition(row.id, {
       to, by, actorId: deciderId, reason: `${input.verdict}: ${reason}`, expectedState: row.state,
       claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
@@ -119,7 +122,7 @@ export function decide(input: DecideInput): DecideResult {
   });
   if (moved.kind !== 'applied') return refused(`${name} could not move to ${to}: ${moved.detail}.`);
   if (input.verdict === 'owner_done') recordOwnerRemainder(row.id);
-  // 2c: the decision-time effects (design 5c: dependents, project roll-up, schedule stop) run here.
-  const words: Partial<Record<WorkState, string>> = { done: 'Done', failed: "Closed: couldn't be done", sent_back: 'Sent back to its worker', abandoned: 'Cancelled' };
+  onDecided(row.id, decisionId);
+  const words: Partial<Record<WorkState, string>> = { done: 'Done', failed: "Closed: couldn't be done", sent_back: 'Sent back to its worker', abandoned: 'Cancelled', open: 'decided for this run; the schedule goes on' };
   return { kind: 'decided', to, text: `Decided: ${name} is ${words[to]}. Reason: ${reason}` };
 }

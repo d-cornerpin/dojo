@@ -342,13 +342,13 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
 });
 
 describe('D1 fix round 1: the stop is the job task\'s own successful effects; momentum is new SUCCESSFUL work', () => {
-  it.skip('2c: I1 (probe P1): the measured close is REFUSED ("still returns N"), then the agent replies — still parked, no menu', async () => {
+  it('I1 (probe P1): the measured hand-in is REFUSED ("still lists N"), then the agent replies: still parked, no menu', async () => {
     const id = await openTask(true);
     let state = ranCalls(freshTurn(), id, [labelCall(139)], ids(139));
     countMeasure.mockResolvedValue({ ok: true, count: 10412 });
-    const refused = await call('work_update:status', { task_id: id, status: 'complete', result: 'done', evidence: [{ kind: 'claim', claim: 'labelled' }] });
-    expect(refused.content).toMatch(/^Refused: .*still returns 10412/);
-    const close = { id: 'tc-close', name: 'work_update', arguments: { action: 'status', task_id: id, status: 'complete' } } as ToolCall;
+    const refused = await call('work_update:hand_in', { task_id: id, outcome: 'finished', proof: [], note: 'labelled' });
+    expect(refused.content).toMatch(/^Refused: [\s\S]*still lists 10412/);
+    const close = { id: 'tc-close', name: 'work_update', arguments: { action: 'hand_in', task_id: id, outcome: 'finished' } } as ToolCall;
     state = advance(state, {
       toolCalls: [...state.toolCalls, close],
       toolResults: [...state.toolResults, { toolCallId: 'tc-close', name: 'work_update', isError: true, content: refused.content } as AgentTurnState['toolResults'][number]],
@@ -444,7 +444,7 @@ describe('D1 fix round 1: the stop is the job task\'s own successful effects; mo
 describe('C2: the end-of-turn text never coaches closure', () => {
   const FORBIDDEN = ['Close the task NOW', 'auto-pause', 'Save everyone', 'almost always option', 'Pick exactly one'];
 
-  it.skip('2c: a scheduled turn ending with an unmeasured task in progress: continue first, then the doors; no scheduler "DONE" hint', async () => {
+  it('a scheduled turn ending with an unmeasured task in progress: continue first, then the doors; no scheduler "DONE" hint', async () => {
     await openTask(false);
     const out = await runGoingIdle(freshTurn(), ctxFor({ mostRecentInbound: { origin_intent: 'scheduler' } }), scratch());
     const text = menuSteers(out.state)[0].content;
@@ -452,7 +452,7 @@ describe('C2: the end-of-turn text never coaches closure', () => {
     expect(text).not.toContain('scheduler-triggered');
     const cont = text.indexOf('If there is more to do, do it');
     expect(cont).toBeGreaterThan(-1);
-    for (const door of ['status="paused"', 'status="blocked"', 'status="complete"']) expect(text.indexOf(door)).toBeGreaterThan(cont);
+    for (const door of ['status="paused"', 'status="blocked"', 'action="hand_in"']) expect(text.indexOf(door)).toBeGreaterThan(cont);
     expect(text).toContain('A task left in progress is not a problem: a one-off task stays open and you are brought back to it; a scheduled run left in progress is recorded as not done, and its schedule goes on.');   // fix round 1 I-4
     expect(text).not.toContain('or you name what is left');   // fix round 1 I-5
   });

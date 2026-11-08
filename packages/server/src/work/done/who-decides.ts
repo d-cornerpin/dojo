@@ -6,7 +6,7 @@ import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { VALIDATION_ATTEMPT_MARKERS } from '../validation-drive.js';
-import { workerOf, workersOf } from './hand-in.js';
+import { workerOf, workersOf } from './record.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 

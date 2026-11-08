@@ -270,7 +270,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
       if (def) filtered.push(def);
     }
   }
-  // 2c. t200: a long result's pointer names this reader of the agent's OWN results; every agent holds it, allow list or not (deny wins).
+  // A long result's pointer names this reader of the agent's OWN results; every agent holds it, allow list or not (deny wins).
   const reader = toolDefinitions.find((t) => t.name === RESULT_READ_TOOL);
   if (reader && !filtered.includes(reader) && !toolsPolicy.deny.includes(RESULT_READ_TOOL)) filtered.push(reader);
 

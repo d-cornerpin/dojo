@@ -28,12 +28,9 @@
 // CORRECTION, because a stored state carries no record of intent and rewriting on inference
 // moves real work.
 //
-// So exactly ONE of the four shapes is repaired — and it is not repaired HERE. Shape (a) is
-// handed to `tracker/tools.ts:checkProjectCompletion`, which that file's own header calls *"the
-// SINGLE authority for the success-vs-fail-open call"*. This module finds candidates; the
-// authority decides. That is why there is no `UPDATE work` anywhere in this file and no second
-// closer, and a conformance clause holds it that way. It also means D-K comes along for free:
-// a project whose last task FELL is left OPEN and labelled, never announced as done.
+// So exactly ONE of the four shapes is repaired, and not here: a project whose tasks have all ended is
+// settled by `work/done/project-state.ts`, because a project is derived from its tasks. A project whose
+// last task fell is left open, as the derivation says.
 //
 // ── HIS SAFETY CONSTRAINTS, ADOPTED VERBATIM ────────────────────────────────────────────
 //   * never close a project holding any `in_progress`/`on_deck` task
@@ -57,6 +54,7 @@ import { createLogger } from '../logger.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { projectScope, taskScope } from '../work/tracker-view.js';
+import { deriveProjectState, settleProject } from '../work/done/project-state.js';
 
 const logger = createLogger('version-gap');
 
@@ -67,11 +65,8 @@ export const VERSION_GAP_REPORT_KEY = 'version_gap_reconcile_last';
 // THE PREDICATES — ONE COPY, SHARED WITH THE HEALER
 // ════════════════════════════════════════════════════════════════════════════════
 //
-// Two of the four shapes already had a live detector in `healer/diagnostic.ts`
-// (`ORPHANED_PROJECT`, `ORPHANED_TASK`). The two mechanisms are deliberately NOT merged —
-// continuous health and a one-shot version-gap pass are different jobs on different clocks —
-// but the PREDICATE is single-sourced here, because two copies of "what counts as orphaned"
-// is precisely the drift this project keeps closing. The healer imports these.
+// The orphaned-task shape also has a live detector in `healer/diagnostic.ts`; the predicate is
+// single-sourced here and the healer imports it.
 
 /**
  * SHAPE (d): a task dangling in a live state on an assignee that no longer exists.
@@ -114,27 +109,6 @@ export const ORPHANED_TASK_JOIN = (t = 't', a = 'a'): string =>
 export const ORPHANED_TASK_WHERE = (t = 't', a = 'a'): string =>
   `${taskScope(t)} AND ${t}.state IN ('claimed', 'open')`
   + ` AND ${t}.assignee_agent IS NOT NULL AND ${a}.status = 'terminated'`;
-
-/**
- * SHAPE (a): every task in the project is DONE and the project is still open.
- *
- * ⚠ THE PREDICATE IS `state <> 'done'`, NOT "not terminal", AND THAT IS D-K, NOT AN OVERSIGHT.
- * The owner's decision of record: a project that ran out of open tasks but has at least one
- * FALLEN task is deliberately left open for attention — it is not an orphan to be closed. A
- * wider predicate here would flag exactly the projects D-K exists to protect, and the Healer
- * would re-offer to close them on every cycle for ever.
- *
- * The `EXISTS` tail is what makes this shape DISJOINT from shape (b): a project with no tasks
- * at all satisfies "no non-done task" vacuously, and folding the two together would close
- * empty projects under a rule written for finished ones.
- */
-export const ORPHANED_PROJECT_WHERE = (p = 'p'): string =>
-  `${projectScope(p)} AND ${p}.state = 'open'
-      AND NOT EXISTS (
-        SELECT 1 FROM work t
-        WHERE t.parent_id = ${p}.id AND t.kind = 'task' AND t.state <> 'done'
-      )
-      AND EXISTS (SELECT 1 FROM work t2 WHERE t2.parent_id = ${p}.id AND t2.kind = 'task')`;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // THE SCAN
@@ -187,9 +161,10 @@ export function scanVersionGap(): ReconcileScan {
     `SELECT p.id AS id, p.title AS title, p.state AS state FROM work p WHERE ${projectScope('p')}`,
   ).all() as Array<Row & { state: string }>;
 
-  const orphanedIds = new Set((db.prepare(
-    `SELECT p.id AS id FROM work p WHERE ${ORPHANED_PROJECT_WHERE('p')}`,
-  ).all() as Row[]).map((r) => r.id));
+  const orphanedIds = new Set(projects.filter((p) => {
+    const derived = p.state === 'open' ? deriveProjectState(p.id) : null;
+    return derived === 'done' || derived === 'abandoned';
+  }).map((p) => p.id));
 
   const emptyIds = new Set((db.prepare(
     `SELECT p.id AS id FROM work p
@@ -215,8 +190,8 @@ export function scanVersionGap(): ReconcileScan {
     if (orphanedIds.has(p.id)) {
       findings.push({
         shape: 'all-tasks-terminal-but-open', subject: 'project', id: p.id, title,
-        why: 'every task in this project is complete, but the project itself is still open — the board shows it as live work when there is none.',
-        correction: 'the owner closes it from the dashboard project board',   // 2c: a project is derived from its tasks
+        why: 'every task in this project has ended, but the project itself is still open, so the board shows it as live work when there is none.',
+        correction: 'none needed: this pass settles it from its tasks',
       });
       continue;
     }
@@ -285,16 +260,16 @@ export interface ReconcileResult extends ReconcileScan {
 }
 
 /**
- * Run the pass. Idempotent by construction: the only change it makes is handing a structurally
- * unambiguous project to `checkProjectCompletion`, which is itself idempotent and which stops
- * matching this pass's predicate the moment it acts — so a second run finds nothing to do and
- * `repaired` comes back 0. Proven by driving it twice rather than argued for here.
+ * Run the pass. The one change it makes is settling each shape-(a) project from its tasks
+ * (`settleProject`), which stops matching the moment it acts, so a second run repairs nothing.
  */
 export async function runVersionGapReconcile(): Promise<ReconcileResult> {
   const scan = scanVersionGap();
-  const repaired = 0;
-
-  // 2c: a project whose tasks all ended is derived from them; the repair of that shape lands there.
+  let repaired = 0;
+  for (const f of scan.findings) {
+    if (f.shape !== 'all-tasks-terminal-but-open') continue;
+    if (settleProject(f.id)) repaired++;
+  }
 
   const result: ReconcileResult = { ...scan, repaired, at: new Date().toISOString() };
 
@@ -316,14 +291,8 @@ export async function runVersionGapReconcile(): Promise<ReconcileResult> {
     standDown: result.projectStandDown,
   });
 
-  // ── ONE PLAIN LINE, THE OR2 WAY ──
-  // To the AGENT, not to the owner's chat. The ruling of 2026-07-30, recorded on
-  // `checkProjectCompletion`'s own fallen-project branch: *"when a project ends with failed
-  // pieces, the platform does NOT alert the owner directly and does NOT stay silent — the AGENT
-  // is told ... and the agent decides and speaks."* A reconciliation report about projects is
-  // squarely inside that ruling's subject.
-  //
-  // And it is ONE LINE with the denominator in it, not the report. The report is in `config`
+  // ── ONE PLAIN LINE, to the agent, never the owner's chat: the agent decides and speaks.
+  // It is ONE LINE with the denominator in it, not the report. The report is in `config`
   // and on the tracker route; a wall of findings in an awareness notice is a wall nobody reads.
   // Silent when there is nothing to say — the negative control is a clause.
   if (result.findings.length > 0) {

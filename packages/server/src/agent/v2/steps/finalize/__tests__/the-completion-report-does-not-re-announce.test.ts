@@ -97,22 +97,16 @@ function delivery(id: string, d: DeliveryShape): string {
   return id;
 }
 
-/** A one-shot tracker task that closed `done` inside the turn window, on the given receipt. */
-function doneTask(id: string, deliveryId: string, closedAtMs: number, openedAtMs: number): void {
+/** A one-shot tracker task handed in inside the turn window, with the given delivery as its proof. */
+function handedInTask(id: string, deliveryId: string, handedInAtMs: number, openedAtMs: number): void {
   mockDb.current!.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                        wakes, closes_thread, title, opened_at, updated_at)
-     VALUES (?, 'task', ?, 'owner', 'tracker', ?, 'open', 'tracker', 0, 0, ?, ?, ?)`,
-  ).run(id, AGENT, id, TITLE, openedAtMs, openedAtMs);
-  // Both schema conditions for a closed row: the upheld adjudication (two-key) and
-  // migration 135's `done means DELIVERED` receipt.
+     VALUES (?, 'task', ?, 'owner', 'tracker', ?, 'handed_in', 'tracker', 0, 0, ?, ?, ?)`,
+  ).run(id, AGENT, id, TITLE, openedAtMs, handedInAtMs);
   mockDb.current!.prepare(
-    `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at)
-     VALUES (?, 'done', 'upheld', 'pm', ?)`,
-  ).run(id, Date.now());
-  mockDb.current!.prepare(
-    `UPDATE work SET state='done', closed_at=?, result_delivery_id=? WHERE id=?`,
-  ).run(closedAtMs, deliveryId, id);
+    `INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'handed_in', ?, ?, ?)`,
+  ).run(id, JSON.stringify({ outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }], note: '', filedBy: AGENT }), AGENT, handedInAtMs);
 }
 
 const reportEvents = (): Array<{ content: string }> =>
@@ -145,7 +139,7 @@ describe('a completion the owner already has does not ride the event', () => {
       channel: 'dashboard', tool: 'dashboard', recipientId: 'owner',
       conversationId: CONV, messageId: 'bubble-1',
     });
-    doneTask('34519aca', '1f03db51', Date.now(), t);
+    handedInTask('34519aca', '1f03db51', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
 
@@ -155,7 +149,7 @@ describe('a completion the owner already has does not ride the event', () => {
   it('an iMessage receipt is owner-evidence too — the routed channel, not just the dashboard', async () => {
     const t = Date.now() - 5 * 60_000;
     delivery('d-im', { channel: 'imessage', tool: 'auto-route', recipientId: FX.n11 });
-    doneTask('task-im', 'd-im', Date.now(), t);
+    handedInTask('task-im', 'd-im', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
     expect(reportEvents()).toHaveLength(0);
@@ -182,7 +176,7 @@ describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {
     delivery('d-a2a', {
       channel: 'a2a', tool: 'send_to_agent', recipientId: FXID.n5,
     });
-    doneTask('task-a2a', 'd-a2a', Date.now(), t);
+    handedInTask('task-a2a', 'd-a2a', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
 
@@ -197,7 +191,7 @@ describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {
       channel: 'dashboard', tool: 'engine-ack', recipientId: 'owner',
       conversationId: CONV, messageId: 'bubble-ack',
     });
-    doneTask('task-ack', 'd-ack', Date.now(), t);
+    handedInTask('task-ack', 'd-ack', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
     expect(reportEvents()).toHaveLength(1);
@@ -209,7 +203,7 @@ describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {
       channel: 'dashboard', tool: 'dashboard', recipientId: 'owner',
       conversationId: CONV, messageId: 'chip-1',
     });
-    doneTask('task-chip', 'd-chip', Date.now(), t);
+    handedInTask('task-chip', 'd-chip', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
     expect(reportEvents()).toHaveLength(1);
@@ -221,7 +215,7 @@ describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {
       channel: 'dashboard', tool: 'dashboard', recipientId: 'owner',
       conversationId: CONV, outcome: 'suppressed',
     });
-    doneTask('task-sup', 'd-sup', Date.now(), t);
+    handedInTask('task-sup', 'd-sup', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
     expect(reportEvents()).toHaveLength(1);
@@ -236,7 +230,7 @@ describe('the guard narrows nothing else', () => {
   it('non-A2A turns never reach the selector at all', async () => {
     const t = Date.now() - 5 * 60_000;
     delivery('d-a2a2', { channel: 'a2a', tool: 'send_to_agent' });
-    doneTask('task-user', 'd-a2a2', Date.now(), t);
+    handedInTask('task-user', 'd-a2a2', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t), false));
     expect(reportEvents()).toHaveLength(0);
@@ -245,7 +239,7 @@ describe('the guard narrows nothing else', () => {
   it('a close BEFORE the turn window is out of scope, evidenced or not', async () => {
     const t = Date.now() - 5 * 60_000;
     delivery('d-old', { channel: 'a2a', tool: 'send_to_agent' });
-    doneTask('task-old', 'd-old', t - 60_000, t - 120_000);
+    handedInTask('task-old', 'd-old', t - 60_000, t - 120_000);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
     expect(reportEvents()).toHaveLength(0);
@@ -258,8 +252,8 @@ describe('the guard narrows nothing else', () => {
       conversationId: CONV, messageId: 'bubble-seen',
     });
     delivery('d-unseen', { channel: 'a2a', tool: 'send_to_agent' });
-    doneTask('task-seen', 'd-seen', Date.now(), t);
-    doneTask('task-unseen', 'd-unseen', Date.now() + 1, t);
+    handedInTask('task-seen', 'd-seen', Date.now(), t);
+    handedInTask('task-unseen', 'd-unseen', Date.now() + 1, t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
 

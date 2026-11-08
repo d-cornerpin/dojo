@@ -15,12 +15,11 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { findTaskOriginChain, renderTaskOriginChain } from './origin-chain.js';
-import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { insertEngineEvent, claimTrackerNoticeForTask } from '../memory/message-store.js';
+import { insertEngineEvent } from '../memory/message-store.js';
 import { isDreamerAgent, isPrimaryAgent } from '../config/platform.js';
 import { assignmentMeasureLine } from '../work/measure-view.js';
 import { planStepLineOf } from '../work/plan-store.js';
@@ -63,48 +62,6 @@ export interface AssignmentNotificationResult {
   ok: boolean;
   /** The full message content that was persisted (caller may want to push into in-flight context). */
   content: string | null;
-}
-
-/**
- * Neutralize a still-pending task-assignment engine event once its task has
- * reached a terminal state (C2). The scaffold that creates a task from the
- * current turn ALSO pushes the assignment notice inline into that same turn, so
- * the assignee acts on it immediately; the persisted notice row is a record for
- * compaction/display, not a second delivery. But it is stored conv_key=NULL, so
- * once the turn ends the runtime drain / engine-event pickup re-delivers it as a
- * fresh "begin working on this task" prompt on a NEW turn, and the floor model
- * redoes the work, overwriting the artifact the user was already shown. Marking
- * it claimed (conv_key='engine', the same sentinel the loop stamps when it
- * actually serves an engine event) excludes it from getPendingEngineEvent
- * without deleting it, so a task that is already done can never be re-driven.
- *
- * Only touches the pending (conv_key IS NULL) tracker assignment notice(s) for
- * THIS task (matched on the full task-id in the notice body, which is unique),
- * so unrelated engine events are never affected. Idempotent, best-effort;
- * genuinely-open tasks are untouched, so the dangling-recovery machinery for
- * unfinished work still fires as before.
- */
-export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, taskId: string): void {
-  if (!assignedAgentId || !taskId) return;
-  // P2 serve boundary, KEYED retirement first (migration 112): every unserved
-  // engine event carrying this task_id (assignment notices, triggers, pokes)
-  // retires the moment the task goes terminal. The content-LIKE claim below is
-  // kept ONLY as a legacy fallback for pre-112 rows whose task_id is NULL;
-  // scar-ledger note: delete the LIKE arm once the fleet's pending rows have
-  // aged past the 6-hour event horizon on a post-112 build.
-  try {
-    retireEngineEventsForTask(taskId, 'task_terminal');
-  } catch { /* best effort; the LIKE fallback below still neutralizes */ }
-  const like = `%ID: ${taskId}%`;
-  try {
-    // T6: one home, one call. This was two — the row could be in either physical
-    // table, so the claim had to be attempted against both.
-    claimTrackerNoticeForTask({ agentId: assignedAgentId, contentLike: like });
-  } catch (err) {
-    logger.warn('Failed to claim assignment notice for terminal task (non-fatal)', {
-      taskId, assignedAgentId, error: err instanceof Error ? err.message : String(err),
-    }, assignedAgentId);
-  }
 }
 
 /**

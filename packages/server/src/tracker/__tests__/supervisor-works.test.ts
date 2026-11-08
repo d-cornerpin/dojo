@@ -140,8 +140,8 @@ describe('THE DOORBELL — the wake carries the row, not a patrol sweep', () => 
     expect(src).toMatch(/doorbell/i);
   });
 
-  it("the doorbell is wired at the one hand-in door, so no hand-in can forget it", () => {
-    expect(readFileSync(new URL('../../work/done/hand-in.ts', import.meta.url), 'utf8')).toMatch(/ringValidationDoorbell/);
+  it("the doorbell rings in the hand-in effects, so no hand-in can forget it", () => {
+    expect(readFileSync(new URL('../../work/done/effects.ts', import.meta.url), 'utf8')).toMatch(/ringValidationDoorbell/);
     expect(pmSource()).toMatch(/setValidationDoorbellHandler/);
   });
 });

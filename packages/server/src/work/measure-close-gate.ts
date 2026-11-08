@@ -71,8 +71,7 @@ export function recordOwnerRemainder(id: string): void {
 export const RUN_STATUS_INCOMPLETE = 'incomplete';
 
 /** A run about to be recorded `complete`: what its task's measure says is left, or null (nothing
- *  left, unmeasured, unread, or this close named its remainder at the agent's door, now or through
- *  a close request the PM is blessing). */
+ *  left, unmeasured, unread, or the task was handed in during this run). */
 export function runItemsLeft(occurrenceId: string): { taskId: string; left: number; unit: string } | null {
   const occ = getDb().prepare("SELECT parent_id AS p, sequence AS n FROM work WHERE id = ? AND kind = 'occurrence'")
     .get(occurrenceId) as { p: string | null; n: number | null } | undefined;
@@ -81,28 +80,13 @@ export function runItemsLeft(occurrenceId: string): { taskId: string; left: numb
   return r && r.left > 0 ? { taskId: occ.p, left: r.left, unit: r.unit } : null;
 }
 
-/** The writer's pending-close-request rule (`handedInExpr`), for a run: a close request
- *  the agent filed on the task during THIS run (event-id order: after the run's first event) crossed
- *  the agent's door, which re-read and judged it (named remainder or zero). It counts while pending,
- *  and once the PM's Key 2 answered it with the close, since the run is settled after that; a
- *  throw-back (a rejection, a reopen) answers it the other way. */
+/** The task was handed in during THIS run (event-id order: after the run's first event): the hand-in door
+ *  judged its measure then (0, or a named remainder), so a stale reading does not mark the run incomplete. */
 function closeRequestedThisRun(taskId: string, occurrenceId: string): boolean {
-  const db = getDb();
-  const r = db.prepare(
-    `SELECT ${handedInExpr('w')} AS pending,
-            (SELECT MAX(e.id) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'handed_in') AS req,   -- 2c
-            (SELECT MIN(e.id) FROM work_events e WHERE e.work_id = ?) AS run_start
-       FROM work w WHERE w.id = ?`,
-  ).get(occurrenceId, taskId) as { pending: number; req: number | null; run_start: number | null } | undefined;
-  if (!r || r.req === null || r.run_start === null || r.req < r.run_start) return false;
-  if (r.pending === 1) return true;
-  const answer = db.prepare(
-    `SELECT kind, json_extract(payload, '$.to') AS to_state FROM work_events
-      WHERE work_id = ? AND id > ? AND (kind = 'claim_rejected' OR (kind = 'transition'
-        AND json_extract(payload, '$.to') IN ('done', 'failed', 'abandoned', 'open')))
-      ORDER BY id LIMIT 1`,
-  ).get(taskId, r.req) as { kind: string; to_state: string | null } | undefined;
-  return answer?.kind === 'transition' && answer.to_state === 'done';
+  return !!getDb().prepare(
+    `SELECT 1 FROM work_events h WHERE h.work_id = ? AND h.kind = 'handed_in'
+        AND h.id >= (SELECT MIN(e.id) FROM work_events e WHERE e.work_id = ?) LIMIT 1`,
+  ).get(taskId, occurrenceId);
 }
 
 /** The remainder of a run recorded incomplete, on its task's own record (the PM and the owner read it). */

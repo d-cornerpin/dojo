@@ -1,5 +1,5 @@
-// The measured-close refusal (`remainderRefusal`, tracker/measure-gate.ts) states facts and never
-// coaches a close: no "close it with" or "close again with" menu (product law, "Finishing, not closing").
+// The hand-in door's refusal of a measured task with items left states facts and never coaches a close:
+// no "close it with" or "close again with" menu (product law, "Finishing, not closing").
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -17,7 +17,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 
 import { runMigrations } from '../../db/migrations.js';
 import { openTrackerTask } from '../../work/tracker-store.js';
-import { remainderRefusal } from '../measure-gate.js';
+import { handIn } from '../../work/done/hand-in.js';
 
 const AGENT = 'agent-measured';
 
@@ -30,16 +30,18 @@ beforeEach(() => {
 });
 
 describe('the measured-close refusal states facts only', () => {
-  it('complete_task on a measured task with items left: the count, and the hand-in that takes a remainder, with no "close it" menu', () => {
+  it('a finished hand-in of a measured task with items left: the count, and the can\'t-be-done remainder, with no "close it" menu', () => {
     const id = openTrackerTask({
       title: 'Sort the inbox', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
       origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
     });
     mockDb.current!.prepare(`UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 7, measure_at = ? WHERE id = ?`)
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), id);
-    const text = remainderRefusal(id, 'complete_task(status="complete")') ?? '';
-    expect(text).toContain('still returns 7 messages');
-    expect(text).toContain('outcome="cant_be_done"');
+    const r = handIn({ workId: id, by: { kind: 'worker', agentId: AGENT }, outcome: 'finished', items: [], note: 'sorted' });
+    const text = r.text;
+    expect(r.kind).toBe('refused');
+    expect(text).toContain('still lists 7 items');
+    expect(text).toContain("can't be done with a remainder item");
     expect(text).not.toMatch(/close it with|close again with/);
   });
 });

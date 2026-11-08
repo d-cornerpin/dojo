@@ -131,6 +131,16 @@ const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string
     done: 0, dynamic: 1, subjects: 'board tasks and projects',
     owner: 'decide: the decision on a hand-in, or the owner\'s own close',
   },
+  'work/done/housekeeping.ts': {
+    // A service agent's own housekeeping (root_kind 'service'), settled by the engine on its receipt.
+    done: 0, dynamic: 1, subjects: 'service housekeeping tasks',
+    owner: 'settleHousekeeping: the engine settles housekeeping its worker handed in',
+  },
+  'work/done/project-state.ts': {
+    // A project is derived from its tasks; this moves it to its derived end after a decision.
+    done: 0, dynamic: 1, subjects: 'board projects',
+    owner: 'settleProject: a project done when its tasks are',
+  },
   'work/occurrences.ts': {
     // SWEEP CORE-1 CT2 — THE COUNT DID NOT MOVE AND THE OWNER DID, which is the whole record
     // this line has to carry. `settleOccurrence` was a bookkeeping closer: it took whatever

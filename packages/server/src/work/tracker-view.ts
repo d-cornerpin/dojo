@@ -153,17 +153,21 @@ export const projectScope = (a = 'w'): string =>
  *
  * Reconciliation + containment measurement: `tracker/__tests__/census-wire-through-seam.test.ts`.
  *
- * A row handed in waits for its decision and does not fire (2c: a run's hand-in never holds the
- * schedule). `work_update(filter:"overdue")` reads this same expression.
+ * A row handed in as a whole waits for its decision and does not fire; a run's hand-in never holds
+ * the next run. `work_update(filter:"overdue")` reads this same expression.
  */
 export const dueScope = (a = 'w'): string =>
   `${a}.next_run_at IS NOT NULL AND ${a}.next_run_at <= ?`
   + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0`
-  + ` AND ${handedInExpr(a)} = 0`;
+  + ` AND (${handedInExpr(a)} = 0 OR (SELECT json_extract(h.payload, '$.scope') FROM work_events h`
+  + ` WHERE h.work_id = ${a}.id AND h.kind = 'handed_in' ORDER BY h.id DESC LIMIT 1) IS 'run')`;
 
 /** `root_kind` for rows this platform opens from now on. Migrated rows keep `'legacy'`;
  *  both are in scope, and the pair is the whole enumeration. */
 export const TRACKER_ROOT_KIND = 'tracker';
+
+/** `root_kind` of a service agent's own housekeeping: off the board (`work/done/housekeeping.ts`). */
+export const SERVICE_ROOT_KIND = 'service';
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 3 — TIME

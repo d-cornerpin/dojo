@@ -7,67 +7,25 @@
 //     `checkProof` passes every item.
 // A refused proof appends `hand_in_refused` with the reasons (the durable count the ladder reads); a call
 // on the wrong row or by the wrong agent moves nothing and counts nothing. A good hand-in is one unit:
-// the `handed_in` event carrying the resolved items, and the move to handed_in.
+// the `handed_in` event carrying the resolved items, and the move to handed_in. A run of a live schedule
+// with a next run is handed in with scope `run`. Housekeeping rows (`housekeeping.ts`) settle on the engine's receipt.
 import { getDb } from '../../db/connection.js';
-import { withUnit } from '../../db/unit.js';
 import { redactHandedCredentials } from '../../credentials/secret-values.js';
-import { ringValidationDoorbell } from '../validation-drive.js';
-import { transition, appendWorkEvent, type WorkOutcome, type WorkState } from '../store.js';
+import { transition, appendWorkEvent, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
 import { measuredItemsLeft } from '../measure-close-gate.js';
-import { PATIENCE_ENTRY } from '../../tracker/assignee-patience.js';
-import { checkProof, type HandInOutcome, type ProofItemInput, type ResolvedItem } from './proof.js';
+import { checkProof, proofFor, type HandInOutcome, type ProofItemInput } from './proof.js';
+import { workerOf, unitOrRollback, type HandInRecord, type HandInScope } from './record.js';
+import { onHandedIn } from './effects.js';
+import { isHousekeeping, settleHousekeeping } from './housekeeping.js';
 
 export type HandInBy = { kind: 'worker'; agentId: string } | { kind: 'engine'; onBehalfOf: string; because: string };
-export interface HandInInput { workId: string; by: HandInBy; outcome: HandInOutcome; items: ProofItemInput[]; note: string }
+export interface HandInInput { workId: string; by: HandInBy; outcome: HandInOutcome; items: ProofItemInput[]; note: string; scope?: HandInScope }
 export type HandInResult = { kind: 'handed_in'; eventId: number; text: string } | { kind: 'refused'; text: string };
-
-/** What a `handed_in` event carries. */
-export interface HandInRecord { outcome: HandInOutcome; items: ResolvedItem[]; note: string; filedBy: string }
 
 const HANDS_IN_FROM: readonly WorkState[] = ['open', 'claimed', 'sent_back'];
 
-interface DoorRow { id: string; kind: string; state: WorkState; title: string | null; worker: string; open_tasks: number }
-
-/** The worker of a task: its assignee, else the agent holding it. Empty when there is no such row. */
-export function workerOf(workId: string): string {
-  const r = getDb().prepare('SELECT COALESCE(assignee_agent, agent_id) AS w FROM work WHERE id = ?').get(workId) as { w: string } | undefined;
-  return r?.w ?? '';
-}
-
-/** The newest hand-in of a row and its event id, or null when it was never handed in. */
-export function latestHandIn(workId: string): (HandInRecord & { eventId: number }) | null {
-  const e = getDb().prepare(
-    "SELECT id, payload FROM work_events WHERE work_id = ? AND kind = 'handed_in' ORDER BY id DESC LIMIT 1",
-  ).get(workId) as { id: number; payload: string } | undefined;
-  return e ? { ...(JSON.parse(e.payload) as HandInRecord), eventId: e.id } : null;
-}
-
-class Rollback extends Error { constructor(readonly outcome: WorkOutcome) { super('rollback'); } }
-
-/** Run `fn` as one unit, rolled back whole when the transition inside it is not applied. */
-export function unitOrRollback(fn: () => WorkOutcome): WorkOutcome {
-  try {
-    return withUnit(() => { const out = fn(); if (out.kind !== 'applied') throw new Rollback(out); return out; });
-  } catch (err) {
-    if (err instanceof Rollback) return err.outcome;
-    throw err;
-  }
-}
-
-/** Every agent that worked this row: its worker now, every agent that handed it in, and every holder it
- *  was moved away from. None of them decides it. */
-export function workersOf(workId: string): Set<string> {
-  const rows = getDb().prepare(
-    `SELECT actor AS a FROM work_events WHERE work_id = ? AND kind = 'handed_in' AND actor <> 'engine'
-     UNION SELECT json_extract(payload, '$.from_agent') FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?`,
-  ).all(workId, workId, PATIENCE_ENTRY.reassigned) as Array<{ a: string | null }>;
-  const out = new Set(rows.map((r) => r.a).filter((a): a is string => !!a));
-  const now = workerOf(workId);
-  if (now) out.add(now);
-  return out;
-}
+interface DoorRow { id: string; kind: string; state: WorkState; title: string | null; worker: string; open_tasks: number; live_schedule: number }
 
 const label = (r: Pick<DoorRow, 'id' | 'title'>): string => `"${r.title ?? r.id}" [${r.id}]`;
 const outcomeWords = (o: HandInOutcome): string => (o === 'finished' ? 'finished' : "can't be done");
@@ -76,7 +34,8 @@ function doorRow(workId: string): DoorRow | undefined {
   return getDb().prepare(
     `SELECT w.id, w.kind, w.state, w.title, COALESCE(w.assignee_agent, w.agent_id) AS worker,
             (SELECT COUNT(*) FROM work t WHERE t.parent_id = w.id AND ${taskScope('t')}
-                AND t.state NOT IN ('done', 'failed', 'abandoned')) AS open_tasks
+                AND t.state NOT IN ('done', 'failed', 'abandoned')) AS open_tasks,
+            (w.repeat_interval IS NOT NULL AND w.next_run_at IS NOT NULL AND w.schedule_status IN ('waiting', 'running')) AS live_schedule
        FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
   ).get(workId) as DoorRow | undefined;
 }
@@ -94,14 +53,9 @@ const refused = (row: DoorRow | undefined, whys: string[]): HandInResult => ({
   text: [`Refused: the hand-in${row ? ` of ${label(row)}` : ''} was not accepted, and nothing moved.`, ...whys.map((w) => `- ${w}`)].join('\n'),
 });
 
-/** The hand-in-time effects (design 5c). Today: the decider is woken. */
-function afterHandIn(workId: string): void {
-  // 2c: the schedule advance, asker relay, queued-prompt clear and finish ack join here.
-  ringValidationDoorbell({ workId, shape: 'close-request' });
-}
-
 /** THE HAND-IN DOOR (header). */
 export function handIn(input: HandInInput): HandInResult {
+  if (isHousekeeping(input.workId)) return settleHousekeeping(input);
   const row = doorRow(input.workId);
   if (!row) return refused(undefined, [`There is no task or project ${input.workId} on the board.`]);
   const wrong = rowRefusal(row, input.by);
@@ -112,6 +66,9 @@ export function handIn(input: HandInInput): HandInResult {
   const note = redactHandedCredentials(row.worker, (input.note ?? '').replace(/\s+/g, ' ').trim());
   const whys: string[] = note === '' ? ['The note must say what was done, or why it cannot be done.'] : [];
   const left = input.outcome === 'finished' ? measuredItemsLeft(row.id) : 0;
+  if (row.kind === 'project' && input.outcome === 'finished' && row.open_tasks > 0) {
+    whys.push(`Its ${row.open_tasks} open task${row.open_tasks === 1 ? ' is' : 's are'} not finished; a project is done when its tasks are. Hand it in as can't be done to close them with it.`);
+  }
   if (left > 0) whys.push(`Its measure still lists ${left} item${left === 1 ? '' : 's'}, so it is not finished. Finish them, or hand it in as can't be done with a remainder item naming them and why.`);
   const proof = checkProof(row.id, row.worker, input.outcome, input.items);
   if (!proof.ok) whys.push(...proof.refusals.map((r) => r.why));
@@ -120,7 +77,8 @@ export function handIn(input: HandInInput): HandInResult {
     return refused(row, whys);
   }
 
-  const record: HandInRecord = { outcome: input.outcome, items: proof.items, note, filedBy };
+  const scope = input.scope ?? (row.live_schedule ? 'run' : undefined);
+  const record: HandInRecord = { outcome: input.outcome, items: proof.items, note, filedBy, ...(scope ? { scope } : {}) };
   let eventId = 0;
   const moved = unitOrRollback(() => {
     eventId = appendWorkEvent(row.id, 'handed_in', filedBy, record);
@@ -130,13 +88,29 @@ export function handIn(input: HandInInput): HandInResult {
     });
   });
   if (moved.kind !== 'applied') return refused(row, [`The work could not move to handed in: ${moved.detail}.`]);
-  afterHandIn(row.id);
+  onHandedIn(row.id, eventId);
   const n = proof.items.length;
-  const stillOpen = row.kind === 'project' && row.open_tasks > 0
-    ? ` Its ${row.open_tasks} open task${row.open_tasks === 1 ? ' is' : 's are'} not closed by this; each is handed in on its own.` : '';
+  const withTasks = row.kind === 'project' && row.open_tasks > 0 ? ` Its ${row.open_tasks} open task${row.open_tasks === 1 ? ' closes' : 's close'} with it.` : '';
   return {
     kind: 'handed_in', eventId,
     text: `Handed in: ${label(row)} as ${outcomeWords(input.outcome)}, with ${n} proof item${n === 1 ? '' : 's'}. `
-      + `It is not done yet: it waits for a decision by someone other than its worker.${stillOpen}`,
+      + `It is not done yet: it waits for a decision by someone other than its worker.${withTasks}`,
   };
+}
+
+/** The engine hands work in for its worker, from the worker's own records: finished on what `proofFor`
+ *  finds (or `items`), else can't be done on an engine record that says why. `outcome` asks for one of
+ *  the two only. It never sets done. */
+export function engineHandIn(
+  workId: string, because: string, opts: { outcome?: HandInOutcome; items?: ProofItemInput[]; scope?: HandInScope } = {},
+): HandInResult {
+  const by: HandInBy = { kind: 'engine', onBehalfOf: workerOf(workId), because };
+  const items = opts.items ?? (opts.outcome === 'cant_be_done' ? [] : proofFor(workId).map(({ kind, ref }) => ({ kind, ref })));
+  if (opts.outcome !== 'cant_be_done' && items.length > 0) {
+    const r = handIn({ workId, by, outcome: 'finished', items, note: because, scope: opts.scope });
+    if (r.kind === 'handed_in' || opts.outcome === 'finished') return r;
+  }
+  if (opts.outcome === 'finished') return { kind: 'refused', text: `Refused: the engine found no proof on record for ${workId}.` };
+  const record: ProofItemInput = { kind: 'remainder', ref: 'engine record', facts: { reason: because } };
+  return handIn({ workId, by, outcome: 'cant_be_done', items: [...(opts.outcome === 'cant_be_done' ? items : []), record], note: because, scope: opts.scope });
 }

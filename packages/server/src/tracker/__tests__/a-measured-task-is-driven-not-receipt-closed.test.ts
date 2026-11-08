@@ -150,10 +150,10 @@ function wroteFile(taskId: string, atMs: number): void {
     .run(taskId, `file:${report}`, atMs, atMs);
 }
 const closeLogged = (taskId: string): number => (db().prepare(
-  "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND payload LIKE '%delivery-receipt close%'",
+  "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'handed_in' AND actor = 'engine'",
 ).get(taskId) as { n: number }).n;
 
-describe('fix round 3 (NB2): a delivered measured task with items left is driven, never receipt-closed', () => {
+describe('fix round 3 (NB2): a delivered measured task with items left is driven, never handed in by the engine', () => {
   it('two cycles of the ladder: it climbs to escalation, never sends a close-out poke, never logs a close', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
@@ -177,13 +177,15 @@ describe('fix round 3 (NB2): a delivered measured task with items left is driven
     expect(checkIns('task-u').join('\n')).toMatch(/DELIVERY ON RECORD/);
   });
 
-  it('CONTROL: a measured task at zero is still receipt-closed at strike 2 as before', async () => {
+  it('CONTROL: a measured task at zero is handed in by the engine at strike 2, never set done', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-z', 'the finished sweep', now - 6 * MIN, 0);
     wroteFile('task-z', now - 5 * MIN);
     for (const m of [0, 10, 25]) await sweepAt(now + m * MIN);
     expect(checkIns('task-z').join('\n')).toMatch(/DELIVERY ON RECORD/);
-    expect(closeLogged('task-z')).toBeGreaterThan(0);
+    expect(closeLogged('task-z')).toBe(1);
+    expect((db().prepare("SELECT state FROM work WHERE id = 'task-z'").get() as { state: string }).state).toBe('handed_in');
+    expect(db().prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = 'task-z' AND kind = 'decided'").get()).toEqual({ c: 0 });
   });
 });

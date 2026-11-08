@@ -1,14 +1,14 @@
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens, validationMeasureLines } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
-import { engineProof, proofDelivery, proofFor, proofLines, type ResolvedItem } from '../work/done/proof.js';
-import { latestHandIn } from '../work/done/hand-in.js';
+import { engineProof, proofFor, proofLines, type ResolvedItem } from '../work/done/proof.js';
+import { engineHandIn } from '../work/done/hand-in.js';
+import { latestHandIn } from '../work/done/record.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { getBoxTimeZone } from '../scheduler/engine.js';
-import { turnContext } from '../agent/turn-context.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { clearReReviewBound, reReviewHeldBack } from './pm-rereview-bound.js';
@@ -17,8 +17,6 @@ import { writeAgentStatus } from '../agent/agent-status.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, revertCountExpr, stampColumns, handedInExpr,
 } from '../work/tracker-view.js';
-import { patchWork, setTrackerStatus } from '../work/tracker-store.js';
-import { noteUnsettled } from '../work/store.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
 import {
   setValidationDoorbellHandler, validationAttemptCountExpr, validationQueueOrderExpr,
@@ -406,15 +404,11 @@ export function stopPokeLoop(): void {
   logger.info('Poke loop stopped');
 }
 
-// ── Phase B.1: event-driven PM wake on transitions ──
-// When a task is closed the engine buffers the task id, debounces 10 seconds (so a burst of
-// transitions becomes one PM review), then fires a fresh review that
-// bypasses the polled 10-minute throttle. The polled review still runs
-// as a safety-net heartbeat. The smell-pattern detector runs inline on
-// transition and writes any signals into task_log + tasks.last_smell_flag.
+// The event-driven PM wake: a hand-in's doorbell buffers the row and debounces 10 seconds (a burst of
+// hand-ins becomes one review), then a fresh review runs past the polled 10-minute throttle, which stays
+// as the heartbeat.
 
 const TRANSITION_DEBOUNCE_MS = 10_000;
-const SMELL_POKE_WINDOW_SEC = 60;
 const transitionBuffer = new Set<string>();
 let transitionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -482,20 +476,6 @@ export function drainValidationDoorbell(): string[] {
 /** How many rows are waiting to be carried. Exported for the driven clause. */
 export function pendingValidationDoorbellCount(): number {
   return doorbellRows.size;
-}
-
-/**
- * Called by completeAgent when a task is closed. Buffers the task id and schedules a debounced
- * PM review. The review runs as a fresh LLM call regardless of the polled throttle.
- */
-export function noteCloseForReview(taskId: string): void {
-  // Smell detection happens here so the flag lands BEFORE PM reviews.
-  try {
-    runSmellDetector(taskId);
-  } catch (err) {
-    logger.warn('runSmellDetector threw (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
-  }
-  armDebouncedReview(taskId, 'transition:complete');
 }
 
 /**
@@ -664,12 +644,6 @@ export async function escalateCloseoutMissToPM(ctx: {
   }
 }
 
-/**
- * Smell-pattern detector. Writes signal entries into task_log and sets
- * tasks.last_smell_flag for PM to read as context. Never blocks the
- * transition (that's the engine hard-gate's job), this is purely an
- * advisory signal.
- */
 /** Humane rendering of the structured smell flag for the PM model's context.
  *  Legacy prose flags (pre-P6b rows) pass through unchanged. */
 function renderSmellFlag(raw: string): string {
@@ -678,56 +652,6 @@ function renderSmellFlag(raw: string): string {
     if (f.kind === 'complete_dodges_poke') return `closed within ${f.elapsedSec}s of the last poke with no non-tracker tool calls on the closing turn`;
   } catch { /* legacy prose flag */ }
   return raw;
-}
-
-function runSmellDetector(taskId: string): void {
-  const db = getDb();
-  const lastPoke = lastPokeOf(taskId);
-  if (lastPoke) {
-    const elapsedSec = Math.floor((Date.now() - lastPoke.sentAtMs) / 1000);
-    if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
-      const taskAgent = db.prepare(`SELECT agent_id AS assigned_to FROM work WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
-      // P6b REKEY: "did any real work ride this close" reads the CLOSING
-      // TURN's own audit set (turn_number lineage, mig 116), not an
-      // agent-global clock window that credited tool calls from unrelated
-      // concurrent conversations. The dodge shape is by definition the
-      // assignee closing its own task in-turn, so the closing turn is the
-      // assignee's live turn; an engine/Key-2 close has no live turn and is
-      // not a dodge, so no flag.
-      const closingTurn = taskAgent?.assigned_to ? turnContext(taskAgent.assigned_to)?.turnNumber : undefined;
-      if (taskAgent?.assigned_to && closingTurn !== undefined) {
-        // PHASE-2 T8V: A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE, because it
-        // is a SQL LIKE against `audit_log.target`. `audit_log` records the tool NAME,
-        // and after the verb collapse no live tool starts with `tracker_`, so
-        // `NOT LIKE 'tracker_%'` would have been TRUE for every work call; the smell
-        // would have found a "non-tracker tool" in every closing turn and NEVER fired
-        // again. It matches the live prefix now. The retired prefix is kept alongside
-        // it because `audit_log` is HISTORY: a turn straddling the upgrade, or a
-        // re-read of an older turn, still holds rows written under the old names.
-        const nonTrackerTool = db.prepare(`
-          SELECT 1 FROM audit_log
-          WHERE agent_id = ?
-            AND turn_number = ?
-            AND action_type = 'tool_call'
-            AND target NOT LIKE 'work\_%' ESCAPE '\'
-            AND target NOT LIKE 'tracker\_%' ESCAPE '\'
-          LIMIT 1
-        `).get(taskAgent.assigned_to, closingTurn) as { 1: number } | undefined;
-        if (!nonTrackerTool) {
-          // Structured flag (P6b): readers parse fields, not prose.
-          const flag = JSON.stringify({ kind: 'complete_dodges_poke', elapsedSec, closingTurn });
-          noteUnsettled(patchWork(taskId, { last_smell_flag: flag }, { touch: false }), 'pm: smell flag stamped', { taskId });
-          void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
-            taskId,
-            fromEntity: 'engine',
-            entryKind: 'smell_flag',
-            reason: flag,
-          }));
-          logger.info('Smell flag set: complete dodging poke', { taskId, elapsedSec, closingTurn });
-        }
-      }
-    }
-  }
 }
 
 // ── PM LLM Review, runs the PM agent's brain periodically ──
@@ -1847,7 +1771,6 @@ async function runPMReview(): Promise<void> {
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
   for (const cTask of unvalidatedCompleteRows) {
-    // 2c: service-agent housekeeping leaves the board and settles on its own receipts (design 5c).
     const agentName = cTask.assigned_to
       ? agents.find(a => a.id === cTask.assigned_to)?.name ?? cTask.assigned_to
       : 'unassigned';
@@ -2190,9 +2113,8 @@ export async function runPokeCheck(): Promise<void> {
   //     update the tracker). No clock: time alone never ends another agent's task
   //     (R11/R25), and activity elsewhere is a guess, not a record.
   //
-  // Marks 'fallen' with an audit note so the row stays queryable but
-  // drops off the active kanban. Never touches agent-created or user-
-  // created tasks.
+  // Hands each in as can't be done on that reply record, for the decider; never touches agent-created
+  // or user-created tasks.
   try {
     // The receiver-active test lives IN the WHERE clause, not in a per-row check
     // after the limit. It used to run in JavaScript, past LIMIT 50: rows whose
@@ -2217,37 +2139,12 @@ export async function runPokeCheck(): Promise<void> {
       LIMIT 50
     `).all() as Array<{ id: string; title: string; assigned_to: string; project_id: string | null }>;
 
-    if (candidates.length > 0) {
-      // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
-      const closeStmt = {
-        run: (id: string) => noteUnsettled(setTrackerStatus(id, 'fallen', {
-          by: 'pm', actorId: getPMAgentId(),   // 2c: an engine hand-in from the thread's reply
-          reason: 'A2A assignment answered: the receiver recorded a reply on this ticket\'s thread but never moved the ticket',
-        }), 'pm: stale A2A assignment swept', { taskId: id }),
-      };
-      let swept = 0;
-      const { writeTaskLog } = await import('./task-log.js');
-      for (const t of candidates) {
-        closeStmt.run(t.id);
-        writeTaskLog({
-          taskId: t.id,
-          fromEntity: 'engine',
-          entryKind: 'auto_sweep',
-          fromStatus: 'on_deck',
-          toStatus: 'fallen',
-          actionTaken: 'A2A auto-task sweeper',
-          reason: `A2A-assigned on_deck task; receiver ("${t.assigned_to}") recorded a reply on its thread. Handled via reply not via tracker.`,
-        });
-        swept++;
-      }
-      if (swept > 0) {
-        logger.info('A2A auto-task sweeper closed stale on_deck rows', {
-          swept, candidates: candidates.length,
-          sample: candidates.slice(0, 3).map(t => `${t.id.slice(0, 8)}:${t.title.slice(0, 40)}`),
-        });
-        // 2c: the project roll-up runs at the decision.
-      }
+    let handed = 0;
+    for (const t of candidates) {
+      const r = engineHandIn(t.id, `the receiver ${t.assigned_to} replied on this ticket's own thread and never moved the ticket`, { outcome: 'cant_be_done' });
+      if (r.kind === 'handed_in') handed++;
     }
+    if (handed > 0) logger.info('A2A auto-task sweeper handed in answered on_deck rows', { handed, candidates: candidates.length });
   } catch (err) {
     logger.warn('A2A auto-task sweeper failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
@@ -2518,44 +2415,22 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // a rung that tried to inherit that would be rebuilding (1) with a different name.
 
     // ── Work on record ──
-    // Before driving the work, check what the engine itself can count for it (`engineProof`: a file the
-    // worker wrote, a measure at 0). Strike 1: the poke says what is on record instead of re-driving the
-    // whole job. Strike 2 (a poke was already sent after that proof existed and the status still says
-    // in_progress): the engine closes the task itself with the basis recorded, and the normal validation
-    // takes it from there. A measured task with items left is never closed here.
+    // What the engine itself can count for the work (`engineProof`: a file the worker wrote, a measure at 0).
+    // Strike 1: the poke says what is on record and "do not redo". Strike 2 (a poke already went out after
+    // that proof existed): the engine hands the work in for its worker on that proof.
     const proof = task.status === 'in_progress' && !leftAlone && measuredItemsLeft(task.id) === 0 ? engineProof(task.id) : [];
     const workOnRecord = proof.length > 0 ? proofLines(proof).join('; ') : null;
     const provedAtMs = Math.max(...proof.map((i) => (i.kind === 'file' ? Date.parse(String(i.facts.mtime)) : Number(i.facts.at))));
     if (workOnRecord && lastPoke && lastPoke.sentAtMs >= provedAtMs) {
-      const db = getDb();
-      const basis = `engine close on the work on record: ${workOnRecord}; a close steer was already sent (${new Date(lastPoke.sentAtMs).toISOString().replace('T', ' ').slice(0, 19)} UTC) and the status still said in_progress`;
-      const strike2Delivery = proofDelivery(task.id);
-      const s2 = setTrackerStatus(task.id, 'complete', {
-        by: strike2Delivery ? 'engine' : 'pm', actorId: 'engine',
-        evidenceRef: strike2Delivery, resultDeliveryId: strike2Delivery,
-        expectedState: 'claimed', reason: basis,
+      const r = engineHandIn(task.id, `the work is on record (${workOnRecord}) and a poke already went out without a hand-in`, {
+        outcome: 'finished', items: proof.map(({ kind, ref }) => ({ kind, ref })),
       });
-      if (s2.kind !== 'applied') {
-        logger.warn('strike-2 engine close refused by the work gate', { taskId: task.id, result: s2 });
-      } else {
-        const cur = db.prepare('SELECT result FROM work WHERE id = ?').get(task.id) as { result: string | null } | undefined;
-        if (!cur?.result) noteUnsettled(patchWork(task.id, { result: `Delivered (engine-recorded): ${workOnRecord}` }), 'pm: work on record noted on the poke sweep', { taskId: task.id });
+      if (r.kind === 'handed_in') {
+        recordRemediation(task.id, 'engine', 'strike-2 engine hand-in on the work on record');
+        broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType: 'receipt_close' } });
+        continue;
       }
-      void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
-        taskId: task.id,
-        fromEntity: 'engine',
-        entryKind: 'observation',
-        fromStatus: 'in_progress',
-        toStatus: 'complete',
-        actionTaken: 'delivery-receipt close (strike 2)',
-        reason: basis,
-      }));
-      recordRemediation(task.id, 'engine', 'strike-2 engine close on delivery receipt');
-      logger.warn('PM drive: delivered-but-unclosed task engine-closed on receipt basis (strike 2)', {
-        taskId: task.id, title: task.title,
-      });
-      broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType: 'receipt_close' } });
-      continue;
+      logger.warn('strike-2 engine hand-in refused', { taskId: task.id, why: r.text.slice(0, 200) });
     }
 
     // ── Normal poke (nudge / urgent / escalate) ──

@@ -457,10 +457,8 @@ describe('ARM 3 — THE CLOSER: the run closes on the message, or it does not cl
     expect(occurrenceOwesDeliverable('no-such-run')).toEqual({ owes: false, taskKind: null, taskId: null });
   });
 
-  it('3h the run-as-complete RETIREMENT path is gated too — the three call sites that pass null', () => {
-    // `skipOpenOccurrencesAsComplete` hard-codes `deliveryId = null` and used to record the
-    // run `complete` on the strength of the caller's assertion alone. For a declared task it
-    // cannot any more.
+  it('3h a run settled complete with no delivery is gated too', () => {
+    // A caller's word that a declared run is complete, with no delivery, never records it complete.
     seedSchedule();
     declareDeliverableOnSchedule(W);
     const runId = claim();

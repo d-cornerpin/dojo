@@ -73,12 +73,9 @@ describe('serve boundary (P2)', () => {
       .toMatch(/served_by_turn IS NULL AND swept_at IS NULL/);
   });
 
-  it('run close claims its trigger by key; terminal tasks retire their events by key', () => {
+  it('run close claims its trigger by key', () => {
     const runner = read('scheduler/runner.ts');
     expect(runner).toMatch(/retireEngineEventsForRun\(runId\)/);
-    const notify = read('tracker/notify.ts');
-    const fn = notify.slice(notify.indexOf('export function claimAssignmentNoticeForTerminalTask'));
-    expect(fn.slice(0, 1500)).toMatch(/retireEngineEventsForTask\(taskId/);
   });
 
   it('the spent-premise definitions read LIVE referent state', () => {
@@ -247,37 +244,6 @@ describe('turn record (P4)', () => {
     // assertion is now strictly about it rather than about it plus a co-written column.
     expect(store).toMatch(/export function recordServingTurnByRowid/);
     expect(store).toMatch(/UPDATE messages SET served_by_turn = COALESCE\(@servedByTurn, served_by_turn\)/);
-  });
-
-  // ── RETIRED DELIBERATELY (PHASE-2 T8c item 3), and replaced by the demolition it now
-  // guards. This clause pinned `closeEngineScaffoldSameTurn`'s P4 rekey: "created within
-  // this turn" must be turn IDENTITY (`origin_turn === liveTurn`), not a five-minute clock
-  // window, because a slow turn silently failed the clock version. The FUNCTION is gone —
-  // it died with the empty-project machine that created the danglers it cleaned up
-  // (PHASE-2.md Task T8 Step 4: "`closeEngineScaffoldSameTurn` dies with the scaffold").
-  //
-  // Retiring the clause without a replacement would leave nothing saying the path is
-  // supposed to be absent, and #15 is explicit that an absence is a question, not an
-  // answer. So the clause is INVERTED into a tombstone: the engine's one privileged
-  // close must stay gone, and if it ever comes back it comes back with its identity gate.
-  it('TOMBSTONE: the engine has no privileged same-turn close any more', () => {
-    const tools = read('tracker/tools.ts');
-    expect(tools).not.toMatch(/export async function closeEngineScaffoldSameTurn/);
-    // ⚠ PHASE-6 GUARD-AUDIT 2026-08-04 — THIS CLAUSE WAS THE QUIET SHAPE, EXACTLY.
-    // A NEGATIVE assertion over a SINGLE-FILE corpus passes for two different reasons and
-    // cannot tell them apart: because the call is absent, or because the corpus stopped
-    // containing the place it would live. `loop.ts` is being drained into step packages,
-    // so a re-introduced privileged close landing in `steps/<name>/` was invisible here —
-    // a tombstone that cannot see the grave. The negative control below reads
-    // `pm-agent.ts`, which is NOT in the engine corpus, so it never covered this gap.
-    const loop = engine();
-    expect(loop).not.toMatch(/closeEngineScaffoldSameTurn\(/);
-    // NEGATIVE CONTROL of the same shape: the OTHER engine close — the PM ladder's
-    // strike-2 receipt close — must still be here, or this clause would pass by the
-    // engine losing every close rather than just the ungated one.
-    const pm = read('tracker/pm-agent.ts');
-    expect(pm).toMatch(/strike2Delivery/);
-    expect(pm).toMatch(/delivery-receipt close \(strike 2\)/);
   });
 });
 

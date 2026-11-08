@@ -46,7 +46,7 @@ vi.mock('../../db/connection.js', async () => {
 import { createWorkTable, seedTrackerTask } from './work-fixture.js';
 import {
   claimOccurrence, settleOccurrence, inFlightOccurrence,
-  skipOpenOccurrences, skipOpenOccurrencesAsComplete, assignOccurrence,
+  skipOpenOccurrences, assignOccurrence,
   sweepOrphanedOccurrences, sweepTerminatedAgentOccurrences, deleteOccurrencesOf,
   OCCURRENCE_KIND,
 } from '../occurrences.js';
@@ -286,29 +286,6 @@ describe("requirement preserved: the fallen path's skipped-run COUNT", () => {
     seedSchedule(T0);
     settleOccurrence(fire(1), 'complete', 'del-1', null);
     expect(skipOpenOccurrences(W, 'agent fell over')).toBe(0);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-describe("requirement preserved: 'all runs complete' retires the schedule's open run", () => {
-  it("closes the open run and its history reads 'complete', not 'skipped'", () => {
-    // The three sites this replaces all wrote `status='complete'` with no delivery to point
-    // at: "All runs completed by agent", "Schedule stopped and marked complete",
-    // "Auto-completed: group deleted". G7 forces the ROW to `abandoned`; the history must
-    // still say what the caller asserted.
-    seedSchedule(T0);
-    fire(1);
-    expect(skipOpenOccurrencesAsComplete(W, 'All runs completed by agent')).toBe(1);
-    const [run] = listOccurrenceRuns(W);
-    expect(run.status).toBe('complete');
-    expect(run.resultSummary).toBe('All runs completed by agent');
-  });
-
-  it('is a no-op when nothing is open — a stale call must not invent a run', () => {
-    seedSchedule(T0);
-    settleOccurrence(fire(1), 'complete', 'del-1', 'the real close');
-    expect(skipOpenOccurrencesAsComplete(W, 'stale')).toBe(0);
-    expect(listOccurrenceRuns(W)[0].resultSummary).toBe('the real close');
   });
 });
 

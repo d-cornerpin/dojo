@@ -1,8 +1,7 @@
-// proof-fix V round 3 — a recurring task's blessed run, end to end through the real doors.
-// The worker's per-run finish (work_update:status complete) on a NON-final run advances the
-// schedule through the engine with no close request at all; only a FINAL run or a stop
-// (complete_all_runs) files Key 1. Each shape is driven with an occurrence really in flight,
-// then the PM's work_validate, and judged by what an owner expects of the row.
+// A recurring task's run, end to end through the real doors. The worker's hand-in on a NON-final run
+// is a run hand-in: the schedule advances at once and the PM's decision returns the row to Open for its
+// next run. The FINAL run's hand-in is the whole schedule's: its approval ends the row done with the
+// schedule stopped. Each shape is driven with an occurrence really in flight.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -29,13 +28,14 @@ vi.mock('../../agent/access/read.js', async (orig) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { claimOccurrence } from '../../work/occurrences.js';
-import { trackerValidateComplete } from '../tools.js';
-import { setTrackerStatus } from '../../work/tracker-store.js';
 import { setNextRun } from '../../work/next-run.js';
+import { decide } from '../../work/done/decide.js';
+import { openProof } from '../../work/done/open-proof.js';
+import { clearPlatformConfigCache } from '../../config/platform.js';
 
 const AGENT = 'agent-recurring';
 const PM = 'pm-agent';
-const CLOSE = { result: 'done', evidence: [{ kind: 'claim', claim: 'ran the sweep' }] };
+const HAND_IN = { outcome: 'finished', proof: [{ kind: 'delivery', ref: '' }], note: 'ran the sweep' };
 
 type Out = { content: string; isError: boolean };
 const call = async (key: string, args: Record<string, unknown>): Promise<Out> =>
@@ -44,9 +44,16 @@ const db = (): Database.Database => mockDb.current!;
 const row = (id: string) => db().prepare(
   'SELECT state, schedule_status, next_run_at, attempts FROM work WHERE id = ?',
 ).get(id) as { state: string; schedule_status: string; next_run_at: number | null; attempts: number };
-const keyOnes = (id: string): number => (db().prepare(
-  "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'validation_requested'",
-).get(id) as { n: number }).n;
+const scopeOf = (id: string): string | null => (db().prepare(
+  "SELECT json_extract(payload, '$.scope') AS s FROM work_events WHERE work_id = ? AND kind = 'handed_in' ORDER BY id DESC LIMIT 1",
+).get(id) as { s: string | null }).s;
+/** The PM's decision, by the one decision door, after opening the proof it relies on. */
+const pmDecides = (id: string, verdict: 'approve' | 'send_back') => {
+  openProof(PM, id, 0);
+  const r = decide({ workId: id, deciderAgentId: PM, verdict, reason: 'The sweep reached the owner' });
+  expect(r.kind, r.text).toBe('decided');
+  return r;
+};
 /** A result that reached the person — what a close points at (`deliveryForTaskClose`). */
 const seedDelivery = (): void => {
   const id = `d-${Math.random()}`;
@@ -84,59 +91,47 @@ beforeEach(() => {
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
     VALUES (?, 'Worker', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(AGENT);
   db().prepare(`INSERT INTO agents (id, name, status) VALUES (?, 'PM', 'idle')`).run(PM);
+  db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_id', ?)").run(PM);
+  clearPlatformConfigCache();
 });
 
-describe('a recurring task keeps its schedule through a run the PM blesses', () => {
-  it.skip('2c: a non-final run: the worker\'s finish advances the schedule itself (no Key 1), and a later PM validate is a no-op', async () => {
+describe('a recurring task keeps its schedule through a run the PM decides', () => {
+  it('a non-final run: the worker\'s hand-in is a run hand-in, the schedule advances at once, and the decision returns the row to Open', async () => {
     const id = await recurringInFlight();
     const before = row(id);
-    const fin = await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE });
+    seedDelivery();
+    const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
     await settle();
-    expect(fin.content, fin.content).toMatch(/Run completed for recurring task/);
-    expect(keyOnes(id), 'a non-final per-run finish files no close request').toBe(0);
+    expect(fin.isError, fin.content).toBe(false);
+    expect(scopeOf(id)).toBe('run');
     let r = row(id);
-    expect(r.state).toBe('on_deck');
+    expect(r.state).toBe('handed_in');
     expect(r.schedule_status).toBe('waiting');
     expect(r.next_run_at!).toBeGreaterThan(Date.now());
     expect(r.attempts).toBe(before.attempts + 1);
-    // The PM validating afterwards must not disturb any of that.
-    await trackerValidateComplete(PM, { task_id: id, valid: true });
+    expect(pmDecides(id, 'approve').kind).toBe('decided');
     r = row(id);
-    expect({ s: r.state, ss: r.schedule_status, a: r.attempts }).toEqual({ s: 'on_deck', ss: 'waiting', a: before.attempts + 1 });
+    expect({ s: r.state, ss: r.schedule_status, a: r.attempts }).toEqual({ s: 'open', ss: 'waiting', a: before.attempts + 1 });
   });
 
-  it.skip('2c: a stop filed while a run is in flight: the PM bless leaves a STOPPED schedule on a done row, never a live one', async () => {
-    const id = await recurringInFlight();
-    seedDelivery();
-    const fin = await call('work_update:status', { task_id: id, status: 'complete', complete_all_runs: true, ...CLOSE });
-    expect(fin.content, fin.content).toMatch(/FILED|filed|request/i);
-    expect(keyOnes(id)).toBe(1);
-    const out = await trackerValidateComplete(PM, { task_id: id, valid: true });
-    await settle();
-    const r = row(id);
-    expect(out, out).toMatch(/^\[OK\]/);
-    expect(r.state).toBe('done');
-    expect(r.schedule_status, 'a done row must not keep a live schedule').toBe('completed');
-  });
-
-  it.skip('2c: a final run (no further occurrence): the filed close, once blessed, ends the schedule with the row', async () => {
+  it('a final run (no further occurrence): its approval ends the row done and stops the schedule', async () => {
     const id = await recurringInFlight({ repeat_end_type: 'after_count', repeat_end_value: '1' });
+    db().prepare('UPDATE work SET next_run_at = NULL WHERE id = ?').run(id);
     seedDelivery();
-    const fin = await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE });
-    expect(fin.content, fin.content).not.toMatch(/Run completed for recurring task/);
-    const out = await trackerValidateComplete(PM, { task_id: id, valid: true });
+    const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
+    expect(fin.isError, fin.content).toBe(false);
+    expect(scopeOf(id)).toBeNull();
+    expect(pmDecides(id, 'approve').kind).toBe('decided');
     await settle();
     const r = row(id);
-    expect(out, out).toMatch(/^\[OK\]/);
     expect(r.state).toBe('done');
     expect(r.schedule_status).toBe('completed');
   });
 
-  it.skip('2c: the one rule at the fire-time writer: nothing arms a schedule on a settled row', async () => {
+  it('the one rule at the fire-time writer: nothing arms a schedule on a settled row', async () => {
     const id = await recurringInFlight();
-    seedDelivery();
-    const d = (db().prepare("SELECT id FROM deliveries ORDER BY created_at DESC LIMIT 1").get() as { id: string }).id;
-    setTrackerStatus(id, 'complete', { by: 'pm', actorId: PM, claim: 'authoritative', resultDeliveryId: d, reason: 'closed' });
+    expect(decide({ workId: id, deciderAgentId: null, verdict: 'owner_done', reason: 'closed' }).kind).toBe('decided');
+    await settle();
     expect(row(id).state).toBe('done');
     setNextRun(id, { at: Date.now() + 3_600_000, alongside: { schedule_status: 'waiting' }, reason: 'test' });
     expect(row(id).schedule_status).toBe('completed');
@@ -144,14 +139,14 @@ describe('a recurring task keeps its schedule through a run the PM blesses', () 
     expect((db().prepare('SELECT is_paused AS p FROM work WHERE id = ?').get(id) as { p: number }).p, 'an ended schedule has one shape').toBe(1);
   });
 
-  it.skip('2c: N1: a row with a repeat interval but no live schedule is a one-shot to the filer AND the validator', async () => {
+  it('N1: a row with a repeat interval but no live schedule is handed in whole, and decided done', async () => {
     const id = await recurringInFlight();
     db().prepare("UPDATE work SET schedule_status = 'unscheduled', state = 'claimed' WHERE id = ?").run(id);
     seedDelivery();
-    const fin = await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE });
-    expect(fin.content, fin.content).not.toMatch(/Run completed for recurring task/);
-    const out = await trackerValidateComplete(PM, { task_id: id, valid: true });
-    expect(out, out).toMatch(/^\[OK\] Complete validated/);
+    const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
+    expect(fin.isError, fin.content).toBe(false);
+    expect(scopeOf(id)).toBeNull();
+    expect(pmDecides(id, 'approve').kind).toBe('decided');
     expect(row(id).state).toBe('done');
   });
 });

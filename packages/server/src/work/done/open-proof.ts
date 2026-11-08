@@ -5,7 +5,7 @@
 import { getDb } from '../../db/connection.js';
 import { appendWorkEvent } from '../store.js';
 import { fileFacts, EXCERPT_BYTES } from './file-facts.js';
-import { latestHandIn, workerOf } from './hand-in.js';
+import { latestHandIn, workerOf } from './record.js';
 import { proofLines, type ResolvedItem } from './proof.js';
 
 export type OpenResult = { ok: true; text: string } | { ok: false; text: string };

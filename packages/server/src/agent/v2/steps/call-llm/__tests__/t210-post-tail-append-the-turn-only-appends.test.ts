@@ -107,7 +107,8 @@ vi.mock('../../../../../logger.js', () => ({
 import { runV2Turn } from '../../../loop.js';
 import { runMigrations } from '../../../../../db/migrations.js';
 import { submitUserMessage } from '../../../../../gateway/routes/chat.js';
-import { createTask, setTaskStatus } from '../../../../../tracker/schema.js';
+import { createTask } from '../../../../../tracker/schema.js';
+import { decide } from '../../../../../work/done/decide.js';
 
 const AGENT = 'primary';
 const TASKS_HEAD = '═══ YOUR ACTIVE TASKS';
@@ -243,12 +244,12 @@ describe('decision 37 — within one turn, the array only grows', () => {
     expectLabelShape(label);
   });
 
-  it.skip('2c: a task list that EMPTIED mid-turn: the old copy stays above and a label below says it no longer applies', async () => {
+  it('a task list that EMPTIED mid-turn: the old copy stays above and a label below says it no longer applies', async () => {
     const id = task('Reconcile the PELICAN manifests');
     await submitUserMessage(AGENT, 'Finish the PELICAN reconciliation.');
     onTool = () => {
-      // Through the tracker's own status door, the way a cancel reaches the board.
-      expect(setTaskStatus(id, 'cancelled', { by: 'owner', actorId: 'owner', reason: 'no longer needed' })).not.toBeNull();
+      // The owner's cancel, through the one decision door.
+      expect(decide({ workId: id, deciderAgentId: null, verdict: 'cancel', reason: 'no longer needed' }).kind).toBe('decided');
     };
     const [a, b] = await turn(
       { tool: { name: 'web_search', arguments: { query: 'PELICAN totals' } } },

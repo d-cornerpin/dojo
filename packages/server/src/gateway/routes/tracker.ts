@@ -614,20 +614,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
           toStatus: body.status,
           actionTaken: 'dashboard PUT /tracker/tasks/:id',
         });
-        if (body.status === 'fallen' || body.status === 'cancelled') {
-          // RC-17.5: a drag to a terminal column on a live schedule must also STOP the
-          // schedule, or the scheduler keeps firing it (the due query filters
-          // only schedule_status/is_paused, not status). Mirror the tool path.
-          try {
-            const { terminateLiveScheduleOnFallen } = await import('../../scheduler/runner.js');
-            if (body.status === 'cancelled') {
-              terminateLiveScheduleOnFallen(id, 'the task was cancelled from the dashboard', 'schedule terminated on cancel');
-            } else {
-              terminateLiveScheduleOnFallen(id, 'the task was marked fallen from the dashboard');
-            }
-          } catch { /* best-effort */ }
-          // 2c: the project roll-up runs at the decision.
-        }
       }
     }
 

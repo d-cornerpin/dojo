@@ -33,6 +33,8 @@ export function spentTask(taskId: string): Spent | null {
   ).get(taskId) as { status: string; is_paused: number } | undefined;
   if (!task) return { reason: 'task_missing', state: 'task row gone' };
   if (isTerminalTaskStatus(task.status)) return { reason: 'task_terminal', state: `task ${task.status}` };
+  // Handed-in work waits for its decision; a queued prompt for it would only redo it.
+  if (task.status === 'handed_in') return { reason: 'task_handed_in', state: 'task handed in' };
   // A hold never makes work spent; a paused schedule does.
   if (task.is_paused === 1) return { reason: 'task_paused', state: 'task paused' };
   return null;

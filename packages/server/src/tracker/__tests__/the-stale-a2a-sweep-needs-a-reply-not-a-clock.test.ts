@@ -93,7 +93,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     mockDb.current = new Database(':memory:');
     createWorkTable(mockDb.current);
     mockDb.current.exec(`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT, status TEXT, model_id TEXT, updated_at TEXT, session_started_at TEXT);
-      CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, agent_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, agent_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, lane TEXT, channel TEXT, source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT, a2a_requires_response INTEGER, inbound_meta TEXT, origin_intent TEXT, conversation_id TEXT, sender_id TEXT, sent_at INTEGER, created_at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS a2a_replies (assign_message_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, thread_id TEXT NOT NULL, reply_intent TEXT NOT NULL, replied_at TEXT NOT NULL DEFAULT (datetime('now')));`);
   });
 
@@ -105,12 +105,12 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     expect(stateOf('t-chatty'), 'activity elsewhere is a guess, not a record').toBe('open');
   });
 
-  it.skip('2c: a ticket younger than 30 minutes is closed the moment the receiver replies on its thread', async () => {
+  it('a ticket younger than 30 minutes is handed in as can\'t be done the moment the receiver replies on its thread', async () => {
     seed('t-replied', 'thread-bbb', 60_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a1', ?, 'thread-bbb', 'COMPLETE')")
       .run(RECEIVER);
     await runPokeCheck();
-    expect(stateOf('t-replied')).toBe('failed');
+    expect(stateOf('t-replied')).toBe('handed_in');
   });
 
   it('a reply on a different thread does not close this ticket', async () => {
@@ -130,11 +130,11 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     expect(stateOf('t-live')).toBe('open');
   });
 
-  it.skip.each(['ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'])('2c: a %s reply ends the ticket', async (intent) => {
+  it.each(['ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'])('a %s reply hands the ticket in', async (intent) => {
     seed('t-final', 'thread-eee', 60_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a8', ?, 'thread-eee', ?)")
       .run(RECEIVER, intent);
     await runPokeCheck();
-    expect(stateOf('t-final')).toBe('failed');
+    expect(stateOf('t-final')).toBe('handed_in');
   });
 });

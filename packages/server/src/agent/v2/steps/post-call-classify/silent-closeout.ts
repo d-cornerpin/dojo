@@ -15,6 +15,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { closedWithoutDelivery, owesAnswer } from '../../answered-edge.js';
 import { msToText, taskScope, tsToMs } from '../../../../work/tracker-view.js';
+import { handedInSinceExpr, handInNoteExpr } from '../../../../work/done/record.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
@@ -60,11 +61,10 @@ export async function runSilentCloseout(
       const turnStartedAtMs = Date.parse(`${turnStartedAt.replace(' ', 'T')}Z`);
       const closedWorkThisTurn = closedWithoutDelivery(agentId, Number.isFinite(turnStartedAtMs) ? turnStartedAtMs : Date.now() - 60_000);
       const closedThisTurn = db.prepare(`
-        SELECT w.title AS title, w.result AS result, ${msToText('w.opened_at')} AS created_at,
+        SELECT w.title AS title, ${handInNoteExpr('w')} AS result, ${msToText('w.opened_at')} AS created_at,
                w.source_message_id AS source_message_id FROM work w
-         WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'done'
-           AND w.repeat_interval IS NULL AND w.closed_at >= ?
-         ORDER BY w.closed_at ASC LIMIT 3
+         WHERE ${taskScope('w')} AND w.agent_id = ? AND w.repeat_interval IS NULL AND ${handedInSinceExpr('w')}
+         ORDER BY w.updated_at ASC LIMIT 3
       `).all(agentId, tsToMs(turnStartedAt) ?? 0) as Array<{ title: string; result: string | null; created_at: string; source_message_id: string | null }>;
       if (closedWorkThisTurn.length > 0) {
         logger.info('v2 silent-closeout: work settled this turn with NO delivery to point at', {
@@ -114,7 +114,7 @@ export async function runSilentCloseout(
             receipts = isTangibleDeliverySummary(summary) ? summary : '';
           } catch { /* fall through to the no-receipts wording */ }
           const steerText =
-            `[Engine record: this turn marked ${whichTask} complete. ` +
+            `[Engine record: this turn handed in ${whichTask}. ` +
             (receipts.length > 0
               ? `The engine recorded this delivery: ${receipts.slice(0, 220)}. ${userWords(turnCtx.address, true)} has not heard anything about it. `
               : 'The engine has NO recorded delivery for it (no file artifact, no channel send). ') +

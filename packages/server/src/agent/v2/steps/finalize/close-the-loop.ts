@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, tsToMs } from '../../../../work/tracker-view.js';
+import { handedInSinceExpr, handInNoteExpr, handInDeliveriesExpr } from '../../../../work/done/record.js';
 // UX-REPAIR ROUND 11 T42: the DECLARED sets for "this delivery is not an answer to anybody".
 // One owner (`work/ask-settlement.ts`), four readers now — `answered-edge.ts`,
 // `work/occurrences.ts`, `work/ask-remediation.ts` and the guard below. IMPORTED, never
@@ -68,12 +69,12 @@ const logger = createLogger('v2-loop');
 // Proof, both directions: `__tests__/the-completion-report-does-not-re-announce.test.ts`.
 const NOT_OWNER_FACING_CHANNELS = ["'a2a'", "'none'"];
 
-/** SQL: TRUE when this work row's receipt is a delivery the OWNER can already have read. */
+/** SQL: TRUE when a delivery this work row was handed in on is one the OWNER can already have read. */
 const ownerEvidencedClose = (a: string): string => {
   const tools = [...NON_ANSWERING_DELIVERY_TOOLS].map((t) => `'${t}'`).join(', ');
   const chips = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
   return `EXISTS (SELECT 1 FROM deliveries d
-                   WHERE d.id = ${a}.result_delivery_id
+                   WHERE d.id IN ${handInDeliveriesExpr(a)}
                      AND d.outcome = 'delivered'
                      AND d.channel NOT IN (${NOT_OWNER_FACING_CHANNELS.join(', ')})
                      AND d.tool NOT IN (${tools})
@@ -106,13 +107,12 @@ export async function scheduleCompletionReport(ctx: FinalizeContext): Promise<vo
   if (isA2ATurn) {
     try {
       const justCompleted = db.prepare(`
-        SELECT w.id AS id, w.title AS title, w.result AS result FROM work w
+        SELECT w.id AS id, w.title AS title, ${handInNoteExpr('w')} AS result FROM work w
         WHERE ${taskScope('w')} AND w.agent_id = ?
-          AND w.state = 'done'
-          AND w.closed_at >= ?
+          AND ${handedInSinceExpr('w')}
           AND w.repeat_interval IS NULL
           AND NOT ${ownerEvidencedClose('w')}
-        ORDER BY w.closed_at ASC
+        ORDER BY w.updated_at ASC
         LIMIT 5
       `).all(agentId, tsToMs(turnStartedAt) ?? 0) as Array<{ id: string; title: string; result: string | null }>;
       if (justCompleted.length > 0) {

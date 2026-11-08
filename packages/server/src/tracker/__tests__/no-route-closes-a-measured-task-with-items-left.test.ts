@@ -1,8 +1,6 @@
 // v3.5 DONE IS MEASURED, fix round 2 — NO ROUTE closes a measured task with items left unless the
-// remainder is named: the engine's own closes (the same-turn receipt close, the A2A deliverable
-// close request, the PM's receipt close, the join-drive card release, a group deletion's orphans,
-// the scheduler's last-run and recovery closes) all cross the tracker's ONE status writer, which
-// now holds the rule; the PM's own close and `complete_task` are judged at their doors.
+// remainder is named: every route, the engine's own hand-ins and `complete_task` included, reaches
+// the one hand-in door, which holds the rule; only the owner closes directly.
 //
 // Driven through the work verbs' own door (`agent/tools/cat/tracker.ts`), because that is where
 // the measure is read (it is I/O) before the synchronous close door judges it. The schema is the
@@ -142,24 +140,24 @@ describe('complete_task (a spawned agent ending)', () => {
   const completeTask = (args: Record<string, unknown>) =>
     (agentsHandlers['complete_task'] as (ctx: unknown) => Promise<Out>)({ agentId: AGENT, args });
 
-  it('with items left is refused BEFORE the agent is ended, naming the hand-in that takes a remainder', async () => {
+  it('with items left the hand-in is refused BEFORE the agent is ended, naming the remainder it takes', async () => {
     const id = await apprentice(40);
     countMeasure.mockResolvedValueOnce({ ok: true, count: 40 });
     const out = await completeTask({ status: 'complete', summary: 'labelled what I could' });
-    expect(out.content).toMatch(/^Refused: complete_task\(status="complete"\) on a measured task\. .*still returns 40 messages/);
-    // Field fix 3 review round 4: still names the door that takes a remainder, as a fact, with no
-    // "close it with ... complete" menu (close-coaching is a defect).
-    expect(out.content).toContain('work_update(action="hand_in", outcome="cant_be_done"');
-    expect(out.content).toContain('kind:"remainder"');
+    expect(out.content).toMatch(/^Refused: the hand-in of "Sort the inbox".*\n- Its measure still lists 40 items/);
+    // Names the hand-in that takes a remainder, as a fact, with no "close it with" menu.
+    expect(out.content).toContain("can't be done with a remainder item");
+    expect(out.content).toContain('work_update(action="hand_in"');
     expect(out.content).not.toMatch(/close it with/);
     expect(out.isError).toBe(true);
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).not.toBe('terminated');
     expect(readWork(id).state).toBe('claimed');
   });
-  it('at zero ends as before; and after a remainder was named at the status door it is not refused again', async () => {
-    await apprentice(40);
+  it('at zero it hands the task in on its measure and ends the agent', async () => {
+    const id = await apprentice(40);
     countMeasure.mockResolvedValueOnce({ ok: true, count: 0 });
     expect((await completeTask({ status: 'complete', summary: 'all labelled' })).content).toMatch(/Task completion reported: complete/);
+    expect(readWork(id).state).toBe('handed_in');
   });
   it('a task handed in with a named remainder lets complete_task end the agent', async () => {
     const id = await apprentice(40);

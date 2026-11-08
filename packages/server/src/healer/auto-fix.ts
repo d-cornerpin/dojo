@@ -23,8 +23,7 @@ import { activeRuns } from '../agent/shared-state.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
-import { ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
-import { setTrackerStatus, deliveryForCompletedChildren } from '../work/tracker-store.js';
+import { setTrackerStatus } from '../work/tracker-store.js';
 import { workSettled } from '../work/store.js';
 import { writeAssignee } from '../work/row-authority.js';
 import { recordMove } from '../work/move-record.js';
@@ -397,50 +396,6 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   return { applied: false, description: '' };
 }
 
-function fixOrphanedProject(item: DiagnosticItem): AutoFixResult {
-  if (item.code !== 'ORPHANED_PROJECT') return { applied: false, description: '' };
-
-  const db = getDb();
-  // D-K (owner decision): close-as-complete ONLY when every task is complete.
-  // A project that has run out of open tasks but has at least one FALLEN task
-  // must NOT be auto-closed as a success, it is left open for attention (the
-  // tracker path labels it, see checkProjectCompletion). The predicate is
-  // therefore `status != 'complete'` (not `NOT IN ('complete','fallen')`): a
-  // fallen task now blocks the close, which is also what keeps the paired
-  // ORPHANED_PROJECT detector from re-offering this project every cycle.
-  // SWEEP CORE-2 item 3 — THE PREDICATE WAS IN THREE PLACES AND IS NOW IN ONE. It stood here,
-  // in `healer/diagnostic.ts`'s ORPHANED_PROJECT detector, and (as of that task) in the
-  // version-gap reconciliation pass. Three copies of "what counts as a finished-but-open
-  // project" is three chances for the fixer and the detector to disagree about the same row —
-  // and the D-K reasoning above is exactly the kind that gets carried into two copies and
-  // updated in one. The definition, with that reasoning, lives with the predicate now.
-  const finished = db.prepare(`
-    SELECT p.id AS id FROM work p
-     WHERE ${ORPHANED_PROJECT_WHERE('p')}
-  `).all() as Array<{ id: string }>;
-  let closed = 0;
-  for (const p of finished) {
-    // G7: `done` points at a delivery. A project has none of its own, so it points at the
-    // real delivery its last completed child was closed against (`deliveryForCompletedChildren`).
-    const r = setTrackerStatus(p.id, 'complete', {
-      by: 'healer', actorId: 'healer',
-      reason: 'every task on this project is complete; closing the project to match',
-      resultDeliveryId: deliveryForCompletedChildren(p.id),
-    });
-    if (r.kind === 'applied') closed++;
-    else logger.warn('project auto-close refused', { projectId: p.id, result: r });
-  }
-  const updated = { changes: closed };
-
-  if (updated.changes > 0) {
-    return {
-      applied: true,
-      description: `Closed out ${updated.changes} project(s) that were already finished but hadn't been marked complete`,
-    };
-  }
-
-  return { applied: false, description: '' };
-}
 
 function fixStaleRateLimit(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'AGENT_RATE_LIMITED' || !item.agentId) return { applied: false, description: '' };
@@ -473,7 +428,6 @@ const FIX_MAP: Record<string, (item: DiagnosticItem) => AutoFixResult> = {
   AGENT_ERROR: fixErrorAgent,
   ORPHANED_TOOL_MESSAGES: fixOrphanedToolMessages,
   ORPHANED_TASK: fixOrphanedTask,
-  ORPHANED_PROJECT: fixOrphanedProject,
   AGENT_RATE_LIMITED: fixStaleRateLimit,
 };
 

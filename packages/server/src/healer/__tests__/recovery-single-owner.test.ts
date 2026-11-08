@@ -352,11 +352,11 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     expect(row).toEqual({ category: 'STUCK_AGENT', result: 'success', agent_id: INJURED });
   });
 
-  it('the deterministic tier still answers exactly its seven codes', () => {
+  it('the deterministic tier still answers exactly its six codes', () => {
     const src = read('healer/auto-fix.ts');
     const map = src.slice(src.indexOf('const FIX_MAP'), src.indexOf('// ── Main Entry Point ──'));
     expect([...map.matchAll(/^\s{2}([A-Z_]+):/gm)].map((m) => m[1]).sort()).toEqual([
-      'AGENT_ERROR', 'AGENT_PAUSED', 'AGENT_RATE_LIMITED', 'ORPHANED_PROJECT',
+      'AGENT_ERROR', 'AGENT_PAUSED', 'AGENT_RATE_LIMITED',
       'ORPHANED_TASK', 'ORPHANED_TOOL_MESSAGES', 'STUCK_AGENT',
     ]);
   });

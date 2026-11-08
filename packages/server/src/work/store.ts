@@ -76,7 +76,7 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
   open:      ['claimed', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
   claimed:   ['open', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
   sent_back: ['open', 'claimed', 'handed_in', 'abandoned'],
-  handed_in: ['sent_back', 'done', 'failed', 'abandoned'],
+  handed_in: ['open', 'claimed', 'sent_back', 'done', 'failed', 'abandoned'],
   blocked:   ['open', 'claimed', 'done', 'failed', 'abandoned'],
   done:      ['open'],
   failed:    ['open', 'abandoned'],
@@ -299,6 +299,11 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       kind: 'refused', workId, reason: 'needs-decision',
       detail: `a ${row.kind} is finished by a decision on its hand-in, not by a status change: the worker hands it in with proof (work_update action="hand_in") and a decider other than the worker decides it`,
     };
+  }
+
+  // ── G10: handed-in work waits for its decision; only the next run of its schedule moves it sooner. ──
+  if (row.state === 'handed_in' && (input.to === 'open' || input.to === 'claimed') && input.by !== 'scheduler' && input.claim !== 'decided') {
+    return { kind: 'refused', workId, reason: 'needs-decision', detail: 'handed-in work waits for a decision: it is approved or sent back, not moved' };
   }
 
   // ══ EFFECTS — all of them, once, in one transaction with the state change ══

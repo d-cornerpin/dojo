@@ -1,6 +1,6 @@
 // Paused and blocked are holds on Working work, never states and never a way out: a held task keeps
 // its state, needs no verdict, is still handed in and decided, and the owner holds and lifts it from
-// the dashboard. A recurring task waits between runs as Open, and its schedule pauses on its own flag.
+// the dashboard. On deck is Open, and a recurring task's schedule pauses on its own flag.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -10,7 +10,6 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { getTask } from '../../../tracker/schema.js';
 import { holdOf } from '../hold.js';
-import { onTaskRunComplete } from '../../../scheduler/runner.js';
 import { freshBoard, deliveredToOwner, call, stateOf, eventCount, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
@@ -77,20 +76,6 @@ describe('a hold is a flag on Working work', () => {
     expect(r.isError, r.content).toBe(false);
     expect(stateOf()).toBe('handed_in');
     expect(holdOf(TASK)).toBeNull();
-  });
-
-  it('a recurring run that finishes returns the row to Open', async () => {
-    freshBoard();
-    const at = Date.now() - 60_000;
-    doneDb().prepare("UPDATE work SET repeat_interval = 1, repeat_unit = 'days', schedule_status = 'running', next_run_at = ? WHERE id = ?")
-      .run(Date.now() + 86_400_000, TASK);
-    doneDb().prepare(
-      `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, sequence, opened_at, updated_at)
-       VALUES ('run-1', 'occurrence', ?, ?, 'schedule', 'schedule', ?, 'open', 'occurrence', 0, 0, 'occurrence #1', 1, ?, ?)`,
-    ).run(TASK, WORKER, TASK, at, at);
-    deliveredToOwner();
-    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
-    expect(stateOf()).toBe('open');
   });
 
   it('on_deck means Open, and a recurring task\'s schedule pauses on its own flag without moving the task', async () => {

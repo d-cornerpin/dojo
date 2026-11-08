@@ -223,16 +223,16 @@ describe('a run that ends with items left is recorded incomplete, and the schedu
   });
 });
 
-describe('minor (b): a refused last-run close says what happened', () => {
-  it('the stuck-row force-reset with no runs left, refused by the measure, never logs "marked complete" and does not touch the row again', () => {
+describe('minor (b): a stuck schedule with no runs left and items left is handed in as can\'t be done', () => {
+  it('the stuck-row force-reset with no runs left hands it in on its record, never done, and does not touch the row again', () => {
     seedSchedule(W, null);
     // No anchor: the recurrence has no next run, which is the force-reset's "no future runs" arm.
     db().prepare("UPDATE work SET state = 'claimed', schedule_status = 'running', measure_json = ?, measure_remaining = 5, measure_at = ? WHERE id = ?").run(MEASURE, RUN_OPENED, W);
     warns.length = 0;
     forceResetStuckRecurringTask(W);
     expect(warns.some((w) => /marked complete/.test(w))).toBe(false);
-    expect(warns.some((w) => /refused/.test(w))).toBe(true);
-    expect(stateOf(W)).toBe('claimed');
+    expect(stateOf(W)).toBe('handed_in');
+    expect((db().prepare("SELECT json_extract(payload, '$.outcome') AS o FROM work_events WHERE work_id = ? AND kind = 'handed_in'").get(W) as { o: string }).o).toBe('cant_be_done');
     const touched = (db().prepare('SELECT updated_at AS u FROM work WHERE id = ?').get(W) as { u: number }).u;
     warns.length = 0;
     forceResetStuckRecurringTask(W);   // the 120-minute retry
@@ -332,48 +332,29 @@ describe('fix round 4: the owner\'s run history reads an incomplete run as "Inco
   });
 });
 
-describe('fix round 4 (minor): a run close honours a close request filed in this run, as the task close does', () => {
+describe('a run close honours a hand-in filed in this run, whose door judged the measure', () => {
   beforeEach(() => {
     seedSchedule(W, null);
     countMeasure.mockReset();
   });
-  // The Key-1 request exactly as the store writes it (`work/store.ts`, G9) once the agent's door has
-  // judged the close (named remainder or zero).
+  // The `handed_in` event as the hand-in door writes it, after it judged the measure (a named remainder).
   const fileCloseRequest = (): void => {
-    db().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'validation_requested', ?, ?, ?)")
-      .run(W, JSON.stringify({ requested_state: 'done', reason: 'closing with the rest named', from: 'claimed', result_delivery_id: null }), AGENT, Date.now());
+    db().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'handed_in', ?, ?, ?)")
+      .run(W, JSON.stringify({ outcome: 'cant_be_done', items: [], note: 'the rest named', filedBy: AGENT, scope: 'run' }), AGENT, Date.now());
   };
 
-  it.skip('2c: a request filed during the run (the door judged it) settles the run complete when the PM blesses it', async () => {
+  it('a hand-in filed during the run (the door judged it) settles the run complete', async () => {
     measure(5);
     const run = claim();
     fileCloseRequest();
-    expect(await onTaskRunComplete(W, 'complete', '(PM validated this run)')).toBe(true);
+    expect(await onTaskRunComplete(W, 'complete', 'handed in this run')).toBe(true);
     expect(settledRunStatus(run)).toBe('complete');
   });
 
-  it.skip('2c: a request the PM\'s Key 2 already answered with the close (it is no longer pending) still counts', async () => {
-    measure(5);
-    const run = claim();
-    fileCloseRequest();
-    db().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'transition', ?, 'pm', ?)").run(W, JSON.stringify({ from: 'claimed', to: 'done', by: 'pm' }), Date.now());
-    expect(await onTaskRunComplete(W, 'complete', '(PM validated this run)')).toBe(true);
-    expect(settledRunStatus(run)).toBe('complete');
-  });
-
-  it('CONTROL: a request filed BEFORE this run opened (event order) does not count', async () => {
+  it('CONTROL: a hand-in filed BEFORE this run opened (event order) does not count', async () => {
     measure(5);
     fileCloseRequest();
     const run = claim();
-    expect(await onTaskRunComplete(W, 'complete', 'swept')).toBe(true);
-    expect(settledRunStatus(run)).toBe('incomplete');
-  });
-
-  it('CONTROL: a request the PM threw back does not count; the run is incomplete', async () => {
-    measure(5);
-    const run = claim();
-    fileCloseRequest();
-    db().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'claim_rejected', '{}', 'pm', ?)").run(W, Date.now());
     expect(await onTaskRunComplete(W, 'complete', 'swept')).toBe(true);
     expect(settledRunStatus(run)).toBe('incomplete');
   });

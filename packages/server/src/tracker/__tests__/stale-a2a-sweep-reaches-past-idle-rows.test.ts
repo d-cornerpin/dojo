@@ -126,7 +126,7 @@ afterEach(() => {
 const nn = (i: number): string => String(i).padStart(2, '0');
 
 describe('stale-A2A sweep reaches past the rows it will never close', () => {
-  it.skip('2c: closes the one row whose receiver answered, even with 51 silent rows sorted ahead of it', async () => {
+  it('hands in the one row whose receiver answered, even with 51 silent rows sorted ahead of it', async () => {
     const now = Date.now();
     const idleAt = now - 45 * MIN;   // every row below is past the 30-min grace
     const busyAt = now - 35 * MIN;   // also past the grace, but NEWER than all the silent rows
@@ -162,19 +162,16 @@ describe('stale-A2A sweep reaches past the rows it will never close', () => {
     // after the assertions below.
     await new Promise((r) => setTimeout(r, 15));
 
-    // The reachable row is closed the way the sweep closes it: status 'fallen' (state
-    // 'failed', where setTrackerStatus('fallen') lands it).
-    const closed = listTasks({}).find((t) => t.id === 'task-52');
-    expect(closed?.status).toBe('fallen');
+    // The reachable row is handed in for its worker, as can't be done on the reply record.
     expect((db().prepare(`SELECT state FROM work WHERE id = 'task-52'`).get() as { state: string }).state)
-      .toBe('failed');
+      .toBe('handed_in');
 
     // The 51 silent rows stay exactly as they were: the sweep must not touch them (their
     // failure path is the in_progress poke chain, not this sweep), and the limit must not
     // be what hides them either — the EXISTS filter, not the window, is what drops them.
     for (let i = 1; i <= 51; i++) {
       const r = db().prepare(`SELECT state, updated_at FROM work WHERE id = ?`).get(`task-${nn(i)}`) as { state: string; updated_at: number };
-      expect(r.state, `task-${nn(i)} state`).toBe('on_deck');
+      expect(r.state, `task-${nn(i)} state`).toBe('open');
       expect(r.updated_at, `task-${nn(i)} updated_at`).toBe(idleAt);
     }
   });

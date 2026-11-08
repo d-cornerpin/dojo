@@ -72,7 +72,7 @@ vi.mock('../../tracker/notify.js', async (orig) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
 import { trackerRouter } from '../../gateway/routes/tracker.js';
-import { trackerUpdateStatus } from '../../tracker/tools.js';
+import { onTaskRunComplete } from '../runner.js';
 import { calculateNextRun, instantToWall, type ScheduledTask } from '../engine.js';
 import { tsToMs } from '../../work/tracker-view.js';
 
@@ -142,7 +142,7 @@ describe('the schedule calcs that skip the row\'s zone', () => {
     expect(instantToWall(stored.next_run_at!, TASK_ZONE).hour).toBe(9);
   });
 
-  it.skip('2c: the missed-run check calls a task terminal on its own zone\'s end date, not the box\'s', async () => {
+  it('a finished run is the LAST run on the task\'s own zone\'s end date, not the box\'s: it hands in the whole schedule', async () => {
     const start = '2026-10-26T20:00:00.000Z';
     seedTrackerTask(db(), {
       id: 'ending-daily', agentId: 'worker', status: 'in_progress', title: 'the closing digest',
@@ -172,17 +172,9 @@ describe('the schedule calcs that skip the row\'s zone', () => {
     expect(calculateNextRun({ ...probeBase, tz: TASK_ZONE }), 'the task zone must read the task as finished').toBeNull();
     expect(calculateNextRun({ ...probeBase, tz: null }), 'the box zone must read the task as owing another run').not.toBeNull();
 
-    const text = await trackerUpdateStatus('worker', {
-      taskId: 'ending-daily', status: 'complete',
-      result: 'the last digest went out', evidence: [{ kind: 'claim', claim: 'the digest reached the outbox', pointer: '/var/spool/digest/outbox' }],
-    });
-
-    // The task-zone answer is terminal: this close is the task's LAST run. The box-zone answer
-    // is "a run completed, another is scheduled", which archives the result and clears it off
-    // the row. The final-close text and the persisted result together pin the terminal verdict,
-    // however the close's own gates then answer.
-    expect(text.startsWith('Run completed for recurring task.'), `the close must not read as one run among many: ${text.slice(0, 120)}`).toBe(false);
-    const row = db().prepare('SELECT result FROM work WHERE id = ?').get('ending-daily') as { result: string | null };
-    expect(row.result).toBe('the last digest went out');
+    expect(await onTaskRunComplete('ending-daily', 'complete', 'the last digest went out')).toBe(true);
+    // The task-zone answer is terminal: this run is the schedule's last, so it is handed in whole.
+    const h = db().prepare("SELECT json_extract(payload, '$.scope') AS s FROM work_events WHERE work_id = 'ending-daily' AND kind = 'handed_in'").get() as { s: string };
+    expect(h.s, 'the last run hands in the schedule, never one run among many').toBe('schedule');
   });
 });

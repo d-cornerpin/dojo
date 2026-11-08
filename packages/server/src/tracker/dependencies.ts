@@ -4,7 +4,6 @@ import { setTrackerStatus } from '../work/tracker-store.js';
 import { noteUnsettled } from '../work/store.js';
 import { createLogger } from '../logger.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
-import { getTask } from './schema.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 
 const logger = createLogger('pm-agent');
@@ -76,21 +75,17 @@ export function checkDependencies(completedTaskId: string): void {
 
       // Notify primary agent or the assigned agent
       const recipient = row.assigned_to ?? getPrimaryAgentId();
-      const task = getTask(row.id);
-
-      if (task) {
-        const message = `Task "${task.title}" (${task.id}) is now unblocked. All dependencies are complete.`
-          + (startsLater ? ` It starts at its own scheduled time (${task.scheduledStart ?? 'later'}), not before.` : '') + '\n\n' +
-          `Priority: ${task.priority}\n` +
-          (task.description ? `Description: ${task.description}\n` : '') +
-          `Previously blocked on: ${dependsOn.join(', ')}`;
-
-        sendAgentMessage(getPMAgentId(), recipient, 'status', message, {
-          taskId: task.id,
-          event: 'unblocked',
-          completedDependency: completedTaskId,
-        });
-      }
+      const task = db.prepare('SELECT priority, description FROM work WHERE id = ?').get(row.id) as { priority: string | null; description: string | null };
+      const message = `Task "${row.title}" (${row.id}) is now unblocked. All dependencies are complete.`
+        + (startsLater ? ` It starts at its own scheduled time (${new Date(row.scheduled_start ?? row.next_run_at ?? nowMs).toISOString()}), not before.` : '') + '\n\n' +
+        `Priority: ${task.priority ?? 'normal'}\n` +
+        (task.description ? `Description: ${task.description}\n` : '') +
+        `Previously blocked on: ${dependsOn.join(', ')}`;
+      sendAgentMessage(getPMAgentId(), recipient, 'status', message, {
+        taskId: row.id,
+        event: 'unblocked',
+        completedDependency: completedTaskId,
+      });
     }
   }
 }

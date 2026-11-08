@@ -38,13 +38,12 @@ import { renameAgent } from '../../../prompt/agent-rename.js';
 import { mismatchWarning } from '../assignment-capability.js';
 import { coerceNumberArg } from '../pagination.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
-import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
-import { patchWork, setTrackerStatus } from '../../../work/tracker-store.js';
-import { proofDelivery } from '../../../work/done/proof.js';
+import { taskScope, projectScope } from '../../../work/tracker-view.js';
+import { patchWork } from '../../../work/tracker-store.js';
+import { engineHandIn } from '../../../work/done/hand-in.js';
 import { noteUnsettled } from '../../../work/store.js';
-import { skipOpenOccurrencesAsComplete } from '../../../work/occurrences.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
-import { completeTaskRefusal } from './measure-door.js';
+import { completeTaskHandIn } from './measure-door.js';
 import { validateAlwaysLoadedTools } from '../../always-loaded-tools.js';
 import { toolDefinitionsByName } from '../definitions.js';
 import { createGroup, assignAgentToGroup } from '../../groups.js';
@@ -1065,7 +1064,10 @@ export const agentsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    { const no = completeMapped === 'complete' ? await completeTaskRefusal(agentId) : null; if (no) return { content: no, isError: true }; }   // v3.5: measured work left
+    if (completeMapped !== 'blocked') {
+      const no = await completeTaskHandIn(agentId, completeMapped as 'complete' | 'fallen', completeSummary ?? '');
+      if (no) return { content: no, isError: true };
+    }
     try {
       await completeAgent(
         agentId,
@@ -1674,46 +1676,19 @@ export const agentsHandlers: ToolHandlerMap = {
       }
     }
 
-    // Auto-complete any tasks still assigned to terminated members or the group
-    // This prevents orphaned tasks stuck in on_deck/in_progress after cleanup
+    // The tasks of terminated members (or of the group) are handed in as can't be done on the termination
+    // record, and their schedules stop now, so no task is left with a worker that no longer exists.
     if (args.terminate_members) {
-      const groupDb2 = getDb();
-      const orphanedTasks = groupDb2.prepare(`
-        SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
-               w.schedule_status AS schedule_status FROM work w
+      const orphanedTasks = getDb().prepare(`
+        SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
           AND (w.assigned_to_group = ? OR w.agent_id IN (SELECT id FROM agents WHERE group_id = ? AND status = 'terminated'))
-          AND w.state NOT IN ('done', 'failed')
-      `).all(groupId, groupId) as Array<{ id: string; title: string; status: string; schedule_status: string }>;
+          AND w.state IN ('open', 'claimed', 'sent_back')
+      `).all(groupId, groupId) as Array<{ id: string }>;
+      const { terminateLiveScheduleOnFallen } = await import('../../../scheduler/runner.js');
       for (const t of orphanedTasks) {
-        // G7: closing this as `complete` points at the work the agent actually delivered
-        // before its group was torn down. With nothing on the ledger the gate refuses and
-        // the row stays visible rather than being silently marked finished.
-        // PHASE-2 T8T: `by: 'engine'`. This is teardown bookkeeping, not the caller
-        // claiming the work is finished — the agent that owned the task has just been
-        // terminated and cannot claim anything. Under RULING 1 an agent's own close of a
-        // tracker row is a Key-1 request, so keeping `by: 'agent'` would leave every
-        // orphaned task open with a request nobody will validate. G6 still makes the
-        // engine point at the delivery, and with nothing on the ledger G7 still refuses.
-        const orphanDelivery = proofDelivery(t.id);
-        const r = setTrackerStatus(t.id, 'complete', {
-          by: 'engine', actorId: agentId,
-          reason: 'the group this task belonged to was deleted and its members terminated',
-          evidenceRef: orphanDelivery,
-          resultDeliveryId: orphanDelivery,
-        });
-        if (r.kind === 'applied') {
-          noteUnsettled(patchWork(t.id, {
-            schedule_status: t.schedule_status === 'unscheduled' ? 'unscheduled' : 'completed',
-            is_paused: 1,
-          }), 'terminate_agent: schedule stopped with the agent', { taskId: t.id });
-        } else {
-          logger.warn('group-delete task close refused', { taskId: t.id, result: r });
-        }
-        skipOpenOccurrencesAsComplete(t.id, 'Auto-completed: group deleted');
-      }
-      if (orphanedTasks.length > 0) {
-        logger.info('Auto-completed orphaned tasks during group deletion', { groupId, count: orphanedTasks.length });
+        engineHandIn(t.id, `the group this task belonged to was deleted by ${agentId} and its members terminated`, { outcome: 'cant_be_done' });
+        terminateLiveScheduleOnFallen(t.id, 'the group this task belonged to was deleted', 'schedule stopped with the group');
       }
     }
 

@@ -140,7 +140,7 @@ describe('PART A — the work spine has exactly one writer', () => {
     const writer = read(STATE_WRITER_MODULE);
     expect(writer).toMatch(/UPDATE work\b/);
     expect(writer).toMatch(/INSERT INTO work_events\b/);
-    expect(read('work/done/decide.ts')).toMatch(/INSERT INTO adjudications\b/);
+    expect(read('work/done/record.ts')).toMatch(/INSERT INTO adjudications\b/);
     expect(writesWorkState(writer)).toBe(true);
   });
 

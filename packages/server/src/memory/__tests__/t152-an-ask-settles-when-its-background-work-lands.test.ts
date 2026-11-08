@@ -136,8 +136,8 @@ import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { mediaHandlers } from '../../agent/tools/cat/media.js';
 import { untrackedWorkAcrossTurns } from '../../agent/turn-state.js';
 import { createTask } from '../../tracker/schema.js';
-import { transition, rejectClaim } from '../../work/store.js';
-import { recordDelivery } from '../../agent/v2/deliveries.js';
+import { handIn } from '../../work/done/hand-in.js';
+import { decide } from '../../work/done/decide.js';
 import { carryJobWork, registerDrainWake, endJobCarry } from '../../work/task-freshness.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
@@ -363,7 +363,7 @@ const latestImageDelivery = (): string => (mockDb.current!.prepare(
 const reServes = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served'`).get() as { n: number }).n;
 
 describe('t152 round 2 — nothing is settled while the agent still owes work on the request', () => {
-  it.skip('2c: images land while a tracker task linked to the request is open: the ask stays open; it settles when the task closes', async () => {
+  it('images land while a tracker task linked to the request is open: the ask stays open; it settles when the task is handed in', async () => {
     await submitUserMessage(AGENT, 'Make one small image of a heron, then write a post about it.');
     const ask = askRow();
     createTask({ title: 'Write the heron post', createdBy: AGENT, assignedTo: AGENT, origin: { kind: 'ask', sourceMessageId: ask.root_id, turn: null, convKey: null } });
@@ -375,9 +375,11 @@ describe('t152 round 2 — nothing is settled while the agent still owes work on
     await until(() => imageBubbles() === 1);
     await new Promise((r) => setTimeout(r, 200));
     expect(askRow().state, 'the image landed but the post is still owed').not.toBe('done');
-    const r = transition(taskId, { to: 'done', by: 'pm', claim: 'authoritative', resultDeliveryId: latestImageDelivery(), reason: 'the post was written' });
-    expect(r.kind).toBe('applied');
-    expect(askRow().state, 'the work ended and the result had reached the owner: it settles').toBe('done');
+    expect(handIn({
+      workId: taskId, by: { kind: 'worker', agentId: AGENT }, outcome: 'cant_be_done', note: 'the post is not wanted',
+      items: [{ kind: 'remainder', ref: 'the heron post', facts: { reason: 'the owner dropped the post after the image' } }],
+    }).kind).toBe('handed_in');
+    expect(askRow().state, 'the holder owes nothing more and the result had reached the owner: it settles').toBe('done');
   });
 
   it('images land during a parked job that carries the ask: no settle; the continuation\'s finalize settles it', async () => {
@@ -461,19 +463,21 @@ describe('t152 round 2 — a request whose last job was cancelled', () => {
 // ROUND 2b (coordinator decision): a task whose close its holder has FILED is no longer owed. With the
 // project manager off nobody validates that close, and the ask must not wait for ever on it.
 // ════════════════════════════════════════════════════════════════════════════════════════
-describe('t152 round 2b — a filed close is the holder\'s "I owe nothing more"', () => {
+describe('t152 round 2b: a hand-in is the holder\'s "I owe nothing more"', () => {
   const linkedTask = (askRoot: string): string => {
     createTask({ title: 'Make the images', createdBy: AGENT, assignedTo: AGENT, origin: { kind: 'ask', sourceMessageId: askRoot, turn: null, convKey: null } });
     return (mockDb.current!.prepare(`SELECT id FROM work WHERE kind = 'task' AND source_message_id = ?`).get(askRoot) as { id: string }).id;
   };
-  /** The agent's `work_update(status=complete)`: Key 1 only. No project manager exists in this world to turn Key 2. */
+  /** The agent hands its task in through the one door; no decider exists in this world, so it waits. */
   const fileClose = (taskId: string): void => {
-    const receipt = (recordDelivery({ agentId: AGENT, tool: 'dashboard', channel: 'dashboard', recipientId: 'owner', outcome: 'delivered' }) as { value: { deliveryId: string } }).value.deliveryId;
-    expect(transition(taskId, { to: 'done', by: 'agent', resultDeliveryId: receipt, reason: 'all the images were requested' }).kind).toBe('refused');
+    expect(handIn({
+      workId: taskId, by: { kind: 'worker', agentId: AGENT }, outcome: 'cant_be_done', note: 'all the images were requested',
+      items: [{ kind: 'remainder', ref: 'the caption', facts: { reason: 'the owner asked for the images alone' } }],
+    }).kind).toBe('handed_in');
   };
   const taskState = (id: string): string => (mockDb.current!.prepare(`SELECT state FROM work WHERE id = ?`).get(id) as { state: string }).state;
 
-  it.skip('2c: PM off: the agent filed its complete BEFORE the images land: the last image settles the ask (the task stays unvalidated)', async () => {
+  it('the agent handed its task in BEFORE the images land: the last image settles the ask (the task still waits for its decision)', async () => {
     await submitUserMessage(AGENT, 'Make two small images.');
     const taskId = linkedTask(askRow().root_id);
     fileClose(taskId);
@@ -486,7 +490,7 @@ describe('t152 round 2b — a filed close is the holder\'s "I owe nothing more"'
     await release(2, imageSuccess);
     await until(() => askRow().state === 'done');
     expect(askRow().state).toBe('done');
-    expect(taskState(taskId), 'nobody validated the task: it is still the record of that close').not.toBe('done');
+    expect(taskState(taskId), 'nobody decided the task: it is still handed in').toBe('handed_in');
   });
 
   it('control: the task is still IN PROGRESS (no close filed): the images land and the ask stays held', async () => {
@@ -501,7 +505,7 @@ describe('t152 round 2b — a filed close is the holder\'s "I owe nothing more"'
     expect(askRow().state).toBe('blocked');
   });
 
-  it.skip('2c: the images land first, THEN the agent files its close: filing it settles the ask', async () => {
+  it('the images land first, THEN the agent hands its task in: the hand-in settles the ask', async () => {
     await submitUserMessage(AGENT, 'Make one small image, then write a post.');
     const taskId = linkedTask(askRow().root_id);
     wireImageCalls();
@@ -515,23 +519,23 @@ describe('t152 round 2b — a filed close is the holder\'s "I owe nothing more"'
     expect(askRow().state, 'the holder said it owes nothing more').toBe('done');
   });
 
-  it.skip('2c: the PM throws the close back BEFORE the images land: the task is owed again and holds the ask; filing again releases it', async () => {
+  it('a hand-in sent back BEFORE the images land is owed work again and holds the ask; handing in again releases it', async () => {
     await submitUserMessage(AGENT, 'Make one small image, then write a post.');
     const taskId = linkedTask(askRow().root_id);
     fileClose(taskId);
-    expect(rejectClaim(taskId, { claimState: 'done', by: 'pm', note: 'not finished' }).kind).toBe('applied');
+    expect(decide({ workId: taskId, deciderAgentId: null, verdict: 'send_back', reason: 'not finished' }).kind).toBe('decided');
     wireImageCalls();
     imageGate.waiting.length = 0;
     await turn(imageCalls(1), { content: '[no-reply]' });
     await release(1, imageSuccess);
     await until(() => imageBubbles() === 1);
     await new Promise((r) => setTimeout(r, 200));
-    expect(askRow().state, 'a rejected close is owed work again').toBe('blocked');
+    expect(askRow().state, 'a sent-back task is owed work again').toBe('blocked');
     fileClose(taskId);
     expect(askRow().state).toBe('done');
   });
 
-  it('the PM re-opens the task AFTER the ask is done: the ask stays done, and nothing throws', async () => {
+  it('the task is sent back AFTER the ask is done: the ask stays done, and nothing throws', async () => {
     await submitUserMessage(AGENT, 'Make one small image.');
     const taskId = linkedTask(askRow().root_id);
     fileClose(taskId);
@@ -541,8 +545,8 @@ describe('t152 round 2b — a filed close is the holder\'s "I owe nothing more"'
     await release(1, imageSuccess);
     await until(() => askRow().state === 'done');
     const before = askRow();
-    expect(transition(taskId, { to: 'open', by: 'pm', claim: 'authoritative', reason: 'the close was wrong: re-opened' }).kind).toBe('applied');
+    expect(decide({ workId: taskId, deciderAgentId: null, verdict: 'send_back', reason: 'the close was wrong' }).kind).toBe('decided');
     expect(askRow(), 'the ask is the settled record; the task carries the remaining work').toEqual(before);
-    expect(taskState(taskId)).toBe('open');
+    expect(taskState(taskId)).toBe('sent_back');
   });
 });

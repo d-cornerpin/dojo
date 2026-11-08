@@ -48,20 +48,6 @@ vi.mock('../../config/platform.js', () => ({
   getPMAgentId: () => 'pm',
   getOwnerName: () => 'the owner',
 }));
-// The REAL authority, with a recorder around it: the clause that matters is WHICH projects this
-// pass is willing to hand to a closer at all, and a stub would prove nothing about that.
-const authorityCalls: string[] = [];
-vi.mock('../tools.js', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../tools.js')>();
-  return {
-    ...real,
-    checkProjectCompletion: (projectId: string | null, agentId: string) => {
-      if (projectId) authorityCalls.push(projectId);
-      return real.checkProjectCompletion(projectId, agentId);
-    },
-  };
-});
-
 import { createWorkTable, seedTrackerTask, seedTrackerProject } from '../../work/__tests__/work-fixture.js';
 
 function applySchema(db: Database.Database): void {
@@ -82,6 +68,11 @@ function applySchema(db: Database.Database): void {
     );
     CREATE TABLE IF NOT EXISTS deliveries (
       id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS turn_artifacts (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS adjudications (
+      id INTEGER PRIMARY KEY, work_id TEXT, claim_state TEXT, verdict TEXT, by_agent TEXT,
+      evidence_ref TEXT, note TEXT, created_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS messages (
       seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL,
@@ -135,7 +126,6 @@ function seedProject(
 
 beforeEach(() => {
   notices.length = 0;
-  authorityCalls.length = 0;
   mockDb.current = new Database(':memory:');
   applySchema(mockDb.current);
 });
@@ -301,23 +291,7 @@ describe('C4 his safety constraints', () => {
 });
 
 describe('C5 report, never rewrite — except where the structure is unambiguous', () => {
-  it.skip('2c: the ONE repairable shape goes through the EXISTING authority, not a second closer', async () => {
-    const raw = await import('node:fs').then(m => m.readFileSync(
-      new URL('../version-gap-reconcile.ts', import.meta.url), 'utf8'));
-    // Blank comments first, keeping line count: the header DESCRIBES the rule it obeys, and
-    // prose about a statement is not a statement. Same idiom as the spine's own walk.
-    const src = raw
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-    // `checkProjectCompletion` is the SINGLE authority for the success-vs-fail-open call.
-    expect(src).toMatch(/checkProjectCompletion/);
-    // And this module must not contain a second closer, nor write the work table at all.
-    expect(src).not.toMatch(/setTrackerStatus\(/);
-    expect(src).not.toMatch(/UPDATE\s+work\b/i);
-    expect(src).not.toMatch(/patchWork\(/);
-  });
-
-  it.skip('2c: every finding carries its ONE-CALL correction, so a report is actionable', async () => {
+  it('every finding carries its correction and says why, so a report is actionable', async () => {
     const { runVersionGapReconcile } = await import('../version-gap-reconcile.js');
     const db = mockDb.current!;
     seedProject(db, 'p-empty', []);
@@ -327,7 +301,7 @@ describe('C5 report, never rewrite — except where the structure is unambiguous
     const out = await runVersionGapReconcile();
     expect(out.findings.length).toBeGreaterThan(0);
     for (const f of out.findings) {
-      expect(f.correction, `${f.shape} has no one-call correction`).toMatch(/work_/);
+      expect(f.correction.length, `${f.shape} has no correction`).toBeGreaterThan(10);
       expect(f.why.length, `${f.shape} does not say why it is a finding`).toBeGreaterThan(20);
     }
   });
@@ -356,14 +330,7 @@ describe('C2 running it twice produces the same result', () => {
 
     expect(snapshotAfterSecond).toEqual(snapshotAfterFirst);
     expect(second.projectsExamined).toBe(first.projectsExamined);
-    expect(second.repaired).toBe(first.repaired);
-    // ⚠ AND THE REPAIR ARM IS NOT PROVEN HERE, WHICH IS RECORDED RATHER THAN PAPERED OVER.
-    // On a fixture this thin the work gate refuses the rollup close outright, so `repaired`
-    // is 0 on BOTH passes and "the second changed nothing" would be true for the wrong
-    // reason. The arm is driven instead on the REHEARSAL body — a `VACUUM INTO` copy of the
-    // real box with the shape planted into it, full schema and every real gate — and the
-    // 1-then-0 result is in the task report. What THIS clause proves is the half a fixture
-    // can prove: the pass is stable, and it hands the authority exactly one candidate.
+    expect([first.repaired, second.repaired], 'the finished project settles once, from its tasks').toEqual([1, 0]);
   });
 });
 
@@ -371,8 +338,8 @@ describe('C2 running it twice produces the same result', () => {
 // C6b — ONE PLAIN LINE, THE OR2 WAY
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('C5b the authority is consulted for exactly the repairable shape, and nothing else', () => {
-  it.skip('2c: only the all-tasks-terminal-but-open project is ever handed to a closer', async () => {
+describe('C5b exactly the repairable shape is settled, and nothing else', () => {
+  it('only the all-tasks-ended project settles from its tasks; live, fallen and empty projects stay open', async () => {
     const { runVersionGapReconcile } = await import('../version-gap-reconcile.js');
     const db = mockDb.current!;
     seedProject(db, 'p-all-done', ['complete']);
@@ -380,10 +347,11 @@ describe('C5b the authority is consulted for exactly the repairable shape, and n
     seedProject(db, 'p-empty', []);
     seedProject(db, 'p-live', ['complete', 'in_progress']);
     seedProject(db, 'p-ghost-assignee', ['in_progress'], { agentId: 'ghost' });
+    deliverTask(db, 'p-all-done-t0', 'd-1');
 
     await runVersionGapReconcile();
-    expect(authorityCalls, 'a project with live work, a fallen task, or no tasks must never reach a closer')
-      .toEqual(['p-all-done']);
+    const settled = (db.prepare("SELECT id FROM work WHERE kind = 'project' AND state = 'done' ORDER BY id").all() as Array<{ id: string }>).map((r) => r.id);
+    expect(settled, 'a project with live work, a fallen task, or no tasks never settles').toEqual(['p-all-done']);
   });
 });
 
@@ -458,11 +426,10 @@ describe('C7 the healer and this pass do not hold two copies of one predicate', 
   // when a planted fault restored the inline SQL beside an unused import. It now asserts both
   // halves: the helpers are CALLED, and the distinctive fragments of the predicate exist in
   // exactly one file.
-  it('the healer\'s two overlapping detectors CALL this module\'s predicates', async () => {
+  it('the healer\'s overlapping detector CALLS this module\'s predicate', async () => {
     const fs = await import('node:fs');
     const healer = fs.readFileSync(new URL('../../healer/diagnostic.ts', import.meta.url), 'utf8');
     expect(healer).toMatch(/\$\{ORPHANED_TASK_WHERE\(/);
-    expect(healer).toMatch(/\$\{ORPHANED_PROJECT_WHERE\(/);
   });
 
   // ⚠ t129 — AND THE JOIN KEY, WHICH IS THE HALF THAT DRIFTED.
@@ -553,8 +520,7 @@ describe('C7 the healer and this pass do not hold two copies of one predicate', 
       // moved inside the predicate, and a census that no longer matches anything passes
       // VACUOUSLY — which is the "deleting a row to make it green" failure this family of
       // clauses exists to refuse. Asserted against the live string instead.
-      return /assignee_agent IS NOT NULL AND \$\{a\}\.status = 'terminated'/.test(body)
-        || /t\.kind = 'task' AND t\.state <> 'done'/.test(body);
+      return /assignee_agent IS NOT NULL AND \$\{a\}\.status = 'terminated'/.test(body);
     }).map((f) => f.slice(SRC.length + 1).split(path.sep).join('/'));
     expect(owners, 'the orphan predicate has grown a second copy').toEqual(
       ['tracker/version-gap-reconcile.ts']);

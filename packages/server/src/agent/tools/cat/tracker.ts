@@ -44,6 +44,7 @@ import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, resolveProjectId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import { handIn } from '../../../work/done/hand-in.js';
+import { isHousekeeping } from '../../../work/done/housekeeping.js';
 import { decide, type Verdict } from '../../../work/done/decide.js';
 import { openProof } from '../../../work/done/open-proof.js';
 import { proofFor, type HandInOutcome, type ProofItemInput, type ProofKind } from '../../../work/done/proof.js';
@@ -460,7 +461,9 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_update:hand_in"({ agentId, args }) {
     const raw = (args.task_id ?? args.project_id) as string | undefined;
     if (!raw) return { content: 'Error: hand_in needs the task_id (or project_id) of the work you are handing in.', isError: true };
-    const r = args.task_id ? resolveTaskId(String(args.task_id), agentId) : resolveProjectId(String(args.project_id), agentId);
+    // A service agent's own housekeeping is off the board, so it is taken by its exact id.
+    const r = args.task_id && isHousekeeping(String(args.task_id)) ? { ok: true as const, id: String(args.task_id) }
+      : args.task_id ? resolveTaskId(String(args.task_id), agentId) : resolveProjectId(String(args.project_id), agentId);
     if (!r.ok) return { content: formatResolveError(args.task_id ? 'task' : 'project', raw, r), isError: true };
     await remeasureTask(agentId, r.id);
     const done = handIn({

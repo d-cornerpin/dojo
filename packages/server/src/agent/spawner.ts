@@ -18,12 +18,9 @@ import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
-import {
-  setTrackerStatus, patchWork,
-} from '../work/tracker-store.js';
-import { proofDelivery } from '../work/done/proof.js';
+import { patchWork } from '../work/tracker-store.js';
 import { setHold, heldExpr } from '../work/done/hold.js';
-import { workSettled, noteUnsettled } from '../work/store.js';
+import { noteUnsettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -784,91 +781,12 @@ export async function completeAgent(
   // never falsely inherits 'complete').
   const resolvedTaskId = resolveAgentTaskId(agentId, agent.task_id);   // `agent/agent-task.ts`
 
-  // D-K: when this completion fells tasks (status='fallen'), collect the
-  // affected project ids so the success-vs-fail-open check can run after all
-  // rows have landed. Complete transitions are deliberately NOT collected
-  // here: their project check fires downstream when the PM validates
-  // (work_validate(action="validate")), fallen has no validation flag so this is its only hook.
-
-  // If task_id: update task status
+  // The task was handed in by complete_task before this ran (`completeTaskHandIn`); a block holds it.
   if (resolvedTaskId) {
-    const taskStatus = status;
-    // Phase B.0: tasks.notes is read-only legacy. Snapshot prior status
-    // for the task_log transition entry, then update the row without
-    // touching the notes column. completion_summary stays as the
-    // canonical "result" home for apprentice flows (also reused by
-    // Phase B.1 evidence plumbing).
-    const priorRow = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.parent_id AS project_id FROM work w WHERE w.id = ?`).get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
-
-    // Phase B.1: plumb result + evidence_json from the apprentice's summary
-    // so PM has structured input to validate against (instead of just prose).
-    // The 'tool_call_ref' evidence kind points PM at the audit log window
-    // for this apprentice; the 'claim' kind carries the summary text itself.
-    let evidenceJson: string | null = null;
-    if (taskStatus === 'complete') {
-      try {
-        const evidence: Array<{ kind: string; claim: string; pointer?: string }> = [
-          {
-            kind: 'tool_call_ref',
-            claim: `Apprentice "${agent.name}" completed ${toolStats.count} tool calls over ${durationSeconds}s runtime, see audit log.`,
-            pointer: `audit_log WHERE agent_id="${agentId}" AND created_at BETWEEN "${agent.created_at}" AND now`,
-          },
-          { kind: 'claim', claim: summary },
-        ];
-        if (results) {
-          evidence.push({ kind: 'output_paste', claim: 'Apprentice provided detailed results text.', pointer: 'see task.completion_summary' });
-        }
-        evidenceJson = JSON.stringify(evidence);
-      } catch { /* leave null on failure */ }
-    }
-
-    // The apprentice's result columns are a patch; the status is a transition. A
-    // `complete` close points at the hand-off the apprentice actually made (G7) — for an
-    // apprentice that is normally the A2A delivery back to the agent that spawned it.
-    noteUnsettled(patchWork(resolvedTaskId, {
-      completion_summary: summary,
-      ...(taskStatus === 'complete' ? { result: summary, evidence_json: evidenceJson } : {}),
-    }), 'completeAgent: completion summary recorded', { taskId: resolvedTaskId });
-    // t129: `taskStatus` is reachable as `'fallen'`, and this call used to be the one
-    // model-driven disposal BELOW the blocked-work gate — so `complete_task(status="fallen")`
-    // could still kill a PM-ruled blocked row. It is gated now because the gate moved onto
-    // `setTrackerStatus` itself, "the tracker's one status writer", rather than being copied
-    // to a second site. Nothing changed at this call; the refusal arrives in `closeRes` and
-    // the branch below already logs it. An apprentice closing out an ORDINARY block, or
-    // reporting `complete`, is untouched — `complete` still files its Key-1 request.
-    if (taskStatus === 'blocked') {
+    noteUnsettled(patchWork(resolvedTaskId, { completion_summary: summary }), 'completeAgent: completion summary recorded', { taskId: resolvedTaskId });
+    if (status === 'blocked') {
       const held = setHold(resolvedTaskId, 'blocked', summary.split('\n')[0] || `apprentice "${agent.name}" is blocked`, agentId);
       if (!held.ok) logger.warn('completeAgent: block refused', { agentId, taskId: resolvedTaskId, why: held.why }, agentId);
-    } else {
-      const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
-        by: 'agent', actorId: agentId,
-        reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,
-        resultDeliveryId: taskStatus === 'complete' ? proofDelivery(resolvedTaskId) : null,
-      });
-      if (!workSettled(closeRes)) {
-        logger.warn('completeAgent: task close refused by the work gate',
-          { agentId, taskId: resolvedTaskId, taskStatus, result: closeRes }, agentId);
-      }
-    }
-
-    if (taskStatus !== 'blocked') {   // a hold records its own trail entry
-      void (await import('../tracker/task-log.js')).writeTaskLog({
-        taskId: resolvedTaskId,
-        fromEntity: `agent:${agentId}`,
-        entryKind: 'transition',
-        fromStatus: priorRow?.status ?? null,
-        toStatus: taskStatus,
-        actionTaken: 'complete_task',
-        note: summary,
-        evidenceJson,
-      });
-    }
-
-    // Phase B.1: event-driven PM wake on a close.
-    try {
-      if (taskStatus === 'complete') (await import('../tracker/pm-agent.js')).noteCloseForReview(resolvedTaskId);
-    } catch (err) {
-      logger.warn('noteCloseForReview hookup failed (non-fatal)', { taskId: resolvedTaskId, error: err instanceof Error ? err.message : String(err) });
     }
 
     // Phase 7 (Part X), fire onTaskComplete hook so the parent agent gets
@@ -888,81 +806,30 @@ export async function completeAgent(
     }
   }
 
-  // ── Layer 2 dangler sweep, per-task disposition from lineage (P6b) ──
-  // The completing agent is being torn down, so its other in_progress tasks
-  // cannot progress; leaving them in_progress would violate STATUS-TRUTH.
-  // The old sweep blanket-inherited the PRIMARY's status, which could falsely
-  // mark a genuinely separate co-assigned task 'complete'. Disposition is now
-  // per task, from lineage: a dangler sharing the primary task's work order
-  // (same project, or same originating ask via source_message_id) inherits the
-  // completing status; a FOREIGN-rooted dangler (or any dangler when no
-  // primary resolved) becomes 'blocked' with the reason recorded, never
-  // falsely complete. Skips the primary (handled above) and paused tasks
-  // (intentionally set aside).
+  // The ending agent's other working tasks cannot progress. One sharing its task's work order (same
+  // project, or same originating ask) is handed in on the items of that task's hand-in; any other is
+  // handed in as can't be done on the termination record. Held tasks are left as they are.
   try {
-    const bulkStatus = status;
-    const primaryLineage = resolvedTaskId
-      ? db.prepare('SELECT parent_id AS project_id, source_message_id FROM work WHERE id = ?')
-          .get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
+    const [{ engineHandIn }, { latestHandIn }] = await Promise.all([import('../work/done/hand-in.js'), import('../work/done/record.js')]);
+    const primary = resolvedTaskId
+      ? db.prepare('SELECT parent_id AS project_id, source_message_id FROM work WHERE id = ?').get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
       : undefined;
-    const otherDanglers = db.prepare(`
-      SELECT w.id AS id, w.title AS title, w.parent_id AS project_id,
-             w.source_message_id AS source_message_id FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ?
-        AND w.state = 'claimed'
-        AND NOT ${heldExpr('w')}
-        AND w.id != COALESCE(?, '')
-    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null; source_message_id: string | null }>;
-    const danglerLog = await import('../tracker/task-log.js');
-    for (const dt of otherDanglers) {
-      const sameWork = !!primaryLineage && (
-        (dt.project_id !== null && dt.project_id === primaryLineage.project_id) ||
-        (dt.source_message_id !== null && dt.source_message_id === primaryLineage.source_message_id)
-      );
-      const disposition = sameWork ? bulkStatus : 'blocked';
-      if (disposition === 'blocked') {
-        const held = setHold(dt.id, 'blocked', `agent "${agent.name}" ended and this task is not part of its finished work; reassign it`, 'engine');
-        if (!held.ok) logger.warn('completeAgent: dangler hold refused', { taskId: dt.id, why: held.why });
-      } else {
-        const inheritedDelivery = disposition === 'complete' ? proofDelivery(dt.id) : null;
-        const dRes = setTrackerStatus(dt.id, disposition, {
-          by: disposition === 'complete' ? 'engine' : 'agent', actorId: agentId,
-          reason: 'shares the primary task\'s work order and inherits its close',
-          evidenceRef: inheritedDelivery,
-          resultDeliveryId: inheritedDelivery,
-        });
-        if (!workSettled(dRes)) logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
-        void danglerLog.writeTaskLog({
-          taskId: dt.id,
-          fromEntity: 'engine',
-          entryKind: 'auto_sweep',
-          fromStatus: 'in_progress',
-          toStatus: disposition,
-          actionTaken: 'completeAgent layer-2 dangler sweep (per-task lineage disposition)',
-          reason: `agent "${agent.name}" called complete_task(status="${status}"); this task shares the primary task's work order (project/ask lineage) and inherits its close`,
-        });
-      }
+    const items = resolvedTaskId ? (latestHandIn(resolvedTaskId)?.items ?? []).map(({ kind, ref }) => ({ kind, ref })) : [];
+    const danglers = db.prepare(`
+      SELECT w.id AS id, w.parent_id AS project_id, w.source_message_id AS source_message_id FROM work w
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')} AND w.id != COALESCE(?, '')
+    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; project_id: string | null; source_message_id: string | null }>;
+    for (const dt of danglers) {
+      const sameWork = !!primary && ((dt.project_id !== null && dt.project_id === primary.project_id)
+        || (dt.source_message_id !== null && dt.source_message_id === primary.source_message_id));
+      engineHandIn(dt.id, sameWork
+        ? `agent "${agent.name}" ended (complete_task ${status}); this task shares its work order`
+        : `agent "${agent.name}" ended (complete_task ${status}) and this task is not part of its work`,
+      sameWork && status === 'complete' && items.length > 0 ? { items } : { outcome: 'cant_be_done' });
     }
-    if (otherDanglers.length > 0) {
-      logger.info('completeAgent: dispositioned dangling in_progress tasks by lineage', {
-        agentId, count: otherDanglers.length, primaryStatus: bulkStatus,
-        sample: otherDanglers.slice(0, 3).map((t) => t.id.slice(0, 8)),
-      }, agentId);
-    }
-  } catch (autocloseErr) {
-    logger.warn('completeAgent: dangler disposition failed (non-fatal)', {
-      agentId, error: autocloseErr instanceof Error ? autocloseErr.message : String(autocloseErr),
-    }, agentId);
+  } catch (err) {
+    logger.warn('completeAgent: dangler hand-in failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
   }
-
-  // 2c: the project roll-up of a fallen close runs at the decision.
-
-  // P6b STRIP: the orphaned-completion "you forgot to link a task" nag is
-  // gone. The spawn contract requires the task link at spawn, so the unlinked
-  // case is structurally closed; when it still happens the ambiguity warning
-  // in the resolver above is the engineering signal, and the dangler sweep
-  // dispositions any stranded rows. The per-completion parent drip taught
-  // nothing at the moment it arrived.
 
   // If this is the Dreamer ending a batch, advance the dream chain.
   // FA-V4: fire on ANY terminal status, not just 'complete'. On 'complete' the

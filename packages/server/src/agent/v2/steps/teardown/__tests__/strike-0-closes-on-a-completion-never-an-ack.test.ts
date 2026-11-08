@@ -6,11 +6,10 @@
 // task for "its answer", and the re-review measured a start ack followed by a PROGRESS line
 // engine-closing every step ("Found three tables; I will book one next").
 //
-// THE RULING (binding, round 4): done is measured, never declared. The engine's own closes count
-// only what the engine can count (`work/done/proof.ts:engineProof`): a file the worker wrote for the
-// task, or a measure that came down to 0. A line of text never
-// closes a task by the engine, on any channel. A text answer is the WORKER's to close on, filed for
-// the PM (OR-FIELD3(b), `tracker/tools.ts`).
+// THE RULING (binding, round 4): done is measured, never declared. The engine hands a same-turn task
+// in for its worker only on what the engine can count (`work/done/proof.ts:engineProof`): a file the
+// worker wrote for the task, or a measure that came down to 0. A line of text never makes the engine
+// hand a task in, on any channel; a text answer is the worker's to hand in. Nothing here sets done.
 //
 // Driven through the real `finalizeTurnRecord` on a real migrated database: the real settlement
 // runs on the turn's answer line, then strike-0 runs.
@@ -177,8 +176,14 @@ describe('(b) a real text completion is the WORKER\'s to close on, never the eng
   }
 });
 
-describe('(c) what the engine can count still closes them', () => {
-  it.skip('2c: a file the worker wrote, charged to one task, closes that task and only that one', async () => {
+const engineHandedIn = (id: string): void => {
+  const ev = db().prepare("SELECT actor FROM work_events WHERE work_id = ? AND kind = 'handed_in'").all(id) as Array<{ actor: string }>;
+  expect(ev.map((e) => e.actor)).toEqual(['engine']);
+  expect(db().prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = 'decided'").get(id)).toEqual({ c: 0 });
+};
+
+describe('(c) what the engine can count is handed in for its worker, never set done', () => {
+  it('a file the worker wrote, charged to one task, hands in that task and only that one', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     const only = line('d-file-line', 'dashboard', conv, 'Here is the confirmation.');
     const fs = await import('node:fs');
@@ -191,10 +196,11 @@ describe('(c) what the engine can count still closes them', () => {
     db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`)
       .run(tasks[0], `file:${file}`, Date.now(), Date.now());
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
-    expect(states(tasks)).toEqual(['done', 'claimed']);
+    expect(states(tasks)).toEqual(['handed_in', 'claimed']);
+    engineHandedIn(tasks[0]);
   });
 
-  it.skip('2c: a measured task whose measure reads 0 closes; its unmeasured sibling stays open', async () => {
+  it('a measured task whose measure reads 0 is handed in; its unmeasured sibling stays open', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     db().prepare(`UPDATE work SET measure_json = ?, measure_initial = 12, measure_remaining = 12, measure_at = ? WHERE id = ?`)
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), tasks[0]);
@@ -202,6 +208,7 @@ describe('(c) what the engine can count still closes them', () => {
     recordMeasured(tasks[0], { ok: true, count: 0 }, Date.now());
     const only = line('d-swept', 'dashboard', conv, 'The inbox is clear.');
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
-    expect(states(tasks)).toEqual(['done', 'claimed']);
+    expect(states(tasks)).toEqual(['handed_in', 'claimed']);
+    engineHandedIn(tasks[0]);
   });
 });

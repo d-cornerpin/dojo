@@ -1,13 +1,13 @@
 // The hand-in door: finished or can't be done, with proof items that pass the one proof check. A status
-// claim is never proof, a weak model's old close habit reaches this same door, and a project hand-in
-// says plainly that it closes none of the project's open tasks.
+// claim is never proof, a weak model's old close habit reaches this same door, and a project with open
+// tasks is handed in only as can't be done, its decision closing them.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-import { freshBoard, deliveredToOwner, call, stateOf, eventCount, WORKER, OTHER, TASK } from './helpers/decision-world.js';
+import { freshBoard, deliveredToOwner, call, stateOf, eventCount, PM, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 describe('a hand-in needs real proof', () => {
@@ -57,7 +57,7 @@ describe('a hand-in needs real proof', () => {
     expect(JSON.parse(ev.payload)).toMatchObject({ outcome: 'finished', items: [{ kind: 'delivery', ref: d }] });
   });
 
-  it('a project close that closes nothing says so: the project is handed in, its open tasks stay open', async () => {
+  it('a project with an open task is not handed in as finished; handed in as can\'t be done, its decision closes the task', async () => {
     freshBoard();
     const at = Date.now() - 60_000;
     doneDb().prepare(
@@ -67,7 +67,13 @@ describe('a hand-in needs real proof', () => {
     doneDb().prepare("UPDATE work SET parent_id = 'proj-1' WHERE id = ?").run(TASK);
     const d = deliveredToOwner();
     const r = await call(WORKER, 'work_update', { action: 'close_project', project_id: 'proj-1', proof: [{ kind: 'delivery', ref: d }], note: 'All sent' });
-    expect(r.content).toMatch(/1 open task is not closed by this/);
-    expect(stateOf()).toBe('claimed');
+    expect(r.content).toMatch(/1 open task is not finished/);
+    const cant = await call(WORKER, 'work_update', { action: 'hand_in', project_id: 'proj-1', outcome: 'cant_be_done', proof: [{ kind: 'remainder', ref: 'the second quarter', reason: 'the owner dropped the second quarter from scope' }], note: 'Scope cut' });
+    expect(cant.content).toMatch(/1 open task closes with it/);
+    await call(PM, 'work_validate', { action: 'open_proof', task_id: 'proj-1', item: 0 });
+    const dec = await call(PM, 'work_validate', { action: 'decide', task_id: 'proj-1', verdict: 'approve', reason: 'The owner cut the scope' });
+    expect(dec.isError, dec.content).toBe(false);
+    expect(stateOf('proj-1')).toBe('failed');
+    expect(stateOf()).toBe('failed');
   });
 });

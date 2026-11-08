@@ -712,41 +712,6 @@ export function skipOpenOccurrences(workId: string, reason: string): number {
   return closed;
 }
 
-/**
- * Close every open occurrence of a schedule recording the run's own word as `complete`.
- *
- * The three sites this replaces all said the same thing —
- * `UPDATE task_runs SET status='complete' ... WHERE status='running'` — when a human-or-agent
- * decision retired the whole schedule: "all runs completed by agent", "schedule stopped and
- * marked complete", "auto-completed: group deleted". None of them had a delivery to point at,
- * so the occurrence settles `abandoned` (G7: `done` means DELIVERED, and no sentinel is
- * invented) while the run history still reads `complete`, which is what the caller asserted.
- *
- * ⚠ SWEEP CORE-1 CT2 — AND "WHAT THE CALLER ASSERTED" IS EXACTLY WHAT THIS SWEEP REMOVED AS AN
- * AUTHORITY. The paragraph above is the incident stated as a design: an agent's assertion,
- * carried into the owner's run history as the word `complete`, with `deliveryId` hard-coded
- * `null` at the call below — i.e. a run recorded complete that could not possibly have been
- * closed on evidence, at three real call sites. For a task that owes nobody a message that
- * remains correct and is untouched. For a DECLARED deliverable-owing task the gate inside
- * `settleOccurrence` now re-derives the run's own evidence and, finding none, either refuses
- * (returning `owed`, which this counter does not count) or records the run UNDELIVERED. The
- * caller's word narrows the scope; it no longer decides the fact.
- *
- * The count it returns is unchanged in meaning: how many runs this call actually closed. A run
- * left `owed` is deliberately NOT counted, so the sentence the caller prints to the owner
- * ("N open run(s) skipped") stays true.
- */
-export function skipOpenOccurrencesAsComplete(workId: string, summary: string): number {
-  const open = getDb().prepare(
-    `SELECT id FROM work WHERE kind = ? AND parent_id = ? AND state IN ('open','claimed')`,
-  ).all(OCCURRENCE_KIND, workId) as Array<{ id: string }>;
-  let closed = 0;
-  for (const o of open) {
-    if (runSettleApplied(settleOccurrence(o.id, 'complete', null, summary))) closed += 1;
-  }
-  return closed;
-}
-
 /** RC-17.4's age guard, carried verbatim from the query it replaces
  *  (`scheduler/runner.ts` `cleanupStaleRuns`: `datetime('now','-5 minutes')`). It exists to
  *  avoid racing an in-flight advance, so it is not a threshold anybody invented here. */
