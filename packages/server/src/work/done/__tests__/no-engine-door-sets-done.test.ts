@@ -1,6 +1,6 @@
 // Every former engine door hands work in for its worker and never sets it done: the row lands in
 // handed_in, the hand-in is filed by the engine (complete_task is the helper's own), and no decision is
-// made. One case per door; the run, same-turn, strike-2, relay-card and stale-sweep doors are pinned in
+// made. One case per door; the run, same-turn, relay-card and assign-reply doors are pinned in
 // their own files.
 import { describe, it, expect, vi } from 'vitest';
 
@@ -10,7 +10,6 @@ vi.mock('../../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMe
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { onTaskRunComplete, forceResetStuckRecurringTask } from '../../../scheduler/runner.js';
-import { deliverA2AMessage } from '../../../agent/a2a-transport.js';
 import { latestHandIn } from '../record.js';
 import { freshBoard, deliveredToOwner, call, stateOf, eventCount, MAIN, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
@@ -31,20 +30,6 @@ function aScheduledRun(nextRunAt: number | null): void {
 }
 
 describe('no engine door sets done', () => {
-  it('an assignee\'s answer on its assignment thread hands the assigned task in, on that delivery', async () => {
-    freshBoard();
-    doneDb().prepare("UPDATE work SET requester = 'agent', requester_id = ?, a2a_thread_id = 'thr-assign-1' WHERE id = ?").run(MAIN, TASK);
-    const text = '[A2A:ANSWER thread:thr-assign-1] The report has 12 sections; the totals are on page 3.';
-    const at = Math.floor(Date.now() / 1000) * 1000;
-    doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at) VALUES ('msg-ans', ?, 'a2a', 'assistant', ?, 1, ?, ?)").run(WORKER, text, at, at);
-    doneDb().prepare(
-      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, detail, outcome, created_at, updated_at)
-       VALUES ('dlv-ans', ?, 'send_to_agent', 'a2a', ?, 'msg-ans', ?, 'delivered', datetime('now'), datetime('now'))`,
-    ).run(WORKER, MAIN, text);
-    await deliverA2AMessage({ intent: 'ANSWER', threadId: 'thr-assign-1', fromAgent: WORKER, toAgent: MAIN, requiresResponse: false, payload: 'The report has 12 sections; the totals are on page 3.' });
-    handedInByEngine();
-    expect(latestHandIn(TASK)?.items.map((i) => i.ref)).toEqual(['dlv-ans']);
-  });
 
   it('a failed final scheduled run is handed in as can\'t be done, and the owner is told at once', async () => {
     freshBoard();

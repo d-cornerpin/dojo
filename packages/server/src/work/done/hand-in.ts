@@ -115,3 +115,14 @@ export function engineHandIn(
   return handIn({ workId, by, outcome: 'cant_be_done', items: [...(opts.outcome === 'cant_be_done' ? items : []), record], note: because, scope: opts.scope });
 }
 
+/** A receiver's final reply on the thread of an assign task it holds (Open or Working) hands that task in:
+ *  finished on the reply's own delivery, can't be done on a FAIL. A progress reply hands in nothing. */
+export function handInOnAssignReply(threadId: string, workerId: string, intent: string, deliveryId: string | null): void {
+  if (!['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL'].includes(intent)) return;
+  const row = getDb().prepare(
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state IN ('open', 'claimed') AND w.repeat_interval IS NULL LIMIT 1`,
+  ).get(threadId, workerId) as { id: string } | undefined;
+  if (!row) return;
+  if (intent === 'FAIL') engineHandIn(row.id, 'the assignee replied FAIL on its assignment thread', { outcome: 'cant_be_done' });
+  else if (deliveryId) engineHandIn(row.id, 'the assignee delivered the work on its assignment thread', { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] });
+}

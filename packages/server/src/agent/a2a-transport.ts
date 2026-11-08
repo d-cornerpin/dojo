@@ -76,7 +76,6 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall, ChannelKind } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { taskScope } from '../work/tracker-view.js';
-import { proofDelivery } from '../work/done/proof.js';
 import { engineHandIn } from '../work/done/hand-in.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -972,21 +971,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
   }
 
-  // An assignee's final reply on its assignment thread hands the assigned task in for it: finished on the
-  // delivery when one proves it, else can't be done on the reply. An applied hand-off passed the work on.
-  if (!handOffReport?.applied && ['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL'].includes(effectiveIntent)) {
-    try {
-      const assigned = getDb().prepare(
-        `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state IN ('open', 'claimed') AND w.repeat_interval IS NULL LIMIT 1`,
-      ).get(threadId, envelope.fromAgent) as { id: string } | undefined;
-      const delivery = assigned && effectiveIntent !== 'FAIL' ? proofDelivery(assigned.id) : null;
-      if (assigned && delivery) engineHandIn(assigned.id, 'the assignee delivered the work on its assignment thread', { outcome: 'finished', items: [{ kind: 'delivery', ref: delivery }] });
-      else if (assigned) engineHandIn(assigned.id, `the assignee replied ${effectiveIntent} on its assignment thread without delivering the work`, { outcome: 'cant_be_done' });
-    } catch (err) {
-      logger.warn('assignment-thread hand-in failed (non-fatal)', { threadId: threadShort, error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted
   // and the broadcast went out, so the dashboard's chat feed got the message
@@ -1844,18 +1828,8 @@ function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: n
       : `(no content came back — this piece ${p.state === 'abandoned' ? 'was abandoned' : 'failed'})`;
     return `Piece ${i + 1} (from ${name}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
   });
-  // The wording lives in `work/join-drive.ts` beside the ladder that spends it, so a test can
-  // read it without driving a turn. T10 also
-  // moved the ORDER ahead of the quotes — the events lane renders this row as a 400-char gist,
-  // and the instruction used to sit past the cut. Byte-identical re-sends were the other half:
-  // the model was never told this was attempt 2 or 3 (measured, PC2).
-  //
-  // T68b, and it is the reason that "T10 moved the ORDER ahead of the quotes" line above is now
-  // history rather than a live constraint: the row no longer goes through the gist at all. The
-  // whole 3,660 chars — order, hand-off check, and every piece quoted verbatim — reach the
-  // model through the fresh tail (`memory/assembler.ts isFanoutJoinImperative`). The ordering
-  // inside the text is kept exactly as it is: it was right for its own sake, and re-shuffling
-  // it now would churn bytes for no reason.
+  // The wording lives in `work/join-drive.ts`; the steer reaches the model whole through the fresh tail
+  // (`memory/assembler.ts isFanoutJoinImperative`): the order first, then every piece quoted verbatim.
   const steer = compileSteerText({
     // 3.5: the relay delivers to the ASK's own sender, so the order names that person.
     asker: compileAskerFromMeta(

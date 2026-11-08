@@ -40,7 +40,7 @@ import { coerceNumberArg } from '../pagination.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope } from '../../../work/tracker-view.js';
 import { patchWork } from '../../../work/tracker-store.js';
-import { engineHandIn } from '../../../work/done/hand-in.js';
+import { engineHandIn, handInOnAssignReply } from '../../../work/done/hand-in.js';
 import { noteUnsettled } from '../../../work/store.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
 import { completeTaskHandIn } from './measure-door.js';
@@ -750,7 +750,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 // Channel `a2a`, which mints no `conversations` row by construction — peer
                 // coordination is not a human conversation. Same channel, same vocabulary and
                 // same shape as the existing a2a producer; no new class of row is introduced.
-                recordedId(recordAtDoor({
+                const replyDeliveryId = recordedId(recordAtDoor({
                   outcome: 'delivered', channel: 'a2a',
                   agentId, tool: 'send_to_agent',
                   recipientId: targetCheck?.id ?? agentRef,
@@ -762,6 +762,11 @@ export const agentsHandlers: ToolHandlerMap = {
                 }), 'send_to_agent: hand-off to a peer', {
                   from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
                 });
+                // A final reply on an assign thread hands the assigned task in, on this delivery (or FAIL).
+                if (!result.handOff?.applied) {
+                  try { handInOnAssignReply(result.threadId, agentId, effectiveIntent, replyDeliveryId); }
+                  catch (err) { logger.warn('assign-thread hand-in failed (non-fatal)', { thread: result.threadId.slice(0, 8), error: err instanceof Error ? err.message : String(err) }, agentId); }
+                }
                 content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}${result.answeredRequestOnThread ? ' (you gave no thread_id, so it went on the request you were answering, your assignment)' : ''}.` +
                   (requiresResponse || result.autoPromotedFromFyi
                     ? ` Their reply is ASYNCHRONOUS, it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +

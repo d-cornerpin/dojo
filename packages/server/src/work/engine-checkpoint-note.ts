@@ -5,6 +5,7 @@ import { getDb } from '../db/connection.js';
 import { writeTaskLog } from '../tracker/task-log.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
 import { servedOwnerMessageIds } from '../memory/served-ask.js';
+import { taskScope } from './tracker-view.js';
 
 /** Why the checkpoint fired: one member per checkpoint site. */
 export type EngineCheckpointReason = 'turn-budget' | 'tool-loop' | 'job-continues';
@@ -16,13 +17,13 @@ const REASON_TEXT: Record<EngineCheckpointReason, string> = {
 };
 
 /** Call just before a checkpoint queues its continuation: the work the turn served (and `jobTaskIds`) is
- *  carried to it, and each of this agent's tasks among them still open gets one note. Returns the number noted. */
+ *  carried to it, and each of this agent's board tasks among them still open gets one note. Returns the number noted. */
 export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason, jobTaskIds: string[] = []): number {
   const tied = [...new Set([...turnWorkIds(agentId), ...jobTaskIds])];
   carryJobWork(agentId, tied, servedOwnerMessageIds(agentId));
   if (tied.length === 0) return 0;
   const open = getDb().prepare(
-    `SELECT id FROM work WHERE agent_id = ? AND id IN (${tied.map(() => '?').join(', ')}) AND state IN ('open', 'claimed', 'sent_back')`,
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.id IN (${tied.map(() => '?').join(', ')}) AND w.state IN ('open', 'claimed', 'sent_back')`,
   ).all(agentId, ...tied) as Array<{ id: string }>;
   for (const { id } of open) {
     writeTaskLog({

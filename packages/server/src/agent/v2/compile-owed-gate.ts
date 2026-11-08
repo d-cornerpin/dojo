@@ -14,8 +14,7 @@
 // a closed set while the one duty the redrive ladder has already come back for is owed.
 //
 // ── THE LOAD-BEARING CONSTRAINT ──
-// BUG-2: THE GATE IS NEVER ARMED ON A TURN A HUMAN IS WAITING ON (the `triggerRow ? [] : …` ternary
-// in `steps/preflight/compile-gate.ts`, driven in `agent/v2/__tests__/integration.test.ts`).
+// The gate is never armed on a turn a human is waiting on (`steps/preflight/compile-gate.ts`).
 //
 // ── WHY THE MODULE, RATHER THAN A FEW LINES IN THE STEPS ──
 // `stale-work-ids.ts`'s shape, for `stale-work-ids.ts`'s reason: a gate whose decision is
@@ -92,8 +91,7 @@ export function stillCompileOwed(ids: readonly string[]): string[] {
        AND compile_pending = 1
        AND state NOT IN ('done','failed','abandoned')
   `).all(...ids) as Array<{ id: string }>).map((r) => r.id));
-  // Driven from the CALLER's list so the order is the caller's, the same discipline
-  // the record states for itself.
+  // Driven from the caller's list, so the order is the caller's.
   return ids.filter((id) => live.has(id));
 }
 
@@ -118,8 +116,6 @@ export interface CompileOwedGateDecision {
  * The three cheap conditions are tested first and in this order — nothing armed, the duty
  * already discharged this turn, the call is in the allowed set — so a turn with no owed
  * compile asks the database nothing. Only the branch that was about to refuse pays a query.
- * Two gates that answer
- * "may this call run?" should not have two different ideas of when to consult the spine.
  *
  * ── T68b — THE FOURTH CONDITION: THE GATE MAY NOT ASSERT WHAT IT HAS NOT VERIFIED. ──────
  *

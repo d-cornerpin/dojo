@@ -9,8 +9,7 @@
 // row saying the same thing would be noise, and this gate's whole premise is that the model
 // is not reading that kind of instruction.
 //
-// BUG-2: the gate is NEVER armed on a turn a human is waiting on (the ternary below); the invariant is
-// driven in `agent/v2/__tests__/integration.test.ts`.
+// The gate is never armed on a turn a human is waiting on (the ternary below).
 //
 // The redrive steers arrive on engine-wake and A2A turns, off the conversation path, which is
 // where the owed compile is owed.

@@ -135,8 +135,8 @@ function tellOwner(workId: string): void {
 }
 
 async function take(workId: string, due: LadderAction): Promise<void> {
-  const row = getDb().prepare(`SELECT w.title, w.state, w.hold_kind, w.hold_reason, ${stallSinceSql('w')} AS since FROM work w WHERE w.id = ?`).get(workId) as
-    { title: string | null; state: string; hold_kind: string | null; hold_reason: string | null; since: number };
+  const row = getDb().prepare(`SELECT w.title, w.state, w.hold_kind, w.hold_reason, ${taskMovedAtSql('w')} AS moved FROM work w WHERE w.id = ?`).get(workId) as
+    { title: string | null; state: string; hold_kind: string | null; hold_reason: string | null; moved: number };
   const title = row.title ?? workId, worker = workerOf(workId);
   if (due === 'owner') { tellOwner(workId); return; }
   if (due === 'pm') {
@@ -146,7 +146,7 @@ async function take(workId: string, due: LadderAction): Promise<void> {
   }
   if (due === 'hint') {
     if (busy(worker, workId)) return;
-    const since = msToUtcText(row.since);
+    const since = msToUtcText(row.moved);
     await hintOnce(workId, worker, row.hold_kind === 'blocked' ? LADDER_HINT.blocked(title, since, row.hold_reason ?? '') : LADDER_HINT.stalled(title, since));
     return;
   }

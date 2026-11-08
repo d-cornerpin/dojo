@@ -332,7 +332,8 @@ function recordMisses(pmId: string, held: ReadonlyMap<string, number>, why: stri
   }
 }
 
-/** THE PM'S REVIEW (header). The PM runs once; a run that ends with a held hand-in still undecided records the miss. */
+/** THE PM'S REVIEW (header). The PM runs once; when its turn has ended (or never ran), each held hand-in still
+ *  undecided records the miss. */
 export async function runPMReview(): Promise<void> {
   if (reviewing) { rungWhileReviewing = true; return; }
   reviewing = true;
@@ -363,7 +364,7 @@ export async function runPMReview(): Promise<void> {
       runtime.whenQueuedRunEnds?.(pmId) ?? Promise.resolve('not-run' as const),
       new Promise<'not-run'>((resolve) => { bound = setTimeout(() => resolve('not-run'), QUEUED_TURN_BOUND_MS); }),
     ]).finally(() => clearTimeout(bound));
-    if (turn === 'ran') recordMisses(pmId, held, 'the review ran and gave no verdict on this hand-in');
+    recordMisses(pmId, held, turn === 'ran' ? 'the review ran and gave no verdict on this hand-in' : 'the review\'s turn never ran');
   } catch (err) {
     logger.error('PM review failed', { error: errText(err) });
     recordMisses(pmId, held, 'the review failed before a verdict');
