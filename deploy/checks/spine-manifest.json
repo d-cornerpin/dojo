@@ -729,7 +729,7 @@
       "stateColumn": "outcome",
       "terminalStates": [],
       "workShaped": false,
-      "why": "A measurement log, not a job: one row per summary the decision model read against its source (v3.5 B4), recording what happened to that summary (kept, kept after a rewrite, not kept, unchecked) and the probability that it states something as pending. Nothing is claimed, assigned, owed or completed; rows are written once and never transition.",
+      "why": "A measurement log, not a job: one row per summary the decision model read against its source, recording what happened to that summary (kept, kept after a rewrite, not kept, unchecked) and the probability that it states something as pending. Nothing is claimed, assigned, owed or completed; rows are written once and never transition.",
       "disposition": "Kept two weeks; the Healer report reads its running numbers."
     },
     {
