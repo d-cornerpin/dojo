@@ -22,7 +22,7 @@ import {
   setTrackerStatus, patchWork,
 } from '../work/tracker-store.js';
 import { proofDelivery } from '../work/done/proof.js';
-import { setHold } from '../work/done/hold.js';
+import { setHold, heldExpr } from '../work/done/hold.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -570,7 +570,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
   try {
     const danglers = db.prepare(`
       SELECT w.id AS id FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.hold_kind IS NULL
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')}
     `).all(agentId) as Array<{ id: string }>;
     const why = `assigned agent "${agent.name}" was terminated (${reason ?? 'manual'}); reassign or close it from the dashboard`;
     for (const dt of danglers) {
@@ -851,23 +851,24 @@ export async function completeAgent(
       }
     }
 
-    void (await import('../tracker/task-log.js')).writeTaskLog({
-      taskId: resolvedTaskId,
-      fromEntity: `agent:${agentId}`,
-      entryKind: 'transition',
-      fromStatus: priorRow?.status ?? null,
-      toStatus: taskStatus,
-      actionTaken: 'complete_task',
-      note: summary,
-      evidenceJson,
-    });
+    if (taskStatus !== 'blocked') {   // a hold records its own trail entry
+      void (await import('../tracker/task-log.js')).writeTaskLog({
+        taskId: resolvedTaskId,
+        fromEntity: `agent:${agentId}`,
+        entryKind: 'transition',
+        fromStatus: priorRow?.status ?? null,
+        toStatus: taskStatus,
+        actionTaken: 'complete_task',
+        note: summary,
+        evidenceJson,
+      });
+    }
 
-    // Phase B.1: event-driven PM wake on terminal transitions.
+    // Phase B.1: event-driven PM wake on a close.
     try {
-      const { noteTransitionForReview } = await import('../tracker/pm-agent.js');
-      noteTransitionForReview(resolvedTaskId, taskStatus);
+      if (taskStatus === 'complete') (await import('../tracker/pm-agent.js')).noteCloseForReview(resolvedTaskId);
     } catch (err) {
-      logger.warn('noteTransitionForReview hookup failed (non-fatal)', { taskId: resolvedTaskId, error: err instanceof Error ? err.message : String(err) });
+      logger.warn('noteCloseForReview hookup failed (non-fatal)', { taskId: resolvedTaskId, error: err instanceof Error ? err.message : String(err) });
     }
 
     // Phase 7 (Part X), fire onTaskComplete hook so the parent agent gets
@@ -909,7 +910,7 @@ export async function completeAgent(
              w.source_message_id AS source_message_id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.hold_kind IS NULL
+        AND NOT ${heldExpr('w')}
         AND w.id != COALESCE(?, '')
     `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null; source_message_id: string | null }>;
     const danglerLog = await import('../tracker/task-log.js');
@@ -931,19 +932,16 @@ export async function completeAgent(
           resultDeliveryId: inheritedDelivery,
         });
         if (!workSettled(dRes)) logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
+        void danglerLog.writeTaskLog({
+          taskId: dt.id,
+          fromEntity: 'engine',
+          entryKind: 'auto_sweep',
+          fromStatus: 'in_progress',
+          toStatus: disposition,
+          actionTaken: 'completeAgent layer-2 dangler sweep (per-task lineage disposition)',
+          reason: `agent "${agent.name}" called complete_task(status="${status}"); this task shares the primary task's work order (project/ask lineage) and inherits its close`,
+        });
       }
-
-      void danglerLog.writeTaskLog({
-        taskId: dt.id,
-        fromEntity: 'engine',
-        entryKind: 'auto_sweep',
-        fromStatus: 'in_progress',
-        toStatus: disposition,
-        actionTaken: 'completeAgent layer-2 dangler sweep (per-task lineage disposition)',
-        reason: sameWork
-          ? `agent "${agent.name}" called complete_task(status="${status}"); this task shares the primary task's work order (project/ask lineage) and inherits its close`
-          : `agent "${agent.name}" called complete_task(status="${status}") and is being torn down; this task's lineage does NOT tie it to the completed work, so it is blocked (not falsely closed) for reassignment`,
-      });
     }
     if (otherDanglers.length > 0) {
       logger.info('completeAgent: dispositioned dangling in_progress tasks by lineage', {

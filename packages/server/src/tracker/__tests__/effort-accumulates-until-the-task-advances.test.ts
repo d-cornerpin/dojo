@@ -58,7 +58,7 @@ vi.mock('../../memory/message-store.js', async (importOriginal) => ({
 }));
 vi.mock('../pm-agent.js', () => ({
   ensurePMAgentRunning: () => { /* no-op */ },
-  noteTransitionForReview: () => { /* no-op */ },
+  noteCloseForReview: () => { /* no-op */ },
   // §5's trackerValidateComplete terminal-close path dynamically imports this.
   checkDependencies: () => { /* no-op */ },
 }));

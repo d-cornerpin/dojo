@@ -29,6 +29,7 @@ import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { continueTheJob } from './job-continues.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { heldExpr } from '../../../../work/done/hold.js';
 
 const logger = createLogger('v2-loop');
 
@@ -105,9 +106,8 @@ export async function runGoingIdle(
   // Broader sibling of the add-notes-stop nudge. Catches every case
   // where the agent ends a turn while a task assigned to them is
   // still in_progress AND they did not transition it this turn.
-  // Lists them with the end-of-turn choices - keep going first,
-  // then paused (waiting on user), blocked (needs escalation), or
-  // complete when done. One-shot so a model that insists on
+  // Lists the end-of-turn choices (keep going, hold it, or hand it in).
+  // One-shot so a model that insists on
   // stopping doesn't trigger a loop.
   //
   // Skip if the close-out gate is already armed for this turn
@@ -127,7 +127,7 @@ export async function runGoingIdle(
       SELECT w.id AS id, w.title AS title FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0 AND w.hold_kind IS NULL
+        AND w.is_paused = 0 AND NOT ${heldExpr('w')}
       ORDER BY w.updated_at DESC
       LIMIT 5
     `).all(agentId) as Array<{ id: string; title: string }>;
@@ -284,7 +284,7 @@ export async function runGoingIdle(
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0 AND w.hold_kind IS NULL
+        AND w.is_paused = 0 AND NOT ${heldExpr('w')}
         AND w.repeat_interval IS NOT NULL
       ORDER BY w.updated_at DESC
       LIMIT 10

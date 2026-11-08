@@ -101,8 +101,6 @@ describe('serve boundary (P2)', () => {
       .not.toMatch(/ev\.run_status|m\.run_status/);
     const lineage = read('agent/v2/work-lineage.ts');
     expect(lineage, 'the run referent is asked through the module that owns it').toMatch(/occurrenceRunStatus\(runId\)/);
-    // PHASE-2 T8b: the live referent is a `work` row, read through the tracker's own scope.
-    expect(lineage).toMatch(/AS status, w\.hold_kind AS hold FROM work w/);
   });
 });
 

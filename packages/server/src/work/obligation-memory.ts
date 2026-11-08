@@ -79,9 +79,9 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { markObsolete } from '../vault/store.js';
-// §7's board counts ask `tracker-view.ts` which rows are the tracker's, rather than re-typing
-// its three root kinds here. See the §7 header.
+// §7's board counts ask `tracker-view.ts` which rows are the tracker's (see the §7 header).
 import { taskScope, projectScope } from './tracker-view.js';
+import { heldExpr } from './done/hold.js';
 
 const logger = createLogger('obligation-memory');
 
@@ -621,7 +621,7 @@ export function openBoardCounts(agentId: string): BoardCounts {
        COALESCE(sum(CASE WHEN w.kind = 'ask' AND w.state = 'blocked' THEN 1 ELSE 0 END), 0)
          AS asksBlocked,
        COALESCE(sum(CASE WHEN ${TRACKER_ROWS} THEN 1 ELSE 0 END), 0) AS tracker,
-       COALESCE(sum(CASE WHEN ${TRACKER_ROWS} AND w.hold_kind = 'blocked' THEN 1 ELSE 0 END), 0)
+       COALESCE(sum(CASE WHEN ${TRACKER_ROWS} AND ${heldExpr('w', 'blocked')} THEN 1 ELSE 0 END), 0)
          AS trackerBlocked
        FROM work w
       WHERE w.agent_id = ? AND w.closed_at IS NULL`,

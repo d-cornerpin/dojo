@@ -35,7 +35,7 @@ vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => undefined }
 vi.mock('../../tracker/pm-agent.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensurePMAgentRunning: () => undefined,
-  noteTransitionForReview: () => undefined,
+  noteCloseForReview: () => undefined,
 }));
 
 import { runMigrations } from '../../db/migrations.js';

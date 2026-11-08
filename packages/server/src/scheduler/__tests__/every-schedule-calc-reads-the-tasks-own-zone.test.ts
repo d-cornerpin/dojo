@@ -61,7 +61,7 @@ vi.mock('../../agent/agent-notice.js', async (orig) => ({
 vi.mock('../../tracker/pm-agent.js', async (orig) => ({
   ...(await orig<typeof import('../../tracker/pm-agent.js')>()),
   ensurePMAgentRunning: () => { /* no-op */ },
-  noteTransitionForReview: () => { /* no-op */ },
+  noteCloseForReview: () => { /* no-op */ },
 }));
 vi.mock('../../tracker/notify.js', async (orig) => ({
   ...(await orig<typeof import('../../tracker/notify.js')>()),

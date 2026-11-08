@@ -1082,15 +1082,15 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const holdReason = typeof args.notes === 'string' ? args.notes.trim() : '';
     const resumeAt = hold === 'paused' && typeof args.resume_at === 'string' ? tsToMs(args.resume_at) : null;
     if (hold) {
-      if (holdReason.length < 15 && !callerIsPM) {
+      if (holdReason.length < 15) {
         return `Error: status="${hold}" requires a clear reason in \`notes\` (minimum 15 characters): `
           + (hold === 'paused' ? 'name what you are waiting for (e.g. "waiting for the vendor to send the tracking number").'
             : 'name the obstacle (e.g. "need API key for service X").');
       }
-      const held = setHold(taskId, hold, holdReason || hold, agentId, resumeAt);
+      const held = setHold(taskId, hold, holdReason, agentId, resumeAt);
       if (!held.ok) return `Refused: ${taskId} was not put on hold (${held.why}).`;
-    } else if (status) {
-      clearHold(taskId, agentId);
+    } else if (status && status === taskRow?.prior_status) {
+      clearHold(taskId, agentId);   // already there: only the hold lifts (a move lifts it in transition())
     }
 
     // PHASE-2 T8b: the column half and the STATE half are two calls now, because they are
@@ -1106,7 +1106,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (hold) {
       if (task && !priority) broadcast({ type: 'tracker:task_updated', data: task });
       linkLaterInstruction(agentId, taskId);
-      return `[OK] task_id=${taskId} | status=in_progress, ${hold}: ${holdReason}\n\n`
+      return `[OK] task_id=${taskId} | status=${task?.status ?? 'in_progress'}, ${hold}: ${holdReason}\n\n`
         + `Task held: ${taskRow?.title ?? taskId}. It is still yours: hand it in when it is finished or cannot be done.`
         + (resumeAt ? `\nAuto-resumes: ${formatTimeForAgent(resumeAt)}` : '');
     }

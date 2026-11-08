@@ -21,7 +21,7 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
-vi.mock('../pm-agent.js', () => ({ ensurePMAgentRunning: () => {}, noteTransitionForReview: () => {} }));
+vi.mock('../pm-agent.js', () => ({ ensurePMAgentRunning: () => {}, noteCloseForReview: () => {} }));
 vi.mock('../notify.js', () => ({ injectTaskAssignmentNotification: () => {}, claimAssignmentNoticeForTerminalTask: () => false }));
 const { countMeasure } = vi.hoisted(() => ({ countMeasure: vi.fn() }));
 vi.mock('../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../work/measure.js')>()), countMeasure }));

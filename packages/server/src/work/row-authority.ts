@@ -44,6 +44,7 @@ import { currentAddress } from '../agent/v2/turn-address.js';
 import { recordMove } from './move-record.js';
 import { isTerminal, type Actor, type WorkState } from './store.js';
 import { pieceIdsExpr } from './validation-drive.js';
+import { holdOf } from './done/hold.js';
 
 const logger = createLogger('row-authority');
 
@@ -55,7 +56,7 @@ const isMoveCause = (v: unknown): v is MoveCause =>
 
 /** The facts the gate decides on, read from the row itself on every call. */
 export interface RowFacts {
-  id: string; kind: string; title: string; state: WorkState; hold: 'paused' | 'blocked' | null;
+  id: string; kind: string; title: string; state: WorkState;
   /** `assignee_agent` when set, else `agent_id` (the holder an unassigned row keeps). */
   holder: string;
   groupId: string | null;
@@ -78,17 +79,17 @@ export function isLiveAgent(agentId: string | null | undefined): boolean {
 
 export function rowFacts(id: string): RowFacts | null {
   const r = getDb().prepare(
-    `SELECT id, kind, title, state, hold_kind, agent_id, assignee_agent, assigned_to_group, requester, requester_id
+    `SELECT id, kind, title, state, agent_id, assignee_agent, assigned_to_group, requester, requester_id
        FROM work WHERE id = ? AND kind IN ('task', 'project')`,
   ).get(id) as {
-    id: string; kind: string; title: string | null; state: WorkState; hold_kind: 'paused' | 'blocked' | null; agent_id: string;
+    id: string; kind: string; title: string | null; state: WorkState; agent_id: string;
     assignee_agent: string | null; assigned_to_group: string | null;
     requester: string | null; requester_id: string | null;
   } | undefined;
   if (!r) return null;
   const holder = r.assignee_agent ?? r.agent_id;
   return {
-    id: r.id, kind: r.kind, title: r.title ?? '(untitled)', state: r.state, hold: r.hold_kind, holder,
+    id: r.id, kind: r.kind, title: r.title ?? '(untitled)', state: r.state, holder,
     groupId: r.assigned_to_group, creator: r.requester === 'agent' ? r.requester_id : null,
     holderLive: isLiveAgent(holder),
   };
@@ -286,10 +287,11 @@ export function checkMove(req: MoveRequest): MoveCheck {
     return { ok: true, facts: f, cause };
   }
   // OR-PM-1v2: blocked or declined work escalates to the owner; only the owner's word moves it.
-  if (f.hold === 'blocked' || wasDeclined(f.id)) {
+  const blocked = holdOf(f.id)?.kind === 'blocked';
+  if (blocked || wasDeclined(f.id)) {
     return {
       ok: false,
-      text: `Error: "${f.title}" is ${f.hold === 'blocked' ? 'blocked' : 'work an agent declined'}, `
+      text: `Error: "${f.title}" is ${blocked ? 'blocked' : 'work an agent declined'}, `
         + `and that escalates to ${getOwnerName()}; agents do not move it. ${escalationPointer(req.actorId)}`,
     };
   }

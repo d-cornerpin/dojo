@@ -31,6 +31,7 @@ import type { WaitingConversation } from '../../counterparty.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext } from './index.js';
 import { userWords } from '../../turn-address.js';
+import { heldExpr } from '../../../../work/done/hold.js';
 
 /** The gate message's first words: the dedupe below finds a recent one by them. */
 export const GATE_MSG_HEAD = '[System: tracker check before this turn.';
@@ -86,7 +87,7 @@ export async function runCloseoutGate(
       SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0 AND w.hold_kind IS NULL
+        AND w.is_paused = 0 AND NOT ${heldExpr('w')}
         AND ${handedInExpr('w')} = 0
         AND ${taskMovedAtSql('w')} < ?
       ORDER BY ${taskMovedAtSql('w')} ASC
@@ -111,7 +112,7 @@ export async function runCloseoutGate(
       INNER JOIN work p ON p.id = t.parent_id
       WHERE ${taskScope('t')} AND t.agent_id = ?
         AND t.state = 'open'
-        AND t.is_paused = 0 AND t.hold_kind IS NULL
+        AND t.is_paused = 0 AND NOT ${heldExpr('t')}
         AND ${handedInExpr('t')} = 0
         AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
         AND t.schedule_status != 'waiting'

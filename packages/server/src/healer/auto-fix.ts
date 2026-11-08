@@ -29,6 +29,7 @@ import { workSettled } from '../work/store.js';
 import { writeAssignee } from '../work/row-authority.js';
 import { recordMove } from '../work/move-record.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../agent/stream-patience.js';
+import { holdOf } from '../work/done/hold.js';
 
 const logger = createLogger('healer-autofix');
 
@@ -318,9 +319,8 @@ function fixOrphanedToolMessages(item: DiagnosticItem): AutoFixResult {
 function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'ORPHANED_TASK') return { applied: false, description: '' };
 
-  // Unassign tasks from terminated agents. Paused tasks stay paused
-  // (the user explicitly paused them — don't silently unpause).
-  // Non-paused tasks move to on_deck so they can be reassigned.
+  // Unassign tasks from terminated agents. A paused hold stays (the owner paused it on purpose);
+  // any other task moves to Open so it can be reassigned.
   // PHASE-2 T8b: on `work`, and the state half now goes through `transition()` per row.
   // The old statement did both jobs in one ungated UPDATE — it moved state with no reason,
   // no actor and no event. Unassigning is a column patch; moving to `on_deck` is a
@@ -356,10 +356,10 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // also what makes this pass idempotent: a row it has cleared is no longer selected.
   const db = getDb();
   const orphans = db.prepare(`
-    SELECT w.id AS id, w.hold_kind AS hold, w.assignee_agent AS assignee
+    SELECT w.id AS id, w.assignee_agent AS assignee
       FROM work w ${ORPHANED_TASK_JOIN('w', 'a')}
      WHERE ${ORPHANED_TASK_WHERE('w', 'a')}
-  `).all() as Array<{ id: string; hold: string | null; assignee: string }>;
+  `).all() as Array<{ id: string; assignee: string }>;
   let changed = 0;
   for (const o of orphans) {
     // ONE ROW CANNOT TAKE THE PASS DOWN ANY MORE. The write above is fixed, so the known
@@ -367,7 +367,7 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
     // that a per-row fault was escaping into the caller and silently ending the sweep.
     try {
       // Paused tasks stay paused (the user explicitly paused them — don't silently unpause).
-      if (o.hold !== 'paused') {
+      if (holdOf(o.id)?.kind !== 'paused') {
         const r = setTrackerStatus(o.id, 'on_deck', {
           by: 'healer', actorId: 'healer',
           reason: 'assigned agent no longer exists; returned to the deck for reassignment',

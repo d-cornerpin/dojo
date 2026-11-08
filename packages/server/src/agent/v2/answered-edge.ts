@@ -42,7 +42,7 @@ import { askIdForMessage } from '../../work/store.js';
 // owner, three readers (this file, `work/occurrences.ts`, `work/ask-remediation.ts`).
 import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs } from '../../work/tracker-view.js';
-import { setHold } from '../../work/done/hold.js';
+import { setHold, heldExpr } from '../../work/done/hold.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
 import { withSessionBoundary } from '../../memory/session-boundary.js';
 // ROUND 3: the withdrawal predicate moved to its own module beside the report store (see the
@@ -806,7 +806,7 @@ export function pauseDriveWorkWaitingOnOwner(
     `SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
         AND w.agent_id = ? AND w.state IN (${DRIVE_STATES.join(', ')})
-        AND w.hold_kind IS NULL AND w.repeat_interval IS NULL
+        AND NOT ${heldExpr('w')} AND w.repeat_interval IS NULL
         AND (w.origin_turn IS NULL OR w.origin_turn <> ?)
         ${linkClause}
         ${sinceMs != null ? 'AND w.updated_at >= ?' : ''}

@@ -27,7 +27,7 @@ import { getDb } from '../../../../db/connection.js';
 import { isPMAgent } from '../../../../config/platform.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
-import { setHold } from '../../../../work/done/hold.js';
+import { setHold, heldExpr } from '../../../../work/done/hold.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 // T53: `enqueueSteer` is no longer imported here. Both of this file's steers go through
@@ -158,7 +158,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
       const task = db2.prepare(`
         SELECT w.id AS id, w.title AS title, w.parent_id AS project_id,
                w.root_kind AS root_kind FROM work w
-        WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.hold_kind IS NULL
+        WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')}
         ORDER BY w.updated_at DESC LIMIT 1
       `).get(agentId) as { id: string; title: string; project_id: string | null; root_kind: string } | undefined;
       if (task) {

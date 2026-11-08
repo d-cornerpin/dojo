@@ -48,6 +48,7 @@ import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, handedInExpr, WORK_EVENT,
 } from './tracker-view.js';
+import { heldExpr } from './done/hold.js';
 
 const logger = createLogger('validation-drive');
 
@@ -204,8 +205,8 @@ export const ownerEscalationOrderingExpr = (a: string): string =>
   + `  THEN ${validationAttemptRecordedExpr(a)} ELSE 1 END)`;
 
 /** The status word the owner's line uses: a blocked hold reads `blocked`. */
-const escalationStatusExpr = (a: string): string =>   // 2d
-  `CASE WHEN ${a}.hold_kind = 'blocked' THEN 'blocked' ELSE ${STATE_TO_STATUS_SQL(`${a}.state`)} END`;
+const escalationStatusExpr = (a: string): string =>
+  `CASE WHEN ${heldExpr(a, 'blocked')} THEN 'blocked' ELSE ${STATE_TO_STATUS_SQL(`${a}.state`)} END`;
 
 export interface OwnerEscalationRow {
   id: string;
@@ -439,8 +440,8 @@ export function recordPersonTold(
  * the ladder about an old block on every later claim/release (driven RED in
  * `__tests__/t142-fix1-recipient-and-arms.test.ts`).
  */
-const episodeStartExpr = (a: string): string =>   // 2d: a block's episode starts at its hold
-  `(CASE WHEN ${a}.hold_kind = 'blocked'`
+const episodeStartExpr = (a: string): string =>   // a block's episode starts at its hold
+  `(CASE WHEN ${heldExpr(a, 'blocked')}`
   + ` THEN COALESCE((SELECT MAX(he.id) FROM work_events he WHERE he.work_id = ${a}.id AND he.kind = 'audit'`
   + `   AND json_extract(he.payload, '$.entry_kind') = 'hold_set'), 0) ELSE 0 END)`;
 
@@ -456,7 +457,7 @@ const latestNewsEventIdExpr = (a: string): string =>
   `MAX(`
   + `COALESCE((SELECT MAX(ne.id) FROM work_events ne WHERE ne.work_id = ${a}.id`
   + `   AND (ne.kind IN ('transition', 'validation_requested')`
-  + `        OR (ne.kind = 'audit' AND json_extract(ne.payload, '$.entry_kind') = 'hold_set'))), 0), `   // 2d
+  + `        OR (ne.kind = 'audit' AND json_extract(ne.payload, '$.entry_kind') = 'hold_set'))), 0), `
   + `COALESCE((SELECT MAX(fe.id) FROM work_events fe WHERE fe.kind = 'transition'`
   + `   AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})`
   + `   AND fe.work_id IN (${pieceIdsExpr(a)})), 0))`;
@@ -502,7 +503,7 @@ export const ownerEpisodeSettledExpr = (a: string): string =>
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /** A task held blocked: one trip up the ladder per block (`ownerEpisodeSettledExpr`), with no verdict. */
-export const blockedNeedsOwnerExpr = (a: string): string => `${a}.hold_kind = 'blocked'`;   // 2d
+export const blockedNeedsOwnerExpr = (a: string): string => heldExpr(a, 'blocked');
 
 /**
  * ── t124 — THE FAILURE COUNTER THE OWNER ALREADY BELIEVED IN. ──
@@ -517,9 +518,9 @@ export const blockedNeedsOwnerExpr = (a: string): string => `${a}.hold_kind = 'b
  * has spoken, not how often the work has failed.
  *
  * ── WHAT COUNTS AS A FAILURE, AND WHY IT NEEDS NO NEW WRITE ──
- * The triage names three shapes. All three already land as ONE recorded row shape, because
- * all three go through `transition()`, the spine's single state writer:
- *   · a `blocked` status            → `transition` payload `$.to = 'blocked'`
+ * Three shapes, each already a durable `work_events` row:
+ *   · a blocked hold on the task    → `audit` entry `hold_set` with `to_status = 'blocked'`
+ *   · a blocked ask or piece        → `transition` payload `$.to = 'blocked'`
  *   · an `intent:'FAIL'` decline    → `settlePieceWithoutResult(child, {to:'failed'})`
  *                                     (`agent/a2a-transport.ts` FAIL arm) → `$.to = 'failed'`
  *   · the synthetic `ABANDONED`     → `settlePieceWithoutResult(child, {to:'abandoned'})`
@@ -570,6 +571,11 @@ export const FAILURE_TRANSITION_STATES = ['blocked', 'failed', 'abandoned'] as c
 
 const FAILURE_STATE_LIST = FAILURE_TRANSITION_STATES.map((s) => `'${s}'`).join(', ');
 
+/** One failure event `fe`: a move into a failure state, or a task held blocked. */
+const FAILURE_EVENT = `((fe.kind = 'transition' AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST}))`
+  + ` OR (fe.kind = 'audit' AND json_extract(fe.payload, '$.entry_kind') = 'hold_set'`
+  + `     AND json_extract(fe.payload, '$.to_status') = 'blocked'))`;
+
 /**
  * The delegated pieces one row owns, by BOTH recorded edges — the `parent_id` edge for a row
  * that delegated the work, and the `a2a_thread_id` edge for the ASSIGN task a decline is about.
@@ -588,9 +594,7 @@ export const pieceIdsExpr = (owner: string, extraFrom = '', extraWhere = ''): st
 
 /** How many recorded failures this row and its delegated pieces have come back with, as SQL. */
 export const workFailureCountExpr = (a: string): string =>
-  `(SELECT COUNT(*) FROM work_events fe`
-  + `  WHERE fe.kind = 'transition'`
-  + `    AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})`
+  `(SELECT COUNT(*) FROM work_events fe WHERE ${FAILURE_EVENT}`
   + `    AND (fe.work_id = ${a}.id`
   + `         OR fe.work_id IN (${pieceIdsExpr(a)})))`;
 
@@ -683,8 +687,8 @@ export const workFailureCountExpr = (a: string): string =>
  * INVISIBLE to the PM agent, no pokes, no nags, ever"*). What stays admissible is live work, the
  * set the owner's case lives in: a declined ASSIGN left `claimed` on the agent that refused it.
  */
-const failureArmStateBound = (a: string): string =>   // 2d
-  `${a}.state NOT IN (${TERMINAL_STATES.map((st) => `'${st}'`).join(', ')}) AND ${a}.hold_kind IS NOT 'paused'`;
+const failureArmStateBound = (a: string): string =>
+  `${a}.state NOT IN (${TERMINAL_STATES.map((st) => `'${st}'`).join(', ')}) AND NOT ${heldExpr(a, 'paused')}`;
 
 export const anyRecordedFailureExpr = (a: string): string =>
   `(${workFailureCountExpr(a)} >= 1 AND ${failureArmStateBound(a)})`;
@@ -713,8 +717,7 @@ export function workFailureCount(workId: string): number {
   try {
     return (getDb().prepare(
       `SELECT COUNT(*) AS n FROM work_events fe
-        WHERE fe.kind = 'transition'
-          AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})
+        WHERE ${FAILURE_EVENT}
           AND (fe.work_id = @id
                OR fe.work_id IN (${pieceIdsExpr('ow', ', work ow', ' AND ow.id = @id')}))`,
     ).get({ id: workId }) as { n: number } | undefined)?.n ?? 0;
@@ -747,7 +750,7 @@ export function workFailureCount(workId: string): number {
  */
 export const ownerEscalationStateArmsExpr = (a: string): string =>
   `(\n`
-  + `        ${handedInExpr(a)} = 1\n`   // 2d: a paused task is a hold, never escalated
+  + `        ${handedInExpr(a)} = 1\n`
   + `        OR ${blockedNeedsOwnerExpr(a)}\n`
   + `      )`;
 
@@ -798,8 +801,7 @@ export function selectRowsForOwnerEscalation(
       -- migration 139 means the worker's own close leaves the row where it was with a
       -- Key-1 request on it. Reading only the done arm would let exactly the rows this
       -- sweep exists for age out of its sight; handedInExpr is both shapes and
-      -- the whole state set they can sit in (T21). The blocked and failure-count arms are
-      -- t124's; §3a argues both.
+      -- the whole state set they can sit in, plus the blocked and failure-count arms.
       AND ${ownerEscalationShapesExpr('w')}
       -- SWEEP CORE-2 item 1 — THE ORDERING LAW. The owner is not told his validator did not
       -- rule while the platform holds no record that it was ever asked.

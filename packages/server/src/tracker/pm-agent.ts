@@ -488,15 +488,14 @@ export function pendingValidationDoorbellCount(): number {
  * Called by completeAgent when a task is closed. Buffers the task id and schedules a debounced
  * PM review. The review runs as a fresh LLM call regardless of the polled throttle.
  */
-export function noteTransitionForReview(taskId: string, toStatus: string): void {
-  if (toStatus !== 'complete') return;
+export function noteCloseForReview(taskId: string): void {
   // Smell detection happens here so the flag lands BEFORE PM reviews.
   try {
     runSmellDetector(taskId);
   } catch (err) {
-    logger.warn('runSmellDetector threw (non-fatal)', { taskId, toStatus, error: err instanceof Error ? err.message : String(err) });
+    logger.warn('runSmellDetector threw (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
   }
-  armDebouncedReview(taskId, `transition:${toStatus}`);
+  armDebouncedReview(taskId, 'transition:complete');
 }
 
 /**
@@ -1724,10 +1723,8 @@ async function runPMReview(): Promise<void> {
     //       legitimate work.
     //   (b) agents.updated_at gets bumped when status flips - so it's an
     //       exact "agent went idle at" timestamp, not a sloppy proxy.
-    // The agent's end-of-turn nudge teaches it to mark waiting-on-user
-    // tasks as 'paused' (PM ignores) and escalation cases as 'blocked' (PM
-    // surfaces but doesn't poke). An IDLE issue here means the agent
-    // genuinely stalled out without transitioning, and the PM should poke.
+    // A held task (paused or blocked) is not poked. An IDLE issue here means the
+    // agent genuinely stalled out without putting the task on hold, and the PM should poke.
     //
     // Exempts recurring tasks with a future nextRunAt - those are stuck-
     // between-runs from a previous fire that didn't close cleanly. The

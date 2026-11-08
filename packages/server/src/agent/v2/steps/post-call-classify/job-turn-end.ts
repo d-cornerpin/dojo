@@ -36,6 +36,7 @@ import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
 import type { ToolCall } from '@dojo/shared';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext } from './index.js';
+import { heldExpr } from '../../../../work/done/hold.js';
 
 export interface JobAtPassEnd {
   taskId: string;
@@ -57,7 +58,7 @@ export function jobTaskOf(agentId: string, db: Database): TaskRow | null {
   const only = carried ? `AND w.id IN (${carried.map(() => '?').join(', ')})` : '';
   return (db.prepare(`
     SELECT w.id AS id, w.measure_json AS measureJson, w.measure_remaining AS stored FROM work w
-    WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0 AND w.hold_kind IS NULL ${only}
+    WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0 AND NOT ${heldExpr('w')} ${only}
     ORDER BY ${workingTaskOrder('w')} LIMIT 1
   `).get(agentId, ...(carried ?? [])) as TaskRow | undefined) ?? null;
 }

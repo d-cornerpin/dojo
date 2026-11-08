@@ -511,7 +511,7 @@ function ownerMoveRefusal(id: string, status: string): string | null {
     const held = setHold(id, status, `${status} by the owner on the dashboard`, 'owner');
     return held.ok ? null : held.why;
   }
-  clearHold(id, 'owner');
+  if (getTask(id)?.status === status) clearHold(id, 'owner');   // already there: only the hold lifts
   const { result } = setTaskStatusResult(id, status as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
   if (workSettled(result)) return null;
   return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;

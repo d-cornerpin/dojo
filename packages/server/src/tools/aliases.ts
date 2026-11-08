@@ -135,9 +135,7 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
   tracker_clear_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_clear_notes was removed. To append a note use work_note({ task_id, notes }); to replace/clear the notes field use work_update({ action: "edit", task_id, notes: "" }).' },
   // Retired by C27 into `tracker_validate`, which T8V retired into `work_validate`.
   // Chained through in one hop so the oldest names still land on the live verb.
-  tracker_validate_pause: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'pause' }) },
   tracker_validate_complete: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'complete' }) },
-  tracker_validate_blocked: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'blocked' }) },
 };
 
 export interface ResolvedAlias {

@@ -259,7 +259,7 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
     expect(setHold(id, 'paused', 'owner paused it', 'owner').ok).toBe(true);
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
-    expect(block).toMatch(/Status: paused since \[[^\]]+\] — paused by the owner/);
+    expect(block).toMatch(/Status: paused since \[[^\]]+\]: paused by the owner/);
     expect(block).not.toMatch(/to answer/);
   });
 

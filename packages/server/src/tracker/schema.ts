@@ -32,6 +32,7 @@ import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 import type { Plan } from '../work/plan.js';
+import { heldExpr } from '../work/done/hold.js';
 
 const logger = createLogger('tracker-schema');
 
@@ -851,8 +852,7 @@ function taskListWhere(filter?: TaskListFilter): { conditions: string[]; params:
     params.push(Date.now());
   }
   if (filter?.status === 'paused' || filter?.status === 'blocked') {
-    conditions.push('work.hold_kind = ?');   // a hold, not a state
-    params.push(filter.status);
+    conditions.push(heldExpr('work', filter.status));   // a hold, not a state
   } else if (filter?.status) {
     conditions.push('work.state = ?');
     params.push(statusToState(filter.status));

@@ -10,6 +10,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { getTask } from '../../../tracker/schema.js';
 import { holdOf } from '../hold.js';
+import { onTaskRunComplete } from '../../../scheduler/runner.js';
 import { freshBoard, deliveredToOwner, call, stateOf, eventCount, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
@@ -67,6 +68,29 @@ describe('a hold is a flag on Working work', () => {
     expect(stateOf()).toBe('handed_in');
     expect(eventCount('handed_in')).toBe(1);
     expect(holdOf(TASK)).toBeNull();
+  });
+
+  it('a held task hands in can\'t be done, and the hold ends at the hand-in', async () => {
+    freshBoard();
+    await call(WORKER, 'work_update', { action: 'status', task_id: TASK, status: 'blocked', notes: 'the vendor shut the portal down' });
+    const r = await call(WORKER, 'work_update', { action: 'hand_in', task_id: TASK, outcome: 'cant_be_done', proof: [{ kind: 'remainder', ref: 'the portal export', reason: 'the vendor shut the portal down last month' }], note: 'The export cannot be made' });
+    expect(r.isError, r.content).toBe(false);
+    expect(stateOf()).toBe('handed_in');
+    expect(holdOf(TASK)).toBeNull();
+  });
+
+  it('a recurring run that finishes returns the row to Open', async () => {
+    freshBoard();
+    const at = Date.now() - 60_000;
+    doneDb().prepare("UPDATE work SET repeat_interval = 1, repeat_unit = 'days', schedule_status = 'running', next_run_at = ? WHERE id = ?")
+      .run(Date.now() + 86_400_000, TASK);
+    doneDb().prepare(
+      `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, sequence, opened_at, updated_at)
+       VALUES ('run-1', 'occurrence', ?, ?, 'schedule', 'schedule', ?, 'open', 'occurrence', 0, 0, 'occurrence #1', 1, ?, ?)`,
+    ).run(TASK, WORKER, TASK, at, at);
+    deliveredToOwner();
+    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
+    expect(stateOf()).toBe('open');
   });
 
   it('on_deck means Open, and a recurring task\'s schedule pauses on its own flag without moving the task', async () => {

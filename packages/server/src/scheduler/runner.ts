@@ -26,7 +26,7 @@ import {
   recordValidationEscalation,
 } from '../work/tracker-store.js';
 import { proofDelivery } from '../work/done/proof.js';
-import { clearHold } from '../work/done/hold.js';
+import { clearHold, heldExpr } from '../work/done/hold.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
@@ -574,8 +574,6 @@ export async function autoResolveStaleMissedRunPauses(): Promise<void> {
           taskId,
           fromEntity: 'engine',
           entryKind: 'auto_sweep',
-          fromStatus: 'paused',
-          toStatus: 'on_deck',
           actionTaken: `engine auto-skipped ${missedSlots} missed run${missedSlots === 1 ? '' : 's'} to the next scheduled time`,
           reason: `${MISSED_RUNS_PASSED_OVER} (work_schedule(action="resolve_missed") never ran); schedule resumed, next run at ${nextRun}`,
         });
@@ -1565,7 +1563,7 @@ export function cleanupStaleRuns(): void {
     SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to
     FROM work t
     WHERE ${taskScope('t')} AND t.schedule_status = 'running'
-      AND t.hold_kind IS NOT 'paused'
+      AND NOT ${heldExpr('t', 'paused')}
       AND t.agent_id IS NOT NULL
       AND MAX(
         COALESCE(
@@ -1614,7 +1612,7 @@ export function cleanupStaleRuns(): void {
     SELECT t.id AS id, t.title AS title
     FROM work t
     WHERE ${taskScope('t')} AND t.schedule_status = 'running'
-      AND t.hold_kind IS NOT 'paused'
+      AND NOT ${heldExpr('t', 'paused')}
       AND t.agent_id IS NULL
       AND t.last_run_at < ?
   `).all(Date.now() - 5 * 60_000) as Array<{ id: string; title: string }>;
@@ -1896,7 +1894,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 export function resumeExpiredPauses(): void {
   const expired = getDb().prepare(`
     SELECT w.id AS id FROM work w
-    WHERE ${taskScope('w')} AND w.hold_kind = 'paused' AND w.paused_until IS NOT NULL AND w.paused_until <= ?
+    WHERE ${taskScope('w')} AND ${heldExpr('w', 'paused')} AND w.paused_until IS NOT NULL AND w.paused_until <= ?
   `).all(Date.now()) as Array<{ id: string }>;
   for (const { id } of expired) {
     if (!clearHold(id, 'scheduler')) continue;

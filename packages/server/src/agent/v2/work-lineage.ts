@@ -29,11 +29,12 @@ export function spentRun(runId: string): Spent | null {
 
 export function spentTask(taskId: string): Spent | null {
   const task = getDb().prepare(
-    `SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.hold_kind AS hold FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(taskId) as { status: string; hold: string | null } | undefined;
+    `SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.is_paused AS is_paused FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
+  ).get(taskId) as { status: string; is_paused: number } | undefined;
   if (!task) return { reason: 'task_missing', state: 'task row gone' };
   if (isTerminalTaskStatus(task.status)) return { reason: 'task_terminal', state: `task ${task.status}` };
-  if (task.hold === 'paused') return { reason: 'task_paused', state: 'task paused' };
+  // A hold never makes work spent; a paused schedule does.
+  if (task.is_paused === 1) return { reason: 'task_paused', state: 'task paused' };
   return null;
 }
 

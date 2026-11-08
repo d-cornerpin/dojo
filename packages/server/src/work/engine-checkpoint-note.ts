@@ -58,6 +58,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
 import { servedOwnerMessageIds } from '../memory/served-ask.js';
+import { heldExpr } from './done/hold.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
  *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
@@ -102,7 +103,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
     SELECT w.id AS id FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ?
       AND w.state = 'claimed'
-      AND w.is_paused = 0 AND w.hold_kind IS NULL
+      AND w.is_paused = 0 AND NOT ${heldExpr('w')}
       AND w.id IN (${ids})
   `).all(agentId, ...tied) as Array<{ id: string }>;
 
@@ -112,7 +113,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
     INNER JOIN work p ON p.id = t.parent_id
     WHERE ${taskScope('t')} AND t.agent_id = ?
       AND t.state = 'open'
-      AND t.is_paused = 0 AND t.hold_kind IS NULL
+      AND t.is_paused = 0 AND NOT ${heldExpr('t')}
       AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
       AND t.schedule_status != 'waiting'
       AND p.requester_id = ?
@@ -194,7 +195,7 @@ function handOverOneVerdict(agentId: string): string | null {
     SELECT w.id AS id, w.title AS title FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ?
       AND w.state = 'claimed'
-      AND w.is_paused = 0 AND w.hold_kind IS NULL
+      AND w.is_paused = 0 AND NOT ${heldExpr('w')}
   `).all(agentId) as Array<{ id: string; title: string | null }>;
 
   for (const task of claimed) {

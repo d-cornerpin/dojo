@@ -26,6 +26,7 @@ import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
 import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
 import type { ToolEffect } from '../../../tools/types.js';
 import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
+import { heldExpr } from '../../../../work/done/hold.js';
 
 /**
  * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.
@@ -65,7 +66,7 @@ import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
 export function resolveCurrentClaimedTaskId(agentId: string): string | null {
   const row = getDb().prepare(
     `SELECT w.id AS id FROM work w
-     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.hold_kind IS NULL
+     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')}
      ORDER BY ${workingTaskOrder('w')} LIMIT 1`,
   ).get(agentId) as { id: string } | undefined;
   return row?.id ?? null;
@@ -121,9 +122,8 @@ export function countTrackerWorkThisIteration(
   // FA-T3: the multi-step floor counts REAL WORK calls only, calls that are
   // neither tracker ops nor TRIVIAL_TOOLS (read-only reconnaissance / utility
   // / bookkeeping). Before this, a pure recon turn (check email + calendar +
-  // texts + vault, ~6 read-only lookups) tripped the >=6 floor, auto-scaffolded
-  // a junk project, then failed the close-out gate, auto-paused, and fired
-  // CLOSEOUT_MISS at the PM. Trivial lookups are not multi-step work. Reads
+  // texts + vault, ~6 read-only lookups) tripped the >=6 floor and scaffolded a
+  // junk project. Trivial lookups are not multi-step work. Reads
   // still never DISARM the floor (FN-9); they simply no longer COUNT toward it.
   const nonTrackerInThisIter = result.toolCalls.filter(
     (tc) => !isTrackerFamilyCall(tc.name, tc.arguments) && !TRIVIAL_TOOLS.has(tc.name),

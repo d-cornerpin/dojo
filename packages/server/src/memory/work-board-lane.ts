@@ -221,7 +221,7 @@ function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): str
   const title = t.title.length > caps.title ? `${t.title.slice(0, caps.title)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
   if (v.waiting) {
-    line += `\n  Status: ${t.hold ?? t.status} since ${recordedInstant(v.waiting.since)} — ${waitingOn(v, caps)}. `
+    line += `\n  Status: ${t.hold ?? t.status} since ${recordedInstant(v.waiting.since)}: ${waitingOn(v, caps)}. `
       + 'Not current work: do not resume it unless asked.';
   }
   if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
@@ -235,7 +235,7 @@ function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): str
   return line;
 }
 
-/** WHO paused it is the hold's own actor (round 3), which tells the engine's "waiting on the
+/** WHO paused it is the hold's own actor, which tells the engine's "waiting on the
  *  person" from an owner pausing the job himself, which is not a question waiting on his answer. */
 function waitingOn(v: TaskView, caps: TermCaps): string {
   switch (v.waiting?.by) {
