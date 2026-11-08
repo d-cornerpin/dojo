@@ -55,7 +55,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { getPMAgentId, getPrimaryAgentId } from '../config/platform.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 import { projectScope, taskScope } from '../work/tracker-view.js';
 
 const logger = createLogger('version-gap');
@@ -216,7 +216,7 @@ export function scanVersionGap(): ReconcileScan {
       findings.push({
         shape: 'all-tasks-terminal-but-open', subject: 'project', id: p.id, title,
         why: 'every task in this project is complete, but the project itself is still open — the board shows it as live work when there is none.',
-        correction: `work_update(action="close_project", project_id="${p.id}", status="complete", reason="every task completed")`,
+        correction: 'the owner closes it from the dashboard project board',   // 2c: a project is derived from its tasks
       });
       continue;
     }
@@ -224,7 +224,7 @@ export function scanVersionGap(): ReconcileScan {
       findings.push({
         shape: 'zero-task-ghost', subject: 'project', id: p.id, title,
         why: 'this project is open and has no tasks at all. It may be wreckage from a build whose close path was broken, or it may be one somebody is building right now — a stored row cannot tell you which, so it is flagged and left alone.',
-        correction: `work_update(action="close_project", project_id="${p.id}", status="cancelled", reason="empty project, no work was ever added")`,
+        correction: 'the owner cancels it from the dashboard project board',
       });
       continue;
     }
@@ -292,19 +292,9 @@ export interface ReconcileResult extends ReconcileScan {
  */
 export async function runVersionGapReconcile(): Promise<ReconcileResult> {
   const scan = scanVersionGap();
-  let repaired = 0;
+  const repaired = 0;
 
-  // THE ONE REPAIRABLE SHAPE, THROUGH THE ONE AUTHORITY. Dynamic import because `tracker/tools.ts`
-  // statically imports `pm-agent.ts`; a static import here would drag the PM into every caller,
-  // and it is the same idiom `scheduler/runner.ts` uses to reach this function.
-  const { checkProjectCompletion } = await import('./tools.js');
-  for (const f of scan.findings) {
-    if (f.shape !== 'all-tasks-terminal-but-open') continue;
-    // The authority independently re-checks that nothing is still open, so the owner's "never
-    // close a project holding live work" holds even if this module's predicate were wrong.
-    const outcome = checkProjectCompletion(f.id, getPMAgentId());
-    if (outcome === 'completed') repaired += 1;
-  }
+  // 2c: a project whose tasks all ended is derived from them; the repair of that shape lands there.
 
   const result: ReconcileResult = { ...scan, repaired, at: new Date().toISOString() };
 

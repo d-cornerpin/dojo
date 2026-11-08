@@ -46,8 +46,7 @@ import { recipientIdsMatch } from '../agent/recipient-identity.js';
 import { isOwnerIMessageRecipient } from '../services/safe-senders.js';
 import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
-  taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
-  unvalidatedCloseExpr, unvalidatedPauseExpr, lastEntryEventIdExpr, WORK_EVENT,
+  taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, handedInExpr, lastEntryEventIdExpr, WORK_EVENT,
 } from './tracker-view.js';
 
 const logger = createLogger('validation-drive');
@@ -207,7 +206,7 @@ export function validationAttemptCount(workId: string): number {
  * law is about. A paused row with no close request is untouched — the negative control.
  */
 export const ownerEscalationOrderingExpr = (a: string): string =>
-  `(CASE WHEN ${unvalidatedCloseExpr(a)}`
+  `(CASE WHEN ${handedInExpr(a)}`
   + `  THEN ${validationAttemptRecordedExpr(a)} ELSE 1 END)`;
 
 export interface OwnerEscalationRow {
@@ -813,8 +812,7 @@ export const statedObstacleExpr = (a: string): string =>
  */
 export const ownerEscalationStateArmsExpr = (a: string): string =>
   `(\n`
-  + `        ${unvalidatedCloseExpr(a)}\n`
-  + `        OR (${unvalidatedPauseExpr(a)} AND ${a}.missed_runs_paused_at IS NULL)\n`
+  + `        ${handedInExpr(a)} = 1\n`   // 2d: a paused task is a hold, never escalated
   + `        OR ${blockedNeedsOwnerExpr(a)}\n`
   + `      )`;
 
@@ -859,13 +857,13 @@ export function selectRowsForOwnerEscalation(
     FROM work w
     WHERE ${taskScope('w')}
       AND NOT ${ownerEpisodeSettledExpr('w')}
-      AND ${awaitingUserVerdictExpr('w')} = 0
+     
       AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
       AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
       -- PHASE-2 T8T: "an unvalidated close does not sit forever" has two shapes, and
       -- migration 139 means the worker's own close leaves the row where it was with a
       -- Key-1 request on it. Reading only the done arm would let exactly the rows this
-      -- sweep exists for age out of its sight; unvalidatedCloseExpr is both shapes and
+      -- sweep exists for age out of its sight; handedInExpr is both shapes and
       -- the whole state set they can sit in (T21). An active missed_runs_paused_at means
       -- the ENGINE paused this task for missed runs (alertMissedRuns), not the agent — not
       -- the owner's call; the PM sweep adjudicates that unvalidated pause and D12 owns its
@@ -914,7 +912,7 @@ export function selectRowsSkippedAsDelivered(
       FROM work w
       WHERE ${taskScope('w')}
         AND NOT ${ownerEpisodeSettledExpr('w')}
-        AND ${awaitingUserVerdictExpr('w')} = 0
+       
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
         AND ${ownerEscalationShapesExpr('w')}
@@ -1144,7 +1142,7 @@ export function ownerVerdictNudgeText(p: {
     `${p.agentName} marked "${title}" (${shortId}) ${p.status} over ${p.boundMin} minutes ago `
     + `and the PM cannot confirm it. Settle it yourself if you can; leave ${p.ownerName} out of `
     + `it. If only he can decide, ask him in your own voice, then record it with work_validate `
-    + `(apply_user_validation), quoting him. If you text or email him, pass task_id ${shortId}.`
+    + `(decide), quoting him in user_quote. If you text or email him, pass task_id ${shortId}.`
   );
 }
 
@@ -1164,10 +1162,10 @@ export function selectRowsHeldBackFromOwner(
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
         AND NOT ${ownerEpisodeSettledExpr('w')}
-        AND ${awaitingUserVerdictExpr('w')} = 0
+       
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
-        AND ${unvalidatedCloseExpr('w')}
+        AND ${handedInExpr('w')}
         AND ${validationAttemptRecordedExpr('w')} = 0
         AND w.updated_at < ?
       ORDER BY w.updated_at ASC

@@ -414,7 +414,7 @@ describe('T65 CONTROLS — a call without the window is what it always was', () 
     // The re-bless is ONE property. `activity` stays out of the enum, exactly as T60 left it:
     // the pointer sentence in the list door's own result is where the action is advertised.
     const action = props.action as { enum: string[] };
-    expect(action.enum).toEqual(['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get']);
+    expect(action.enum).toEqual(['status', 'hand_in', 'edit', 'reassign', 'list', 'get']);
   });
 
   it('no OTHER action reads the window — it is the activity door\'s property alone', async () => {

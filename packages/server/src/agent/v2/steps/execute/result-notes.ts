@@ -55,7 +55,7 @@ const VISIBILITY_TRIGGER_RE = /https?:\/\/\S+|[~/]\.dojo\/uploads\//;
 // a soft nudge on a new tool, never a correctness issue.
 const BOOKKEEPING_NUDGE_TOOLS = new Set([
   'work_update:status',
-  'work_update:complete_step',
+  'work_update:hand_in',
   'complete_task',
   'vault_remember',
   'vault_update',

@@ -136,11 +136,11 @@ describe('PART A — the work spine has exactly one writer', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('the writer module DOES write all three tables — the rule above is not vacuous', () => {
+  it('the writer module DOES write the state and its events, and the decision writes the verdict: the rule above is not vacuous', () => {
     const writer = read(STATE_WRITER_MODULE);
     expect(writer).toMatch(/UPDATE work\b/);
     expect(writer).toMatch(/INSERT INTO work_events\b/);
-    expect(writer).toMatch(/INSERT INTO adjudications\b/);
+    expect(read('work/done/decide.ts')).toMatch(/INSERT INTO adjudications\b/);
     expect(writesWorkState(writer)).toBe(true);
   });
 

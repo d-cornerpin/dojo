@@ -1,43 +1,19 @@
 import { Hono } from 'hono';
-import {
-  createProject,
-  getProject,
-  listProjects,
-  createTask,
-  getTask,
-  listTasksPage,
-  updateTask,
-  addTaskNotes,
-  closeProjectAndOpenTasks,
-  resolveTaskId,
-  formatResolveError,
-  setTaskStatusResult,
-  broadcastTaskSettled,
-} from '../../tracker/schema.js';
+import { createProject, getProject, listProjects, createTask, getTask, listTasksPage, updateTask, closeProjectAndOpenTasks, resolveTaskId, formatResolveError, setTaskStatusResult, broadcastTaskSettled } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import {
-  taskScope, projectScope, awaitingUserVerdictExpr, revertCountExpr,
+  taskScope, projectScope, revertCountExpr,
   STATE_TO_STATUS_SQL, type TrackerStatus,
 } from '../../work/tracker-view.js';
-import {
-  upholdClaim, resetRevertCount, recordValidationEscalation, clearUserVerdict,
-} from '../../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../../work/next-run.js';
 import { armScheduleOnOwnerSave } from '../../tracker/finished-task-schedule.js';
 import { VERSION_GAP_REPORT_KEY } from '../../tracker/version-gap-reconcile.js';
 import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
-import {
-  findOverrideRequest, resolveOverrideRequest, listOverrideRequests,
-  overrideRollup as overrideRollupSince, type OverrideStatus,
-} from '../../work/override-requests.js';
-import {
-  deleteTrackerRow, deliveryForCompletedChildren,
-} from '../../work/tracker-store.js';
-import { proofDelivery } from '../../work/done/proof.js';
-import { statusToState, tsToMs } from '../../work/tracker-view.js';
+import { deleteTrackerRow } from '../../work/tracker-store.js';
+import { decide, type Verdict } from '../../work/done/decide.js';
+import { tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
-import { recordOwnerCloseReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
@@ -262,45 +238,26 @@ trackerRouter.post('/tasks/:id/observation', async (c) => {
   }
 });
 
-// POST /tasks/:id/user-validate — user validates a complete/paused/blocked task from the dashboard.
-// This is the user-side counterpart to work_validate. Bypasses PM entirely; user authority is final.
-trackerRouter.post('/tasks/:id/user-validate', async (c) => {
+// POST /tasks/:id/decision: the owner decides a task from the dashboard (approve or send back a hand-in,
+// or close or cancel it himself). The decision is `work/done/decide.ts`'s, the owner's by construction.
+trackerRouter.post('/tasks/:id/decision', async (c) => {
   const rawId = c.req.param('id');
   const resolved = resolveTaskId(rawId);
-  if (!resolved.ok) {
-    return c.json({ ok: false, error: formatResolveError('task', rawId, resolved) }, 404);
+  if (!resolved.ok) return c.json({ ok: false, error: formatResolveError('task', rawId, resolved) }, 404);
+  let body: { verdict?: string; reason?: string };
+  try {
+    body = await c.req.json();
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Body must be JSON: { verdict: "approve"|"send_back"|"owner_done"|"cancel", reason }' });
   }
-
-  const task = getTask(resolved.id);
-  if (!task) return c.json({ ok: false, error: 'Task not found' }, 404);
-
-  const { writeTaskLog } = await import('../../tracker/task-log.js');
-  if (!['complete', 'paused', 'blocked'].includes(task.status)) {
-    return c.json({ ok: false, error: `task status="${task.status}" cannot be user-validated (only complete/paused/blocked).` }, 400);
+  const verdict = body.verdict as Verdict;
+  if (!['approve', 'send_back', 'owner_done', 'cancel'].includes(verdict)) {
+    return c.json({ ok: false, error: 'verdict must be "approve", "send_back", "owner_done" or "cancel"' }, 400);
   }
-  const flagColumn = `${task.status}_validated`;
-
-  // PHASE-2 T8b: the flag is an ADJUDICATION now — the owner is an authority (G8), so their
-  // verdict is a row with their name on it rather than a 1 in a column nobody signed.
-  upholdClaim(resolved.id, statusToState(task.status), 'owner', 'user', 'user marked validated');
-  recordValidationEscalation(resolved.id, 'user', null);
-
-  writeTaskLog({
-    taskId: resolved.id,
-    fromEntity: 'user',
-    entryKind: 'transition',
-    fromStatus: task.status,
-    toStatus: task.status,
-    actionTaken: `user-validate via dashboard (${flagColumn}=1)`,
-    reason: 'user marked validated',
-  });
-
-  const updated = getTask(resolved.id);
-  if (updated) {
-    const { broadcast } = await import('../../gateway/ws.js');
-    broadcast({ type: 'tracker:task_updated', data: updated });
-  }
-  return c.json({ ok: true, data: { validated: true } });
+  const r = decide({ workId: resolved.id, deciderAgentId: null, verdict, reason: body.reason ?? '' });
+  if (r.kind !== 'decided') return c.json({ ok: false, error: r.text }, 409);
+  broadcastTaskSettled(resolved.id, null);
+  return c.json({ ok: true, data: { to: r.to, text: r.text } });
 });
 
 // GET /tasks/:id/log — structured audit log entries for a task (Phase B.0)
@@ -367,19 +324,15 @@ trackerRouter.get('/hygiene', async (c) => {
       GROUP BY category
     `).all() as Array<{ category: string; count: number }>;
 
-    // Override request rollup (last 7 days).
-    const overrideRollup = overrideRollupSince(7);
-
     // Tasks currently elevated: high revert_count or awaiting verdict.
     const elevated = db.prepare(`
       SELECT substr(w.id, 1, 8) as id8, w.title AS title,
              ${STATE_TO_STATUS_SQL('w.state')} AS status,
              ${revertCountExpr('w')} AS revert_count,
-             ${awaitingUserVerdictExpr('w')} AS awaiting_user_verdict,
              w.last_smell_flag AS last_smell_flag
       FROM work w
       WHERE ${taskScope('w')}
-        AND (${revertCountExpr('w')} >= 2 OR ${awaitingUserVerdictExpr('w')} = 1 OR w.last_smell_flag IS NOT NULL)
+        AND (${revertCountExpr('w')} >= 2 OR w.last_smell_flag IS NOT NULL)
       ORDER BY revert_count DESC, w.updated_at DESC
       LIMIT 20
     `).all();
@@ -419,7 +372,6 @@ trackerRouter.get('/hygiene', async (c) => {
       data: {
         validateOutcomes,
         smellFlags,
-        overrideRollup,
         elevated,
         pmCost,
       },
@@ -430,118 +382,6 @@ trackerRouter.get('/hygiene', async (c) => {
   }
 });
 
-// POST /override-requests/:id/resolve — user (via dashboard) approves or denies an override.
-// Mirrors the PM-side work_validate(action="override") tool but credits the user as the resolver.
-trackerRouter.post('/override-requests/:id/resolve', async (c) => {
-  const id = c.req.param('id');
-  let body: { approve?: boolean; reason?: string };
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 400, message: 'invalid JSON body' });
-  }
-  const approve = body.approve === true;
-  const reason = (body.reason ?? '').trim();
-  if (!reason) return c.json({ ok: false, error: 'reason is required' }, 400);
-
-  try {
-    const req = findOverrideRequest(id);
-    if (!req) return c.json({ ok: false, error: 'override request not found' }, 404);
-    if (req.status !== 'pending') {
-      return c.json({ ok: false, error: `override request is already ${req.status}` }, 400);
-    }
-
-    const { writeTaskLog } = await import('../../tracker/task-log.js');
-    if (approve) {
-      // Override approval is an AUTHORITATIVE decision by the owner, so it is one call:
-      // `transition()` files the upheld adjudication in the same transaction as the move
-      // (`claim: 'authoritative'`), which is what the three flag columns were imitating.
-      const { setTaskStatus } = await import('../../tracker/schema.js');
-      const updated = setTaskStatus(req.taskId, req.requestedStatus as TrackerStatus, {
-        by: 'owner', actorId: 'user', claim: 'authoritative',
-        reason: `owner approved override request ${id}: ${reason}`,
-        resultDeliveryId: req.requestedStatus === 'complete' ? proofDelivery(req.taskId) : null,
-      });
-      if (!updated) return c.json({ ok: false, error: 'task vanished before override could be applied' }, 500);
-      resetRevertCount(req.taskId, 'user', `override ${id} approved`);
-      clearUserVerdict(req.taskId, 'user', `override ${id} approved`);
-      // The verdict is already in `adjudications` — `setTaskStatus` above carries
-      // `claim: 'authoritative'`. This answers the ASK.
-      resolveOverrideRequest(req.id, { outcome: 'approved', resolvedBy: 'user', reason });
-      writeTaskLog({
-        taskId: req.taskId,
-        fromEntity: 'user',
-        entryKind: 'override',
-        toStatus: req.requestedStatus,
-        actionTaken: 'dashboard override(approve=true)',
-        reason,
-      });
-      // D-K: an approved override to 'fallen' can be the transition that
-      // empties the project of open tasks; run the fail-open check (idempotent).
-      if (req.requestedStatus === 'fallen' || req.requestedStatus === 'cancelled') {
-        try {
-          const { checkProjectCompletion } = await import('../../tracker/tools.js');
-          checkProjectCompletion(updated.projectId, 'user:dashboard');
-        } catch { /* best-effort */ }
-      }
-      logger.info('Override approved via dashboard', { taskId: req.taskId, requestId: id });
-      return c.json({ ok: true, data: { approved: true } });
-    }
-
-    resolveOverrideRequest(req.id, { outcome: 'denied', resolvedBy: 'user', reason });
-    writeTaskLog({
-      taskId: req.taskId,
-      fromEntity: 'user',
-      entryKind: 'override',
-      actionTaken: 'dashboard override(approve=false)',
-      reason: `denied: ${reason}`,
-    });
-    // Best-effort A2A notification to the requesting agent.
-    try {
-      const { deliverA2ANotice } = await import('../../agent/a2a-notice.js');
-      const { getPMAgentId } = await import('../../config/platform.js');
-      await deliverA2ANotice({
-        intent: 'QUESTION',
-        threadId: '',
-        requiresResponse: true,
-        payload: `Your override request on task ${req.taskId.slice(0, 8)} was denied by the user. Reason: ${reason}. Address the original engine objection and resubmit cleanly.`,
-        toAgent: req.requestedBy,
-        fromAgent: getPMAgentId(),
-      }, 'Dashboard override-denial notice to the requesting agent', { taskId: req.taskId, requestedBy: req.requestedBy });
-    } catch { /* best-effort */ }
-    logger.info('Override denied via dashboard', { taskId: req.taskId, requestId: id });
-    return c.json({ ok: true, data: { approved: false } });
-  } catch (err) {
-    logger.error('POST /override-requests/:id/resolve failed', { id, error: err instanceof Error ? err.message : String(err) });
-    return c.json({ ok: false, error: 'failed to resolve override' }, 500);
-  }
-});
-
-// GET /override-requests — list override requests, optionally filtered by status (Phase B.1)
-trackerRouter.get('/override-requests', async (c) => {
-  const statusParam = c.req.query('status');
-  try {
-    const allowed = new Set(['pending', 'approved', 'denied', 'auto_denied']);
-    // PHASE-2 T8T RESUMED-2 (RULING 4): the dashboard's wire shape is preserved
-    // field-for-field — this route's consumer is a UI that reads snake_case keys, and
-    // changing them here would be this rekey silently changing the product.
-    const rows = listOverrideRequests({
-      status: statusParam && allowed.has(statusParam) ? statusParam as OverrideStatus : undefined,
-      limit: 100,
-    }).map((r) => ({
-      id: r.id, task_id: r.taskId, requested_by: r.requestedBy,
-      requested_status: r.requestedStatus, justification: r.justification,
-      last_engine_error: r.lastEngineError, attempts_attached: r.attemptsAttached,
-      status: r.status, resolved_by: r.resolvedBy, resolved_reason: r.resolvedReason,
-      created_at: r.createdAt, resolved_at: r.resolvedAt,
-      task_title: r.taskTitle, task_goal: r.taskGoal,
-    }));
-    return c.json({ ok: true, data: rows });
-  } catch (err) {
-    logger.error('GET /override-requests failed', { error: err instanceof Error ? err.message : String(err) });
-    return c.json({ ok: false, error: 'failed to load override requests' }, 500);
-  }
-});
 
 // POST /tasks — create standalone task
 trackerRouter.post('/tasks', async (c) => {
@@ -736,34 +576,23 @@ trackerRouter.put('/tasks/:id', async (c) => {
         });
       }
       if (statusUpdate) {
-        // The owner dragging a card IS the authority (Q5), so the transition carries
-        // `claim: 'authoritative'` and files its own adjudication — the three
-        // `*_validated = 1` assignments below used to do that by hand.
-        //
-        // PHASE-2 T8b2 — THE REFUSAL IS ANSWERED, NOT SWALLOWED. T8b routed this through
-        // `transition()`, so G7 (`done` means DELIVERED) now reaches the dashboard close.
-        // `setTaskStatus` returns null on a refusal; this handler ignored it and replied
-        // 200 {ok:true} with the UNCHANGED task, then logged a `task_log` transition for a
-        // move that never happened. Measured before this fix: PUT {status:'complete'} on a
-        // task with no resolvable delivery -> HTTP 200, `work.state` still 'claimed', and a
-        // `to_status='complete'` audit row. A false receipt in the history the owner reads
-        // is worse than the refusal it hid.
-        // PHASE-2 T8c2 item 5 — THE OWNER'S OWN CLOSE REACHES `done`: a real delivery is looked
-        // for first, else his own act becomes the receipt (not a fake delivery: channel='none',
-        // outcome='owner_closed'). The argument is in `agent/v2/deliveries.ts:recordOwnerCloseReceipt`.
-        const { result } = setTaskStatusResult(id, statusUpdate as TrackerStatus, {
-          by: 'owner', actorId: 'user', claim: 'authoritative',
-          reason: 'dashboard PUT /tracker/tasks/:id',
-          resultDeliveryId: statusUpdate === 'complete'
-            ? (proofDelivery(id) ?? deliveryIdOf(recordOwnerCloseReceipt(id, 'the dashboard task board')))
-            : null,
-        });
-        if (!workSettled(result)) {
-          const detail = isStateConflict(result)
-            ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
+        // The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`); any other
+        // move is a plain status change.
+        const closing = statusUpdate === 'complete' || statusUpdate === 'cancelled' || statusUpdate === 'fallen';
+        const refusal = closing
+          ? (() => {
+              const r = decide({ workId: id, deciderAgentId: null, verdict: statusUpdate === 'complete' ? 'owner_done' : 'cancel', reason: `moved to ${statusUpdate} on the dashboard task board` });
+              return r.kind === 'decided' ? null : r.text;
+            })()
+          : (() => {
+              const { result } = setTaskStatusResult(id, statusUpdate as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
+              if (workSettled(result)) return null;
+              return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
+            })();
+        if (refusal) {
           return c.json({
             ok: false,
-            error: `status change to "${statusUpdate}" was refused, ${detail}`,
+            error: `status change to "${statusUpdate}" was refused, ${refusal}`,
             data: { taskId: id, refusedStatus: statusUpdate, otherUpdatesApplied: Object.keys(columnUpdates) },
           }, 409);
         }
@@ -778,19 +607,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
           toStatus: body.status,
           actionTaken: 'dashboard PUT /tracker/tasks/:id',
         });
-        // The uphold rode the transition above (claim: 'authoritative'); the revert count
-        // resets here, and only when the task is NOT awaiting the owner's verdict — those
-        // have their own resolution path via the user-verdict verb.
-        const awaiting = getDb().prepare(
-          `SELECT ${awaitingUserVerdictExpr('w')} AS a FROM work w WHERE w.id = ?`,
-        ).get(id) as { a: number } | undefined;
-        if (awaiting?.a !== 1) resetRevertCount(id, 'user', 'dashboard transition');
-        // D-K: a dashboard drag to 'fallen' can be the transition that empties
-        // the project of open tasks; run the fail-open check (idempotent).
-        // All-complete projects left active still have the Healer's
-        // ORPHANED_PROJECT backstop; fallen-containing ones have no backstop,
-        // so the needs-attention label must land at transition time.
-        // T18: `cancelled` is the second terminal outcome and takes the same two steps.
         if (body.status === 'fallen' || body.status === 'cancelled') {
           // RC-17.5: a drag to a terminal column on a live schedule must also STOP the
           // schedule, or the scheduler keeps firing it (the due query filters
@@ -803,10 +619,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
               terminateLiveScheduleOnFallen(id, 'the task was marked fallen from the dashboard');
             }
           } catch { /* best-effort */ }
-          try {
-            const { checkProjectCompletion } = await import('../../tracker/tools.js');
-            checkProjectCompletion(existing.projectId, 'user:dashboard');
-          } catch { /* best-effort */ }
+          // 2c: the project roll-up runs at the decision.
         }
       }
     }
@@ -914,23 +727,7 @@ trackerRouter.post('/projects/:id/close', async (c) => {
   }
 
   try {
-    const result = closeProjectAndOpenTasks({
-      projectId: id,
-      closingAgentId: 'dashboard',
-      // PHASE-2 T8T: the owner's bulk close is the OWNER's, and under RULING 1 that is what
-      // turns the second key. Without this the dashboard's close would file a Key-1 request
-      // per row and the board would not move — the same defect T8b2 found on the single-task
-      // PUT, one route over.
-      authority: { by: 'owner', actorId: 'user' },
-      taskStatus: status as 'complete' | 'cancelled',
-      projectStatus: status as 'complete' | 'cancelled',
-      reason,
-      // Same policy as the task close above, and for the same reason: a project the owner
-      // closes by hand whose children delivered nothing is still HIS to close.
-      resultDeliveryId: status === 'complete'
-        ? (deliveryForCompletedChildren(id) ?? deliveryIdOf(recordOwnerCloseReceipt(id, 'the dashboard project board')))
-        : null,
-    });
+    const result = closeProjectAndOpenTasks({ projectId: id, taskStatus: status as 'complete' | 'cancelled', reason });
     return c.json({ ok: true, data: result });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -20,10 +20,8 @@
 // dashboard drag, his approval of a complete override, his project close — is never refused. What
 // was left is recorded on the task ("Closed by the owner with N <unit> left") once the close lands.
 import { getDb } from '../db/connection.js';
-import { pendingCloseRequestExpr } from './tracker-view.js';
+import { handedInExpr } from './tracker-view.js';
 import { appendAuditEntry } from './audit-trail.js';
-
-const permits = new Set<string>();
 
 /** "1 message", "1 box", "5 messages": a count of the measure's unit, in the owner's words. Only a
  *  trailing plural "s" comes off ("boxes"/"batches"/"addresses" lose "es"; "messages" loses "s"). */
@@ -31,17 +29,10 @@ const singular = (unit: string): string =>
   /(?:x|ch|sh|ss)es$/.test(unit) ? unit.slice(0, -2) : /[^s]s$/.test(unit) ? unit.slice(0, -1) : unit;
 export const countOf = (n: number, unit: string): string => `${n} ${n === 1 ? singular(unit) : unit}`;
 
-/** Run `close` with this task's named remainder honoured by the writer. Synchronous on purpose:
- *  the permit cannot outlive the call it was granted for. */
-export function withNamedRemainder<T>(taskId: string, close: () => T): T {
-  permits.add(taskId);
-  try { return close(); } finally { permits.delete(taskId); }
-}
-
 /** A measured task's last stored reading and unit; null when it is not measured or was not read. */
 function lastReading(id: string): { left: number; initial: number | null; unit: string; pending: boolean } | null {
   const row = getDb().prepare(
-    `SELECT w.measure_json AS m, w.measure_remaining AS left, w.measure_initial AS initial, ${pendingCloseRequestExpr('w')} AS pending
+    `SELECT w.measure_json AS m, w.measure_remaining AS left, w.measure_initial AS initial, ${handedInExpr('w')} AS pending
        FROM work w WHERE w.id = ? AND w.kind = 'task'`,
   ).get(id) as { m: string | null; left: number | null; initial: number | null; pending: number } | undefined;
   if (!row?.m || row.left === null) return null;
@@ -66,22 +57,8 @@ export function measuredItemsLeft(id: string): number {
   return lastReading(id)?.left ?? 0;
 }
 
-export function measuredCloseRefusal(
-  id: string, status: string, input: { by: string },
-): { kind: 'refused'; workId: string; reason: 'measure-items-left'; detail: string } | null {
-  if (status !== 'complete' || permits.has(id) || input.by === 'owner') return null;
-  const r = lastReading(id);
-  if (!r || r.left === 0 || r.pending) return null;
-  return {
-    kind: 'refused', workId: id, reason: 'measure-items-left',
-    detail: `Its measure still returned ${r.left} ${r.unit} when last read, so the task is not done. It closes when the measure `
-      + 'reads 0; if some items genuinely cannot or should not be done, its own agent closes it with a remainder naming them and why.',
-  };
-}
-
-/** After an APPLIED owner close of a measured task with items left: what was left, on the record. */
-export function recordOwnerRemainder(id: string, status: string, input: { by: string }): void {
-  if (status !== 'complete' || input.by !== 'owner') return;
+/** After the owner closed a measured task with items left: what was left, on the record. */
+export function recordOwnerRemainder(id: string): void {
   const r = lastReading(id);
   if (r && r.left > 0) appendAuditEntry(id, 'owner', { entryKind: 'observation', note: `Closed by the owner with ${countOf(r.left, r.unit)} left.` });
 }
@@ -99,12 +76,12 @@ export const RUN_STATUS_INCOMPLETE = 'incomplete';
 export function runItemsLeft(occurrenceId: string): { taskId: string; left: number; unit: string } | null {
   const occ = getDb().prepare("SELECT parent_id AS p, sequence AS n FROM work WHERE id = ? AND kind = 'occurrence'")
     .get(occurrenceId) as { p: string | null; n: number | null } | undefined;
-  if (!occ?.p || permits.has(occ.p) || closeRequestedThisRun(occ.p, occurrenceId)) return null;
+  if (!occ?.p || closeRequestedThisRun(occ.p, occurrenceId)) return null;
   const r = lastReading(occ.p);
   return r && r.left > 0 ? { taskId: occ.p, left: r.left, unit: r.unit } : null;
 }
 
-/** The writer's pending-close-request rule (`pendingCloseRequestExpr`), for a run: a close request
+/** The writer's pending-close-request rule (`handedInExpr`), for a run: a close request
  *  the agent filed on the task during THIS run (event-id order: after the run's first event) crossed
  *  the agent's door, which re-read and judged it (named remainder or zero). It counts while pending,
  *  and once the PM's Key 2 answered it with the close, since the run is settled after that; a
@@ -112,9 +89,8 @@ export function runItemsLeft(occurrenceId: string): { taskId: string; left: numb
 function closeRequestedThisRun(taskId: string, occurrenceId: string): boolean {
   const db = getDb();
   const r = db.prepare(
-    `SELECT ${pendingCloseRequestExpr('w')} AS pending,
-            (SELECT MAX(e.id) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_requested'
-               AND json_extract(e.payload, '$.requested_state') = 'done') AS req,
+    `SELECT ${handedInExpr('w')} AS pending,
+            (SELECT MAX(e.id) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'handed_in') AS req,   -- 2c
             (SELECT MIN(e.id) FROM work_events e WHERE e.work_id = ?) AS run_start
        FROM work w WHERE w.id = ?`,
   ).get(occurrenceId, taskId) as { pending: number; req: number | null; run_start: number | null } | undefined;

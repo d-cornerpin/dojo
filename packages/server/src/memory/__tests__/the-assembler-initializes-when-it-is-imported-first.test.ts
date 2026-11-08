@@ -317,7 +317,7 @@ describe('the census of modules that cannot be a first import', () => {
     // certainly contains the modules the arms above name individually.
     expect(graph.length, 'the assembler graph is enumerated').toBeGreaterThan(400);
     for (const must of ['memory/assembler.ts', 'memory/message-store.ts', 'work/ask-settlement.ts',
-      'scheduler/runner.ts', 'tracker/pm-agent.ts', 'agent/tools/index.ts']) {
+      'tracker/pm-agent.ts', 'agent/tools/index.ts']) {
       expect(graph.map((g) => path.relative(SERVER_SRC, g)), `graph contains ${must}`).toContain(must);
     }
     // And the six it is about are genuinely IN the gate's closure — the review's load-bearing

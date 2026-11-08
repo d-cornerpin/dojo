@@ -30,18 +30,16 @@ beforeEach(() => {
 });
 
 describe('the measured-close refusal states facts only', () => {
-  for (const takesRemainder of [true, false]) {
-    it(`${takesRemainder ? 'a door that takes a remainder' : 'the schedule door'}: the count and what the PM sees, with no "close it" menu`, () => {
-      const id = openTrackerTask({
-        title: 'Sort the inbox', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
-        origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
-      });
-      mockDb.current!.prepare(`UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 7, measure_at = ? WHERE id = ?`)
-        .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), id);
-      const text = remainderRefusal(id, AGENT, {}, 'status="complete"', takesRemainder) ?? '';
-      expect(text).toContain('still returns 7 messages');
-      expect(text).toMatch(/the PM sees that count/i);
-      expect(text).not.toMatch(/close it with|close again with/);
+  it('complete_task on a measured task with items left: the count, and the hand-in that takes a remainder, with no "close it" menu', () => {
+    const id = openTrackerTask({
+      title: 'Sort the inbox', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
+      origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
     });
-  }
+    mockDb.current!.prepare(`UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 7, measure_at = ? WHERE id = ?`)
+      .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), id);
+    const text = remainderRefusal(id, 'complete_task(status="complete")') ?? '';
+    expect(text).toContain('still returns 7 messages');
+    expect(text).toContain('outcome="cant_be_done"');
+    expect(text).not.toMatch(/close it with|close again with/);
+  });
 });

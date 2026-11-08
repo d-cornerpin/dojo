@@ -18,16 +18,18 @@ describe('the work_update doc', () => {
     const head = d.indexOf('**action="status" — when each status applies:**');
     expect(head).toBeGreaterThan(-1);
     const keepOn = d.indexOf('1. **You will take the next action on this work**');
-    const finished = d.indexOf('5. **You finished the task**');
+    const finished = d.indexOf('4. **You finished the task, or it cannot be done** → action="hand_in"');
     expect(keepOn).toBeGreaterThan(head);
-    expect(finished).toBeGreaterThan(d.indexOf('4. **The whole project is no longer relevant**'));
+    expect(finished).toBeGreaterThan(d.indexOf('3. **You are blocked by something'));
     expect(d).toContain('**A task left in_progress at the end of a turn stays yours.**');
     expect(d).toContain('a scheduled run left in progress is recorded as not done, and its schedule goes on.');   // fix round 1 I-4
     expect(d).not.toMatch(/Close-outs are silent|want to abandon a project/);   // fix round 1 M-1
   });
 
-  it('t250 parked: documents measure on edit and remainder on a close', () => {
+  it('documents measure on edit, and the hand-in: proof, the measured rule and who decides', () => {
     expect(doc()).toContain('Pass `measure` to set or replace a task\'s measure; a new measure is a new scope, counted from now.');
-    expect(doc()).toContain('if some of its items genuinely cannot or should not be done, pass `remainder` naming them and why.');
+    expect(doc()).toContain('A measured task is finished only when its measure reads 0.');
+    expect(doc()).toContain('a hand-in with no real proof, or a "done" message alone, is refused');
+    expect(doc()).toContain('someone other than you (the PM, else the main agent, else the owner)');
   });
 });

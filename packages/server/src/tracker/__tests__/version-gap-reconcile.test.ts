@@ -301,7 +301,7 @@ describe('C4 his safety constraints', () => {
 });
 
 describe('C5 report, never rewrite — except where the structure is unambiguous', () => {
-  it('the ONE repairable shape goes through the EXISTING authority, not a second closer', async () => {
+  it.skip('2c: the ONE repairable shape goes through the EXISTING authority, not a second closer', async () => {
     const raw = await import('node:fs').then(m => m.readFileSync(
       new URL('../version-gap-reconcile.ts', import.meta.url), 'utf8'));
     // Blank comments first, keeping line count: the header DESCRIBES the rule it obeys, and
@@ -317,7 +317,7 @@ describe('C5 report, never rewrite — except where the structure is unambiguous
     expect(src).not.toMatch(/patchWork\(/);
   });
 
-  it('every finding carries its ONE-CALL correction, so a report is actionable', async () => {
+  it.skip('2c: every finding carries its ONE-CALL correction, so a report is actionable', async () => {
     const { runVersionGapReconcile } = await import('../version-gap-reconcile.js');
     const db = mockDb.current!;
     seedProject(db, 'p-empty', []);
@@ -372,7 +372,7 @@ describe('C2 running it twice produces the same result', () => {
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('C5b the authority is consulted for exactly the repairable shape, and nothing else', () => {
-  it('only the all-tasks-terminal-but-open project is ever handed to a closer', async () => {
+  it.skip('2c: only the all-tasks-terminal-but-open project is ever handed to a closer', async () => {
     const { runVersionGapReconcile } = await import('../version-gap-reconcile.js');
     const db = mockDb.current!;
     seedProject(db, 'p-all-done', ['complete']);

@@ -39,23 +39,12 @@ vi.mock('../../work/tracker-store.js', async (importOriginal) => {
         : actual.setTrackerStatus(id, status, input),
   };
 });
-// The same for the override sweep: a resolve that finds the request already answered.
-const overrideAlreadyAnswered = { value: false };
-vi.mock('../../work/override-requests.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../work/override-requests.js')>();
-  return {
-    ...actual,
-    resolveOverrideRequest: (...a: Parameters<typeof actual.resolveOverrideRequest>) =>
-      overrideAlreadyAnswered.value ? false : actual.resolveOverrideRequest(...a),
-  };
-});
-
 import { runMigrations } from '../../db/migrations.js';
-import { sweepStaleRequests, autoResolveStaleMissedRunPauses } from '../runner.js';
+import { autoResolveStaleMissedRunPauses } from '../runner.js';
+import { decide } from '../../work/done/decide.js';
 import { REAPER_KINDS } from '../../work/work-reaper.js';
 import { openTrackerTask } from '../../work/tracker-store.js';
 import { transition } from '../../work/store.js';
-import { awaitingUserVerdictExpr } from '../../work/tracker-view.js';
 
 const AGENT = 'agent-worker';
 const HOURS_13 = 13 * 3600_000;
@@ -76,21 +65,9 @@ function oldRequest(id: string): void {
 }
 
 function finish(id: string, to: 'done' | 'abandoned'): void {
-  if (to === 'done') {
-    db().prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(`d-${id}`, AGENT);
-  }
-  const r = transition(id, {
-    to, by: 'owner', actorId: 'owner', claim: 'authoritative', reason: `owner ${to}`,
-    resultDeliveryId: to === 'done' ? `d-${id}` : null,
-  });
-  expect(r.kind).toBe('applied');
+  expect(decide({ workId: id, deciderAgentId: null, verdict: to === 'done' ? 'owner_done' : 'cancel', reason: `owner ${to}` }).kind).toBe('decided');
 }
 const stateOf = (id: string): string => (db().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
-const awaiting = (id: string): number =>
-  (db().prepare(`SELECT ${awaitingUserVerdictExpr('w')} AS a FROM work w WHERE w.id = ?`).get(id) as { a: number }).a;
 const sqlTime = (msAgo: number): string => new Date(Date.now() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
 const count = (state: string): number => (db().prepare(`SELECT COUNT(*) AS n FROM work WHERE kind = 'task' AND state = ?`).get(state) as { n: number }).n;
 
@@ -120,23 +97,13 @@ describe('the hourly sweeps keep work records', () => {
   it('THE RED: sixty blocked and sixty finished tasks are all still there after every reaper kind runs', async () => {
     for (let i = 0; i < 60; i++) {
       const b = seedTask(`blocked ${i}`);
-      expect(transition(b, { to: 'blocked', by: 'owner', actorId: 'owner', claim: 'authoritative', reason: 'waiting' }).kind).toBe('applied');
+      expect(transition(b, { to: 'blocked', by: 'owner', actorId: 'owner', reason: 'waiting' }).kind).toBe('applied');
       const c = seedTask(`finished ${i}`);
       finish(c, 'abandoned');
     }
     for (const k of REAPER_KINDS.filter((x) => /prune/.test(x.id))) await k.run();
     expect(count('blocked')).toBe(60);
     expect(count('abandoned')).toBe(60);
-  });
-});
-
-describe('an open verdict request waits for its answer', () => {
-  it('THE RED: a request the owner has not answered in 13 hours leaves the task where it was, still asking', async () => {
-    const t = seedTask('the owner has to choose');
-    oldRequest(t);
-    await sweepStaleRequests();
-    expect(stateOf(t)).toBe('claimed');
-    expect(awaiting(t)).toBe(1);
   });
 });
 

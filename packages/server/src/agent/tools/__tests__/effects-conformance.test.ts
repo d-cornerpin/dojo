@@ -148,9 +148,6 @@ const HANDLER_TEXT_RULED: Readonly<Record<string, { sites: number; reason: strin
   // verbs, so the anti-rot check below (`declared.has(n)`) retires the ruling by force
   // and the three corrected texts were restored to naming it. A ruling that has become
   // unnecessary is deleted, never kept as a comfortable excuse.
-  awaiting_user_verdict: { sites: 1, reason: 'a WORK-ROW state flag reported to the model ("while awaiting_user_verdict=1 the PM will leave this task alone"), not a parameter it is being asked to pass' },
-  complete_validated: { sites: 1, reason: 'a work-row state flag reported in a no-op notice, not a parameter' },
-  blocked_validated: { sites: 1, reason: 'a work-row state flag reported in a no-op notice, not a parameter' },
   trashed: { sites: 5, reason: "a Google Drive API query term (`trashed=false`) inside the provider's own search string, not a parameter of any tool" },
   top: { sites: 6, reason: 'the Microsoft Graph `$top` query parameter inside a provider URL, not a parameter of any tool' },
   boundary: { sites: 1, reason: 'the MIME multipart boundary in a Google upload request header, not a parameter of any tool' },

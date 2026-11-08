@@ -72,7 +72,11 @@ const MIGRATION = liveCheckMigration();
 // v3.5 (orchestrator ruling, fix round 1): `continued` and `stalled` were declared in migration 200b
 // so the release rebuilds work_events ONCE; Task D1 landed their writer (`work/job-momentum.ts`) and
 // deleted them here, exactly as `floor_ghosted`'s writer did.
-const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = [];
+// The one path to done (901) left these with no writer: old rows still carry them, and 2f drops them.
+const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = [
+  'claim_rejected', 'claim_upheld', 'override_request', 'override_resolved',
+  'user_verdict_cleared', 'user_verdict_requested', 'validation_requested',
+];
 
 // ── the source walk ────────────────────────────────────────────────────────────────────
 
@@ -287,8 +291,9 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     // 26 since UX-REPAIR ROUND 6 T25 landed `owed_interrupt`'s (`work/ask-settlement.ts`);
     // 27 since v3.3.3 t142 landed `person_told`'s (`work/validation-drive.ts:recordPersonTold`);
     // 28 since v3.5 landed `measured`'s (`work/ledger-store.ts`, MEASURED_EVENT);
-    // 30 since v3.5 D1 landed `continued`'s and `stalled`'s (`work/job-momentum.ts`).
-    expect(writtenKinds().kinds.size).toBe(30);
+    // 30 since v3.5 D1 landed `continued`'s and `stalled`'s (`work/job-momentum.ts`);
+    // 27 since 901: four hand-in and decision kinds written, the seven verdict-door kinds not.
+    expect(writtenKinds().kinds.size).toBe(27);
   });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
@@ -311,7 +316,7 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     expect(sorted(boundConstantValues('OCCURRENCE_EVENT')!))
       .toEqual(['occurrence_fired', 'occurrence_released', 'occurrence_settled']);
     expect(sorted(boundConstantValues('WORK_EVENT')!)).toEqual([
-      'activity', 'person_told', 'revert_reset', 'user_verdict_cleared', 'user_verdict_requested',
+      'activity', 'person_told', 'revert_reset',
       'validation_escalated',
     ]);
   });
@@ -355,10 +360,10 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
 });
 
 describe('the list itself', () => {
-  it('is sorted, unique, and 30 values — the CHECK is diffed against it by humans', () => {
+  it('is sorted, unique, and 34 values — the CHECK is diffed against it by humans', () => {
     expect([...WORK_EVENT_KINDS]).toEqual(sorted(WORK_EVENT_KINDS));
     expect(new Set(WORK_EVENT_KINDS).size).toBe(WORK_EVENT_KINDS.length);
-    expect(WORK_EVENT_KINDS.length).toBe(30);
+    expect(WORK_EVENT_KINDS.length).toBe(34);
   });
 
   it('`isWorkEventKind` answers for every member and refuses a near-miss', () => {

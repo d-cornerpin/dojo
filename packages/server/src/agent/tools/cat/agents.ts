@@ -1060,7 +1060,7 @@ export const agentsHandlers: ToolHandlerMap = {
     if (!agentCanSelfCompleteById(agentId)) {
       content =
         `complete_task ends a spawned agent's lifecycle and is not available to a persistent agent. ` +
-        `To mark tracker work done use work_update(action="status", task_id=..., status="complete"). ` +
+        `To hand tracker work in use work_update(action="hand_in", task_id=..., outcome="finished", proof=[...], note). ` +
         `If you are blocked, say so in your reply so the person you are talking to can act.`;
       isError = true;
       return { content, isError };

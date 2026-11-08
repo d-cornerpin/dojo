@@ -99,22 +99,16 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
   tracker_edit_task: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'edit' }) },
   tracker_edit_project: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'edit' }) },
   tracker_reassign_task: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'reassign' }) },
-  tracker_complete_step: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'complete_step' }) },
-  tracker_close_project: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'close_project' }) },
+  tracker_complete_step: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'hand_in' }) },
+  tracker_close_project: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'hand_in' }) },
   tracker_list_active: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'list' }) },
   tracker_get_status: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'get' }) },
 
   tracker_add_notes: { to: 'work_note', added: 'T8V dc34dfb 2026-07-29' },
 
-  tracker_request_override: { to: 'work_close_request', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'override' }) },
-  tracker_request_user_verdict: { to: 'work_close_request', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'user_verdict' }) },
   commitment_resolve: { to: 'work_close_request', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'commitment' }) },
 
-  tracker_validate: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'validate' }) },
   tracker_retask: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'retask' }) },
-  tracker_override: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'override' }) },
-  tracker_apply_user_verdict: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'apply_user_verdict' }) },
-  tracker_apply_user_validation: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'apply_user_validation' }) },
 
   tracker_pause_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'pause' }) },
   tracker_resume_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'resume' }) },

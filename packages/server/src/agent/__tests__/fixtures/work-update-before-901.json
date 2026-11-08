@@ -1,0 +1,108 @@
+{
+ "changed": {
+  "action": {
+   "type": "string",
+   "enum": [
+    "status",
+    "edit",
+    "reassign",
+    "complete_step",
+    "close_project",
+    "list",
+    "get"
+   ],
+   "description": "Which update to perform. Omit and the engine infers it from the fields you passed (`status` \u2192 status, `assigned_to` \u2192 reassign, a `project_id` with a `reason` \u2192 close_project, editable fields \u2192 edit, a bare id \u2192 get, nothing \u2192 list)."
+  },
+  "task_id": {
+   "type": "string",
+   "description": "The task ID (full UUID or 8+ char prefix) of a task that ALREADY EXISTS \u2014 either an id `work_open` returned to you, or one listed by `work_update(action=\"list\")`. NEVER invent an id or pass a placeholder: if the task does not exist yet, call `work_open` to create it and use the id it returns. For action=\"complete_step\", the step you just completed."
+  },
+  "project_id": {
+   "type": "string",
+   "description": "The project ID (full UUID or 8+ char prefix). Used by action=\"edit\" (rename a project), \"close_project\", and \"get\"."
+  },
+  "status": {
+   "type": "string",
+   "enum": [
+    "on_deck",
+    "in_progress",
+    "complete",
+    "blocked",
+    "fallen",
+    "paused",
+    "cancelled"
+   ],
+   "description": "action=\"status\": the new status. Quick reference: \"in_progress\" = actively working / about to take an action this turn. \"complete\" = done. \"paused\" = waiting on the user (already asked them), PM ignores entirely, no pokes. \"blocked\" = needs escalation/attention, PM surfaces this to the primary user. \"on_deck\" = queued, not yet started. The two TERMINAL outcomes are different and both are kept for history: \"fallen\" = it failed or you gave up on it, and \"cancelled\" = someone (usually the user) chose to call it off, which is NOT a failure. Use \"cancelled\" whenever the user says to cancel, drop, skip or never mind something; both stop any schedule on the task immediately. action=\"close_project\": the terminal status for the project and every open task, \"complete\" | \"cancelled\" (default \"cancelled\")."
+  },
+  "notes": {
+   "type": "string",
+   "description": "For paused (min 15 chars, names a specific external trigger) or blocked (min 15 chars, names the obstacle). On complete, use the `result` field instead, not notes. On action=\"edit\", REPLACES the notes field (to append instead, use work_note). On action=\"complete_step\", notes about what was done in this step."
+  },
+  "result": {
+   "type": "string",
+   "description": "Required when status=\"complete\" and for action=\"complete_step\". Non-empty string describing what was accomplished. PM compares this to the goal."
+  },
+  "evidence": {
+   "type": "array",
+   "description": "Required when status=\"complete\" and for action=\"complete_step\". Non-empty array of text-only evidence records. Each entry is {kind, claim, pointer?}. Supported kinds: claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. Engine enforces structure; PM reads content and judges substance. Example: [{kind:\"file_modified\", claim:\"updated 12 routes\", pointer:\"packages/server/src/gateway/routes/\"}, {kind:\"tool_call_ref\", claim:\"18 file_edit calls succeeded\"}].",
+   "items": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "description": "One of: claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote."
+     },
+     "claim": {
+      "type": "string",
+      "description": "Non-empty text statement of what this evidence shows."
+     },
+     "pointer": {
+      "type": "string",
+      "description": "Optional: file path, audit-log timestamp, URL, or other locator PM can use to verify."
+     }
+    },
+    "required": [
+     "kind",
+     "claim"
+    ]
+   }
+  },
+  "complete_all_runs": {
+   "type": "boolean",
+   "description": "For recurring tasks only: if true, marks ALL remaining runs as complete and stops the schedule. Use when you handled all iterations in a single run."
+  },
+  "reason": {
+   "type": "string",
+   "description": "Required for action=\"close_project\". A short sentence on why you are closing the project. Gets appended as a note on every closed task, this is the audit trail for the user."
+  },
+  "user_quote": {
+   "type": "string",
+   "description": "The owner's exact words asking for this, from the message you are answering. Needed for cause=\"user_requested\", and to cancel or reopen, or close a project over, work another live agent holds. Checked against that message."
+  },
+  "remainder": {
+   "type": "object",
+   "description": "Only when closing a MEASURED task while its measure still returns items: say what is left and why. disposition=\"skipped\" (you judged they should be left; the PM sees the count and your reason) or \"blocked\" (you cannot do them; use status=\"blocked\" instead unless the rest of the task is done).",
+   "properties": {
+    "disposition": {
+     "type": "string",
+     "enum": [
+      "skipped",
+      "blocked"
+     ]
+    },
+    "reason": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "disposition",
+    "reason"
+   ]
+  }
+ },
+ "added": [
+  "outcome",
+  "proof",
+  "note"
+ ]
+}

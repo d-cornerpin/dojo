@@ -125,6 +125,12 @@ const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string
     owner: 'landPiece (piece, literal + dynamic re-settle), resolveCommitment '
       + '(commitments ONLY: it refuses an ask row)',
   },
+  'work/done/decide.ts': {
+    // 901: the one decision. Its `done` is board work only (it refuses a row outside the board's task and
+    // project scope), so it never reaches an ask.
+    done: 0, dynamic: 1, subjects: 'board tasks and projects',
+    owner: 'decide: the decision on a hand-in, or the owner\'s own close',
+  },
   'work/occurrences.ts': {
     // SWEEP CORE-1 CT2 — THE COUNT DID NOT MOVE AND THE OWNER DID, which is the whole record
     // this line has to carry. `settleOccurrence` was a bookkeeping closer: it took whatever

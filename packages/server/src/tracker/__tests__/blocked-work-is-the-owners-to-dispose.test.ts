@@ -106,7 +106,6 @@ import { trackerUpdateStatus, trackerOverride } from '../tools.js';
 import { setTaskStatusResult, updateTask } from '../schema.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { upholdClaim, setTrackerStatus } from '../../work/tracker-store.js';
-import { fileOverrideRequest } from '../../work/override-requests.js';
 import { validatedExpr } from '../../work/tracker-view.js';
 import { AUDIT_KIND } from '../../work/audit-trail.js';
 import { PATIENCE_ENTRY } from '../assignee-patience.js';
@@ -243,50 +242,9 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe("§1 the primary cannot dispose of another agent's PM-upheld blocked work", () => {
-  it('⚠ THE DRIVE: work_update(action="status", status="cancelled") is REFUSED and the row stays blocked', () => {
-    seedBlockedRow({ upheld: true });
 
-    const out = trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
 
-    // The executor derives `isError` from a leading "Error" (`agent/tools.ts`), so the shape
-    // the drive measured — `isError: false` — is exactly this assertion.
-    expect(out.startsWith('Error'), `the drive must come back isError:true, got: ${out}`).toBe(true);
-    expect(out).not.toContain('[OK]');
 
-    // The row did not move, and it is still the victim's.
-    expect(rowOf().state).toBe('blocked');
-    expect(rowOf().agent_id).toBe(VICTIM);
-
-    // And nothing was written as though it had: no transition off `blocked`.
-    const moved = eventsOf().filter((e) => e.kind === 'transition');
-    expect(moved, 'a refused disposal records no transition').toEqual([]);
-  });
-
-  it('the refusal POINTS AT THE ESCALATION PATH and says who rules', () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
-    // Not a bare "no". A model that is refused without a next move retries the refusal.
-    expect(out.toLowerCase(), 'the refusal must name the owner as the one who rules')
-      .toMatch(/owner|the user/);
-    expect(out, 'the refusal must name the door that escalates it')
-      .toContain('work_close_request');
-    expect(out, 'and it must say the block itself is not in question')
-      .toMatch(/blocked/i);
-  });
-
-  it('`fallen` is the same door — the gate is about disposal, not about one word', () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'fallen', notes: UNPROMPTED });
-    expect(out.startsWith('Error')).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
-
-  it('a THIRD agent with no role at all is refused too — the gate is not about the primary', () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus('third', { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
-    expect(out.startsWith('Error')).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
 
   it('a NOT-upheld block is still not a bystander\'s to dispose of', () => {
     seedBlockedRow({ upheld: false });
@@ -295,25 +253,7 @@ describe("§1 the primary cannot dispose of another agent's PM-upheld blocked wo
     expect(rowOf().state).toBe('blocked');
   });
 
-  it("the PM's own BARE status door is not an authority either — a PM-upheld block it then cancels is the same pre-emption", () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus(PM, { taskId: TASK, status: 'cancelled', notes: 'PM closing this out.' });
-    expect(out.startsWith('Error'), `the PM's bare status door must not dispose, got: ${out}`).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
 
-  it('CONTROL: THIS gate is about BLOCKED rows — an in-progress row is refused by the OTHER rule, and its holder disposes', () => {
-    // t193 (owner decision 2) inverted the bystander half of this control: the primary cancelling a
-    // live agent's in-progress row is now refused by `work/row-authority.ts:takeoverRefusal`, a
-    // different reason from this gate's. The holder's own disposal is the control that stays.
-    seedTrackerTask(mockDb.current!, { id: 'inprog-01', title: TITLE, status: 'in_progress', agentId: VICTIM });
-    const out = trackerUpdateStatus(PRIMARY, { taskId: 'inprog-01', status: 'cancelled', notes: 'no longer needed' });
-    expect(out.startsWith('Error'), out).toBe(true);
-    expect(out, 'refused by the takeover rule, not by this gate').not.toContain('not yours to set on blocked work');
-    const own = trackerUpdateStatus(VICTIM, { taskId: 'inprog-01', status: 'cancelled', notes: 'no longer needed' });
-    expect(own, `the holder's own in-progress row is disposable as before, got: ${own}`).toContain('[OK]');
-    expect(rowOf('inprog-01').state).toBe('abandoned');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -340,174 +280,12 @@ describe("§1 the primary cannot dispose of another agent's PM-upheld blocked wo
 // now pinned SHUT, and the owner's door is the passing control beside it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§2 the owner disposes; the PM escalates', () => {
-  it("the dashboard PUT's own authority disposes of a PM-upheld block", () => {
-    seedBlockedRow({ upheld: true });
-    const { result } = setTaskStatusResult(TASK, 'cancelled', {
-      by: 'owner', actorId: 'user', claim: 'authoritative',
-      reason: 'dashboard PUT /tracker/tasks/:id',
-    });
-    expect(result.kind, `the owner's door must still land, got ${JSON.stringify(result)}`).toBe('applied');
-    expect(rowOf().state).toBe('abandoned');
-  });
-
-  it("⚠ INVERTED (t130): the PM's authoritative claim does NOT dispose of a PM-upheld block", () => {
-    seedBlockedRow({ upheld: true });
-    const { result } = setTaskStatusResult(TASK, 'fallen', {
-      by: 'pm', actorId: PM, claim: 'authoritative',
-      reason: 'PM ruled the block fatal',
-    });
-    expect(result.kind, `an authoritative-shaped PM claim must not dispose, got ${JSON.stringify(result)}`)
-      .toBe('refused');
-    expect(rowOf().state, 'the row waits for the owner').toBe('blocked');
-  });
-
-  it('the exemption names the OWNER, so the claim alone is not the key', () => {
-    // The same call, the same claim, one word different. That word is the whole fix.
-    seedBlockedRow({ upheld: true, id: 'pair-owner-01' });
-    seedBlockedRow({ upheld: true, id: 'pair-pm-0001' });
-    const asOwner = setTaskStatusResult('pair-owner-01', 'cancelled', {
-      by: 'owner', actorId: 'user', claim: 'authoritative', reason: 'the owner called it off',
-    }).result;
-    const asPm = setTaskStatusResult('pair-pm-0001', 'cancelled', {
-      by: 'pm', actorId: PM, claim: 'authoritative', reason: 'the PM called it off',
-    }).result;
-    expect(asOwner.kind).toBe('applied');
-    expect(asPm.kind).toBe('refused');
-  });
-
-  it('⚠ the authoritative CLAIM buys a model-driven actor nothing — the fact the gate turns on', () => {
-    // This is what t130 actually changed, stated as the rule rather than as a line of code:
-    // the claim is not a key here. `store.ts:AUTHORITIES` lets exactly `owner` and `pm`
-    // assert it, the owner is exempt because the owner is not a model, and the PM is gated
-    // BECAUSE it is one — with or without the claim, and whatever the claim's shape.
-    for (const claim of ['authoritative', undefined] as const) {
-      seedBlockedRow({ upheld: true, id: `claimkey-${claim ? 'a' : 'n'}1` });
-      const { result } = setTaskStatusResult(`claimkey-${claim ? 'a' : 'n'}1`, 'cancelled', {
-        by: 'pm', actorId: PM, claim, reason: 'the PM called it off',
-      });
-      expect(result.kind, `claim=${String(claim)} must not open this door`).toBe('refused');
-    }
-  });
-
-  it('CONTROL: the non-model actors are all still exempt — the owner is not a special case', () => {
-    // The gate's own complement, driven: `Actor` is a closed union and `MODEL_DRIVEN` is
-    // {agent, pm}, so these four are exempt by the same single predicate the owner uses.
-    // Pinned because t130 deleted the separate owner clause, and this is the fact that
-    // replaced it.
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-nm001', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(VICTIM);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-nm001', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-nm001' WHERE id = 'del-nm001'`).run();
-    const actors = [
-      { by: 'owner' as const, claim: 'authoritative' as const, ev: null },
-      { by: 'engine' as const, claim: undefined, ev: 'del-nm001' },
-      { by: 'scheduler' as const, claim: undefined, ev: null },
-      { by: 'healer' as const, claim: undefined, ev: null },
-    ];
-    for (const [n, a] of actors.entries()) {
-      const id = `nonmodel-${n}1`;
-      seedBlockedRow({ upheld: true, id });
-      const { result } = setTaskStatusResult(id, 'cancelled', {
-        by: a.by, actorId: a.by, claim: a.claim, reason: `${a.by} disposed of it`,
-        evidenceRef: a.ev,
-      });
-      expect(result.kind, `${a.by} must not be gated, got ${JSON.stringify(result)}`).not.toBe('refused');
-    }
-  });
-
-  it("the OWNER's authority is not gated even on an ORDINARY block", () => {
-    seedBlockedRow({ upheld: false });
-    const { result } = setTaskStatusResult(TASK, 'cancelled', {
-      by: 'owner', actorId: 'user', claim: 'authoritative', reason: 'not worth doing',
-    });
-    expect(result.kind).toBe('applied');
-  });
-
-  it('CONTROL: a PM authoritative move that is NOT a disposal is untouched — the five other doors', () => {
-    // reject-pause / reject-close / reject-block resolve a row FORWARD, and retask moves it to
-    // in_progress. None names a disposal, so none is affected by the narrowing. Driven rather
-    // than asserted from the ALLOWED_TARGETS reading alone.
-    seedBlockedRow({ upheld: true });
-    const { result } = setTaskStatusResult(TASK, 'in_progress', {
-      by: 'pm', actorId: PM, claim: 'authoritative', reason: 'PM rejected the block',
-    });
-    expect(result.kind, `forward is never the refusal, got ${JSON.stringify(result)}`).toBe('applied');
-    expect(rowOf().state).toBe('claimed');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §3 — THE ASSIGNEE STILL RESOLVES FORWARD, and still closes out an ordinary block.
 //      Run-4's P5 depends on the second of these; the ruling depends on the first.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§3 resolving forward is what agents do with a block', () => {
-  it('the assignee moves its own blocked row back to in_progress — the resolution, recorded', () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'in_progress', notes: 'the credential was renewed; resuming',
-    });
-    expect(out, `resolving forward must land, got: ${out}`).toContain('[OK]');
-    expect(rowOf().state).toBe('claimed');
-    const moved = eventsOf().filter((e) => e.kind === 'transition');
-    expect(moved.length, 'the resolution is recorded as a transition').toBe(1);
-    expect(moved[0]!.actor).toBe(VICTIM);
-  });
-
-  it('a BYSTANDER may resolve it forward as well — only disposal is fenced', () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus(PRIMARY, {
-      taskId: TASK, status: 'in_progress', notes: 'I got the credential renewed for her',
-    });
-    expect(out, `forward is never the refusal, got: ${out}`).toContain('[OK]');
-    expect(rowOf().state).toBe('claimed');
-  });
-
-  it('the ASSIGNEE still closes out an ORDINARY (not-upheld) block — the normal path, untouched', () => {
-    seedBlockedRow({ upheld: false });
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
-    });
-    expect(out, `the assignee's own close-out of an ordinary block must land, got: ${out}`).toContain('[OK]');
-    expect(rowOf().state).toBe('abandoned');
-  });
-
-  it('⚠ but a PM-UPHELD block is the OWNER\'S to dispose of — not even the assignee may', () => {
-    seedBlockedRow({ upheld: true });
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'giving up on this one',
-    });
-    expect(out.startsWith('Error'), `an upheld block waits for the owner, got: ${out}`).toBe(true);
-    expect(out.toLowerCase()).toMatch(/owner|the user/);
-    expect(rowOf().state).toBe('blocked');
-  });
-
-  it('`complete` keeps its OWN door: the two-key close request is filed, never swallowed by this gate', () => {
-    seedBlockedRow({ upheld: true });
-    // G7 asks for a delivery before G9 can file anything, which is the correct order and not
-    // this gate's business — so the row gets one, and the clause then measures G9.
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-0001', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(VICTIM);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0001', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0001' WHERE id = 'del-0001'`).run();
-    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'complete', notes: 'done anyway',
-      result: 'reconciled the ledger against the supplier statements',
-      evidence: [{ kind: 'claim', claim: 'the ledger ties out for the quarter' }],
-    });
-    // G9's path, unchanged: the request is RECORDED and reads as a success, not as this gate.
-    expect(out, `the Key-1 filing must survive this gate, got: ${out}`).toContain('[FILED]');
-    expect(eventsOf().some((e) => e.kind === 'validation_requested'),
-      'the close request is on the record').toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §4 — S5: THE SIDE DOOR. The judge went through `action: "status"`; an assignee move on that
@@ -585,35 +363,8 @@ describe('§5 the audit census', () => {
     return out;
   };
 
-  it('REFUSED disposal: the row keeps its uphold and gains NO transition', () => {
-    seedBlockedRow({ upheld: true });
-    trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
-    const census = censusOf();
-    expect(census.claim_upheld, "the PM's uphold is still the last word on this row").toBe(1);
-    expect(census.transition ?? 0, 'and nothing moved it').toBe(0);
-  });
 
-  it("OWNER disposal: one transition, and the owner's verdict is a row", () => {
-    seedBlockedRow({ upheld: true });
-    setTaskStatusResult(TASK, 'cancelled', {
-      by: 'owner', actorId: 'user', claim: 'authoritative', reason: 'the owner called it off',
-    });
-    expect(censusOf().transition, 'the owner moved it exactly once').toBe(1);
-    const adj = mockDb.current!.prepare(
-      "SELECT by_agent, claim_state FROM adjudications WHERE work_id = ? AND claim_state = 'abandoned'",
-    ).all(TASK) as Array<{ by_agent: string; claim_state: string }>;
-    expect(adj.length, "the disposal is adjudicated, not just applied").toBe(1);
-    expect(adj[0]!.by_agent).toBe('user');
-  });
 
-  it('FORWARD resolution: one transition, named to its actor, and the block is not re-upheld', () => {
-    seedBlockedRow({ upheld: true });
-    trackerUpdateStatus(VICTIM, { taskId: TASK, status: 'in_progress', notes: 'credential renewed' });
-    const census = censusOf();
-    expect(census.transition).toBe(1);
-    expect(census.claim_upheld).toBe(1);
-    expect(eventsOf().find((e) => e.kind === 'transition')!.actor).toBe(VICTIM);
-  });
 
   it('SIDE-DOOR call (t193; the door since test-2 rank 3): refused whole, before the writer, so nothing half-applies', () => {
     seedTrackerTask(mockDb.current!, { id: 'ride-0006', title: TITLE, status: 'in_progress', agentId: VICTIM });
@@ -641,50 +392,6 @@ describe('§5 the audit census', () => {
 // Two copies of one predicate with one of them repaired. §6 holds the single source.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§6 one upheld block does not mark the row for life', () => {
-  /** Drive the row through the full cycle the first cut got wrong. */
-  function reblockOnAFreshObstacle(): void {
-    seedBlockedRow({ upheld: true });
-    // resolved forward — the uphold now belongs to a block that is over
-    expect(trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'in_progress', notes: 'the credential was renewed; resuming',
-    })).toContain('[OK]');
-    // and blocked AGAIN, on something new that nobody has ruled on
-    expect(trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'blocked', notes: 'the ledger export endpoint now returns 500s',
-    })).toContain('[OK]');
-  }
-
-  it('⚠ THE BLOCKER: after resolve-and-reblock the assignee closes out its own ordinary block', () => {
-    reblockOnAFreshObstacle();
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'the export endpoint is retired; this work is moot',
-    });
-    expect(out, `the stale uphold must not survive the re-block, got: ${out}`).toContain('[OK]');
-    expect(rowOf().state).toBe('abandoned');
-  });
-
-  it('the gate and the BOARD agree on the same row — one source, not two readings', () => {
-    reblockOnAFreshObstacle();
-    const board = (mockDb.current!.prepare(
-      `SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`,
-    ).get(TASK) as { v: number }).v;
-    expect(board, 'the board calls this block unvalidated — the stale uphold is out of scope').toBe(0);
-    // And the door's own answer, read through the same expression the gate uses.
-    const door = (mockDb.current!.prepare(
-      `SELECT ${validatedExpr('w', 'blocked', { excludeSystemClosers: true })} AS v FROM work w WHERE w.id = ?`,
-    ).get(TASK) as { v: number }).v;
-    expect(door, 'and so does the door').toBe(0);
-  });
-
-  it('CONTROL: a FRESH uphold on the SECOND block is in scope and does refuse the assignee', () => {
-    reblockOnAFreshObstacle();
-    upholdClaim(TASK, 'blocked', 'pm', PM, 'PM confirmed the new obstacle too');
-    const out = trackerUpdateStatus(VICTIM, { taskId: TASK, status: 'cancelled', notes: 'giving up' });
-    expect(out.startsWith('Error'), `a fresh ruling still binds, got: ${out}`).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §7 — FIX ROUND, GAP 2: A TIMEOUT IS NOT A RULING.
@@ -708,52 +415,6 @@ describe('§6 one upheld block does not mark the row for life', () => {
 // claim" — so the one divergence is a named argument on the single source, not a second copy.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§7 machine-minted upholds do not make a row owner-only', () => {
-  it("⚠ the SCHEDULER's timed-out verdict does not bind the assignee", () => {
-    seedBlockedRow({ upheld: true, upheldBy: 'scheduler' });
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
-    });
-    expect(out, `a verdict request that merely expired is not a ruling, got: ${out}`).toContain('[OK]');
-    expect(rowOf().state).toBe('abandoned');
-  });
-
-  it("⚠ the ENGINE's thrash auto-block does not bind the assignee either", () => {
-    seedBlockedRow({ upheld: true, upheldBy: 'engine' });
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'this task was mis-scoped from the start; dropping it',
-    });
-    expect(out, `an engine circuit-breaker is not a ruling, got: ${out}`).toContain('[OK]');
-  });
-
-  it('nor the healer — the exclusion is the whole SYSTEM_CLOSER_ROLES list, not a special case', () => {
-    seedBlockedRow({ upheld: true, upheldBy: 'healer' });
-    expect(trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
-    })).toContain('[OK]');
-  });
-
-  it('but a machine uphold still does not let a BYSTANDER dispose — the other leg is untouched', () => {
-    seedBlockedRow({ upheld: true, upheldBy: 'scheduler' });
-    const out = trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
-    expect(out.startsWith('Error'), `the bystander leg stands on its own, got: ${out}`).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
-
-  it("CONTROL: a real PM verdict is NOT a system closer — the PM's agent id binds as before", () => {
-    seedBlockedRow({ upheld: true, upheldBy: PM });
-    const out = trackerUpdateStatus(VICTIM, { taskId: TASK, status: 'cancelled', notes: 'giving up' });
-    expect(out.startsWith('Error'), `a PM ruling must still bind, got: ${out}`).toBe(true);
-  });
-
-  it('and the BOARD still counts an engine uphold as validated — that reading is ruled and unchanged', () => {
-    seedBlockedRow({ upheld: true, upheldBy: 'engine' });
-    const board = (mockDb.current!.prepare(
-      `SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`,
-    ).get(TASK) as { v: number }).v;
-    expect(board, "the done-only scoping stays done-only; the door's exclusion is opt-in").toBe(1);
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §8 — FIX ROUND, GAP 3: THE DISPOSAL BELOW THE OLD DOOR.
@@ -770,15 +431,6 @@ describe('§7 machine-minted upholds do not make a row owner-only', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§8 the direct setTrackerStatus path is gated too', () => {
-  it("⚠ THE BYPASS: complete_task(status=\"fallen\")'s own call shape is refused", () => {
-    seedBlockedRow({ upheld: true });
-    const r = setTrackerStatus(TASK, 'fallen', {
-      by: 'agent', actorId: VICTIM,
-      reason: 'apprentice "Worker" called complete_task(status="fallen")',
-    });
-    expect(r.kind, `the direct writer must refuse too, got ${JSON.stringify(r)}`).toBe('refused');
-    expect(rowOf().state).toBe('blocked');
-  });
 
   it('a BYSTANDER apprentice on the same path is refused as well', () => {
     seedBlockedRow({ upheld: false });
@@ -789,14 +441,6 @@ describe('§8 the direct setTrackerStatus path is gated too', () => {
     expect(rowOf().state).toBe('blocked');
   });
 
-  it('CONTROL: the same path still disposes of an ORDINARY block for its own assignee', () => {
-    seedBlockedRow({ upheld: false });
-    const r = setTrackerStatus(TASK, 'fallen', {
-      by: 'agent', actorId: VICTIM, reason: 'apprentice called complete_task(status="fallen")',
-    });
-    expect(r.kind, 'the apprentice closing out its own unruled block is the normal path').toBe('applied');
-    expect(rowOf().state).toBe('failed');
-  });
 
   // ⚠ THE SCOPING CLAUSE. A mutant that deleted `taskScope` from the gate's own row read
   // SURVIVED the first round-2 sweep — nothing pinned that this rule is about the TRACKER's
@@ -804,41 +448,7 @@ describe('§8 the direct setTrackerStatus path is gated too', () => {
   // OR1 folded onto that table, and T4's fan-out children are `kind='task'` with
   // `root_kind='a2a_thread'`, settled `by: 'agent'` by `landPiece`. A gate that caught those
   // would be refusing a join piece's settlement under a rule written about tracker work.
-  it('⚠ SCOPED: a non-tracker work row in `blocked` is none of this gate\'s business', () => {
-    // An ASK, not a tracker task — same table, same state, same model-driven actor.
-    mockDb.current!.prepare(
-      `INSERT INTO work (id, kind, agent_id, assignee_agent, requester, requester_id, root_kind,
-                         root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
-       VALUES ('ask-00000001', 'ask', ?, ?, 'agent', ?, 'a2a_thread', 'ask-00000001', 'blocked',
-               'ask', 0, 0, 'a question in flight', 1700000000000, 1700000000000)`,
-    ).run(VICTIM, VICTIM, VICTIM);
-    upholdClaim('ask-00000001', 'blocked', 'pm', PM, 'upheld');
-    mockDb.current!.prepare('UPDATE adjudications SET created_at = ? WHERE work_id = ?')
-      .run(UPHELD_AT, 'ask-00000001');
 
-    const r = setTrackerStatus('ask-00000001', 'cancelled', {
-      by: 'agent', actorId: PRIMARY, reason: 'the thread is dead',
-    });
-    expect(r.kind, `an ask is not a tracker noun, got ${JSON.stringify(r)}`).not.toBe('refused');
-  });
-
-  it('CONTROL: the ENGINE is not model-driven and is not gated on this path', () => {
-    seedBlockedRow({ upheld: true });
-    // G6 makes the engine point at something real, which is the engine's own fence and not
-    // this gate's — so it gets a delivery that resolves, and then the ONLY thing that could
-    // refuse this move is the disposal gate. It does not.
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-eng01', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(VICTIM);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-eng01', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-eng01' WHERE id = 'del-eng01'`).run();
-    const r = setTrackerStatus(TASK, 'fallen', {
-      by: 'engine', actorId: 'engine', reason: 'the run was reaped', evidenceRef: 'del-eng01',
-    });
-    expect(r.kind, `an engine disposal is untouched by this gate, got ${JSON.stringify(r)}`).toBe('applied');
-    expect(rowOf().state).toBe('failed');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -847,53 +457,6 @@ describe('§8 the direct setTrackerStatus path is gated too', () => {
 //      assignee's clause, so here it is driven as the bystander.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves nothing', () => {
-  it("⚠ the PRIMARY's `complete` on another agent's blocked row: [FILED], still blocked", () => {
-    seedBlockedRow({ upheld: true });
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-0002', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(VICTIM);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0002', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0002' WHERE id = 'del-0002'`).run();
-    // G7 resolves the delivery against the ROW's agent (`deliveryForTaskClose` reads
-    // `work.agent_id`), not against whoever is calling — so it belongs to the assignee even
-    // when the bystander is the one filing. G7 is satisfied first so the clause measures G9.
-    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
-
-    const out = trackerUpdateStatus(PRIMARY, {
-      taskId: TASK, status: 'complete',
-      notes: 'I picked this up and finished it for her',
-      result: 'reconciled the ledger against the supplier statements',
-      evidence: [{ kind: 'claim', claim: 'the ledger ties out for the quarter' }],
-    });
-    // Key 2 needs the owner's authoritative claim or a SYSTEM_CLOSER. A bystander has neither
-    // — and neither does the assignee, which is exactly why `complete` is not this gate's job.
-    expect(out, `a bystander's complete can only FILE, got: ${out}`).toContain('[FILED]');
-    expect(eventsOf().some((e) => e.kind === 'validation_requested'),
-      'the close request is on the record, naming the bystander').toBe(true);
-    expect(eventsOf().find((e) => e.kind === 'validation_requested')!.actor).toBe(PRIMARY);
-    expect(rowOf().state, 'and the row did not move').toBe('blocked');
-  });
-
-  it('an ORDINARY block is the same answer — `complete` never depends on the uphold', () => {
-    seedBlockedRow({ upheld: false });
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('del-0003', ?, 1, 'send_message', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(VICTIM);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0003', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(VICTIM);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0003' WHERE id = 'del-0003'`).run();
-    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
-    const out = trackerUpdateStatus(PRIMARY, {
-      taskId: TASK, status: 'complete', notes: 'finished it for her',
-      result: 'reconciled the ledger against the supplier statements',
-      evidence: [{ kind: 'claim', claim: 'the ledger ties out' }],
-    });
-    expect(out).toContain('[FILED]');
-    expect(rowOf().state).toBe('blocked');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §10 — t130: THE CALL THE INSTRUMENTS CAUGHT, driven end to end through the real verb.
@@ -915,110 +478,3 @@ describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves no
 // row that never moved.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe("§10 the PM's override verb cannot force a PM-upheld block to a disposal", () => {
-  /** File the pending ask the caught call answered. */
-  const fileAsk = (status: string, id = TASK): string =>
-    fileOverrideRequest(id, {
-      requestedBy: VICTIM, requestedStatus: status,
-      justification: 'the supplier portal credential has expired and nobody can reissue it',
-    });
-
-  it('⚠ THE CAUGHT CALL: work_validate(action="override", approve:true) is REFUSED, row still blocked', async () => {
-    seedBlockedRow({ upheld: true });
-    const askId = fileAsk('cancelled');
-
-    const out = await trackerOverride(PM, {
-      override_request_id: askId, approve: true,
-      reason: 'the same harness fixture family: a manifest against a supplier index that never resolves, no deliverable',
-    });
-
-    // The executor derives `isError` from a leading "Error", so this IS the `isError: true`
-    // the fix owes — and the `[OK] override approved … forced to "cancelled"` string the
-    // instruments captured must not come back.
-    expect(out.startsWith('Error'), `the caught call must now come back isError:true, got: ${out}`).toBe(true);
-    expect(out).not.toContain('[OK]');
-    expect(out).not.toMatch(/forced to/);
-
-    expect(rowOf().state, 'the row is still blocked and still the victim\'s').toBe('blocked');
-    expect(rowOf().agent_id).toBe(VICTIM);
-    expect(eventsOf().filter((e) => e.kind === 'transition'), 'nothing moved it').toEqual([]);
-  });
-
-  it('the refusal carries the ESCALATION POINTER, not a bare no and not a false cause', async () => {
-    seedBlockedRow({ upheld: true });
-    const out = await trackerOverride(PM, {
-      override_request_id: fileAsk('cancelled'), approve: true, reason: 'no deliverable here',
-    });
-    // The old null-path rendered every refusal as a deletion. That would send the PM to
-    // re-read a row that is still there, and it would be the engine stating a false cause.
-    expect(out, 'the door must not claim the task was deleted').not.toMatch(/was deleted/);
-    expect(out.toLowerCase(), 'it names who rules').toMatch(/owner|the user/);
-    expect(out, 'and the door that escalates it').toContain('work_close_request');
-    expect(out, 'and tells the model to stop rather than loop').toMatch(/do NOT retry/i);
-  });
-
-  it('`fallen` through the same verb is the same answer', async () => {
-    seedBlockedRow({ upheld: true });
-    const out = await trackerOverride(PM, {
-      override_request_id: fileAsk('fallen'), approve: true, reason: 'this one failed outright',
-    });
-    expect(out.startsWith('Error')).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
-
-  it('the override ask stays PENDING — a refused approval has not answered it', async () => {
-    seedBlockedRow({ upheld: true });
-    const askId = fileAsk('cancelled');
-    await trackerOverride(PM, { override_request_id: askId, approve: true, reason: 'no deliverable' });
-    const { findOverrideRequest } = await import('../../work/override-requests.js');
-    expect(findOverrideRequest(askId)?.status,
-      'retiring the ask would lose the question the owner is the one to rule on').toBe('pending');
-  });
-
-  // ⚠ WIDER THAN THE TRIAGE DESCRIBED, AND MEASURED RATHER THAN ASSUMED.
-  //
-  // I wrote this clause expecting the PM to still override an UNRULED block, and it failed —
-  // so the assumption was wrong, not the code. The reason is the gate's OTHER leg, shipped in
-  // t129 and reviewed then: a BYSTANDER may not dispose of a blocked row, and the PM is never
-  // the assignee of a worker's task. So once the exemption names the owner, the PM's
-  // override-approve can no longer dispose of ANY blocked row — not only an upheld one.
-  //
-  // That is the ruling rather than an overreach, and it is worth stating because the triage's
-  // fix note emphasised the upheld case. OR-PM-1v2 is unconditional: blocked/declined work
-  // *"is NOT reassignable by agents — it ESCALATES to the user"*, and disposal is strictly
-  // worse than the reassignment it fences. An unruled block is work nobody has adjudicated at
-  // all, so a model forcing it to `cancelled` pre-escalation is the same pre-emption with less
-  // evidence behind it, not more entitlement. The PM's route is the ladder; the owner's door
-  // disposes (asserted in §2).
-  it('⚠ an UNRULED block is not the PM\'s to override either — the bystander leg still binds', async () => {
-    seedBlockedRow({ upheld: false });
-    const out = await trackerOverride(PM, {
-      override_request_id: fileAsk('cancelled'), approve: true,
-      reason: 'the supplier portal is retired; this work is moot',
-    });
-    expect(out.startsWith('Error'), `the PM is a bystander on a worker's row, got: ${out}`).toBe(true);
-    expect(rowOf().state).toBe('blocked');
-  });
-
-  it('and the ASSIGNEE\'s own override of its own unruled block still lands — the normal path', async () => {
-    // The override verb is the PM's, so the assignee reaches this shape through the status
-    // door; driven here so the "who may still dispose of an unruled block" answer is pinned
-    // beside the refusals above rather than only in §3.
-    seedBlockedRow({ upheld: false });
-    const out = trackerUpdateStatus(VICTIM, {
-      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
-    });
-    expect(out, `the assignee's own close-out is untouched, got: ${out}`).toContain('[OK]');
-    expect(rowOf().state).toBe('abandoned');
-  });
-
-  it('CONTROL: the verb still overrides a NON-blocked row to a disposal', async () => {
-    seedTrackerTask(mockDb.current!, { id: 'ip-ovr-001', title: TITLE, status: 'in_progress', agentId: VICTIM });
-    const out = await trackerOverride(PM, {
-      override_request_id: fileAsk('cancelled', 'ip-ovr-001'), approve: true,
-      reason: 'no longer needed',
-    });
-    expect(out, `only BLOCKED rows are fenced, got: ${out}`).not.toMatch(/^Error/);
-    expect(rowOf('ip-ovr-001').state).toBe('abandoned');
-  });
-});

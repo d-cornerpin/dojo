@@ -140,10 +140,8 @@ describe('THE DOORBELL — the wake carries the row, not a patrol sweep', () => 
     expect(src).toMatch(/doorbell/i);
   });
 
-  it("the doorbell is wired at the SPINE, so no close path can forget it", () => {
-    // Both shapes ring from inside `transition()` — the one writer — rather than from the
-    // two tool call sites that happen to produce them today.
-    expect(storeSource()).toMatch(/ringValidationDoorbell/);
+  it("the doorbell is wired at the one hand-in door, so no hand-in can forget it", () => {
+    expect(readFileSync(new URL('../../work/done/hand-in.ts', import.meta.url), 'utf8')).toMatch(/ringValidationDoorbell/);
     expect(pmSource()).toMatch(/setValidationDoorbellHandler/);
   });
 });

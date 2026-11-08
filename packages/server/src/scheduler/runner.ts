@@ -19,9 +19,8 @@ import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import { withUnit } from '../db/unit.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
-  pendingCloseRequestExpr, type TrackerStatus,
+  handedInExpr, type TrackerStatus,
 } from '../work/tracker-view.js';
-import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-requests.js';
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts,
   recordValidationEscalation,
@@ -238,89 +237,6 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
   return agents.length > 0 ? agents[0].id : null;
 }
 
-// ── Phase B.1: 12h auto-expire sweeps ──
-//
-// Override requests that PM hasn't resolved within 12 hours auto-deny,
-// with a notice to the agent. Tasks flagged awaiting_user_verdict that
-// the user hasn't replied to within 12 hours drop to 'blocked' with
-// the timeout reason logged. Both keep the system honest when humans
-// are away.
-
-const STALE_REQUEST_HOURS = 12;
-
-/**
- * PHASE-2 T9 — the reaper's entry point for this file's two 12-hour SLAs.
- *
- * One export rather than two, because they are one kind: "a request a human never answered
- * inside `DEADLINES.stale_request` auto-resolves so the system stays honest while people are
- * away." Sequential and independently guarded — each already swallows its own failure — so a
- * failure in one cannot silence the other.
- */
-export async function sweepStaleRequests(): Promise<void> {
-  await sweepStaleOverrideRequests();
-  // ⟨TOMBSTONE⟩ FIELD FIX 3 AUDIT ROUND (#9): `sweepStaleUserVerdictRequests` ran here and dropped a
-  // task to blocked when the owner had not given his verdict within 12 hours, a fixed clock on the
-  // owner's own time (owner: "I don't want to put hard limits on the dojo"). The request now stays
-  // open until it is answered or the task moves on; a move into a terminal state still answers it
-  // (`clearUserVerdict` on the transition), and the board still shows the open question.
-}
-
-async function sweepStaleOverrideRequests(): Promise<void> {
-  try {
-    // PHASE-2 T8T RESUMED-2 (RULING 4): the queue moved to `work_events`; the 12-hour bound
-    // is unchanged and still this file's own constant (5a, carried verbatim).
-    const stale = staleOverrideRequests(STALE_REQUEST_HOURS, 50);
-    if (stale.length === 0) return;
-
-    const { writeTaskLog } = await import('../tracker/task-log.js');
-    let swept = 0;
-    for (const r of stale) {
-      // A TIMEOUT IS NOT A VERDICT, which is why the old schema had `auto_denied` as a value
-      // distinct from `denied` and why nothing is written to `adjudications` here: nobody
-      // ruled. The ask is answered and the requester is told.
-      //
-      // v3.5 field fix 3 (#3, the sibling sweep): the audit row and the requester's notice
-      // follow ONLY a resolution that applied. `false` means the request was already answered
-      // (the PM ruled between the finder and here), and then nothing was auto-denied.
-      const resolved = resolveOverrideRequest(r.id, {
-        outcome: 'auto_denied', resolvedBy: 'engine',
-        reason: `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution`,
-      });
-      if (!resolved) continue;
-      writeTaskLog({
-        taskId: r.taskId,
-        fromEntity: 'engine',
-        entryKind: 'auto_sweep',
-        actionTaken: `override request auto-denied (id=${r.id.slice(0, 8)})`,
-        reason: `pending more than ${STALE_REQUEST_HOURS}h without PM resolution; original justification: ${r.justification.slice(0, 200)}`,
-      });
-
-      // Notify the requesting agent via A2A.
-      try {
-        const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
-        await deliverA2ANotice({
-          intent: 'QUESTION',
-          threadId: '',
-          requiresResponse: true,
-          payload:
-            `Your override request on task ${r.taskId.slice(0, 8)} (status="${r.requestedStatus}") ` +
-            `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution. The request is auto-denied. ` +
-            `Address the engine's original concern and resubmit cleanly, or file a fresh work_close_request(action="override").`,
-          toAgent: r.requestedBy,
-          fromAgent: getPMAgentId(),
-        }, 'Override auto-denial notice to the requesting agent', { taskId: r.taskId, requestedBy: r.requestedBy });
-      } catch { /* best-effort */ }
-      swept++;
-    }
-    if (swept > 0) {
-      logger.info('Auto-expired override requests', { swept, hours: STALE_REQUEST_HOURS });
-    }
-  } catch (err) {
-    logger.warn('sweepStaleOverrideRequests failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 
 // ── 5-minute validation escalation ──
@@ -1083,7 +999,7 @@ export async function checkScheduledTasks(): Promise<void> {
     // This is an events-lane message row, not a prompt-prefix surface; no golden moves.
     const message = taskKind === 'reminder'
       ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the owner now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. the owner asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). Say it as a SEPARATE response with no tool call in it — text that rides along with a tool call is treated as working notes and never reaches the owner. Then, in your NEXT response, silently call work_update(action="status") with task_id="${taskId}" and status="complete". That status call is internal bookkeeping; do NOT write any owner-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire owner-facing output.`
-      : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, call work_update(action="status") with task_id="${taskId}" and status="complete". That status call is internal bookkeeping; do NOT write any owner-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The owner already received your reminder/output above; an extra "task closed" line is just noise.`;
+      : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, hand it in: work_update(action="hand_in") with task_id="${taskId}" and its proof. That call is internal bookkeeping; do NOT write any owner-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The owner already received your reminder/output above; an extra "task closed" line is just noise.`;
 
     // Inject as engine event and trigger runtime.
     // D-A step 4: a scheduler fire is inter-agent/engine traffic (origin_kind=
@@ -1328,12 +1244,12 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // running recurring row back to `on_deck`. A worker that filed `complete_all_runs` is asking
   // for the SCHEDULE to stop; sending the row to `on_deck` while that request is outstanding
   // hands the row back to the cadence while its stop awaits a verdict. (The request itself stays
-  // visible from any non-terminal state, `closeRequestFiledExpr`.) It stays `claimed`, in front
+  // visible from any non-terminal state, `handedInExpr`.) It stays `claimed`, in front
   // of the validator, until Key 2 rules; if the close is REFUSED the request is answered, the
   // hold in `dueScope` lifts, and the next tick resumes the cadence with the refusal on the
   // row's own ledger.
   const stopPending = (getDb().prepare(
-    `SELECT ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`,
+    `SELECT ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`,
   ).get(taskId) as { pending: number } | undefined)?.pending === 1;
 
   if (nextRun && stopPending) {
@@ -1421,17 +1337,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     } catch (err) {
       logger.warn('scheduler: failed-final-run owner notice failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
-    // D-K: this fallen transition can be the one that empties the task's project
-    // of open tasks, so run the success-vs-fail-open check (idempotent) so the
-    // project gets labelled needs-attention instead of staying silently active.
-    // Dynamic import: tracker/tools.ts statically imports onTaskRunComplete from
-    // this module, a static back-import would cycle.
-    try {
-      const { checkProjectCompletion } = await import('../tracker/tools.js');
-      checkProjectCompletion((task.project_id as string | null) ?? null, getPMAgentId());
-    } catch (err) {
-      logger.warn('scheduler: checkProjectCompletion after failed final run failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
-    }
+    // 2c: the project roll-up runs at the decision.
     logger.warn('Scheduler: final run failed; task marked fallen (not complete) and owner notified', { taskId, runId, status });
   } else {
     // No more runs: mark everything as completed
@@ -1965,7 +1871,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
   // recurring-dangler pass, tracker-closeout's) because it is this function's own
   // precondition, and a precondition stated once cannot be forgotten by the fourth caller.
   const heldForValidation = db.prepare(
-    `SELECT ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`,
+    `SELECT ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`,
   ).get(taskId) as { pending: number } | undefined;
   if (heldForValidation?.pending === 1) {
     logger.info('Scheduler: force-reset SKIPPED — a close request is pending on this row; it is a validation subject, not a stuck row', {

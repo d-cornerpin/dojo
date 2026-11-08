@@ -140,18 +140,17 @@ describe('the seventeen rows, one clause each', () => {
     // PHASE-2 T8V: three PM-only tools became three ACTIONS on one verb. A gate
     // keyed on `work_validate` alone would lock nothing the day a non-PM action
     // joins the verb.
-    const g = covers('8', rowsFor('work_validate', { action: 'validate' }));
+    const g = covers('8', rowsFor('work_validate', { action: 'retask' }));
     expect(g.kind).toBe('pm_only_operation');
-    expect(g.kind === 'pm_only_operation' && g.operation).toBe('work_validate:validate');
+    expect(g.kind === 'pm_only_operation' && g.operation).toBe('work_validate:retask');
+    // a decision is not PM-only: the decision door itself says who decides
+    expect(rowsFor('work_validate', { action: 'decide' }).some((x) => x.kind === 'pm_only_operation')).toBe(false);
     // …and a work verb whose OPERATION is not on the PM list produces no gate,
-    // which is the half a name-keyed rule gets wrong. Note that `work_validate`
-    // is PM-only in EVERY one of its operations today — its absorb ladder ends
-    // in `validate` — so the honest counter-example lives on `work_update`.
+    // which is the half a name-keyed rule gets wrong.
     expect(rowsFor('work_update', { action: 'get' }).some((x) => x.kind === 'pm_only_operation')).toBe(false);
     expect(rowsFor('work_update', { action: 'reassign' }).some((x) => x.kind === 'pm_only_operation')).toBe(false);
-    // …while `work_validate` under any action is gated, because every one of its
-    // operations is on the list. Measured, not assumed.
-    for (const action of ['validate', 'retask', 'override', 'apply_user_verdict', 'get']) {
+    // …while retask under its other spellings is gated too. Measured, not assumed.
+    for (const action of ['retask']) {
       expect(
         rowsFor('work_validate', { action }).some((x) => x.kind === 'pm_only_operation'),
         `work_validate(action=${action}) must still meet the PM gate`,

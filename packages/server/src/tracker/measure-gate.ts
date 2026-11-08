@@ -1,5 +1,4 @@
-// The tracker's side of a task's measure: storing one that was set, and the remainder rule at the close
-// doors (items left are closed only with a named remainder the one proof check accepts).
+// The tracker's side of a task's measure: storing one that was set, and the remainder rule at complete_task.
 //
 // The I/O half (parsing the wire value, the agent's grants, counting) is async and lives at the
 // door that has the awaits (`agent/tools/cat/measure-door.ts`); the close doors here are
@@ -8,11 +7,8 @@
 import { getDb } from '../db/connection.js';
 import { parseMeasure, describeMeasure, type Measure, type MeasureCount } from '../work/measure.js';
 import { ledgerTotals, setMeasure } from '../work/ledger-store.js';
-import { writeTaskLog } from './task-log.js';
 import { resolveTaskId, formatResolveError } from './schema.js';
 import { taskWriteRefusal } from '../work/row-authority.js';
-import { checkProof } from '../work/done/proof.js';
-import { readAuditTrail } from '../work/audit-trail.js';
 
 /** A measure the async door validated and read once, handed to the synchronous creator. */
 export interface MeasureReading { measure: Measure; count: MeasureCount; at: number }
@@ -48,75 +44,15 @@ function closeFacts(taskId: string): { measure: Measure; initial: number | null;
   return { measure: parsed.measure, initial: row.measure_initial, left: row.measure_remaining };
 }
 
-/** The remainder this close names, when the proof check accepts it as a remainder item: `skipped` or
- *  `blocked`, with a reason. */
-function namedRemainder(taskId: string, agentId: string, left: string, args: Record<string, unknown>): { disposition: string; reason: string } | null {
-  const rem = args.remainder as { disposition?: unknown; reason?: unknown } | undefined;
-  if (rem?.disposition !== 'skipped' && rem?.disposition !== 'blocked') return null;
-  const reason = typeof rem.reason === 'string' ? rem.reason.trim() : '';
-  const proof = checkProof(taskId, agentId, 'cant_be_done', [{ kind: 'remainder', ref: `${left} ${rem.disposition}`, facts: { reason } }]);
-  return proof.ok ? { disposition: rem.disposition, reason } : null;
-}
-
-/**
- * The remainder rule every door that marks a measured task complete asks: items left and not named are
- * refused. Null = the close may proceed. It writes nothing; a named remainder is recorded by the door
- * once the close has landed (`namedRemainderNote`). `takesRemainder` is false at a door that has no
- * `remainder` argument (the schedule door), whose refusal therefore names the door that does.
- */
-export function remainderRefusal(
-  taskId: string, agentId: string, args: Record<string, unknown>, door = 'status="complete"', takesRemainder = true,
-): string | null {
+/** A measured task with items left is not done: the door that would finish it (complete_task, 2c) is refused,
+ *  naming the hand-in that takes a remainder. Null = nothing is left, or the measure could not be read. */
+export function remainderRefusal(taskId: string, door: string): string | null {
   const f = closeFacts(taskId);
-  if (!f || (takesRemainder && namedRemainder(taskId, agentId, `${f.left} ${f.measure.unit}`, args))) return null;
-  const { unit } = f.measure;
-  const named = `remainder={disposition:"skipped", reason:"<why these ${f.left} are left>"}`;
+  if (!f) return null;
   return (
-    `Refused: ${door} on a measured task. Its measure (${describeMeasure(f.measure)}) still returns ${f.left} ${unit} ` +
+    `Refused: ${door} on a measured task. Its measure (${describeMeasure(f.measure)}) still returns ${f.left} ${f.measure.unit} ` +
     `(${f.initial ?? '?'} when the task started; ${ledgerTotals(taskId).touched} touched so far). The task is not done. ` +
-    `What the measure lists is what remains. Items that genuinely cannot or should not be done are a remainder: ` +
-    `${named}${takesRemainder ? '' : ' (taken by work_update(action="status"), not by this door)'}; ` +
-    `blocked work is status="blocked" with the reason. The PM sees that count and your reason.`
-  );
-}
-
-const REMAINDER_NOTE = 'Remainder named at close:';
-
-/** The note a close that named its remainder leaves on the task's record, once it has landed. */
-export function namedRemainderNote(taskId: string, agentId: string, args: Record<string, unknown>): string | null {
-  const f = closeFacts(taskId);
-  const rem = f ? namedRemainder(taskId, agentId, `${f.left} ${f.measure.unit}`, args) : null;
-  return f && rem ? `${REMAINDER_NOTE} ${f.left} ${f.measure.unit} ${rem.disposition}: ${rem.reason}` : null;
-}
-
-/** Did a close on this task name its remainder (the note above is on its record)? */
-export function remainderOnRecord(taskId: string): boolean {
-  return readAuditTrail(taskId, { kinds: ['observation'] }).some((e) => (e.note ?? '').startsWith(REMAINDER_NOTE));
-}
-
-export function recordNamedRemainder(agentId: string, taskId: string, note: string): void {
-  writeTaskLog({ taskId, fromEntity: `agent:${agentId}`, entryKind: 'observation', note });
-}
-
-/** The project's open measured tasks: what close_project(status="complete") would close and must judge. */
-export function measuredOpenTasksOf(projectId: string): Array<{ id: string; title: string }> {
-  return getDb().prepare(
-    `SELECT id, title FROM work WHERE parent_id = ? AND kind = 'task' AND measure_json IS NOT NULL
-       AND state NOT IN ('done', 'failed', 'abandoned')`,
-  ).all(projectId) as Array<{ id: string; title: string }>;
-}
-
-/** close_project(status="complete"): the same judgement over every measured task it would close.
- *  A project close cannot name a remainder for each task, so it names the door that can. */
-export function projectRemainderGate(projectId: string): string | null {
-  const left = measuredOpenTasksOf(projectId)
-    .map((t) => ({ t, f: closeFacts(t.id) }))
-    .filter((x): x is { t: { id: string; title: string }; f: NonNullable<ReturnType<typeof closeFacts>> } => x.f !== null);
-  if (left.length === 0) return null;
-  const lines = left.map(({ t, f }) => `"${t.title}" (${t.id.slice(0, 8)}): its measure (${describeMeasure(f.measure)}) still returns ${f.left} ${f.measure.unit}`);
-  return (
-    `Refused: close_project(status="complete") on a project with measured work left. ${lines.join('; ')}. ` +
-    `Those tasks are not done. Continue working through what each measure lists; if the rest of one genuinely cannot or should not be done, ` +
-    `close that task with work_update(action="status", status="complete", remainder={disposition:"skipped", reason:"<why>"}) or status="blocked", then close the project.`
+    `Items that genuinely cannot or should not be done are handed in as can't be done, with a remainder item naming them and why: ` +
+    `work_update(action="hand_in", outcome="cant_be_done", proof=[{kind:"remainder", ref:"${f.left} ${f.measure.unit}", reason:"<why>"}]).`
   );
 }

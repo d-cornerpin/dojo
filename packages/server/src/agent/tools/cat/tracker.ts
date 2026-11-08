@@ -41,27 +41,21 @@ import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
 import { moveAssignee } from '../../../work/row-authority.js';
 import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
-import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
+import { resolveTaskId, resolveProjectId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
-import * as trackerMod from '../../../tracker/tools.js';
-import { proofFor, proofLines } from '../../../work/done/proof.js';
-import { fromAsker } from '../../../work/done/asker.js';
-import { proofSeen } from '../../../tracker/looked-at.js';
-import { remainderOnRecord } from '../../../tracker/measure-gate.js';
-import { readLaterMessages } from '../../../memory/task-list-words.js';
-import { heldDeliveryLine } from '../../../tracker/owed-delivery.js';
-import { unvalidatedCloseExpr } from '../../../work/tracker-view.js';
-import { findOverrideRequest } from '../../../work/override-requests.js';
+import { handIn } from '../../../work/done/hand-in.js';
+import { decide, type Verdict } from '../../../work/done/decide.js';
+import { openProof } from '../../../work/done/open-proof.js';
+import { proofFor, type HandInOutcome, type ProofItemInput, type ProofKind } from '../../../work/done/proof.js';
+import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, repeatNumberError, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
-  trackerListActive, trackerActivity, activityWindowStart, trackerCompleteStep, trackerCloseProject,
-  trackerPauseSchedule, trackerResumeSchedule,
-  trackerRetask, trackerRequestOverride, trackerOverride, trackerRequestUserVerdict,
-  trackerApplyUserVerdict, trackerApplyUserValidation, trackerResolveMissedRuns,
+  trackerListActive, trackerActivity, activityWindowStart,
+  trackerPauseSchedule, trackerResumeSchedule, trackerRetask, trackerResolveMissedRuns,
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
-import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure, closeWithMeasure, isCompleteStatus, remeasureProject } from './measure-door.js';   // v3.5 DONE IS MEASURED
+import { readMeasureArg, remeasureTask, editWithMeasure } from './measure-door.js';   // v3.5 DONE IS MEASURED
 import { checkPlan, tasksFromPlan, explicitTasks, taskPlanMismatch, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import { scaleFactsForAgent } from '../../../tools/scale-facts.js';
 import type { ToolHandlerMap } from '../handler.js';
@@ -110,25 +104,34 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
   return [...nums].sort((a, b) => a - b).join(',');
 }
 
-/** A PM uphold is refused, with the facts and never a lean toward either verdict, unless the PM has been
- *  shown or has opened proof on record (`proofFor`), or the close named its remainder, or the asker's own
- *  later words are recorded on the task. An override approval is its own close claim, so it is checked
- *  whether or not a close request is filed. It is refused in every context, a live PM turn or not. */
-function unbackedUpholdRefusal(pmAgentId: string, rawTaskId: string, opts: { override?: boolean } = {}): string | null {
-  const r = resolveTaskId(rawTaskId);
-  if (!r.ok) return null;   // the door gives its own error for an id it cannot find
-  const subject = getDb().prepare(`SELECT 1 AS y FROM work w WHERE w.id = ?${opts.override ? '' : ` AND ${unvalidatedCloseExpr('w')}`}`).get(r.id);
-  if (!subject || remainderOnRecord(r.id) || readLaterMessages(r.id).some((m) => !!m.messageId && fromAsker(r.id, m.messageId))) return null;
-  const proof = proofFor(r.id);
-  if (proof.length > 0) {
-    if (proofSeen(pmAgentId, r.id, proof)) return null;
-    return `Refused: the proof on record has not been shown to you or opened since the close was filed:\n${proofLines(proof).map((l) => `  - ${l}`).join('\n')}\n`
-      + 'Open it (the file, or history_get on the message) before ruling.';
-  }
-  const held = heldDeliveryLine(r.id).replace(/^\n\s*/, '');
-  return 'Refused: nothing on record shows this work. No file the worker wrote for it, message to the asker, confirmed receipt '
-    + `or measure at 0 is on record, no remainder was named, and the asker's own later words are not recorded. ${held ? `${held} ` : ''}`
-    + 'There is nothing to open that shows the work was done.';
+/** A hand-in's proof items as the model sent them. A file, delivery, receipt or measure item may leave its
+ *  ref empty: it is then the newest of that kind the engine finds on record for the task (`proofFor`). */
+function proofItemsOf(taskId: string, raw: unknown): ProofItemInput[] {
+  if (!Array.isArray(raw)) return [];
+  const found = proofFor(taskId);
+  return raw.filter((i): i is Record<string, unknown> => typeof i === 'object' && i !== null).map((i) => {
+    const kind = String(i.kind ?? '') as ProofKind;
+    const given = typeof i.ref === 'string' ? i.ref.trim() : String(i.ref ?? '');
+    const ref = given || (found.filter((f) => f.kind === kind).pop()?.ref ?? '');
+    return { kind, ref, ...(typeof i.reason === 'string' ? { facts: { reason: i.reason } } : {}) };
+  });
+}
+
+/** "finished" or "can't be done", from `outcome`, else from an old closing status word. */
+function outcomeOf(args: Record<string, unknown>): HandInOutcome {
+  const o = typeof args.outcome === 'string' ? args.outcome.trim().toLowerCase().replace(/[\s'-]+/g, '_') : '';
+  if (o === 'finished' || o === 'cant_be_done') return o;
+  if (o === 'can_t_be_done' || o === 'cannot_be_done') return 'cant_be_done';
+  const word = normalizeTaskStatus(args.status);
+  return word === 'fallen' || word === 'cancelled' ? 'cant_be_done' : 'finished';
+}
+
+/** A task or project id as the decision tools take it. */
+function resolveAnyBoardId(raw: string, agentId: string): { ok: true; id: string } | { ok: false; text: string } {
+  const t = resolveTaskId(raw, agentId);
+  if (t.ok) return t;
+  const p = resolveProjectId(raw, agentId);
+  return p.ok ? p : { ok: false, text: formatResolveError('task', raw, t) };
 }
 
 const tableOfHandlers: ToolHandlerMap = {
@@ -446,20 +449,27 @@ const tableOfHandlers: ToolHandlerMap = {
       taskId: args.task_id as string,
       status: args.status as string,
     };
-    const statusNotes = noteWithReason(args.notes, args.reason);   // a close's `reason` is kept as its note, never refused
+    const statusNotes = noteWithReason(args.notes, args.reason);
     if (statusNotes) updateArgs.notes = statusNotes;
     if (args.resume_at) updateArgs.resume_at = args.resume_at;
-    if (args.complete_all_runs) updateArgs.complete_all_runs = args.complete_all_runs;
-    // Phase B.1: result + evidence forwarded for the complete hard gate.
-    if (args.result !== undefined) updateArgs.result = args.result;
-    if (args.evidence !== undefined) updateArgs.evidence = args.evidence;
-    // priority is the status door's second field. `assigned_to` is not read here: the per-operation
-    // argument check refuses a status call that carries it (test-2 rank 3), so it never reaches this.
     if (args.priority !== undefined) updateArgs.priority = args.priority;
-    if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
-    if (args.remainder !== undefined) updateArgs.remainder = args.remainder;
-    content = await closeWithMeasure(agentId, isCompleteStatus(args.status) ? closeTargetOf(agentId, args.task_id) : null, args, () => trackerUpdateStatus(agentId, updateArgs));
+    content = trackerUpdateStatus(agentId, updateArgs);
     return { content, isError: isError || content.startsWith('Refused:') };
+  },
+
+  async "work_update:hand_in"({ agentId, args }) {
+    const raw = (args.task_id ?? args.project_id) as string | undefined;
+    if (!raw) return { content: 'Error: hand_in needs the task_id (or project_id) of the work you are handing in.', isError: true };
+    const r = args.task_id ? resolveTaskId(String(args.task_id), agentId) : resolveProjectId(String(args.project_id), agentId);
+    if (!r.ok) return { content: formatResolveError(args.task_id ? 'task' : 'project', raw, r), isError: true };
+    await remeasureTask(agentId, r.id);
+    const done = handIn({
+      workId: r.id, by: { kind: 'worker', agentId }, outcome: outcomeOf(args),
+      items: proofItemsOf(r.id, args.proof), note: noteWithReason(args.note, noteWithReason(args.notes, args.reason)) ?? '',
+    });
+    if (done.kind === 'handed_in') return { content: done.text, isError: false };
+    const onRecord = proofFor(r.id).map((i) => `{kind:"${i.kind}", ref:"${i.ref}"}`);
+    return { content: onRecord.length > 0 ? `${done.text}\nRecords on file for this work that you may cite as proof: ${onRecord.join(', ')}.` : done.text, isError: true };
   },
 
   async "work_note"({ agentId, args }) {
@@ -767,58 +777,28 @@ const tableOfHandlers: ToolHandlerMap = {
     return { content, isError };
   },
 
-  async "work_update:complete_step"({ agentId, args }) {
-    let content = '';
-    // task_id is intentionally NOT hard-required here: a single-task agent
-    // (the floor model working its one assigned step) routinely omits it.
-    // trackerCompleteStep resolves the obvious task when exactly one is in
-    // progress for this agent, and rejects-with-guidance otherwise, so we
-    // pass whatever the model sent (possibly undefined) straight through.
-    content = await closeWithMeasure(agentId, closeTargetOf(agentId, args.task_id ?? args.taskId), args, () => trackerCompleteStep(agentId, {
-      taskId: (args.task_id ?? args.taskId) as string | undefined,
-      notes: noteWithReason(args.notes, args.reason),   // a close's `reason` is kept as its note, never refused
-      // t193 (owner decision 27): the same close-out proof as status="complete".
-      result: args.result,
-      evidence: args.evidence,
-      remainder: args.remainder,
-    }));
-    return { content, isError: content.startsWith('Refused:') };
+  async "work_validate:decide"({ agentId, args }) {
+    const err = checkRequired([
+      { name: 'task_id', value: args.task_id, type: 'string' },
+      { name: 'verdict', value: args.verdict, type: 'string' },
+    ]);
+    if (err) return { content: err, isError: true };
+    const r = resolveAnyBoardId(String(args.task_id), agentId);
+    if (!r.ok) return { content: r.text, isError: true };
+    const out = decide({
+      workId: r.id, deciderAgentId: agentId, verdict: String(args.verdict) as Verdict, reason: typeof args.reason === 'string' ? args.reason : '',
+      ownerQuote: typeof args.user_quote === 'string' ? args.user_quote : undefined,
+    });
+    return { content: out.text, isError: out.kind === 'refused' };
   },
 
-  async "work_validate:validate"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    const vkind = args.kind as 'pause' | 'complete' | 'blocked' | undefined;
-    if (!vkind || !['pause', 'complete', 'blocked'].includes(vkind)) {
-      content = 'Error: work_validate(action="validate") requires kind to be one of: pause, complete, blocked.';
-      isError = true;
-      return { content, isError };
-    }
-    const tvErr = checkRequired([
-      { name: 'task_id', value: args.task_id, type: 'string' },
-      { name: 'valid', value: args.valid, type: 'boolean' },
-    ]);
-    if (tvErr) { content = tvErr; isError = true; return { content, isError }; }
-    const vp = {
-      task_id: args.task_id as string,
-      valid: args.valid as boolean,
-      // v3.5 field fix 3 follow-up: the PM's `reason` is READ, never refused. A rejection with no
-      // `reject_reason` is rejected for that reason; an uphold carries it on the spine's transition
-      // and in the verdict record (`looked-at.ts:reasonGiven`). Refusing it stranded a finished close.
-      reject_reason: (typeof args.reject_reason === 'string' && args.reject_reason.trim())
-        ? args.reject_reason
-        : (typeof args.reason === 'string' ? args.reason : undefined),
-      reason: typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : undefined,
-      target_status: args.target_status as string | undefined,
-    };
-    if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
-    else if (vkind === 'complete') {
-      const refusal = vp.valid ? unbackedUpholdRefusal(agentId, vp.task_id) : null;
-      if (refusal) return { content: refusal, isError: true };
-      content = await trackerMod.trackerValidateComplete(agentId, vp);
-    }
-    else content = await trackerMod.trackerValidateBlocked(agentId, vp);
-    return { content, isError };
+  async "work_validate:open_proof"({ agentId, args }) {
+    const err = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
+    if (err) return { content: err, isError: true };
+    const r = resolveAnyBoardId(String(args.task_id), agentId);
+    if (!r.ok) return { content: r.text, isError: true };
+    const out = openProof(agentId, r.id, coerceNumberArg(args.item) ?? 0);
+    return { content: out.text, isError: !out.ok };
   },
 
   async "work_validate:retask"({ agentId, args }) {
@@ -833,131 +813,8 @@ const tableOfHandlers: ToolHandlerMap = {
       task_id: args.task_id as string,
       directive: args.directive as string,
       target_status: args.target_status as string | undefined,
-      allow_regenerate: args.allow_regenerate as boolean | undefined,
     });
     return { content, isError };
-  },
-
-  async "work_close_request:override"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    const troErr = checkRequired([
-      { name: 'task_id', value: args.task_id, type: 'string' },
-      { name: 'requested_status', value: args.requested_status, type: 'string' },
-      { name: 'justification', value: args.justification, type: 'string' },
-    ]);
-    if (troErr) { content = troErr; isError = true; return { content, isError }; }
-    content = trackerRequestOverride(agentId, {
-      task_id: args.task_id as string,
-      requested_status: args.requested_status as string,
-      justification: args.justification as string,
-    });
-    return { content, isError };
-  },
-
-  async "work_validate:override"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    const toErr = checkRequired([
-      { name: 'override_request_id', value: args.override_request_id, type: 'string' },
-      { name: 'approve', value: args.approve, type: 'boolean' },
-      { name: 'reason', value: args.reason, type: 'string' },
-    ]);
-    if (toErr) { content = toErr; isError = true; return { content, isError }; }
-    // PM-CANNOT-APPROVE C7: an override that APPROVES a close upholds it, so it meets the same record
-    // check as `validate` (it used to skip it, and became the way around it). A deny never does.
-    if (args.approve === true) {
-      const req = findOverrideRequest(String(args.override_request_id).trim());
-      if (req && req.status === 'pending' && isCompleteStatus(req.requestedStatus)) {
-        const refusal = unbackedUpholdRefusal(agentId, req.taskId, { override: true });
-        if (refusal) return { content: refusal, isError: true };
-      }
-    }
-    content = await trackerOverride(agentId, {
-      override_request_id: args.override_request_id as string,
-      approve: args.approve as boolean,
-      reason: args.reason as string,
-    });
-    return { content, isError };
-  },
-
-  async "work_close_request:user_verdict"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    const truvErr = checkRequired([
-      { name: 'task_id', value: args.task_id, type: 'string' },
-      { name: 'status_requested', value: args.status_requested, type: 'string' },
-      { name: 'agent_summary', value: args.agent_summary, type: 'string' },
-      { name: 'pm_rejection_summary', value: args.pm_rejection_summary, type: 'string' },
-    ]);
-    if (truvErr) { content = truvErr; isError = true; return { content, isError }; }
-    content = await trackerRequestUserVerdict(agentId, {
-      task_id: args.task_id as string,
-      status_requested: args.status_requested as string,
-      agent_summary: args.agent_summary as string,
-      pm_rejection_summary: args.pm_rejection_summary as string,
-    });
-    return { content, isError };
-  },
-
-  async "work_validate:apply_user_verdict"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    const tauvErr = checkRequired([
-      { name: 'task_id', value: args.task_id, type: 'string' },
-      { name: 'status', value: args.status, type: 'string' },
-      { name: 'user_quote', value: args.user_quote, type: 'string' },
-    ]);
-    if (tauvErr) { content = tauvErr; isError = true; return { content, isError }; }
-    content = await trackerApplyUserVerdict(agentId, {
-      task_id: args.task_id as string,
-      status: args.status as string,
-      user_quote: args.user_quote as string,
-      // Read, never refused: both ride the verdict's transition reason.
-      reason: noteWithReason(args.reason, undefined),
-      feedback: noteWithReason(args.feedback, undefined),
-    });
-    return { content, isError };
-  },
-
-  async "work_validate:apply_user_validation"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    const tauvErr = checkRequired([
-      { name: 'task_id', value: args.task_id, type: 'string' },
-      { name: 'validated', value: args.validated, type: 'boolean' },
-      { name: 'user_quote', value: args.user_quote, type: 'string' },
-    ]);
-    if (tauvErr) { content = tauvErr; isError = true; return { content, isError }; }
-    content = await trackerApplyUserValidation(agentId, {
-      task_id: args.task_id as string,
-      validated: args.validated as boolean,
-      user_quote: args.user_quote as string,
-      // `reason` is read, never refused: it is the feedback when none was given, else joined to it.
-      feedback: noteWithReason(args.feedback, args.reason),
-      reason: noteWithReason(args.reason, undefined),
-    });
-    return { content, isError };
-  },
-
-  async "work_update:close_project"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    // A project close that carries `notes` instead of (or beside) `reason` is closed for them, never refused.
-    const closeReason = noteWithReason(args.reason, args.notes);
-    const tcpErr = checkRequired([
-      { name: 'project_id', value: args.project_id, type: 'string' },
-      { name: 'reason', value: closeReason, type: 'string' },
-    ]);
-    if (tcpErr) { content = tcpErr; isError = true; return { content, isError }; }
-    await remeasureProject(agentId, args.project_id, args.status);
-    content = trackerCloseProject(agentId, {
-      project_id: args.project_id as string,
-      status: args.status as string | undefined,
-      reason: closeReason as string,
-      user_quote: args.user_quote,
-    });
-    return { content, isError: content.startsWith('Refused:') };
   },
 
   async "work_schedule:pause"({ agentId, args }) {
@@ -965,8 +822,7 @@ const tableOfHandlers: ToolHandlerMap = {
     let isError = false;
     const tpsErr = pauseActionMissing(args) ?? checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (tpsErr) { content = tpsErr; isError = true; return { content, isError }; }
-    if (args.mark_complete === true) await remeasureTask(agentId, closeTargetOf(agentId, args.task_id));
-    content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
+    content = trackerPauseSchedule(agentId, { taskId: args.task_id as string });
     return { content, isError: content.startsWith('Refused:') };
   },
 

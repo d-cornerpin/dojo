@@ -53,7 +53,6 @@ const FILES = [
   'tracker/tools.ts',
   'tracker/pm-agent.ts',
   'gateway/routes/tracker.ts',
-  'work/override-requests.ts',
 ];
 
 const SRC = (rel: string) => fileURLToPath(new URL(`../../${rel}`, import.meta.url));

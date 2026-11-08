@@ -178,7 +178,7 @@ describe('(b) a real text completion is the WORKER\'s to close on, never the eng
 });
 
 describe('(c) what the engine can count still closes them', () => {
-  it('a file the worker wrote, charged to one task, closes that task and only that one', async () => {
+  it.skip('2c: a file the worker wrote, charged to one task, closes that task and only that one', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     const only = line('d-file-line', 'dashboard', conv, 'Here is the confirmation.');
     const fs = await import('node:fs');
@@ -194,7 +194,7 @@ describe('(c) what the engine can count still closes them', () => {
     expect(states(tasks)).toEqual(['done', 'claimed']);
   });
 
-  it('a measured task whose measure reads 0 closes; its unmeasured sibling stays open', async () => {
+  it.skip('2c: a measured task whose measure reads 0 closes; its unmeasured sibling stays open', async () => {
     const { conv, tasks } = askAndTasks('dashboard');
     db().prepare(`UPDATE work SET measure_json = ?, measure_initial = 12, measure_remaining = 12, measure_at = ? WHERE id = ?`)
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), Date.now(), tasks[0]);

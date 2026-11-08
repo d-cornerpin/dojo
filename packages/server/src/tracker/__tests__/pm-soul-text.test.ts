@@ -10,9 +10,9 @@ const soul = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.ur
 describe('the PM soul', () => {
   it('says the job is finished work, and judges the measured record first', () => {
     expect(soul).toContain('Your job is to make sure the work gets done. A closed task is not the goal; a finished job is.');
-    expect(soul).toContain('**Judge the measured record first.**');
-    expect(soul).toContain('**A task without a measure is judged on its ledger and receipts**');
-    expect(soul).toContain('**Never validate on prose alone, but VERIFY before rejecting.**');
+    expect(soul).toContain('# Deciding hand-ins');
+    expect(soul).toContain('A measured task is finished only when its measure reads 0');
+    expect(soul).toContain('a message saying "done" is the worker\'s account, not the work');
   });
   it('no longer biases toward validate or calls the job "tasks get completed"', () => {
     expect(soul).not.toContain('Bias toward validate');
@@ -20,7 +20,9 @@ describe('the PM soul', () => {
     expect(soul).not.toContain('make sure tasks get completed');
   });
 
-  it('t250 parked: says the PM\'s own close of a measured task with items left is refused too', () => {
-    expect(soul).toContain('Your own status="complete" on such a task is refused the same way unless you name the remainder.');
+  it('opens the proof, decides in one line or sends back, and never decides its own work or reassigns', () => {
+    expect(soul).toContain('work_validate(action="open_proof", task_id, item=N)');
+    expect(soul).toContain('verdict="approve", reason="<one line: how the proof meets the goal>"');
+    expect(soul).toContain('You never decide your own work, and you never close, reassign or flip a worker\'s status.');
   });
 });

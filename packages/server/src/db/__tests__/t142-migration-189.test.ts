@@ -31,7 +31,7 @@ const SUBJECTS = FILES.filter((f) => f.startsWith('189'));
 const isSubject = (f: string): boolean => SUBJECTS.includes(f);
 /** A LATER work_events kind rebuild (v3.5's 200b adds `measured`) did not exist on any box this file
  *  rehearses; replaying it would hand vintage A a CHECK that already carries `person_told`. */
-const isLaterKindRebuild = (f: string): boolean => f > '189~' && !f.startsWith('9')
+const isLaterKindRebuild = (f: string): boolean => f > '189~'
   && /CHECK\s*\(\s*kind\s+IN\s*\(/i.test(fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf-8'));
 
 function baseSchemaFromRunner(): string {

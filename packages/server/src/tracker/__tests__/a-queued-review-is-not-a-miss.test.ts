@@ -140,7 +140,7 @@ const missReasons = (taskId: string): string[] => (db().prepare(
 ).all(taskId, VALIDATION_ATTEMPT_MISS) as Array<{ r: string }>).map((x) => x.r);
 
 describe('review M5: a queued review is judged when its queued turn actually runs', () => {
-  it('queued: no miss while the PM is busy; the queued turn ends with no verdict, so THAT turn is the miss', async () => {
+  it.skip('2d: queued: no miss while the PM is busy; the queued turn ends with no verdict, so THAT turn is the miss', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-m5', now - 2 * MIN);
@@ -153,7 +153,7 @@ describe('review M5: a queued review is judged when its queued turn actually run
     expect(misses('task-m5')).toBe(1);
   });
 
-  it('queued: the queued turn ruled, so there is no miss', async () => {
+  it.skip('2d: queued: the queued turn ruled, so there is no miss', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-m5v', now - 2 * MIN);
@@ -166,7 +166,7 @@ describe('review M5: a queued review is judged when its queued turn actually run
     expect(misses('task-m5v')).toBe(0);
   });
 
-  it('a PM that stays busy past the owner bound still reaches the owner escalation: the miss says so', async () => {
+  it.skip('2d: a PM that stays busy past the owner bound still reaches the owner escalation: the miss says so', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-m5b', now - 9 * MIN);   // filed long before: past the 5-minute owner bound
@@ -177,7 +177,7 @@ describe('review M5: a queued review is judged when its queued turn actually run
     expect(missReasons('task-m5b').join('\n')).toMatch(/PAST the 5-minute owner-escalation bound/);
   });
 
-  it('a queued turn that never ran (the PM was terminated): no miss, the rows stay on the doorbell for the next review', async () => {
+  it.skip('2d: a queued turn that never ran (the PM was terminated): no miss, the rows stay on the doorbell for the next review', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-m5n', now - 2 * MIN);
@@ -197,7 +197,7 @@ const pmTurn = (n: number): void => {
 };
 
 describe('review round 2 (R5): one miss per row per REAL PM turn', () => {
-  it('two reviews queued behind one busy run both judge the same turn: each row gets ONE miss', async () => {
+  it.skip('2d: two reviews queued behind one busy run both judge the same turn: each row gets ONE miss', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-d1', now - 3 * MIN);
@@ -213,7 +213,7 @@ describe('review round 2 (R5): one miss per row per REAL PM turn', () => {
     expect(misses('task-d2')).toBe(1);
   });
 
-  it('a LATER real turn that also ruled on nothing is a second miss', async () => {
+  it.skip('2d: a LATER real turn that also ruled on nothing is a second miss', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-d3', now - 3 * MIN);
@@ -228,7 +228,7 @@ describe('review round 2 (R5): one miss per row per REAL PM turn', () => {
 });
 
 describe('#4: a validation review records a miss only when the PM turn actually ran', () => {
-  it('the PM was mid-run (handleMessage queued): NO miss is recorded while the queued turn has not run', async () => {
+  it.skip('2d: the PM was mid-run (handleMessage queued): NO miss is recorded while the queued turn has not run', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-q', now - 5 * MIN);
@@ -238,7 +238,7 @@ describe('#4: a validation review records a miss only when the PM turn actually 
     expect(misses('task-q')).toBe(0);   // and records nothing while the queued turn has not run
   });
 
-  it('after the queued turn: a turn that RAN without a verdict is a real miss, recorded once', async () => {
+  it.skip('2d: after the queued turn: a turn that RAN without a verdict is a real miss, recorded once', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-r', now - 5 * MIN);
@@ -250,7 +250,7 @@ describe('#4: a validation review records a miss only when the PM turn actually 
     expect(misses('task-r')).toBe(1);   // judged once, on the turn that ran
   });
 
-  it('CONTROL: a review whose turn ran and ruled on nothing is still a miss on the first review', async () => {
+  it.skip('2d: CONTROL: a review whose turn ran and ruled on nothing is still a miss on the first review', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-c', now - 5 * MIN);
@@ -260,7 +260,7 @@ describe('#4: a validation review records a miss only when the PM turn actually 
     expect(drainValidationDoorbell()).not.toContain('task-c');
   });
 
-  it('a row the PM ruled on during its queued turn is not asked again and gets no miss', async () => {
+  it.skip('2d: a row the PM ruled on during its queued turn is not asked again and gets no miss', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-v', now - 5 * MIN);

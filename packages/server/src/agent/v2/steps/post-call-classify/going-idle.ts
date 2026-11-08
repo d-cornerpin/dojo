@@ -207,7 +207,7 @@ export async function runGoingIdle(
         `\nIf there is more to do, do it: call your next tool now and continue from exactly where you stopped (next item, next line, next step; do not restart or re-read what you already processed).\n` +
         `If you are waiting on the person (you already asked them): work_update(action="status", task_id, status="paused", notes="waiting for X").\n` +
         `If something the person does not know about stops you: work_update(action="status", task_id, status="blocked", notes="why").\n` +
-        `If the task is genuinely finished: work_update(action="status", task_id, status="complete", result, evidence) — a measured task closes when its measure reads 0; if some of its items genuinely cannot or should not be done, pass remainder naming them and why.\n` +
+        `If the task is genuinely finished: work_update(action="hand_in", task_id, outcome="finished", proof=[...], note); a measured task is finished when its measure reads 0, and items that genuinely cannot or should not be done are handed in as can't be done with a remainder item naming them and why.\n` +
         `A task left in progress is not a problem: a one-off task stays open and you are brought back to it; a scheduled run left in progress is recorded as not done, and its schedule goes on.]`
       );
       // v3.1.10: if the agent ALREADY produced a user-facing reply this

@@ -10,7 +10,6 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { cardMover } from './tracker-card-move';
 import { KanbanBoard } from '../components/KanbanBoard';
-import { OverrideQueuePanel } from '../components/OverrideQueuePanel';
 import { TaskRunHistory } from '../components/TaskRunHistory';
 import { TaskScheduleForm, DEFAULT_SCHEDULE, type ScheduleConfig } from '../components/TaskScheduleForm';
 import { ModalShell } from '../components/ModalShell';
@@ -36,6 +35,7 @@ export const TaskDetailPanel = ({
   const [assignedTo, setAssignedTo] = useState(task.assignedTo || '');
   const [noteInput, setNoteInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [decisionReason, setDecisionReason] = useState('');
   const [logEntries, setLogEntries] = useState<api.TaskLogEntry[]>([]);
   const [logLoading, setLogLoading] = useState(false);
 
@@ -186,38 +186,31 @@ export const TaskDetailPanel = ({
               <option value="fallen">Failed</option>
               <option value="cancelled">Cancelled</option>
             </select>
-            {/* Awaiting-validation chip + manual validate button. */}
-            {((task.status === 'complete' && task.completeValidated === 0) ||
-              (task.status === 'paused' && task.pauseValidated === 0) ||
-              (task.status === 'blocked' && task.blockedValidated === 0)) && (
+            {task.status === 'handed_in' && (
               <div className="mt-2 glass-nested rounded-lg p-2 border border-cp-amber/30">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs text-cp-amber">
-                    <span>{'⚠'}</span>
-                    <span>Awaiting validation</span>
-                    {task.validationEscalatedAt && (
-                      <span className="text-ui/55">(user has been asked)</span>
-                    )}
-                  </div>
-                  <button
-                    onClick={async () => {
-                      setSaving(true);
-                      const res = await api.userValidateTask(task.id);
-                      if (res.ok) {
-                        onUpdate();
-                      } else {
-                        toast.error(res.error ?? 'That did not go through.');
-                      }
-                      setSaving(false);
-                    }}
-                    disabled={saving}
-                    className="px-2 py-1 text-xs glass-btn-primary rounded disabled:opacity-50"
-                  >
-                    Mark validated
-                  </button>
-                </div>
-                <div className="text-[10px] text-ui/55 mt-1">
-                  Neither PM nor you has validated this status yet. If you confirm, this clears the bug.
+                <div className="text-xs text-cp-amber mb-1">Handed in: waiting for a decision</div>
+                <input
+                  value={decisionReason}
+                  onChange={(e) => setDecisionReason(e.target.value)}
+                  placeholder="Reason, one line"
+                  className="w-full px-2 py-1 text-xs glass-input rounded"
+                />
+                <div className="flex gap-2 mt-2">
+                  {(['approve', 'send_back'] as const).map((verdict) => (
+                    <button
+                      key={verdict}
+                      onClick={async () => {
+                        setSaving(true);
+                        const res = await api.decideTask(task.id, verdict, decisionReason);
+                        if (res.ok) { setDecisionReason(''); onUpdate(); } else toast.error(res.error ?? 'That did not go through.');
+                        setSaving(false);
+                      }}
+                      disabled={saving || decisionReason.trim() === ''}
+                      className="px-2 py-1 text-xs glass-btn-primary rounded disabled:opacity-50"
+                    >
+                      {verdict === 'approve' ? 'Approve' : 'Send back'}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -602,7 +595,6 @@ const HygienePanel = ({
   const totalValidates = hygiene.validateOutcomes.reduce((s, v) => s + v.validates, 0);
   const totalRejects = hygiene.validateOutcomes.reduce((s, v) => s + v.rejects, 0);
   const totalSmells = hygiene.smellFlags.reduce((s, v) => s + v.count, 0);
-  const pendingOverrides = hygiene.overrideRollup.find((o) => o.status === 'pending')?.count ?? 0;
   const elevatedCount = hygiene.elevated.length;
   const totalPmCost = hygiene.pmCost.reduce((s, p) => s + (p.cost_24h ?? 0), 0);
 
@@ -623,7 +615,6 @@ const HygienePanel = ({
           <span><b className="ok">{totalValidates}</b> blessed</span>
           {totalRejects > 0 && <span><b className="bad">{totalRejects}</b> rejected</span>}
           {totalSmells > 0 && <span><b className="warn">{totalSmells}</b> smell</span>}
-          {pendingOverrides > 0 && <span><b className="warn">{pendingOverrides}</b> overrides</span>}
           {elevatedCount > 0 && <span><b className="warn">{elevatedCount}</b> elevated</span>}
           {totalPmCost > 0 && <span>{formatUsd(totalPmCost)}/24h</span>}
         </div>
@@ -660,22 +651,6 @@ const HygienePanel = ({
                 <div key={s.category} className="text-xs">
                   <span className="text-cp-amber font-medium">{s.category}:</span>{' '}
                   <span className="text-ui/80">{s.count}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="glass-nested rounded-lg p-3">
-          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">Override rollup</div>
-          {hygiene.overrideRollup.length === 0 ? (
-            <div className="text-xs text-ui/55 italic">none</div>
-          ) : (
-            <div className="space-y-1">
-              {hygiene.overrideRollup.map((o) => (
-                <div key={o.status} className="text-xs">
-                  <span className="text-ui font-medium">{o.status}:</span>{' '}
-                  <span className="text-ui/80">{o.count}</span>
                 </div>
               ))}
             </div>
@@ -720,9 +695,6 @@ const HygienePanel = ({
                   {t.revert_count > 0 && (
                     <span className="ml-2 text-cp-coral">↺{t.revert_count}</span>
                   )}
-                  {t.awaiting_user_verdict === 1 && (
-                    <span className="ml-2 text-cp-amber">verdict?</span>
-                  )}
                   {t.last_smell_flag && (
                     <div className="text-ui/55 italic ml-3 text-[10px]">{t.last_smell_flag}</div>
                   )}
@@ -752,29 +724,19 @@ export const Tracker = () => {
   const { subscribe, reconnectCount } = useWebSocket();
   const toast = useToast();
 
-  // Phase B.1 / Q5 (corrected): override queue and hygiene panel are
-  // tracker-page concerns and always visible here. Wordy Mode is a chat-page
-  // toggle for showing tool-call mechanics inline; it does not apply here.
-  const [overrides, setOverrides] = useState<api.OverrideRequestRow[]>([]);
+  // The hygiene panel is a tracker-page concern and always visible here.
   const [hygiene, setHygiene] = useState<api.TrackerHygiene | null>(null);
   const [hygieneExpanded, setHygieneExpanded] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    const loadOverrides = () => {
-      api.getOverrideRequests('pending').then((res) => {
-        if (cancelled) return;
-        if (res.ok) setOverrides(res.data);
-      });
-    };
     const loadHygiene = () => {
       api.getTrackerHygiene().then((res) => {
         if (cancelled) return;
         if (res.ok) setHygiene(res.data);
       });
     };
-    loadOverrides();
     loadHygiene();
-    const interval = setInterval(() => { loadOverrides(); loadHygiene(); }, 30_000);
+    const interval = setInterval(loadHygiene, 30_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
@@ -917,19 +879,6 @@ export const Tracker = () => {
         </div>
       </header>
       {loadError && <div className="note--warn">Could not load the tasks: {loadError}</div>}
-
-      {/* Phase B.1: override request queue. Visible whenever there are
-          pending requests; this is actionable work the user should see. */}
-      {overrides.length > 0 && (
-        <OverrideQueuePanel
-          overrides={overrides}
-          onResolved={() => {
-            api.getOverrideRequests('pending').then((res) => {
-              if (res.ok) setOverrides(res.data);
-            });
-          }}
-        />
-      )}
 
       {/* Phase D: tracker hygiene + telemetry banner. Collapsed by default;
           click to expand. */}

@@ -78,17 +78,6 @@ describe('H3: a command carrying a handed credential is stored, shown and record
     expect(text).not.toContain(SECRET);
   });
 
-  it('RECORDED: the verdict\'s evidence_ref and claim payload never hold the credential', () => {
-    runTheCall();
-    appendWorkEvent(TASK, 'validation_requested', WORKER, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: null });
-    validationMeasureLines(TASK, 4000);   // the request the review showed
-    openTurnContext(PM).turnNumber = 3;
-    upholdClaim(TASK, 'done', 'pm', PM, 'x');
-    const adj = db().prepare('SELECT evidence_ref FROM adjudications WHERE work_id = ?').get(TASK) as { evidence_ref: string };
-    expect(adj.evidence_ref).not.toContain(SECRET);
-    const ev = db().prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'claim_upheld'").get(TASK) as { payload: string };
-    expect(ev.payload).not.toContain(SECRET);
-  });
 
   it('CENSUS: the ledger writer goes through the one redactor, and no second one exists', () => {
     const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../ledger-store.ts'), 'utf8');

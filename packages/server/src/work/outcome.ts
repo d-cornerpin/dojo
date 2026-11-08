@@ -74,8 +74,8 @@ export type TransitionGate =
   | 'engine-evidence-unresolved'
   | 'done-requires-delivery'
   | 'delivery-unresolved'
-  | 'authoritative-claim-not-permitted'
-  | 'requires-validation'
+  // Board work ends only by a decision on its hand-in (`work/done/decide.ts`).
+  | 'needs-decision'
   | 'reopen-requires-authority'
   // PHASE-2 T4: the two refusals the fan-out join owes. Both were caller-side `if`s in the
   // string machine and both are structural here, so no caller can forget them.

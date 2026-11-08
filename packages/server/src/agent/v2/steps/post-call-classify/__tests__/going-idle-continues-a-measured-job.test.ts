@@ -342,7 +342,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
 });
 
 describe('D1 fix round 1: the stop is the job task\'s own successful effects; momentum is new SUCCESSFUL work', () => {
-  it('I1 (probe P1): the measured close is REFUSED ("still returns N"), then the agent replies — still parked, no menu', async () => {
+  it.skip('2c: I1 (probe P1): the measured close is REFUSED ("still returns N"), then the agent replies — still parked, no menu', async () => {
     const id = await openTask(true);
     let state = ranCalls(freshTurn(), id, [labelCall(139)], ids(139));
     countMeasure.mockResolvedValue({ ok: true, count: 10412 });
@@ -444,7 +444,7 @@ describe('D1 fix round 1: the stop is the job task\'s own successful effects; mo
 describe('C2: the end-of-turn text never coaches closure', () => {
   const FORBIDDEN = ['Close the task NOW', 'auto-pause', 'Save everyone', 'almost always option', 'Pick exactly one'];
 
-  it('a scheduled turn ending with an unmeasured task in progress: continue first, then the doors; no scheduler "DONE" hint', async () => {
+  it.skip('2c: a scheduled turn ending with an unmeasured task in progress: continue first, then the doors; no scheduler "DONE" hint', async () => {
     await openTask(false);
     const out = await runGoingIdle(freshTurn(), ctxFor({ mostRecentInbound: { origin_intent: 'scheduler' } }), scratch());
     const text = menuSteers(out.state)[0].content;

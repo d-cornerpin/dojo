@@ -217,37 +217,6 @@ describe('a state change is recorded ONCE, by the spine', () => {
     expect(formatEntryLine(t)).not.toContain('claimed');
   });
 
-  it('a PM blessing appears once, from the verdict the product already writes', () => {
-    // ⚠ THE FIXTURE LIED TWICE BEFORE IT BUILT, and both are the class T10F wrote down.
-    // First it seeded `state='done'` with `closed_at` NULL — the paired-nullability CHECK
-    // refused it. Then `done` was refused again for carrying no `result_delivery_id`, which is
-    // the spine's central promise expressed as a CHECK ("work is done because something was
-    // delivered"). Both surfaced as crashes rather than silent passes only because the seed
-    // runs before the clause; a fixture must be able to BUILD before its assertion means
-    // anything. So the delivery is real here, exactly as the constraint demands.
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, tool, channel, outcome)
-       VALUES ('d1', ?, 'send_message', 'chat', 'delivered')`,
-    ).run(AGENT);
-    seedWork('w1', { state: 'done', closed_at: T, result_delivery_id: 'd1' });
-    upholdClaim('w1', 'done', 'pm', FXID.n5, 'PM blessed the complete');
-
-    // ONE line, and it names itself a verdict rather than a transition with equal endpoints —
-    // RULING 10's "record them as what they ARE", applied to the live writer as well as to
-    // the migrated rows.
-    const hist = listTaskLog('w1');
-    const blessings = hist.filter((e) => e.note === 'PM blessed the complete');
-    expect(blessings.length, 'the blessing must not appear twice').toBe(1);
-    expect(blessings[0].entryKind).toBe('claim_upheld');
-    expect(formatEntryLine(blessings[0])).toContain('PM blessed the complete');
-    // It reaches the PM's own ledger set, which is where it used to arrive.
-    expect(getRecentTransitions('w1').some((e) => e.entryKind === 'claim_upheld')).toBe(true);
-    // And the adjudication itself is untouched — the verdict record is not the trail.
-    const adj = mockDb.current!.prepare(
-      "SELECT count(*) AS c FROM adjudications WHERE work_id = 'w1' AND verdict = 'upheld'",
-    ).get() as { c: number };
-    expect(adj.c).toBe(1);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════

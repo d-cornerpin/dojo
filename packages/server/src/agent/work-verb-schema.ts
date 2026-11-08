@@ -224,9 +224,3 @@ export const WORK_MEASURE_PROP: PropSchema = {
  *  the description is a pointer, so the ~600-character text is on the wire once per tool, not three times. */
 export const WORK_MEASURE_REF_PROP: PropSchema = { ...WORK_MEASURE_PROP, description: 'This item\'s own measure, as the top-level `measure` describes.' };
 
-export const WORK_REMAINDER_PROP: PropSchema = {
-  type: 'object',
-  description: 'Only when closing a MEASURED task while its measure still returns items: say what is left and why. disposition="skipped" (you judged they should be left; the PM sees the count and your reason) or "blocked" (you cannot do them; use status="blocked" instead unless the rest of the task is done).',
-  properties: { disposition: { type: 'string', enum: ['skipped', 'blocked'] }, reason: { type: 'string' } },
-  required: ['disposition', 'reason'],
-};

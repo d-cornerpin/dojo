@@ -427,16 +427,8 @@ describe('§3 every production file that writes `work` with raw SQL has a verdic
       + '`work.description` in plaintext, and in the title the dashboard broadcasts.',
     ).not.toMatch(/lastUserMessageContent/);
 
-    const tools = codeOnly(readRel('tracker/tools.ts'));
-    expect(tools).toContain('redactHandedCredentials(agentId, result)');
-    expect(tools).toContain('redactHandedCredentials(agentId, JSON.stringify(evidenceOut))');
-    // Seam three: `fileAssignDeliverableCloseRequest`'s bind. Driven behaviourally in
-    // `tracker/__tests__/a-closing-credential-never-lands-on-the-row` §3; pinned here too so
-    // a deletion reds even if that file is removed.
-    expect(
-      tools,
-      'the A2A assign-deliverable close no longer redacts the assignee\'s deliverable text '
-      + 'before binding it to `work.result`',
-    ).toContain('redactHandedCredentials(\n    senderAgentId,');
+    // The close door's result/evidence seam left with the close door; the hand-in note is its successor.
+    expect(codeOnly(readRel('work/done/hand-in.ts'))).toContain('redactHandedCredentials(row.worker,');
+    // Seam three (the assign-thread deliverable's bind) left with its door; 2c brings the engine hand-in back.
   });
 });

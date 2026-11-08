@@ -288,7 +288,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     return {
       toolCallId: id,
       name,
-      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: work_validate (validate or reject a close request with action="validate", send work back with action="retask", adjudicate with action="override" / "apply_user_verdict"), work_schedule (pause / resume), plus read-only inspection (work_update with action="get" or "list", file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or work_validate(action="retask").`,
+      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: work_validate (open a hand-in's proof with action="open_proof", approve it or send it back with action="decide", redirect open work with action="retask"), work_schedule (pause / resume), plus read-only inspection (work_update with action="get" or "list", file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or work_validate(action="retask").`,
       isError: true,
     };
   }

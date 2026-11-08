@@ -566,7 +566,7 @@ export interface Task {
   /** T18: `cancelled` is the second TERMINAL outcome (spine `abandoned`), distinct from
    *  `fallen`. It renders in the same board column with its own word — see
    *  `dashboard/src/lib/task-status.ts`, which owns that rule. */
-  status: 'on_deck' | 'in_progress' | 'complete' | 'blocked' | 'fallen' | 'paused' | 'cancelled';
+  status: 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'blocked' | 'fallen' | 'paused' | 'cancelled';
   assignedTo: string | null;
   assignedToName: string | null;
   createdBy: string;

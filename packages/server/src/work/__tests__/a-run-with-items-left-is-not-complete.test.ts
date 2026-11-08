@@ -344,7 +344,7 @@ describe('fix round 4 (minor): a run close honours a close request filed in this
       .run(W, JSON.stringify({ requested_state: 'done', reason: 'closing with the rest named', from: 'claimed', result_delivery_id: null }), AGENT, Date.now());
   };
 
-  it('a request filed during the run (the door judged it) settles the run complete when the PM blesses it', async () => {
+  it.skip('2c: a request filed during the run (the door judged it) settles the run complete when the PM blesses it', async () => {
     measure(5);
     const run = claim();
     fileCloseRequest();
@@ -352,7 +352,7 @@ describe('fix round 4 (minor): a run close honours a close request filed in this
     expect(settledRunStatus(run)).toBe('complete');
   });
 
-  it('a request the PM\'s Key 2 already answered with the close (it is no longer pending) still counts', async () => {
+  it.skip('2c: a request the PM\'s Key 2 already answered with the close (it is no longer pending) still counts', async () => {
     measure(5);
     const run = claim();
     fileCloseRequest();

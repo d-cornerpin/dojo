@@ -20,10 +20,13 @@ import {
   workProp,
   WORK_MEASURE_PROP,
   WORK_MEASURE_REF_PROP,
-  WORK_REMAINDER_PROP,
 } from '../work-verb-schema.js';
 import { WORK_PLAN_PROP } from '../work-plan-schema.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
+// 901 (the one path to done): work_update's close fields were rewritten as the hand-in. The fields as they
+// stood before, so every earlier rung below is still measured on the schema it was measured on.
+import BEFORE_901 from './fixtures/work-update-before-901.json' with { type: 'json' };
+const WORK_REMAINDER_PROP = BEFORE_901.changed.remainder;
 
 // PHASE-5 T4: the wire array moved to `agent/tools/definitions.ts` byte-identical.
 // This walk reads the SOURCE TEXT, so the path follows the code — that is the point
@@ -62,6 +65,21 @@ function schemaOf(name: string): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__MEASURE_REF', '__REMAINDER', '__PLAN', `return (${body});`);
   return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_MEASURE_REF_PROP, WORK_REMAINDER_PROP, WORK_PLAN_PROP) as Record<string, unknown>;
+}
+
+/** work_update as it stood before 901: the hand-in's fields out, the close fields back, in their order. */
+function without901(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = (schema as { properties: Record<string, unknown> }).properties;
+  const before = BEFORE_901.changed as Record<string, unknown>;
+  const order = ['action', 'task_id', 'project_id', 'id', 'status', 'notes', 'result', 'evidence', 'resume_at', 'complete_all_runs', 'reason'];
+  const out: Record<string, unknown> = {};
+  for (const k of order) out[k] = before[k] ?? props[k];
+  for (const [k, v] of Object.entries(props)) {
+    if (k in out || BEFORE_901.added.includes(k)) continue;
+    out[k] = before[k] ?? v;
+    if (k === 'measure') out.remainder = before.remainder;
+  }
+  return { ...schema, properties: out };
 }
 
 // Captured at `8f36cdb`, BEFORE the S2 rewire, by serialising both verbs' input_schema.
@@ -218,6 +236,9 @@ const T266_BASELINE_CHARS = { work_open: 8405, work_update: 10180 };
 // and the description names both kinds. The guard puts the post-t266 object back wherever it appears
 // (top level, each tasks[] item and each plan step) and must land on t266's bytes.
 const AUDIT5_BASELINE_CHARS = { work_open: 8922, work_update: 10531 };
+// ── 901 (the one path to done): `hand_in` replaces complete_step and close_project; `outcome`, `proof`
+// and `note` replace `result`, `evidence`, `complete_all_runs` and `remainder`. work_open is unchanged.
+const H901_CHARS = { work_update: 8983 };
 const PRE_AUDIT5_PROPERTIES = {
   tool: { type: 'string', enum: ['gmail_search', 'user_gmail_search'] },
   args: { type: 'object', properties: { query: { type: 'string' }, account: { type: 'string' } }, required: ['query'] },
@@ -277,19 +298,20 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
   const openWire = schemaOf('work_open');
   const updWire = schemaOf('work_update');
   const openNow = withoutT266(withoutAudit5(openWire));
-  const updNow = withoutT266(withoutAudit5(updWire));
+  const updNow = withoutT266(withoutAudit5(without901(updWire)));
   const open = withoutT250(withoutT262(openNow));
   const upd = withoutT250(updNow);
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
     expect(JSON.stringify(openWire).length).toBe(AUDIT5_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(updWire).length).toBe(AUDIT5_BASELINE_CHARS.work_update);
+    expect(JSON.stringify(updWire).length).toBe(H901_CHARS.work_update);
+    expect(JSON.stringify(without901(updWire)).length).toBe(AUDIT5_BASELINE_CHARS.work_update);
   });
 
   it('audit #5: the measure object is the whole delta, and nothing else moved', () => {
     expect(JSON.stringify(withoutAudit5(openWire)).length).toBe(T266_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(withoutAudit5(updWire)).length).toBe(T266_BASELINE_CHARS.work_update);
     expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search', 'user_gmail_search', 'outlook_search', 'user_outlook_search', 'file_list']);
+    expect(JSON.stringify(withoutAudit5(without901(updWire))).length).toBe(T266_BASELINE_CHARS.work_update);
   });
 
   it('t266 — the measure words are the whole delta, and nothing else moved', () => {

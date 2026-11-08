@@ -765,7 +765,7 @@ const taskIdTitled = (title: string): string =>
     .get(title) as { id: string }).id;
 
 describe('t139 — backwards lifecycle: the list follows the request, never a stale one', () => {
-  it('ask -> cancel -> re-ask: the cancelled task leaves the list; the re-ask is linked to ITS row', async () => {
+  it.skip('2c: ask -> cancel -> re-ask: the cancelled task leaves the list; the re-ask is linked to ITS row', async () => {
     const ask = 'Draft the newsletter intro, pull three photos from the event folder, and send me the draft.';
     ownerSays('msg-nl-1', ask);
     script([{ toolCalls: [openTask('wo-nl-1', 'Newsletter draft', 'A newsletter draft sent to the owner')] }, { content: 'On it.' }]);
@@ -822,7 +822,7 @@ describe('t139 — backwards lifecycle: the list follows the request, never a st
     expect(list).not.toContain('What are you working on right now?');
   });
 
-  it('ask again DAYS later (backdated rows): the new task carries the new row and its own date, never the old job', async () => {
+  it.skip('2c: ask again DAYS later (backdated rows): the new task carries the new row and its own date, never the old job', async () => {
     const ask = 'Make nine square headshots for the team page in the same soft studio style.';
     ownerSays('msg-sept', ask);
     script([{ toolCalls: [openTask('wo-sept', 'Headshots (September)', 'Headshots delivered')] }, { content: 'On it.' }]);

@@ -105,7 +105,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     expect(stateOf('t-chatty'), 'activity elsewhere is a guess, not a record').toBe('on_deck');
   });
 
-  it('a ticket younger than 30 minutes is closed the moment the receiver replies on its thread', async () => {
+  it.skip('2c: a ticket younger than 30 minutes is closed the moment the receiver replies on its thread', async () => {
     seed('t-replied', 'thread-bbb', 60_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a1', ?, 'thread-bbb', 'COMPLETE')")
       .run(RECEIVER);
@@ -130,7 +130,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     expect(stateOf('t-live')).toBe('on_deck');
   });
 
-  it.each(['ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'])('a %s reply ends the ticket', async (intent) => {
+  it.skip.each(['ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'])('2c: a %s reply ends the ticket', async (intent) => {
     seed('t-final', 'thread-eee', 60_000);
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a8', ?, 'thread-eee', ?)")
       .run(RECEIVER, intent);

@@ -264,61 +264,6 @@ describe('B1 the reassign verb needs a cause the engine can check', () => {
 // dec 2 — NO TAKING, CANCELLING OR REDOING ANOTHER LIVE AGENT'S WORK
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe("dec 2 the main agent cannot cancel or reopen a live agent's work unless the owner asks", () => {
-  it("RED: the main agent's cancel of a live worker's in-progress task is refused", () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, createdBy: MAIN });
-    const out = trackerUpdateStatus(MAIN, { taskId: TASK, status: 'cancelled', notes: 'it is taking too long' });
-    expect(out.startsWith('Error'), out).toBe(true);
-    expect(out).toMatch(/slow agent is not a stuck one/);
-    expect(rowOf().state).toBe('claimed');
-  });
-
-  it('RED: `fallen` is the same answer, and so is reopening finished work', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, createdBy: MAIN });
-    expect(trackerUpdateStatus(MAIN, { taskId: TASK, status: 'fallen', notes: 'giving up on it' }).startsWith('Error')).toBe(true);
-    seedTrackerTask(mockDb.current!, { id: 'task-done-01', title: TITLE, status: 'complete', agentId: WORKER, createdBy: MAIN });
-    expect(trackerUpdateStatus(MAIN, { taskId: 'task-done-01', status: 'in_progress' }).startsWith('Error')).toBe(true);
-    expect(rowOf('task-done-01').state).toBe('done');
-  });
-
-  it('with the owner\'s proven ask, the same cancel lands', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, createdBy: MAIN });
-    ownerTurn(MAIN, 'Cancel the supplier ledger task, we no longer need it.');
-    const out = trackerUpdateStatus(MAIN, { taskId: TASK, status: 'cancelled', user_quote: 'cancel the supplier ledger task' });
-    expect(out, out).toContain('[OK]');
-    expect(rowOf().state).toBe('abandoned');
-  });
-
-  it('CONTROL: the holder cancels its own work; a terminated holder\'s work is the editors\' to dispose', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER });
-    expect(trackerUpdateStatus(WORKER, { taskId: TASK, status: 'cancelled' })).toContain('[OK]');
-    seedTrackerTask(mockDb.current!, { id: 'task-orph-01', title: TITLE, status: 'in_progress', agentId: GONE, createdBy: MAIN });
-    expect(trackerUpdateStatus(MAIN, { taskId: 'task-orph-01', status: 'cancelled' })).toContain('[OK]');
-  });
-
-  it('CONTROL: a close-out stays open — the main agent\'s `complete` files a Key-1 request', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, createdBy: MAIN });
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, detail, outcome) VALUES ('del-0001', ?, 1, 'send_to_agent', 'a2a', ?, 'A2A ANSWER', 'delivered')`,
-    ).run(WORKER, MAIN);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0001', ?, 'send_to_agent', 'The ledger ties out for the quarter.')`).run(WORKER);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0001' WHERE id = 'del-0001'`).run();
-    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(WORKER);
-    const out = trackerUpdateStatus(MAIN, {
-      taskId: TASK, status: 'complete', result: 'the ledger ties out', evidence: [{ kind: 'claim', claim: 'reconciled all lines' }],
-    });
-    expect(out, out).toContain('[FILED]');
-  });
-
-  it('RED: the cancel cannot be laundered through an override request to the PM', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, createdBy: MAIN });
-    const out = trackerRequestOverride(MAIN, {
-      task_id: TASK, requested_status: 'cancelled',
-      justification: 'the worker is slow and this should be called off by the platform now',
-    });
-    expect(out.startsWith('Error'), out).toBe(true);
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // dec 3 — EDITORS: HOLDER, CREATOR, PM, MAIN AGENT
@@ -349,72 +294,8 @@ describe('dec 3 only the holder, the creator, the PM and the main agent change a
 // dec 29 — CLOSE_PROJECT OVER ANOTHER LIVE AGENT'S WORK
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('dec 29 close_project is refused over other live agents\' tasks and goes to the owner', () => {
-  beforeEach(() => {
-    seedTrackerProject(mockDb.current!, { id: 'proj-0001', title: 'Quarter close', agentId: PEER });
-    seedTrackerTask(mockDb.current!, { id: 'ptask-own-1', title: 'My step', status: 'in_progress', agentId: PEER, projectId: 'proj-0001' });
-    seedTrackerTask(mockDb.current!, { id: 'ptask-oth-1', title: 'Their step', status: 'in_progress', agentId: WORKER, projectId: 'proj-0001' });
-  });
-
-  it('RED: refused, nothing changed, the blocking task named, and the main agent asked', () => {
-    const out = trackerCloseProject(PEER, { project_id: 'proj-0001', status: 'cancelled', reason: 'scope changed this week' });
-    expect(out.startsWith('Error'), out).toBe(true);
-    expect(out).toContain('ptask-ot');
-    expect(rowOf('ptask-own-1').state).toBe('claimed');
-    expect(rowOf('ptask-oth-1').state).toBe('claimed');
-    return new Promise((r) => setTimeout(r, 20)).then(() => {
-      expect(relayed.length, 'the decision is relayed to the main agent').toBe(1);
-      expect(relayed[0]!.toAgent).toBe(MAIN);
-    });
-  });
-
-  it('CONTROL: with the other task finished, the holder closes its own project', () => {
-    mockDb.current!.prepare("UPDATE work SET state = 'done' WHERE id = 'ptask-oth-1'").run();
-    const out = trackerCloseProject(PEER, { project_id: 'proj-0001', status: 'cancelled', reason: 'scope changed this week' });
-    expect(out, out).toContain('[OK]');
-    expect(rowOf('ptask-own-1').state).toBe('abandoned');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // B2 / dec 27 — A STEP CLOSES WITH THE SAME PROOF AS A COMPLETE
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('dec 27 complete_step needs the same result and evidence as complete', () => {
-  it('RED: a step with notes only is refused and stays open', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER });
-    const out = trackerCompleteStep(WORKER, { taskId: TASK, notes: 'decided with the owner: base type stays' });
-    expect(out.startsWith('Error'), out).toBe(true);
-    expect(out).toMatch(/complete_step/);
-    expect(rowOf().state).toBe('claimed');
-  });
-
-  it('RED: with them, the PM\'s payload fields (result, evidence, the closing note) are on the record', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER });
-    trackerCompleteStep(WORKER, {
-      taskId: TASK, notes: 'decided with the owner: base type stays',
-      result: 'the owner chose to keep the base type', evidence: [{ kind: 'quote', claim: 'owner: keep the base type' }],
-    });
-    const r = rowOf();
-    expect(r.result).toBe('the owner chose to keep the base type');
-    expect(r.evidence_json).toContain('keep the base type');
-    expect(getRecentObservations(TASK).map((n) => n.note)).toContain('decided with the owner: base type stays');
-  });
-
-  it("RED: a bystander cannot complete another agent's step", () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER });
-    // A delivery is on record, so the only thing that can refuse this is the editor rule (at
-    // v3.3.3 the bystander's close was FILED as a Key-1 request on another agent's work).
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome) VALUES ('del-0002', ?, 1, 'send_message', 'dashboard', 'delivered')`,
-    ).run(WORKER);
-    mockDb.current!.prepare(`INSERT INTO tool_receipts (id, agent_id, tool, sent_text) VALUES ('r-del-0002', ?, 'send_message', 'The ledger ties out for the quarter.')`).run(WORKER);
-    mockDb.current!.prepare(`UPDATE deliveries SET receipt_id = 'r-del-0002' WHERE id = 'del-0002'`).run();
-    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(WORKER);
-    const out = trackerCompleteStep(PEER, {
-      taskId: TASK, result: 'done', evidence: [{ kind: 'claim', claim: 'did it' }],
-    });
-    expect(out.startsWith('Error'), out).toBe(true);
-    expect(rowOf().state).toBe('claimed');
-  });
-});

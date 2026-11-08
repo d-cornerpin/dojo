@@ -41,20 +41,10 @@ vi.mock('../../../../tracker/tools.js', () => {
     trackerListActive: fail('work_update:list'),
     trackerActivity: fail('work_update:activity'),
     activityWindowStart: () => undefined,
-    trackerCompleteStep: fail('work_update:complete_step'),
-    trackerCloseProject: fail('work_update:close_project'),
     trackerPauseSchedule: fail('work_schedule:pause'),
     trackerResumeSchedule: fail('work_schedule:resume'),
     trackerResolveMissedRuns: fail('work_schedule:resolve_missed'),
     trackerRetask: fail('work_validate:retask'),
-    trackerRequestOverride: fail('work_close_request:override'),
-    trackerOverride: fail('work_validate:override'),
-    trackerRequestUserVerdict: fail('work_close_request:user_verdict'),
-    trackerApplyUserVerdict: fail('work_validate:apply_user_verdict'),
-    trackerApplyUserValidation: fail('work_validate:apply_user_validation'),
-    trackerValidatePause: fail('work_validate:validate'),
-    trackerValidateComplete: fail('work_validate:validate'),
-    trackerValidateBlocked: fail('work_validate:validate'),
   };
 });
 vi.mock('../../../../db/connection.js', () => ({
@@ -68,18 +58,14 @@ import { probeArgsFor } from '../../__tests__/door-forward-census.js';
 const DEFS = new Map(getAllToolDefinitions().map((d) => [d.name, d]));
 
 // Routing values a handler reads from its args rather than from its key.
-const ROUTING: Record<string, Record<string, unknown>> = {
-  'work_validate:validate': { kind: 'pause' },
-};
+const ROUTING: Record<string, Record<string, unknown>> = {};
 
-/** The six B3 named. They must each be REACHED, or the census is measuring air. */
+/** Handlers that reach the stubbed tracker layer. They must each be REACHED, or the census is measuring air.
+ *  (The six B3 named were the verdict doors; the one decision replaced them.) */
 const THE_SIX = [
-  'work_validate:validate',
-  'work_close_request:override',
-  'work_validate:override',
-  'work_close_request:user_verdict',
-  'work_validate:apply_user_verdict',
-  'work_validate:apply_user_validation',
+  'work_validate:retask',
+  'work_schedule:pause',
+  'work_schedule:resume',
 ];
 
 beforeEach(() => reached.clear());
@@ -107,7 +93,7 @@ describe('t189 B3: tracker handlers say isError when they return an Error: text'
     });
   }
 
-  it('is not vacuous: all six named handlers reached the stubbed tracker layer and were checked', async () => {
+  it('is not vacuous: the named handlers reached the stubbed tracker layer and were checked', async () => {
     for (const key of THE_SIX) {
       const tool = key.split(':')[0]!;
       const def = DEFS.get(tool)!;
@@ -117,6 +103,6 @@ describe('t189 B3: tracker handlers say isError when they return an Error: text'
       expect(String(res.content)).toMatch(/^Error/);
       expect(res.isError, `${key}: the stub's Error text must surface as isError`).toBe(true);
     }
-    expect(keys.length).toBeGreaterThan(20);
+    expect(keys.length).toBeGreaterThan(15);
   });
 });

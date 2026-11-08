@@ -33,7 +33,7 @@ import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import {
-  transition, rejectClaim, appendWorkEvent,
+  transition, appendWorkEvent,
   type Actor, type Claim, type WorkOutcome, type WorkState,
 } from './store.js';
 import {
@@ -44,13 +44,11 @@ import {
 // config row, so it adds no cycle to this module.
 import { getOwnerName } from '../config/platform.js';
 import { takeoverRefusal } from './row-authority.js';
-import { measuredCloseRefusal, recordOwnerRemainder } from './measure-close-gate.js';
 import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
 // leaf (imports only the DB connection), so importing it here creates no cycle with the
 // CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
 import { advanceBaseline } from '../tracker/effort-governor.js';
-import { pmVerdictRecord } from '../tracker/looked-at.js';   // K35: a PM verdict names what the PM looked at
 
 const logger = createLogger('tracker-store');
 
@@ -777,7 +775,7 @@ export function setTrackerStatus(
   // t129: the blocked-work disposal gate. HERE, and not one layer up in `tracker/schema.ts`,
   // because this function is "the tracker's one status writer" and that is the only place
   // every tracker status writer crosses — see the gate's own header below.
-  const disposal = blockedDisposalRefusal(id, status, input) ?? takeoverRefusal(id, to, input) ?? measuredCloseRefusal(id, status, input);   // t193 (dec 2); v3.5: nor measured work with items left
+  const disposal = blockedDisposalRefusal(id, status, input) ?? takeoverRefusal(id, to, input);   // t193 (dec 2)
   if (disposal) {
     logger.warn(`status change refused (${disposal.reason})`, { workId: id, status, by: input.by, actorId: input.actorId });
     return disposal;
@@ -791,7 +789,7 @@ export function setTrackerStatus(
       to,
       by: input.by,
       reason: input.reason,
-      evidenceRef: input.evidenceRef ?? (input.claim === 'authoritative' ? pmVerdictRecord(input.by, input.actorId ?? '', id)?.ref : null) ?? null,   // K35
+      evidenceRef: input.evidenceRef ?? null,
       resultDeliveryId: input.resultDeliveryId ?? null,
       claim: input.claim,
       expectedState: input.expectedState,
@@ -828,7 +826,7 @@ export function setTrackerStatus(
   // bookkeeping must never be able to fail or roll back a state change that has
   // already been decided.
   if (result.kind === 'applied') {
-    advanceBaseline(id); recordOwnerRemainder(id, status, input);   // v3.5: what the owner closed with items left
+    advanceBaseline(id);
   }
   return result;
 }
@@ -913,31 +911,6 @@ export function stampTicket(workId: string, f: {
 // 4 — THE TWO-KEY WRITES (the flag columns' successors)
 // ════════════════════════════════════════════════════════════════════════════════
 
-/** An authority upholds the row's CURRENT claim — the write behind `*_validated = 1`.
- *  `transition()` files the adjudication when a state actually moves; this is the case where
- *  the state is already right and only the verdict is missing. */
-export function upholdClaim(id: string, claimState: WorkState, _by: Actor, byId: string, note: string): number {
-  const rec = pmVerdictRecord(_by, byId, id);   // K35: a PM's verdict records what it looked at; any other authority's reads as before
-  const rowid = withUnit((): number => {
-    const info = getDb().prepare(
-      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-       VALUES (?, ?, 'upheld', ?, ?, ?, ?)`,
-    ).run(id, claimState, byId, rec?.ref ?? null, rec?.note ?? note, now());
-    appendWorkEvent(id, 'claim_upheld', byId, { claim_state: claimState, note: rec?.note ?? note, looked_at: rec?.looked_at });
-    return Number(info.lastInsertRowid);
-  });
-  logger.info('claim upheld', { workId: id, claimState, by: byId });
-  return rowid;
-}
-
-/** A thrown-back claim — the write behind `revert_count = revert_count + 1`. Delegates to
- *  `store.ts:rejectClaim` so `adjudications` keeps one writer module. */
-export function throwBackClaim(id: string, claimState: WorkState, by: Actor, byId: string, note: string): void {
-  const rec = pmVerdictRecord(by, byId, id);
-  const r = rejectClaim(id, { claimState, by, byId, note, evidenceRef: rec?.ref, lookedAt: rec?.looked_at });
-  if (r.kind !== 'applied') logger.warn('claim rejection refused', { workId: id, reason: r.reason, detail: r.detail });
-}
-
 /** `revert_count = 0`. A COUNT cannot be assigned, so a reset is a MARKER the count reads
  *  past — which also means the history survives the reset instead of being erased. */
 export function resetRevertCount(id: string, actorId: string, reason: string): void {
@@ -949,12 +922,3 @@ export function recordValidationEscalation(id: string, actorId: string, threadId
   appendWorkEvent(id, WORK_EVENT.validationEscalated, actorId, { thread_id: threadId });
 }
 
-/** `awaiting_user_verdict = 1` + `user_verdict_requested_at = now`. */
-export function requestUserVerdict(id: string, actorId: string, detail: unknown): void {
-  appendWorkEvent(id, WORK_EVENT.userVerdictRequested, actorId, detail);
-}
-
-/** `awaiting_user_verdict = 0` + `user_verdict_requested_at = NULL`. */
-export function clearUserVerdict(id: string, actorId: string, reason: string): void {
-  appendWorkEvent(id, WORK_EVENT.userVerdictCleared, actorId, { reason });
-}

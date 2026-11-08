@@ -69,9 +69,9 @@ const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8
 // 1. THE DEADLINE TABLE — thirteen rows, each carried from its own site
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('T9: the per-kind deadline table has all TWELVE cliffs, each with its reason', () => {
+describe('T9: the per-kind deadline table has all ELEVEN cliffs, each with its reason', () => {
   it('twelve ids, no more and no fewer (close_out_idle left in field fix 3 audit round #8)', () => {
-    expect(DEADLINE_IDS).toHaveLength(12);
+    expect(DEADLINE_IDS).toHaveLength(11);
     expect(Object.keys(DEADLINES).sort()).toEqual([...DEADLINE_IDS].sort());
   });
 
@@ -123,8 +123,6 @@ describe('T9: the per-kind deadline table has all TWELVE cliffs, each with its r
       .toBe(constantAt('agent/stuck-thresholds.ts', 'STUCK_AGENT_THRESHOLD_MINUTES') * 60_000);
     expect(DEADLINES.engine_event_expiry.ms)
       .toBe(constantAt('agent/v2/counterparty.ts', 'ENGINE_EVENT_EXPIRY_HOURS') * 3_600_000);
-    expect(DEADLINES.stale_request.ms)
-      .toBe(constantAt('scheduler/runner.ts', 'STALE_REQUEST_HOURS') * 3_600_000);
   });
 
   it('the three RENAMED constants still hold their pre-Phase-2 values', () => {

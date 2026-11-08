@@ -2,7 +2,7 @@ import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens, validationMeasureLines } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { engineProof, proofDelivery, proofFor, proofLines, type ResolvedItem } from '../work/done/proof.js';
-import { keepProofShownFor, noteProofShown } from './looked-at.js';
+import { latestHandIn } from '../work/done/hand-in.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -15,13 +15,10 @@ import { clearReReviewBound, reReviewHeldBack } from './pm-rereview-bound.js';
 // SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
 import { writeAgentStatus } from '../agent/agent-status.js';
 import {
-  taskScope, msToText, STATE_TO_STATUS_SQL, revertCountExpr,
-  awaitingUserVerdictExpr, unvalidatedCloseExpr, unvalidatedPauseExpr, unvalidatedBlockExpr,
-  stampColumns, closeRequestFiledExpr,
+  taskScope, msToText, STATE_TO_STATUS_SQL, revertCountExpr, stampColumns, handedInExpr,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus } from '../work/tracker-store.js';
 import { noteUnsettled } from '../work/store.js';
-import { listOverrideRequests, PENDING_OVERRIDE_COUNT_SQL } from '../work/override-requests.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
 import {
   setValidationDoorbellHandler, validationAttemptCountExpr, validationQueueOrderExpr,
@@ -35,7 +32,6 @@ import {
 import { VALIDATION_ESCALATION_MIN } from '../scheduler/validation-clock.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation, pokesSentThisCycle } from '../work/poke-ladder.js';
@@ -50,8 +46,7 @@ import {
 import { freshTailHorizon } from '../memory/tail-horizon.js';
 import { contextWindowPolicy } from '../memory/budget.js';
 import { agentTurnWindow } from '../router/router-window.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
-import type { Message } from '@dojo/shared';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isSetupCompleted } from '../config/platform.js';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
@@ -62,7 +57,6 @@ import { taskLastMovedAt, agentIsLive, answeredSinceCheckIn } from './liveness.j
 import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
 import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './effort-verdict-failures.js';
-import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 
 /** Proof items as an indented list under `head`, or '' when there are none. */
@@ -71,10 +65,6 @@ function proofBlock(proof: readonly ResolvedItem[], head: string): string {
   return lines.length > 0 ? `${head}\n${lines.map((l) => `    - ${l}`).join('\n')}\n` : '';
 }
 
-/** After a request carrying these items reached the PM, record them as shown (`noteProofShown`). */
-const markShown = (shown: ReadonlyMap<string, readonly ResolvedItem[]>): void => {
-  for (const [taskId, proof] of shown) noteProofShown(taskId, proof.map((i) => i.ref));
-};
 
 const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
 
@@ -92,26 +82,27 @@ function ownerWordsLines(taskId: string): string {
   return `\n  Owner words recorded on this task (sent while it was open; the turn that answered them touched it):\n${shown.join('\n')}`;
 }
 
-/** The PM's UNVALIDATED_COMPLETE request: the record the close is judged on, never a lean toward either verdict. */
+/** The PM's UNVALIDATED_COMPLETE request: the hand-in waiting for its decision, never a lean toward either verdict. */
 export function unvalidatedCompleteText(taskId: string, p: {
   title: string; agentName: string; goal: string | null; result: string | null; priority: string; revertCount: number;
   headExtras: string; evidenceBlock: string; ledgerRoomTokens?: number; proof?: readonly ResolvedItem[];
 }): string {
-  const proof = proofBlock(p.proof ?? proofFor(taskId), '  Proof on record (the engine resolved each item):')
-    || '  Proof on record: none (no file, message to the asker, confirmed receipt or measure at 0).\n';
-  return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) closed by ${p.agentName}, awaiting your validation.${p.headExtras}\n`
+  const handIn = latestHandIn(taskId);
+  const items = handIn?.items ?? p.proof ?? proofFor(taskId);
+  const proof = items.length > 0
+    ? `  Proof handed in (open each item before approving):\n${proofLines(items).map((l, i) => `    ${i}. ${l}`).join('\n')}\n`
+    : '  Proof handed in: none.\n';
+  return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) handed in by ${p.agentName}${handIn?.outcome === 'cant_be_done' ? " as can't be done" : ''}, waiting for your decision.${p.headExtras}\n`
     + `  Goal: ${p.goal ?? '(no goal recorded, pre-migration row)'}\n`
-    + `  Result: ${p.result ?? '(none)'}\n`
-    + `  Evidence (the worker's own words):\n${p.evidenceBlock}\n${proof}`
+    + `  Note: ${handIn?.note ?? p.result ?? '(none)'}\n`
+    + `${p.evidenceBlock ? `  Evidence (the worker's own words):\n${p.evidenceBlock}\n` : ''}${proof}`
     + `${validationMeasureLines(taskId, p.ledgerRoomTokens)}${heldDeliveryLine(taskId)}${ownerWordsLines(taskId)}\n`
     + `  Priority=${p.priority}, revert_count=${p.revertCount}.\n`
-    + `  Open the proof above BEFORE validating (skepticism rule); the worker's own message is its account, not the work. `
-    + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true) when the work demonstrably matches the goal. `
-    + `Call work_validate(action="validate", kind="complete", task_id="${taskId}", valid=false, reject_reason="...", target_status="in_progress") when it does not. `
-    + `A measured task: validate when the measure reads 0, or when the named remainder's reason holds against the goal; reject and state the count when it does not; `
-    + `when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker's reason. `
-    + `An unmeasured task: judge the proof on record above, not the result text. `
-    + `A task whose job is a decision (nothing to file or send) is delivered when the owner's recorded words above settle it; the agent's own notes quoting the owner do not count.`;
+    + `  Open the proof: work_validate(action="open_proof", task_id="${taskId}", item=N) for each item; the worker's own message is its account, not the work. `
+    + `Then work_validate(action="decide", task_id="${taskId}", verdict="approve", reason="<one line: how the proof meets the goal>"), `
+    + `or verdict="send_back" with the reason naming what is missing. `
+    + `A measured task: approve when the measure reads 0, or when the named remainder's reason holds against the goal; send it back stating the count when it does not. `
+    + `A task whose job is a decision (nothing to file or send) is met when the owner's recorded words above settle it; the agent's own notes quoting the owner do not count.`;
 }
 
 const logger = createLogger('pm-agent');
@@ -217,15 +208,13 @@ export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   'work_update:activity',
   'work_note',                                   // leave a note on a task
   'work_schedule:pause', 'work_schedule:resume',
-  'work_validate:validate', 'work_validate:retask',
+  'work_validate:decide', 'work_validate:open_proof', 'work_validate:retask',
+  'work_update:hand_in',                         // a task the PM itself works; the main agent decides it
   // ⛔ `work_update:reassign` WAS HERE. OWNER RULING 2026-10-02: "Their job is not to reassign a
   // task because they don't feel it is getting worked on fast enough. At no point during the
   // construction of the dojo did I ever ask for the PM agent to simply reassign tasks to another
   // agent." Re-ruled for v3.4 (dec 1): NEVER. `work/row-authority.ts:checkMove` also refuses the
   // PM by identity. `the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses this list.
-  'work_validate:override',
-  'work_close_request:override',
-  'work_validate:apply_user_verdict',
   // The edit ops are REQUIRED by the engine's scaffold rename handoff
   // (loop.ts dispatchPMRenameHandoff explicitly instructs the PM to call it).
   // Omitting them (2026-07-17 battery, untracked-multistep-floor red) made the
@@ -234,41 +223,13 @@ export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   // made that fact a `root_kind` column no edit can reach) and
   // FYI-ing the primary to do the task rename for it.
   'work_update:edit',
-  'work_update:close_project',
 ];
 
 const PM_ALLOWED_WORK_OPS_SET: ReadonlySet<string> = new Set<string>(PM_ALLOWED_WORK_OPS);
 
-/**
- * Operations only the PM may perform, whichever verb carries them. Kept as ops
- * for the same reason: `work_validate`'s five actions are all PM-only today,
- * but the executor gate states the rule rather than relying on that.
- */
-export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>([
-  'work_validate:validate',
-  'work_validate:retask',
-  'work_validate:override',
-  'work_validate:apply_user_verdict',
-]);
-
-/**
- * Operations only the PRIMARY may perform. One member, and it is a CORRECTION.
- *
- * UX-REPAIR round 2 T12, measured: `work_validate:apply_user_validation` sat in
- * `PM_ONLY_WORK_OPS` above AND was absent from `PM_ALLOWED_WORK_OPS`, so gate row 8 refused
- * the primary (`PERMISSION_DENIED: only the PM agent can call …`) and `pmMayCall` refused the
- * PM. The escalation's whole terminal step was closed to both agents it could be addressed to;
- * the only working door was the dashboard route the owner drives himself.
- *
- * The key here is THE USER, not the PM: this op transcribes a verdict the OWNER gave, and the
- * owner speaks to the primary. The failsafe's own 2026-06-01 intent is that the user
- * adjudicates what the PM could not, so handing it back to the PM — which has already failed
- * to rule on the row — would close the loop on the agent that could not close it. The PM stays
- * out. The two-key contract is intact: the op still applies only a quoted user verdict.
- */
-export const PRIMARY_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>([
-  'work_validate:apply_user_validation',
-]);
+/** Operations only the PM may perform, whichever verb carries them. Deciding is not one of them: the
+ *  decision door itself says who decides (`work/done/who-decides.ts`). */
+export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>(['work_validate:retask']);
 
 // Non-work tools the PM may call. Plain names: these tools were not collapsed.
 const PM_ALLOWED_OTHER_TOOLS: readonly string[] = [
@@ -666,7 +627,7 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   const payload =
     `[Engine notice - CLOSEOUT MISS]\n\n` +
-    `Agent "${ctx.agentId}" finished a turn without calling work_update(action="status") / work_update(action="complete_step"). The engine ` +
+    `Agent "${ctx.agentId}" finished a turn without calling work_update(action="status") / work_update(action="hand_in"). The engine ` +
     `did NOT pause or close the dangling one-shot task(s) below; they remain in_progress with their true status. Your job: don't rubber-stamp. Decide per task.\n\n` +
     `Dangling task(s) (still in_progress):\n${taskLines}\n\n` +
     `What the agent said to the user (shown in chat this turn):\n` +
@@ -676,13 +637,13 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Your verbs:\n` +
     `  (a) work_validate(action="retask", task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"${stalled !== null ? `; for the stalled task, ${stalledRetaskExample(stalled)}` : ''}). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing: it stays in_progress and your check-ins keep it moving. If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
-    `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the proof on record above + what the agent said + a quick work_update(action="get") / file check / etc.) that the goal is met (for a measured task: its measure reads 0, or the agent named the remainder) and the agent just forgot to close the tracker.\n\n` +
+    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing: it stays in_progress and your check-ins keep it moving. If the work genuinely can't proceed, the worker hands it in as can't be done with the proof of why. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
+    `  (c) work_validate(action="retask", task_id, directive) telling the worker to hand it in: work_update(action="hand_in") with the proof on record. USE THIS WHEN the goal looks met (for a measured task: its measure reads 0, or the agent named the remainder) and the agent just did not hand it in. You never close it yourself: the work is decided after it is handed in.\n\n` +
     `**A side effect that already ran is never re-run.** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
     `or an exec that hit a live external API, that action already happened; re-running it would duplicate it (double email, ` +
     `double text, double charge). That one call is not the whole job: judge the task on its record (its measure, the ledger, any remainder named, the receipts). ` +
-    `If the goal is met, accept it via (c), citing the audit row; if work remains, retask naming what is left and saying not to repeat the call that already ran.\n\n` +
+    `If the goal is met, ask for the hand-in via (c), citing the audit row; if work remains, retask naming what is left and saying not to repeat the call that already ran.\n\n` +
     `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
     `Rubber-stamping means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
 
@@ -699,7 +660,6 @@ export async function escalateCloseoutMissToPM(ctx: {
     // t109 C: A DROP IS A RETURN, NOT A THROW, so the `.catch` below never saw one and this
     // record claimed a hand-off nobody received (`b67cd244` is the template; the reachable
     // reasons and the clause are argued in `an-escalation-nobody-received-says-so.test.ts`).
-    if (res.delivered) markShown(shownProof);
     if (!res.delivered) {
       logger.warn('Closeout-miss escalation to the PM was NOT delivered', {
         pmId, agentId: ctx.agentId, taskCount: rows.length, source: ctx.source,
@@ -933,8 +893,8 @@ function idsStillAwaitingKeyTwo(ids: readonly string[]): Set<string> {
     const rows = db.prepare(`
       SELECT w.id AS id FROM work w
       WHERE w.id IN (${holes})
-        AND ${unvalidatedCloseExpr('w')}
-        AND ${awaitingUserVerdictExpr('w')} = 0
+        AND ${handedInExpr('w')}
+       
     `).all(...ids) as Array<{ id: string }>;
     return new Set(rows.map((r) => r.id));
   } catch {
@@ -990,8 +950,8 @@ function recordValidatorUnavailable(pmId: string, pmStatus: string): void {
     const rows = getDb().prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
-        AND ${unvalidatedCloseExpr('w')}
-        AND ${awaitingUserVerdictExpr('w')} = 0
+        AND ${handedInExpr('w')}
+       
         AND ${validationAttemptCountExpr('w')} = 0
       LIMIT 20
     `).all() as Array<{ id: string }>;
@@ -1589,10 +1549,7 @@ async function runPMReview(): Promise<void> {
           -- the worker's filed request, which leaves the row where it was); T21 made the
           -- second shape's STATE SET the one thing it is, so this count and the queue it
           -- wakes cannot disagree about what is waiting.
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
-          ${PENDING_OVERRIDE_COUNT_SQL}
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${handedInExpr('w')})
         AS c
       `).get() as { c: number }).c;
     } catch {
@@ -1694,10 +1651,7 @@ async function runPMReview(): Promise<void> {
   if (activeTasks.length === 0) {
     const pendingCount = db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
-        ${PENDING_OVERRIDE_COUNT_SQL}
+        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${handedInExpr('w')})
       AS c
     `).get() as { c: number };
     if (pendingCount.c === 0) return;
@@ -1873,81 +1827,6 @@ async function runPMReview(): Promise<void> {
     }
   }
 
-  // ── v2.7.18: unvalidated-pause detection ──
-  // Every task with status='paused' AND pause_validated=0 needs a PM
-  // judgment call before it's "trusted." Catches the gaming pattern
-  // where agents mark tasks paused just to silence PM pokes.
-  //
-  // Wait at least 1 minute after the pause to give the agent a beat to
-  // also resolve / unpause / get woken up by an inbound user message.
-  // Include the agent's last user-facing assistant message (so PM can
-  // judge whether the pause notes match a real request) and the task
-  // notes themselves (the pause reason the agent supplied).
-  const unvalidatedPauseRows = db.prepare(`
-    SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to,
-           ${msToText('w.updated_at')} AS updated_at
-    FROM work w
-    WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}
-      AND w.updated_at < ?
-    ORDER BY w.updated_at ASC
-    LIMIT 10
-  `).all(Date.now() - 60_000) as Array<{ id: string; title: string; assigned_to: string | null; updated_at: string }>;
-
-  // Phase B.0: read the pause reason from the most recent observation entry
-  // attached to this task in task_log, with fallback to the legacy notes
-  // column for tasks that pre-date the migration backfill. Once the
-  // backfill has run on this DB the legacy fallback should rarely hit.
-  //
-  // v2.9.22, also accept 'auto_sweep' entries so engine-initiated pauses
-  // surface a real reason. Pre-fix, engine auto-pauses wrote auto_sweep
-  // entries that this filter missed, so PM saw "(EMPTY)" and rejected
-  // every engine-paused task as gaming. The primary fix (engine auto-pause
-  // setting pause_validated=1) makes this filter irrelevant for engine
-  // pauses going forward, but if any other code path leaves an
-  // unvalidated auto-pause in the world, PM at least sees the reason.
-  // PHASE-2 T10G: the trail's own reader. Same three kinds, same newest-first order; the
-  // statement is gone because the table is.
-  const recentObservation = (id: string): { note: string | null } | undefined =>
-    listTaskLog(id, { limit: 1, kinds: ['observation', 'legacy_note', 'auto_sweep'] })[0];
-  const legacyNotesStmt = db.prepare(`SELECT notes FROM work WHERE id = ?`);
-
-  for (const pTask of unvalidatedPauseRows) {
-    const agentName = pTask.assigned_to
-      ? agents.find(a => a.id === pTask.assigned_to)?.name ?? pTask.assigned_to
-      : 'unassigned';
-    let lastAssistantSnippet = '(no recent assistant message)';
-    if (pTask.assigned_to) {
-      const lastMsg = db.prepare(`
-        SELECT content FROM messages
-        WHERE agent_id = ? AND role = 'assistant'
-        ORDER BY created_at DESC, rowid DESC LIMIT 1
-      `).get(pTask.assigned_to) as { content: string } | undefined;
-      if (lastMsg?.content) {
-        lastAssistantSnippet = lastMsg.content.length > 220
-          ? lastMsg.content.slice(0, 220) + '...'
-          : lastMsg.content;
-      }
-    }
-    const logRow = recentObservation(pTask.id);
-    const legacyRow = legacyNotesStmt.get(pTask.id) as { notes: string | null } | undefined;
-    const rawReason = logRow?.note ?? legacyRow?.notes ?? null;
-    const pauseReason = rawReason && rawReason.trim()
-      ? rawReason.replace(/\s+/g, ' ').trim()
-      : '(EMPTY)';
-    issues.push({
-      stableId: `${pTask.id}|UNVALIDATED_PAUSE`,
-      owes: 'uphold the pause or reject it',
-      text:
-        `UNVALIDATED_PAUSE: "${pTask.title}" (${pTask.id.slice(0, 8)}) was paused by ${agentName} but has not been validated yet.\n` +
-        `  Pause reason notes: "${pauseReason}"\n` +
-        `  Agent's last user-facing message: "${lastAssistantSnippet}"\n` +
-        `  Decide: valid pause (names a specific external trigger that matches a real request) or gaming (vague / no matching request / sounds like 'blocked' instead). ` +
-        `Call work_validate(action="validate", kind="pause", task_id="${pTask.id}", valid=true) if real. ` +
-        `Call work_validate(action="validate", kind="pause", task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
-        `Rejection auto-reverts the task to in_progress (or pass target_status to pick on_deck/blocked) and notifies the agent.`,
-    });
-  }
-
   // SWEEP CORE-2 item 1 — the doorbell's rows, as a bound OR-arm on the settle window.
   // Parameterised (never interpolated) because a work id is data.
   const doorbellIds = Array.from(doorbell).slice(0, 20);
@@ -1968,7 +1847,7 @@ async function runPMReview(): Promise<void> {
   //     Key 1. The row does not move until this rung blesses it, so it is still sitting in
   //     whichever non-terminal state it was worked from (`claimed`, `paused` after an owner wait
   //     — round-5 S5, event 22401 — or `on_deck` after a rejected pause). Which states those are is
-  //     `closeRequestFiledExpr`'s to say, not this query's — the paused one was missing here
+  //     `handedInExpr`'s to say, not this query's — the paused one was missing here
   //     for exactly as long as this query answered it itself.
   // Reading only the first shape is how the queue would go quiet while work waited in it.
   // Review M1: the room each row's ledger listing may take is the PM's OWN measured assembly budget
@@ -1997,8 +1876,8 @@ async function runPMReview(): Promise<void> {
            ${revertCountExpr('w')} AS revert_count
     FROM work w
     WHERE ${taskScope('w')}
-      AND ${unvalidatedCloseExpr('w')}
-      AND ${awaitingUserVerdictExpr('w')} = 0
+      AND ${handedInExpr('w')}
+     
       -- SWEEP CORE-2 item 1 — THE RIDER SKIPS THE SETTLE WINDOW. The 15 s guard exists so a
       -- row is not reported mid-write; a DOORBELL row was rung by the very write that
       -- finished it, with its result and evidence already persisted, so making it wait is the
@@ -2034,60 +1913,8 @@ async function runPMReview(): Promise<void> {
       .slice(0, 3)
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
-  keepProofShownFor(new Set(unvalidatedCompleteRows.map((r) => r.id)));
-  const reviewProof = new Map<string, readonly ResolvedItem[]>();
   for (const cTask of unvalidatedCompleteRows) {
-    // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
-    // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/
-    // imaginer housekeeping, PM self-tasks) must be adjudicated by the ENGINE
-    // against its own receipts, deterministically, never by the PM model chain
-    // (which cannot inspect internal machinery and stalls in poke ping-pong)
-    // and never by the user (who cannot observe it at all). Production chain:
-    // churn-era dreamer tasks sat complete+unvalidated for days, then the
-    // newly-visible escalation tier asked the OWNER yes/no questions about
-    // archive batches. The escalation skip alone would leave the stall in
-    // place forever; this branch RESOLVES it through the sanctioned Key-2 door
-    // (trackerValidateComplete as the PM), with the basis recorded.
-    // P6b SHRINK: the old bases 2 (dreamer + global archive-queue consult) and
-    // 3 (silent unverifiable leftover) are gone. With receipt-filed closeouts
-    // + execution lineage, every legitimate maintenance completion carries its
-    // own receipt (basis 1). A receipt-LESS one still closes (valid=false
-    // would re-open churn on a shell nobody can work, the days-stall class)
-    // but the basis names it a DEFECT and the log is error-level: the
-    // completing path failed to file its receipt, which is a bug to fix, not
-    // background noise to adjudicate around.
-    if (cTask.assigned_to && isSystemServiceAgent(cTask.assigned_to)) {
-      try {
-        const { trackerValidateComplete } = await import('./tools.js');
-        const hasReceipt = Boolean((cTask.result && cTask.result.trim()) || (cTask.evidence_json && cTask.evidence_json !== '[]'));
-        const basis = hasReceipt
-          ? `engine-maintenance receipt on the task itself: ${(cTask.result ?? '').slice(0, 160) || 'evidence array recorded'}`
-          : 'DEFECT: maintenance completion filed NO receipt (result/evidence empty); closed by engine jurisdiction rule to prevent churn, but the completing path owes a receipt';
-        if (!hasReceipt) {
-          logger.error('PM sweep: maintenance task completed WITHOUT a receipt (receipt-filed closeout contract violated by the completing path)', {
-            taskId: cTask.id, assignedTo: cTask.assigned_to, title: (cTask.title ?? '').slice(0, 120),
-          });
-        }
-        await trackerValidateComplete(getPMAgentId(), { task_id: cTask.id, valid: true });
-        const { writeTaskLog } = await import('./task-log.js');
-        writeTaskLog({
-          taskId: cTask.id,
-          fromEntity: 'pm',
-          entryKind: 'observation',
-          actionTaken: 'engine-maintenance adjudication',
-          reason: basis,
-        });
-        logger.info('PM sweep: engine-maintenance task adjudicated deterministically (never via model chain or user)', {
-          taskId: cTask.id, assignedTo: cTask.assigned_to, basis: basis.slice(0, 200),
-        });
-      } catch (err) {
-        logger.warn('PM sweep: engine-maintenance adjudication failed (will retry next sweep)', {
-          taskId: cTask.id, error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      continue;
-    }
-
+    // 2c: service-agent housekeeping leaves the board and settles on its own receipts (design 5c).
     const agentName = cTask.assigned_to
       ? agents.find(a => a.id === cTask.assigned_to)?.name ?? cTask.assigned_to
       : 'unassigned';
@@ -2097,7 +1924,7 @@ async function runPMReview(): Promise<void> {
       ? `\n  ⚠ SMELL_FLAG: ${renderSmellFlag(cTask.last_smell_flag)}`
       : '';
     const runLine = isRecurringRun
-      ? `\n  Per-run completion (recurring task, next fire at ${cTask.next_run_at}). On valid=true the engine archives result/evidence to task_log and resets to on_deck for next fire.`
+      ? `\n  A run of a recurring task (next fire at ${cTask.next_run_at}); the schedule goes on whatever you decide.`
       : '';
     const goalEdits = goalEditStmt(cTask.id);
     const goalEditLine = goalEdits.length > 0
@@ -2123,79 +1950,22 @@ async function runPMReview(): Promise<void> {
     // confirm it, push back on it, or go get more information.
     const doorbellLine = doorbell.has(cTask.id)
       ? `\n  🔔 ${agentName} just said they got this done. Judge it now on its record (the measure, `
-        + `what its calls touched, any remainder it named, the receipts): validate it, reject it naming `
-        + `what is missing, or get more info. Do this one now.`
+        + `what its calls touched, any remainder it named, the receipts): approve it or send it back naming `
+        + `what is missing. Do this one now.`
       : '';
     // Not shown to the model — it is the ordering fact, and prose about it would only invite
     // the validator to treat a stubborn row as suspect. Logged instead, below.
     void cTask.attempts_recorded;
     const proof = proofFor(cTask.id);
-    reviewProof.set(cTask.id, proof);
     issues.push({
       stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
-      owes: 'uphold the close or reject it naming what is missing',
+      owes: 'approve the hand-in or send it back naming what is missing',
       text: unvalidatedCompleteText(cTask.id, {
         proof,
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
         headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}`,
         ledgerRoomTokens: reviewLedgerRoomTokens(pmBudgetTokens, unvalidatedCompleteRows.length),
       }),
-    });
-  }
-
-  // ── Phase B.1: UNVALIDATED_BLOCK ──
-  const unvalidatedBlockRows = db.prepare(`
-    SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
-           w.priority AS priority, ${msToText('w.updated_at')} AS updated_at,
-           ${revertCountExpr('w')} AS revert_count
-    FROM work w
-    WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')}
-      AND ${awaitingUserVerdictExpr('w')} = 0
-      AND w.updated_at < ?
-    ORDER BY w.updated_at ASC
-    LIMIT 10
-  `).all(Date.now() - 60_000) as Array<{
-    id: string; title: string; assigned_to: string | null; goal: string | null;
-    priority: string; updated_at: string; revert_count: number;
-  }>;
-
-  for (const bTask of unvalidatedBlockRows) {
-    const agentName = bTask.assigned_to
-      ? agents.find(a => a.id === bTask.assigned_to)?.name ?? bTask.assigned_to
-      : 'unassigned';
-    const obsRow = recentObservation(bTask.id);
-    const blockReason = obsRow?.note?.trim() || '(no recent observation)';
-    issues.push({
-      stableId: `${bTask.id}|UNVALIDATED_BLOCK|${bTask.revert_count}`,
-      owes: 'uphold the block or reject it',
-      // C3 (t190): the review always carries the platform's own recent tool/connection facts.
-      text: await unvalidatedBlockIssueText({
-        taskId: bTask.id, title: bTask.title, agentName, assigneeId: bTask.assigned_to,
-        goal: bTask.goal, priority: bTask.priority, revertCount: bTask.revert_count, blockReason,
-      }),
-    });
-  }
-
-  // ── Phase B.1: OVERRIDE_REQUEST ──
-  // PHASE-2 T8T RESUMED-2 (RULING 4): the queue is `work_events` now, and the ordering key
-  // is the event sequence rather than a TEXT clock — oldest ask first, exactly as before.
-  const overrideRows = listOverrideRequests({ status: 'pending', limit: 10 });
-
-  for (const oRow of overrideRows) {
-    const agentName = oRow.requestedBy === 'engine'
-      ? 'engine (circuit-breaker)'
-      : agents.find(a => a.id === oRow.requestedBy)?.name ?? oRow.requestedBy;
-    issues.push({
-      stableId: `override|${oRow.id}`,
-      owes: 'approve the override or deny it',
-      text:
-        `OVERRIDE_REQUEST (id=${oRow.id.slice(0, 8)}): ${agentName} wants task "${oRow.taskTitle ?? '?'}" (${oRow.taskId.slice(0, 8)}) forced to "${oRow.requestedStatus}".\n` +
-        `  Goal: ${oRow.taskGoal ?? '(no goal recorded)'}\n` +
-        `  Justification: ${oRow.justification}\n` +
-        (oRow.lastEngineError ? `  Last engine error: ${oRow.lastEngineError}\n` : '') +
-        (oRow.attemptsAttached > 1 ? `  Engine-auto-fired after ${oRow.attemptsAttached} hard-gate rejections, the agent was thrashing on shape.\n` : '') +
-        `  Approve: work_validate(action="override", override_request_id="${oRow.id}", approve=true, reason="..."). ` +
-        `Deny: work_validate(action="override", override_request_id="${oRow.id}", approve=false, reason="...").`,
     });
   }
 
@@ -2356,7 +2126,6 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     id: msgId, agentId: pmId, content: situationReport,
     sourceAgentId: null, originIntent: 'pm_review', work: null,
   });
-  markShown(reviewProof);   // the report is in the PM's own record now
 
   broadcast({
     type: 'chat:message',
@@ -2519,16 +2288,14 @@ export async function runPokeCheck(): Promise<void> {
       // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
       const closeStmt = {
         run: (id: string) => noteUnsettled(setTrackerStatus(id, 'fallen', {
-          by: 'pm', actorId: getPMAgentId(), claim: 'authoritative',
+          by: 'pm', actorId: getPMAgentId(),   // 2c: an engine hand-in from the thread's reply
           reason: 'A2A assignment answered: the receiver recorded a reply on this ticket\'s thread but never moved the ticket',
         }), 'pm: stale A2A assignment swept', { taskId: id }),
       };
       let swept = 0;
-      const sweptProjects = new Set<string>();
       const { writeTaskLog } = await import('./task-log.js');
       for (const t of candidates) {
         closeStmt.run(t.id);
-        if (t.project_id) sweptProjects.add(t.project_id);
         writeTaskLog({
           taskId: t.id,
           fromEntity: 'engine',
@@ -2545,15 +2312,7 @@ export async function runPokeCheck(): Promise<void> {
           swept, candidates: candidates.length,
           sample: candidates.slice(0, 3).map(t => `${t.id.slice(0, 8)}:${t.title.slice(0, 40)}`),
         });
-        // D-K: a sweep-to-fallen can be the transition that empties a project of
-        // open tasks; run the success-vs-fail-open check so the project gets its
-        // needs-attention label + primary notice instead of staying silently
-        // active. Idempotent, extra calls are harmless. Dynamic import: tools.ts
-        // statically imports this module, a static back-import would cycle.
-        const { checkProjectCompletion } = await import('./tools.js');
-        for (const projectId of sweptProjects) {
-          checkProjectCompletion(projectId, getPMAgentId());
-        }
+        // 2c: the project roll-up runs at the decision.
       }
     }
   } catch (err) {
@@ -2579,10 +2338,7 @@ export async function runPokeCheck(): Promise<void> {
           -- the worker's filed request, which leaves the row where it was); T21 made the
           -- second shape's STATE SET the one thing it is, so this count and the queue it
           -- wakes cannot disagree about what is waiting.
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedBlockExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
-          ${PENDING_OVERRIDE_COUNT_SQL}
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${handedInExpr('w')})
         AS c
       `).get() as { c: number };
       return row.c;
@@ -2617,7 +2373,7 @@ export async function checkInAtThePark(taskId: string): Promise<void> {
 /** The worker's close request is filed on this row and no verdict has landed yet. */
 function closeFiledAwaitingVerdict(taskId: string): boolean {
   try {
-    return !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${closeRequestFiledExpr('w')} = 1`).get(taskId);
+    return !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${handedInExpr('w')} = 1`).get(taskId);
   } catch { return false; }   // a read that fails leaves the ladder as it was
 }
 

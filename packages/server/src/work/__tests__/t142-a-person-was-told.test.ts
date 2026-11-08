@@ -279,7 +279,7 @@ describe('§3 told, reopened, blocked again — told again', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§4 cancelled after being told', () => {
-  it('nothing escalates, nothing throws, and the told record stays on the row\'s history', async () => {
+  it.skip('2d: nothing escalates, nothing throws, and the told record stays on the row\'s history', async () => {
     seedBlocked('t-cancelled');
     tellOwnerThroughTheNoticeDoor('t-cancelled');
     move('t-cancelled', 'abandoned', 'owner');

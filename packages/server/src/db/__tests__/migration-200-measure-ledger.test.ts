@@ -143,8 +143,8 @@ describe('migration 200b: the measured event kind', () => {
     for (const k of ['measured', 'continued', 'stalled']) expect(() => insertEvent(db, k)).not.toThrow();
     const { WORK_EVENT_KINDS } = await import('../../work/event-kinds.js');
     expect(WORK_EVENT_KINDS).toEqual(expect.arrayContaining(['measured', 'continued', 'stalled']));
-    // ONE rebuild: no later migration rebuilds work_events for another kind.
+    // ONE rebuild for this release; 901 is the next release's one migration (the one path to done).
     const rebuilders = fs.readdirSync(MIGRATIONS).filter((f) => f > '200' && /CHECK\s*\(\s*kind\s+IN/i.test(fs.readFileSync(path.join(MIGRATIONS, f), 'utf-8')));
-    expect(rebuilders).toEqual([FILE_B]);
+    expect(rebuilders).toEqual([FILE_B, '901_task_done_one_path.sql']);
   });
 });

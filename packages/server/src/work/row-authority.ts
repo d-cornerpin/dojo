@@ -38,7 +38,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { isPMAgent, isPrimaryAgent, getOwnerName, getPrimaryAgentId } from '../config/platform.js';
+import { isPMAgent, isPrimaryAgent, getOwnerName } from '../config/platform.js';
 import { turnContext } from '../agent/turn-context.js';
 import { currentAddress } from '../agent/v2/turn-address.js';
 import { recordMove } from './move-record.js';
@@ -367,37 +367,3 @@ export function planSpawnTask(actorId: string, taskId: string, handling: unknown
 
 // ── 5. CLOSING A WHOLE PROJECT (dec 29) ─────────────────────────────────────────────────
 
-/**
- * dec 29: a bulk close over work another LIVE agent holds — the project row or an open task —
- * is refused unless the owner asked (proven structurally). The agent is told which rows block
- * it; a non-main closer's request goes to the owner through the main agent, the one agent that
- * speaks with them (the relay `work_close_request(action="user_verdict")` uses). `null` = go.
- */
-export function projectCloseRefusal(
-  actorId: string, projectId: string, title: string, status: string, reason: string, userQuote: string | null,
-): string | null {
-  const ids = getDb().prepare(
-    `SELECT id FROM work WHERE kind = 'task' AND parent_id = ? AND state NOT IN ('done', 'failed', 'abandoned')`,
-  ).all(projectId) as Array<{ id: string }>;
-  const blockers = [{ id: projectId }, ...ids].map(({ id }) => rowFacts(id))
-    .filter((f): f is RowFacts => !!f && f.holderLive && !isOwn(f, actorId));
-  if (blockers.length === 0 || (userQuote && ownerAskedInThisTurn(actorId, userQuote).ok)) return null;
-  const list = blockers.map((b) => `"${b.title}" (${b.id.slice(0, 8)}, held by ${who(b.holder)})`).join('; ');
-  if (!isPrimaryAgent(actorId)) {
-    void import('../agent/a2a-notice.js').then(({ deliverA2ANotice }) => deliverA2ANotice({
-      intent: 'QUESTION', threadId: '', requiresResponse: true,
-      payload: `Please put this decision to ${getOwnerName()}: I (agent ${actorId}) want to close project "${title}" `
-        + `(${projectId.slice(0, 8)}) as ${status} because: ${reason}. That would also close work other live agents hold: ${list}. `
-        + `The platform refused the close until ${getOwnerName()} decides. If they agree, close it with `
-        + `work_update(action="close_project", project_id="${projectId}", status="${status}", reason="...", user_quote="<their exact words>").`,
-      toAgent: getPrimaryAgentId(), fromAgent: actorId,
-    }, 'Blocked project close relayed to the main agent', { projectId }, actorId)).catch((err) => {
-      logger.warn('blocked project close: relay to the main agent failed', { projectId, error: err instanceof Error ? err.message : String(err) });
-    });
-  }
-  return `Error: project "${title}" was NOT closed, and nothing on it changed. Closing it would also close `
-    + `${blockers.length} open item(s) other live agents hold: ${list}. That is ${getOwnerName()}'s call, not an agent's. `
-    + (isPrimaryAgent(actorId)
-      ? `Ask ${getOwnerName()} whether to close it; if they say so, call again with user_quote set to their exact words.`
-      : `The main agent has been asked to put this to ${getOwnerName()}; do not retry the close.`);
-}

@@ -23,7 +23,7 @@ import type { Database } from 'better-sqlite3';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { taskScope, closeRequestFiledExpr } from '../../../../work/tracker-view.js';
+import { taskScope, handedInExpr } from '../../../../work/tracker-view.js';
 import { taskMovedAtSql, jobCarriedIds } from '../../../../work/task-freshness.js';
 import { readMeasureFacts, formatMeasureLine } from '../../../../work/measure-view.js';
 import { advance } from '../../state.js';
@@ -80,14 +80,14 @@ export async function runCloseoutGate(
     // v3.5 live check (preflight.4, row 5b): a close the worker has FILED waits on its verdict (the PM's,
     // or the owner's when escalated), and the filing told the worker nothing further is needed from it.
     // The ball is not the worker's, so neither arm names it: the PM ladder's own question
-    // (`closeRequestFiledExpr`, the one predicate), asked here too. A rejected close is open work again
+    // (`handedInExpr`, the one predicate), asked here too. A rejected close is open work again
     // (`claim_rejected` ends the request), so the gate sees it as before.
     const inProgressDanglers = (db.prepare(`
       SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
         AND w.is_paused = 0
-        AND ${closeRequestFiledExpr('w')} = 0
+        AND ${handedInExpr('w')} = 0
         AND ${taskMovedAtSql('w')} < ?
       ORDER BY ${taskMovedAtSql('w')} ASC
       LIMIT 10
@@ -112,7 +112,7 @@ export async function runCloseoutGate(
       WHERE ${taskScope('t')} AND t.agent_id = ?
         AND t.state = 'on_deck'
         AND t.is_paused = 0
-        AND ${closeRequestFiledExpr('t')} = 0
+        AND ${handedInExpr('t')} = 0
         AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
         AND t.schedule_status != 'waiting'
         AND p.requester_id = ?
@@ -189,8 +189,7 @@ export async function runCloseoutGate(
         `${GATE_MSG_HEAD} Your tracker shows work that has not moved for a while; nothing is closed for you, and the tracker should say where it stands.\n\n` +
         `${sections.join('\n\n')}\n\n` +
         `**Start this turn with one tracker call, before any reply.** For each item: work_note(task_id, notes="what is next") if you are continuing it (then carry on with the work in this same turn); ` +
-        `work_update(action="status", status="paused" with resume_at, or "blocked") if you are waiting; status="complete" (or action="complete_step") only for one that is done (a measured task closes when its measure reads 0; if some of its items genuinely cannot or should not be done, pass remainder naming them and why); ` +
-        `work_update(action="close_project", project_id, status="cancelled", reason="...") only if the whole project is no longer wanted (a duplicate, or superseded). ` +
+        `work_update(action="status", status="paused" with resume_at, or "blocked") if you are waiting; work_update(action="hand_in") only for one that is done or cannot be done, with its proof (a measured task is finished when its measure reads 0); ` +
         `Until one tracker call lands the engine refuses other tool calls; after it, the rest of the turn is yours. ` +
         `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.]`
       );

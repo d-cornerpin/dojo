@@ -10,23 +10,12 @@ import { broadcast } from '../gateway/ws.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { setTrackerStatus, resetRevertCount } from '../work/tracker-store.js';
 import { workSettled, isStateConflict, type WorkOutcome, type WorkPatchOutcome } from '../work/store.js';
-import { awaitingUserVerdictExpr, stateToStatus } from '../work/tracker-view.js';
+import { stateToStatus } from '../work/tracker-view.js';
 import { getTask } from './schema.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('finished-task-schedule');
 
-/**
- * ONE test for "this task is a live recurring schedule" — the filer (`work_update` status and
- * complete_step) and the validator (`work_validate` complete) used to each spell their own
- * (`schedule_status !== 'unscheduled' && repeat_interval` vs `repeat_interval !== null`), so a
- * row one called recurring the other treated as a one-shot, or the reverse.
- */
-export const isScheduledRecurring = (
-  scheduleStatus: string | null | undefined, repeatInterval: number | null | undefined,
-): boolean => scheduleStatus !== 'unscheduled' && !!repeatInterval;
-
-/** The row's state when it is finished (done, failed or abandoned); null when it is still live. */
 export function finishedStateOf(taskId: string): string | null {
   const st = (getDb().prepare('SELECT state FROM work WHERE id = ?').get(taskId) as { state: string } | undefined)?.state;
   return isTerminalName(st) ? st! : null;
@@ -67,15 +56,11 @@ export function armScheduleOnOwnerSave(taskId: string, arm: () => WorkPatchOutco
       if (finished) {
         for (const to of ['active', 'on_deck'] as const) {
           const hop = setTrackerStatus(taskId, to, {
-            by: 'owner', actorId: 'user', claim: 'authoritative',
+            by: 'owner', actorId: 'user',
             reason: 'the owner set a new schedule on a finished task (dashboard PUT /tracker/tasks/:id)',
           });
           if (!workSettled(hop)) throw new ReopenRefused(refusedWhy(hop));
         }
-        // Same as the status branch of this PUT: a person moving a task resets its revert count
-        // unless it is awaiting his verdict. Inside the unit, so a landed reopen never answers 500.
-        const awaiting = getDb().prepare(`SELECT ${awaitingUserVerdictExpr('w')} AS a FROM work w WHERE w.id = ?`).get(taskId) as { a: number } | undefined;
-        if (awaiting?.a !== 1) resetRevertCount(taskId, 'user', 'dashboard transition');
       }
       const armed = arm();
       if (unsettled(armed)) throw new ReopenRefused(refusedWhy(armed));

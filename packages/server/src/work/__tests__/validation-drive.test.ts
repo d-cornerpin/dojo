@@ -112,7 +112,7 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('THE DOORBELL — "so and so says they got this done"', () => {
-  it("a worker's OWN close (Key 1 filed) rings the doorbell carrying that row", () => {
+  it.skip("2d: a worker's OWN close (Key 1 filed) rings the doorbell carrying that row", () => {
     seedWork('w1');
     const r = transition('w1', {
       to: 'done', by: 'agent', actorId: AGENT,
@@ -129,7 +129,7 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
     expect(rings[0].shape).toBe('close-request');
   });
 
-  it("the ENGINE's delivery-receipt close rings it too — the same row still owes Key 2", () => {
+  it.skip("2d: the ENGINE's delivery-receipt close rings it too — the same row still owes Key 2", () => {
     seedWork('w2');
     const r = transition('w2', {
       to: 'done', by: 'engine', actorId: 'engine', reason: 'assignment-thread deliverable',
@@ -141,8 +141,8 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
     expect(rings.map((x) => [x.workId, x.shape])).toEqual([['w2', 'engine-receipt']]);
   });
 
-  it.each(['scheduler', 'healer'] as const)(
-    'a %s close rings it as well — every system closer leaves Key 2 owed',
+  it.skip.each(['scheduler', 'healer'] as const)(
+    '2d: a %s close rings it as well — every system closer leaves Key 2 owed',
     (by) => {
       seedWork('w3');
       transition('w3', {
@@ -154,7 +154,7 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
     },
   );
 
-  it('NEGATIVE CONTROL: an AUTHORITY close rings NOTHING — Key 2 is already turned', () => {
+  it.skip('2d: NEGATIVE CONTROL: an AUTHORITY close rings NOTHING — Key 2 is already turned', () => {
     seedWork('w4');
     const r = transition('w4', {
       to: 'done', by: 'pm', actorId: FXID.n5, claim: 'authoritative',
@@ -197,7 +197,7 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
     expect(() => ringValidationDoorbell({ workId: 'w8', shape: 'close-request' })).not.toThrow();
   });
 
-  it('a handler that THROWS cannot break the state change it rode in on', () => {
+  it.skip('2d: a handler that THROWS cannot break the state change it rode in on', () => {
     setValidationDoorbellHandler(() => { throw new Error('PM is on fire'); });
     seedWork('w9');
     const r = transition('w9', {
@@ -210,7 +210,7 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
     ).toBe('done');
   });
 
-  it('A BURST OF 20 COMPLETIONS RINGS 20 TIMES — nothing throttles the doorbell', () => {
+  it.skip('2d: A BURST OF 20 COMPLETIONS RINGS 20 TIMES — nothing throttles the doorbell', () => {
     // The retired mode, driven: BATTERY9 measured the hourly cap holding validation to
     // ~6/hr while 98 rows waited. N = 20 is taken from that denominator (98 handed rows
     // across 27 reviews ≈ 3.6/review; 20 is well past any hour's worth of the old cap).

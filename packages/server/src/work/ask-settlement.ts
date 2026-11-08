@@ -56,7 +56,7 @@ import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
-import { closeRequestFiledExpr } from './tracker-view.js';
+import { handedInExpr } from './tracker-view.js';
 import { jobCarriedAsks } from './task-freshness.js';
 import { delegatedRelayEvidence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
@@ -1217,7 +1217,7 @@ function mediaJobs(askRootId: string): { all: number; out: number; cancelled: nu
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (getDb().prepare(
     `SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
-        AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${closeRequestFiledExpr('t')} = 0 LIMIT 1`,
+        AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0 LIMIT 1`,
   ).get(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not filed a close)';
   const bag = turnContext(ask.agent_id);
   if (bag?.root?.kind === 'ask' && bag.root.sourceMessageId === ask.root_id && bag.turnNumber !== ignoreTurn) {

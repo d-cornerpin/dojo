@@ -92,29 +92,17 @@ function ownerSaidSince(atMs: number, q: string): boolean {
   return saidIn(rows, q, floor);
 }
 
-/** Did the owner himself write `quote` (a whole message or sentence), since the verdict on `taskId` was requested? */
-export function ownerSaidSinceVerdictAsked(taskId: string, quote: string): boolean {
-  const q = normalizeQuote(quote);
-  if (!q) return false;
-  const at = askedAt(taskId, WORK_EVENT.userVerdictRequested);
-  return at !== null && ownerSaidSince(at, q);
-}
-
-// v3.5 field fix 3 (owner ruling b): "the owner approved" is accepted only when the owner's words really
-// appear in the conversation. The PM review exists so agents cannot close jobs on their own to get out of
-// the work, so BOTH owner doors (`apply_user_verdict`, `apply_user_validation`) take their quote through this.
+// "The owner decided" is accepted only when the owner's words really appear in the conversation: agents
+// must not close jobs on their own to get out of the work, so a relayed owner decision is checked here.
 //
-// Newer than the ask: the ask is the task's own event (`user_verdict_requested` for a stalemate verdict,
-// `validation_escalated` for a validation check). With no ask on record, only the owner's message this turn
+// Newer than the ask: the ask is the task's own `validation_escalated` event. With no ask on record, only the owner's message this turn
 // is answering counts, and the owner's later messages in the same conversation: never older history.
 export type OwnerQuoteProof = { ok: true } | { ok: false; why: string };
 
-export function ownerQuoteProof(
-  taskId: string, ask: 'verdict' | 'validation', agentId: string, quote: string,
-): OwnerQuoteProof {
+export function ownerQuoteProof(taskId: string, agentId: string, quote: string): OwnerQuoteProof {
   const q = normalizeQuote(quote);
   if (!q) return { ok: false, why: 'no quote was given' };
-  const at = askedAt(taskId, ask === 'verdict' ? WORK_EVENT.userVerdictRequested : WORK_EVENT.validationEscalated);
+  const at = askedAt(taskId, WORK_EVENT.validationEscalated);
   if (at !== null) {
     return ownerSaidSince(at, q)
       ? { ok: true }

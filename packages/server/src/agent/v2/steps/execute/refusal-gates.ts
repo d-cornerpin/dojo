@@ -144,7 +144,7 @@ export function runRefusalGates(
         `  (a) Continue the work from that result: the next item or step, or \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
         `  (b) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
         `  (c) Send ${userWords(turnCtx.address)} a direct question if you need clarification.\n` +
-        `  (d) Only if the work is done: work_update(action="status", status='complete', result='...', evidence=[...]).`;
+        `  (d) Only if the work is done: work_update(action="hand_in", outcome="finished", proof=[...], note='...').`;
       state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
       logger.warn('v2: thrash gate refused tool call', {
         toolName: tc.name, signature: thisSig,
@@ -277,7 +277,7 @@ export function runRefusalGates(
       `Refused: engine tracker check. ${closeOut.live.length} in_progress task(s) of yours have not moved for a while ` +
       `(ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
       `Say where they stand before any other tool: work_note(task_id, notes="what is next") if you are continuing; ` +
-      `work_update(action="status", status="paused"|"blocked") if you are waiting; status="complete" only if one is done. ` +
+      `work_update(action="status", status="paused"|"blocked") if you are waiting; work_update(action="hand_in") only for one that is done. ` +
       `After any one of those the gate stands down for this turn and "${tc.name}" works normally. ` +
       `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.`
     );

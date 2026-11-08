@@ -48,7 +48,6 @@ beforeEach(() => {
   const m = mocked();
   m.getProjects.mockResolvedValue({ ok: true, data: [{ id: 'p1', title: 'Alpha', status: 'active' }] } as never);
   m.getAgents.mockResolvedValue({ ok: true, data: [] } as never);
-  m.getOverrideRequests.mockResolvedValue({ ok: true, data: [] } as never);
   m.getTrackerHygiene.mockResolvedValue({ ok: false, error: 'x' } as never);
 });
 afterEach(() => { vi.clearAllMocks(); });

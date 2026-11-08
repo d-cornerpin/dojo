@@ -121,13 +121,13 @@ describe('the PM runs on its whole soul', () => {
     const soul = getSoulContent(PM);
 
     // The doctrine the stub does not have. Each of these is a section of `templates/PM-SOUL.md`
-    // whose absence was a live behaviour: the skepticism block is the one that tells the PM to
-    // dereference a pointer before it rejects a close.
-    expect(soul).toContain('# Skepticism');
-    expect(soul).toContain('NEVER reject because you didn');
-    expect(soul).toContain('# Non-idempotent tasks, the duplicate-action trap');
+    // whose absence was a live behaviour: the deciding block is the one that tells the PM to open
+    // the proof before it approves.
+    expect(soul).toContain('# Deciding hand-ins');
+    expect(soul).toContain('An approval is refused until every item has been opened by you');
+    expect(soul).toContain('the directive says NOT to repeat it');
     expect(soul).toContain('# Vault, Review Continuity');
-    expect(soul.length).toBeGreaterThan(10_000);
+    expect(soul.length).toBeGreaterThan(7_000);
   });
 
   it('every placeholder is substituted — the model is never shown a `{{…}}`', () => {
@@ -160,7 +160,7 @@ describe('the PM runs on its whole soul', () => {
 
     const soul = getSoulContent(PM);
 
-    expect(soul).toContain('# Skepticism');
+    expect(soul).toContain('# Deciding hand-ins');
     expect(soul).not.toContain('{{');
     // Re-seeded on disk, so the card and the model agree from here on.
     expect(fs.readFileSync(path.join(PROMPTS, 'PM-SOUL.md'), 'utf-8')).toBe(soul);

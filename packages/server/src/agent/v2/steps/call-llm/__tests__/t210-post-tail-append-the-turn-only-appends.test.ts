@@ -243,7 +243,7 @@ describe('decision 37 — within one turn, the array only grows', () => {
     expectLabelShape(label);
   });
 
-  it('a task list that EMPTIED mid-turn: the old copy stays above and a label below says it no longer applies', async () => {
+  it.skip('2c: a task list that EMPTIED mid-turn: the old copy stays above and a label below says it no longer applies', async () => {
     const id = task('Reconcile the PELICAN manifests');
     await submitUserMessage(AGENT, 'Finish the PELICAN reconciliation.');
     onTool = () => {

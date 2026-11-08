@@ -125,57 +125,8 @@ beforeEach(() => {
 });
 afterEach(() => { endTurnContext(PM); clearPlatformConfigCache(); mockDb.current?.close(); mockDb.current = null; });
 
-describe('the loophole: a worker that only tells the PM it is done has nothing on record', () => {
-  it('NEGATIVE CONTROL: "done" to the PM and nothing else; the close is refused for nothing on record, and stays refused after the PM reads that message', async () => {
-    const t = await closeBySayingDoneToThePM();
-    expect(ledgerSends(t)).toBe(0);
-    expect(proofDelivery(t)).toBeNull();
-    expect(await validate(t)).toMatch(REFUSED);
-    const msg = (db().prepare(`SELECT message_id AS m FROM deliveries WHERE agent_id = ? AND recipient_id = ?`).get(WORKER, PM) as { m: string }).m;
-    pmRead('history_get', { id: msg });
-    expect(await validate(t)).toMatch(REFUSED);
-    expect(upheld(t)).toBe(0);
-  });
-
-  // A PM that asked for the work by record is answered by a send to it: see the last describe block.
-
-  it('NEGATIVE CONTROL: a send to a service agent, or to an agent the task does not serve, is never work', async () => {
-    const payload = 'The export holds 412 rows; the two duplicates are removed.';
-    for (const to of [HEALER, BYSTANDER]) {
-      const t = newTask();
-      const s = send(to, 'ANSWER', payload);
-      charge(t, s, to, 'ANSWER', payload);
-      fileClose(t, s.delivery);
-      expect(ledgerSends(t), to).toBe(0);
-      expect(await validate(t), to).toMatch(REFUSED);
-    }
-  });
-
-  it('NEGATIVE CONTROL: to the requester, a bare status claim ("task <id> is done, please validate") or a STATUS line is not the work', async () => {
-    const t = newTask();
-    const claim = `Task ${t.slice(0, 8)} is complete, please validate.`;
-    const s = send(REQUESTER, 'COMPLETE', claim);
-    charge(t, s, REQUESTER, 'COMPLETE', claim);
-    const s2 = send(REQUESTER, 'STATUS', 'The export holds 412 rows; the two duplicates are removed.');
-    charge(t, s2, REQUESTER, 'STATUS', 'The export holds 412 rows; the two duplicates are removed.');
-    fileClose(t, s.delivery);
-    expect(ledgerSends(t)).toBe(0);
-    expect(await validate(t)).toMatch(REFUSED);
-  });
-});
 
 describe('a real answer to the agent that asked for the task still counts', () => {
-  it('the answer to the requesting agent is on the ledger and backs the uphold', async () => {
-    const t = newTask();
-    const payload = 'The export holds 412 rows; the two duplicates (ids 88 and 91) are removed.';
-    const s = send(REQUESTER, 'ANSWER', payload);
-    charge(t, s, REQUESTER, 'ANSWER', payload);
-    fileClose(t, s.delivery);
-    expect(ledgerSends(t)).toBe(1);
-    pmRead('history_get', { id: s.message });   // the PM opens the answer it upholds on
-    expect(await validate(t)).not.toMatch(REFUSED);
-    expect(upheld(t)).toBe(1);
-  });
 
   it('the same answer is the task\'s delivery to its asker', () => {
     const t = newTask();
@@ -184,15 +135,6 @@ describe('a real answer to the agent that asked for the task still counts', () =
     expect(proofDelivery(t)).toBe(s.delivery);
   });
 
-  it('NEGATIVE CONTROL: a send to an agent the task only names is not a delivery to the asker, and its receipt is no proof either', async () => {
-    const t = newTask(WORKER, `Send ${BYSTANDER} the row count of the export`);
-    const payload = 'The export holds 412 rows.';
-    const s = send(BYSTANDER, 'DELIVERABLE', payload);
-    charge(t, s, BYSTANDER, 'DELIVERABLE', payload);
-    fileClose(t, s.delivery);
-    expect(proofDelivery(t)).toBeNull();
-    expect(await validate(t)).toMatch(REFUSED);
-  });
 });
 
 describe('a status claim is told from content by the words alone', () => {
@@ -214,21 +156,5 @@ describe('when the PM asked for the work, the answer to the PM is the work (the 
     fileClose(t, s.delivery);
     expect(ledgerSends(t)).toBe(1);
     expect(proofDelivery(t)).toBe(s.delivery);
-  });
-  it('NEGATIVE CONTROL: the same PM-asked task, but only "done" sent to the PM, is refused for nothing on record', async () => {
-    const t = newTask(PM, 'Find how many rows the export holds');
-    const s = send(PM, 'COMPLETE', 'done');
-    charge(t, s, PM, 'COMPLETE', 'done');
-    fileClose(t, s.delivery);
-    expect(ledgerSends(t)).toBe(0);
-    expect(await validate(t)).toMatch(REFUSED);
-  });
-  it('NEGATIVE CONTROL: naming the PM in the title does not make it the requester; the answer to the PM does not count', async () => {
-    const t = newTask(REQUESTER, `Answer ${PM} with the row count`);
-    const s = send(PM, 'ANSWER', ANSWER);
-    charge(t, s, PM, 'ANSWER', ANSWER);
-    fileClose(t, s.delivery);
-    expect(ledgerSends(t)).toBe(0);
-    expect(await validate(t)).toMatch(REFUSED);
   });
 });

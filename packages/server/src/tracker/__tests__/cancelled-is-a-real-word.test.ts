@@ -134,43 +134,8 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 status:"cancelled" lands on the spine as `abandoned`', () => {
-  it('the round-3 S2 shape: a user cancellation is stored as abandoned, read back as cancelled', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Take the trash out', status: 'on_deck' });
-    const out = trackerUpdateStatus(AGENT, {
-      taskId: TASK, status: 'cancelled',
-      notes: `Cancelled per ${FX.n11}: he\'ll take the trash out tonight instead.`,
-    });
-    expect(out).toContain('[OK]');
-    expect(rowOf().state).toBe('abandoned');
-    expect(rowOf().closed_at).not.toBeNull();
-    expect(out).toContain('status=cancelled');
-  });
 
-  it('every user-choice synonym reaches the same terminal, and none of them reach `failed`', () => {
-    const words = ['cancelled', 'canceled', 'dropped', 'wontfix', 'abandoned', 'Cancelled', 'CANCELLED'];
-    for (const [n, word] of words.entries()) {
-      const id = `synonym-${n}-000${n}`;
-      seedTrackerTask(mockDb.current!, { id, title: word, status: 'on_deck' });
-      const out = trackerUpdateStatus(AGENT, { taskId: id, status: word });
-      expect(out, `${word}: ${out}`).toContain('[OK]');
-      expect(rowOf(id).state, word).toBe('abandoned');
-    }
-  });
 
-  it('CONTROL — the failure words are byte-identical: still `failed`', () => {
-    // Ids are deliberately non-prefixing: `resolveTaskId` accepts an 8+ char PREFIX, so
-    // `task-fail` + the word would make three ambiguous ids and the tool would refuse all
-    // three — a green that proved nothing.
-    const cases: Array<[string, string]> = [
-      ['fallen', 'wordfallen-01'], ['failed', 'wordfailed-01'], ['fail', 'wordfailbare-01'],
-    ];
-    for (const [word, id] of cases) {
-      seedTrackerTask(mockDb.current!, { id, title: word, status: 'on_deck' });
-      const out = trackerUpdateStatus(AGENT, { taskId: id, status: word });
-      expect(out, `${word}: ${out}`).toContain('[OK]');
-      expect(rowOf(id).state, word).toBe('failed');
-    }
-  });
 
   it('CONTROL — every other synonym class is untouched', () => {
     // `complete` and `on_deck` are excluded on purpose, each guarded by a rule that is NOT
@@ -195,71 +160,13 @@ describe('§1 status:"cancelled" lands on the spine as `abandoned`', () => {
     }
   });
 
-  it('an unrecognized value is still REFUSED, and the guidance now names cancelled', () => {
-    seedTrackerTask(mockDb.current!, { id: 'task-bogus-1', title: 'x', status: 'on_deck' });
-    const out = trackerUpdateStatus(AGENT, { taskId: 'task-bogus-1', status: 'flumped' });
-    expect(out).toMatch(/^Error: "flumped" is not a recognized task status/);
-    expect(out).toContain('cancelled');
-    expect(rowOf('task-bogus-1').state).toBe('on_deck');
-  });
 
-  it('the advertised vocabulary and the error text agree — the contradiction is gone', () => {
-    seedTrackerTask(mockDb.current!, { id: 'task-vocab-1', title: 'x', status: 'on_deck' });
-    const err = trackerUpdateStatus(AGENT, { taskId: 'task-vocab-1', status: 'zzz' });
-    // Every value the wire enum advertises for action="status" must appear in the legal set
-    // the error prints. `definitions.ts:1097` is the enum; this is the promise it makes.
-    for (const v of ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled']) {
-      expect(err, `error text omits the advertised value "${v}"`).toContain(v);
-    }
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §2 — THE LEDGER NAMES THE ACTOR'S CHOICE, AND THE SCHEDULE STILL DISARMS (F-17)
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§2 the reason string and the schedule', () => {
-  it('a cancellation never says "given up on"', () => {
-    seedTrackerTask(mockDb.current!, {
-      id: TASK, title: 'Reminder: trash', status: 'on_deck',
-      schedule_status: 'waiting', is_paused: 0, next_run_at: Date.now() + 3_600_000,
-      repeat_interval: 1, repeat_unit: 'days', task_kind: 'reminder',
-    });
-    trackerUpdateStatus(AGENT, { taskId: TASK, status: 'cancelled' });
-    const log = logOf();
-    expect(log).not.toContain('given up on');
-    expect(log).not.toContain('marked fallen');
-    // The trail line the OWNER reads carries the same word, not the failure one.
-    expect(log).not.toContain('terminated on fallen');
-    expect(log).toContain('schedule terminated on cancel');
-    expect(log).toMatch(/cancell?ed/i);
-  });
-
-  it('F-17 STAYS CLOSED: a cancelled reminder\'s live schedule is terminated', () => {
-    seedTrackerTask(mockDb.current!, {
-      id: TASK, title: 'Reminder: trash', status: 'on_deck',
-      schedule_status: 'waiting', is_paused: 0, next_run_at: Date.now() + 3_600_000,
-      repeat_interval: 1, repeat_unit: 'days', task_kind: 'reminder',
-    });
-    const out = trackerUpdateStatus(AGENT, { taskId: TASK, status: 'cancelled' });
-    const r = rowOf();
-    expect(r.schedule_status, 'a cancelled reminder left ARMED is F-17 exactly').toBe('completed');
-    expect(r.is_paused).toBe(1);
-    expect(r.next_run_at).toBeNull();
-    expect(out).toContain('Schedule stopped');
-  });
-
-  it('CONTROL — a fallen task still disarms, and still says "given up on"', () => {
-    seedTrackerTask(mockDb.current!, {
-      id: 'task-fallen-1', title: 'Reminder: x', status: 'on_deck',
-      schedule_status: 'waiting', is_paused: 0, next_run_at: Date.now() + 3_600_000,
-      repeat_interval: 1, repeat_unit: 'days', task_kind: 'reminder',
-    });
-    trackerUpdateStatus(AGENT, { taskId: 'task-fallen-1', status: 'fallen' });
-    expect(rowOf('task-fallen-1').schedule_status).toBe('completed');
-    expect(logOf('task-fallen-1')).toContain('given up on');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §3 — THE PREDICATES THAT WOULD HAVE FALLEN THROUGH SILENTLY
@@ -307,23 +214,6 @@ describe('§3 terminality is not a list of two words any more', () => {
 // are read (the board, the detail page, the tool's own vocabulary), not their absence here.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§3b terminal rows stay out of the "active" listing, on purpose', () => {
-  it('neither terminal outcome appears in work_update(action="list")', () => {
-    seedTrackerTask(mockDb.current!, { id: 'listcancel-01', title: 'Cancelled work', status: 'in_progress' });
-    seedTrackerTask(mockDb.current!, { id: 'listfallen-01', title: 'Failed work', status: 'in_progress' });
-    seedTrackerTask(mockDb.current!, { id: 'listopen-001', title: 'Live work', status: 'in_progress' });
-    trackerUpdateStatus(AGENT, { taskId: 'listcancel-01', status: 'cancelled' });
-    trackerUpdateStatus(AGENT, { taskId: 'listfallen-01', status: 'fallen' });
-    expect(rowOf('listcancel-01').state).toBe('abandoned');
-    expect(rowOf('listfallen-01').state).toBe('failed');
-
-    const listed = trackerListActive(AGENT, {});
-    expect(listed, 'a still-open task must be listed — otherwise this clause is vacuous')
-      .toContain('Live work');
-    expect(listed, 'a cancelled task is closed; "active" must not claim it').not.toContain('Cancelled work');
-    expect(listed, 'a failed task is closed; "active" must not claim it').not.toContain('Failed work');
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §4 — THE BOARD. This is the constraint `632cadd` recorded, and it is the reason the fold

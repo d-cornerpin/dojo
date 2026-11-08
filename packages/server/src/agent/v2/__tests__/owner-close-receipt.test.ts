@@ -34,7 +34,7 @@ vi.mock('../../../memory/conversations.js', () => ({
 }));
 
 import { createWorkTable, seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
-import { recordOwnerCloseReceipt, recordDelivery, deliveryIdOf } from '../deliveries.js';
+import { recordDecisionReceipt, recordDelivery, deliveryIdOf } from '../deliveries.js';
 
 const W = 'task-1';
 const AGENT = 'a1';
@@ -64,7 +64,7 @@ beforeEach(() => {
 
 describe('the receipt is an honest record, not a claimed send', () => {
   it('records one row that says exactly what happened', () => {
-    const id = deliveryIdOf(recordOwnerCloseReceipt(W, 'the dashboard task board'));
+    const id = deliveryIdOf(recordDecisionReceipt(W, 'The owner', 'the dashboard task board'));
     expect(id).not.toBeNull();
     const rows = receipts();
     expect(rows).toHaveLength(1);
@@ -80,15 +80,15 @@ describe('the receipt is an honest record, not a claimed send', () => {
   it('carries NO root lineage — migration 135s own reasoning, applied live', () => {
     // 135:230-232: a sentinel carrying `root_id=<task id>` "would have manufactured per-task
     // delivery evidence for the PM's own consult path". This row must not carry it either.
-    recordOwnerCloseReceipt(W, 'the dashboard task board');
+    recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     expect(receipts()[0].root_id).toBeNull();
     expect(receipts()[0].root_kind).toBeNull();
   });
 
   it('is one row PER CLOSE, so the instant of each is on the record', () => {
     seedTrackerTask(mockDb.current!, { id: 'task-2', title: 'another', agentId: AGENT });
-    const a = deliveryIdOf(recordOwnerCloseReceipt(W, 'the dashboard task board'));
-    const b = deliveryIdOf(recordOwnerCloseReceipt('task-2', 'the dashboard task board'));
+    const a = deliveryIdOf(recordDecisionReceipt(W, 'The owner', 'the dashboard task board'));
+    const b = deliveryIdOf(recordDecisionReceipt('task-2', 'The owner', 'the dashboard task board'));
     expect(a).not.toBe(b);
     expect(receipts()).toHaveLength(2);
   });
@@ -96,7 +96,7 @@ describe('the receipt is an honest record, not a claimed send', () => {
   it('refuses an id that does not resolve, so G7 refuses the close', () => {
     // PHASE-4 T1: the refusal has a NAME now. It used to be a null indistinguishable
     // from "the ledger write threw", which is the other way this returns nothing.
-    const o = recordOwnerCloseReceipt('no-such-work', 'the dashboard task board');
+    const o = recordDecisionReceipt('no-such-work', 'The owner', 'the dashboard task board');
     expect(o.kind).toBe('refused');
     if (o.kind === 'refused') expect(o.reason).toBe('no-such-work');
     expect(deliveryIdOf(o)).toBeNull();
@@ -107,7 +107,7 @@ describe('the receipt is an honest record, not a claimed send', () => {
 describe('the receipt is invisible to every consumer of the ledger', () => {
   it('NEGATIVE CONTROL: the PM consult path does not see it as delivery evidence', () => {
     // `tracker/task-stamps.ts:66`, verbatim shape.
-    recordOwnerCloseReceipt(W, 'the dashboard task board');
+    recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     const channels = mockDb.current!.prepare(
       `SELECT DISTINCT channel FROM deliveries WHERE agent_id = ? AND outcome = 'delivered'`,
     ).all(AGENT);
@@ -117,7 +117,7 @@ describe('the receipt is invisible to every consumer of the ledger', () => {
   it('NEGATIVE CONTROL: the tracker-store close resolver does not offer it to a later close', () => {
     // `work/tracker-store.ts:377` — if this returned the receipt, an AGENT's next close
     // would inherit the owner's exemption, which is exactly the leak to prevent.
-    recordOwnerCloseReceipt(W, 'the dashboard task board');
+    recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     const hit = mockDb.current!.prepare(
       `SELECT id FROM deliveries WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack'`,
     ).get(AGENT);
@@ -128,7 +128,7 @@ describe('the receipt is invisible to every consumer of the ledger', () => {
     // `agent/v2/outbound.ts:430` is the ONE reader with no outcome filter. It is keyed on
     // `channel='dashboard'` AND a real message id; the receipt is `channel='none'` with a
     // NULL message id, so it is unreachable twice over.
-    recordOwnerCloseReceipt(W, 'the dashboard task board');
+    recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     const hit = mockDb.current!.prepare(
       `SELECT id FROM deliveries WHERE agent_id = ? AND channel = 'dashboard' AND message_id = ?`,
     ).get(AGENT, null);
@@ -137,7 +137,7 @@ describe('the receipt is invisible to every consumer of the ledger', () => {
 
   it('POSITIVE CONTROL: a REAL delivery by the same agent IS seen by those same queries', () => {
     // Without this, the three clauses above would pass on an empty table and prove nothing.
-    recordOwnerCloseReceipt(W, 'the dashboard task board');
+    recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     recordDelivery({
       agentId: AGENT, tool: 'auto-route', channel: 'dashboard', outcome: 'delivered',
       messageId: 'm1', conversationId: 'c1',

@@ -89,7 +89,7 @@ describe('the discriminated result the caller must read', () => {
   });
 
   it('conflict when the caller acted on a state that has since moved', () => {
-    seedWork('w1', { state: 'claimed' });
+    seedWork('w1', { state: 'claimed', kind: 'commitment' });   // board work ends only by a decision (G9)
     const r = transition('w1', { to: 'done', by: 'agent', reason: 'x', expectedState: 'open' });
     expect(r.kind).toBe('refused');
     if (r.kind !== 'refused') return;
@@ -153,9 +153,9 @@ describe('G5 — the legal-transition table', () => {
     // an override to complete. Before this the move was refused as illegal, `setTaskStatus` returned
     // falsy, and the caller reported "task was deleted before override approval could land" — a refused
     // transition and a vanished row look identical to it. Forever, once a minute.
-    seedWork('w1', { state: 'on_deck' });
+    seedWork('w1', { state: 'on_deck', kind: 'commitment' });   // board work ends only by a decision (G9)
     const r = transition('w1', {
-      to: 'done', by: 'pm', actorId: 'pm-fixture', claim: 'authoritative',
+      to: 'done', by: 'pm', actorId: 'pm-fixture',
       reason: 'PM approved override request: audit shows the work landed',
       // The real path supplies this too (`deliveryForTaskClose` at the override-approval site): `done`
       // requires a delivery receipt from EVERY actor, authority included, and t89 does not touch that.
@@ -241,7 +241,7 @@ describe('G6 — the engine may only assert what it can point at (OR2)', () => {
     seedWork('sched', { kind: 'commitment' });
     seedWork('occ', { kind: 'occurrence', parent_id: 'sched', sequence: 1 });
     for (const [id, ref] of [['a', 'd-1'], ['b', 'art-1'], ['c', 'occ']] as const) {
-      seedWork('w-' + id, { state: 'claimed' });
+      seedWork('w-' + id, { state: 'claimed', kind: 'commitment' });
       const r = transition('w-' + id, { to: 'failed', by: 'engine', reason: 'gave up', evidenceRef: ref });
       expect(r.kind).toBe('applied');
     }
@@ -273,7 +273,7 @@ describe('G7 — done means DELIVERED', () => {
   });
 
   it('accepts done with a real delivery, and stamps closed_at with it', () => {
-    seedWork('w1', { state: 'claimed' });
+    seedWork('w1', { state: 'claimed', kind: 'commitment' });   // board work ends only by a decision (G9)
     const r = transition('w1', {
       to: 'done', by: 'engine', reason: 'sent it', evidenceRef: 'd-1', resultDeliveryId: 'd-1',
     });
@@ -286,14 +286,6 @@ describe('G7 — done means DELIVERED', () => {
 });
 
 describe('G8 — two-key is a type, not a source scan', () => {
-  it('refuses an authoritative claim from a worker agent and allows it from the PM', () => {
-    seedWork('w1', { state: 'claimed' });
-    const bad = transition('w1', { to: 'failed', by: 'agent', reason: 'x', claim: 'authoritative' });
-    expect(bad.kind).toBe('refused');
-    if (bad.kind === 'refused') expect(bad.reason).toBe('authoritative-claim-not-permitted');
-    const good = transition('w1', { to: 'failed', by: 'pm', reason: 'x', claim: 'authoritative' });
-    expect(good.kind).toBe('applied');
-  });
 
   it('a NON-terminal move needs no second key — blocked/paused are not settlements', () => {
     seedWork('w1', { state: 'claimed' });
@@ -304,15 +296,6 @@ describe('G8 — two-key is a type, not a source scan', () => {
     expect(stateOf('w1')).toBe('blocked');
   });
 
-  it('a worker claiming FAILED is recorded as a validation request, state unchanged', () => {
-    seedWork('w1', { state: 'claimed' });
-    const r = transition('w1', { to: 'failed', by: 'agent', reason: 'cannot do it', claim: 'requests-validation' });
-    expect(r.kind).toBe('refused');
-    if (r.kind !== 'refused') return;
-    expect(r.reason).toBe('requires-validation');
-    expect(stateOf('w1')).toBe('claimed');
-    expect(events('w1').map((e) => e.kind)).toEqual(['validation_requested']);
-  });
 
   // ── TOMBSTONE (PHASE-2 T8T): "DONE is exempt from the second key" WAS this file's clause,
   // and RULING 1 reversed it for the tracker's two nouns. The exemption was never wrong about
@@ -320,14 +303,6 @@ describe('G8 — two-key is a type, not a source scan', () => {
   // adjudicate it — so the requirement survives, scoped. Both halves are asserted here so the
   // reversal is a decision on the record rather than a test that quietly changed shape; the
   // full clause set is `work/__tests__/two-key-completion.test.ts`.
-  it('DONE is NO LONGER exempt for a tracker task — the second key is structural now', () => {
-    seedWork('w1', { state: 'claimed' });                     // kind='task' by default
-    const r = transition('w1', {
-      to: 'done', by: 'agent', reason: 'sent it', claim: 'requests-validation', resultDeliveryId: 'd-1',
-    });
-    expect(r.kind).toBe('refused');
-    if (r.kind === 'refused') expect(r.reason).toBe('requires-validation');
-  });
 
   it('and IS still exempt for an ask — a delivery IS the receipt, which is what OR1 widened', () => {
     seedWork('w1', { kind: 'ask', state: 'claimed' });
@@ -337,18 +312,6 @@ describe('G8 — two-key is a type, not a source scan', () => {
     expect(r.kind).toBe('applied');
   });
 
-  it('an authoritative transition writes an adjudication row; a rejection writes the other kind', () => {
-    seedWork('w1', { state: 'claimed' });
-    transition('w1', { to: 'failed', by: 'owner', reason: 'I say so', claim: 'authoritative' });
-    const adj = mockDb.current!.prepare('SELECT verdict, claim_state FROM adjudications WHERE work_id = ?')
-      .all('w1') as Array<{ verdict: string; claim_state: string }>;
-    expect(adj).toEqual([{ verdict: 'upheld', claim_state: 'failed' }]);
-    expect(revertCount('w1')).toBe(0);
-    const rej = rejectClaim('w1', { claimState: 'done', by: 'pm', note: 'no delivery, no done' });
-    expect(rej.kind).toBe('applied');
-    expect(revertCount('w1')).toBe(1);
-    expect(rejectClaim('w1', { claimState: 'done', by: 'agent', note: 'let me' }).kind).toBe('refused');
-  });
 });
 
 describe('reopening settled work needs an authority', () => {

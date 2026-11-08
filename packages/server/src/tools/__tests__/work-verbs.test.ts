@@ -41,7 +41,7 @@ import {
 import { TOOL_ALIASES, resolveToolAlias, isTombstone } from '../aliases.js';
 import { STRUCTURING_OPS } from '../../agent/v2/classifiers/hoarding.js';
 import { WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
-import { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS, PRIMARY_ONLY_WORK_OPS, PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
+import { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS, PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
 import { classifyTool } from '@dojo/shared';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -56,23 +56,17 @@ const RETIRED: Array<{ name: string; args: Record<string, unknown>; op: string }
   { name: 'tracker_create_task', args: { title: 'Pull the quotes' }, op: 'work_open:task' },
   { name: 'reminder_create', args: { what: 'go get coffee', when: '2026-07-29T18:00:00Z' }, op: 'work_open:reminder' },
   { name: 'commitment_open', args: { description: 'email Bob the roof quote' }, op: 'work_open:commitment' },
-  { name: 'tracker_update_status', args: { task_id: 'abc12345', status: 'complete', result: 'done', evidence: [] }, op: 'work_update:status' },
+  { name: 'tracker_update_status', args: { task_id: 'abc12345', status: 'paused', notes: 'waiting on the owner' }, op: 'work_update:status' },
   { name: 'tracker_edit_task', args: { task_id: 'abc12345', title: 'Renamed' }, op: 'work_update:edit' },
   { name: 'tracker_edit_project', args: { project_id: 'proj1234', title: 'Renamed' }, op: 'work_update:edit' },
   { name: 'tracker_reassign_task', args: { task_id: 'abc12345', assigned_to: 'maddy' }, op: 'work_update:reassign' },
-  { name: 'tracker_complete_step', args: { task_id: 'abc12345', notes: 'step done' }, op: 'work_update:complete_step' },
-  { name: 'tracker_close_project', args: { project_id: 'proj1234', reason: 'superseded' }, op: 'work_update:close_project' },
+  { name: 'tracker_complete_step', args: { task_id: 'abc12345', notes: 'step done' }, op: 'work_update:hand_in' },
+  { name: 'tracker_close_project', args: { project_id: 'proj1234', reason: 'superseded' }, op: 'work_update:hand_in' },
   { name: 'tracker_list_active', args: { filter: 'mine' }, op: 'work_update:list' },
   { name: 'tracker_get_status', args: { id: 'abc12345' }, op: 'work_update:get' },
   { name: 'tracker_add_notes', args: { task_id: 'abc12345', notes: 'still working' }, op: 'work_note' },
-  { name: 'tracker_request_override', args: { task_id: 'abc12345', requested_status: 'complete', justification: 'x'.repeat(40) }, op: 'work_close_request:override' },
-  { name: 'tracker_request_user_verdict', args: { task_id: 'abc12345', status_requested: 'complete', agent_summary: 'x'.repeat(40), pm_rejection_summary: 'y'.repeat(30) }, op: 'work_close_request:user_verdict' },
   { name: 'commitment_resolve', args: { id: 'cmt:1a2b3c4d5e6f', disposition: 'kept' }, op: 'work_close_request:commitment' },
-  { name: 'tracker_validate', args: { kind: 'complete', task_id: 'abc12345', valid: true }, op: 'work_validate:validate' },
   { name: 'tracker_retask', args: { task_id: 'abc12345', directive: 'd'.repeat(40) }, op: 'work_validate:retask' },
-  { name: 'tracker_override', args: { override_request_id: 'ovr12345', approve: true, reason: 'ok' }, op: 'work_validate:override' },
-  { name: 'tracker_apply_user_verdict', args: { task_id: 'abc12345', status: 'complete', user_quote: 'yes it is done' }, op: 'work_validate:apply_user_verdict' },
-  { name: 'tracker_apply_user_validation', args: { task_id: 'abc12345', validated: true, user_quote: 'yep' }, op: 'work_validate:apply_user_validation' },
   { name: 'tracker_pause_schedule', args: { task_id: 'abc12345' }, op: 'work_schedule:pause' },
   { name: 'tracker_resume_schedule', args: { task_id: 'abc12345' }, op: 'work_schedule:resume' },
   { name: 'tracker_resolve_missed_runs', args: { task_id: 'abc12345', action: 'run_now' }, op: 'work_schedule:resolve_missed' },
@@ -123,14 +117,16 @@ describe('T8V — the collapse is total and reversible at the boundary', () => {
   //   • work_update:activity — UX-REPAIR ROUND 13 T60. No predecessor: the platform served
   //     "what is open now" and never served "what changed over a window", which is how the
   //     S4 turn answered "quiet day" over 57 rows opened and closed the same day.
-  const POST_COLLAPSE_OPS = ['work_update:activity'];
+  //   • work_validate:decide, work_validate:open_proof: the one decision (901). The verdict verbs
+  //     they replace are deleted, not aliased: a decision needs the proof opened and a decider.
+  const POST_COLLAPSE_OPS = ['work_update:activity', 'work_validate:decide', 'work_validate:open_proof'];
 
   it('every operation traces to a retired verb, or is a named post-collapse addition', () => {
     const covered = new Set([...RETIRED.map((r) => r.op), ...POST_COLLAPSE_OPS]);
     expect([...WORK_OPS].filter((op) => !covered.has(op)), 'an operation no retired verb maps to and no task named').toEqual([]);
     expect([...covered].filter((op) => !isWorkOp(op)), 'a phantom operation id in the retired table').toEqual([]);
     expect([...POST_COLLAPSE_OPS].filter((op) => RETIRED.some((r) => r.op === op)), 'a post-collapse op that DOES have a retired verb — move it out of the exemption').toEqual([]);
-    expect(WORK_OPS).toHaveLength(24); // 24 retired verbs → 23 ops (two edits share one), + activity
+    expect(WORK_OPS).toHaveLength(19); // the hand-in absorbs the close verbs; decide and open_proof replace the verdict verbs
   });
 
   it('the missed-runs discriminator collision is broken, not papered over', () => {
@@ -152,20 +148,21 @@ describe('T8V — absorb-don\'t-refuse (#77): a weak model that omits the discri
     ['work_open', { title: 'A project', level: 2, tasks: [] }, 'work_open:project'],
     ['work_open', { what: 'call mom' }, 'work_open:reminder'],
     ['work_open', { description: 'I will send the quote' }, 'work_open:commitment'],
-    ['work_update', { task_id: 'a', status: 'complete' }, 'work_update:status'],
+    ['work_update', { task_id: 'a', status: 'paused' }, 'work_update:status'],
+    // a closing status word is a hand-in, never a status (the old habit reaches the proof check)
+    ['work_update', { task_id: 'a', status: 'complete' }, 'work_update:hand_in'],
+    ['work_update', { task_id: 'a', proof: [] }, 'work_update:hand_in'],
     ['work_update', { task_id: 'a', title: 'new' }, 'work_update:edit'],
     // §7.2's named absorb rule: a project_id without a task_id is a project edit.
     ['work_update', { project_id: 'p', title: 'new' }, 'work_update:edit'],
-    ['work_update', { project_id: 'p', reason: 'superseded' }, 'work_update:close_project'],
+    ['work_update', { project_id: 'p', reason: 'superseded' }, 'work_update:get'],
     ['work_update', { task_id: 'a', assigned_to: 'maddy' }, 'work_update:reassign'],
     ['work_update', { task_id: 'a' }, 'work_update:get'],
     ['work_update', {}, 'work_update:list'],
     ['work_close_request', { id: 'cmt:abc', disposition: 'kept' }, 'work_close_request:commitment'],
-    ['work_close_request', { task_id: 'a', requested_status: 'complete' }, 'work_close_request:override'],
     ['work_validate', { task_id: 'a', directive: 'd' }, 'work_validate:retask'],
-    ['work_validate', { override_request_id: 'o', approve: true }, 'work_validate:override'],
-    ['work_validate', { task_id: 'a', validated: false }, 'work_validate:apply_user_validation'],
-    ['work_validate', { task_id: 'a', kind: 'pause', valid: true }, 'work_validate:validate'],
+    ['work_validate', { task_id: 'a', item: 0 }, 'work_validate:open_proof'],
+    ['work_validate', { task_id: 'a', verdict: 'approve' }, 'work_validate:decide'],
     ['work_schedule', { task_id: 'a' }, 'work_schedule:pause'],
     ['work_schedule', { task_id: 'a', resolution: 'skip' }, 'work_schedule:resolve_missed'],
   ];
@@ -219,8 +216,8 @@ const CANARIES: Canary[] = [
     behaviour: 'B2 thrash-counter forward progress',
     where: 'agent/v2/loop.ts via PROGRESS_WORK_OPS',
     test: inSet(PROGRESS_WORK_OPS),
-    fires: ['tracker_update_status', 'tracker_complete_step', 'tracker_add_notes'],
-    silent: ['tracker_close_project', 'tracker_get_status', 'tracker_list_active'],
+    fires: ['tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_close_project'],
+    silent: [ 'tracker_get_status', 'tracker_list_active'],
   },
   {
     behaviour: 'B3 pre-turn close-out gate SATISFACTION (disengages the gate for the rest of the turn)',
@@ -237,29 +234,27 @@ const CANARIES: Canary[] = [
     fires: [
       'tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_close_project',
       'tracker_get_status', 'tracker_list_active', 'tracker_edit_task',
-      'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_resolve_missed_runs',
+      'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_resolve_missed_runs'
     ],
-    silent: ['tracker_create_project', 'tracker_create_task', 'reminder_create', 'commitment_open', 'commitment_resolve', 'tracker_validate'],
+    silent: ['tracker_create_project', 'tracker_create_task', 'reminder_create', 'commitment_open', 'commitment_resolve'],
   },
   {
     behaviour: 'B5 multi-step floor DISARM (FN-9 / FA-T2 — the worker is tending its own work)',
     where: 'agent/v2/loop.ts via DISARMING_WORK_OPS',
     test: inSet(DISARMING_WORK_OPS),
-    fires: ['tracker_create_project', 'tracker_create_task', 'tracker_add_notes', 'tracker_edit_task', 'tracker_edit_project', 'tracker_complete_step'],
+    fires: ['tracker_create_project', 'tracker_create_task', 'tracker_add_notes', 'tracker_edit_task', 'tracker_edit_project', 'tracker_complete_step', 'tracker_close_project'],
     // reads never disarm (FN-9); closes/handoffs never disarm (FA-T2); governance never disarms
     silent: [
-      'tracker_get_status', 'tracker_list_active', 'tracker_close_project', 'tracker_reassign_task',
-      'tracker_resolve_missed_runs', 'tracker_validate', 'tracker_retask', 'tracker_override',
-      'tracker_request_override', 'tracker_request_user_verdict', 'tracker_apply_user_verdict',
-      'tracker_apply_user_validation', 'tracker_pause_schedule', 'tracker_resume_schedule',
+      'tracker_get_status', 'tracker_list_active', 'tracker_reassign_task',
+      'tracker_resolve_missed_runs', 'tracker_retask', 'tracker_pause_schedule', 'tracker_resume_schedule'
     ],
   },
   {
     behaviour: 'B6 user-requested-close reply nudge (the close carries a task_id)',
     where: 'agent/v2/loop.ts via CLOSE_OPS_WITH_TASK_ID',
     test: inSet(CLOSE_OPS_WITH_TASK_ID),
-    fires: ['tracker_update_status', 'tracker_complete_step'],
-    silent: ['tracker_close_project', 'tracker_add_notes'],
+    fires: ['tracker_update_status', 'tracker_complete_step', 'tracker_close_project'],
+    silent: [ 'tracker_add_notes'],
   },
   {
     behaviour: 'B7 hoarding brake — structuring tools satisfy the gate',
@@ -276,8 +271,7 @@ const CANARIES: Canary[] = [
     test: (n, a) => isTrackerFamilyCall(n, a),
     fires: [
       'tracker_get_status', 'tracker_list_active', 'tracker_create_project', 'tracker_create_task',
-      'tracker_update_status', 'tracker_add_notes', 'tracker_edit_task', 'tracker_close_project',
-      'tracker_validate', 'tracker_pause_schedule',
+      'tracker_update_status', 'tracker_add_notes', 'tracker_edit_task', 'tracker_close_project', 'tracker_pause_schedule'
     ],
     // the three names that never carried the prefix and so never had the exemption
     silent: ['reminder_create', 'commitment_open', 'commitment_resolve'],
@@ -295,11 +289,9 @@ const CANARIES: Canary[] = [
     test: inSet(new Set<string>(PM_ALLOWED_WORK_OPS)),
     fires: [
       'tracker_list_active', 'tracker_get_status', 'tracker_add_notes',
-      'tracker_pause_schedule', 'tracker_resume_schedule',
-      'tracker_validate', 'tracker_retask',
-      'tracker_override', 'tracker_request_override', 'tracker_apply_user_verdict',
-      'tracker_edit_project', 'tracker_edit_task', 'tracker_close_project',
-    ],
+      'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_retask',
+      'tracker_edit_project', 'tracker_edit_task', 'tracker_close_project'
+    , 'tracker_complete_step'],
     // THE ONE THE COLLAPSE ENDANGERS MOST: after the collapse the PM's allowed
     // close and its forbidden status flip are the SAME VERB. A name-keyed gate
     // could not refuse these and would have handed the PM a worker's keyboard.
@@ -313,7 +305,8 @@ const CANARIES: Canary[] = [
     // dashboard door still reassigns; what is gone is the overseer's standing authority to decide
     // it. `tracker/__tests__/the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses the
     // absence at the ladder, which is where the authority was actually being spent.
-    silent: ['tracker_update_status', 'tracker_complete_step', 'tracker_create_task', 'tracker_create_project', 'reminder_create', 'tracker_request_user_verdict', 'tracker_apply_user_validation', 'tracker_resolve_missed_runs', 'tracker_reassign_task'],
+    // The PM hands in a task it works itself (the main agent decides it), so the hand-in fires.
+    silent: ['tracker_update_status', 'tracker_create_task', 'tracker_create_project', 'reminder_create', 'tracker_resolve_missed_runs', 'tracker_reassign_task'],
   },
   {
     behaviour: 'B11 PM-ONLY operations (a worker calling one is refused at the executor)',
@@ -324,18 +317,10 @@ const CANARIES: Canary[] = [
     // WALL. That op transcribes a verdict THE OWNER gave, and it was refused to the primary by
     // this set AND to the PM by its absence from `PM_ALLOWED_WORK_OPS`: a double refusal that
     // made the escalation's own terminal step unexecutable by everyone it addressed.
-    fires: ['tracker_validate', 'tracker_retask', 'tracker_override', 'tracker_apply_user_verdict'],
+    fires: [ 'tracker_retask'],
     silent: [
-      'tracker_update_status', 'tracker_request_override', 'tracker_create_task', 'tracker_list_active',
-      'tracker_apply_user_validation',
+      'tracker_update_status', 'tracker_create_task', 'tracker_list_active'
     ],
-  },
-  {
-    behaviour: 'B11p PRIMARY-ONLY operations (the owner speaks to the primary, so the primary records his verdict)',
-    where: 'agent/tools/gates.ts row 8p via PRIMARY_ONLY_WORK_OPS',
-    test: inSet(PRIMARY_ONLY_WORK_OPS),
-    fires: ['tracker_apply_user_validation'],
-    silent: ['tracker_validate', 'tracker_retask', 'tracker_override', 'tracker_apply_user_verdict', 'tracker_update_status'],
   },
   {
     behaviour: 'B12 the READ carve-out (never disarms, always parallelisable)',
@@ -362,7 +347,7 @@ const CANARIES: Canary[] = [
     silent: [
       'tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_add_notes',
       'tracker_complete_step', 'tracker_close_project', 'tracker_list_active', 'tracker_get_status',
-      'commitment_open', 'commitment_resolve', 'tracker_validate',
+      'commitment_open', 'commitment_resolve'
     ],
   },
 ];
@@ -430,9 +415,7 @@ describe('T8V — the advertised surface and the enforced surface cannot drift',
 
   it('every PM-only operation is one the PM itself is allowed (or is deliberately owner-only)', () => {
     const allowed = new Set<string>(PM_ALLOWED_WORK_OPS);
-    const ownerOnly = ['work_validate:apply_user_validation']; // the primary applies the owner's chat reply
     for (const op of PM_ONLY_WORK_OPS) {
-      if (ownerOnly.includes(op)) continue;
       expect(allowed.has(op), `${op} is PM-only but not in the PM's own allow-list — nobody can call it`).toBe(true);
     }
   });

@@ -16,19 +16,20 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
 import {
   taskRowColumns, projectRowColumns, taskScope, projectScope, dueScope,
-  statusToState, tsToMs, msToText, revertCountExpr, awaitingUserVerdictExpr, type TrackerStatus,
+  statusToState, tsToMs, msToText, revertCountExpr, type TrackerStatus,
 } from '../work/tracker-view.js';
 import { TERMINAL_STATE_NAMES } from '../work/terminal-states.js';
 import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
-import { workSettled, noteUnsettled, type Actor, type WorkOutcome } from '../work/store.js';
+import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
 import { writeAssignee } from '../work/row-authority.js';
+import { isTerminalName } from '../work/terminal-states.js';
+import { decide } from '../work/done/decide.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 import type { Plan } from '../work/plan.js';
 
@@ -350,123 +351,32 @@ export function listProjects(filter?: { status?: string }): Project[] {
 }
 
 /**
- * Bulk-close a project AND every still-open task on it. "Open" = anything
- * not already in a terminal state (complete/fallen). Tasks get the chosen
- * status and a note explaining who closed them and why. The project itself
- * moves to the matching terminal status.
- *
- * Returns counts so callers can render a useful result string.
+ * The owner closes a project and every still-open task on it from the dashboard: each row is his
+ * decision (`work/done/decide.ts`, owner_done or cancel). Returns counts and every row that did not
+ * close, so the caller reports what is still open.
  */
 export function closeProjectAndOpenTasks(params: {
   projectId: string;
-  closingAgentId: string;
-  /** User-facing intent: did the work actually finish, or are we abandoning it? */
   taskStatus: 'complete' | 'cancelled';
-  projectStatus: 'complete' | 'cancelled';
   reason: string;
-  /** The delivery that makes a `complete` close true. `transition()`'s G7 refuses `done`
-   *  without one — see the note on `refused` below. */
-  resultDeliveryId?: string | null;
-  /**
-   * WHO is closing (PHASE-2 T8T). The dashboard's bulk close is the OWNER's — he is an
-   * authority and his close turns both keys — while an agent calling
-   * `work_update(action="close_project")` is claiming its own work is finished, which under
-   * RULING 1 is Key 1 and files a close request per row. The parameter exists because the
-   * function could not previously tell those two apart: both arrived as
-   * `closingAgentId`, and a string is not an authority.
-   */
-  authority?: { by: Actor; actorId: string };
-  /** t193: the owner's exact words when an agent closes over other live agents' tasks because
-   *  the owner asked; `setTrackerStatus`'s takeover gate checks them per task. */
-  userQuote?: string | null;
-}): {
-  projectId: string; tasksClosed: number; alreadyClosed: number; refused: number;
-  /** v3.5 live check (preflight.4): every row that did NOT land, with the outcome that says why,
-   *  so the caller reports what is still open instead of a count it can mistake for success. */
-  unsettled: Array<{ workId: string; outcome: WorkOutcome }>;
-  /** The project row's own outcome; settled means the project itself closed. */
-  projectOutcome: WorkOutcome | null;
-} {
-  const db = getDb();
-  const { projectId, closingAgentId, taskStatus, projectStatus, reason, authority } = params;
-  const actor = authority
-    ? { by: authority.by, actorId: authority.actorId, claim: 'authoritative' as const }
-    : { by: 'agent' as Actor, actorId: closingAgentId, claim: undefined, userQuote: params.userQuote ?? null };
-
-  // Kanban DB-status mapping. This USED to read: "the board only renders the six legacy task
-  // statuses … storing a literal 'cancelled' on a task would make it disappear from the
-  // board. So a user-facing 'cancelled' task is stored as 'fallen'." (`632cadd`, 2026-05-20.)
-  // That was true, it was a RENDERING constraint rather than a semantic judgement, and
-  // UX-REPAIR ROUND 3 T18 answered it rather than obeying it: `fallen` and `cancelled` share
-  // the terminal column and each card carries its own word
-  // (`dashboard/src/lib/task-status.ts`). So the user's word is now STORED as itself — spine
-  // `abandoned`, via `tracker-view.ts`'s existing total map — and nothing vanishes.
-  const dbTaskStatus: TrackerStatus = taskStatus === 'cancelled' ? 'cancelled' : 'complete';
-  const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
-
-  const tasks = db
+}): { projectId: string; tasksClosed: number; alreadyClosed: number; refused: number; unsettled: Array<{ workId: string; text: string }>; projectClosed: boolean } {
+  const { projectId, reason } = params;
+  const verdict = params.taskStatus === 'cancelled' ? 'cancel' : 'owner_done';
+  const tasks = getDb()
     .prepare(`SELECT work.id AS id, work.state AS state FROM work WHERE ${TASK_WHERE} AND work.parent_id = ?`)
     .all(projectId) as Array<{ id: string; state: string }>;
-
   let tasksClosed = 0;
   let alreadyClosed = 0;
-  let refused = 0;
-  const unsettled: Array<{ workId: string; outcome: WorkOutcome }> = [];
-  let projectOutcome: WorkOutcome | null = null;
-  const TERMINAL = new Set(['done', 'failed', 'abandoned']);
-
-  const closedTransitions: Array<{ taskId: string; from: string; to: string }> = [];
-  const txn = db.transaction(() => {
-    for (const t of tasks) {
-      if (TERMINAL.has(t.state)) {
-        alreadyClosed++;
-        continue;
-      }
-      const r = setTrackerStatus(t.id, dbTaskStatus, {
-        ...actor,
-        reason: `bulk-closed with its project: ${reason}`,
-        resultDeliveryId: params.resultDeliveryId ?? null,
-      });
-      if (r.kind !== 'applied') {
-        // The gate refused (almost always G7: a `complete` close with no delivery to point
-        // at). Counted and surfaced rather than swallowed — a silent skip here is how the
-        // board and the truth drift apart.
-        refused++;
-        if (!workSettled(r)) unsettled.push({ workId: t.id, outcome: r });
-        logger.warn('bulk close refused for task', { taskId: t.id, result: r });
-        continue;
-      }
-      closedTransitions.push({ taskId: t.id, from: r.value.from, to: r.value.to });
-      tasksClosed++;
-    }
-    const pr = setTrackerStatus(projectId, projectStatus as TrackerStatus, {
-      ...actor, reason,
-      resultDeliveryId: params.resultDeliveryId ?? null,
-    });
-    projectOutcome = pr;
-    if (pr.kind !== 'applied') {
-      refused++;
-      logger.warn('bulk close refused for project', { projectId, result: pr });
-    }
-  });
-  txn();
-
-  // Write the task_log entries OUTSIDE the closing transaction so a single
-  // failure to write a log row never rolls back the actual status changes.
-  // The log writer is best-effort by design (see task-log.ts).
-  for (const tx of closedTransitions) {
-    void writeTaskLog({
-      taskId: tx.taskId,
-      fromEntity: `agent:${closingAgentId}`,
-      entryKind: 'transition',
-      fromStatus: tx.from,
-      toStatus: tx.to,
-      actionTaken: `bulk-closed via work_update(action="close_project") (${noteMarker})`,
-      reason,
-    });
+  const unsettled: Array<{ workId: string; text: string }> = [];
+  for (const t of tasks) {
+    if (isTerminalName(t.state)) { alreadyClosed++; continue; }
+    const r = decide({ workId: t.id, deciderAgentId: null, verdict, reason: `closed with its project: ${reason}` });
+    if (r.kind === 'decided') tasksClosed++;
+    else unsettled.push({ workId: t.id, text: r.text });
   }
-
-  logger.info('Project bulk-closed', { projectId, tasksClosed, alreadyClosed, refused, taskStatus, projectStatus, closingAgentId });
+  const pr = decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  if (pr.kind !== 'decided') unsettled.push({ workId: projectId, text: pr.text });
+  logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
   // Broadcast updated tasks + project so the dashboard repaints.
   for (const t of tasks) {
@@ -480,7 +390,7 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed, refused, unsettled, projectOutcome };
+  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: pr.kind === 'decided' };
 }
 
 export function updateProject(
@@ -994,14 +904,12 @@ export function listTasksPage(
   const { conditions, params } = taskListWhere(filter);
   // Re-review 3 (M3): the system agents' tasks are dropped HERE, before the page is cut. Dropped after,
   // a page made only of them reached the board empty, its cursor never moved, and the older visible
-  // tasks were out of reach. A system agent's task in dispute (thrown back, awaiting the owner's verdict,
-  // or a stalemate) stays visible so the owner can act on it.
+  // tasks were out of reach. A system agent's task that was sent back stays visible so the owner can act on it.
   const hidden = [...(page.hideAgentIds ?? [])];
   if (hidden.length > 0) {
     const marks = hidden.map(() => '?').join(', ');
     conditions.push(`COALESCE(work.requester_id, '') NOT IN (${marks})`);
-    conditions.push(`(COALESCE(work.agent_id, '') NOT IN (${marks}) OR ${revertCountExpr('work')} > 0`
-      + ` OR ${awaitingUserVerdictExpr('work')} = 1 OR work.title LIKE 'STALEMATE on %')`);
+    conditions.push(`(COALESCE(work.agent_id, '') NOT IN (${marks}) OR ${revertCountExpr('work')} > 0)`);
     params.push(...hidden, ...hidden);
   }
   const terminal = `work.state IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`;

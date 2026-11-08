@@ -256,8 +256,8 @@ describe('Phase D scenario suite', () => {
     }
     // NEGATIVE CONTROL of the same shape: the walk is reading real files with real content,
     // so "not found" means absent rather than unread.
-    expect(src('tracker/tools.ts')).toContain('fileOverrideRequest');
-    expect(src('scheduler/runner.ts')).toContain('staleOverrideRequests');
+    expect(src('tracker/tools.ts')).toContain('trackerRetask');
+    expect(src('scheduler/runner.ts')).toContain('terminateLiveScheduleOnFallen');
   });
 
   it('Scenario G: recurring task per-run completion archives result and resets to on_deck', () => {

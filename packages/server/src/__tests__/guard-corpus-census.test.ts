@@ -229,14 +229,6 @@ const DRIVER_BY_PATH: Declaration[] = [
       + 'stronger corpus. Its in-function sibling `CLOSE_OUT_IDLE_MINUTES` (loop.ts:2296) was '
       + 'widened to the engine in the same task.',
   },
-  {
-    rel: 'packages/server/src/tracker/__tests__/two-key-conformance.test.ts',
-    verdict: 'step-aware',
-    why: 'The driver is named inside the three KEY allowlists, whose whole purpose is to say '
-      + 'WHICH file is permitted a privileged write; the corpus itself is the shared engine '
-      + 'derivation plus the subsystem walks. This is the guard CUT 2 found going quiet, and it '
-      + 'is the reference repair.',
-  },
 ];
 
 /**
@@ -408,7 +400,7 @@ describe('the guard-corpus census (PHASE-6 GUARD-AUDIT)', () => {
     expect(rels, 'the top-level src/__tests__ directory is missing — the pathspec blind spot is back')
       .toContain('packages/server/src/__tests__/outcome.test.ts');
     expect(rels, 'the nested __tests__ half of the corpus is missing')
-      .toContain('packages/server/src/tracker/__tests__/two-key-conformance.test.ts');
+      .toContain('packages/server/src/tracker/__tests__/origin-spine-conformance.test.ts');
   });
 
   it('every guard that READS source and names the DRIVER by path uses the shared corpus or is declared', () => {

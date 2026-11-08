@@ -11,7 +11,6 @@
 // not read refuses the whole call before anything runs, and the refusal names, from the same map, the
 // operations that do read it. It replaces the one-off `assigned_to` guard on the status door.
 
-import { noteProofShown } from '../../../tracker/looked-at.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -61,29 +60,8 @@ const events = (kind: string): number => (db().prepare('SELECT COUNT(*) AS n FRO
 const row = (): { measure_json: string | null; title: string; agent_id: string } => db().prepare('SELECT measure_json, title, agent_id FROM work WHERE id = ?').get(TASK) as never;
 
 describe('rank 3: a declared argument the chosen action does not read refuses the call', () => {
-  it('measure on complete_step: refused with the facts, no close is filed, the measure is not set', async () => {
-    const r = await call('work_update', { action: 'complete_step', task_id: TASK, measure: MEASURE, result: 'labels sorted' });
-    expect(r.isError).toBe(true);
-    expect(r.content).toBe('Refused: work_update(action="complete_step") does not read "measure", so nothing was done. '
-      + '"measure" is read by work_open(kind="task") and work_update(action="edit").');
-    expect(events('validation_requested')).toBe(0);
-    expect(row().measure_json).toBeNull();
-  });
 
-  it('measure and title on status: refused, both named, the row unchanged', async () => {
-    const r = await call('work_update', { action: 'status', task_id: TASK, status: 'complete', result: 'done', measure: MEASURE, title: 'renamed' });
-    expect(r.isError).toBe(true);
-    expect(r.content).toContain('work_update(action="status") does not read "measure" or "title", so nothing was done.');
-    expect(r.content).toContain('"title" is read by');
-    expect(events('validation_requested')).toBe(0);
-    expect(row()).toMatchObject({ measure_json: null, title: 'sort the labels' });
-  });
 
-  it('a third pair, remainder on close_project: refused, naming the doors that read it', async () => {
-    const r = await call('work_update', { action: 'close_project', project_id: 'proj-x', reason: 'done', remainder: '3 left' });
-    expect(r.content).toBe('Refused: work_update(action="close_project") does not read "remainder", so nothing was done. '
-      + '"remainder" is read by work_update(action="status") and work_update(action="complete_step").');
-  });
 
   it('REPLACES the one-off guard: assigned_to on status is refused by the same class, naming reassign', async () => {
     const r = await call('work_update', { action: 'status', task_id: TASK, status: 'in_progress', assigned_to: 'someone-else' });
@@ -141,10 +119,6 @@ describe('rank 3: the map cannot drift from the handlers or the schemas', () => 
     }
   });
 
-  it('workOperation and the map agree on the operation ids', () => {
-    expect(Object.keys(WORK_OP_READS).sort()).toEqual([...WORK_OPS].sort());
-    expect(workOperation('work_update', { action: 'complete_step' })).toBe('work_update:complete_step');
-  });
 });
 
 // The $0 dry run: the PM's verdict on a finished, measured job carried `reason`, and the map (which listed
@@ -160,7 +134,6 @@ describe('a PM verdict that carries a reason is applied, never refused', () => {
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES ('d-unread-1', ?, NULL, 'dashboard', 'dashboard', 'm-unread-1', 'delivered', datetime('now'))`,
     ).run(AGENT);
     appendWorkEvent(TASK, 'validation_requested', AGENT, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: 'd-unread-1' });
-    noteProofShown(TASK, ['d-unread-1']);   // the PM's review showed it the message
   };
   const state = (): string => (db().prepare('SELECT state FROM work WHERE id = ?').get(TASK) as { state: string }).state;
   const lastVerdict = (verdict: string): { note: string } | undefined =>
@@ -170,25 +143,7 @@ describe('a PM verdict that carries a reason is applied, never refused', () => {
     return rows.map((r) => r.payload).join('\n');
   };
 
-  it('valid=true with reason: the close is upheld and the reason is on the record', async () => {
-    fileClose();
-    const r = await call('work_validate', { action: 'validate', kind: 'complete', task_id: TASK, valid: true, reason: 'the measure reads 0 and the label is gone' }, PM);
-    expect(r.content).not.toMatch(/^Refused:/);
-    expect(r.content, r.content).toMatch(/^\[OK\]/);
-    expect(r.isError).toBe(false);
-    expect(state()).toBe('done');
-    expect(lastVerdict('upheld')).toBeDefined();
-    expect(spineReason()).toContain('the measure reads 0 and the label is gone');
-  });
 
-  it('valid=false with reason and no reject_reason: the close is rejected for that reason', async () => {
-    fileClose();
-    const r = await call('work_validate', { action: 'validate', kind: 'complete', task_id: TASK, valid: false, reason: 'two messages still carry the label; clear them and resubmit' }, PM);
-    expect(r.content).not.toMatch(/^Refused:/);
-    expect(r.content).toContain('two messages still carry the label; clear them and resubmit');
-    expect(state()).not.toBe('done');
-    expect(lastVerdict('rejected')?.note).toBe('two messages still carry the label; clear them and resubmit');
-  });
 
   it('the close doors keep a note-like argument instead of refusing the call over it', () => {
     expect(unknownArgsAgainstSchema('work_update', { action: 'status', task_id: TASK, status: 'complete', result: 'r', reason: 'done' }).unread).toEqual([]);
@@ -220,36 +175,7 @@ describe('the owner-verdict doors read reason, never refuse it', () => {
     expect(unknownArgsAgainstSchema('work_validate', { action: 'apply_user_validation', task_id: TASK, validated: true, user_quote: 'q', reason: 'r' }).unread).toEqual([]);
   });
 
-  it('apply_user_verdict: reason and feedback both ride the transition reason', async () => {
-    requestUserVerdict(TASK, 'pm', { why: 'stalemate' });
-    ownerReplies('Park it for now.');
-    const out = await run('work_validate:apply_user_verdict', { task_id: TASK, status: 'on_deck', user_quote: 'park it for now', reason: 'the owner wants it later', feedback: 'start with the oldest label' });
-    expect(out, out).toMatch(/^\[OK\]/);
-    expect(payloads()).toContain('the owner wants it later');
-    expect(payloads()).toContain('start with the oldest label');
-  });
 
-  it('apply_user_validation, validated=false with reason only: the reason is the feedback', async () => {
-    setState('blocked');
-    askedAndAnswered('No, not done.');
-    const out = await run('work_validate:apply_user_validation', { task_id: TASK, validated: false, user_quote: 'no, not done', reason: 'two labels are still there' });
-    expect(out, out).toMatch(/^\[OK\]/);
-    expect(note('rejected')).toBe('two labels are still there');
-  });
 
-  it('apply_user_validation, validated=false with feedback and reason: both are kept', async () => {
-    setState('blocked');
-    askedAndAnswered('No.');
-    await run('work_validate:apply_user_validation', { task_id: TASK, validated: false, user_quote: 'no', feedback: 'clear the label', reason: 'two are left' });
-    expect(note('rejected')).toBe('clear the label\ntwo are left');
-    expect(payloads()).toContain('clear the label\\ntwo are left');
-  });
 
-  it('apply_user_validation, validated=true with reason: the uphold carries it', async () => {
-    setState('blocked');
-    askedAndAnswered('Yes, it is blocked.');
-    const out = await run('work_validate:apply_user_validation', { task_id: TASK, validated: true, user_quote: 'yes, it is blocked', reason: 'waiting on the vendor' });
-    expect(out, out).toMatch(/^\[OK\]/);
-    expect(note('upheld')).toContain('waiting on the vendor');
-  });
 });

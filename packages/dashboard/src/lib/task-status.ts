@@ -30,7 +30,7 @@ export type TaskStatus = Task['status'];
 /** The columns the kanban renders, in order. `cancelled` is NOT one — it shares the terminal
  *  column with `fallen`, which is why the board gained a word rather than a column. */
 export const KANBAN_COLUMN_KEYS = [
-  'on_deck', 'in_progress', 'paused', 'complete', 'blocked', 'fallen',
+  'on_deck', 'in_progress', 'handed_in', 'sent_back', 'paused', 'complete', 'blocked', 'fallen',
 ] as const;
 
 export type KanbanColumnKey = (typeof KANBAN_COLUMN_KEYS)[number];

@@ -27,7 +27,8 @@ import { getDb } from '../../../../db/connection.js';
 import { isPMAgent } from '../../../../config/platform.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
-import { setTrackerStatus, upholdClaim } from '../../../../work/tracker-store.js';
+import { setTrackerStatus } from '../../../../work/tracker-store.js';
+import { noteUnsettled } from '../../../../work/store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 // T53: `enqueueSteer` is no longer imported here. Both of this file's steers go through
@@ -176,10 +177,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
           reason: `engine auto-block: ${breakerReason}`,
           note: noteLine,
         });
-        if (blockRes.kind === 'applied') {
-          upholdClaim(task.id, 'blocked', 'engine', 'engine',
-            `deterministic engine block: ${breakerReason}`);
-        }
+        noteUnsettled(blockRes, 'thrash gate: engine auto-block', { taskId: task.id });
         // F1.4: no noteTransitionForReview call here. runPMReview surfaces any
         // blocked task after 30 minutes regardless of blocked_validated (the
         // pm-agent blocked-issue check), so the PM has its backstop. A fresh
@@ -354,7 +352,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `  (b) Reply to ${userWords(currentAddress(agentId))} with the answer you can give using the data you already have, if that is what they asked for.\n` +
         `  (c) Call work_update(action="status", status='blocked') if you genuinely cannot proceed.\n` +
         `  (d) Send ${userWords(currentAddress(agentId))} a specific question if you need clarification.\n` +
-        `  (e) Only if a tracker task is done: work_update(action="status", status='complete') with a result + evidence.\n\n` +
+        `  (e) Only if a tracker task is done: work_update(action="hand_in") with its proof.\n\n` +
         `If you keep hitting refused signatures the engine will auto-block this task to stop the loop.`;
       logger.warn('v2: thrash gate activated for signature', {
         toolName: thrash.toolName, signature: thrash.signature,

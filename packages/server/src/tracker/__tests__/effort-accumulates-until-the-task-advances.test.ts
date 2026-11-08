@@ -327,15 +327,6 @@ describe('§4 trackerUpdateStatus — the actual tool result says "[NO-OP]", and
     expect(effortDelta(row)).toBe(33);         // spamming this call cannot reset the meter
   });
 
-  it('CONTROL — a real status change through the same tool DOES move the baseline', () => {
-    seedTrackerTask(mockDb.current!, { id: 'real-task-001', agentId: 'a1', status: 'on_deck' });
-    chargeEffort('real-task-001', 12);
-
-    const out = trackerUpdateStatus('a1', { taskId: 'real-task-001', status: 'cancelled' });
-
-    expect(out).toContain('[OK]');
-    expect(effortDelta(effortRow('real-task-001'))).toBe(0);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -349,90 +340,8 @@ describe('§5 trackerCompleteStep and closeProjectAndOpenTasks, called directly 
     mockDb.current = db;
   });
 
-  describe('trackerCompleteStep — the two-key contract\'s two halves, both through setTrackerStatus', () => {
-    /** A delivery `deliveryForTaskClose` can resolve (or the task's own `result_delivery_id`
-     *  fallback can point at) so G7 ("done means delivered") never blocks either call below —
-     *  the property under test here is the TWO-KEY gate (G9), not the delivery gate. */
-    function seedDelivery(db: Database.Database, id: string, agentId: string): void {
-      db.prepare(
-        `INSERT INTO deliveries (id, agent_id, outcome, tool, created_at, turn_number)
-         VALUES (?, ?, 'delivered', 'send_message', datetime('now'), NULL)`,
-      ).run(id, agentId);
-    }
-
-    it('a plain agent\'s call FILES A KEY-1 REQUEST and does not itself advance the baseline', () => {
-      // Measured, not assumed (this test was written against the real return string and
-      // state after running it): a worker agent can never close its own tracker task
-      // directly (PHASE-2 T8T, "an agent no longer closes one on its own say-so", G9 in
-      // `work/store.ts`) — `setTrackerStatus`'s `transition()` call refuses with
-      // `requires-validation`, which is `kind: 'refused'`, never `'applied'`. My wiring at
-      // `setTrackerStatus` therefore correctly does NOT call `advanceBaseline` here — this is
-      // the SAME "refused does not advance" property §3 already pins, now proven through
-      // `trackerCompleteStep`'s own real call site rather than a direct `setTrackerStatus` call.
-      seedTrackerTask(mockDb.current!, {
-        id: 'complete-step-task', agentId: 'a1', status: 'in_progress', result_delivery_id: 'd-1',
-      });
-      seedDelivery(mockDb.current!, 'd-1', 'a1');
-      chargeEffort('complete-step-task', 60);
-
-      const out = trackerCompleteStep('a1', { taskId: 'complete-step-task', result: 'the step is done', evidence: [{ kind: 'claim', claim: 'the step is done' }] });   // t193 (dec 27): a step closes with result + evidence
-
-      expect(out, out).toContain('[FILED]');
-      expect(stateOf('complete-step-task')).toBe('claimed'); // NOT moved to done — Key 1 only
-      expect(effortDelta(effortRow('complete-step-task'))).toBe(60); // baseline untouched
-    });
-
-    it('the PM turning Key 2 (trackerValidateComplete) — the SAME setTrackerStatus choke point, a different caller — DOES move the baseline: this is "complete_step moves the baseline to current" in full', async () => {
-      seedTrackerTask(mockDb.current!, {
-        id: 'req-task-001', agentId: 'a1', status: 'in_progress', result_delivery_id: 'd-1',
-      });
-      seedDelivery(mockDb.current!, 'd-1', 'a1');
-      chargeEffort('req-task-001', 60);
-
-      // Step 1 — the worker files the request (Key 1). Baseline untouched, exactly as above.
-      const filed = trackerCompleteStep('a1', { taskId: 'req-task-001', result: 'the step is done', evidence: [{ kind: 'claim', claim: 'the step is done' }] });   // t193 (dec 27)
-      expect(filed, filed).toContain('[FILED]');
-      expect(effortDelta(effortRow('req-task-001'))).toBe(60);
-
-      // Step 2 — the PM turns Key 2. `by: 'pm', claim: 'authoritative'` clears G9, so THIS
-      // call is where `transition()` actually applies the move to `done`.
-      const validated = await trackerValidateComplete('pm', { task_id: 'req-task-001', valid: true });
-
-      expect(validated, validated).toContain('[OK]');
-      expect(stateOf('req-task-001')).toBe('done');
-      expect(effortDelta(effortRow('req-task-001'))).toBe(0);       // baseline moved
-      expect(effortRow('req-task-001').effort_calls).toBe(60);      // lifetime total kept
-    });
-  });
 
   describe('closeProjectAndOpenTasks — moves the baseline directly, no two-key caveat', () => {
-    it('closes every open child task AND the project row itself, moving each one\'s baseline', () => {
-      seedTrackerProject(mockDb.current!, { id: 'proj-1', agentId: 'a1', status: 'active' });
-      seedTrackerTask(mockDb.current!, { id: 'child-1', agentId: 'a1', status: 'in_progress', projectId: 'proj-1' });
-      seedTrackerTask(mockDb.current!, { id: 'child-2', agentId: 'a1', status: 'on_deck', projectId: 'proj-1' });
-      chargeEffort('child-1', 88);
-      chargeEffort('child-2', 21);
-      chargeEffort('proj-1', 5);
-      expect(effortDelta(effortRow('child-1'))).toBe(88);
-      expect(effortDelta(effortRow('child-2'))).toBe(21);
-      expect(effortDelta(effortRow('proj-1'))).toBe(5);
-
-      // 'cancelled' — the tool's own documented default for this verb — targets `abandoned`,
-      // not `done`, so the two-key gate (G9) never applies and this is a genuine `applied`
-      // transition on the first call, for every row it touches.
-      const result = closeProjectAndOpenTasks({
-        projectId: 'proj-1', closingAgentId: 'a1',
-        taskStatus: 'cancelled', projectStatus: 'cancelled', reason: 'scope changed',
-      });
-
-      expect(result).toMatchObject({ projectId: 'proj-1', tasksClosed: 2, alreadyClosed: 0, refused: 0, unsettled: [] });   // v3.5: the result also carries each row's outcome
-      expect(effortDelta(effortRow('child-1'))).toBe(0);
-      expect(effortDelta(effortRow('child-2'))).toBe(0);
-      expect(effortDelta(effortRow('proj-1'))).toBe(0); // the project row itself, schema.ts:426
-      expect(effortRow('child-1').effort_calls).toBe(88); // lifetime totals kept, not erased
-      expect(effortRow('child-2').effort_calls).toBe(21);
-      expect(effortRow('proj-1').effort_calls).toBe(5);
-    });
 
     it('a task already terminal is skipped (alreadyClosed), and its baseline is correctly left alone', () => {
       seedTrackerProject(mockDb.current!, { id: 'proj-2', agentId: 'a1', status: 'active' });

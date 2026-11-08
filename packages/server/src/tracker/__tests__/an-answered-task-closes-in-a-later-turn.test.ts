@@ -125,34 +125,7 @@ beforeEach(() => {
 });
 
 describe('a task answered in turn N closes on that answer in a later turn', () => {
-  it('THE FIELD SHAPE: ack, work, answer on the dashboard in turn N; complete_step in an A2A turn N+1 files Key 1 on the answer', () => {
-    const askId = seedOwnerAsk('msg-ask');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask');
-    line('d-ack', 'On it, setting up the folder now.', ASK_TURN);
-    const answer = line('b2b026a7', 'Done: the folder holds hello.txt, and ls lists it.', ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask', answer);
-    expect(askRow(askId)).toEqual({ state: 'done', result_delivery_id: 'b2b026a7' });
-    laterA2ATurn();
 
-    const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
-    expect(out, out).toMatch(/^\[FILED\]/);
-    expect(closeRequest(steps[1])?.result_delivery_id).toBe('b2b026a7');
-    // The request the PM reads names the same delivery the close filed on.
-    expect(proofDelivery(steps[1])).toBe('b2b026a7');
-  });
-
-  it('work_update status="complete" (the other worker door) files on the same answer', () => {
-    const askId = seedOwnerAsk('msg-ask-s');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-s');
-    line('d-ack-s', 'On it.', ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask-s', line('d-ans-s', 'All four steps are done.', ASK_TURN));
-    laterA2ATurn();
-    const out = trackerUpdateStatus(AGENT, { taskId: steps[2], status: 'complete', ...CLOSE });
-    expect(out, out).toMatch(/\[FILED\]/);
-    expect(closeRequest(steps[2])?.result_delivery_id).toBe('d-ans-s');
-  });
 
   it('the ANSWERED STAMP edge: a task with no ask edge, stamped answered on the turn that settled the ask', () => {
     const askId = seedOwnerAsk('msg-ask-st');
@@ -175,85 +148,6 @@ const markAck = (deliveryId: string): void => {
   db().prepare("UPDATE messages SET origin_intent = 'engine_start_ack' WHERE id = ?").run(`m-${deliveryId}`);
 };
 
-describe('an ack never closes a task; a text line is the worker\'s to file on, for the PM', () => {
-  it('NEGATIVE CONTROL, driven: the MARKED start ack is the turn\'s only line; no receipt, the later close is refused, nothing reads as delivered', () => {
-    const askId = seedOwnerAsk('msg-ask-ack');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-ack');
-    const ack = line('d-onit', "On it, I've opened a project with 4 steps and will work through them.", ASK_TURN);
-    markAck('d-onit');
-    endTurnAndSettle(askId, 'msg-ask-ack', ack);
-    expect(askRow(askId).result_delivery_id, 'the settlement never takes the marked ack as a receipt').toBeNull();
-    for (const s of steps) stampAnswered(s);
-    laterA2ATurn();
-
-    expect(proofDelivery(steps[1])).toBeNull();
-    expect(engineProofLine(steps[1])).toBeNull();
-    const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
-    expect(out).toMatch(/^Error:/);
-    expect(out).toMatch(/No completion for this task has reached the owner yet/);
-    expect(closeRequest(steps[1])).toBeUndefined();
-    const view = trackerGetStatus(AGENT, { taskId: steps[1] });
-    expect(view).not.toContain('ALREADY DELIVERED');
-    expect(view).not.toContain('CLOSE if done');
-  });
-
-  it('SAME TURN: opened, acked and closed in one turn, the ack is not proof and the close is refused for nothing on record', () => {
-    const askId = seedOwnerAsk('msg-ask-one');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-one');
-    line('d-ack-one', "On it, I've handed the folder work to a helper.", ASK_TURN);
-    markAck('d-ack-one');   // the engine classified it as the turn's start line
-    const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
-    expect(out).toMatch(/No completion for this task has reached the owner yet/);
-    expect(closeRequest(steps[0])).toBeUndefined();
-  });
-
-  it('SAME TURN: an unmarked ack followed by the answer in that turn: the answer is the receipt, never the ack', () => {
-    const askId = seedOwnerAsk('msg-ask-two');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-two');
-    line('d-ack-two', "On it, I've opened the steps.", ASK_TURN);
-    line('d-ans-two', 'Made the folder; hello.txt is in it and ls lists it.', ASK_TURN);
-    expect(trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE })).toMatch(/^\[FILED\]/);
-    expect(closeRequest(steps[0])?.result_delivery_id).toBe('d-ans-two');
-  });
-
-  it('THE PROBE (R1): ack, then a PROGRESS line the ask settles on; the worker\'s close FILES for the PM and does not close by itself', () => {
-    const askId = seedOwnerAsk('msg-ask-pr');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-pr');
-    line('d-ack-pr', 'On it.', ASK_TURN);
-    markAck('d-ack-pr');
-    endTurnAndSettle(askId, 'msg-ask-pr', line('d-progress', 'Found three tables that fit; I will book one next and send you the confirmation.', ASK_TURN));
-    expect(askRow(askId).result_delivery_id).toBe('d-progress');
-    laterA2ATurn();
-    // The engine never reads a text line as delivered work.
-    expect(engineProofLine(steps[1])).toBeNull();
-    expect(trackerGetStatus(AGENT, { taskId: steps[1] })).not.toContain('ALREADY DELIVERED');
-    // The worker's own close files Key 1 on the line the owner read; the PM judges it.
-    const out = trackerCompleteStep(AGENT, { task_id: steps[1], ...CLOSE });
-    expect(out).toMatch(/^\[FILED\]/);
-    expect(closeRequest(steps[1])?.result_delivery_id).toBe('d-progress');
-    expect((db().prepare('SELECT state FROM work WHERE id = ?').get(steps[1]) as { state: string }).state).toBe('claimed');
-  });
-
-  it('R2: "On it." delivered BEFORE work_open, then the real answer; the worker\'s close is accepted and G7 never says nothing reached the owner', () => {
-    const askId = seedOwnerAsk('msg-ask-r2');
-    stampClaimingTurn(askId, ASK_TURN);
-    line('d-ack-r2', 'On it.', ASK_TURN);
-    markAck('d-ack-r2');
-    db().prepare('UPDATE deliveries SET created_at = datetime(\'now\', \'-2 seconds\') WHERE id = ?').run('d-ack-r2');
-    const steps = seedSteps('msg-ask-r2');
-    endTurnAndSettle(askId, 'msg-ask-r2', line('d-booked-r2', 'Booked: a table for four on Friday at 7pm, confirmation 4471.', ASK_TURN));
-    laterA2ATurn();
-    expect(proofDelivery(steps[0])).toBe('d-booked-r2');
-    const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
-    expect(out, out).toMatch(/^\[FILED\]/);
-    expect(out).not.toMatch(/No completion|nothing has reached/i);
-    expect(closeRequest(steps[0])?.result_delivery_id).toBe('d-booked-r2');
-  });
-});
 
 describe('every close door reads the one proof check', () => {
   it('a bare "Done." to the owner is a status claim, never the task\'s delivery', () => {
@@ -275,16 +169,3 @@ describe('every close door reads the one proof check', () => {
   });
 });
 
-describe('the G7 refusal states facts, never coaching', () => {
-  it('with nothing on record: no completion has reached the owner, and no "send it first" order', () => {
-    const askId = seedOwnerAsk('msg-ask-none');
-    stampClaimingTurn(askId, ASK_TURN);
-    const steps = seedSteps('msg-ask-none');
-    laterA2ATurn();
-    const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
-    expect(out).toMatch(/No completion for this task has reached the owner yet/);
-    expect(out).not.toMatch(/send the result first/i);
-    expect(out).not.toMatch(/hand it back on the thread/i);
-    expect(out).not.toMatch(/then set status/i);
-  });
-});

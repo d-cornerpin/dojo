@@ -52,8 +52,8 @@ describe('the close-out gate refusal', () => {
     expect(text).toContain('Refused: engine tracker check.');
     const note = text.indexOf('work_note(');
     expect(note).toBeGreaterThan(-1);
-    for (const w of ['paused', 'blocked', 'complete']) expect(text.indexOf(w)).toBeGreaterThan(note);
-    expect(text).toContain('status="complete" only if one is done');
+    for (const w of ['paused', 'blocked', 'hand_in']) expect(text.indexOf(w)).toBeGreaterThan(note);
+    expect(text).toContain('work_update(action="hand_in") only for one that is done');
     expect(text).not.toMatch(/never closed|resolve at least one/);
   });
 

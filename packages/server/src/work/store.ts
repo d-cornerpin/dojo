@@ -16,8 +16,8 @@
 //   3. Effects run INSIDE, once, atomically with the state change.
 //   4. `by: 'engine'` REQUIRES an `evidenceRef` that RESOLVES to a real occurrence,
 //      delivery or artifact row — "the engine may only assert what it can point at" (OR2).
-//   5. `claim` is a TYPE, not a source-scan test: 'requests-validation' | 'authoritative',
-//      and there is no third option, so the two-key contract cannot be forgotten.
+//   5. `claim` is a TYPE: 'decided' is the only value, and `work/done/decide.ts` is the only
+//      caller that passes it. A board task reaches done, failed or abandoned only with it.
 //
 // WHAT IS DELIBERATELY NOT HERE YET, AND WHO OWES IT. `transition()`'s effect set is
 // complete for everything that exists in `work` TODAY. Three effects named in the lift
@@ -41,33 +41,26 @@ import { createLogger } from '../logger.js';
 // it was for `TransitionResult`, so every caller keeps ONE import path and the
 // split is an implementation detail rather than a second place to look.
 import type { WorkEventKind } from './event-kinds.js';
-// SWEEP CORE-2 item 1 — THE DOORBELL. Rung from inside the one writer, so no close path can
-// forget it. `work/` still does not import `tracker/`: the validator registers a handler.
-import { ringValidationDoorbell } from './validation-drive.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
 import { notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
-// v3.5 field fix 3 (#3b): the verdict request's log position. `tracker-view.ts` imports only TYPES
-// from this module, so this value import creates no cycle.
-import { userVerdictOpenOnLogExpr, WORK_EVENT } from './tracker-view.js';
-import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
+import type { TransitionApplied, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
 
 const logger = createLogger('work-store');
 
 export type WorkState =
-  | 'open' | 'claimed' | 'done' | 'failed' | 'abandoned' | 'paused' | 'blocked' | 'on_deck';
+  | 'open' | 'claimed' | 'handed_in' | 'sent_back' | 'done' | 'failed' | 'abandoned' | 'paused' | 'blocked' | 'on_deck';
 
 export type WorkKind = 'ask' | 'task' | 'project' | 'occurrence' | 'commitment';
 
 /** Who is asking for the change. The authority table below is keyed on this and nothing else. */
 export type Actor = 'owner' | 'pm' | 'agent' | 'engine' | 'scheduler' | 'healer';
 
-/** Two-key as a type. There is no third option, so "did this call go through validation?"
- *  is answered by the compiler rather than by a conformance suite reading source. */
-export type Claim = 'requests-validation' | 'authoritative';
+/** A decision was made (`work/done/decide.ts`). The only way a board task becomes terminal. */
+export type Claim = 'decided';
 
 export { TERMINAL_STATES, isTerminal };
 
@@ -114,9 +107,11 @@ export { TERMINAL_STATES, isTerminal };
 // an authoritative actor — so this adds an edge, not a bypass. The rule above now reads in both
 // directions: a non-terminal state may return to the queue, AND the queue may reach any outcome.
 const LEGAL: Record<WorkState, readonly WorkState[]> = {
-  open:      ['claimed', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
+  open:      ['claimed', 'handed_in', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
   on_deck:   ['open', 'claimed', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
-  claimed:   ['open', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
+  claimed:   ['open', 'handed_in', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
+  sent_back: ['open', 'claimed', 'handed_in', 'on_deck', 'paused', 'blocked', 'abandoned'],
+  handed_in: ['sent_back', 'done', 'failed', 'abandoned'],
   paused:    ['open', 'claimed', 'on_deck', 'blocked', 'done', 'failed', 'abandoned'],
   blocked:   ['open', 'claimed', 'on_deck', 'paused', 'done', 'failed', 'abandoned'],
   done:      ['open'],
@@ -124,31 +119,13 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
   abandoned: ['open'],
 };
 
-/** Only these actors may assert `claim: 'authoritative'`. Everyone else must either bring a
- *  delivery (for `done`) or ask for validation. */
-const AUTHORITIES: readonly Actor[] = ['owner', 'pm'];
+/** Who may reopen settled work. Anyone else is a confused model acting on a stale id. */
+const REOPENERS: readonly Actor[] = ['owner', 'pm', 'engine'];
 
-/**
- * PHASE-2 T8T — WHO TURNS THE SECOND KEY (progress.md RULING 1).
- *
- * The subsystems that close work on the platform's own receipts rather than on somebody's
- * say-so. They are named here rather than derived from "not an agent" because the list is
- * the ruling's own enum widened by a measurement: the MAP's `adjudication.authority` was
- * `('pm','owner','engine')`, and this tree's `Actor` type has two more subsystem values that
- * did not exist when the MAP was written. Enumerated by command at HEAD `214ba3a` —
- * `git grep -n "setTrackerStatus(.*'complete'" -- packages/server/src` plus the `by:` line
- * under each — the closers of a task/project `done` are: `owner`, `pm` (authorities),
- * `engine` (three sanctioned receipt closes), `scheduler` (three schedule finals),
- * `healer` (project auto-close), and `agent`.
- *
- * G7 has already refused every `done` that cannot point at a delivery row that EXISTS, so
- * "with resolved delivery evidence" is not an extra condition on this list — it is a
- * property of every close that reaches this far.
- *
- * The AGENT is deliberately absent. That is the whole ruling: a worker's own close is Key 1
- * and only Key 1.
- */
-const SYSTEM_CLOSERS: readonly Actor[] = ['engine', 'scheduler', 'healer'];
+/** Board work: the tracker's tasks and projects, never a join piece of an ask. The same scope as
+ *  migration 139's `two_key_completion` trigger, so the gate and the constraint never disagree. */
+const isBoardWork = (row: Pick<WorkRow, 'kind' | 'root_kind'>): boolean =>
+  (row.kind === 'task' || row.kind === 'project') && row.root_kind !== 'a2a_thread';
 
 export interface TransitionInput {
   to: WorkState;
@@ -309,8 +286,9 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     };
   }
 
-  // ── G6: the engine may only assert what it can point at (OR2). ──
-  if (input.by === 'engine') {
+  // ── G6: the engine may only assert what it can point at (OR2). An engine hand-in points at the
+  //        proof items the hand-in door already checked. ──
+  if (input.by === 'engine' && input.to !== 'handed_in') {
     if (!input.evidenceRef) {
       return {
         kind: 'refused', workId, reason: 'engine-needs-evidence',
@@ -343,87 +321,19 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     }
   }
 
-  // ── G8: the two-key contract. ──
-  if (input.claim === 'authoritative' && !AUTHORITIES.includes(input.by)) {
-    return {
-      kind: 'refused', workId, reason: 'authoritative-claim-not-permitted',
-      detail: `${input.by} may not claim authority; that is the owner's and the PM's`,
-    };
-  }
-  // Reopening a settled row is the move a confused model makes on a stale id, so it needs an
-  // authority — or the engine, which by G6 already had to point at something real.
-  if (isTerminal(row.state) && !isTerminal(input.to)
-      && input.claim !== 'authoritative' && input.by !== 'engine') {
+  // ── G8: reopening settled work needs an authority, or the engine pointing at something real (G6). ──
+  if (isTerminal(row.state) && !isTerminal(input.to) && !REOPENERS.includes(input.by)) {
     return {
       kind: 'refused', workId, reason: 'reopen-requires-authority',
       detail: `reopening ${row.state} work needs the owner or the PM`,
     };
   }
-  // ── G9: TWO-KEY COMPLETION IS STRUCTURAL (PHASE-2 T8T, progress.md RULING 1) ──
-  //
-  // Migration `139`'s trigger refuses a `task`/`project` row reaching `done` without an
-  // upheld `claim_state='done'` adjudication. This gate is the same rule stated one layer
-  // up, so a worker gets a steerable sentence instead of a SQLite ABORT — and so the Key-1
-  // filing is RECORDED rather than lost with the aborted statement.
-  //
-  // What changed from T2's G8, and why (the comment this replaces said the opposite):
-  //   "`done` is exempt because a delivery IS the receipt … requiring a second key on top of
-  //    a proven delivery would re-create the validated-flag columns this phase deletes."
-  // That reasoning holds for asks, commitments and occurrences, and it still governs them —
-  // they close by delivery and are untouched below. It does NOT hold for the two tracker
-  // nouns, where research 19 §1c's two-key contract is the requirement and the flag columns
-  // are being replaced by adjudication ROWS, not by an exemption. The delivery stays
-  // mandatory (G7 above); it is now the FIRST key rather than both.
-  //
-  // The worker is not being refused a capability it had — it is being told which door.
-  // `work_close_request` files Key 1 (this event); `work_validate` turns Key 2; and for the
-  // common case the engine's own delivery-receipt close turns it at the turn boundary
-  // without anyone waiting.
-  //
-  // SUBJECT: the TRACKER's two nouns, which is not the same set as `kind IN ('task','project')`.
-  // T4's fan-out opens its countdown children as `kind='task'` with `root_kind='a2a_thread'`
-  // and `landPiece` (below, in this file) settles each one `by: 'agent'` — 17 such rows on the
-  // box when this landed. They are pieces of an ask, not board rows (`tracker-view.ts:104-112`),
-  // and two-key completion is not about them. Same discriminator as migration `139`'s trigger,
-  // stated in both places on purpose: a gate and a constraint that disagree is worse than
-  // either alone.
-  const twoKeySubject = (row.kind === 'task' || row.kind === 'project')
-    && row.root_kind !== 'a2a_thread'
-    && input.to === 'done';
-  const turnsKeyTwo = input.claim === 'authoritative' || SYSTEM_CLOSERS.includes(input.by);
-  if (twoKeySubject && !turnsKeyTwo) {
-    const eventId = appendEvent(workId, 'validation_requested', actorId, {
-      requested_state: 'done', reason: input.reason, from: row.state,
-      result_delivery_id: deliveryId ?? null,
-    });
-    logger.info('work close requested (Key 1 filed)', { workId, kind: row.kind, from: row.state, eventId });
-    // ── SWEEP CORE-2 item 1 — THE DOORBELL, SHAPE 1 (owner's design, 2026-08-06) ──
-    // *"so and so says they got this done. Confirm and mark it in the tracker, or push back,
-    // or get more info."* This is that moment, and until now it woke NOBODY: the tool door
-    // returns on this refusal (`tracker/tools.ts`) before it reaches the only PM wake in the
-    // tree, so the platform's most common completion shape waited on a patrol sweep whose
-    // dedup then compared the unchanged set equal and skipped it. Measured cost, BATTERY9:
-    // zero Key-2 verdicts in 84 minutes.
-    ringValidationDoorbell({ workId, shape: 'close-request' });
-    if (row.kind === 'task') notifyTaskEnded(row.agent_id, row.source_message_id);   // t152: a filed close is the holder's "I owe nothing more"
+  // ── G9: board work ends only by a decision (`work/done/decide.ts`), for every actor. The worker
+  //        hands in (`work/done/hand-in.ts`); nobody, the engine included, sets it done directly. ──
+  if (isBoardWork(row) && isTerminal(input.to) && input.claim !== 'decided') {
     return {
-      kind: 'refused', workId, reason: 'requires-validation',
-      detail: `close request recorded (event ${eventId}); a ${row.kind} is closed by an authority or by the engine's own delivery receipt, not by the worker that did it`,
-    };
-  }
-
-  // A worker agent asking to settle work it cannot prove is a REQUEST, recorded as one. The
-  // event lands; the state does not move. `done` is handled by G9 above for the two tracker
-  // nouns; for the kinds OR1 folded onto this table it stays exempt, because an ask closes
-  // when something was DELIVERED and there is no second party to adjudicate it.
-  if (input.claim === 'requests-validation' && isTerminal(input.to) && input.to !== 'done') {
-    const eventId = appendEvent(workId, 'validation_requested', actorId, {
-      requested_state: input.to, reason: input.reason, from: row.state,
-    });
-    logger.info('work validation requested', { workId, from: row.state, requested: input.to, eventId });
-    return {
-      kind: 'refused', workId, reason: 'requires-validation',
-      detail: `recorded as a validation request (event ${eventId}); an authority confirms it`,
+      kind: 'refused', workId, reason: 'needs-decision',
+      detail: `a ${row.kind} is finished by a decision on its hand-in, not by a status change: the worker hands it in with proof (work_update action="hand_in") and a decider other than the worker decides it`,
     };
   }
 
@@ -441,29 +351,6 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   const at = now();
 
   withUnit(() => {
-    // EFFECT: an authority's verdict is a ROW, not a flag column, and RULING 1 makes the
-    // system closers' delivery receipt the same kind of row. Filed FIRST so migration
-    // `139`'s BEFORE-UPDATE trigger can see it in this transaction.
-    //
-    // `by_agent` is the ROLE for a system close and the ACTOR for an authority's, and that
-    // asymmetry is load-bearing rather than sloppy: `tracker-view.ts:validatedExpr` reads
-    // this column to answer the PM's question ("did an authority bless this?"), which is a
-    // DIFFERENT question from the trigger's ("is this close adjudicated at all?"). The
-    // strike-0 close runs with `actorId: <the agent's id>`, so writing the actor here would
-    // make an engine close indistinguishable from a person's — and stamping
-    // `complete_validated=1` on an engine close is migration `108`'s demolished forgery,
-    // re-created. Owner ruling 2026-07-19, `tracker/tools.ts:256-270`.
-    if (input.claim === 'authoritative' || (twoKeySubject && SYSTEM_CLOSERS.includes(input.by))) {
-      db.prepare(
-        `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-         VALUES (?, ?, 'upheld', ?, ?, ?, ?)`,
-      ).run(
-        workId, input.to,
-        input.claim === 'authoritative' ? actorId : input.by,
-        input.evidenceRef ?? null, input.reason, at,
-      );
-    }
-
     db.prepare(
       `UPDATE work SET
          state = ?,
@@ -497,20 +384,6 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       claim: input.claim ?? null,
       note: input.note ?? null,
     }, at);
-
-    // EFFECT (v3.5 field fix 3, #3b): A FINISHED ROW ANSWERS ITS OPEN VERDICT REQUEST. The
-    // request asked the owner to rule on the row's status; once the row is finished by any
-    // door (a cancel, a bulk close, an owner drag, the PM) there is nothing left to rule on.
-    // Only four callers ever cleared a request, so a row closed any other way kept it "open"
-    // for ever, and the 12h sweep re-picked it every 30s on the owner's box. One place, in the
-    // same transaction as the state change, so every door is covered.
-    if (terminal && !isTerminal(from)) {
-      const open = db.prepare(`SELECT ${userVerdictOpenOnLogExpr('w')} AS o FROM work w WHERE w.id = ?`)
-        .get(workId) as { o: number } | undefined;
-      if (open?.o === 1) {
-        appendEvent(workId, WORK_EVENT.userVerdictCleared, actorId, { reason: `closed: ${input.to} (${input.reason})` }, at);
-      }
-    }
 
     // EFFECT: the fan-out countdown. A child settling is the ONLY thing that decrements it,
     // and it decrements atomically in the same transaction as the child's own state change —
@@ -561,19 +434,6 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
 
   logger.info('work transition applied', { workId, from, to: input.to, by: input.by, eventId });
 
-  // ── SWEEP CORE-2 item 1 — THE DOORBELL, SHAPE 2 ──
-  // The engine / scheduler / healer closing on a delivery receipt. The adjudication above is
-  // stamped with the ROLE, and `validatedExpr('done')` excludes exactly those roles, so this
-  // row is `done` AND still owes Key 2 — TB5's whole subject. An `authoritative` close is not
-  // rung: that IS Key 2 turning.
-  //
-  // Rung AFTER the transaction, deliberately: the validator must never be woken about a row
-  // whose write could still roll back, and a handler must never run inside the single
-  // writer's unit. `ringValidationDoorbell` swallows its own failures for the same reason.
-  if (twoKeySubject && input.claim !== 'authoritative' && SYSTEM_CLOSERS.includes(input.by)) {
-    ringValidationDoorbell({ workId, shape: 'engine-receipt' });
-  }
-
   // ── UX-REPAIR ROUND 3 T17 — THE OBLIGATION'S MEMORY DIES WITH THE OBLIGATION ──
   // A commitment reaching a terminal state is the moment — and the ONLY moment — at which
   // the platform knows a promise is no longer owed. Before this, no lifecycle exit touched
@@ -589,50 +449,12 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   }
 
   // t152: a tracker task linked to an owner's request ended — what it held back from settling may settle now.
-  if (row.kind === 'task' && terminal && !isTerminal(from)) notifyTaskEnded(row.agent_id, row.source_message_id);
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
 }
 
-/** Record an authority's REJECTION of a claim. The uphold path lives inside `transition()`
- *  because it moves state; a rejection moves nothing, so it is its own small writer — and it
- *  is here, in the same module, because `adjudications` has one writer for the same reason
- *  `work` does. */
-export function rejectClaim(
-  workId: string,
-  params: { claimState: WorkState; by: Actor; byId?: string; note: string; evidenceRef?: string | null; lookedAt?: object },
-): { kind: 'applied'; id: number } | { kind: 'refused'; reason: TransitionGate; detail: string } {
-  if (!AUTHORITIES.includes(params.by)) {
-    return {
-      kind: 'refused', reason: 'authoritative-claim-not-permitted',
-      detail: `${params.by} may not adjudicate`,
-    };
-  }
-  const db = getDb();
-  if (!db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId)) {
-    return { kind: 'refused', reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
-  }
-  // T2: the verdict and the event that records it are ONE unit — a rejection nobody
-  // can find in the event log is the silence this phase exists to close.
-  return withUnit((): { kind: 'applied'; id: number } => {
-    const info = db.prepare(
-      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-       VALUES (?, ?, 'rejected', ?, ?, ?, ?)`,
-    ).run(workId, params.claimState, params.byId ?? params.by, params.evidenceRef ?? null, params.note, now());
-    appendEvent(workId, 'claim_rejected', params.byId ?? params.by, { claim_state: params.claimState, note: params.note, looked_at: params.lookedAt });
-    return { kind: 'applied', id: Number(info.lastInsertRowid) };
-  });
-}
-
-/** How many times this work item's claims have been thrown back. A COUNT, never a column —
- *  `revert_count` was a maintained integer on `tasks` and it drifted. */
-export function revertCount(workId: string): number {
-  const r = getDb().prepare(
-    "SELECT count(*) AS c FROM adjudications WHERE work_id = ? AND verdict = 'rejected'",
-  ).get(workId) as { c: number };
-  return r.c;
-}
 
 // ════════════════════════════════════════════════════════════════════════════════
 // PHASE-2 T3 — THE ASK: every ask is a ticket, and a claim is a STATE.

@@ -232,7 +232,7 @@ describe('the engine stops asking for the shape it destroys', () => {
     expect(text).not.toContain('and THEN call');
     expect(text.toLowerCase()).toContain('separate');
     // and it still names the tool and the bound, so nothing was lost in the rewording
-    expect(text).toContain('work_update(action="status")');
+    expect(text).toContain('work_update(action="hand_in")');
     expect(text).toContain('steer 1 of 3');
   });
 

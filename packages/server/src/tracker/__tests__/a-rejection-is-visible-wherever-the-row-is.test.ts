@@ -195,14 +195,6 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('T49 (a): a stopped row states its own recorded reason on the board', () => {
-  it('THE S4 SHAPE: the Paused row carries the recorded wait, not just a title', () => {
-    seedS4Row();
-    const body = section(trackerListActive(AGENT, {}), 'Paused Tasks (1):');
-    const joined = body.join('\n');
-    expect(joined, 'the pause reason is the row\'s own recorded words').toContain(
-      `Waiting on ${FX.n11} to name the notes folder for the reorganization`,
-    );
-  });
 
   it('a Blocked row carries its recorded reason too', () => {
     seedBlockedWithNote();
@@ -210,15 +202,6 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
     expect(joined).toContain('Cannot locate the "notes folder"');
   });
 
-  it('the clause is TRUNCATED — one line on a board row, never the whole note', () => {
-    seedS4Row();
-    const clause = section(trackerListActive(AGENT, {}), 'Paused Tasks (1):')
-      .find((l) => l.includes(`Waiting on ${FX.n11}`))!;
-    expect(clause, 'a board row is one line').not.toContain('\n');
-    expect(clause.length).toBeLessThan(200);
-    expect(clause, 'the tail is cut, so the note is not reproduced whole')
-      .not.toContain('until his answer is relayed');
-  });
 
   it('the status-filtered read of the same rows carries it too', () => {
     seedBlockedWithNote();
@@ -254,49 +237,10 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('T49 (b): the detail read states the last PM ruling when it is a rejection', () => {
-  it('THE S4 SHAPE: the rejection is on the row the agent reads', () => {
-    const t = seedS4Row();
-    const out = trackerGetStatus(AGENT, { taskId: t });
-    expect(out).toContain('Last PM ruling: REJECTED — No summary file was ever delivered');
-  });
 
-  it('the ruling reason is the RECORDED one, truncated — no engine words added', () => {
-    const t = seedS4Row();
-    const line = trackerGetStatus(AGENT, { taskId: t })
-      .split('\n').find((l) => l.startsWith('Last PM ruling:'))!;
-    const quoted = line.slice('Last PM ruling: REJECTED — '.length).replace(/\.\.\.$/, '');
-    expect(REJECT_REASON.startsWith(quoted),
-      'every quoted byte is a prefix of what the PM actually recorded').toBe(true);
-  });
 
-  it('a blocked row whose close the PM rejected says so as well', () => {
-    const t = newTask('Migrate field 15');
-    pmRejectsTheClose(t, 'evidence does not show field-15 was migrated; finish it and resubmit');
-    expect(trackerGetStatus(AGENT, { taskId: t })).toContain(
-      'Last PM ruling: REJECTED — evidence does not show field-15 was migrated',
-    );
-  });
 
-  it('CONTROL: a claim_upheld{paused} does NOT count as an upheld close (event 24602)', () => {
-    // This is the incident's own tail. If a blessed WAIT silenced the ruling line, T49 would
-    // be dark on the very row it was written for.
-    const t = seedS4Row();
-    expect(trackerGetStatus(AGENT, { taskId: t })).toContain('Last PM ruling: REJECTED');
-  });
 
-  it('CONTROL: an upheld CLOSE shows NO ruling line', () => {
-    const t = newTask('Migrate field 15');
-    pmRejectsTheClose(t, 'evidence does not show field-15 was migrated; finish it and resubmit');
-    // The agent redoes the work and files again; the PM blesses it this time.
-    setTrackerStatus(t, 'complete', {
-      by: 'pm', actorId: PM, claim: 'authoritative',
-      resultDeliveryId: seedDelivery('d-field15'), reason: 'PM validated the close',
-    });
-    upholdClaim(t, 'done', 'pm', PM, 'PM validated the close against the goal');
-    const out = trackerGetStatus(AGENT, { taskId: t });
-    expect(out).not.toContain('Last PM ruling');
-    expect(out).not.toContain('REJECTED');
-  });
 
   it('CONTROL: a row with no adjudication at all is unchanged', () => {
     const t = seedBlockedWithNote();

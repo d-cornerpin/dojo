@@ -104,7 +104,7 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     const words = cards()[0].words;
     expect(words).not.toContain('work_validate');
     expect(words).not.toContain('vault_get');
-    expect(words).toContain('work_close_request');
+    expect(words).toContain('work_update');
   });
 
   it('a current box (every listed tool held) sees no card, no note, no record, and no change', () => {

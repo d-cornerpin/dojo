@@ -1214,48 +1214,15 @@ export const addTaskObservation = async (
   });
 };
 
-// User-side validation: flips the appropriate *_validated flag from the dashboard.
-export const userValidateTask = async (
+// The owner's decision on a task: approve or send back a hand-in, or close or cancel it himself.
+export const decideTask = async (
   id: string,
-): Promise<ApiResponse<{ validated: boolean }>> => {
-  return request<{ validated: boolean }>(`/tracker/tasks/${id}/user-validate`, {
-    method: 'POST',
-  });
-};
-
-// Phase B.1: override-request queue.
-export interface OverrideRequestRow {
-  id: string;
-  task_id: string;
-  task_title: string | null;
-  task_goal: string | null;
-  requested_by: string;
-  requested_status: string;
-  justification: string;
-  last_engine_error: string | null;
-  attempts_attached: number;
-  status: 'pending' | 'approved' | 'denied' | 'auto_denied';
-  resolved_by: string | null;
-  resolved_reason: string | null;
-  created_at: string;
-  resolved_at: string | null;
-}
-
-export const getOverrideRequests = async (
-  status?: 'pending' | 'approved' | 'denied' | 'auto_denied',
-): Promise<ApiResponse<OverrideRequestRow[]>> => {
-  const q = status ? `?status=${status}` : '';
-  return request<OverrideRequestRow[]>(`/tracker/override-requests${q}`);
-};
-
-export const resolveOverrideRequest = async (
-  id: string,
-  approve: boolean,
+  verdict: 'approve' | 'send_back' | 'owner_done' | 'cancel',
   reason: string,
-): Promise<ApiResponse<{ approved: boolean }>> => {
-  return request<{ approved: boolean }>(`/tracker/override-requests/${id}/resolve`, {
+): Promise<ApiResponse<{ to: string; text: string }>> => {
+  return request<{ to: string; text: string }>(`/tracker/tasks/${id}/decision`, {
     method: 'POST',
-    body: JSON.stringify({ approve, reason }),
+    body: JSON.stringify({ verdict, reason }),
   });
 };
 
@@ -1263,13 +1230,11 @@ export const resolveOverrideRequest = async (
 export interface TrackerHygiene {
   validateOutcomes: Array<{ from_entity: string; rejects: number; validates: number }>;
   smellFlags: Array<{ category: string; count: number }>;
-  overrideRollup: Array<{ status: string; count: number }>;
   elevated: Array<{
     id8: string;
     title: string;
     status: string;
     revert_count: number;
-    awaiting_user_verdict: number;
     last_smell_flag: string | null;
   }>;
   pmCost: Array<{ modelId: string | null; calls: number; cost_24h: number | null }>;

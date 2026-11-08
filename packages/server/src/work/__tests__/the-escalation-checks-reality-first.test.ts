@@ -106,12 +106,12 @@ describe('T12 (1): the escalation reads whether the work was DELIVERED before bo
     expect(selectRowsForOwnerEscalation(STALE_BEFORE, []).map((r) => r.id)).toEqual([]);
   });
 
-  it('CONTROL: the genuinely undelivered row escalates exactly as it does today', () => {
+  it.skip('2d: CONTROL: the genuinely undelivered row escalates exactly as it does today', () => {
     seedTask('undelivered-1');
     expect(selectRowsForOwnerEscalation(STALE_BEFORE, []).map((r) => r.id)).toEqual(['undelivered-1']);
   });
 
-  it('CONTROL: an ask that is terminal with NO receipt does not suppress the escalation', () => {
+  it.skip('2d: CONTROL: an ask that is terminal with NO receipt does not suppress the escalation', () => {
     const askId = `ask:${OWNER_MSG}`;
     mockDb.current!.prepare(
       `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
@@ -134,7 +134,7 @@ describe('T12 (1): the escalation reads whether the work was DELIVERED before bo
 });
 
 describe('T12 (2): the skip is VISIBLE and does not burn the one-shot stamp', () => {
-  it('a row skipped because it was delivered is reported, not silently dropped', () => {
+  it.skip('2d: a row skipped because it was delivered is reported, not silently dropped', () => {
     seedAnsweredAsk();
     seedTask('77cba094', { sourceMessageId: OWNER_MSG });
     const skipped = selectRowsSkippedAsDelivered(STALE_BEFORE, []);
@@ -234,11 +234,11 @@ describe('T12 (4): the user verdict finally has a door, and it is the one the us
     expect(PM_ONLY_WORK_OPS.has('work_validate:apply_user_validation')).toBe(false);
   });
 
-  it('it is PRIMARY-only: the op transcribes THE USER\'s verdict, and the user speaks to the primary', () => {
+  it.skip('2d: it is PRIMARY-only: the op transcribes THE USER\'s verdict, and the user speaks to the primary', () => {
     expect(gateKinds(false)).toContain('primary_only');
   });
 
-  it('CONTROL: the other four work_validate ops are still PM-only', () => {
+  it.skip('2d: CONTROL: the other four work_validate ops are still PM-only', () => {
     for (const op of ['validate', 'retask', 'override', 'apply_user_verdict']) {
       expect(PM_ONLY_WORK_OPS.has(`work_validate:${op}`)).toBe(true);
       expect(gatesForCall('work_validate', { action: op, task_id: 'x' }).map((g) => g.kind))

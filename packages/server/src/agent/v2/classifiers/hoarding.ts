@@ -151,7 +151,7 @@ export const STRUCTURING_OPS = new Set<string>([
   'work_open:project',
   'work_open:task',
   'work_update:status',
-  'work_update:complete_step',
+  'work_update:hand_in',
   'work_note',
   'work_update:edit',
   'file_write',

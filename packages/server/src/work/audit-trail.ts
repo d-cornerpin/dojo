@@ -136,8 +136,7 @@ export function readAuditTrail(
     // filed at all. Those are different failures and he could not tell them apart.
     //
     // This branch RENDERS an existing event. It introduces no event kind, writes nothing,
-    // and touches no predicate — `pendingCloseRequestExpr` and `unvalidatedCloseExpr` are
-    // untouched, which is the T21/T26 preservation property stated as a fact about the diff.
+    // and touches no predicate: `handedInExpr` is untouched. 2d: old rows only; a hand-in is a `handed_in` event.
     `SELECT e.id, e.work_id, e.actor, 'validation_requested',
             ${STATE_TO_STATUS_SQL(jx('from'))}, ${STATE_TO_STATUS_SQL(jx('requested_state'))},
             ${jx('reason')}, NULL, 'close requested — awaiting validation', NULL, e.created_at

@@ -465,7 +465,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 IMPORTANT INSTRUCTIONS:
 1. Begin working immediately.
 2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.
-3. If you have been assigned a tracker task, call work_update(action="status", task_id=YOUR_TASK_ID, status="complete", notes="what you did") BEFORE calling complete_task.
+3. If you have been assigned a tracker task, hand it in with work_update(action="hand_in", task_id=YOUR_TASK_ID, outcome="finished", proof=[...], note="what you did") BEFORE calling complete_task.
 4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
 5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
 6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
@@ -816,7 +816,6 @@ export async function completeAgent(
   // rows have landed. Complete transitions are deliberately NOT collected
   // here: their project check fires downstream when the PM validates
   // (work_validate(action="validate")), fallen has no validation flag so this is its only hook.
-  const fallenProjectIds = new Set<string>();
 
   // If task_id: update task status
   if (resolvedTaskId) {
@@ -827,7 +826,6 @@ export async function completeAgent(
     // canonical "result" home for apprentice flows (also reused by
     // Phase B.1 evidence plumbing).
     const priorRow = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.parent_id AS project_id FROM work w WHERE w.id = ?`).get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
-    if (taskStatus === 'fallen' && priorRow?.project_id) fallenProjectIds.add(priorRow.project_id);
 
     // Phase B.1: plumb result + evidence_json from the apprentice's summary
     // so PM has structured input to validate against (instead of just prose).
@@ -960,7 +958,6 @@ export async function completeAgent(
       if (!workSettled(dRes)) {
         logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
       }
-      if (disposition === 'fallen' && dt.project_id) fallenProjectIds.add(dt.project_id);
 
       void danglerLog.writeTaskLog({
         taskId: dt.id,
@@ -986,24 +983,7 @@ export async function completeAgent(
     }, agentId);
   }
 
-  // D-K: a complete_task(status="fallen") can be the transition that empties a
-  // project of open tasks (fall-last ordering). Run the success-vs-fail-open
-  // check per affected project so it gets its needs-attention label + primary
-  // notice instead of staying silently active. Idempotent, extra calls are
-  // harmless. Dynamic import matches this file's cross-module style and avoids
-  // pulling the tracker tool module into the static graph.
-  if (fallenProjectIds.size > 0) {
-    try {
-      const { checkProjectCompletion } = await import('../tracker/tools.js');
-      for (const projectId of fallenProjectIds) {
-        checkProjectCompletion(projectId, agentId);
-      }
-    } catch (err) {
-      logger.warn('completeAgent: checkProjectCompletion after fallen close failed (non-fatal)', {
-        agentId, error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    }
-  }
+  // 2c: the project roll-up of a fallen close runs at the decision.
 
   // P6b STRIP: the orphaned-completion "you forgot to link a task" nag is
   // gone. The spawn contract requires the task link at spawn, so the unlinked

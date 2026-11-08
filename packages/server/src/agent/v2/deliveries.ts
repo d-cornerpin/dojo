@@ -205,7 +205,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
  * does not resolve. It is a refusal rather than a null so the caller can tell it apart from
  * a ledger write that broke.
  */
-export function recordOwnerCloseReceipt(workId: string, surface: string): LedgerOutcome {
+export function recordDecisionReceipt(workId: string, decider: string, surface: string): LedgerOutcome {
   const w = getDb().prepare('SELECT agent_id FROM work WHERE id = ?')
     .get(workId) as { agent_id: string } | undefined;
   if (!w) return { kind: 'refused', reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
@@ -215,8 +215,8 @@ export function recordOwnerCloseReceipt(workId: string, surface: string): Ledger
     channel: 'none',
     outcome: 'owner_closed',
     conversationId: null,
-    detail: `The owner closed this work himself, from ${surface}. Nothing was delivered by `
-      + `this row: it is the receipt for his own act, which is what satisfies work.done's `
+    detail: `${decider} decided this work, by ${surface}. Nothing was delivered by `
+      + `this row: it is the receipt for the decision, which is what satisfies work.done's `
       + `delivery requirement here. Every reader of this table filters outcome='delivered'.`,
   });
 }

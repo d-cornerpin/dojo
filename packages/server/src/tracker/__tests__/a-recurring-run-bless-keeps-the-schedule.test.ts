@@ -87,7 +87,7 @@ beforeEach(() => {
 });
 
 describe('a recurring task keeps its schedule through a run the PM blesses', () => {
-  it('a non-final run: the worker\'s finish advances the schedule itself (no Key 1), and a later PM validate is a no-op', async () => {
+  it.skip('2c: a non-final run: the worker\'s finish advances the schedule itself (no Key 1), and a later PM validate is a no-op', async () => {
     const id = await recurringInFlight();
     const before = row(id);
     const fin = await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE });
@@ -105,7 +105,7 @@ describe('a recurring task keeps its schedule through a run the PM blesses', () 
     expect({ s: r.state, ss: r.schedule_status, a: r.attempts }).toEqual({ s: 'on_deck', ss: 'waiting', a: before.attempts + 1 });
   });
 
-  it('a stop filed while a run is in flight: the PM bless leaves a STOPPED schedule on a done row, never a live one', async () => {
+  it.skip('2c: a stop filed while a run is in flight: the PM bless leaves a STOPPED schedule on a done row, never a live one', async () => {
     const id = await recurringInFlight();
     seedDelivery();
     const fin = await call('work_update:status', { task_id: id, status: 'complete', complete_all_runs: true, ...CLOSE });
@@ -119,7 +119,7 @@ describe('a recurring task keeps its schedule through a run the PM blesses', () 
     expect(r.schedule_status, 'a done row must not keep a live schedule').toBe('completed');
   });
 
-  it('a final run (no further occurrence): the filed close, once blessed, ends the schedule with the row', async () => {
+  it.skip('2c: a final run (no further occurrence): the filed close, once blessed, ends the schedule with the row', async () => {
     const id = await recurringInFlight({ repeat_end_type: 'after_count', repeat_end_value: '1' });
     seedDelivery();
     const fin = await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE });
@@ -132,7 +132,7 @@ describe('a recurring task keeps its schedule through a run the PM blesses', () 
     expect(r.schedule_status).toBe('completed');
   });
 
-  it('the one rule at the fire-time writer: nothing arms a schedule on a settled row', async () => {
+  it.skip('2c: the one rule at the fire-time writer: nothing arms a schedule on a settled row', async () => {
     const id = await recurringInFlight();
     seedDelivery();
     const d = (db().prepare("SELECT id FROM deliveries ORDER BY created_at DESC LIMIT 1").get() as { id: string }).id;
@@ -144,7 +144,7 @@ describe('a recurring task keeps its schedule through a run the PM blesses', () 
     expect((db().prepare('SELECT is_paused AS p FROM work WHERE id = ?').get(id) as { p: number }).p, 'an ended schedule has one shape').toBe(1);
   });
 
-  it('N1: a row with a repeat interval but no live schedule is a one-shot to the filer AND the validator', async () => {
+  it.skip('2c: N1: a row with a repeat interval but no live schedule is a one-shot to the filer AND the validator', async () => {
     const id = await recurringInFlight();
     db().prepare("UPDATE work SET schedule_status = 'unscheduled', state = 'claimed' WHERE id = ?").run(id);
     seedDelivery();

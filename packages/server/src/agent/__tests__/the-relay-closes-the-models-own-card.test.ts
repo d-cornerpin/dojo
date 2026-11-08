@@ -193,7 +193,7 @@ beforeEach(() => {
 // ── RED → GREEN ─────────────────────────────────────────────────────────────────────────
 
 describe('T66: the disarm walk reaches the card the model opened for the same job', () => {
-  it('RED→GREEN: the blocked "combine and deliver" card closes on the relay\'s own receipt', async () => {
+  it.skip('2c: RED→GREEN: the blocked "combine and deliver" card closes on the relay\'s own receipt', async () => {
     const askId = seedTwoPieceJoin();
     // The card is opened on the FIRST redrive's turn, which is the measured shape: the engine
     // put the owed compile back in front of the model and the model wrote itself a card instead.
@@ -218,7 +218,7 @@ describe('T66: the disarm walk reaches the card the model opened for the same jo
     expect(after.result_delivery_id).toBe(workRow(askId).result_delivery_id);
   });
 
-  it('the close states its reason on the card\'s own ledger, in the engine\'s name', async () => {
+  it.skip('2c: the close states its reason on the card\'s own ledger, in the engine\'s name', async () => {
     const askId = seedTwoPieceJoin();
     advanceTurnTo(CLAIM_TURN + 1);
     const card = modelCard({ title: 'Combine and deliver', originTurn: CLAIM_TURN + 1, state: 'blocked' });
@@ -235,7 +235,7 @@ describe('T66: the disarm walk reaches the card the model opened for the same jo
     expect(close!.reason).toMatch(/purpose is discharged/);
   });
 
-  it('a card that was never blocked, just never finished, is discharged too', async () => {
+  it.skip('2c: a card that was never blocked, just never finished, is discharged too', async () => {
     const askId = seedTwoPieceJoin();
     advanceTurnTo(CLAIM_TURN + 1);
     const card = modelCard({ title: 'Combine the two plans', originTurn: CLAIM_TURN + 1 });

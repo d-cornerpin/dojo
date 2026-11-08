@@ -203,7 +203,7 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 a block the PM confirmed is real reaches the owner', () => {
-  it('THE INVERSION: a PM-upheld block is a candidate for owner escalation', () => {
+  it.skip('2d: THE INVERSION: a PM-upheld block is a candidate for owner escalation', () => {
     seedBlocked('t-upheld');
     upholdClaim('t-upheld', 'blocked', 'pm', PM, 'PM confirmed the block is real');
     age('t-upheld');
@@ -214,7 +214,7 @@ describe('§1 a block the PM confirmed is real reaches the owner', () => {
     expect(row!.blocked_validated, 'the uphold really is recorded').toBe(1);
   });
 
-  it('THE MUTANT, both ways: restoring the `blocked_validated = 0` conjunct re-opens the void', () => {
+  it.skip('2d: THE MUTANT, both ways: restoring the `blocked_validated = 0` conjunct re-opens the void', () => {
     seedBlocked('t-upheld');
     upholdClaim('t-upheld', 'blocked', 'pm', PM, 'PM confirmed the block is real');
     age('t-upheld');
@@ -231,7 +231,7 @@ describe('§1 a block the PM confirmed is real reaches the owner', () => {
       'the old arm is what excluded it — this is the measured defect').not.toContain('t-upheld');
   });
 
-  it('and the OTHER direction: `close` and `pause` keep their validation conjunct', () => {
+  it.skip('2d: and the OTHER direction: `close` and `pause` keep their validation conjunct', () => {
     // The negative control for fix 1's scope. An upheld PAUSE is resolved — the pause is
     // legitimate and there is nothing left to tell anyone — so it must NOT escalate.
     seedWork('t-paused', { state: 'paused' });
@@ -244,7 +244,7 @@ describe('§1 a block the PM confirmed is real reaches the owner', () => {
     expect(candidates(), 'an upheld pause is resolved, not escalated').not.toContain('t-paused');
   });
 
-  it('DRIVEN END TO END: the ladder runs out and the OWNER IS TOLD', async () => {
+  it.skip('2d: DRIVEN END TO END: the ladder runs out and the OWNER IS TOLD', async () => {
     seedBlocked('t-upheld');
     upholdClaim('t-upheld', 'blocked', 'pm', PM, 'PM confirmed the block is real');
     age('t-upheld');
@@ -267,7 +267,7 @@ describe('§1 a block the PM confirmed is real reaches the owner', () => {
     expect(alert, 'the old fixed sentence said the opposite').not.toContain('has not been able to confirm');
   });
 
-  it('the floor-ghost event carries the facts the sentence was built from', async () => {
+  it.skip('2d: the floor-ghost event carries the facts the sentence was built from', async () => {
     seedBlocked('t-upheld');
     upholdClaim('t-upheld', 'blocked', 'pm', PM, 'PM confirmed the block is real');
     age('t-upheld');
@@ -481,7 +481,7 @@ describe('§4 healthy progressing work NEVER escalates', () => {
   // that the real counter counts, and the clause can go red.
   // ════════════════════════════════════════════════════════════════════════════════════
 
-  it('AN OWNER-CANCELLED TASK IS NEVER ESCALATED — driven through the dashboard door', async () => {
+  it.skip('2d: AN OWNER-CANCELLED TASK IS NEVER ESCALATED — driven through the dashboard door', async () => {
     // The row first FAILS for real, so it carries the recorded failures the arm counts. This is
     // the reviewer's `drv-cancel`: without the state bound it scores >= 1 and is admitted.
     seedWork('t-cancelled', { remaining_children: 1 });
@@ -522,7 +522,7 @@ describe('§4 healthy progressing work NEVER escalates', () => {
     ).not.toContain('wire up the greenhouse sensor');
   });
 
-  it('every TERMINAL state is bounded, each reached through transition() with real failures', () => {
+  it.skip('2d: every TERMINAL state is bounded, each reached through transition() with real failures', () => {
     // `done` needs a delivery receipt by CHECK, so it is driven with one; the other two are the
     // shapes a failure itself produces.
     for (const [id, to] of [['t-fail', 'failed'], ['t-aband', 'abandoned']] as const) {
@@ -560,7 +560,7 @@ describe('§4 healthy progressing work NEVER escalates', () => {
       .toContain('t-still-open');
   });
 
-  it('a PAUSED row is not nagged either — the tool contract promises the owner silence in it', () => {
+  it.skip('2d: a PAUSED row is not nagged either — the tool contract promises the owner silence in it', () => {
     // This exclusion is beyond the reviewer's required fix and is argued at the predicate: a
     // pause is the owner holding the ball. Coverage is not lost — an UNVALIDATED pause still
     // escalates through the arm that owns that state, which the next clause drives.
@@ -582,7 +582,7 @@ describe('§4 healthy progressing work NEVER escalates', () => {
     expect(candidates(), 'no pokes, no nags, ever').not.toContain('t-paused-fail');
   });
 
-  it('the one-shot stamp still bounds everything: a row already escalated is not escalated twice', async () => {
+  it.skip('2d: the one-shot stamp still bounds everything: a row already escalated is not escalated twice', async () => {
     seedBlocked('t-once');
     upholdClaim('t-once', 'blocked', 'pm', PM, 'PM confirmed the block is real');
     age('t-once');

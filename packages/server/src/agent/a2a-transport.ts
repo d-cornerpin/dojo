@@ -842,7 +842,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       // completion notification automatically.
       const taskShort = autoTask.taskId.slice(0, 8);
       threadInfo += autoTask.isNew
-        ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Call work_update(action="status", task_id="${autoTask.taskId}", status="completed", notes="…") when you finish so ${senderName} gets the completion notice.]`
+        ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Hand it in with work_update(action="hand_in", task_id="${autoTask.taskId}", outcome="finished", proof=[...], note) when you finish so ${senderName} gets the completion notice.]`
         : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with work_update(action="status") when state changes.]`;
     }
     if (effectiveIntent === 'ASSIGN') {
@@ -969,28 +969,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
   }
 
-  // Owner ruling (2026-07-19): a terminal SUCCESS reply from the assignee on
-  // its assignment thread files the worker's Key-1 close request from the
-  // receipt itself (the weakest model delivers the work, then skips the
-  // tracker form). Success intents only; FAIL leaves the task open for the PM
-  // chase. Key 2 stays entirely with the PM.
-  //
-  // ROUND-11 T43 leg (c): an APPLIED hand-off is not a delivery. The sender's own assignment
-  // task must stay open — they have not finished the work, they have passed it on — so the
-  // Key-1 request is not filed. A REFUSED hand-off files it exactly as today, because the
-  // reply settled exactly as today.
-  if (!handOffReport?.applied
-      && (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE')) {
-    try {
-      const { fileAssignDeliverableCloseRequest } = await import('../tracker/tools.js');
-      await fileAssignDeliverableCloseRequest(envelope.fromAgent, threadId, envelope.payload ?? '');
-    } catch (err) {
-      logger.warn('assign-deliverable close request failed (non-fatal)', {
-        threadId: threadShort, error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
+  // 2c: an assignee's terminal success reply on its assignment thread becomes an engine hand-in here.
 
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted

@@ -98,27 +98,7 @@ describe('an iMessage start ack is not a completion', () => {
     expect(list).not.toContain('CLOSE if done');
   });
 
-  it('CONTROL (round 4): a later iMessage completion is the worker\'s to file on; the engine still reads no delivery', () => {
-    const { askId, taskId } = seedAskAndTask();
-    const ack = imessage('d-onit');
-    db().prepare("UPDATE deliveries SET tool = 'engine-ack' WHERE id = ?").run(ack);   // the engine's own marking
-    settle(askId, imessage('d-booked'));
-    stamp(taskId);
-    const view = trackerGetStatus(AGENT, { taskId });
-    expect(view).not.toMatch(DELIVERED);
-    expect(view).not.toContain('CLOSE if done');
-    const out = trackerUpdateStatus(AGENT, { taskId, status: 'complete', result: 'booked', evidence: [{ kind: 'claim', claim: 'confirmation 4471 sent' }] });
-    expect(out, out).toMatch(/\[FILED\]/);
-  });
 
-  it('the start ack on the engine-ack lane is never the task\'s answer: the worker\'s close is refused', () => {
-    const { askId, taskId } = seedAskAndTask();
-    const ack = imessage('d-onit');
-    db().prepare("UPDATE deliveries SET tool = 'engine-ack' WHERE id = ?").run(ack);
-    settle(askId, ack);
-    const out = trackerUpdateStatus(AGENT, { taskId, status: 'complete', result: 'booked', evidence: [{ kind: 'claim', claim: 'x' }] });
-    expect(out).toMatch(/No completion for this task has reached the owner yet/);
-  });
 
   it('the stamp line states facts only, on every channel (no "CLOSE if done")', () => {
     for (const summary of ['via imessage', 'file report.md; via email', 'via dashboard']) {

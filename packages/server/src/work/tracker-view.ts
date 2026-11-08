@@ -41,13 +41,15 @@ import { TERMINAL_STATE_NAMES } from './terminal-states.js';
  *  `135`'s CASE arms are the enumeration (it read the lived-in body, where projects carry
  *  `complete`, `cancelled` and `active`), and the task side adds nothing beyond them. */
 export type TrackerStatus =
-  | 'on_deck' | 'in_progress' | 'complete' | 'blocked' | 'fallen' | 'paused'
+  | 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'blocked' | 'fallen' | 'paused'
   | 'active' | 'cancelled';
 
 /** The forward map, character for character the one migration `135` used. */
 const STATUS_TO_STATE: Record<TrackerStatus, WorkState> = {
   on_deck: 'on_deck',
   in_progress: 'claimed',
+  handed_in: 'handed_in',
+  sent_back: 'sent_back',
   complete: 'done',
   blocked: 'blocked',
   fallen: 'failed',
@@ -62,6 +64,8 @@ const STATUS_TO_STATE: Record<TrackerStatus, WorkState> = {
 const STATE_TO_STATUS: Record<WorkState, TrackerStatus> = {
   on_deck: 'on_deck',
   claimed: 'in_progress',
+  handed_in: 'handed_in',
+  sent_back: 'sent_back',
   done: 'complete',
   blocked: 'blocked',
   failed: 'fallen',
@@ -166,30 +170,13 @@ export const projectScope = (a = 'w'): string =>
  *
  * Reconciliation + containment measurement: `tracker/__tests__/census-wire-through-seam.test.ts`.
  *
- * ⚠ UX-REPAIR ROUND 6 T26 — A FILED STOP HOLDS THE ROW OUT OF FIRING, AND IT IS NOT A
- * THRESHOLD. The paragraph above is about noise floors; this clause is about AUTHORITY. When
- * a worker files `complete_all_runs` — "every run is done; the schedule stops here" — the
- * two-key wall deliberately leaves the row unmoved until Key 2 rules. Without this, the row
- * keeps firing while the verdict is outstanding: the 2026-08-10 duplicate weather task was
- * due again the next day at 4:08 on BOTH twins, five seconds after its own stop was filed.
- * A row whose stop is awaiting a verdict is not overdue for a run — it is a validation
- * subject, and it is fully visible as one through the completion queue.
- *
- * SELF-LIFTING, BY THE SAME EXPRESSION: if Key 2 REFUSES, the PM's `claim_rejected` answers
- * the request, `pendingCloseRequestExpr` drops to 0 and the row rejoins its cadence on the
- * very next tick — with the refusal reason on its own ledger. Nothing has to remember to
- * un-hold it, which is the property this whole two-key surface is built on.
- *
- * ONE DECLARATION, deliberately: `work_update(filter:"overdue")` reads this same expression,
- * and it should — a row held for a verdict is not a row the model should be told to go run.
- * Splitting the scheduler's copy from the model's would be a second definition of "overdue",
- * which is the thing this predicate exists to prevent.
+ * A row handed in waits for its decision and does not fire (2c: a run's hand-in never holds the
+ * schedule). `work_update(filter:"overdue")` reads this same expression.
  */
 export const dueScope = (a = 'w'): string =>
   `${a}.next_run_at IS NOT NULL AND ${a}.next_run_at <= ?`
   + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0`
-  + ` AND ${pendingCloseRequestExpr(a)} = 0`;
-
+  + ` AND ${handedInExpr(a)} = 0`;
 
 /** `root_kind` for rows this platform opens from now on. Migrated rows keep `'legacy'`;
  *  both are in scope, and the pair is the whole enumeration. */
@@ -210,14 +197,12 @@ export const TRACKER_ROOT_KIND = 'tracker';
 export const msToText = (col: string): string =>
   `CASE WHEN ${col} IS NULL THEN NULL ELSE strftime('%Y-%m-%d %H:%M:%S', ${col} / 1000, 'unixepoch') END`;
 
-
 /** TypeScript side of the same conversion, for values crossing the boundary in code. */
 export function tsToMs(text: string | null | undefined): number | null {
   if (text == null || text === '') return null;
   const ms = Date.parse(/[TZ]|[+-]\d\d:?\d\d$/.test(text) ? text : `${text}Z`);
   return Number.isNaN(ms) ? null : ms;
 }
-
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 4 — THE TWO-KEY FACTS, WHICH ARE NOW ROWS
@@ -343,98 +328,9 @@ export const validatedExpr = (
       ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
   + `   AND adj.event_seq >= COALESCE(${lastEntryEventIdExpr(a, `'${state}'`)}, 0)) THEN 1 ELSE 0 END)`;
 
-/**
- * KEY 1, AS A QUERY (PHASE-2 T8T).
- *
- * Before the two-key trigger, "Key 1 is filed and Key 2 is not" was a STATE:
- * `status='complete' AND complete_validated=0`. Migration `139` makes that state
- * unrepresentable for a tracker row closed by its own worker — the row does not move — so
- * Key 1 moved from the state to an EVENT: `transition()`'s `validation_requested` row.
- *
- * "Pending" is the request being NEWER than the row's newest ANSWER, which is what makes it
- * self-clearing: the engine's receipt close, a retask, a reopen — anything that ENDS or
- * RE-TASKS the row — writes a `transition`, and a PM who throws the claim back writes a
- * `claim_rejected` without moving anything. Either answers the request, so both end it, and
- * nobody has to remember to clear a flag. Compared by `work_events.id`, never by `created_at`:
- * this phase has now hit the same-millisecond defect three times (the poke ladder's window,
- * the scheduler's occurrence CAS, the adjudication instant in `store.ts`), and a sequence
- * exists here, so a clock is the wrong instrument.
- *
- * ⚠ UX-REPAIR ROUND 6 T26 — NOT EVERY TRANSITION IS AN ANSWER, and one of them was burying
- * the request five seconds after it was filed.
- *
- * THE LEDGER (dev body, 2026-08-10, by event id): 22628 is the agent's honest
- * `complete_all_runs` on a duplicate recurring row — `{requested_state:'done', from:'claimed',
- * "agent asserts every run is done; the schedule stops here"}`. 22630, five seconds later, is
- * the janitor that resets structurally-stuck recurring rows: `claimed→on_deck`, by SCHEDULER,
- * "this run is failed; the schedule rejoins at its next occurrence". 22630 > 22628, so this
- * expression read 0 and the request vanished from every queue that asks for it. The duplicate
- * rejoined its cadence and its occurrence was orphaned and skipped four minutes later (22632).
- *
- * SO: WHICH events answer "is this job finished?" A verdict does — `claim_rejected`. A
- * transition that ENDS the row (`done`/`failed`/`abandoned`) does: the row is finished, one
- * way or another. A transition back to `open` does: it has been re-tasked, so it is not
- * finished and the old request is moot. A move BETWEEN WORKING STATES — claimed→on_deck,
- * claimed→paused, on_deck→claimed — says where the job IS, never whether it is FINISHED, and
- * leaves the request exactly where the worker put it.
- *
- * KEYED ON THE ROW'S OWN MOVEMENT, NOT ON THE ACTOR. `by:'scheduler'` was the tempting
- * discriminator and it is the wrong one: the scheduler also writes the legitimate receipt
- * close (`forceResetStuckRecurringTask`'s no-future-runs branch closes `by:'scheduler'` when
- * it holds a delivery), so an actor test would have re-broken the self-clearing this
- * expression's own paragraph promises. The destination state is the fact.
- *
- * T21's SELF-HEAL PROPERTY IS UNTOUCHED AND STRENGTHENED. `claim_upheld` was never in the
- * comparison set — that omission is what let round-5's stuck paused rows heal the moment the
- * queue could see them — and it is still not. The set only got SMALLER, so nothing that was
- * pending before is buried now: the round-5 shape heals faster, never slower. Asserted in
- * `tracker/__tests__/a-close-request-survives-the-scheduler.test.ts` and re-proven by re-running
- * `a-close-filed-from-a-paused-row.test.ts` whole.
- *
- * requirement preserved: work whose worker says it is finished is SEEN by the validator.
- * That was the `complete_validated=0` queue; this is the same queue, keyed on the row that
- * records the claim instead of on the state the claim used to be allowed to set.
- */
-export const pendingCloseRequestExpr = (a: string): string =>
-  `(CASE WHEN COALESCE((SELECT MAX(e.id) FROM work_events e`
-  + `    WHERE e.work_id = ${a}.id AND e.kind = 'validation_requested'`
-  + `      AND json_extract(e.payload, '$.requested_state') = 'done'), -1)`
-  + `  > COALESCE((SELECT MAX(e2.id) FROM work_events e2`
-  + `    WHERE e2.work_id = ${a}.id`
-  + `      AND (e2.kind = 'claim_rejected'`
-  + `        OR (e2.kind = 'transition'`
-  + `            AND json_extract(e2.payload, '$.to')`
-  + `                IN ('done', 'failed', 'abandoned', 'open')))), -1)`
-  + ` THEN 1 ELSE 0 END)`;
-
-/**
- * WHICH ROWS HAVE A CLOSE FILED ON THEM — the subject, written ONCE (round-5 T21, proof-fix V).
- *
- * Ten sites once hand-listed `claimed` (round-5 S5 found `paused` missing); the pair was itself
- * a second copy of a rule the filing path lacks: `transition()`'s G9 files a worker's close from
- * EVERY non-terminal state, so a step paused, rejected back to `on_deck`, finished and filed was
- * told "[FILED] … do NOT retry" and reached no queue. The subject is "not terminal", DERIVED
- * from `terminal-states.ts`: what the filing path accepts is by construction what the validator
- * sees. A reader wanting one state (the pause and block lenses below) must say so itself.
- */
-export const closeRequestFiledExpr = (a: string): string =>
-  `(CASE WHEN ${a}.state NOT IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')}) AND ${pendingCloseRequestExpr(a)} = 1 THEN 1 ELSE 0 END)`;
-
-/** "Somebody says this is finished and no authority has agreed" — the completion queue's
- *  whole subject, in its two shapes: the engine's own receipt close (`done`, unblessed) and
- *  the worker's filed close request (the row has not moved). */
-export const unvalidatedCloseExpr = (a: string): string =>
-  `((${a}.state = 'done' AND ${validatedExpr(a, 'done')} = 0) OR ${closeRequestFiledExpr(a)} = 1)`;
-
-/** The pause lens's subject — v2.7.18's anti-gaming question, MINUS the rows that have since
- *  filed a close. A finished row is a completion question; asking the PM to bless its stale
- *  pause note is how S5's close was eaten. */
-export const unvalidatedPauseExpr = (a: string): string =>
-  `(${a}.state = 'paused' AND ${validatedExpr(a, 'paused')} = 0 AND ${closeRequestFiledExpr(a)} = 0)`;
-
-/** The block lens's subject, MINUS rows that have since filed a close (a completion question). */
-export const unvalidatedBlockExpr = (a: string): string =>
-  `(${a}.state = 'blocked' AND ${validatedExpr(a, 'blocked')} = 0 AND ${closeRequestFiledExpr(a)} = 0)`;
+/** Board work handed in and waiting for its decision (`work/done/`), as 1/0. The readers of the
+ *  filed-close question all read this one fact now; 2d replaces them with the one ladder. */
+export const handedInExpr = (a: string): string => `(CASE WHEN ${a}.state = 'handed_in' THEN 1 ELSE 0 END)`;
 
 /**
  * C5 (v3.5 field fix 3 evidence round): WHICH OF AN AGENT'S CLAIMED TASKS A TURN IS WORKING, when
@@ -451,27 +347,13 @@ export const unvalidatedBlockExpr = (a: string): string =>
  *      with the lowest number is the one in hand. A row with no step keeps the old newest-first tiebreak.
  */
 export const workingTaskOrder = (a: string): string =>
-  `${pendingCloseRequestExpr(a)} ASC, ${a}.updated_at DESC, `
+  `${handedInExpr(a)} ASC, ${a}.updated_at DESC, `
   + `CASE WHEN ${a}.step_number IS NULL THEN 1 ELSE 0 END ASC, ${a}.step_number ASC, ${a}.rowid DESC`;
 
-/** The delivery the worker's Key-1 request named: what the validator closes on, never a delivery
- *  looked up later. */
-export const closeRequestDeliveryExpr = (a: string): string =>
-  `(SELECT json_extract(e.payload, '$.result_delivery_id') FROM work_events e`
-  + ` WHERE e.work_id = ${a}.id AND e.kind = 'validation_requested'`
-  + `   AND json_extract(e.payload, '$.requested_state') = 'done'`
-  + ` ORDER BY e.id DESC LIMIT 1)`;
-
-/** Event kinds this file and `tracker-store.ts` agree on. Declared once so a typo cannot make
- *  a writer and a reader disagree silently — the failure mode research 03 catalogued. */
 export const WORK_EVENT = {
   /** The 5-minute unvalidated-transition escalation (was `validation_escalated_at` +
    *  `validation_thread_id`). Payload: `{ thread_id }`. */
   validationEscalated: 'validation_escalated',
-  /** The stalemate flag (was `awaiting_user_verdict` + `user_verdict_requested_at`). */
-  userVerdictRequested: 'user_verdict_requested',
-  /** Its clear (override, applied verdict, the scheduler's staleness sweep). */
-  userVerdictCleared: 'user_verdict_cleared',
   /** `revert_count = 0`. The count itself is `COUNT(adjudications rejected)`, so a RESET has
    *  to be a marker the count reads past rather than an assignment. */
   revertReset: 'revert_reset',
@@ -497,30 +379,6 @@ const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
  *  so the upgrade itself moves no label. */
 export const validationEscalatedAtExpr = (a: string): string =>
   msToText(lastEvent(a, WORK_EVENT.validationEscalated));
-
-/** `validation_thread_id` — the payload of that same event. */
-export const validationThreadIdExpr = (a: string): string =>
-  `(SELECT json_extract(e.payload, '$.thread_id') FROM work_events e`
-  + ` WHERE e.work_id = ${a}.id AND e.kind = '${WORK_EVENT.validationEscalated}'`
-  + ` ORDER BY e.created_at DESC, e.id DESC LIMIT 1)`;
-
-/** `awaiting_user_verdict` — set by a request, cleared by an apply/override/staleness sweep.
- *  Expressed as "the newest request is newer than the newest clear" — newer ON THE LOG
- *  (t142): compared by `work_events.id`. It compared instants, so a request re-filed in the
- *  same millisecond as the clear before it read as already answered and the row left the
- *  hold it had just been put in. */
-export const awaitingUserVerdictExpr = (a: string): string =>
-  `(CASE WHEN ${a}.state NOT IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`
-  + ` AND ${userVerdictOpenOnLogExpr(a)} = 1 THEN 1 ELSE 0 END)`;
-
-/** v3.5 field fix 3 (#3a): the request's POSITION on the log alone, whatever the row's state.
- *  `awaitingUserVerdictExpr` adds the scope bound: a finished row cannot be awaiting a verdict
- *  on its status (the owner's box swept five done/cancelled rows every 30s for that reason).
- *  This one is for the writers that answer a request as part of closing a row
- *  (`work/store.ts:transition`) and for the repair migration's question. */
-export const userVerdictOpenOnLogExpr = (a: string): string =>
-  `(CASE WHEN COALESCE(${lastEvent(a, WORK_EVENT.userVerdictRequested, 'id')}, -1)`
-  + ` > COALESCE(${lastEvent(a, WORK_EVENT.userVerdictCleared, 'id')}, -1) THEN 1 ELSE 0 END)`;
 
 /** `revert_count` — a COUNT of thrown-back claims since the last reset, never a maintained
  *  integer. `work/store.ts:revertCount()` is the same count without the reset window; this

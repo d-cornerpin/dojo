@@ -26,6 +26,46 @@ export const SWEEP: readonly SweepEntry[] = [
 
 export const ALLOW: readonly AllowEntry[] = [
  {
+  "file": "agent/tools/definitions.ts",
+  "line": "description: 'Update, read, or hand in existing work. `action` picks what: \"status\" (change a task\\'s status while it is open), \"hand_in\" (hand finished or can\\'t-be-done work in, with proof), \"edit\" (change structural fields on a task or project), \"reassign\" (move a task to another agent; needs a `cause`), \"list\" (see active work), \"get\" (full detail on one item).\\n\\n**action=\"status\" — when each status applies:**\\n\\n  1. **You will take the next action on this work** → leave status=\"in_progress\" and call the next tool now.\\n  2. **You are waiting on the USER to do something they already know about** (you just asked them, e.g., \"please reboot the ESP\", \"send me the file\", \"approve X\") → status=\"paused\" with notes explaining what you\\'re waiting for. **Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever.** The user resumes the task by replying or by manually flipping the status. This is the right call for ALL \"I asked the user and now I\\'m waiting\" situations.\\n  3. **You are blocked by something the user does NOT know about yet** (missing API key, external service down, you need a decision the user hasn\\'t been asked about) → status=\"blocked\" with notes saying what you need and what you already tried. **This escalates, and the escalation no longer depends on anyone remembering to pass it along:** the PM reviews the block, the primary agent is notified and woken, and if nobody has surfaced it to the user within a few minutes the platform tells the user itself — what is blocked, since when, and what was tried. One recorded failure on the work is enough to put it on that path, and how long the platform waits first is set by the pace of the assignee\\'s own model rather than a fixed clock. Use this for \"someone needs to know something is wrong.\"\\n  4. **You finished the task, or it cannot be done** → action=\"hand_in\". Not a status change: see below.\\n\\n**Difference between paused and blocked:** paused = \"user has the ball, I\\'m on standby, no escalation needed.\" blocked = \"this needs attention.\" When in doubt with a user-facing question already asked, pick paused.\\n\\n**A task left in_progress at the end of a turn stays yours.** A measured one continues on your next turn while turns make progress, and your board shows its count; an unmeasured one gets a check-in; a scheduled run left in progress is recorded as not done, and its schedule goes on. Close it only when it is done; a measured task\\'s close is checked against its measure.\\n\\n**action=\"hand_in\"** hands your work in when it is finished (outcome=\"finished\") or cannot be done (outcome=\"cant_be_done\"). Pass `proof`: the records that show it, each {kind, ref}. Kinds: \"file\" (ref = the path you wrote), \"delivery\" (ref = the delivery id of your message to whoever asked), \"command\" (ref = the audit id of a command you ran), \"receipt\" (ref = an outside action\\'s receipt id), \"measure\" (a measured task), and for can\\'t be done also \"failure\" (ref = the failed call\\'s audit or receipt id), \"remainder\" (ref = what is left, plus `reason`), \"withdrawal\" (ref = the asker\\'s message saying it is no longer wanted). For a file, delivery, receipt or measure, ref may be left empty: the newest one on record for this task is used. The engine checks every item; a hand-in with no real proof, or a \"done\" message alone, is refused. A measured task is finished only when its measure reads 0. Pass `note`: one line on what was done. The task then waits for a decision by someone other than you (the PM, else the main agent, else the owner); it is done only when approved, and if it is sent back you continue it. Pass project_id instead of task_id to hand in a whole project; its open tasks are not closed by that.\\n\\n**Status changes and hand-ins are silent, ALWAYS, not just for scheduler-triggered tasks.** After a hand-in or a status change, do NOT write a trailing user-facing message about it (\"Task closed\", \"All done\", \"Marked complete\", \"All set\", \"Smoke test passed\", \"All three cleared\", \"You\\'re set\", \"Step closed\", \"Moving to next step\"). The tool result is the only acknowledgment needed; the board shows the change directly. The user already saw your work above; a closeout line is noise. This applies to every kind of work, assigned by the user, auto-created from a chat message, scheduler-triggered, wakeup-triggered, manually created.\\n\\n**action=\"edit\"** changes any structural field on a task, title, description, dependencies, step ordering, schedule (including the day-of-week list for \"specific_days\" recurrence), priority, notes. Pass any subset. Pass `measure` to set or replace a task\\'s measure; a new measure is a new scope, counted from now. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Pass `project_id` instead of `task_id` to rename a project or change its description — use that when a project was auto-named badly (the engine\\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. Use action=\"status\" for status changes, action=\"hand_in\" to hand work in, action=\"reassign\" for assignee changes, and work_schedule for pause/resume, those have side-effects edit intentionally skips.\\n\\n**action=\"list\"** lists active projects and tasks with their status, assignee, and priority. Default returns compact rows (no descriptions); pass verbose=true for descriptions on every result. **action=\"get\"** returns the full details of ONE task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps — use it to read the instructions for any task. Accepts a full UUID or an 8+ char prefix from a list, as `id`, `task_id`, or `project_id` (all accepted).',",
+  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
+ },
+ {
+  "file": "agent/tools/definitions.ts",
+  "line": "description: 'action=\"status\": the new status. \"in_progress\" = actively working / about to take an action this turn. \"paused\" = waiting on the user (already asked them), PM ignores entirely, no pokes. \"blocked\" = needs escalation/attention, PM surfaces this to the primary user. \"on_deck\" = queued, not yet started. Finished or can\\'t-be-done work is not a status: it is handed in (action=\"hand_in\"), and only the decision on the hand-in closes it.',",
+  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
+ },
+ {
+  "file": "agent/tools/definitions.ts",
+  "line": "note: { type: 'string', description: 'Short note on how it was resolved or why it was dropped (for the log; not shown to the user).' },",
+  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
+ },
+ {
+  "file": "prompt/assembler.ts",
+  "line": "- You just called \\`work_update(action=\"status\")\\` / \\`complete_task\\` / \\`vault_remember\\` / \\`credential_add\\` / \\`work_update(action=\"hand_in\")\\` as **incidental bookkeeping**, something you did on your own initiative or while doing other work, and the user already has what they needed. The tool result is the bookkeeping; the user does not need a parallel \"Done.\" or \"All set.\" line. **Exception:** if the user DIRECTLY told you to do this exact thing this turn (\"cancel that reminder\", \"save my key\", \"delete X\", \"mark it done\"), reply with ONE short line confirming it (\"Cancelled the noon reminder.\" / \"Saved your key.\"). That confirmation IS the reply they're waiting for, not noise, staying silent on a direct request reads as ignoring them.",
+  "reason": "static system-prompt law or soul text describing the chat reader generically (true for every counterparty), or the healer/PM soul whose person is the owner by design"
+ },
+ {
+  "file": "tools/categories.ts",
+  "line": "lines.push('- **Keep the tracker true.** Waiting on the user → `paused`; stuck on something they do not know → `blocked`. Finished, or cannot be done → `work_update(action=\"hand_in\")` with its proof; someone other than you decides it. Work still going stays `in_progress`; at the start of a turn nobody is waiting on, the engine asks for one tracker call saying where stale work stands before other tools run.');",
+  "reason": "static tool guidance or a fact about who created a row ('created by the user'), not a recipient"
+ },
+ {
+  "file": "tracker/tools.ts",
+  "line": "`If you're done, hand it in with work_update(action=\"hand_in\"). If you're waiting on the user, use ` +",
+  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
+ },
+ {
+  "file": "tracker/tools.ts",
+  "line": "`with the real reason so the user knows. If you're just done with the task, hand it in with \\`work_update(action=\"hand_in\")\\`. ` +",
+  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
+ },
+ {
+  "file": "tracker/tools.ts",
+  "line": "+ 'If you are paused waiting for the user to do something, use status=\"paused\" with notes naming the wait condition instead.';",
+  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
+ },
+ {
   "file": "agent/join-failure-notice.ts",
   "line": "+ `the text is in the dashboard chat only, so ${asker} may not have seen it. It read: \"${sent.text}\"`;",
   "reason": "a fact about where the Dojo's own message really landed (the send to the asker's channel did not go), not a recipient instruction (C22)"
@@ -252,37 +292,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "tracker/tools.ts",
-  "line": "const content = `[SOURCE: TRACKER TASK UPDATE, automated status update, not a message from the user] ${message}`;",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
   "line": "lines.push('If this local time is NOT what the user asked for, re-call with the corrected time — either as an ISO 8601 UTC instant, or as local_time=\"YYYY-MM-DDThh:mm\" and let the engine do the timezone conversion.');",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "`If you're done, use status=\"complete\". If you're waiting on the user, use ` +",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "`with the real reason so the user knows. If you're just done with the task, use \\`status=\"complete\"\\`. ` +",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "`If you are paused waiting for the user to do something, use status=\"paused\" with notes naming the wait condition instead.` +",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "return 'Error: reject_reason is required when valid=false. One-sentence explanation for the agent (e.g. \"no specific wait condition; you never actually asked the user anything\").';",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "`Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes, PM will reject again. No reply to the PM is needed.`;",
   "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
  },
  {
@@ -292,62 +302,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "tracker/tools.ts",
-  "line": "return `Error: task \"${task.title}\" (${taskId.slice(0, 8)}) has already had its work delivered to the user and is awaiting adjudication. Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action=\"retask\") with allow_regenerate=true. Otherwise, if the delivery meets the goal, bless the close with work_validate(action=\"validate\", kind=\"complete\", valid=true); if entirely new work is needed, create a NEW task with work_open(kind=\"task\").`;",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
   "line": "return `OK: task \"${title}\" stays paused. The user can resume it from the dashboard, or you can later call work_schedule(action=\"resume\").`;",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "if (!userQuote) return 'Error: user_quote is required (the user\\'s exact reply, for the audit trail).';",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}${args.reason ? ` (${args.reason})` : ''}`);",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "reason: 'user confirmed in chat reply',",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "`The user will make the final call. While awaiting_user_verdict=1 the PM will leave this task alone, do not retry the rejected transition.`;",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "brief: `I confirmed the block on \"${task.title}\" (${taskId.slice(0, 8)}) is a real obstacle. Please surface it to the user or unblock it manually.`,",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "return 'Error: reject_reason is required when valid=false. One-sentence directive (e.g. \"you have not actually asked the user, do that first\" or \"this is a workaround not a block\").';",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "`assigned to me (${agentId}). The user verdict request follows. Show this verbatim to ${getOwnerName()} (as your written reply if that turn is talking to them, otherwise in an explicit send that names them) and ` +",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "return `[OK] user verdict requested on task ${taskId.slice(0, 8)}. The user will reply. While awaiting, do not retry the rejected transition.`;",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "if (!status) return 'Error: status is required (the status the user chose).';",
-  "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
- },
- {
-  "file": "tracker/tools.ts",
-  "line": "if (!userQuote) return 'Error: user_quote is required (the user\\'s exact reply, for audit).';",
   "reason": "tool validation or PM/owner-verdict text: the owner is the actor (verdicts, pauses, resumes) or the text is addressed to the PM agent"
  },
  {
@@ -522,62 +477,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/definitions.ts",
-  "line": "description: 'Update, read, or close existing work. `action` picks what: \"status\" (change a task\\'s status), \"edit\" (change structural fields on a task or project), \"reassign\" (move a task to another agent; needs a `cause`), \"complete_step\" (finish a step and start the next), \"close_project\" (close a whole project and its open tasks), \"list\" (see active work), \"get\" (full detail on one item).\\n\\n**action=\"status\" — when each status applies:**\\n\\n  1. **You will take the next action on this work** → leave status=\"in_progress\" and call the next tool now.\\n  2. **You are waiting on the USER to do something they already know about** (you just asked them, e.g., \"please reboot the ESP\", \"send me the file\", \"approve X\") → status=\"paused\" with notes explaining what you\\'re waiting for. **Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever.** The user resumes the task by replying or by manually flipping the status. This is the right call for ALL \"I asked the user and now I\\'m waiting\" situations.\\n  3. **You are blocked by something the user does NOT know about yet** (missing API key, external service down, you need a decision the user hasn\\'t been asked about) → status=\"blocked\" with notes saying what you need and what you already tried. **This escalates, and the escalation no longer depends on anyone remembering to pass it along:** the PM reviews the block, the primary agent is notified and woken, and if nobody has surfaced it to the user within a few minutes the platform tells the user itself — what is blocked, since when, and what was tried. One recorded failure on the work is enough to put it on that path, and how long the platform waits first is set by the pace of the assignee\\'s own model rather than a fixed clock. Use this for \"someone needs to know something is wrong.\"\\n  4. **The whole project is no longer relevant** → use action=\"close_project\" with reason. Not a status change.\\n  5. **You finished the task** → status=\"complete\" (or action=\"complete_step\" in a multi-step project; it auto-advances to the next step). A measured task closes when its measure reads 0; if some of its items genuinely cannot or should not be done, pass `remainder` naming them and why.\\n\\n**Difference between paused and blocked:** paused = \"user has the ball, I\\'m on standby, no escalation needed.\" blocked = \"this needs attention.\" When in doubt with a user-facing question already asked, pick paused.\\n\\n**A task left in_progress at the end of a turn stays yours.** A measured one continues on your next turn while turns make progress, and your board shows its count; an unmeasured one gets a check-in; a scheduled run left in progress is recorded as not done, and its schedule goes on. Close it only when it is done; a measured task\\'s close is checked against its measure.\\n\\nFor recurring tasks: if you completed ALL iterations in a single run, set `complete_all_runs=true` to stop the schedule entirely.\\n\\n**For multi-step projects, prefer action=\"complete_step\" over action=\"status\"**, it auto-advances to the next step so you don\\'t accidentally leave the project with no task in_progress. Marks this task \"complete\" and moves the next step (by step_number) to \"in_progress\", and checks whether the entire project is now complete. Using status=complete to mark a step complete leaves the project with no in_progress task and is the most common cause of \"agent finished a batch but the next batch never started.\" Call it the moment you finish a step, don\\'t batch up multiple completions.\\n\\n**Status changes are silent, ALWAYS, not just for scheduler-triggered tasks.** After a status change to complete (or paused/blocked/fallen), and after every step completion, do NOT write a trailing user-facing message about it (\"Task closed\", \"All done\", \"Marked complete\", \"All set\", \"Smoke test passed\", \"All three cleared\", \"You\\'re set\", \"Step closed\", \"Moving to next step\"). The tool result is the only acknowledgment needed; the board shows the change directly. The user already saw your work above; a closeout line is noise. This applies to every kind of work, assigned by the user, auto-created from a chat message, scheduler-triggered, wakeup-triggered, manually created.\\n\\n**action=\"edit\"** changes any structural field on a task, title, description, dependencies, step ordering, schedule (including the day-of-week list for \"specific_days\" recurrence), priority, notes. Pass any subset. Pass `measure` to set or replace a task\\'s measure; a new measure is a new scope, counted from now. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Pass `project_id` instead of `task_id` to rename a project or change its description — use that when a project was auto-named badly (the engine\\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. Use action=\"status\" for status changes, action=\"reassign\" for assignee changes, and work_schedule for pause/resume, those have side-effects edit intentionally skips.\\n\\n**action=\"close_project\"** closes an entire project AND every open task on it in one call. Use it when a project is no longer wanted (a duplicate, or scope changed and the work is no longer relevant), or when every remaining task has genuinely been completed but is still showing as open. Pass status=\"cancelled\" for abandoned/duplicate/scope-change cases (the default, leaves a \"cancelled\" marker on each task) and status=\"complete\" only when all the work was actually done. `reason` is required and gets appended as a note on every task closed, this is the audit trail for whoever sees the kanban next. Far better than looping action=\"status\" one task at a time, and the only correct response when the engine tells you a project of yours is stranded (open tasks left behind on an abandoned project).\\n\\n**action=\"list\"** lists active projects and tasks with their status, assignee, and priority. Default returns compact rows (no descriptions); pass verbose=true for descriptions on every result. **action=\"get\"** returns the full details of ONE task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps — use it to read the instructions for any task. Accepts a full UUID or an 8+ char prefix from a list, as `id`, `task_id`, or `project_id` (all accepted).',",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "description: 'action=\"status\": the new status. Quick reference: \"in_progress\" = actively working / about to take an action this turn. \"complete\" = done. \"paused\" = waiting on the user (already asked them), PM ignores entirely, no pokes. \"blocked\" = needs escalation/attention, PM surfaces this to the primary user. \"on_deck\" = queued, not yet started. The two TERMINAL outcomes are different and both are kept for history: \"fallen\" = it failed or you gave up on it, and \"cancelled\" = someone (usually the user) chose to call it off, which is NOT a failure. Use \"cancelled\" whenever the user says to cancel, drop, skip or never mind something; both stop any schedule on the task immediately. action=\"close_project\": the terminal status for the project and every open task, \"complete\" | \"cancelled\" (default \"cancelled\").',",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "reason: { type: 'string', description: 'Required for action=\"close_project\". A short sentence on why you are closing the project. Gets appended as a note on every closed task, this is the audit trail for the user.' },",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
   "line": "description: 'APPEND a note to a task\\'s record, stamped with the time. Every call adds one and none replaces another, so it suits progress logs, findings and issue trails. **Read them back with work_update({action:\"get\", id: task_id})**: it lists every note on the task, oldest first, each with its time, and a long record comes in pages that end with the call to continue. (The task\\'s separate notes FIELD is a different thing: work_update({action:\"edit\", task_id, notes}) replaces it.)\\n\\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped (\"completed step 3, waiting on user input about X\", \"blocked - can\\'t proceed without Y\"). A silent stop after a note leaves the user staring at idle progress with no idea what is happening.',",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "description: 'Ask for a close you cannot make yourself (Key 1 of the two-key close). `action` picks which ask:\\n\\n**action=\"override\"** queues an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\\'s hard gate refused, OR that you believe the PM\\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself, the engine queued it on your behalf). `justification` must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.\\n\\n**action=\"user_verdict\"** is only callable on tasks where the engine has flagged a stalemate (after revert_count crossed the per-priority threshold of high=2/normal=3/low=5). It composes a user-facing message describing the stalemate and routes it to the user (direct chat if you are primary, A2A relay through primary otherwise). The user\\'s reply becomes the final verdict, applied via work_validate({action:\"apply_user_verdict\"}).\\n\\n**action=\"commitment\"** closes an item from the OPEN WORK block once you have actually delivered it, or drops it when it is no longer owed. Call it with the id in [brackets] exactly as shown. Use disposition \"kept\" the moment you deliver the thing — that only works if the message or file really went out this turn, because a promise is kept by delivering it, not by saying so. Use disposition \"dropped\" when the person told you to forget it or it no longer applies. If you are unsure whether it is truly done, leave it open — an unfulfilled promise is meant to survive until it is actually fulfilled.',",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "status_requested: { type: 'string', description: 'action=\"user_verdict\": the status you believe is correct (presented as your ask to the user).' },",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "note: { type: 'string', description: 'action=\"commitment\": short note on how it was resolved or why it was dropped (for the log; not shown to the user).' },",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "description: '**PM AGENT ONLY** (the owner reaches these through the dashboard). Key 2 of the two-key close: adjudicate somebody else\\'s claim. `action` picks which:\\n\\n**action=\"validate\"** adjudicates an agent\\'s status claim. Pass `kind`:\\n  - \"pause\": is the pause legitimate? valid=true if the reason names a real, specific external trigger the agent actually requested (e.g. \"waiting for user to reboot ESP\", \"waiting for vendor tracking number\"); valid=false if vague, complains about the PM, or is really a block. (Call for every UNVALIDATED_PAUSE in the situation report.)\\n  - \"complete\": does the goal match the result + evidence? Read the file/audit-log/output named in evidence first, do NOT validate on prose alone. valid=false when the evidence does not demonstrate the goal.\\n  - \"blocked\": is the block real and external (no workaround the agent could try)? valid=false when the agent has not attempted the work, has not asked a question they could ask, or the \"block\" is confusion.\\nOn valid=true the status stands (per-kind side effects: complete fires the dependency cascade / archives a recurring per-run and resets to on_deck; blocked notifies the primary to investigate). On valid=false the task reverts to target_status (default in_progress) and the assigned agent gets the one-sentence directive in reject_reason.\\n\\n**action=\"retask\"** sends a task back to its assigned agent with explicit corrective instructions. Use when the agent\\'s outcome is wrong (work skipped, wrong channel, evidence doesn\\'t match goal, claim doesn\\'t match actual artifact) and you want them to redo it, instead of just confirming a pause or rejecting a complete. Works from any non-terminal status. Resets validation flags, increments revert_count, delivers the directive over A2A. `directive` must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate(kind=\"pause\", valid=false): that\\'s reactive (adjudicating an existing pause); retask is proactive (redirecting the agent\\'s effort). PROTECTED: if the task\\'s work was already delivered to the user (a Key-1 close request is filed awaiting validation, or a legacy delivered flag), retask REFUSES unless you pass allow_regenerate=true, so delivered work is not silently regenerated and overwritten.\\n\\n**action=\"override\"** resolves a queued OVERRIDE_REQUEST. Approve forces the requested status through (bypassing the engine hard gate); deny notifies the agent the engine was right. Distinct from a bare status change: override is for resolving an explicit pending request.\\n\\n**action=\"apply_user_verdict\"** — call ONLY when a task is awaiting a user verdict. Apply the user\\'s reply to that stalemate. Quote the user\\'s exact words in user_quote for the audit log. The status flips immediately with the user as the authority, the validation flag for that status is set, revert_count resets, and the stalemate flag clears. The user\\'s authority is supreme, PM is told not to revisit.\\n\\n**action=\"apply_user_validation\"** — call ONLY when the user replied to a \"[VALIDATION CHECK]\" message in chat. The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\\'s exact reply in user_quote for audit.',",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "directive: { type: 'string', description: 'action=\"retask\": at least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. \"you posted the brief in chat but the task specifies email delivery; call send_email with the same content\").' },",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "allow_regenerate: { type: 'boolean', description: 'action=\"retask\": set true ONLY when the deliverable was already delivered to the user AND you have judged it genuinely misses the goal, so the assignee should redo and overwrite it. Without this, retask refuses to protect delivered work. Default false.' },",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "status: { type: 'string', description: 'action=\"apply_user_verdict\": the status the user chose. Typically complete, blocked, paused, in_progress, or on_deck.' },",
-  "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
- },
- {
-  "file": "agent/tools/definitions.ts",
-  "line": "user_quote: { type: 'string', description: 'The user\\'s exact reply for the audit trail. Required for both user-verdict actions.' },",
   "reason": "tool or schema description in the cached tools prefix: it must stay the same on every turn, so it cannot name the person on this one"
  },
  {
@@ -1081,11 +981,6 @@ export const ALLOW: readonly AllowEntry[] = [
   "reason": "owner-side dashboard events (the owner denied a proposal or attached audio in the chat); the owner is the person by construction"
  },
  {
-  "file": "gateway/routes/tracker.ts",
-  "line": "payload: `Your override request on task ${req.taskId.slice(0, 8)} was denied by the user. Reason: ${reason}. Address the original engine objection and resubmit cleanly.`,",
-  "reason": "owner-side dashboard events (the owner denied a proposal or attached audio in the chat); the owner is the person by construction"
- },
- {
   "file": "google/reauth-notice.ts",
   "line": "'(the OAuth client now sits behind a broker). The user\\'s previously-connected ' +",
   "reason": "owner-facing platform text or a tool-argument description; names no one the agent is asked to tell"
@@ -1367,11 +1262,6 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "prompt/assembler.ts",
-  "line": "- You just called \\`work_update(action=\"status\")\\` / \\`complete_task\\` / \\`vault_remember\\` / \\`credential_add\\` / \\`work_update(action=\"complete_step\")\\` as **incidental bookkeeping**, something you did on your own initiative or while doing other work, and the user already has what they needed. The tool result is the bookkeeping; the user does not need a parallel \"Done.\" or \"All set.\" line. **Exception:** if the user DIRECTLY told you to do this exact thing this turn (\"cancel that reminder\", \"save my key\", \"delete X\", \"mark it done\"), reply with ONE short line confirming it (\"Cancelled the noon reminder.\" / \"Saved your key.\"). That confirmation IS the reply they're waiting for, not noise, staying silent on a direct request reads as ignoring them.",
-  "reason": "static system-prompt law or soul text describing the chat reader generically (true for every counterparty), or the healer/PM soul whose person is the owner by design"
- },
- {
-  "file": "prompt/assembler.ts",
   "line": "- The trigger for this turn was an internal event (scheduler firing, tool result handoff, tracker auto-close re-prompt) and there's nothing new the user needs to know.",
   "reason": "static system-prompt law or soul text describing the chat reader generically (true for every counterparty), or the healer/PM soul whose person is the owner by design"
  },
@@ -1622,11 +1512,6 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "tools/categories.ts",
-  "line": "lines.push('- **Keep the tracker true.** Waiting on the user → `paused`; stuck on something they do not know → `blocked`. A project no longer wanted (a duplicate, superseded) → `work_update(action=\"close_project\", project_id, status=\"cancelled\", reason=\"…\")`, which closes it and its open tasks in one call. Work still going stays `in_progress`; at the start of a turn nobody is waiting on, the engine asks for one tracker call saying where stale work stands before other tools run.');",
-  "reason": "static tool guidance or a fact about who created a row ('created by the user'), not a recipient"
- },
- {
-  "file": "tools/categories.ts",
   "line": "lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading \"19:00\" as your local time when it\\'s actually UTC, and getting every downstream time wrong by 7+ hours.');",
   "reason": "static tool guidance or a fact about who created a row ('created by the user'), not a recipient"
  },
@@ -1634,11 +1519,6 @@ export const ALLOW: readonly AllowEntry[] = [
   "file": "tools/unified-read.ts",
   "line": "\"[DEFAULT for any 'my email / check email for X' ask] Search EVERY connected mailbox at once (agent + owner, Gmail + Outlook), results labeled by source and merged most-recent-first. Use gmail_search / outlook_search / user_gmail_search / user_outlook_search only when the user names one specific mailbox. There is no `account` parameter here (the merged view spans every mailbox); the per-mailbox tools take one.\",",
   "reason": "owner-facing platform text or a tool-argument description; names no one the agent is asked to tell"
- },
- {
-  "file": "tracker/block-review-facts.ts",
-  "line": "`Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> work_validate(action=\"validate\", kind=\"blocked\", task_id=\"${b.taskId}\", valid=false, reject_reason=\"...\").`",
-  "reason": "text addressed to the PM agent about the owner's verdict flow; the owner is the actor"
  },
  {
   "file": "tracker/later-instruction.ts",
@@ -1708,11 +1588,6 @@ export const ALLOW: readonly AllowEntry[] = [
  {
   "file": "work/store.ts",
   "line": "'this ask predates its own agent\\'s session boundary, which is the user\\'s own line — the '",
-  "reason": "a record or log string about the owner's Stop button or a ledger reason; not text the agent is told to say to anyone"
- },
- {
-  "file": "work/work-reaper.ts",
-  "line": "'An override request the PM has not resolved, or a task awaiting the user\\'s verdict, auto-resolves at this age so the system stays honest while humans are away. A TIMEOUT IS NOT A VERDICT: the auto-resolution is recorded as `auto_denied` and nothing is written to `adjudications`, because nobody ruled.',",
   "reason": "a record or log string about the owner's Stop button or a ledger reason; not text the agent is told to say to anyone"
  },
  {

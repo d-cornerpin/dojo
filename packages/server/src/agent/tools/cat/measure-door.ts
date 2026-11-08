@@ -7,13 +7,9 @@
 import { getDb } from '../../../db/connection.js';
 import { parseMeasure, countMeasure, type Measure, type MeasureCount } from '../../../work/measure.js';
 import { recordMeasured } from '../../../work/ledger-store.js';
-import { editMeasure, namedRemainderNote, recordNamedRemainder, measuredOpenTasksOf, remainderRefusal, type MeasureReading } from '../../../tracker/measure-gate.js';
-import { resolveTaskId, resolveProjectId } from '../../../tracker/schema.js';
-import { claimedTasksOf } from '../../../tracker/claimed-tasks.js';
-import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
-import { withNamedRemainder } from '../../../work/measure-close-gate.js';
+import { editMeasure, remainderRefusal, type MeasureReading } from '../../../tracker/measure-gate.js';
 import { resolveAgentTaskId } from '../../agent-task.js';
-import { pendingCloseRequestExpr } from '../../../work/tracker-view.js';
+import { handedInExpr } from '../../../work/tracker-view.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
 
@@ -74,49 +70,6 @@ export async function remeasureTask(_closer: string, taskId: string | null): Pro
   recordMeasured(taskId, await gatedMeasureCount(parsed.measure, row.agent_id), Date.now());
 }
 
-/** Is this status argument a close? The status door's own reading of the word, never a second copy. */
-export const isCompleteStatus = (raw: unknown): boolean => normalizeTaskStatus(raw) === 'complete';
-
-// A close LANDS as a transition (the task, or its run, moved) or as a filed close request (the
-// two-key `validation_requested` an agent's close becomes). A refused or no-op close writes neither.
-const lastTransitionId = (taskId: string): number => (getDb().prepare(
-  `SELECT COALESCE(MAX(id), 0) AS n FROM work_events WHERE kind IN ('transition', 'validation_requested')
-     AND (work_id = ? OR work_id IN (SELECT id FROM work WHERE parent_id = ?))`,
-).get(taskId, taskId) as { n: number }).n;
-
-/** status="complete" / complete_step: re-read, run the synchronous door, and record a named remainder
- *  only once the close has LANDED (the task or its run moved), never on a close refused later. */
-export async function closeWithMeasure(agentId: string, taskId: string | null, args: Record<string, unknown>, close: () => string): Promise<string> {
-  await remeasureTask(agentId, taskId);
-  const note = taskId ? namedRemainderNote(taskId, agentId, args) : null;
-  const mark = note && taskId ? lastTransitionId(taskId) : 0;
-  // A named remainder is honoured by the status writer for exactly this synchronous close.
-  const content = note && taskId ? withNamedRemainder(taskId, close) : close();
-  if (note && taskId && lastTransitionId(taskId) > mark) recordNamedRemainder(agentId, taskId, note);
-  return content;
-}
-
-/** close_project(status="complete"): every measured task it would close is re-read first. */
-export async function remeasureProject(agentId: string, rawProjectId: unknown, status: unknown): Promise<void> {
-  if (typeof rawProjectId !== 'string' || !isCompleteStatus(status)) return;
-  const r = resolveProjectId(rawProjectId, agentId);
-  if (!r.ok) return;
-  for (const t of measuredOpenTasksOf(r.id)) await remeasureTask(agentId, t.id);   // eslint-disable-line no-await-in-loop -- one mailbox at a time
-}
-
-/** The task a close names: its id, or (complete_step without one) the agent's one claimed task —
- *  the same query `trackerCompleteStep` asks (`claimedTasksOf`), so the reading lands on the row it judges. */
-export function closeTargetOf(agentId: string, raw: unknown): string | null {
-  if (typeof raw === 'string' && raw) {
-    const r = resolveTaskId(raw, agentId);
-    return r.ok ? r.id : null;
-  }
-  const rows = claimedTasksOf(agentId);
-  return rows.length === 1 ? rows[0].id : null;
-}
-
-/** work_update(action="edit"). A measure is a new scope, applied only once the rest of the edit
- *  has been; an edit carrying only a measure needs no other field. */
 export async function editWithMeasure(
   agentId: string, args: Record<string, unknown>, hasFields: boolean, edit: () => string,
 ): Promise<{ content: string; isError: boolean }> {
@@ -136,9 +89,9 @@ export async function editWithMeasure(
 export async function completeTaskRefusal(agentId: string): Promise<string | null> {
   const taskId = resolveAgentTaskId(agentId);
   if (!taskId) return null;
-  const row = getDb().prepare(`SELECT w.state AS state, ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`)
+  const row = getDb().prepare(`SELECT w.state AS state, ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`)
     .get(taskId) as { state: string; pending: number } | undefined;
   if (!row || row.pending === 1 || !['claimed', 'on_deck'].includes(row.state)) return null;
   await remeasureTask(agentId, taskId);
-  return remainderRefusal(taskId, agentId, {}, 'complete_task(status="complete")', false);
+  return remainderRefusal(taskId, 'complete_task(status="complete")');
 }

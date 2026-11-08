@@ -25,6 +25,8 @@
 // reviewer can check the translation line by line.
 
 /** The six public verbs. Nothing else is a work verb. */
+import { normalizeTaskStatus, TERMINAL_STATUS_WORDS } from '../tracker/task-status-words.js';
+
 export const WORK_VERBS = [
   'work_open',
   'work_update',
@@ -54,10 +56,9 @@ export const WORK_OPS = [
   'work_open:reminder',                // reminder_create
   'work_open:commitment',              // commitment_open
   'work_update:status',                // tracker_update_status
+  'work_update:hand_in',               // tracker_complete_step + tracker_close_project + the closing statuses
   'work_update:edit',                  // tracker_edit_task + tracker_edit_project
   'work_update:reassign',              // tracker_reassign_task
-  'work_update:complete_step',         // tracker_complete_step
-  'work_update:close_project',         // tracker_close_project
   'work_update:list',                  // tracker_list_active
   'work_update:get',                   // tracker_get_status
   // UX-REPAIR ROUND 13 T60. The ONE operation on this list that absorbed no retired verb:
@@ -67,14 +68,10 @@ export const WORK_OPS = [
   // the "every operation traces to a retired verb" proof stays honest instead of blanket.
   'work_update:activity',              // (new — no retired verb; T60)
   'work_note',                         // tracker_add_notes
-  'work_close_request:override',       // tracker_request_override
-  'work_close_request:user_verdict',   // tracker_request_user_verdict
   'work_close_request:commitment',     // commitment_resolve
-  'work_validate:validate',            // tracker_validate
+  'work_validate:decide',              // tracker_validate + tracker_override + the two user-verdict verbs
+  'work_validate:open_proof',          // (new: the decider's open of a proof item)
   'work_validate:retask',              // tracker_retask
-  'work_validate:override',            // tracker_override
-  'work_validate:apply_user_verdict',  // tracker_apply_user_verdict
-  'work_validate:apply_user_validation', // tracker_apply_user_validation
   'work_schedule:pause',               // tracker_pause_schedule
   'work_schedule:resume',              // tracker_resume_schedule
   'work_schedule:resolve_missed',      // tracker_resolve_missed_runs
@@ -141,11 +138,13 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
 
     case 'work_update': {
       const action = str(args, 'action');
+      // Finishing is a hand-in, never a status: a weak model's old habit (a closing status, a step
+      // close, a project close) reaches the hand-in door and its proof check.
+      if (action === 'hand_in' || action === 'complete_step' || action === 'step' || action === 'close_project' || action === 'close') return 'work_update:hand_in';
+      if ((action === 'status' || action === null) && TERMINAL_STATUS_WORDS.has(normalizeTaskStatus(args?.status) ?? '')) return 'work_update:hand_in';
       if (action === 'status') return 'work_update:status';
       if (action === 'edit') return 'work_update:edit';
       if (action === 'reassign') return 'work_update:reassign';
-      if (action === 'complete_step' || action === 'step') return 'work_update:complete_step';
-      if (action === 'close_project' || action === 'close') return 'work_update:close_project';
       if (action === 'list') return 'work_update:list';
       if (action === 'get') return 'work_update:get';
       // T60. Ahead of the shape ladder for the same reason every explicit discriminator is:
@@ -170,8 +169,8 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       if (has(args, 'assigned_to') || has(args, 'assigned_to_group')) return 'work_update:reassign';
       // A project id with no task id and a `reason` is a close; with edit
       // fields it is a project edit (the §7.2 absorb rule).
+      if (has(args, 'proof') || has(args, 'outcome')) return 'work_update:hand_in';
       if (has(args, 'project_id') && !has(args, 'task_id')) {
-        if (has(args, 'reason')) return 'work_update:close_project';
         if (EDITABLE_FIELDS.some((f) => has(args, f))) return 'work_update:edit';
         return 'work_update:get';
       }
@@ -180,36 +179,14 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       return 'work_update:list';
     }
 
-    case 'work_close_request': {
-      const action = str(args, 'action');
-      if (action === 'override') return 'work_close_request:override';
-      if (action === 'user_verdict' || action === 'verdict') return 'work_close_request:user_verdict';
-      if (action === 'commitment' || action === 'promise') return 'work_close_request:commitment';
-      if (has(args, 'disposition')) return 'work_close_request:commitment';
-      if (has(args, 'status_requested') || has(args, 'pm_rejection_summary')) {
-        return 'work_close_request:user_verdict';
-      }
-      if (has(args, 'requested_status') || has(args, 'justification')) {
-        return 'work_close_request:override';
-      }
-      // A `cmt:` id is unambiguous even with no other field.
-      const id = str(args, 'id');
-      if (id?.startsWith('cmt:')) return 'work_close_request:commitment';
-      return 'work_close_request:override';
-    }
+    case 'work_close_request':
+      return 'work_close_request:commitment';
 
     case 'work_validate': {
       const action = str(args, 'action');
-      if (action === 'validate') return 'work_validate:validate';
-      if (action === 'retask') return 'work_validate:retask';
-      if (action === 'override') return 'work_validate:override';
-      if (action === 'apply_user_verdict') return 'work_validate:apply_user_verdict';
-      if (action === 'apply_user_validation') return 'work_validate:apply_user_validation';
-      if (has(args, 'directive')) return 'work_validate:retask';
-      if (has(args, 'override_request_id') || has(args, 'approve')) return 'work_validate:override';
-      if (has(args, 'validated')) return 'work_validate:apply_user_validation';
-      if (has(args, 'user_quote')) return 'work_validate:apply_user_verdict';
-      return 'work_validate:validate';
+      if (action === 'retask' || has(args, 'directive')) return 'work_validate:retask';
+      if (action === 'open_proof' || (action !== 'decide' && has(args, 'item'))) return 'work_validate:open_proof';
+      return 'work_validate:decide';
     }
 
     case 'work_schedule': {
@@ -308,8 +285,7 @@ export function isWorkReadOp(op: string | null): boolean {
  */
 export const CLOSING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
-  'work_update:complete_step',
-  'work_update:close_project',
+  'work_update:hand_in',
 ]);
 
 /**
@@ -321,7 +297,7 @@ export const CLOSING_WORK_OPS: ReadonlySet<string> = new Set([
  */
 export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
-  'work_update:complete_step',
+  'work_update:hand_in',
   'work_note',
 ]);
 
@@ -333,9 +309,8 @@ export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
  */
 export const SATISFYING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
-  'work_update:complete_step',
+  'work_update:hand_in',
   'work_note',
-  'work_update:close_project',
 ]);
 
 /**
@@ -347,9 +322,8 @@ export const SATISFYING_WORK_OPS: ReadonlySet<string> = new Set([
  */
 export const CLOSE_OUT_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
-  'work_update:complete_step',
+  'work_update:hand_in',
   'work_note',
-  'work_update:close_project',   // bulk-resolve a whole stranded project
   'work_update:get',             // read-only allowed (investigate before resolving)
   'work_update:list',            // ditto
   'work_update:activity',        // ditto (T60) — a read cannot resolve a dangling task, and
@@ -374,7 +348,7 @@ export const DISARMING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_open:task',
   'work_note',
   'work_update:edit',
-  'work_update:complete_step',
+  'work_update:hand_in',
 ]);
 
 /**
@@ -400,7 +374,7 @@ export const OPENING_WORK_OPS: ReadonlySet<string> = new Set([
  */
 export const CLOSE_OPS_WITH_TASK_ID: ReadonlySet<string> = new Set([
   'work_update:status',
-  'work_update:complete_step',
+  'work_update:hand_in',
 ]);
 
 
@@ -427,26 +401,20 @@ export const WORK_OP_READS: Readonly<Record<WorkOp, readonly string[]>> = {
   'work_open:reminder': ['kind', 'what', 'when', 'anchor_time', 'local_time', 'local_timezone', 'repeat_interval', 'repeat_unit',
     'repeat_days_of_week', 'repeat_end_type', 'repeat_end_value'],
   'work_open:commitment': ['kind', 'description'],
-  'work_update:status': ['action', 'task_id', 'status', 'notes', 'resume_at', 'complete_all_runs', 'result', 'evidence', 'priority',
-    'user_quote', 'remainder', 'reason'],
+  'work_update:status': ['action', 'task_id', 'status', 'notes', 'resume_at', 'priority', 'reason'],
+  'work_update:hand_in': ['action', 'task_id', 'project_id', 'outcome', 'proof', 'note', 'status', 'notes', 'reason'],
   'work_update:edit': ['action', 'task_id', 'project_id', ...EDITABLE_FIELDS,   // the edit door's own field list, the one the shape ladder reads
     'local_time', 'local_timezone', 'revert_to_original', 'measure'],
   'work_update:reassign': ['action', 'task_id', 'assigned_to', 'assigned_to_group', 'cause', 'user_quote'],
-  'work_update:complete_step': ['action', 'task_id', 'notes', 'reason', 'result', 'evidence', 'remainder'],
-  'work_update:close_project': ['action', 'project_id', 'reason', 'notes', 'status', 'user_quote'],
   'work_update:list': ['action', 'filter', 'verbose'],
   'work_update:get': ['action', 'id', 'task_id', 'project_id', 'offset'],
   'work_update:activity': ['action', 'hours', 'verbose'],
   'work_note': ['task_id', 'notes'],
-  'work_close_request:override': ['action', 'task_id', 'requested_status', 'justification'],
-  'work_close_request:user_verdict': ['action', 'task_id', 'status_requested', 'agent_summary', 'pm_rejection_summary'],
   'work_close_request:commitment': ['action', 'id', 'disposition', 'note'],
-  'work_validate:validate': ['action', 'kind', 'task_id', 'valid', 'reject_reason', 'reason', 'target_status'],
-  'work_validate:retask': ['action', 'task_id', 'directive', 'target_status', 'allow_regenerate'],
-  'work_validate:override': ['action', 'override_request_id', 'approve', 'reason'],
-  'work_validate:apply_user_verdict': ['action', 'task_id', 'status', 'user_quote', 'reason', 'feedback'],
-  'work_validate:apply_user_validation': ['action', 'task_id', 'validated', 'user_quote', 'feedback', 'reason'],
-  'work_schedule:pause': ['action', 'task_id', 'mark_complete'],
+  'work_validate:decide': ['action', 'task_id', 'verdict', 'reason', 'user_quote'],
+  'work_validate:open_proof': ['action', 'task_id', 'item'],
+  'work_validate:retask': ['action', 'task_id', 'directive', 'target_status'],
+  'work_schedule:pause': ['action', 'task_id'],
   'work_schedule:resume': ['action', 'task_id'],
   'work_schedule:resolve_missed': ['action', 'task_id', 'resolution'],
 };

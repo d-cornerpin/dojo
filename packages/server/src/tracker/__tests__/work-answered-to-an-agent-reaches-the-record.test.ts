@@ -121,31 +121,7 @@ beforeEach(() => {
 afterEach(() => { endTurnContext(PM); mockDb.current?.close(); mockDb.current = null; });
 
 describe('C4: an answer sent to the agent that asked, on the engine\'s verified receipt, is on the record', () => {
-  it('the answer to the requesting agent a turn before the close backs the uphold; the receipt is tied to the task', async () => {
-    const t = newTask();
-    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER });
-    receipt(send, true);
-    delivery('d-answer', { id: 'm-answer', content: ANSWER }, { receiptId: `rcpt-${send}` });
-    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER } }]);
-    // The close's own delivery on the box was the tool-call row of the close itself (a chip, not an answer).
-    fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
-    expect(proofDelivery(t)).toBe('d-answer');
-    pmRead('history_get', { id: 'm-answer' });   // the PM opens the answer it upholds on
-    expect(await validate(t)).not.toMatch(REFUSED);
-    expect(upheld(t)).toBe(1);
-    expect((db().prepare('SELECT task_id FROM tool_receipts WHERE call_id = ?').get(send) as { task_id: string }).task_id).toBe(t);
-  });
 
-  it('NEGATIVE CONTROL: a send that did not land is not counted, and the uphold is refused', async () => {
-    const t = newTask();
-    const send = workerCall('send_to_agent', { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER });
-    receipt(send, false);
-    delivery('d-failed', { id: 'm-failed', content: ANSWER }, { outcome: 'failed', receiptId: `rcpt-${send}` });
-    charge(t, [{ id: send, name: 'send_to_agent', arguments: { agent: REQUESTER, intent: 'ANSWER', payload: ANSWER } }]);
-    fileClose(t, delivery('d-close-chip', { id: 'm-close-chip', content: '[{"type":"tool_use"}]', displayKind: 'tool-turn' }));
-    expect(await validate(t)).toMatch(REFUSED);
-    expect(upheld(t)).toBe(0);
-  });
 
   it('NEGATIVE CONTROL: a tool-call chip, or a line to someone who did not ask, is never the answer', () => {
     const a = newTask();

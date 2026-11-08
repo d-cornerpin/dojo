@@ -120,7 +120,7 @@ describe('PART A — every assignee-column writer is the gate or a named excepti
 });
 
 // ── PART B: the model-reachable tracker doors ──
-const GATE_CALL = /\b(?:taskWriteRefusal|moveAssignee|projectCloseRefusal|takeoverRefusal|checkMove|planSpawnTask)\(/;
+const GATE_CALL = /\b(?:taskWriteRefusal|moveAssignee|takeoverRefusal|checkMove|planSpawnTask)\(/;
 
 /** Doors the gate deliberately does not govern, each with its reason. */
 const UNGOVERNED: Record<string, string> = {
@@ -133,12 +133,10 @@ const UNGOVERNED: Record<string, string> = {
   'work_update:list': 'READ',
   'work_update:activity': 'READ',
   'work_note': 'an observation on the record, open to any agent that can read the task (tasks report item 4)',
-  'work_validate:validate': 'PM-only (PM_ONLY_WORK_OPS); the PM is an editor (dec 3) and adjudicates, never moves',
   'work_validate:retask': 'PM-only; re-drives the SAME holder (dec 1: keep agents working)',
-  'work_validate:override': 'PM-only; the request it resolves was filed through the gated override-request door',
-  'work_validate:apply_user_verdict': 'PM-only; applies the owner\'s own verdict',
-  'work_validate:apply_user_validation': 'primary-only; applies the owner\'s own reply',
-  'work_close_request:user_verdict': 'refused to anyone but the assigned agent by its own check',
+  'work_update:hand_in': 'the hand-in door refuses anyone but the row\'s worker by its own check (work/done/hand-in.ts)',
+  'work_validate:decide': 'the decision door refuses anyone but the decider and the owner by its own check (work/done/who-decides.ts)',
+  'work_validate:open_proof': 'a READ of a waiting hand-in\'s proof, recorded; it moves nothing',
 };
 
 /** The tracker function a handler delegates to, read from the handler's own source. */
@@ -161,7 +159,7 @@ describe('PART B — every model-reachable tracker door calls the gate or is cla
   const keys = Object.keys(trackerHandlers).sort();
 
   it('the classification covers every live door, and names no door that is gone', () => {
-    expect(keys.length, 'the walk is measuring air').toBeGreaterThan(20);
+    expect(keys.length, 'the walk is measuring air').toBeGreaterThan(15);
     for (const k of Object.keys(UNGOVERNED)) expect(keys, `stale classification: ${k}`).toContain(k);
   });
 

@@ -3,6 +3,7 @@
 // the schedule, and the 200 is true. Agent doors (work_update edit, work_schedule resume): the
 // product already refuses an agent's reopen of a finished row, so they refuse up front with nothing
 // changed. Never a silently ended schedule behind an "ok".
+import { decide } from '../../work/done/decide.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -63,7 +64,7 @@ async function finishedRecurring(): Promise<string> {
   const id = /task_id=([0-9a-f-]{36})/.exec(out.content)![1];
   db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at)
     VALUES ('d-fin', ?, NULL, 'dashboard', 'dashboard', 'conv-owner', 'delivered', datetime('now'))`).run(AGENT);
-  setTrackerStatus(id, 'complete', { by: 'pm', actorId: 'pm', claim: 'authoritative', resultDeliveryId: 'd-fin', reason: 'closed' });
+  decide({ workId: id, deciderAgentId: null, verdict: 'owner_done', reason: 'closed' });
   db().prepare("UPDATE work SET schedule_status = 'completed', is_paused = 1, next_run_at = NULL WHERE id = ?").run(id);
   expect(row(id).state).toBe('done');
   return id;

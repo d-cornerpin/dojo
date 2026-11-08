@@ -199,7 +199,7 @@ export function runDeliverSteerText(p: {
     + `and nothing user-visible has been sent since this run started.\n\n`
     + `Say the thing itself now, in your own voice, as a SEPARATE reply with NO tool call in it `
     + `(or on the channel the user asked for). Then, in the response AFTER that, call `
-    + `work_update(action="status") with task_id="${p.taskId}" and status="complete". Text that `
+    + `work_update(action="hand_in") with task_id="${p.taskId}" and its proof. Text that `
     + `rides in the same response as a tool call is treated as working notes, not as your reply, `
     + `so the user never sees it. The run closes on the message, not on this call.\n\n`
     + `A tool-call chip, an internal note, an engine acknowledgement, or a hand-off to another `

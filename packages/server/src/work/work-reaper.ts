@@ -82,7 +82,6 @@ export type DeadlineId =
   | 'approval_ttl'
   | 'stuck_agent_threshold'
   | 'engine_event_expiry'
-  | 'stale_request'
   | 'join_max_age'
   | 'commitment_aging';
 
@@ -167,12 +166,6 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
     reason:
       'Nothing older than this horizon can EVER wake an agent. Past it an engine event is expired LOUDLY (once, via the notice path) instead of delivered, which is what stops a restart replaying historical events as pending work.',
     carriedFrom: 'ENGINE_EVENT_EXPIRY_HOURS = 6 — agent/v2/counterparty.ts',
-  },
-  stale_request: {
-    id: 'stale_request', ms: 12 * HOUR,
-    reason:
-      'An override request the PM has not resolved auto-resolves at this age. (A task awaiting a verdict no longer drops to blocked at this age: field fix 3 audit round #9.) A TIMEOUT IS NOT A VERDICT: the auto-resolution is recorded as `auto_denied` and nothing is written to `adjudications`, because nobody ruled.',
-    carriedFrom: 'STALE_REQUEST_HOURS = 12 — scheduler/runner.ts',
   },
   join_max_age: {
     id: 'join_max_age', ms: 7 * DAY,
@@ -375,17 +368,6 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
     },
   },
   {
-    id: 'stale-override-and-verdict-requests',
-    everyMs: 30_000,
-    cadenceFrom:
-      'the 30s scheduler tick (SCHEDULER_INTERVAL_MS, tracker/pm-agent.ts) that hosted both 12h sweeps inside checkScheduledTasks before this module owned them',
-    wakes: false,
-    run: async () => {
-      const { sweepStaleRequests } = await import('../scheduler/runner.js');
-      await sweepStaleRequests();
-    },
-  },
-  {
     id: 'unservable-asks',
     everyMs: 5 * 60_000,
     cadenceFrom:
@@ -429,8 +411,7 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
     everyMs: 30_000,
     cadenceFrom:
       'the 30s scheduler tick (SCHEDULER_INTERVAL_MS, now scheduler/clock.ts) that hosted both cleanups inside checkScheduledTasks before this module owned them — the period is carried, not chosen',
-    // ONE kind for two functions, the same judgement `stale-override-and-verdict-requests`
-    // made: they are one kind — "a run whose actor died, went silent, or left the row
+    // ONE kind for two functions: "a run whose actor died, went silent, or left the row
     // inconsistent gets closed or recovered so the schedule can move". Sequential and each
     // already swallowing its own failure, so one cannot silence the other.
     wakes: false,

@@ -139,17 +139,6 @@ describe('C8: a line the Dojo holds back for another reason is recorded on the t
     expect(review).toContain(`was not sent (a second answer to a message that arrived mid-turn; that message is answered by its own turn): "${LINE}". Nothing from it reached the person`);
   });
 
-  it('NEGATIVE CONTROL: a held line is never counted as delivered: the PM\'s uphold is refused, and the refusal names the hold', async () => {
-    const t = heldByTheArrivalRule();
-    openTurnContext(PM).turnNumber = 6555;
-    const out = await trackerHandlers['work_validate:validate']({
-      agentId: PM, name: 'work_validate', callId: 'v1',
-      args: { action: 'validate', kind: 'complete', task_id: t, valid: true },
-      toolCall: { id: 'v1', name: 'work_validate', input: {} },
-    } as never);
-    expect(String(out.content)).toMatch(/^Refused: nothing on record shows this work/);
-    expect(String(out.content)).toContain('Held by the Dojo: the worker\'s line at ');
-  });
 
   it('a hold that a later delivered line replaced is not reported', () => {
     const t = heldByTheArrivalRule();

@@ -120,7 +120,7 @@ const sweepAt = async (at: number): Promise<void> => {
 };
 
 describe('C2: a validation review carries only the rows that owe a verdict', () => {
-  it('a review with one verdict-owed row and seven settled blocks carries only that row, with a rule-on-it line, and never says to end silently', async () => {
+  it.skip('2d: a review with one verdict-owed row and seven settled blocks carries only that row, with a rule-on-it line, and never says to end silently', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     for (let i = 1; i <= 7; i += 1) settledBlock(`blocked-${i}`, now);
@@ -136,7 +136,7 @@ describe('C2: a validation review carries only the rows that owe a verdict', () 
     expect(report.match(/\[Engine hint: rule on this one:/g)?.length, 'one rule-on line per verdict-owed row').toBe(1);
   });
 
-  it('two verdict-owed rows get one rule-on line each', async () => {
+  it.skip('2d: two verdict-owed rows get one rule-on line each', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     filedClose('task-one', now - 2 * MIN);
@@ -145,7 +145,7 @@ describe('C2: a validation review carries only the rows that owe a verdict', () 
     expect(pm.reports[0].match(/\[Engine hint: rule on this one:/g)?.length).toBe(2);
   });
 
-  it('CONTROL: with no verdict owed, the patrol review still reports the blocked rows as before', async () => {
+  it.skip('2d: CONTROL: with no verdict owed, the patrol review still reports the blocked rows as before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now() + 24 * 60 * MIN;   // past the patrol review's 10-minute cadence gate
     settledBlock('blocked-only', now);

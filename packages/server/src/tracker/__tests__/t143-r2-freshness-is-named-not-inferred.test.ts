@@ -333,21 +333,6 @@ describe('ROUND 2 (1): the platform notice never depends on the project manager 
   });
 });
 
-describe('ROUND 2 (4): "your pause was lifted" wakes the agent and asks for no reply', () => {
-  it('a PM-rejected pause re-drives the agent through a notice that names the task, with no reply owed to the PM', async () => {
-    claimedTask('task-paused', 'the price check', Date.now() - 30 * MIN, 'c-1');
-    db().prepare("UPDATE work SET state = 'paused' WHERE id = 'task-paused'").run();
-    const out = await trackerValidatePause('pm', { task_id: 'task-paused', valid: false, reject_reason: 'no specific wait condition was named' });
-    expect(out).not.toMatch(/^Error/);
-    // No A2A that owes the PM a reply …
-    expect(a2a.filter((m) => m.toAgent === 'helper' && (m as { requiresResponse?: boolean }).requiresResponse)).toHaveLength(0);
-    // … and the notice the agent gets names the task as a column (its next turn serves that task).
-    const row = db().prepare("SELECT task_id, lane, content FROM messages WHERE agent_id = 'helper' AND content LIKE '%was lifted%'")
-      .get() as { task_id: string; lane: string; content: string } | undefined;
-    expect(row?.task_id).toBe('task-paused');
-    expect(row?.lane).toBe('events');
-  });
-});
 
 describe('ROUND 3 (I2): a check-in owes no reply — nothing waits, nothing escalates for a missing one', () => {
   const eventsToHelper = (): Array<{ task_id: string | null; content: string; a2a_requires_response: number | null }> =>

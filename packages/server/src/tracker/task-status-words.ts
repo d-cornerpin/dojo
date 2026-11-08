@@ -26,3 +26,7 @@ export function normalizeTaskStatus(raw: unknown): string | null {
   const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
   return CANONICAL_TASK_STATUSES.includes(key) ? key : STATUS_SYNONYMS[key] ?? null;
 }
+
+/** The statuses that end work. None is set by a status change: finished or can't-be-done work is handed in,
+ *  and the decision sets the end state (`work/done/`). */
+export const TERMINAL_STATUS_WORDS: ReadonlySet<string> = new Set(['complete', 'fallen', 'cancelled']);

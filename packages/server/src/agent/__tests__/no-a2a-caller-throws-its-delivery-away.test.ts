@@ -177,7 +177,8 @@ describe('no a2a caller throws its delivery away', () => {
     // tracker/pm-agent.ts) was a caller and is DELETED with the total-time cap (OR-LONG-JOBS);
     // the census itself still finds 0 findings over the 7 that remain.
     // t143 r3 (I2): 7 -> 6 — the PM's poke is a re-drive that owes no reply, no longer an A2A.
-    expect(sites).toBeGreaterThanOrEqual(6);
+    // 901: 6 -> 5, the verdict doors' notices left with the doors (one decision replaced them).
+    expect(sites).toBeGreaterThanOrEqual(5);
     expect(files).toContain(TRANSPORT);
     expect(files).toContain(DOOR);
   });
@@ -199,23 +200,11 @@ describe('no a2a caller throws its delivery away', () => {
     const callers = walk(SRC)
       .filter((p) => /\bdeliverA2ANotice\s*\(\{/.test(stripComments(fs.readFileSync(p, 'utf8'))))
       .map(rel).sort();
-    expect(callers).toEqual([
-      'gateway/routes/tracker.ts',
-      'healer/injury-recovery.ts',
-      'scheduler/runner.ts',
-      'techniques/distillation.ts',
-      'tracker/tools.ts',
-      // t193: a refused close_project (owner decision 29) is relayed to the main agent to put to the owner.
-      'work/row-authority.ts',
-    ]);
-    const tools = stripComments(fs.readFileSync(path.join(SRC, 'tracker/tools.ts'), 'utf8'));
-    // t143 r2: 8 -> 7 — the pause-lifted notice is no longer an A2A (it owes the PM no reply; it is an
-    // engine event naming the task, plus the wake).
-    // t143 r3 (I2): 7 -> 4 — the retask directive and the complete- and block-rejection directives are
-    // re-drives too (`redriveWithoutReply`: a wake that owes the PM no reply).
-    expect(tools.match(/\bdeliverA2ANotice\s*\(\{/g)).toHaveLength(4);
+    // 901: the verdict doors' notices (gateway override resolve, the stale-override sweep, the four in
+    // tracker/tools.ts, the refused close_project relay) left with the doors they belonged to.
+    expect(callers).toEqual(['healer/injury-recovery.ts', 'techniques/distillation.ts']);
     // every call hands the door a NOTICE NAME — a door called with no words to say says nothing
-    for (const f of ['gateway/routes/tracker.ts', 'healer/injury-recovery.ts', 'scheduler/runner.ts', 'techniques/distillation.ts', 'tracker/tools.ts', 'work/row-authority.ts']) {
+    for (const f of ['healer/injury-recovery.ts', 'techniques/distillation.ts']) {
       const t = stripComments(fs.readFileSync(path.join(SRC, f), 'utf8'));
       const opens = (t.match(/\bdeliverA2ANotice\s*\(\{/g) ?? []).length;
       const named = (t.match(/\}\s*,\s*'[^']+'\s*,/g) ?? []).length;

@@ -72,7 +72,11 @@ export const WORK_EVENT_KINDS = [
   // v3.5 Task D1 (migration 200b, folded into the release's one rebuild): the engine continued a
   // turn that ended mid-job. Declared before its writer lands, named in the conformance exemption.
   'continued',
+  // Migration 901: the one path to done. A hand-in (accepted or refused), a decision, and a decider's open of a proof item.
+  'decided',
   'floor_ghosted',
+  'hand_in_refused',
+  'handed_in',
   'join_complete',
   'join_opened',
   // v3.5 DONE IS MEASURED (migration 200b). One reading of a task's measure: what it returned,
@@ -96,6 +100,7 @@ export const WORK_EVENT_KINDS = [
   'person_told',
   'poke',
   'poke_remediation',
+  'proof_opened',
   'rearm_refused',
   'revert_reset',
   // v3.5 Task D1 (migration 200b): a continued turn came back with no momentum. As `continued`.

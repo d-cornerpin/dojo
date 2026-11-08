@@ -107,6 +107,8 @@ interface ColumnDef {
 const columns: ColumnDef[] = [
   { key: 'on_deck', label: 'On Deck', flavor: '' },
   { key: 'in_progress', label: 'In Progress', flavor: 'kcol--progress' },
+  { key: 'handed_in', label: 'Handed in', flavor: 'kcol--paused' },
+  { key: 'sent_back', label: 'Sent back', flavor: 'kcol--blocked' },
   { key: 'paused', label: 'Paused', flavor: 'kcol--paused' },
   { key: 'complete', label: 'Complete', flavor: 'kcol--complete' },
   { key: 'blocked', label: 'Blocked', flavor: 'kcol--blocked' },
@@ -260,6 +262,8 @@ const SORT_BY_COLUMN: Record<KanbanColumnKey, Cmp> = {
     asc(a.scheduledStart, b.scheduledStart) ||
     asc(a.createdAt, b.createdAt),
   in_progress: (a, b) => asc(a.updatedAt, b.updatedAt),
+  handed_in: (a, b) => asc(a.updatedAt, b.updatedAt),
+  sent_back: (a, b) => asc(a.updatedAt, b.updatedAt),
   paused: (a, b) => asc(a.updatedAt, b.updatedAt),
   complete: (a, b) => desc(a.completedAt, b.completedAt) || desc(a.updatedAt, b.updatedAt),
   blocked: (a, b) => desc(a.updatedAt, b.updatedAt),
