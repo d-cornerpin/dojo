@@ -1,13 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE SAFE-SENDER RECORDS, AND THE ONE ANSWER TO "WHO IS THE OWNER ON IMESSAGE" (t146).
 //
-// Moved byte-for-byte out of `services/imessage-bridge.ts` (which re-exports every name, so no
-// importer changed), because the owner question had THREE readers and two of them could not
-// import the bridge: a reader under `work/store.ts`, which the bridge reaches through the outbound
-// ledger (a cycle), once wrote its own parse,
-// and it disagreed with the bridge on a list with nobody starred and on a legacy bare-string
-// list (the bridge texted an owner the record then refused). This module imports only the
-// database, the logger and the recipient comparison, so every reader can share it.
+// The safe-sender records and the owner rule, apart from `services/imessage-bridge.ts` (which re-exports
+// every name): this module imports only the database, the logger and the recipient comparison, so a
+// reader the bridge's graph would cycle with can share it.
 //
 // TWO QUESTIONS, TWO ANSWERS. "Which address do I send to?" (`ownerIMessageRecord`): the starred record — `parseSafeSenders` guarantees exactly
 // one in any non-empty list (none starred → the record matching the legacy key, else the first;

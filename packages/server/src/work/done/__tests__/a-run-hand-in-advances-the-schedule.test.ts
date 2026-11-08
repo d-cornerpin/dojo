@@ -122,4 +122,20 @@ describe('a run hand-in advances the schedule', () => {
     const hints = doneDb().prepare("SELECT content FROM messages WHERE agent_id = ? AND content LIKE '[Engine hint: a run of%'").all(WORKER) as Array<{ content: string }>;
     expect(hints).toHaveLength(1);
   });
+
+  it('a run that only told another agent is recorded undelivered', async () => {
+    freshBoard();
+    doneDb().prepare("UPDATE work SET task_kind = 'reminder' WHERE id = ?").run(TASK);
+    aRunInFlight('run-1', Date.now() - 30_000);
+    const at = Math.floor(Date.now() / 1000) * 1000;
+    const text = '[A2A:DELIVERABLE thread:thr-x] Your table for four is booked for Friday.';
+    doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at) VALUES ('m-a2a', ?, 'a2a', 'assistant', ?, 1, ?, ?)").run(WORKER, text, at, at);
+    doneDb().prepare(
+      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, detail, outcome, created_at, updated_at)
+       VALUES ('dlv-a2a', ?, 'send_to_agent', 'a2a', ?, 'm-a2a', ?, 'delivered', datetime('now'), datetime('now'))`,
+    ).run(WORKER, PM, text);
+    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
+    const settled = doneDb().prepare("SELECT json_extract(payload, '$.run_status') AS s FROM work_events WHERE work_id = 'run-1' AND kind = 'occurrence_settled'").get() as { s: string };
+    expect(settled.s).toBe('undelivered');
+  });
 });

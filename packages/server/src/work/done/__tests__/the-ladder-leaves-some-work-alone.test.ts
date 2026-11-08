@@ -1,6 +1,7 @@
 // The ladder leaves alone: an owner-paused task (its clock restarts when the pause lifts), a row whose
-// worker no longer exists, a Working row already idle 14 days when the box first ran the ladder, a
-// worker in a live turn, and a row decided between two sweeps.
+// worker no longer exists, a Working row already idle 14 days when the box first ran the ladder (and a
+// younger idle row's clock starts at that first run, never at its old date), a worker in a live turn, and
+// a row decided between two sweeps.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -14,7 +15,8 @@ import { setHold, clearHold } from '../hold.js';
 import { decide } from '../decide.js';
 import { activeRuns } from '../../../agent/shared-state.js';
 import { freshBoard, handedIn, stateOf, MAIN, WORKER, TASK } from './helpers/decision-world.js';
-import { hintsTo, cards, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { hintsTo, cards, entries, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { LADDER_ENTRY } from '../ladder.js';
 import { doneDb } from './helpers/done-db.js';
 
 const DAY = 24 * 60 * MIN;
@@ -63,5 +65,23 @@ describe('the ladder leaves some work alone', () => {
     expect(hintsTo(WORKER)).toEqual([]);
     expect(hintsTo(MAIN)).toEqual([]);
     expect(cards).toEqual([]);
+  });
+
+  it('rows idle 1 to 13 days when the ladder first ran are clocked from that run: no hint, mark or card at once, the hint one bound later', async () => {
+    const ids = [1, 5, 13].map((d) => {
+      const id = `task-idle-${d}d`;
+      doneDb().prepare(
+        `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+         VALUES (?, 'task', ?, 'owner', 'tracker', ?, 'claimed', 'task', 1, 0, 'An older job', ?, ?)`,
+      ).run(id, WORKER, id, Date.now() - d * DAY, Date.now() - d * DAY);
+      return id;
+    });
+    await runLadder(Date.now());
+    await runLadder(Date.now() + 2 * MIN);
+    expect(hintsTo(WORKER)).toEqual([]);
+    expect(ids.map((id) => entries(id, LADDER_ENTRY.pm))).toEqual([0, 0, 0]);
+    expect(cards).toEqual([]);
+    await runLadder(Date.now() + 6 * MIN);
+    expect(hintsTo(WORKER).filter((h) => h.includes('An older job'))).toHaveLength(3);
   });
 });

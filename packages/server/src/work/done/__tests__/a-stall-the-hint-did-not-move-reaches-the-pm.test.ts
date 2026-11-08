@@ -1,6 +1,6 @@
 // Still nothing one bound after the hint, or a third refused hand-in, and the PM's next report names the
 // stalled task (the refusals with their texts). The report lists only hand-ins the PM owes a verdict on and
-// the stalls the ladder marked, and a stall is reported once.
+// the stalls the ladder marked, a stall is reported once, and one marked while a review runs is not lost.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -13,7 +13,7 @@ import { runLadder, LADDER_ENTRY } from '../ladder.js';
 import { armDebouncedReview, runPMReview } from '../../../tracker/pm-agent.js';
 import { engineHandIn } from '../hand-in.js';
 import { freshBoard, handedIn, call, PM, WORKER, TASK } from './helpers/decision-world.js';
-import { entries, lastReport, pmCanRun, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { entries, lastReport, pmCanRun, resetLadderWorld, turn, MIN } from './helpers/ladder-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 function anotherTask(id: string, worker: string, title: string): void {
@@ -69,5 +69,17 @@ describe('a stall the hint did not move reaches the PM', () => {
     await runPMReview();
     expect(lastReport(PM)).toContain('Its refused hand-ins:');
     expect(lastReport(PM)).toContain('/tmp/missing-2.pdf');
+  });
+
+  it('a stall marked while a review is running is reported by the review that follows it', async () => {
+    await handedIn();
+    anotherTask('task-late', WORKER, 'Book the venue');
+    turn.during = () => {
+      turn.during = () => {};
+      doneDb().prepare("INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES ('task-late', 'audit', 'engine', json_object('entry_kind', ?), ?)").run(LADDER_ENTRY.pm, Date.now() + 5_000);
+      void runPMReview();
+    };
+    await runPMReview();
+    await vi.waitFor(() => expect(lastReport(PM)).toContain('Book the venue'), { timeout: 30_000 });
   });
 });

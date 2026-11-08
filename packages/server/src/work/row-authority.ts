@@ -113,7 +113,7 @@ const pieceIdsExpr = (owner: string, extraFrom = '', extraWhere = ''): string =>
   + `    AND (c.parent_id = ${owner}.id`
   + `         OR (${owner}.a2a_thread_id IS NOT NULL AND c.root_id = ${owner}.a2a_thread_id))`;
 
-/** OR-PM-1v2's "declined": a delegated piece of this row came back FAILED (an a2a FAIL). */
+/** A delegated piece of this row came back FAILED (an a2a FAIL): the row was declined. */
 function wasDeclined(id: string): boolean {
   try {
     return !!getDb().prepare(

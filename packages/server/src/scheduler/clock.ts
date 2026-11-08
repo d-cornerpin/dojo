@@ -1,23 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE SCHEDULER'S CLOCK — SWEEP-F T2, via SWEEP CORE-2 item 3.
 //
-// ── WHAT THIS TAKES BACK, AND FROM WHOM ─────────────────────────────────────────────────
-// Until this module the platform's answer to "when does a schedule fire" was installed by
-// `tracker/pm-agent.ts:startPokeLoop()` — the PROJECT MANAGER's start-up routine — which
-// declared `SCHEDULER_INTERVAL_MS`, held `schedulerTimer`, and cleared it in `stopPokeLoop()`.
-// Two consequences followed from that one coupling, and neither was written down anywhere:
-//
-//   1. A box with the PM DISABLED fired no schedules at all. `index.ts` 4c starts the PM
-//      under `isSetupCompleted() && isPMEnabled()`, and the scheduler's only start was inside
-//      it. Turning off the project manager silently turned off every reminder and every
-//      recurring task on the box.
-//   2. `stopPokeLoop()` stopped the scheduler too. A caller that wanted the PM quiet got the
-//      clock stopped as a side effect it never asked for and could not see.
-//
-// The period is CARRIED, not re-chosen: 30 seconds, the exact value `tracker/pm-agent.ts`
-// declared, which is also `work/work-reaper.ts`'s `REAPER_BASE_TICK_MS` and the cadence three
-// reaper kinds cite as "the 30s scheduler tick". Re-picking it here would have silently moved
-// a clock four other things are measured against.
+// The scheduler's own 30-second clock, started on its own terms (never with the project manager). The
+// period is `work/work-reaper.ts`'s `REAPER_BASE_TICK_MS`, the cadence its kinds cite as "the 30s
+// scheduler tick".
 //
 // ── THE RE-ENTRANCY GUARD, AND WHY THE TICK NEEDED ONE ──────────────────────────────────
 // `checkScheduledTasks` is async and awaits: the due scan's cleanup, `claimOccurrence`, and —

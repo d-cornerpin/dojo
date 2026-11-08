@@ -267,6 +267,9 @@ export function ensurePMAgentRunning(): void {
 const REVIEW_DEBOUNCE_MS = 10_000;
 let reviewTimer: ReturnType<typeof setTimeout> | null = null;
 let reviewing = false;
+let rungWhileReviewing = false;
+/** How long a review waits for a queued PM turn before it counts as one that never ran. */
+const QUEUED_TURN_BOUND_MS = 30 * 60_000;
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** The PM's one wake: a hand-in or a ladder mark arms it, and a burst of them becomes one review. */
@@ -331,7 +334,7 @@ function recordMisses(pmId: string, held: ReadonlyMap<string, number>, why: stri
 
 /** THE PM'S REVIEW (header). The PM runs once; a run that ends with a held hand-in still undecided records the miss. */
 export async function runPMReview(): Promise<void> {
-  if (reviewing) return;
+  if (reviewing) { rungWhileReviewing = true; return; }
   reviewing = true;
   const pmId = getPMAgentId();
   let held = new Map<string, number>();
@@ -344,7 +347,7 @@ export async function runPMReview(): Promise<void> {
     pruneOldPMMessages(pmId);
     const room = reviewLedgerRoomTokens(contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 }).assemblyBudgetTokens, waiting.length);
     const blocks = [...waiting.map((id, i) => handInBlock(id, i + 1, room)), ...stalled.map((id, i) => stallBlock(id, waiting.length + i + 1))];
-    const report = `Tracker review: ${waiting.length} hand-in(s) wait for your decision, ${stalled.length} stalled task(s).\n\n${blocks.join('\n\n')}\n\n`
+    const report = `Tracker review -- ${waiting.length} hand-in(s) wait for your decision, ${stalled.length} stalled task(s).\n\n${blocks.join('\n\n')}\n\n`
       + '[Engine hint: for each HANDED IN row, open its proof with work_validate(action="open_proof", task_id, item=N), then work_validate(action="decide", task_id, '
       + 'verdict="approve", reason="<one line: how the proof meets the goal>"), or verdict="send_back" with the reason naming what is missing. A measured task is met when its '
       + 'measure reads 0 or the named remainder holds; a task whose job is a decision is met by the owner\'s recorded words above, never by the worker quoting him. '
@@ -355,13 +358,21 @@ export async function runPMReview(): Promise<void> {
     broadcast({ type: 'chat:message', agentId: pmId, message: { id: msgId, agentId: pmId, role: 'user' as const, content: report, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
     const runtime = getAgentRuntime();
     const asked = await runtime.handleMessage(pmId, report);
-    const turn = asked === 'queued' ? ((await runtime.whenQueuedRunEnds?.(pmId)) ?? 'not-run') : asked;
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    const turn = asked !== 'queued' ? asked : await Promise.race([
+      runtime.whenQueuedRunEnds?.(pmId) ?? Promise.resolve('not-run' as const),
+      new Promise<'not-run'>((resolve) => { bound = setTimeout(() => resolve('not-run'), QUEUED_TURN_BOUND_MS); }),
+    ]).finally(() => clearTimeout(bound));
     if (turn === 'ran') recordMisses(pmId, held, 'the review ran and gave no verdict on this hand-in');
   } catch (err) {
     logger.error('PM review failed', { error: errText(err) });
     recordMisses(pmId, held, 'the review failed before a verdict');
   } finally {
     reviewing = false;
+    if (rungWhileReviewing) {
+      rungWhileReviewing = false;
+      void runPMReview().catch((err: unknown) => logger.error('PM review failed', { error: errText(err) }));
+    }
   }
 }
 

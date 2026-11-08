@@ -66,4 +66,16 @@ describe('an undecided hand-in goes to the next decider', () => {
     expect(hintsTo(MAIN)).toHaveLength(1);
     for (const reason of reasons) expect(hintsTo(MAIN)[0]).toContain(reason);
   });
+
+  it("three quick send-backs on the main agent's own task card the owner no sooner than 15 minutes after the hand-in", async () => {
+    freshBoard(MAIN); pmCanRun(PM);
+    for (const reason of ['The totals page is missing', 'The chart has no labels', 'The summary is cut off']) {
+      await handedIn(MAIN);
+      expect((await call(PM, 'work_validate', { action: 'decide', task_id: TASK, verdict: 'send_back', reason })).isError).toBe(false);
+    }
+    await runLadder(Date.now() + MIN);
+    expect(cards).toEqual([]);
+    await runLadder(Date.now() + 16 * MIN);
+    expect(cards.filter((c) => c.cardKey === `stall:${TASK}`)).toHaveLength(1);
+  });
 });

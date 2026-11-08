@@ -6,8 +6,8 @@ import { ledgerListing, type LedgerWorkEntry } from '../work/ledger-read.js';
 import { layOutInRoom } from '../memory/other-threads-room.js';
 import { parseMeasure, describeMeasure } from '../work/measure.js';
 import { listTaskLog } from './task-log.js';
+import { msToUtcText } from '../work/tracker-view.js';
 
-const utc = (ms: number): string => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 const fmt = (v: number): string => v.toLocaleString('en-US');
 type Reading = { ok?: boolean; remaining?: number | null; at?: number; error?: string } | null;
 
@@ -32,12 +32,12 @@ function measureText(taskId: string, touched: number, commands: number, byTool: 
     const good = reads.find((x) => x?.ok === true && typeof x.remaining === 'number');
     const why = reads.find((x) => x?.ok === false)?.error;
     return `${name}: could not be read at close${why ? ` (${why.slice(0, 160)})` : ''} — `
-      + (good ? `last good reading ${fmt(good.remaining as number)} at ${utc(good.at ?? 0)}` : 'no earlier reading');
+      + (good ? `last good reading ${fmt(good.remaining as number)} at ${msToUtcText(good.at ?? 0)}` : 'no earlier reading');
   }
   const named = r.measure_remaining === 0 ? undefined
     : listTaskLog(taskId, { kinds: ['observation'] }).map((e) => e.note ?? '').find((x) => x.startsWith('Remainder named at close:'));   // newest first
   return `${name}: ${fmt(r.measure_remaining)} remaining${r.measure_initial === null ? '' : ` of ${fmt(r.measure_initial)} at start`}`
-    + `${r.measure_at ? ` (measured ${utc(r.measure_at)})` : ''}${named ? ` — named by the worker: ${named.slice('Remainder named at close:'.length).trim()}` : ''}`;
+    + `${r.measure_at ? ` (measured ${msToUtcText(r.measure_at)})` : ''}${named ? `, named by the worker: ${named.slice('Remainder named at close:'.length).trim()}` : ''}`;
 }
 
 /** What the validator judges a close on, from the records (done-is-measured E1): the measure, and the

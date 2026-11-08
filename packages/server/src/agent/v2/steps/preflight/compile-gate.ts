@@ -1,6 +1,5 @@
 // ════════════════════════════════════════
-// UX-REPAIR ROUND 12 T47 — `preflight` §7b: THE PRE-TURN COMPILE GATE, the close-out
-// gate's sibling.
+// `preflight` §7b: THE PRE-TURN COMPILE GATE.
 //
 // The owed compiled reply as a hard precondition: an ask whose delegated pieces are all
 // back, whose owner has not been answered, and which the redrive ladder has ALREADY come
@@ -10,18 +9,11 @@
 // row saying the same thing would be noise, and this gate's whole premise is that the model
 // is not reading that kind of instruction.
 //
-// ⚠ BUG-2 IS INHERITED HERE VERBATIM AND IT IS THE SAME LANE SEPARATION. The gate is NEVER
-// armed on a turn a human is waiting on. Its author's words, at
-// `steps/preflight/closeout-gate.ts`: armed on a conversation turn the close-out gate
-// "(a) DELETED the agent's just-streamed reply and (b) REFUSED the tool calls the agent
-// needed to answer" — inv 2 and inv 6 on the weak-model floor. The ternary below is that
-// one, copied; the invariant test is that gate's own, EXTENDED to this gate
-// (`agent/v2/__tests__/integration.test.ts`, five clauses driving the ENFORCEMENT).
+// BUG-2: the gate is NEVER armed on a turn a human is waiting on (the ternary below); the invariant is
+// driven in `agent/v2/__tests__/integration.test.ts`.
 //
-// It costs this gate nothing. The redrive steers arrive on engine-wake and A2A turns
-// (round-12 S5: turns 4900/4901 kind `a2a`, 4902 kind engine) — the same lane class where
-// the close-out gate arms legally. Off the conversation path is exactly where the owed
-// compile is owed.
+// The redrive steers arrive on engine-wake and A2A turns, off the conversation path, which is
+// where the owed compile is owed.
 // ════════════════════════════════════════
 
 import { createLogger } from '../../../../logger.js';
@@ -56,9 +48,8 @@ export function runCompileGate(
       agentId, owedCount: owed.length, sample: owed.slice(0, 3).map((id) => id.slice(0, 8)),
     }, agentId);
   } catch (err) {
-    // A gate that cannot read what is owed must not refuse on a guess. Same direction the
-    // close-out gate takes for the same failure: disarmed for this turn, and the ladder's own
-    // rungs still reach the owner.
+    // A gate that cannot read what is owed must not refuse on a guess: disarmed for this turn, and the
+    // ladder's own rungs still reach the owner.
     logger.warn('v2: owed-compile lookup failed; compile gate disarmed for this turn', {
       agentId, error: err instanceof Error ? err.message : String(err),
     }, agentId);

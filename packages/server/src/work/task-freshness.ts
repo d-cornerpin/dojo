@@ -32,6 +32,14 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at,
   OR (e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id)
       AND NOT (e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = 'observation')))), 0))`;
 
+/** SQL: when the stall ladder first ran on this box (migration 901's applied time), epoch ms; 0 when unknown. */
+export const LADDER_ANCHOR_SQL = `COALESCE((SELECT unixepoch(applied_at) * 1000 FROM _migrations WHERE name LIKE '901%'), 0)`;
+
+/** SQL: when the row under alias `a` started to stall: its last movement, the newest lift of a hold, or the
+ *  ladder's anchor, whichever is latest. */
+export const stallSinceSql = (a: string): string => `MAX(${taskMovedAtSql(a)}, ${LADDER_ANCHOR_SQL}, COALESCE((SELECT MAX(c.created_at)
+  FROM work_events c WHERE c.work_id = ${a}.id AND c.kind = 'audit' AND json_extract(c.payload, '$.entry_kind') = 'hold_cleared'), 0))`;
+
 /** THE JOB IN FLIGHT. Its task ids travel ON the park's own continuation wake (t143 round 6), so
  *  it can be neither stolen nor orphaned:
  *    - a park (`carryJobWork`) names the ids and queues exactly one continuation wake — on the

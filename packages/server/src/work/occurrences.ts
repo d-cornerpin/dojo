@@ -288,7 +288,7 @@ export function settleOccurrence(
   } else if (runStatus === 'complete' && deliveryId && occurrenceOwesDeliverable(occurrenceId).owes) {
     gateNote = 'delivered in its own window';
   }
-  // v3.5: AFTER the deliverable gate; only a run it would record complete is INCOMPLETE.
+  // After the deliverable gate: only a run it would record complete is recorded incomplete for items left.
   if (left && effectiveStatus === 'complete') { effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null; gateNote = `${countOf(left.left, left.unit)} left by the task's measure`; }
 
   // T2: the settle and the run's own word are ONE unit. The event is the ONLY carrier

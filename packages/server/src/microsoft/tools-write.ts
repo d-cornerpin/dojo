@@ -24,7 +24,6 @@ import { ONEDRIVE_CHUNK_BYTES } from './onedrive-chunk.js';
 import { moveToFolder } from './outlook-conversation.js';
 import { homeDir } from '../home.js';
 import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js';
-import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
 // ── Tool Definitions ──
 
@@ -42,7 +41,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         body: { type: 'string', description: 'Email body text' },
         cc: { type: 'string', description: 'CC recipients (comma-separated)' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
-        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['to', 'subject', 'body'],
     },
@@ -62,7 +60,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         body: { type: 'string', description: 'Reply body text' },
         reply_all: { type: 'boolean', description: 'Reply to all recipients (default: false)' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
-        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'body'],
     },
@@ -79,7 +76,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         to: { type: 'string', description: 'Forward to this email address' },
         body: { type: 'string', description: 'Additional text to include' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach IN ADDITION to the original message\'s attachments (which Graph preserves automatically). Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.' },
-        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'to'],
     },
@@ -218,7 +214,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
       properties: {
         chat_id: { type: 'string', description: 'Teams chat ID (from teams_read_messages or teams_create_chat)' },
         message: { type: 'string', description: 'Message text to send' },
-        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['chat_id', 'message'],
     },
@@ -417,7 +412,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         team_id: { type: 'string', description: 'Team ID (from teams_list_teams)' },
         channel_id: { type: 'string', description: 'Channel ID (from teams_list_channels)' },
         message: { type: 'string', description: 'Message text to post' },
-        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['team_id', 'channel_id', 'message'],
     },

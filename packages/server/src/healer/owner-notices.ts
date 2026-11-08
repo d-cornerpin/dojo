@@ -26,6 +26,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { stallSinceSql } from '../work/task-freshness.js';
+import { msToUtcText } from '../work/tracker-view.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
 import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
 import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS } from './local-model-notice-words.js';
@@ -61,17 +63,21 @@ export const stallKey = (workId: string): string => `stall:${workId}`;
 const STALL_TRIED: Record<string, string> = {
   ladder_hint: 'a hint to its worker', ladder_pm: 'the project manager was told', review_miss: 'a project manager review with no verdict', ladder_decider: 'the main agent was asked to decide',
 };
+/** A decided row's stall card leaves every open dashboard now; the day's told record stays. */
+export function endStallCard(workId: string): void {
+  if (ownerToldOf(stallKey(workId))) ownerCardEnded('', stallKey(workId));
+}
 /** The stall card: what is stuck, since when, and what was tried; '' once the task is no longer waiting. */
 function stallWords(workId: string): string {
   const db = getDb();
-  const w = db.prepare(`SELECT title, state, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), w.updated_at) AS since
+  const w = db.prepare(`SELECT title, state, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), ${stallSinceSql('w')}) AS since
     FROM work w WHERE w.id = ? AND w.state IN ('claimed', 'sent_back', 'handed_in')`).get(workId) as { title: string | null; state: string; since: number } | undefined;
   if (!w) return '';
   const tried = db.prepare(`SELECT json_extract(payload, '$.entry_kind') AS k, COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND created_at >= ?
     AND json_extract(payload, '$.entry_kind') IN (${Object.keys(STALL_TRIED).map((k) => `'${k}'`).join(', ')}) GROUP BY k`).all(workId, w.since) as Array<{ k: string; n: number }>;
   const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : 'has not moved';
   const triedWords = tried.length > 0 ? tried.map((t) => `${STALL_TRIED[t.k]}${t.n > 1 ? ` (${t.n} times)` : ''}`).join(', ') : 'nothing yet';
-  return `"${w.title ?? workId}" ${what} since ${new Date(w.since).toLocaleString()}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
+  return `"${w.title ?? workId}" ${what} since ${msToUtcText(w.since)}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
 }
 /** t167: "the limit is reached" for one budget window. The budget key is `global_daily` or `agent_<id>`;
  *  the words never name an agent (the card is re-derived from the key alone). */

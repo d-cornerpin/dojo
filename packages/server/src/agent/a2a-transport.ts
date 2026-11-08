@@ -972,16 +972,16 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
   }
 
-  // An assignee's success reply on its assignment thread hands the assigned task in for it, on that
-  // delivery (the weakest model delivers on the thread and skips the form). An applied hand-off is not a
-  // delivery: the sender passed the work on.
-  if (!handOffReport?.applied && (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE')) {
+  // An assignee's final reply on its assignment thread hands the assigned task in for it: finished on the
+  // delivery when one proves it, else can't be done on the reply. An applied hand-off passed the work on.
+  if (!handOffReport?.applied && ['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL'].includes(effectiveIntent)) {
     try {
       const assigned = getDb().prepare(
-        `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state = 'claimed' AND w.repeat_interval IS NULL LIMIT 1`,
+        `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state IN ('open', 'claimed') AND w.repeat_interval IS NULL LIMIT 1`,
       ).get(threadId, envelope.fromAgent) as { id: string } | undefined;
-      const delivery = assigned ? proofDelivery(assigned.id) : null;
+      const delivery = assigned && effectiveIntent !== 'FAIL' ? proofDelivery(assigned.id) : null;
       if (assigned && delivery) engineHandIn(assigned.id, 'the assignee delivered the work on its assignment thread', { outcome: 'finished', items: [{ kind: 'delivery', ref: delivery }] });
+      else if (assigned) engineHandIn(assigned.id, `the assignee replied ${effectiveIntent} on its assignment thread without delivering the work`, { outcome: 'cant_be_done' });
     } catch (err) {
       logger.warn('assignment-thread hand-in failed (non-fatal)', { threadId: threadShort, error: err instanceof Error ? err.message : String(err) });
     }
@@ -1845,7 +1845,7 @@ function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: n
     return `Piece ${i + 1} (from ${name}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
   });
   // The wording lives in `work/join-drive.ts` beside the ladder that spends it, so a test can
-  // read it without driving a turn (the shape `run-deliver-drive.ts` already uses). T10 also
+  // read it without driving a turn. T10 also
   // moved the ORDER ahead of the quotes — the events lane renders this row as a 400-char gist,
   // and the instruction used to sit past the cut. Byte-identical re-sends were the other half:
   // the model was never told this was attempt 2 or 3 (measured, PC2).

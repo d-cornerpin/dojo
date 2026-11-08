@@ -183,12 +183,7 @@ export async function runTurnTimeBudget(
       return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
 
-    // No park row and no broadcast here.
-    //
-    // T79a: this checkpoint is about to park the turn with whatever the agent had claimed
-    // still in flight. Square the tracker BEFORE queuing the continuation, so the very next
-    // turn's close-out gate (`preflight/closeout-gate.ts`) does not read "checkpointed" as
-    // "abandoned" and refuse the continuation's own tool calls.
+    // No park row and no broadcast here: the checkpoint carries the job to its continuation and notes its tasks.
     try {
       noteEngineCheckpoint(agentId, 'turn-budget');
     } catch (checkpointErr) {

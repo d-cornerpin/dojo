@@ -1,13 +1,12 @@
-// v3.5 DONE IS MEASURED, Task D1 — the two records a turn end leaves on a job's task, and the one
-// read of them. Written by the engine (`'engine'`), so neither reads as the task moving
+// The two records a turn end leaves on a job's task, the one read of them, and the per-turn count of new
+// successful calls the turn end reads as momentum. Written by the engine (`'engine'`), so neither reads as the task moving
 // (`taskMovedAtSql`), and the park that writes `continued` does not touch the task's last-moved time
 // either (`engine-checkpoint-note.ts`): a continuation is not progress, and a stall is its absence.
 //
 //   `continued` — the turn ended mid-job WITH momentum and the engine continued it
 //                 (`agent/v2/steps/post-call-classify/job-continues.ts`);
 //   `stalled`   — a turn the engine continued came back with NO momentum. Nothing is parked or
-//                 closed; the PM's check-in ladder takes the task, and its closeout-miss report
-//                 names the stall and the count (`tracker/pm-agent.ts`).
+//                 closed; the stall ladder (`work/done/ladder.ts`) takes the task from there.
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { appendWorkEvent } from './store.js';

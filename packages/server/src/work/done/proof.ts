@@ -95,6 +95,9 @@ const FINDERS: Record<Found, Finder> = {
   },
 };
 
+/** Channels that reach no person: a run's engine-found delivery must not be one of them. */
+const NO_PERSON_CHANNELS: ReadonlySet<string> = new Set(['a2a', 'none']);
+
 /** The items of these kinds the worker's own rows prove for the task, each held to `checkProof`'s rule
  *  for a finished task. */
 function found(workId: string, kinds: readonly Found[], byEngine = false): ResolvedItem[] {
@@ -102,7 +105,7 @@ function found(workId: string, kinds: readonly Found[], byEngine = false): Resol
   if (!task) return [];
   const ctx: ProofContext = { task, asker: askerOf(workId), workerId: task.worker, outcome: 'finished', byEngine };
   return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(task.openedAt)))
-    .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok ? [r.item] : []; });
+    .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok && !(byEngine && NO_PERSON_CHANNELS.has(String(r.item.facts.channel))) ? [r.item] : []; });
 }
 
 /** THE engine's finder: deliveries to the asker, files the worker wrote that were charged to this task's

@@ -8,10 +8,10 @@ vi.mock('../../../agent/runtime.js', async () => (await import('./helpers/ladder
 vi.mock('../../../tracker/pm-agent.js', async (orig) => ({ ...(await orig<object>()), armDebouncedReview: vi.fn() }));
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-import { runLadder, ladderStep } from '../ladder.js';
+import { runLadder, LADDER_ENTRY } from '../ladder.js';
 import { setHold } from '../hold.js';
 import { freshBoard, WORKER, TASK } from './helpers/decision-world.js';
-import { hintsTo, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { hintsTo, entries, resetLadderWorld, MIN } from './helpers/ladder-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 beforeEach(() => { freshBoard(); resetLadderWorld(); });
@@ -23,7 +23,8 @@ describe('a stalled task gets one hint', () => {
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER)).toHaveLength(1);
     expect(hintsTo(WORKER)[0]).toMatch(/^\[Engine hint: "Write the report" has not moved since .*hand it in with work_update\(action="hand_in"\)/);
-    expect(ladderStep(TASK, Date.now() + 2 * MIN)).toEqual({ reached: 1, due: null });
+    await runLadder(Date.now() + 2 * MIN);
+    expect(entries(TASK, LADDER_ENTRY.pm)).toBe(0);
     await runLadder(Date.now() + 7 * MIN);
     await runLadder(Date.now() + 8 * MIN);
     expect(hintsTo(WORKER)).toHaveLength(1);
@@ -34,7 +35,9 @@ describe('a stalled task gets one hint', () => {
     expect(hintsTo(WORKER)).toHaveLength(1);
     doneDb().prepare("UPDATE work_events SET created_at = created_at - 1000 WHERE work_id = ?").run(TASK);
     expect(setHold(TASK, 'blocked', 'waiting for the vendor to send the price list', WORKER).ok).toBe(true);
-    expect(ladderStep(TASK, Date.now() + 2 * MIN)).toEqual({ reached: 0, due: null });
+    await runLadder(Date.now() + 2 * MIN);
+    expect(hintsTo(WORKER)).toHaveLength(1);
+    expect(entries(TASK, LADDER_ENTRY.pm)).toBe(0);
   });
 
   it('a blocked hold is a stall, and its hint names the reason', async () => {

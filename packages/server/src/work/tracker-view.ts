@@ -184,6 +184,9 @@ export const SERVICE_ROOT_KIND = 'service';
 export const msToText = (col: string): string =>
   `CASE WHEN ${col} IS NULL THEN NULL ELSE strftime('%Y-%m-%d %H:%M:%S', ${col} / 1000, 'unixepoch') END`;
 
+/** An instant as the engine's words show it, `YYYY-MM-DD HH:MM UTC`. */
+export const msToUtcText = (ms: number): string => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+
 /** TypeScript side of the same conversion, for values crossing the boundary in code. */
 export function tsToMs(text: string | null | undefined): number | null {
   if (text == null || text === '') return null;
@@ -456,9 +459,8 @@ export const projectRowColumns = (): string => `SELECT
 // COALESCE semantics are reproduced exactly, including "keep the prior answered stamp when
 // this turn did not answer".
 
-/** The newest `activity` event for this row, by monotonic id (not by clock — two finalizes
- *  inside one millisecond are ordinary, and `work_events.id` is the sequence that survives
- *  it; same lesson as `work/poke-ladder.ts`). */
+/** The newest `activity` event for this row, by monotonic id, never by clock: two finalizes inside
+ *  one millisecond are ordinary, and `work_events.id` is the sequence that survives it. */
 const newestActivity = (a: string, field: string, where = ''): string =>
   `(SELECT ${field} FROM work_events e`
   + ` WHERE e.work_id = ${a}.id AND e.kind = '${WORK_EVENT.activity}'${where}`

@@ -436,22 +436,12 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
     id: 'ladder',
     everyMs: 30_000,
     cadenceFrom:
-      'the 30s scheduler tick the owner-escalation sweep ran on; each step\'s own clock is the worker\'s patience bound, which the ladder applies itself, so the tick is only how often it looks',
+      'the 30s scheduler tick (REAPER_BASE_TICK_MS); each step\'s own clock is the worker\'s patience bound, which the ladder applies itself, so the tick is only how often it looks',
     // It hints workers, wakes the PM and the main agent, and raises the owner's card.
     wakes: true,
     run: async () => {
       const { runLadder } = await import('./done/ladder.js');
       await runLadder();
-    },
-  },
-  {
-    id: 'answered-assign-tasks',
-    everyMs: 60_000,
-    cadenceFrom: 'the PM poke loop\'s 60s tick (POKE_INTERVAL_MS) that hosted this sweep; the rule is the reply on record, never a clock',
-    wakes: true,
-    run: async () => {
-      const { handInAnsweredAssignTasks } = await import('./done/hand-in.js');
-      handInAnsweredAssignTasks();
     },
   },
   {

@@ -288,21 +288,9 @@ export const CLOSING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:hand_in',
 ]);
 
-/**
- * Forward progress for the thrash counter.
- * Was `{tracker_update_status, tracker_complete_step, tracker_add_notes}`.
- * `work_update:close_project` is deliberately absent, exactly as
- * `tracker_close_project` was: closing a project is not evidence the agent is
- * still working the thing it is looping on.
- */
+/** Forward progress on open work: what resets the thrash counter, and what the compile gate lets through
+ *  besides the reply. Closing a project is not in it: that is not working the thing being looped on. */
 export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
-  'work_update:status',
-  'work_update:hand_in',
-  'work_note',
-]);
-
-/** The work ops that engage with open work: what the compile gate lets through besides the reply. */
-export const SATISFYING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
   'work_update:hand_in',
   'work_note',

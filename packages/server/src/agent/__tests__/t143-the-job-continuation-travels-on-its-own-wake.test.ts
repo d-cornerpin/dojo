@@ -102,7 +102,8 @@ function aWholeTurnPassedItOver(): void {
 }
 
 
-const touchedAt = (): number => (mockDb.current!.prepare("SELECT updated_at AS u FROM work WHERE id = 'task-job'").get() as { u: number }).u;
+/** The newest checkpoint note on the job's task, epoch ms (0 when none). */
+const touchedAt = (): number => (mockDb.current!.prepare("SELECT COALESCE(MAX(created_at), 0) AS u FROM work_events WHERE work_id = 'task-job' AND kind = 'audit' AND json_extract(payload, '$.reason') LIKE 'engine checkpoint:%'").get() as { u: number }).u;
 
 /** The park the engine makes at the 75-call cap: the real checkpoint writer and the real helper that
  *  arms the park's own continuation. */

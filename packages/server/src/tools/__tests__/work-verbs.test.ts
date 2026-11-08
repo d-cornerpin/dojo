@@ -33,7 +33,6 @@ import {
   isWorkReadOp,
   CLOSING_WORK_OPS,
   PROGRESS_WORK_OPS,
-  SATISFYING_WORK_OPS,
   DISARMING_WORK_OPS,
   CLOSE_OPS_WITH_TASK_ID,
 } from '../work-verbs.js';
@@ -218,13 +217,7 @@ const CANARIES: Canary[] = [
     fires: ['tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_close_project'],
     silent: [ 'tracker_get_status', 'tracker_list_active'],
   },
-  {
-    behaviour: 'B3 engaging with open work (the compile gate lets these through)',
-    where: 'agent/v2/compile-owed-gate.ts via SATISFYING_WORK_OPS',
-    test: inSet(SATISFYING_WORK_OPS),
-    fires: ['tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_close_project'],
-    silent: ['tracker_get_status', 'tracker_list_active', 'tracker_edit_task'],
-  },
+
   {
     behaviour: 'B5 multi-step floor DISARM (FN-9 / FA-T2 — the worker is tending its own work)',
     where: 'agent/v2/loop.ts via DISARMING_WORK_OPS',
@@ -370,7 +363,6 @@ describe('T8V — LIVENESS: every engine behaviour that matched a tool name stil
     const sets: Array<[string, ReadonlySet<string> | readonly string[]]> = [
       ['CLOSING_WORK_OPS', CLOSING_WORK_OPS],
       ['PROGRESS_WORK_OPS', PROGRESS_WORK_OPS],
-      ['SATISFYING_WORK_OPS', SATISFYING_WORK_OPS],
       ['DISARMING_WORK_OPS', DISARMING_WORK_OPS],
       ['CLOSE_OPS_WITH_TASK_ID', CLOSE_OPS_WITH_TASK_ID],
       ['STRUCTURING_OPS', STRUCTURING_OPS],

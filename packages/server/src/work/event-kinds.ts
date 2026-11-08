@@ -1,56 +1,8 @@
-// THE DECLARED LIST OF `work_events.kind` VALUES — the single source of truth.
-// PHASE-4 T4-SCHEMA (orchestrator ruling P4-R1).
-//
-// WHAT WAS BROKEN, and it is not "the enum needs one more value". There was no enum.
-// Migration `135_work_spine.sql:75` reads
-//
-//     kind TEXT NOT NULL,  -- 12-value enum per 19 s1c incl. 'poke','override_request','observation'
-//
-// and that comment was the whole of it: no CHECK on the column, no TypeScript union,
-// and `appendEvent(workId, kind: string, …)` — a bare `string`. Research
-// `19-rebuild-map-lifts.md:33` really does say *"work_event DDL 12-kind enum"*; `135`
-// transcribed a DESIGN DOCUMENT's enum into a SCHEMA COMMENT and nothing ever made it
-// true. The declared list and the written list had never been the same list, and no
-// mechanism existed that could notice.
-//
-// ── THE LIST BELOW IS DERIVED, NOT INHERITED (roadmap #14). Commands, at dojo dc6da8b: ──
-//
-//   11 literal kinds, over 29 call sites:
-//     git grep -ohE "append(Work)?Event\([^,]+, *'[a-z_]+'" HEAD -- packages/server/src \
-//       | grep -v __tests__ | sed -E "s/.*'([a-z_]+)'/\1/" | sort -u
-//   13 more reached through five constant objects, which are the ONLY other route:
-//     work/audit-trail.ts       AUDIT_KIND        audit
-//     work/occurrences.ts       OCCURRENCE_EVENT  occurrence_fired|released|settled
-//     work/override-requests.ts OVERRIDE_EVENT    override_request, override_resolved
-//     work/tracker-view.ts      WORK_EVENT        validation_escalated, user_verdict_requested,
-//                                                 user_verdict_cleared, revert_reset, activity
-//   = 24 writable from production code. Every one of the 29 call sites passes either a
-//   literal or one of those constants — there is no computed or variable `kind` anywhere,
-//   which is what makes narrowing the parameter possible without a single cast.
-//
-//   + `floor_ghosted` = 25. PHASE-4 T4's Step 2 writes its first row (OR2: when a floor's
-//   steer is refused twice and the agent truly ghosts, the platform records the ghost
-//   instead of speaking in the agent's voice). It is DECLARED HERE and UNWRITTEN TODAY,
-//   deliberately and with an owner, and the conformance walk asserts that set EXACTLY so
-//   the exemption cannot silently grow.
-//
-// ── AND THE HISTORY WAS SWEPT, because a stable box carries rows this build never wrote ──
-// `work_events` was born at migration `135` (commit 6f17259). Every commit from there to
-// HEAD — 178 of them — was re-enumerated with the two commands above. The writable set has
-// never differed from the 24 above: not one kind was ever added and later removed. The
-// three chain files that INSERT into this table directly (`135b`, `144`, `146`) write only
-// `poke`, `override_request`, `occurrence_settled` and `audit`, all four on the list. So an
-// off-list row on a real body cannot be a product of any version of this platform — which
-// is the fact migration `152`'s quarantine branch is sized against, and the reason that
-// branch is a safety net rather than a data transform.
-//
-// ── WHY A LIST AND NOT FIVE LISTS ──
-// The five constant objects above stay: they are what stops a WRITER and a READER
-// disagreeing by typo (`poke-ladder.ts` writes `POKE_EVENT`, `currentRung` reads it). What
-// they stop being is five independent DECLARATIONS. Each now carries
-// `satisfies WorkEventKind` / `satisfies Record<string, WorkEventKind>`, so a value that is
-// not on this list is a compile error at the constant object itself, and this file is the
-// only place a kind comes into existence.
+// THE DECLARED LIST OF `work_events.kind` VALUES: the single source of truth. Migration 152's CHECK admits
+// exactly these, and `appendEvent` takes only a `WorkEventKind`. A kind reaches a call site as a literal or
+// through a constant object bound to this list with `satisfies` (`AUDIT_KIND`, `OCCURRENCE_EVENT`,
+// `WORK_EVENT`), so a value off the list is a compile error where it is declared. Kinds nothing writes any
+// more stay while old rows carry them; the conformance test names each one.
 
 /**
  * Every value `work_events.kind` may hold. Migration `152`'s CHECK constraint carries this

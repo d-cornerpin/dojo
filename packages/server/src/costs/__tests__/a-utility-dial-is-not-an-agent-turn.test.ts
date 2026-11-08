@@ -208,7 +208,7 @@ describe('the premise: exactly one dial declares a purpose', () => {
     // a value this column can now hold must be declared here or a report meets a novel string.
     for (const member of [TURN, UTILITY, 'ollama', 'agent-sdk',
       'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
-      'vision_caption', 'page_summary', 'voice_opener', 'effort_verdict']) {
+      'vision_caption', 'page_summary', 'voice_opener']) {
       expect(block, `the request_type domain no longer declares ${member}`).toContain(member);
     }
   });

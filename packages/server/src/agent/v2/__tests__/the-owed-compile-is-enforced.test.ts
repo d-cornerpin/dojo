@@ -42,7 +42,7 @@ import {
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, recordJoinDrive,
 } from '../../../work/join-drive.js';
-import { SATISFYING_WORK_OPS, toolOpKey } from '../../../tools/work-verbs.js';
+import { PROGRESS_WORK_OPS, toolOpKey } from '../../../tools/work-verbs.js';
 import {
   COMPILE_OWED_ALLOWED_OPS, compileOwedAfterRedrive, stillCompileOwed, compileOwedGateDecision,
 } from '../compile-owed-gate.js';
@@ -183,7 +183,7 @@ describe('T47: the gate disarms the moment the join resolves, by any road', () =
 describe('T47: the allowed set is closed and named', () => {
   it('it is exactly `send_to_agent` plus the tracker calls that engage with open work', () => {
     expect([...COMPILE_OWED_ALLOWED_OPS].sort())
-      .toEqual([...new Set(['send_to_agent', ...SATISFYING_WORK_OPS])].sort());
+      .toEqual([...new Set(['send_to_agent', ...PROGRESS_WORK_OPS])].sort());
   });
 
   it('S5\'S OWN CALLS ARE REFUSED', () => {

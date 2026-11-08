@@ -1,145 +1,34 @@
-// T79a (SLOW-INFERENCE PLAN) — AN ENGINE CHECKPOINT SQUARES THE TRACKER IT INTERRUPTS.
-//
-// THE DEFECT (owner transcript, 12:16–12:35 and 5:52–6:20). Two engine mechanisms PARK a
-// turn mid-work and queue a self-wake continuation, on purpose, as the correct response to a
-// turn that has run long on a slow local model: the 15-minute turn-time budget
-// (`agent/v2/steps/pre-call-gates/turn-budget.ts`) and the 75-tool-loop cap
-// (`agent/v2/loop.ts`). Neither ever touched the tracker. So the very next turn,
-// `agent/v2/steps/preflight/closeout-gate.ts`'s dangler queries — which key on
-// `work.updated_at` going stale (`CLOSE_OUT_IDLE_MINUTES = 10` for a claimed task; 30 minutes
-// for the stranded on_deck family) — read "checkpointed ten minutes ago" as "abandoned ten
-// minutes ago". The gate ARMS, REFUSES every non-tracker tool call the continuation makes,
-// and a slow model re-pays a whole inference round for work it never stopped doing.
-//
-// THE FIX is one call at each checkpoint site, made just before it schedules its own
-// self-continuation: for the task(s) the parked job is serving, record that the checkpoint fired
-// and touch `updated_at`. (Until t143 round 2 this was EVERY dangler of the agent — see below.)
-//
-// THE TWO QUERIES BELOW ARE THE GATE'S OWN TWO DANGLER PREDICATES
-// (`closeout-gate.ts` ~63-103), copied in SHAPE — table, join, state, `is_paused`, schedule
-// and project clauses all verbatim — with ONE deliberate subtraction: the wall-clock
-// staleness clause each carries (`w.updated_at < ?` / `t.updated_at < ?`). The gate's
-// question is "has this gone stale"; the checkpoint's question is "is this interrupted", and
-// every one of the agent's in-flight claimed tasks is interrupted the instant the turn parks
-// — not only the ones that happen to have already crossed the gate's own staleness line. A
-// fresh `updated_at` on a task the agent touched thirty seconds ago is a no-op the gate would
-// have accepted anyway, so dropping the clause costs nothing and closes the race where a
-// second task goes stale one tick after the first was checked.
-//
-// TOUCHING `updated_at` IS HONEST, not a workaround: the task IS being worked, by the very
-// turn that is about to continue on a fresh wakeup. It is precisely what disarms both the
-// gate's staleness predicate and the PM's idle clock — the same signal every ordinary tracker
-// tool call already sends when the model is fast enough to make one before the checkpoint
-// fires.
-//
-// THE WIDE-LOOP RISK THIS CREATES — "the engine now keeps its own claim alive forever, even
-// on a task nobody is really advancing" — is real and deliberately OUT OF SCOPE here. It is
-// exactly what T79c/T79d (this same plan) exist to catch. The two mechanisms are
-// COMPLEMENTARY: this task stops an honestly in-flight task from being read as an abandoned
-// one; T79c/T79d stop a checkpoint from being used to keep a genuinely stuck task alive
-// indefinitely.
-//
-// THE INSERT PATH is the tree's existing one for this exact shape of record —
-// `tracker/task-log.ts`'s `writeTaskLog`, which seven engine-authored call sites already use
-// with `entryKind: 'observation'` / `fromEntity: 'engine'` (`thrash-gate.ts`,
-// `finalize-record.ts`, `counterparty.ts`, `agent/spawner.ts`, `agent/tools/cat/agents.ts`).
-// It resolves to a real `work_events` row of the declared kind `'audit'`
-// (`work/audit-trail.ts`'s `AUDIT_KIND`) carrying `entry_kind: 'observation'` in its payload —
-// NOT a bare `kind='observation'` column value, which `work/event-kinds.ts`'s declared list
-// deliberately does not carry (`work-event-kinds-conformance.test.ts` pins `'observation'` as
-// a refused near-miss). Using the existing seam means no new event kind, no migration, and no
-// second insert idiom for the same fact.
-
+// AN ENGINE CHECKPOINT (the turn-time budget, the tool-loop cap, a job that continues) parks a turn and
+// queues its continuation. It carries the job's work to that continuation and notes the park on each of the
+// job's open tasks; it never touches a task's movement, so a job that stops moving still reads as stalled.
 import { getDb } from '../db/connection.js';
 import { writeTaskLog } from '../tracker/task-log.js';
-import { taskScope } from './tracker-view.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
 import { servedOwnerMessageIds } from '../memory/served-ask.js';
-import { heldExpr } from './done/hold.js';
 
-/** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
- *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
+/** Why the checkpoint fired: one member per checkpoint site. */
 export type EngineCheckpointReason = 'turn-budget' | 'tool-loop' | 'job-continues';
 
 const REASON_TEXT: Record<EngineCheckpointReason, string> = {
   'turn-budget': 'the 15-minute turn-time budget parked this turn for a fresh continuation',
   'tool-loop': 'the 75-tool-call loop cap parked this turn for a fresh continuation',
-  // v3.5 D1 (`post-call-classify/job-continues.ts`): the turn ended mid-job and was making progress.
   'job-continues': 'the turn ended mid-job while making progress; the engine parked it for a fresh continuation',
 };
 
-// t143 ROUND 2 (orchestrator ruling) — A PARK TOUCHES ONLY THE JOB'S OWN WORK.
-// This used to touch EVERY claimed task of the agent (and every stranded step of its projects)
-// at every park. With no total cap that kept a genuinely abandoned second task fresh for a whole
-// long job, so neither the close-out gate nor the PM ever saw it (t137 review M3). A task's
-// freshness may only be refreshed by activity that structurally NAMES it: here, the work the
-// parked turn's trigger names — the owner's ask that opened it (`source_message_id`), the A2A
-// thread that assigned it, the engine event that served it, a task born in this turn, and steps
-// of a project so named. A continuation fires with an empty trigger, so the checkpoint CARRIES
-// that set to the one continuation it queues (the next turn of this agent, and only if that turn
-// has no trigger of its own). The T79a guarantee — the job's own task is never read as abandoned
-// across a park — is kept, now for exactly that task.
-
-/**
- * Call immediately before an engine-forced checkpoint schedules its self-continuation.
- *
- * Touches the job's own in-flight work — an in_progress (claimed) task this turn serves, and a
- * stranded on_deck step of a project it serves (the close-out gate's two dangler families) — and
- * carries the job's work to the continuation. Returns the number of tasks touched.
- */
+/** Call just before a checkpoint queues its continuation: the work the turn served (and `jobTaskIds`) is
+ *  carried to it, and each of this agent's tasks among them still open gets one note. Returns the number noted. */
 export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason, jobTaskIds: string[] = []): number {
-  const db = getDb();
-  const now = Date.now();
-  const tied = [...new Set([...turnWorkIds(agentId), ...jobTaskIds])];   // v3.5 D1: a job-continues park names the task whose progress it measured
-  carryJobWork(agentId, tied, servedOwnerMessageIds(agentId));   // t145: the job's own ask rides the same record
+  const tied = [...new Set([...turnWorkIds(agentId), ...jobTaskIds])];
+  carryJobWork(agentId, tied, servedOwnerMessageIds(agentId));
   if (tied.length === 0) return 0;
-  const ids = tied.map(() => '?').join(', ');
-
-  // The gate's in_progress dangler family, limited to the job's own tasks.
-  const inProgress = db.prepare(`
-    SELECT w.id AS id FROM work w
-    WHERE ${taskScope('w')} AND w.agent_id = ?
-      AND w.state = 'claimed'
-      AND w.is_paused = 0 AND NOT ${heldExpr('w')}
-      AND w.id IN (${ids})
-  `).all(agentId, ...tied) as Array<{ id: string }>;
-
-  // The gate's stranded on_deck family, limited to the job's own steps.
-  const stranded = db.prepare(`
-    SELECT t.id AS id FROM work t
-    INNER JOIN work p ON p.id = t.parent_id
-    WHERE ${taskScope('t')} AND t.agent_id = ?
-      AND t.state = 'open'
-      AND t.is_paused = 0 AND NOT ${heldExpr('t')}
-      AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
-      AND t.schedule_status != 'waiting'
-      AND p.requester_id = ?
-      AND p.state = 'open'
-      AND t.id IN (${ids})
-      AND NOT EXISTS (
-        SELECT 1 FROM work sib
-        WHERE sib.parent_id = p.id AND sib.kind = 'task' AND sib.state = 'claimed'
-      )
-  `).all(agentId, now, agentId, ...tied) as Array<{ id: string }>;
-
-  // Disjoint by construction (`state = 'claimed'` vs `state = 'open'`), so no id can be
-  // double-counted or double-touched.
-  const targets = [...inProgress, ...stranded];
-  const touch = db.prepare('UPDATE work SET updated_at = ? WHERE id = ?');
-  // v3.5 D1 (fix round 1): a job-continues park is NOT movement. Only real progress moves a task, so the
-  // PM's ladder (`taskMovedAtSql`) still sees a job that stops moving; the carry above keeps it off the gate.
-  const moves = reason !== 'job-continues';
-  for (const { id } of targets) {
+  const open = getDb().prepare(
+    `SELECT id FROM work WHERE agent_id = ? AND id IN (${tied.map(() => '?').join(', ')}) AND state IN ('open', 'claimed', 'sent_back')`,
+  ).all(agentId, ...tied) as Array<{ id: string }>;
+  for (const { id } of open) {
     writeTaskLog({
-      taskId: id,
-      fromEntity: 'engine',
-      entryKind: 'observation',
-      reason: `engine checkpoint: ${reason}`,
-      actionTaken: REASON_TEXT[reason],
-      note: 'turn parked for a continuation; this task is still in flight, not abandoned.',
+      taskId: id, fromEntity: 'engine', entryKind: 'observation', reason: `engine checkpoint: ${reason}`,
+      actionTaken: REASON_TEXT[reason], note: 'turn parked for a continuation; this task is still in flight, not abandoned.',
     });
-    if (moves) touch.run(now, id);
   }
-
-  return targets.length;
+  return open.length;
 }

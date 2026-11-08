@@ -10,14 +10,14 @@ import { workerOf, workersOf } from './record.js';
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 
 /** How many PM reviews with no verdict past the hand-in hand the decision on. */
-export const PM_ASKS_BEFORE_ESCALATION = 2;
+const PM_ASKS_BEFORE_ESCALATION = 2;
 /** How many send-backs on one task bring in the next decider. */
 export const SEND_BACKS_BEFORE_ESCALATION = 3;
 /** The trail entry a PM review that gave no verdict on a waiting hand-in leaves on it. */
 export const REVIEW_MISS_ENTRY = 'review_miss';
 
 /** The PM's reviews of this row since its newest hand-in that gave no verdict. */
-export function pmMissesSinceHandIn(workId: string): number {
+function pmMissesSinceHandIn(workId: string): number {
   return (getDb().prepare(
     `SELECT COUNT(*) AS n FROM work_events e
       WHERE e.work_id = ? AND e.kind = '${AUDIT_KIND}' AND json_extract(e.payload, '$.entry_kind') = '${REVIEW_MISS_ENTRY}'

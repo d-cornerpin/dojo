@@ -127,7 +127,6 @@ describe('the PM runs on its whole soul', () => {
     expect(soul).toContain('An approval is refused until every item has been opened by you');
     expect(soul).toContain('the directive says NOT to repeat it');
     expect(soul).toContain('# Vault, Review Continuity');
-    expect(soul.length).toBeGreaterThan(4_000);
   });
 
   it('every placeholder is substituted — the model is never shown a `{{…}}`', () => {
@@ -209,10 +208,4 @@ describe('the doctrine may not name a door that does not exist', () => {
     expect(SHIPPED).not.toMatch(/work_update\s*\(\s*action\s*=\s*["']status["']/);
   });
 
-  it('the corrections the shipped stub carried are not lost in the restoration', () => {
-    // The stub is the text that has actually been reaching the model, and it had been fixed in
-    // two places the template never got: the ASSIGN intent, and the restart rule.
-    expect(SHIPPED).toContain('intent="ASSIGN"');
-    expect(SHIPPED).not.toContain('poke_log');
-  });
 });

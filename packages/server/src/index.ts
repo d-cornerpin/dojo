@@ -696,9 +696,7 @@ async function main(): Promise<void> {
 
   // 4c1. SWEEP CORE-2 item 3 (SWEEP-F T2) — THE SCHEDULER'S OWN CLOCK.
   //
-  // This used to be installed by `startPokeLoop()` inside 4c above, which meant the platform's
-  // answer to "when does a schedule fire" was a side effect of the PROJECT MANAGER starting.
-  // The clock is the scheduler's now and starts on its own terms.
+  // The scheduler's clock starts on its own terms, never with the project manager.
   //
   // The gate is `isSetupCompleted()`: before OOBE finishes there is no owner, no
   // primary agent to fire toward, and no schedules to fire.

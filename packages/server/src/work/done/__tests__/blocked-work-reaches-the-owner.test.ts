@@ -20,10 +20,11 @@ import { doneDb } from './helpers/done-db.js';
 
 const REASON = 'waiting for the landlord to send the signed lease';
 const stallCards = (): typeof cards => cards.filter((c) => c.cardKey === `stall:${TASK}`);
-/** The ladder's own entries and the hold, moved back in time so its bounds have passed. */
+/** The ladder's own entries, the hold and the ladder's first run, moved back in time so its bounds have passed. */
 const backdate = (ms: number): void => {
   doneDb().prepare('UPDATE work_events SET created_at = created_at - ? WHERE work_id = ?').run(ms, TASK);
   doneDb().prepare('UPDATE work SET updated_at = updated_at - ? WHERE id = ?').run(ms, TASK);
+  doneDb().prepare("UPDATE _migrations SET applied_at = datetime(applied_at, ?) WHERE name LIKE '901%'").run(`-${ms / 1000} seconds`);
 };
 
 beforeEach(() => { freshBoard(); resetLadderWorld(); expect(setHold(TASK, 'blocked', REASON, WORKER).ok).toBe(true); });

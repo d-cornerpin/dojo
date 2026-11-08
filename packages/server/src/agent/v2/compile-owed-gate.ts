@@ -10,20 +10,12 @@
 // owner sat waiting on content the platform already held.
 //
 // The owner's doctrine for round 12 is STRUCTURE OVER PERSUASION: where the engine asks the
-// model to behave, make the right outcome mechanical instead. The forcing pattern already
-// existed and already worked — `steps/preflight/closeout-gate.ts` refuses non-tracker tool
-// calls until a tracker call lands, and it bit fourteen seconds after it armed. This is that
-// pattern, pointed at the one duty the redrive ladder has already come back for.
+// model to behave, make the right outcome mechanical instead: this gate refuses every call outside
+// a closed set while the one duty the redrive ladder has already come back for is owed.
 //
-// ── THE CONSTRAINT INHERITED VERBATIM, AND IT IS THE LOAD-BEARING ONE ──
-// BUG-2, from the close-out gate's own header: THE GATE IS NEVER ARMED ON A TURN A HUMAN IS
-// WAITING ON. Armed on a conversation turn that gate "(a) DELETED the agent's just-streamed
-// reply and (b) REFUSED the tool calls the agent needed to answer". The arming half of that
-// separation lives at this gate's own section (`steps/preflight/compile-gate.ts`, the same
-// `triggerRow ? [] : …` ternary), and the invariant test that drives it is the close-out
-// gate's own, extended (`agent/v2/__tests__/integration.test.ts`). It costs this gate nothing:
-// the redrive steers arrive on engine-wake and A2A turns (S5: turns 4900/4901 kind `a2a`, 4902
-// kind engine), which is the same lane class where the close-out gate arms legally.
+// ── THE LOAD-BEARING CONSTRAINT ──
+// BUG-2: THE GATE IS NEVER ARMED ON A TURN A HUMAN IS WAITING ON (the `triggerRow ? [] : …` ternary
+// in `steps/preflight/compile-gate.ts`, driven in `agent/v2/__tests__/integration.test.ts`).
 //
 // ── WHY THE MODULE, RATHER THAN A FEW LINES IN THE STEPS ──
 // `stale-work-ids.ts`'s shape, for `stale-work-ids.ts`'s reason: a gate whose decision is
@@ -33,34 +25,18 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../../db/connection.js';
-import { SATISFYING_WORK_OPS } from '../../tools/work-verbs.js';
+import { PROGRESS_WORK_OPS } from '../../tools/work-verbs.js';
 import { AUDIT_KIND } from '../../work/audit-trail.js';
 import { JOIN_DRIVE_ENTRY } from '../../work/join-drive.js';
 
 /**
- * THE ALLOWED SET, CLOSED AND NAMED — and it is a UNION, deliberately.
- *
- *   * the tracker calls that SATISFY the close-out gate. This is the collision the task
- *     required argued, and the union is the whole answer: a turn armed by BOTH gates must
- *     always have a legal move. The close-out gate demands a tracker call FIRST, in its own
- *     text; if this gate refused those, a turn armed by both would have nothing it could
- *     legally call and the model's only escape would be silence — the failure BUG-2 is about,
- *     arrived at from the other side. Because every member here is also in the close-out
- *     gate's allowlist, one tracker close-out satisfies that gate and passes this one, and the
- *     owed compile is then discharged by TEXT, which no gate blocks.
- *   * `send_to_agent`, because the redrive steer itself names exactly one exception to its own
- *     no-tools rule (T43b: "If a piece reads as a hand-off … send ONE send_to_agent message to
- *     the agent it names asking them for the result directly"). A gate that refused the one
- *     call its own steer instructs would be the engine contradicting itself at the decision
- *     moment.
- *
- * DELIBERATELY NOT HERE, and this is the point of the whole task: `load_tool_docs` and the
- * tracker READS (`work_update:get`/`:list`/`:edit`), which the close-out gate's broader
- * allowlist does permit. Reading a tool's schema is not composing the owner's reply, and
- * `load_tool_docs` is literally the first call S5's model made instead of composing.
+ * THE ALLOWED SET, CLOSED AND NAMED: the work ops that move open work (`PROGRESS_WORK_OPS`), and
+ * `send_to_agent`, the one exception the redrive steer itself names (asking the agent a piece came from
+ * for its result). Reading a tool's schema or the tracker is not composing the owner's reply, so
+ * `load_tool_docs` and the tracker reads are refused.
  */
 export const COMPILE_OWED_ALLOWED_OPS: ReadonlySet<string> = new Set<string>([
-  ...SATISFYING_WORK_OPS,
+  ...PROGRESS_WORK_OPS,
   'send_to_agent',
 ]);
 
@@ -105,9 +81,8 @@ export function compileOwedAfterRedrive(agentId: string): string[] {
  * relay that could not move the row but cleared the flag (`clearJoinCompilePending`). None of
  * them has to know this gate exists.
  *
- * It also drops a row that VANISHED underneath the turn, which is PHASE-6 T0D's finding at the
- * close-out gate stated once more: a gate that refuses the agent's live tool calls on the
- * strength of a row that no longer exists is a trap, not an enforcement.
+ * It also drops a row that VANISHED underneath the turn: a gate that refuses the agent's live tool
+ * calls on the strength of a row that no longer exists is a trap, not an enforcement.
  */
 export function stillCompileOwed(ids: readonly string[]): string[] {
   if (ids.length === 0) return [];
@@ -118,7 +93,7 @@ export function stillCompileOwed(ids: readonly string[]): string[] {
        AND state NOT IN ('done','failed','abandoned')
   `).all(...ids) as Array<{ id: string }>).map((r) => r.id));
   // Driven from the CALLER's list so the order is the caller's, the same discipline
-  // `splitDanglers` states for itself.
+  // the record states for itself.
   return ids.filter((id) => live.has(id));
 }
 
@@ -143,7 +118,7 @@ export interface CompileOwedGateDecision {
  * The three cheap conditions are tested first and in this order — nothing armed, the duty
  * already discharged this turn, the call is in the allowed set — so a turn with no owed
  * compile asks the database nothing. Only the branch that was about to refuse pays a query.
- * That is `closeOutGateDecision`'s shape and it is copied on purpose: two gates that answer
+ * Two gates that answer
  * "may this call run?" should not have two different ideas of when to consult the spine.
  *
  * ── T68b — THE FOURTH CONDITION: THE GATE MAY NOT ASSERT WHAT IT HAS NOT VERIFIED. ──────

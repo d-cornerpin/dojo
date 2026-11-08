@@ -24,6 +24,7 @@ import { proofDelivery } from './proof.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
 import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
+import { endStallCard } from '../../healer/owner-notices.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
 export interface DecideInput {
@@ -98,7 +99,7 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
       claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
     });
   });
-  if (moved.kind === 'applied') onDecided(id, decisionId);
+  if (moved.kind === 'applied') { onDecided(id, decisionId); endStallCard(id); }
   return moved;
 }
 

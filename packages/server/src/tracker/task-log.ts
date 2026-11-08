@@ -38,7 +38,6 @@ export type TaskLogEntryKind =
   | 'evidence'
   | 'directive'
   | 'auto_sweep'
-  | 'smell_flag'
   | 'user_verdict_request'
   | 'user_verdict_applied'
   | 'legacy_note'

@@ -348,7 +348,6 @@ const REVIEWED_RAW_WRITERS: Record<string, string> = {
   'work/ask-remediation.ts': 'stamps result_delivery_id (a delivery row id).',
   'work/ask-settlement.ts': 'stamps result_delivery_id (a delivery row id).',
   'work/deliverable-declaration.ts': 'sets task_kind (an enum).',
-  'work/engine-checkpoint-note.ts': 'touches updated_at.',
 };
 
 describe('§3 every production file that writes `work` with raw SQL has a verdict', () => {
