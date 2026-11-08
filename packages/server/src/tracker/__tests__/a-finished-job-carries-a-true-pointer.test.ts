@@ -90,17 +90,23 @@ describe('the close receipt is a message to the asker made during the task', () 
     expect(proofDelivery(taskId)).toBeNull();
   });
 
-  it('THE S4 SHAPE: "On it, I\'ve handed Squarespace to a helper" from the turn that opened the task is NOT picked; the later rundown is', () => {
+  it('THE S4 SHAPE: the delegating turn\'s lone "On it, I\'ve handed Squarespace to a helper" is NOT the answer once the ask settles on the rundown', () => {
+    mockDb.current!.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at)
+       VALUES ('msg-owner-s4', ?, 'user', 'compare squarespace and wordpress', 'owner', ?, ?)`,
+    ).run(AGENT, CONV, Date.now());
+    openAsk({ agentId: AGENT, messageId: 'msg-owner-s4', conversationId: CONV, requesterId: 'owner', openedAt: Date.now(), title: 'compare' });
+    const askId = askIdForMessage('msg-owner-s4');
+    claimAsk(askId, AGENT);
     seedTurn(4552);
-    const taskId = seedTask('task-s4-open');
-    mockDb.current!.prepare('UPDATE work SET origin_turn = 4552 WHERE id = ?').run(taskId);
+    const taskId = seedTask('task-s4-open', { sourceMessageId: 'msg-owner-s4' });
     seedMessage('msg-ack-s4', "On it, I've handed Squarespace to one helper and WordPress to another to dig into.", 4552);
     seedDelivery('a133f5e2', { turn: 4552, messageId: 'msg-ack-s4' });
-    seedTurn(4553);
-    expect(proofDelivery(taskId)).toBeNull();
     seedTurn(4555);
     seedMessage('msg-rundown-s4', 'Squarespace is $276/yr all-in; WordPress needs separate hosting.', 4555);
     seedDelivery('8eb0439d', { turn: 4555, messageId: 'msg-rundown-s4', offsetSeconds: 10 });
+    mockDb.current!.prepare(`UPDATE work SET result_delivery_id = '8eb0439d' WHERE id = ?`).run(askId);
+    expect(proofFor(taskId).map((i) => i.ref)).toEqual(['8eb0439d']);
     expect(proofDelivery(taskId)).toBe('8eb0439d');
   });
 

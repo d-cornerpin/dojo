@@ -9,7 +9,6 @@ import { ENGINE_SENT_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlemen
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
 import { deliveredToAsker, writtenByAsker, type Asker } from './asker.js';
 import { fileFacts } from './file-facts.js';
-import { currentTurnNumber } from '../../agent/v2/turn-record.js';
 
 export type HandInOutcome = 'finished' | 'cant_be_done';
 export type ProofKind = 'file' | 'delivery' | 'command' | 'receipt' | 'measure' | 'remainder' | 'failure' | 'withdrawal';
@@ -20,9 +19,9 @@ export interface ProofItemInput { kind: ProofKind; ref: string; facts?: { reason
 /** A proof item as the engine resolved it: what it found at the reference. */
 export interface ResolvedItem { kind: ProofKind; ref: string; label: string; facts: Facts }
 
-/** `originTurn`: the turn that opened the task. `askReceipt`: the delivery the ask settlement recorded
- *  for the message the task exists for (the engine's own reading of which line answered it). */
-export interface ProofTask { id: string; title: string | null; openedAt: number; originTurn: number | null; askReceipt: string | null }
+/** `ask`: the ask the task exists for, when it has one, with the delivery its settlement recorded (the
+ *  engine's own reading of which line answered it). */
+export interface ProofTask { id: string; title: string | null; openedAt: number; ask: { receipt: string | null } | null }
 export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome }
 export type Resolution = { ok: true; item: ResolvedItem } | { ok: false; why: string };
 
@@ -101,7 +100,7 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
     outcome: string; created_at: string; text: string | null } | undefined;
   if (!d) return '';
   if (d.outcome !== 'delivered') return `was not delivered (its outcome is ${d.outcome})`;
-  if (ENGINE_SENT_TOOLS.has(d.tool) || d.tool.endsWith('-door') || d.origin_intent === START_ACK_ORIGIN_INTENT) {
+  if (isEngineTool(d.tool) || d.origin_intent === START_ACK_ORIGIN_INTENT) {
     return "is the engine's own line or acknowledgement, not the worker's message";
   }
   if ((NON_ANSWERING_DISPLAY_KINDS as readonly string[]).includes(d.display_kind ?? '')) return 'is a tool chip or working note, not a message';
@@ -111,14 +110,31 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
   if (d.channel === 'a2a' && !handsOverWork(intentOf(d.detail) ?? intentOf(d.text))) return 'does not hand over the work (its intent is not an answer or a deliverable)';
   if (d.text === null) return 'carries no text on record, so it shows no work';
   if (claim(ctx, d.text)) return 'is only a status claim, which is never proof';
-  // Once the turn that opened the task is over, a line from it is the task's start line ("On it, I've
-  // handed it to a helper"), unless the ask settlement recorded that very line as the answer.
-  if (ctx.task.originTurn !== null && d.turn_number === ctx.task.originTurn && ref !== ctx.task.askReceipt
-    && currentTurnNumber(ctx.workerId) > ctx.task.originTurn) {
-    return 'is a line from the turn that opened the task, not its answer';
-  }
+  if (startLineOfItsTurn(ctx, ref, d)) return 'is the start line of its turn, not the answer';
   return { channel: d.channel, recipient: d.recipient_display ?? d.recipient_id ?? 'the owner', at: d.created_at,
     message: d.message_id ?? '', excerpt: excerpt(d.text) };
+}
+
+const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || tool.endsWith('-door');
+
+/** Is this delivery the start line of its turn: the worker's first delivery in that turn, followed by
+ *  another in the same turn, or, once the turn has ended, a lone line the task's ask settled on some
+ *  other line? Keyed to the delivery's own turn record, never to what the worker does afterwards. */
+function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null }): boolean {
+  if (d.turn_number === null) return false;
+  const db = getDb();
+  // The worker's own lines only: never the engine's, never a tool chip or working note.
+  const lines = (db.prepare(
+    `SELECT d.id, d.tool FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id
+      WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
+        AND (m.display_kind IS NULL OR m.display_kind NOT IN (${NON_ANSWERING_DISPLAY_KINDS.map(() => '?').join(', ')}))
+      ORDER BY d.created_at, d.rowid`,
+  ).all(d.agent_id, d.turn_number, ...NON_ANSWERING_DISPLAY_KINDS) as Array<{ id: string; tool: string }>)
+    .filter((r) => !isEngineTool(r.tool)).map((r) => r.id);
+  if (lines[0] !== ref) return false;
+  if (lines.length > 1) return true;
+  const ended = db.prepare('SELECT ended_at FROM turns WHERE agent_id = ? AND turn_number = ?').get(d.agent_id, d.turn_number) as { ended_at: string | null } | undefined;
+  return !!ended?.ended_at && !!ctx.task.ask?.receipt && ref !== ctx.task.ask.receipt;
 }
 
 /** The exit status an exec audit row records: 0, the code, or the reason it stopped. */

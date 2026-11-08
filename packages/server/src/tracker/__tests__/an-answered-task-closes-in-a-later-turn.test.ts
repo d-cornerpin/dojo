@@ -198,6 +198,27 @@ describe('an ack never closes a task; a text line is the worker\'s to file on, f
     expect(view).not.toContain('CLOSE if done');
   });
 
+  it('SAME TURN: opened, acked and closed in one turn, the ack is not proof and the close is refused for nothing on record', () => {
+    const askId = seedOwnerAsk('msg-ask-one');
+    stampClaimingTurn(askId, ASK_TURN);
+    const steps = seedSteps('msg-ask-one');
+    line('d-ack-one', "On it, I've handed the folder work to a helper.", ASK_TURN);
+    markAck('d-ack-one');   // the engine classified it as the turn's start line
+    const out = trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE });
+    expect(out).toMatch(/No completion for this task has reached the owner yet/);
+    expect(closeRequest(steps[0])).toBeUndefined();
+  });
+
+  it('SAME TURN: an unmarked ack followed by the answer in that turn: the answer is the receipt, never the ack', () => {
+    const askId = seedOwnerAsk('msg-ask-two');
+    stampClaimingTurn(askId, ASK_TURN);
+    const steps = seedSteps('msg-ask-two');
+    line('d-ack-two', "On it, I've opened the steps.", ASK_TURN);
+    line('d-ans-two', 'Made the folder; hello.txt is in it and ls lists it.', ASK_TURN);
+    expect(trackerCompleteStep(AGENT, { task_id: steps[0], ...CLOSE })).toMatch(/^\[FILED\]/);
+    expect(closeRequest(steps[0])?.result_delivery_id).toBe('d-ans-two');
+  });
+
   it('THE PROBE (R1): ack, then a PROGRESS line the ask settles on; the worker\'s close FILES for the PM and does not close by itself', () => {
     const askId = seedOwnerAsk('msg-ask-pr');
     stampClaimingTurn(askId, ASK_TURN);

@@ -153,8 +153,10 @@ describe('a PM verdict that carries a reason is applied, never refused', () => {
   const PM = 'pm';   // the platform's default PM id (`config/platform.ts:getPMAgentId`)
   beforeEach(() => { db().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'PM', 'idle', 'sensei')").run(PM); });
   const fileClose = (): void => {
+    db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES ('m-unread-1', ?, 'owner', 'assistant', 'All 12 labelled messages are cleared.', ?, ?)`)
+      .run(AGENT, Date.now(), Date.now());
     db().prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES ('d-unread-1', ?, NULL, 'dashboard', 'dashboard', 'delivered', datetime('now'))`,
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES ('d-unread-1', ?, NULL, 'dashboard', 'dashboard', 'm-unread-1', 'delivered', datetime('now'))`,
     ).run(AGENT);
     appendWorkEvent(TASK, 'validation_requested', AGENT, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: 'd-unread-1' });
   };

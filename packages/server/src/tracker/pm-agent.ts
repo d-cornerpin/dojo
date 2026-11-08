@@ -1,7 +1,7 @@
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, reviewLedgerRoomTokens, validationMeasureLines } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
-import { engineProof, proofDelivery, proofFor, proofLines } from '../work/done/proof.js';
+import { engineProof, proofDelivery, proofFor, proofLines, type ResolvedItem } from '../work/done/proof.js';
 import { keepProofShownFor, noteProofShown } from './looked-at.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
@@ -65,14 +65,16 @@ import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './e
 import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 
-/** The proof on record for a task (`proofFor`), as an indented list under `head`, or '' when there is none.
- *  What it lists is recorded as shown to the PM (`noteProofShown`): this text is only ever sent to the PM. */
-function proofBlock(taskId: string, head: string): string {
-  const proof = proofFor(taskId);
-  noteProofShown(taskId, proof.map((i) => i.ref));
+/** Proof items as an indented list under `head`, or '' when there are none. */
+function proofBlock(proof: readonly ResolvedItem[], head: string): string {
   const lines = proofLines(proof);
   return lines.length > 0 ? `${head}\n${lines.map((l) => `    - ${l}`).join('\n')}\n` : '';
 }
+
+/** After a request carrying these items reached the PM, record them as shown (`noteProofShown`). */
+const markShown = (shown: ReadonlyMap<string, readonly ResolvedItem[]>): void => {
+  for (const [taskId, proof] of shown) noteProofShown(taskId, proof.map((i) => i.ref));
+};
 
 const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
 
@@ -93,9 +95,9 @@ function ownerWordsLines(taskId: string): string {
 /** The PM's UNVALIDATED_COMPLETE request: the record the close is judged on, never a lean toward either verdict. */
 export function unvalidatedCompleteText(taskId: string, p: {
   title: string; agentName: string; goal: string | null; result: string | null; priority: string; revertCount: number;
-  headExtras: string; evidenceBlock: string; ledgerRoomTokens?: number;
+  headExtras: string; evidenceBlock: string; ledgerRoomTokens?: number; proof?: readonly ResolvedItem[];
 }): string {
-  const proof = proofBlock(taskId, '  Proof on record (the engine resolved each item):')
+  const proof = proofBlock(p.proof ?? proofFor(taskId), '  Proof on record (the engine resolved each item):')
     || '  Proof on record: none (no file, message to the asker, confirmed receipt or measure at 0).\n';
   return `UNVALIDATED_COMPLETE: "${p.title}" (${taskId.slice(0, 8)}) closed by ${p.agentName}, awaiting your validation.${p.headExtras}\n`
     + `  Goal: ${p.goal ?? '(no goal recorded, pre-migration row)'}\n`
@@ -631,7 +633,8 @@ export async function escalateCloseoutMissToPM(ctx: {
   const sourceLabel = ctx.source === 'idle-hardcap' ? 'idle-with-in_progress hardcap' : 'pre-turn close-out gate';
 
   const threadId = uuidv4();
-  const proofOnRecord = rows.map((r) => proofBlock(r.id, `  ${r.id.slice(0, 8)}:`)).join('');
+  const shownProof = new Map(rows.map((r) => [r.id, proofFor(r.id)] as const));
+  const proofOnRecord = rows.map((r) => proofBlock(shownProof.get(r.id) ?? [], `  ${r.id.slice(0, 8)}:`)).join('');
   try {
     const { writeTaskLog } = await import('./task-log.js');
     for (const r of rows) {
@@ -696,6 +699,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     // t109 C: A DROP IS A RETURN, NOT A THROW, so the `.catch` below never saw one and this
     // record claimed a hand-off nobody received (`b67cd244` is the template; the reachable
     // reasons and the clause are argued in `an-escalation-nobody-received-says-so.test.ts`).
+    if (res.delivered) markShown(shownProof);
     if (!res.delivered) {
       logger.warn('Closeout-miss escalation to the PM was NOT delivered', {
         pmId, agentId: ctx.agentId, taskCount: rows.length, source: ctx.source,
@@ -2031,6 +2035,7 @@ async function runPMReview(): Promise<void> {
       .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
   keepProofShownFor(new Set(unvalidatedCompleteRows.map((r) => r.id)));
+  const reviewProof = new Map<string, readonly ResolvedItem[]>();
   for (const cTask of unvalidatedCompleteRows) {
     // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
     // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/
@@ -2124,10 +2129,13 @@ async function runPMReview(): Promise<void> {
     // Not shown to the model — it is the ordering fact, and prose about it would only invite
     // the validator to treat a stubborn row as suspect. Logged instead, below.
     void cTask.attempts_recorded;
+    const proof = proofFor(cTask.id);
+    reviewProof.set(cTask.id, proof);
     issues.push({
       stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
       owes: 'uphold the close or reject it naming what is missing',
       text: unvalidatedCompleteText(cTask.id, {
+        proof,
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
         headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}`,
         ledgerRoomTokens: reviewLedgerRoomTokens(pmBudgetTokens, unvalidatedCompleteRows.length),
@@ -2348,6 +2356,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     id: msgId, agentId: pmId, content: situationReport,
     sourceAgentId: null, originIntent: 'pm_review', work: null,
   });
+  markShown(reviewProof);   // the report is in the PM's own record now
 
   broadcast({
     type: 'chat:message',

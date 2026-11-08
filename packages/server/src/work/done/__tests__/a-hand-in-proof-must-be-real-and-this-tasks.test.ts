@@ -367,24 +367,31 @@ describe('a hand-in proof must be real and this task\'s', () => {
     ]);
   });
 
-  it('once the turn that opened the task is over, its line is the start line, never the answer, unless the ask settled on it', () => {
-    doneDb().prepare('UPDATE work SET origin_turn = 7 WHERE id = ?').run(TASK);
-    delivery('d-ack', { text: "On it, I've handed the report to a helper to write up." });
-    doneDb().prepare("UPDATE deliveries SET turn_number = 7 WHERE id = 'd-ack'").run();
-    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered) VALUES (?, 7, 'user', 0)").run(WORKER);
-    expect(finished([{ kind: 'delivery', ref: 'd-ack' }]).ok, 'a close in that same turn reads its own line').toBe(true);
-    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered) VALUES (?, 9, 'user', 0)").run(WORKER);
-    expect(refusal(finished([{ kind: 'delivery', ref: 'd-ack' }]))).toMatch(/turn that opened the task, not its answer/);
-    delivery('d-later', { text: 'The report: 12 sections, totals on page 3.' });
-    doneDb().prepare("UPDATE deliveries SET turn_number = 9 WHERE id = 'd-later'").run();
-    expect(finished([{ kind: 'delivery', ref: 'd-later' }]).ok).toBe(true);
+  it('the start line of a turn is never the answer: followed by a later line in that turn, or a lone line the ask settled elsewhere', () => {
+    const turn = (n: number, ended: boolean): void => {
+      doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered, ended_at, exit_reason) VALUES (?, ?, 'user', 0, ?, ?)")
+        .run(WORKER, n, ended ? sqlTime(Date.now()) : null, ended ? 'answered' : null);
+    };
+    const inTurn = (id: string, n: number, text: string, offsetMs: number): void => {
+      delivery(id, { text, at: Date.now() + offsetMs });
+      doneDb().prepare('UPDATE deliveries SET turn_number = ? WHERE id = ?').run(n, id);
+    };
+    turn(7, false);
+    inTurn('d-ack', 7, "On it, I've handed the report to a helper to write up.", 0);
+    inTurn('d-answer', 7, 'The report: 12 sections, totals on page 3.', 1000);
+    expect(refusal(finished([{ kind: 'delivery', ref: 'd-ack' }]))).toMatch(/start line of its turn/);
+    expect(finished([{ kind: 'delivery', ref: 'd-answer' }]).ok, 'the answer counts in the same turn').toBe(true);
+    // A lone line in an ended turn: the ask settled on another line, so it was the start line.
+    turn(8, true);
+    inTurn('d-lone', 8, "On it, I've handed the report to a helper.", 2000);
+    expect(finished([{ kind: 'delivery', ref: 'd-lone' }]).ok, 'no ask: a lone line is just a line').toBe(true);
     message('m-src', { role: 'user', content: 'Write up the report?', at: openedAt - 1000 });
     doneDb().prepare("UPDATE work SET source_message_id = 'm-src' WHERE id = ?").run(TASK);
     doneDb().prepare(
       `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, result_delivery_id, opened_at, closed_at, updated_at)
-       VALUES ('ask:m-src', 'ask', ?, 'owner', 'conv', 'm-src', 'done', 'answer', 1, 0, 'd-ack', ?, ?, ?)`,
+       VALUES ('ask:m-src', 'ask', ?, 'owner', 'conv', 'm-src', 'done', 'answer', 1, 0, 'd-answer', ?, ?, ?)`,
     ).run(WORKER, openedAt, openedAt, openedAt);
-    expect(finished([{ kind: 'delivery', ref: 'd-ack' }]).ok).toBe(true);
+    expect(refusal(finished([{ kind: 'delivery', ref: 'd-lone' }]))).toMatch(/start line of its turn/);
   });
 
   it('refuses a delivery with no text on record (unknown never counts)', () => {

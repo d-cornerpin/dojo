@@ -37,6 +37,7 @@ import { openTrackerProject, openTrackerTask, setTrackerStatus, upholdClaim, thr
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { unvalidatedCompleteText } from '../pm-agent.js';
 import { noteProofShown } from '../looked-at.js';
+import { proofFor } from '../../work/done/proof.js';
 import { listTaskLog } from '../task-log.js';
 
 const WORKER = 'worker-agent';
@@ -214,10 +215,15 @@ function seedDelivery(id: string, text = 'Done, please validate.'): string {
   ).run(id, WORKER, `dm-${id}`);
   return id;
 }
-/** The PM's review request for the row: what it prints is what the PM was shown. */
-const review = (t: string): string => unvalidatedCompleteText(t, {
-  title: 't', agentName: 'w', goal: null, result: null, priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '',
-});
+/** The PM's review request for the row, delivered: what it printed is what the PM was shown. */
+function review(t: string): string {
+  const proof = proofFor(t);
+  const text = unvalidatedCompleteText(t, {
+    title: 't', agentName: 'w', goal: null, result: null, priority: 'normal', revertCount: 0, headExtras: '', evidenceBlock: '', proof,
+  });
+  noteProofShown(t, proof.map((i) => i.ref));
+  return text;
+}
 /** The PM's own door: `work_validate(action="validate", kind="complete")`, as the model calls it. */
 async function validate(t: string, valid: boolean, extra: Record<string, unknown> = {}): Promise<{ content: string; isError: boolean }> {
   const out = await trackerHandlers['work_validate:validate']({
@@ -255,6 +261,14 @@ describe('an uphold that nothing on record backs is refused at the PM\'s door', 
       + 'or measure at 0 is on record, no remainder was named, and the asker\'s own later words are not recorded. '
       + 'There is nothing to open that shows the work was done.');
     expect(r.content).not.toMatch(/valid=true|approve|uphold it|or else|will be/i);   // facts, never coaching or a threat
+    expect(upheld(t)).toBe(0);
+  });
+
+  it('with nothing on record the uphold is refused outside a live PM turn too (fail closed)', async () => {
+    const t = newTask();
+    fileClose(t, undefined, seedDelivery('deliv-noturn'));
+    endTurnContext(PM);
+    expect((await validate(t, true)).content).toMatch(/^Refused: nothing on record shows this work/);
     expect(upheld(t)).toBe(0);
   });
 

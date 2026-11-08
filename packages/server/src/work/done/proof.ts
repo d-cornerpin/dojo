@@ -22,12 +22,13 @@ const CANT_BE_DONE_KINDS: ReadonlySet<ProofKind> = new Set(['failure', 'remainde
 /** The task as the rules read it, with the agent working it; null when there is no such row. */
 function taskOf(workId: string): (ProofTask & { worker: string }) | null {
   const w = getDb().prepare(
-    `SELECT w.id, w.title, w.opened_at, w.agent_id, w.origin_turn,
-            (SELECT a.result_delivery_id FROM work a WHERE a.kind = 'ask'
-              AND a.id = 'ask:' || COALESCE(w.source_message_id, p.source_message_id)) AS ask_receipt
-       FROM work w LEFT JOIN work p ON p.id = w.parent_id WHERE w.id = ?`,
-  ).get(workId) as { id: string; title: string | null; opened_at: number; agent_id: string; origin_turn: number | null; ask_receipt: string | null } | undefined;
-  return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id, originTurn: w.origin_turn, askReceipt: w.ask_receipt } : null;
+    `SELECT w.id, w.title, w.opened_at, w.agent_id,
+            a.id AS ask_id, a.result_delivery_id AS ask_receipt
+       FROM work w LEFT JOIN work p ON p.id = w.parent_id
+       LEFT JOIN work a ON a.kind = 'ask' AND a.id = 'ask:' || COALESCE(w.source_message_id, p.source_message_id)
+      WHERE w.id = ?`,
+  ).get(workId) as { id: string; title: string | null; opened_at: number; agent_id: string; ask_id: string | null; ask_receipt: string | null } | undefined;
+  return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id, ask: w.ask_id ? { receipt: w.ask_receipt } : null } : null;
 }
 
 /** Does this resolved item show the attempt failed (for a "can't be done")? */

@@ -91,7 +91,7 @@ function applySchema(db: Database.Database): void {
       detail TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE IF NOT EXISTS turns (agent_id TEXT NOT NULL, turn_number INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS turns (agent_id TEXT NOT NULL, turn_number INTEGER NOT NULL, ended_at TEXT);
     CREATE TABLE IF NOT EXISTS turn_artifacts (id TEXT PRIMARY KEY, agent_id TEXT, turn_number INTEGER, kind TEXT);
     CREATE TABLE IF NOT EXISTS messages (
       seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL,
