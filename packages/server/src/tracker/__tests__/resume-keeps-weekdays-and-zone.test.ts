@@ -103,7 +103,7 @@ describe('work_schedule(action="resume") keeps specific_days for a task that has
     process.env.TZ = PINNED;
     // A Monday two weeks in the past (Oct 12 is Mon, 06:00 PDT), already fired twice.
     seedTrackerTask(mockDb.current!, {
-      id: 'task-mw', agentId: AGENT, title: 'mon-wed brief', status: 'paused',
+      id: 'task-mw', agentId: AGENT, title: 'mon-wed brief', status: 'on_deck',
       scheduled_start: Date.parse('2026-10-12T13:00:00.000Z'),
       repeat_interval: 1, repeat_unit: 'specific_days', repeat_end_type: 'never',
       repeat_days_of_week: '1,3',
@@ -134,7 +134,7 @@ describe('work_schedule(action="resume") keeps specific_days for a task that nev
     // A Tuesday start (Oct 6 is Tue, 06:00 PDT): never fired, so the first run
     // must land on the next allowed day, not fire on the disallowed Tuesday.
     seedTrackerTask(mockDb.current!, {
-      id: 'task-never', agentId: AGENT, title: 'never-fired', status: 'paused',
+      id: 'task-never', agentId: AGENT, title: 'never-fired', status: 'on_deck',
       scheduled_start: Date.parse('2026-10-06T13:00:00.000Z'),
       repeat_interval: 1, repeat_unit: 'specific_days', repeat_end_type: 'never',
       repeat_days_of_week: '1,3',
@@ -159,7 +159,7 @@ describe('work_schedule(action="resume") — days control', () => {
   it('a paused daily schedule that has run resumes to a future next run', async () => {
     process.env.TZ = PINNED;
     seedTrackerTask(mockDb.current!, {
-      id: 'task-days', agentId: AGENT, title: 'daily brief', status: 'paused',
+      id: 'task-days', agentId: AGENT, title: 'daily brief', status: 'on_deck',
       scheduled_start: Date.parse('2026-10-14T09:15:00.000Z'),
       repeat_interval: 1, repeat_unit: 'days', repeat_end_type: 'never',
       anchor_local: '2026-10-14T09:15:00.000Z',
@@ -184,13 +184,13 @@ describe('work_schedule(action="resume") keeps the declared timezone', () => {
       // A Monday anchor at 06:00 PDT (Oct 5), already fired twice; the walk from
       // it crosses the Nov 1 DST fall-back, so the resolved zone decides the hour.
       seedTrackerTask(mockDb.current!, {
-        id: `task-wk-${zone}`, agentId: AGENT, title: 'weekly brief', status: 'paused',
+        id: `task-wk-${zone}`, agentId: AGENT, title: 'weekly brief', status: 'on_deck',
         scheduled_start: Date.parse('2026-10-05T13:00:00.000Z'),
         repeat_interval: 1, repeat_unit: 'weeks', repeat_end_type: 'never',
         anchor_local: '2026-10-05T13:00:00.000Z',
         tz: 'America/Los_Angeles',
         attempts: 3, last_run_at: Date.parse('2026-10-21T13:00:00.000Z'),
-        is_paused: 1, schedule_status: 'paused',
+        is_paused: 1, schedule_status: 'on_deck',
       });
       const res = await resume(`task-wk-${zone}`);
       expect(res.isError, res.content).toBe(false);

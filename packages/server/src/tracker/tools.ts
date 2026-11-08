@@ -20,10 +20,10 @@ import { engineProofLine } from '../work/done/proof.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { createLogger } from '../logger.js';
 import { createProject, getProject, createTask, getTask, listTasks, listProjects, updateTask, updateProject, resolveTaskId, resolveProjectId, formatResolveError, setTaskStatus, setTaskStatusResult, broadcastTaskSettled } from './schema.js';
-import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
+import { ensurePMAgentRunning } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification } from './notify.js';
-import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
+import { writeTaskLog, listTaskLog } from './task-log.js';
 import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import { planOfProject } from '../work/plan-store.js';
 import { applyMeasureToTask, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
@@ -42,6 +42,7 @@ import { taskWriteRefusal } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
+import { setHold, clearHold, holdOf } from '../work/done/hold.js';
 
 const logger = createLogger('tracker-tools');
 
@@ -246,7 +247,7 @@ function findRecentNearDuplicateProject(
     const createdMs = new Date(engineAuto.created_at.includes('Z') ? engineAuto.created_at : engineAuto.created_at + 'Z').getTime();
     const firstOpen = db.prepare(`
       SELECT w.id AS id, w.title AS title FROM work w
-      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'on_deck')
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'open')
       ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
       LIMIT 1
     `).get(engineAuto.id) as { id: string; title: string } | undefined;
@@ -289,7 +290,7 @@ function findRecentNearDuplicateProject(
       const createdMs = new Date(row.created_at.includes('Z') ? row.created_at : row.created_at + 'Z').getTime();
       const firstOpen = db.prepare(`
         SELECT w.id AS id, w.title AS title FROM work w
-        WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'on_deck')
+        WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'open')
         ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
         LIMIT 1
       `).get(row.id) as { id: string; title: string } | undefined;
@@ -590,7 +591,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         WHERE ${taskScope('w')} AND w.requester_id = ?
           AND LOWER(w.title) = LOWER(?)
           AND COALESCE(w.assignee_agent, '') = COALESCE(?, '')
-          AND w.state IN ('on_deck', 'claimed', 'paused', 'blocked')
+          AND w.state IN ('open', 'claimed')
           AND w.opened_at >= ?
         ORDER BY w.opened_at DESC
         LIMIT 1
@@ -609,7 +610,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         const recent = db.prepare(`
           SELECT w.id AS id, w.title AS title, substr(w.id, 1, 8) as id8 FROM work w
           WHERE ${taskScope('w')} AND w.requester_id = ?
-            AND w.state IN ('on_deck', 'claimed', 'paused', 'blocked')
+            AND w.state IN ('open', 'claimed')
             AND w.opened_at >= ?
           ORDER BY w.opened_at DESC
           LIMIT 20
@@ -1000,7 +1001,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // The prior status, for the task_log transition entry below (the row has moved once it is written).
     const db = getDb();
     const taskRow = db.prepare(`SELECT title, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; prior_status: string } | undefined;
-    const priorStatus = taskRow?.prior_status ?? null;
+    const priorStatus = holdOf(taskId)?.kind ?? taskRow?.prior_status ?? null;
 
     // v2.10.1, idempotency check. When the agent calls
     // work_update(action="status") with a status that the task is already at,
@@ -1074,58 +1075,22 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
     }
 
-    // Pass resume_at through for timed pauses
-    const resumeAt = args.resume_at as string | undefined;
-    if (status === 'paused' && resumeAt) {
-      updates.pausedUntil = resumeAt;
-    }
-
-    // PM is the overseer. Its proactive transitions skip the worker-targeted
-    // hard gates below. The audit trail still logs from_entity='pm', and
-    // the validate_*/override tools are the structured PM paths.
     const callerIsPM = isPMAgent(agentId);
 
-    // ── Pause-reason engine pre-check (v2.7.18) ──
-    // Pausing without a real wait condition was the most common gaming
-    // pattern: agents marked tasks paused just to silence PM pokes. The
-    // engine refuses empty/short notes here; PM validates the SUBSTANCE of
-    // the reason on its next tick (see pause_validated column + the
-    // work_validate(action="validate") tool).
-    if (status === 'paused' && !callerIsPM) {
-      const pauseNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
-      const MIN_PAUSE_NOTES_LEN = 15;
-      if (pauseNotes.length < MIN_PAUSE_NOTES_LEN) {
-        return (
-          `Error: paused tasks require a clear reason in \`notes\` (minimum ${MIN_PAUSE_NOTES_LEN} characters). ` +
-          `\`notes\` must name the specific external trigger you're waiting on - for example: ` +
-          `"waiting for user to reboot ESP board", "waiting for vendor to send tracking number". ` +
-          `If you're stuck and don't know what to do, that's NOT a paused condition - use \`status="blocked"\` ` +
-          `with the real reason so the user knows. If you're just done with the task, hand it in with \`work_update(action="hand_in")\`. ` +
-          `Pausing without a real reason will be reverted by the PM agent on its next tick.`
-        );
+    // Paused and blocked are holds: the task stays Working and still finishes by a hand-in.
+    const hold = status === 'paused' || status === 'blocked' ? status : null;
+    const holdReason = typeof args.notes === 'string' ? args.notes.trim() : '';
+    const resumeAt = hold === 'paused' && typeof args.resume_at === 'string' ? tsToMs(args.resume_at) : null;
+    if (hold) {
+      if (holdReason.length < 15 && !callerIsPM) {
+        return `Error: status="${hold}" requires a clear reason in \`notes\` (minimum 15 characters): `
+          + (hold === 'paused' ? 'name what you are waiting for (e.g. "waiting for the vendor to send the tracking number").'
+            : 'name the obstacle (e.g. "need API key for service X").');
       }
-      // Anti-gaming sniff: catch phrases that signal the agent is hiding
-      // from PM rather than waiting on a real condition. PM still gets the
-      // final say, but we may as well refuse the obvious cases at the door.
-      const lower = pauseNotes.toLowerCase();
-      const gamingSignals = ['pm keeps', 'pm is', 'silence pm', 'stop the pm', 'nagging', 'stop poking', 'stop the poke'];
-      const matched = gamingSignals.find(s => lower.includes(s));
-      if (matched) {
-        return (
-          `Error: this pause reason ("${pauseNotes.slice(0, 100)}") reads as an attempt to silence the PM, not a real wait condition. ` +
-          `If you're stuck, use \`status="blocked"\` with the real reason. ` +
-          `If you actually have a user-facing question, ask the person you are talking to first then re-pause with a concrete "waiting for X" reason.`
-        );
-      }
-    }
-
-    if (status === 'blocked' && !callerIsPM) {
-      const blockedNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
-      if (blockedNotes.length < 15) {
-        return 'Error: status="blocked" requires a clear reason in `notes` (minimum 15 characters). '
-          + 'Name the specific obstacle (e.g. "need API key for service X", "external service Y is returning 500s"). '
-          + 'If you are paused waiting for the user to do something, use status="paused" with notes naming the wait condition instead.';
-      }
+      const held = setHold(taskId, hold, holdReason || hold, agentId, resumeAt);
+      if (!held.ok) return `Refused: ${taskId} was not put on hold (${held.why}).`;
+    } else if (status) {
+      clearHold(taskId, agentId);
     }
 
     // PHASE-2 T8b: the column half and the STATE half are two calls now, because they are
@@ -1138,14 +1103,18 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       ? updateTask(taskId, columnUpdates)
       : getTask(taskId);
 
+    if (hold) {
+      if (task && !priority) broadcast({ type: 'tracker:task_updated', data: task });
+      linkLaterInstruction(agentId, taskId);
+      return `[OK] task_id=${taskId} | status=in_progress, ${hold}: ${holdReason}\n\n`
+        + `Task held: ${taskRow?.title ?? taskId}. It is still yours: hand it in when it is finished or cannot be done.`
+        + (resumeAt ? `\nAuto-resumes: ${formatTimeForAgent(resumeAt)}` : '');
+    }
+
     if (statusUpdate) {
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
         reason: `work_update(action="status") -> ${String(statusUpdate)}`,
-        pausedUntilMs: updates.pausedUntil !== undefined ? tsToMs(updates.pausedUntil as string | null) : undefined,
-        // The tool path is the one that stops the schedule with the status (updateTask's
-        // own rule); the engine's ball-is-with-the-owner pause deliberately does not.
-        syncSchedulePause: true,
         userQuote: typeof args.user_quote === 'string' ? args.user_quote : null,
       });
       if (!workSettled(sr.result)) {
@@ -1179,9 +1148,6 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           toStatus: status,
           actionTaken: 'work_update(action="status")',
         });
-        // Event-driven PM wake: buffer + 10s debounce, then runPMReview.
-        // Smell detector also fires inside noteTransitionForReview.
-        noteTransitionForReview(taskId, status);
       }
       const persistNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
       if (persistNotes.length > 0) {
@@ -1202,11 +1168,6 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     ];
     if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
     parts.push(`Priority: ${task.priority}`);
-    if (task.status === 'paused' && task.pausedUntil) {
-      parts.push(`Auto-resumes: ${formatTimeForAgent(task.pausedUntil)} (will restore to "${task.statusBeforePause ?? 'on_deck'}")`);
-    } else if (task.status === 'paused') {
-      parts.push('Paused indefinitely, must be resumed manually.');
-    }
 
     linkLaterInstruction(agentId, taskId);
     return parts.join('\n');
@@ -1666,7 +1627,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
 // had said the opposite for a day: event 24599, `entry_kind='reject'`, complete → blocked,
 // "No summary file was ever delivered …". The agent ACTED on that rejection when it landed;
 // what failed is every LATER turn, because neither surface it reads carried the ruling or the
-// pause reason — `list` renders Blocked/Paused rows title-only and `get` renders a State line
+// hold reason: `list` rendered held rows title-only and `get` renders a State line
 // with no adjudication at all. With no surface saying otherwise, stale self-narration was the
 // only account of the row on offer.
 //
@@ -1684,18 +1645,11 @@ function recordedClause(text: string | null | undefined, max: number): string | 
   return flat.length > max ? `${flat.slice(0, max).trimEnd()}...` : flat;
 }
 
-/** (a) The one clause a Blocked/Paused board row carries: the newest thing anyone WROTE about
- *  it. `getRecentObservations` is the EXISTING reader for that set of kinds (observation /
- *  directive / reject / legacy_note) — no new query, no new vocabulary, no new event. Spine
- *  `transition` reasons are deliberately outside that set: on an agent-moved row the reason is
- *  this tool's own echo of the call that moved it (`work_update(action="status") -> paused`),
- *  which tells a later turn nothing the row does not already say in its status. */
+/** (a) Why a held row is held: the hold's own reason. */
 function recordedStopReason(taskId: string): string | null {
-  for (const e of getRecentObservations(taskId, 5)) {
-    const clause = recordedClause(e.note ?? e.reason, 140);
-    if (clause) return `      ^ recorded reason: ${clause}`;
-  }
-  return null;
+  const hold = holdOf(taskId);
+  const clause = recordedClause(hold?.reason, 140);
+  return hold && clause ? `      ^ ${hold.kind}: ${clause}` : null;
 }
 
 /** (b) The newest decision, shown while it is a send-back: the worker reads why its hand-in came back. */
@@ -1737,6 +1691,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           parts.push(`Project: ${proj?.title ?? task.projectId}`);
         }
         if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
+        if (task.hold) parts.push(`${task.hold === 'paused' ? 'Paused' : 'Blocked'}: ${task.holdReason ?? ''}`);
         // The origin chain, in the agent's own view (2026-07-22 owner ruling:
         // the point of the identity work is that the AGENT can discern where a
         // task came from and connect it to its conversation and prompt).
@@ -1936,8 +1891,8 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         }
       } else {
         const taskFilter = filterAssignedTo ? { assignedTo: filterAssignedTo } : undefined;
-        const inProgress = listTasks({ status: 'in_progress', ...taskFilter });
-        const pending = listTasks({ status: 'on_deck', ...taskFilter });
+        const inProgress = listTasks({ status: 'in_progress', ...taskFilter }).filter((t) => !t.hold);
+        const pending = listTasks({ status: 'on_deck', ...taskFilter }).filter((t) => !t.hold);
         const blocked = listTasks({ status: 'blocked', ...taskFilter });
 
         if (inProgress.length > 0) {
@@ -2356,18 +2311,6 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
 // leave tasks stranded forever in on_deck or have to loop calling
 // work_update(action="status") one task at a time.
 
-// ── trackerValidatePause (v2.7.18) ──
-//
-// PM-only tool. For each paused task with pause_validated=0, PM judges
-// whether the pause is a real wait condition or gaming.
-//
-// On valid=true: pause_validated=1; task stays paused; PM stops surfacing
-// the task as an UNVALIDATED_PAUSE issue.
-//
-// On valid=false: task is reverted to in_progress, the assigned agent
-// gets a directive via send_to_agent explaining why their pause was
-// rejected and what to do instead.
-
 const REDRIVE_LATER = ' The directive could not be delivered just now (it is logged); the task is back in play and the PM sweep re-drives it on its schedule.';
 
 // ── trackerRetask ──
@@ -2425,7 +2368,7 @@ export async function trackerRetask(
     return `Error: target_status="${targetStatus}" is not allowed for retask. Use 'in_progress' (default) or 'on_deck'.`;
   }
 
-  // Through `transition()` so is_paused / pause fields reset with the state.
+  // Through `transition()`, which lifts any hold with the move.
   const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
     by: 'pm', actorId: pmAgentId,
     reason: `PM retask: ${directive.slice(0, 200)}`,
@@ -2499,16 +2442,15 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
       `Refused: work_schedule(action="pause") is for recurring/scheduled tasks only, "${task.title}" has no schedule. ` +
       `For a one-shot task: if the work is done, or cannot be done, hand it in: work_update(action="hand_in", task_id="${task.id}", outcome, proof, note). ` +
       `If you're stuck, call work_update(action="status", ..., status="blocked", notes="why"). ` +
-      `Pausing a one-shot task without a resume_at strands it: it sits in the Paused column, can\'t be completed without unpausing, and the PM stops watching it.`
+      `A one-shot task waiting on someone is put on hold instead: work_update(action="status", status="paused", notes="what you are waiting for").`
     );
   }
 
-  noteUnsettled(setTrackerStatus(taskId, 'paused', { by: 'agent', actorId: agentId, reason: 'schedule paused by the assigned agent' }), 'schedule paused by the assigned agent', { taskId });
   noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused' }), 'trackerPauseSchedule: schedule paused', { taskId });
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
   logger.info('Schedule paused', { taskId }, agentId);
-  return `Schedule paused for "${task.title}". Status set to "paused", stale detection and PM monitoring will ignore it until resumed.`;
+  return `Schedule paused for "${task.title}". It does not fire until it is resumed.`;
 }
 
 // ── trackerResumeSchedule ──
@@ -2548,7 +2490,6 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const nextRun = calculateNextRun(scheduledTask);
   // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
   // engine fallback for a pause the missed-runs detector set.
-  noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'schedule resumed; waiting for the next run' }), 'schedule resumed', { taskId });
   noteUnsettled(setNextRun(taskId, {
     at: tsToMs(nextRun),
     alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
@@ -2619,7 +2560,6 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
       // End conditions reached or anchor unset, leave paused.
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
-    noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'missed runs skipped; back on the schedule' }), 'missed runs skipped', { taskId });
     noteUnsettled(setNextRun(taskId, {
       at: tsToMs(nextRun),
       alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
@@ -2634,7 +2574,6 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   // that run completes, onTaskRunComplete will compute the natural
   // next anchor and the task resumes its normal cadence.
   const nowIso = new Date().toISOString();
-  noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'catch-up run requested; back on the schedule now' }), 'catch-up run requested', { taskId });
   // ⚠ ONE OF THE TWO INSTANTS IN THE PRODUCT THAT DOES NOT COME FROM `calculateNextRun`, and
   // it is declared as such in `work/next-run.ts`: the owner asked for ONE catch-up run, so the
   // fire time is NOW by request rather than by cadence. `onTaskRunComplete` recomputes the

@@ -1,6 +1,7 @@
 // v3.5 PLAN BEFORE PROJECT, Task B1 — the step of the plan an agent is on rides its task board every
 // turn, from the records alone, so the plan survives a compaction. Through the REAL board builder on
 // the real migration chain.
+import { setHold } from '../../work/done/hold.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -89,7 +90,7 @@ describe('the current step of the plan rides the task board', () => {
 
   it('a waiting (blocked) task prints no plan line', async () => {
     const ids = planned(PLAN);
-    setTrackerStatus(ids[0], 'blocked', { by: 'agent', actorId: AGENT, reason: 'the mailbox sign-in expired' });
+    setHold(ids[0], 'blocked', 'the mailbox sign-in expired', AGENT);
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(lineOf(block, 'Count')).not.toContain('Plan step');
     expect(lineOf(block, 'Verify')).toContain('Plan step 3 of 3');

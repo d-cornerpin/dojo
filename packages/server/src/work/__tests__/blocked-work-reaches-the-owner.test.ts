@@ -64,6 +64,7 @@ vi.mock('../../agent/runtime.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { transition } from '../store.js';
+import { setHold } from '../done/hold.js';
 import { validatedExpr, taskScope } from '../tracker-view.js';
 import { upholdClaim } from '../tracker-store.js';
 import {
@@ -128,11 +129,7 @@ const OBSTACLE = 'the sensor vendor API returns 500 on every write and support h
 
 function seedBlocked(id: string): void {
   seedWork(id);
-  const r = transition(id, {
-    to: 'blocked', by: 'agent', actorId: ASSIGNEE,
-    reason: 'work_update(action="status") -> blocked', note: OBSTACLE,
-  });
-  expect(r.kind).toBe('applied');
+  expect(setHold(id, 'blocked', OBSTACLE, ASSIGNEE).ok).toBe(true);
   age(id);
 }
 
@@ -293,7 +290,7 @@ describe('§2 an unrelated sentence does not count as telling the owner', () => 
 
   beforeEach(() => {
     // The row, and the ask it exists to satisfy (T11's edge).
-    seedWork('t-sweep', { state: 'blocked', source_message_id: 'msg-about-this-row' });
+    seedWork('t-sweep', { hold_kind: 'blocked', hold_reason: OBSTACLE, source_message_id: 'msg-about-this-row' });
     age('t-sweep');
   });
 
@@ -440,7 +437,7 @@ describe('§4 healthy progressing work NEVER escalates', () => {
   });
 
   it('a blocked row that is NOT yet stale is not a candidate — the clock still decides WHEN', () => {
-    seedWork('t-fresh', { state: 'blocked', updated_at: NOW - 1_000 });
+    seedWork('t-fresh', { hold_kind: 'blocked', hold_reason: OBSTACLE, updated_at: NOW - 1_000 });
     expect(candidates()).not.toContain('t-fresh');
   });
 
@@ -610,7 +607,6 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
     agentName: FX.n4,
     steers: 2,
     failures: 0,
-    blockedValidated: false,
     obstacle: null as string | null,
   };
 
@@ -638,15 +634,9 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
     expect(line).toContain('blocked');
   });
 
-  it('the validator\'s verdict is three-valued and never collapsed', () => {
-    expect(ownerEscalationAlertLine({ ...base, blockedValidated: true }))
-      .toContain('confirmed the block is real');
-    expect(ownerEscalationAlertLine({ ...base, blockedValidated: false }))
-      .toContain('has not been able to confirm');
-    // THE MUTANT THIS FORBIDS: the pre-t124 line said "your PM cannot confirm it"
-    // unconditionally, which fix 1 turns into a lie for the upheld case.
-    expect(ownerEscalationAlertLine({ ...base, blockedValidated: true }))
-      .not.toContain('cannot confirm');
+  it('a block needs no verdict, so the line says nothing about the PM confirming it', () => {
+    expect(ownerEscalationAlertLine(base)).not.toMatch(/PM/);
+    expect(ownerEscalationAlertLine({ ...base, status: 'handed_in' })).toContain('Your PM cannot confirm it.');
   });
 
   it('quotes the agent\'s own obstacle, and omits the clause when there is none', () => {
@@ -850,10 +840,7 @@ describe('§7 a slow model gets more room than a fast one before the owner is to
     // A blocked row is late at the SWEEP's bound; its assignee's model speed is irrelevant to
     // that question, and holding it would re-open the void this lane closed.
     seedWork('t-blocked-slow', { agent_id: SLOW });
-    const r = transition('t-blocked-slow', {
-      to: 'blocked', by: 'agent', actorId: SLOW, reason: 'r', note: OBSTACLE,
-    });
-    expect(r.kind).toBe('applied');
+    expect(setHold('t-blocked-slow', 'blocked', OBSTACLE, SLOW).ok).toBe(true);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(T, 't-blocked-slow');
 
     const row = candidateRow('t-blocked-slow');

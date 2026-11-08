@@ -352,13 +352,11 @@ describe('seed 3 — filter:"overdue" answers the reconciled definition', () => 
       id: 'ovd-06', agentId: AGENT, title: 'unscheduled', status: 'on_deck',
       schedule_status: 'unscheduled', is_paused: 0, next_run_at: null,
     });
-    // THE DIVERGENCE ROW: is_paused=1 while schedule_status is still 'waiting'
-    // (`work/tracker-store.ts` syncSchedulePause writes the flag without the
-    // status). runner.ts excludes it via is_paused; pm-agent excludes it via its
-    // own active-status filter. Both agree — through different mechanisms — and
-    // the filter must agree too, which is why the base carries BOTH clauses.
+    // THE DIVERGENCE ROW: is_paused=1 while schedule_status is still 'waiting'. runner.ts and
+    // pm-agent both exclude it by the flag, and the filter must agree, which is why the base
+    // carries BOTH clauses.
     seedTrackerTask(db, {
-      id: 'ovd-07', agentId: AGENT, title: 'statepaused-schedwaiting', status: 'paused',
+      id: 'ovd-07', agentId: AGENT, title: 'statepaused-schedwaiting', status: 'on_deck',
       schedule_status: 'waiting', is_paused: 1, next_run_at: NOW - 200 * MIN,
     });
   }
@@ -422,7 +420,7 @@ describe('seed 3 — filter:"overdue" answers the reconciled definition', () => 
       const iv = intervalMs(r.repeat_unit as string | null, r.repeat_interval as number | null);
       if (isBase && iv && (r.run_count as number) > 0 && late > iv * 1.5) meaningA.add(id);
       if (nr <= NOW && r.schedule_status === 'waiting'
-          && late > 5 * MIN && r.state !== 'paused') meaningB.add(id);
+          && late > 5 * MIN && r.is_paused === 0) meaningB.add(id);
     }
     // Neither live site selects a row the base does not. That containment IS the
     // reconciliation: the thresholds belong to the ACTIONS, not to the word.

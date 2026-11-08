@@ -75,7 +75,7 @@ export const VERSION_GAP_REPORT_KEY = 'version_gap_reconcile_last';
 
 /**
  * SHAPE (d): a task dangling in a live state on an assignee that no longer exists.
- * `state IN ('claimed','on_deck','paused')` is the tracker's `in_progress`/`on_deck`/`paused`;
+ * `state IN ('claimed','open')` is the tracker's `in_progress`/`on_deck`;
  * the assignee's dormancy is `agents.status = 'terminated'`, the tree's own predicate.
  *
  * ── ⚠ t129 — THE JOIN KEY IS PART OF THE DEFINITION NOW, AND IT HAD TO BECOME SO ──
@@ -112,7 +112,7 @@ export const ORPHANED_TASK_JOIN = (t = 't', a = 'a'): string =>
   `JOIN agents ${a} ON ${a}.id = ${t}.assignee_agent`;
 
 export const ORPHANED_TASK_WHERE = (t = 't', a = 'a'): string =>
-  `${taskScope(t)} AND ${t}.state IN ('claimed', 'on_deck', 'paused')`
+  `${taskScope(t)} AND ${t}.state IN ('claimed', 'open')`
   + ` AND ${t}.assignee_agent IS NOT NULL AND ${a}.status = 'terminated'`;
 
 /**
@@ -206,7 +206,7 @@ export function scanVersionGap(): ReconcileScan {
       WHERE ${projectScope('p')} AND p.state IN ('done', 'failed', 'abandoned')
         AND EXISTS (
           SELECT 1 FROM work t
-          WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state IN ('claimed', 'on_deck')
+          WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state IN ('claimed', 'open')
         )`,
   ).all() as Row[]).map((r) => r.id));
 

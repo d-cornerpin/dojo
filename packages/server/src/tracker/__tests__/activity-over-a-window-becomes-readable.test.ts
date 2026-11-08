@@ -163,9 +163,9 @@ describe('T60 RED — the door the S4 turn needed did not exist', () => {
       openedAt: base, closedAt: base + 1000 });
     // The three the list door shows, opened yesterday and still open.
     const yesterday = localMidnightMs() - 3_600_000;
-    seedWork({ id: 'open-1', kind: 'task', state: 'on_deck', title: 'Reminder: dentist', openedAt: yesterday });
-    seedWork({ id: 'open-2', kind: 'task', state: 'on_deck', title: 'Reminder: meds', openedAt: yesterday });
-    seedWork({ id: 'open-3', kind: 'task', state: 'paused', title: 'Reorganize project notes', openedAt: yesterday });
+    seedWork({ id: 'open-1', kind: 'task', state: 'open', title: 'Reminder: dentist', openedAt: yesterday });
+    seedWork({ id: 'open-2', kind: 'task', state: 'open', title: 'Reminder: meds', openedAt: yesterday });
+    seedWork({ id: 'open-3', kind: 'task', state: 'claimed', title: 'Reorganize project notes', openedAt: yesterday });
 
     const activity = trackerActivity(AGENT, {});
     expect(activity).toMatch(/Opened \(57\)/);

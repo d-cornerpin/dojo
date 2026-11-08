@@ -44,7 +44,7 @@ const SEED_OVERRIDES: Record<string, Record<string, unknown>> = {
   // `ended_at` and `exit_reason` must be both set or both null.
   turns: { ended_at: '2026-01-01 00:00:00' },
   // A terminal `state` needs `closed_at`, a live one must not have it.
-  work: { state: 'on_deck', closed_at: null },
+  work: { state: 'open', closed_at: null },
 };
 
 /** `col IN ('first', ...)` / `col IN (1, ...)` from the CREATE statement: the first member. */

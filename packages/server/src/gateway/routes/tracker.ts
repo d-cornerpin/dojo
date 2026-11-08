@@ -12,6 +12,7 @@ import { VERSION_GAP_REPORT_KEY } from '../../tracker/version-gap-reconcile.js';
 import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { decide, type Verdict } from '../../work/done/decide.js';
+import { setHold, clearHold } from '../../work/done/hold.js';
 import { tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
@@ -498,14 +499,20 @@ trackerRouter.post('/tasks', async (c) => {
   }
 });
 
-/** The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`); any other
- *  move is a plain status change. Null when it landed, else why not. */
-function ownerMoveRefusal(id: string, status: TrackerStatus): string | null {
+/** The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`); paused and
+ *  blocked put it on hold; any other move lifts the hold and is a plain status change. Null when it
+ *  landed, else why not. */
+function ownerMoveRefusal(id: string, status: string): string | null {
   if (status === 'complete' || status === 'cancelled' || status === 'fallen') {
     const r = decide({ workId: id, deciderAgentId: null, verdict: status === 'complete' ? 'owner_done' : 'cancel', reason: `moved to ${status} on the dashboard task board` });
     return r.kind === 'decided' ? null : r.text;
   }
-  const { result } = setTaskStatusResult(id, status, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
+  if (status === 'paused' || status === 'blocked') {
+    const held = setHold(id, status, `${status} by the owner on the dashboard`, 'owner');
+    return held.ok ? null : held.why;
+  }
+  clearHold(id, 'owner');
+  const { result } = setTaskStatusResult(id, status as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
   if (workSettled(result)) return null;
   return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
 }
@@ -588,7 +595,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
         });
       }
       if (statusUpdate) {
-        const refusal = ownerMoveRefusal(id, statusUpdate as TrackerStatus);
+        const refusal = ownerMoveRefusal(id, statusUpdate);
         if (refusal) {
           return c.json({
             ok: false,
@@ -597,7 +604,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           }, 409);
         }
       }
-      if (body.status && body.status !== fromStatus) {
+      if (body.status && body.status !== fromStatus && body.status !== 'paused' && body.status !== 'blocked') {   // a hold writes its own entry
         const { writeTaskLog } = await import('../../tracker/task-log.js');
         writeTaskLog({
           taskId: id,

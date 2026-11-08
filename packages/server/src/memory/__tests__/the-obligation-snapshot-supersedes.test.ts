@@ -107,13 +107,15 @@ function seedBoardRow(p: {
   const terminal = ['done', 'failed', 'abandoned'].includes(p.state);
   const at = Date.now();
   const rootKind = p.rootKind ?? (p.kind === 'ask' ? 'ask' : 'tracker');
+  // A board row is blocked by a hold, never by its state (an ask's `blocked` is a state).
+  const held = p.kind !== 'ask' && p.state === 'blocked';
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, requester_id, root_kind, root_id,
                        state, intent, wakes, closes_thread, title, opened_at, updated_at,
-                       closed_at, provenance)
-     VALUES (?, ?, ?, 'owner', 'owner', ?, ?, ?, 'action', 1, 0, ?, ?, ?, ?, 'live')`,
-  ).run(p.id, p.kind, p.agentId ?? AGENT, rootKind, `turn:${++seq}`, p.state,
-    p.title ?? `${p.kind} row`, at, at, terminal ? at : null);
+                       closed_at, provenance, hold_kind)
+     VALUES (?, ?, ?, 'owner', 'owner', ?, ?, ?, 'action', 1, 0, ?, ?, ?, ?, 'live', ?)`,
+  ).run(p.id, p.kind, p.agentId ?? AGENT, rootKind, `turn:${++seq}`, held ? 'claimed' : p.state,
+    p.title ?? `${p.kind} row`, at, at, terminal ? at : null, held ? 'blocked' : null);
 }
 
 /** The board truth read straight from the spine BY THE TEST, so the agreement clause is an
@@ -135,7 +137,7 @@ function spineBoard(agentId: string): {
                      AND root_kind IN ('legacy','tracker','engine_scaffold')`),
     trackerBlocked: one(`SELECT count(*) AS n FROM work
                           WHERE agent_id = ? AND kind IN ('task','project')
-                            AND closed_at IS NULL AND state = 'blocked'
+                            AND closed_at IS NULL AND hold_kind = 'blocked'
                             AND root_kind IN ('legacy','tracker','engine_scaffold')`),
   };
 }
@@ -461,7 +463,7 @@ describe('§6 the board counts are complete, and they agree with the spine at re
     }
     seedBoardRow({ id: 'trk-blocked', kind: 'task', state: 'blocked', title: 'Reorganize project notes' });
     for (let i = 0; i < 3; i++) {
-      seedBoardRow({ id: `trk-ondeck-${i}`, kind: 'task', state: 'on_deck', title: `Reminder ${i}` });
+      seedBoardRow({ id: `trk-ondeck-${i}`, kind: 'task', state: 'open', title: `Reminder ${i}` });
     }
   };
 
@@ -490,7 +492,7 @@ describe('§6 the board counts are complete, and they agree with the spine at re
     const db = mockDb.current!;
     const at = Date.now();
     db.prepare(`UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'ask:blocked-0'`).run(at);
-    db.prepare(`UPDATE work SET state = 'open' WHERE id = 'trk-blocked'`).run();
+    db.prepare(`UPDATE work SET hold_kind = NULL WHERE id = 'trk-blocked'`).run();
     seedBoardRow({ id: 'ask:fresh', kind: 'ask', state: 'open' });
     const spine = spineBoard(AGENT);
     expect(spine).toEqual({ asks: 6, asksBlocked: 5, tracker: 4, trackerBlocked: 0 });
@@ -500,7 +502,7 @@ describe('§6 the board counts are complete, and they agree with the spine at re
 
   it('the terminal predicate is the SCHEMA\'S — `closed_at IS NULL`, not a state allowlist', () => {
     seedCommitment({ id: 'cmt:predicate01', title: 'history', state: 'abandoned' });
-    for (const state of ['open', 'claimed', 'paused', 'blocked', 'on_deck']) {
+    for (const state of ['open', 'claimed', 'blocked']) {
       seedBoardRow({ id: `ask:${state}`, kind: 'ask', state });
     }
     for (const state of ['done', 'failed', 'abandoned']) {
@@ -510,7 +512,7 @@ describe('§6 the board counts are complete, and they agree with the spine at re
     }
     // Every non-terminal state counts, including `claimed` — the snapshot's completeness
     // claim is the reason `openObligations`' narrower `OWED_STATES` set is NOT reused here.
-    expect(openBoardCounts(AGENT).asks).toBe(5);
+    expect(openBoardCounts(AGENT).asks).toBe(3);
     const src = read('work/obligation-memory.ts');
     const after = src.slice(src.indexOf('export function openBoardCounts'));
     expect(after).toContain('closed_at IS NULL');

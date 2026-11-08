@@ -661,7 +661,7 @@ const tableOfHandlers: ToolHandlerMap = {
     // ── UX-REPAIR ROUND 7.5 T32 LEG B2 — the withdrawal has to reach the ask the turn is
     // HOLDING, and the shared owed-states set deliberately does not include `claimed`.
     //
-    // `OWED_STATES` is `('open','paused','blocked','on_deck')` and it is right for what it is
+    // `OWED_STATES` is `('open','blocked')` and it is right for what it is
     // for: the OPEN WORK block lists what is owed and NOT being worked, so the ask the current
     // turn is serving is correctly absent from it. But the round-7 S6 withdrawal arrives
     // exactly then — "never mind, forget the earbuds" twenty seconds into the turn comparing

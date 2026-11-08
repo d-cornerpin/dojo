@@ -556,8 +556,9 @@ function seedInFlightTask(id = 'w-long-job'): void {
   ).run(id, id, now, now);
 }
 
+/** The row's state, or its hold when it is held (a pause is a hold on Working work). */
 const workState = (id: string): string =>
-  (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
+  (mockDb.current!.prepare('SELECT COALESCE(hold_kind, state) AS state FROM work WHERE id = ?').get(id) as { state: string }).state;
 
 const turnRows = (): Array<{ turn_number: number; exit_reason: string | null; answered: number; effectful_calls: number }> =>
   mockDb.current!.prepare(

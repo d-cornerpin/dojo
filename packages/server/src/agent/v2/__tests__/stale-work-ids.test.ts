@@ -73,7 +73,7 @@ beforeEach(() => {
 describe('(b) a dangling id whose row is gone is DROPPED, not reclassified', () => {
   it('sorts each id into exactly one bucket, and the buckets add up', () => {
     seedWork('d-claimed', { state: 'claimed' });
-    seedWork('d-ondeck', { state: 'on_deck' });
+    seedWork('d-ondeck', { state: 'open' });
     seedWork('d-open', { state: 'open' });
     const ids = ['d-claimed', 'd-ondeck', 'd-open', 'd-deleted'];
 
@@ -88,7 +88,7 @@ describe('(b) a dangling id whose row is gone is DROPPED, not reclassified', () 
 
   it('survivors keep the caller’s order and exclude every id whose row is gone', () => {
     seedWork('d-1', { state: 'claimed' });
-    seedWork('d-3', { state: 'on_deck' });
+    seedWork('d-3', { state: 'open' });
     expect(survivingDanglers(['d-1', 'd-2', 'd-3'])).toEqual(['d-1', 'd-3']);
   });
 

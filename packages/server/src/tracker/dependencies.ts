@@ -18,7 +18,7 @@ export function checkDependencies(completedTaskId: string): void {
            w.agent_id AS assigned_to, w.depends_on AS depends_on,
            w.scheduled_start AS scheduled_start, w.next_run_at AS next_run_at
     FROM work w
-    WHERE ${taskScope('w')} AND w.state IN ('on_deck', 'blocked')
+    WHERE ${taskScope('w')} AND w.state = 'open'
       AND w.depends_on LIKE ?
   `).all(`%${completedTaskId}%`) as Array<{
     id: string;

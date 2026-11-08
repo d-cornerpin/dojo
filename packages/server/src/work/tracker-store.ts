@@ -33,7 +33,7 @@ import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, type Actor, type WorkOutcome, type WorkState } from './store.js';
-import { statusToState, stateToStatus, TRACKER_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
+import { statusToState, TRACKER_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
@@ -140,7 +140,7 @@ const requesterOf = (createdBy: string): string => (createdBy === 'user' ? 'owne
  *  handles, enums, counts, timestamps and the JSON `depends_on` id array. */
 export const CREDENTIAL_BEARING_WORK_TEXT = [
   'title', 'description', 'original_description', 'goal', 'notes',
-  'completion_summary', 'result', 'evidence_json',
+  'completion_summary', 'result', 'evidence_json', 'hold_reason',
 ] as const satisfies readonly TrackerAttr[];
 
 const BEARING = new Set<string>(CREDENTIAL_BEARING_WORK_TEXT);
@@ -384,8 +384,8 @@ export type TrackerAttr =
   | 'a2a_thread_id' | 'last_smell_flag'   // PHASE-2 T10F: `deliverable_shown` dropped (`145`)
   | 'scheduled_start' | 'repeat_interval' | 'repeat_unit' | 'repeat_end_type'
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
-  | 'paused_until' | 'status_before_pause' | 'last_run_at' | 'missed_runs_paused_at'
-  | 'anchor_local' | 'attempts'
+  | 'paused_until' | 'last_run_at' | 'missed_runs_paused_at'
+  | 'anchor_local' | 'attempts' | 'hold_kind' | 'hold_reason' | 'hold_at'
   // UX-REPAIR round 2 T13: `work.tz` existed since migration 135 and was DEAD — absent from
   // this union, so no attribute write could name it, and absent from `scheduleRowColumns`, so
   // the scheduler never read it. The declared per-reminder zone contract was silently void and
@@ -554,39 +554,12 @@ export interface SetStatusInput {
   claimedByTurn?: number | null;
   note?: string | null;
   userQuote?: string | null;   // t193: the owner's words for acting on another live agent's work; checked, never trusted
-  /** Legacy side-effect of `updateTask({ status: 'paused' })`: the resume time rides the
-   *  same call. Epoch-ms; the legacy column was TEXT and `137` converted it. */
-  pausedUntilMs?: number | null;
-  /**
-   * Whether this pause also stops the SCHEDULE (`is_paused`).
-   *
-   * They are TWO AXES and conflating them is a live bug, not a tidiness point: T6's reopen
-   * edge negative-controls them against each other, because the engine's "the ball is with
-   * the owner" pause must NOT stop a recurring schedule, while `work_update(action="status")
-   * (status='paused')` deliberately does — `updateTask`'s own comment said so ("keep
-   * is_paused in sync ... regardless of whether the pause came from work_update(action="status")
-   * or work_schedule(action="pause")"). Default false; the tool paths opt IN.
-   */
-  syncSchedulePause?: boolean;
 }
 
-/**
- * The tracker's one status writer.
- *
- * It carries the side-effects `tracker/schema.ts:updateTask` performed alongside the status
- * assignment, because they are part of the SAME requirement and splitting them across two
- * calls is how a paused row ends up with `is_paused = 0`:
- *   * into `paused`  -> `is_paused = 1`, remember the status we came from, set `paused_until`
- *   * out of `paused` -> clear all three (and leave `is_paused` alone on a close, exactly as
- *     the old code did: a completed recurring task stays paused-from-the-scheduler's-view)
- * `pause_validated = 0` needs no statement any more: the flag is now
- * "an authority upheld the CURRENT pause", so entering `paused` afresh un-validates it by
- * construction (`tracker-view.ts:validatedExpr`).
- */
+/** The tracker's one status writer: `transition()` with the tracker's words (a hold is `work/done/hold.ts`). */
 export function setTrackerStatus(
   id: string, status: TrackerStatus, input: SetStatusInput,
 ): WorkOutcome {
-  const db = getDb();
   const to = statusToState(status);
 
   // Another live agent's work is not reopened or moved on an agent's say-so (t193).
@@ -595,37 +568,16 @@ export function setTrackerStatus(
     logger.warn(`status change refused (${disposal.reason})`, { workId: id, status, by: input.by, actorId: input.actorId });
     return disposal;
   }
-  const before = db.prepare('SELECT state FROM work WHERE id = ?').get(id) as
-    { state: WorkState } | undefined;
-
-  let result!: WorkOutcome;
-  withUnit(() => {
-    result = transition(id, {
-      to,
-      by: input.by,
-      reason: input.reason,
-      evidenceRef: input.evidenceRef ?? null,
-      resultDeliveryId: input.resultDeliveryId ?? null,
-      expectedState: input.expectedState,
-      claimedByTurn: input.claimedByTurn ?? null,
-      note: input.note ?? null,
-      actorId: input.actorId ?? undefined,
-    });
-    if (result.kind !== 'applied') return;
-
-    if (to === 'paused') {
-      noteUnsettled(patchWork(id, {
-        ...(input.syncSchedulePause ? { is_paused: 1 } : {}),
-        status_before_pause: before && before.state !== 'paused' ? stateToStatus(before.state) : null,
-        ...(input.pausedUntilMs !== undefined ? { paused_until: input.pausedUntilMs } : {}),
-      }), 'setTrackerStatus: pause bookkeeping', { taskId: id });
-    } else {
-      noteUnsettled(patchWork(id, {
-        ...(input.syncSchedulePause && to !== 'done' ? { is_paused: 0 } : {}),
-        paused_until: null,
-        status_before_pause: null,
-      }), 'setTrackerStatus: pause bookkeeping cleared', { taskId: id });
-    }
+  const result = transition(id, {
+    to,
+    by: input.by,
+    reason: input.reason,
+    evidenceRef: input.evidenceRef ?? null,
+    resultDeliveryId: input.resultDeliveryId ?? null,
+    expectedState: input.expectedState,
+    claimedByTurn: input.claimedByTurn ?? null,
+    note: input.note ?? null,
+    actorId: input.actorId ?? undefined,
   });
   // SLOW-INFERENCE T79c: a genuine advance moves the effort baseline. `result.kind`
   // is `'applied'` ONLY when `transition()` actually moved `work.state` — never on a
@@ -634,9 +586,7 @@ export function setTrackerStatus(
   // text at `tracker/tools.ts`) unable to reset its own meter: `setTrackerStatus` is
   // this platform's ONE status writer for the tracker's two nouns (doc comment
   // above), so `work_update(action="status")`, `work_update(action="complete_step")`
-  // and `work_update(action="close_project")` — and every PM validate/override path
-  // — all clear this same gate. Rung AFTER `withUnit`, deliberately, the same reason
-  // `transition()` itself rings its own post-transaction effects afterward: pure
+  // and every PM path all clear this same gate. Rung AFTER the transition, deliberately: pure
   // bookkeeping must never be able to fail or roll back a state change that has
   // already been decided.
   if (result.kind === 'applied') {

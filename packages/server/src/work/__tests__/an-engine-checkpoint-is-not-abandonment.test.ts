@@ -93,7 +93,7 @@ function gateStrandedDanglers(agentId: string, now: number): Array<{ id: string 
     SELECT t.id AS id FROM work t
     INNER JOIN work p ON p.id = t.parent_id
     WHERE ${taskScope('t')} AND t.agent_id = ?
-      AND t.state = 'on_deck'
+      AND t.state = 'open'
       AND t.is_paused = 0
       AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
       AND t.schedule_status != 'waiting'
@@ -217,7 +217,7 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
     // SQLite's NULL-comparison rule makes `NULL != 'waiting'` unknown, not true, so a raw NULL
     // silently fails the gate's own predicate too. 'unscheduled' is the real, lived-in value.
     seedWork('w-stranded', {
-      kind: 'task', parent_id: 'proj-1', state: 'on_deck', updated_at: stale,
+      kind: 'task', parent_id: 'proj-1', state: 'open', updated_at: stale,
       schedule_status: 'unscheduled',
     });
 
@@ -238,7 +238,7 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
     seedProject('proj-2', { source_message_id: 'msg-job' });
     seedWork('w-active-sibling', { kind: 'task', parent_id: 'proj-2', state: 'claimed', updated_at: now });
     seedWork('w-on-deck-sibling', {
-      kind: 'task', parent_id: 'proj-2', state: 'on_deck', updated_at: stale,
+      kind: 'task', parent_id: 'proj-2', state: 'open', updated_at: stale,
       schedule_status: 'unscheduled',
     });
 

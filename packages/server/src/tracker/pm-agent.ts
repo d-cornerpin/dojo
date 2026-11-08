@@ -407,8 +407,7 @@ export function stopPokeLoop(): void {
 }
 
 // ── Phase B.1: event-driven PM wake on transitions ──
-// When trackerUpdateStatus flips a task into paused/complete/blocked the
-// engine buffers the task id, debounces 10 seconds (so a burst of
+// When a task is closed the engine buffers the task id, debounces 10 seconds (so a burst of
 // transitions becomes one PM review), then fires a fresh review that
 // bypasses the polled 10-minute throttle. The polled review still runs
 // as a safety-net heartbeat. The smell-pattern detector runs inline on
@@ -416,8 +415,6 @@ export function stopPokeLoop(): void {
 
 const TRANSITION_DEBOUNCE_MS = 10_000;
 const SMELL_POKE_WINDOW_SEC = 60;
-const SMELL_PAUSE_THRASH_CYCLES = 3;
-const SMELL_PAUSE_THRASH_WINDOW_MIN = 30;
 const transitionBuffer = new Set<string>();
 let transitionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -488,16 +485,14 @@ export function pendingValidationDoorbellCount(): number {
 }
 
 /**
- * Called by trackerUpdateStatus / completeAgent / closeProjectAndOpenTasks
- * whenever a task transitions into paused, complete, or blocked. Buffers
- * the task id and schedules a debounced PM review. The review runs as a
- * fresh LLM call regardless of the polled throttle.
+ * Called by completeAgent when a task is closed. Buffers the task id and schedules a debounced
+ * PM review. The review runs as a fresh LLM call regardless of the polled throttle.
  */
 export function noteTransitionForReview(taskId: string, toStatus: string): void {
-  if (!['paused', 'complete', 'blocked'].includes(toStatus)) return;
+  if (toStatus !== 'complete') return;
   // Smell detection happens here so the flag lands BEFORE PM reviews.
   try {
-    runSmellDetector(taskId, toStatus);
+    runSmellDetector(taskId);
   } catch (err) {
     logger.warn('runSmellDetector threw (non-fatal)', { taskId, toStatus, error: err instanceof Error ? err.message : String(err) });
   }
@@ -557,12 +552,6 @@ function armDebouncedReview(taskId: string, why: string): void {
  * refusal of a retask on a handed-in task, and THAT is what protects delivered work.
  * requirement preserved: the PM is still told what each dangling task was for (its goal)
  * and still gets the receipts block below; nothing that varies per row was removed.
- *
- * Before this, the PM only learned about close-out misses indirectly via the
- * periodic situation report, which surfaced the pause as "UNVALIDATED_PAUSE"
- * with no context about what the agent actually said or what they should have
- * done. PM had no real basis to do anything except validate the pause, which is
- * exactly the rubber-stamp behavior the user called out.
  *
  * Fire-and-forget: PM acting takes a real LLM call; if PM is offline or capped
  * the task stays in_progress and the user can resolve from the dashboard.
@@ -688,92 +677,56 @@ function renderSmellFlag(raw: string): string {
   try {
     const f = JSON.parse(raw) as { kind?: string; elapsedSec?: number; cycles?: number; windowMin?: number };
     if (f.kind === 'complete_dodges_poke') return `closed within ${f.elapsedSec}s of the last poke with no non-tracker tool calls on the closing turn`;
-    if (f.kind === 'pause_resume_thrash') return `pause-resume thrash: ${f.cycles} transitions in last ${f.windowMin} min`;
   } catch { /* legacy prose flag */ }
   return raw;
 }
 
-function runSmellDetector(taskId: string, toStatus: string): void {
+function runSmellDetector(taskId: string): void {
   const db = getDb();
-  if (toStatus === 'complete') {
-    const lastPoke = lastPokeOf(taskId);
-    if (lastPoke) {
-      const elapsedSec = Math.floor((Date.now() - lastPoke.sentAtMs) / 1000);
-      if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
-        const taskAgent = db.prepare(`SELECT agent_id AS assigned_to FROM work WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
-        // P6b REKEY: "did any real work ride this close" reads the CLOSING
-        // TURN's own audit set (turn_number lineage, mig 116), not an
-        // agent-global clock window that credited tool calls from unrelated
-        // concurrent conversations. The dodge shape is by definition the
-        // assignee closing its own task in-turn, so the closing turn is the
-        // assignee's live turn; an engine/Key-2 close has no live turn and is
-        // not a dodge, so no flag.
-        const closingTurn = taskAgent?.assigned_to ? turnContext(taskAgent.assigned_to)?.turnNumber : undefined;
-        if (taskAgent?.assigned_to && closingTurn !== undefined) {
-          // PHASE-2 T8V — A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE, because it
-          // is a SQL LIKE against `audit_log.target`. `audit_log` records the tool NAME,
-          // and after the verb collapse no live tool starts with `tracker_`, so
-          // `NOT LIKE 'tracker_%'` would have been TRUE for every work call — the smell
-          // would have found a "non-tracker tool" in every closing turn and NEVER fired
-          // again. It matches the live prefix now. The retired prefix is kept alongside
-          // it because `audit_log` is HISTORY: a turn straddling the upgrade, or a
-          // re-read of an older turn, still holds rows written under the old names.
-          const nonTrackerTool = db.prepare(`
-            SELECT 1 FROM audit_log
-            WHERE agent_id = ?
-              AND turn_number = ?
-              AND action_type = 'tool_call'
-              AND target NOT LIKE 'work\_%' ESCAPE '\'
-              AND target NOT LIKE 'tracker\_%' ESCAPE '\'
-            LIMIT 1
-          `).get(taskAgent.assigned_to, closingTurn) as { 1: number } | undefined;
-          if (!nonTrackerTool) {
-            // Structured flag (P6b): readers parse fields, not prose.
-            const flag = JSON.stringify({ kind: 'complete_dodges_poke', elapsedSec, closingTurn });
-            noteUnsettled(patchWork(taskId, { last_smell_flag: flag }, { touch: false }), 'pm: smell flag stamped', { taskId });
-            void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
-              taskId,
-              fromEntity: 'engine',
-              entryKind: 'smell_flag',
-              reason: flag,
-            }));
-            logger.info('Smell flag set: complete dodging poke', { taskId, elapsedSec, closingTurn });
-          }
+  const lastPoke = lastPokeOf(taskId);
+  if (lastPoke) {
+    const elapsedSec = Math.floor((Date.now() - lastPoke.sentAtMs) / 1000);
+    if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
+      const taskAgent = db.prepare(`SELECT agent_id AS assigned_to FROM work WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
+      // P6b REKEY: "did any real work ride this close" reads the CLOSING
+      // TURN's own audit set (turn_number lineage, mig 116), not an
+      // agent-global clock window that credited tool calls from unrelated
+      // concurrent conversations. The dodge shape is by definition the
+      // assignee closing its own task in-turn, so the closing turn is the
+      // assignee's live turn; an engine/Key-2 close has no live turn and is
+      // not a dodge, so no flag.
+      const closingTurn = taskAgent?.assigned_to ? turnContext(taskAgent.assigned_to)?.turnNumber : undefined;
+      if (taskAgent?.assigned_to && closingTurn !== undefined) {
+        // PHASE-2 T8V: A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE, because it
+        // is a SQL LIKE against `audit_log.target`. `audit_log` records the tool NAME,
+        // and after the verb collapse no live tool starts with `tracker_`, so
+        // `NOT LIKE 'tracker_%'` would have been TRUE for every work call; the smell
+        // would have found a "non-tracker tool" in every closing turn and NEVER fired
+        // again. It matches the live prefix now. The retired prefix is kept alongside
+        // it because `audit_log` is HISTORY: a turn straddling the upgrade, or a
+        // re-read of an older turn, still holds rows written under the old names.
+        const nonTrackerTool = db.prepare(`
+          SELECT 1 FROM audit_log
+          WHERE agent_id = ?
+            AND turn_number = ?
+            AND action_type = 'tool_call'
+            AND target NOT LIKE 'work\_%' ESCAPE '\'
+            AND target NOT LIKE 'tracker\_%' ESCAPE '\'
+          LIMIT 1
+        `).get(taskAgent.assigned_to, closingTurn) as { 1: number } | undefined;
+        if (!nonTrackerTool) {
+          // Structured flag (P6b): readers parse fields, not prose.
+          const flag = JSON.stringify({ kind: 'complete_dodges_poke', elapsedSec, closingTurn });
+          noteUnsettled(patchWork(taskId, { last_smell_flag: flag }, { touch: false }), 'pm: smell flag stamped', { taskId });
+          void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
+            taskId,
+            fromEntity: 'engine',
+            entryKind: 'smell_flag',
+            reason: flag,
+          }));
+          logger.info('Smell flag set: complete dodging poke', { taskId, elapsedSec, closingTurn });
         }
       }
-    }
-  } else if (toStatus === 'paused' || toStatus === 'in_progress') {
-    // Pause-resume thrash: count transitions in/out of paused for this task
-    // within the last 30 minutes.
-    // PHASE-2 T10G: counted off the spine's own transition events. The predicate is carried
-    // shape-for-shape, and it survives the vocabulary change because `paused` is the ONE word
-    // the two vocabularies share — `setTrackerStatus` passes it straight through to
-    // `transition()`, so the event payload says `paused` exactly as the old column did.
-    // MEASURED before the re-point rather than assumed: `work_events` transition payloads on
-    // this box carry `to` values `done|claimed|abandoned|failed|open|paused|blocked`, so the
-    // input this guard needs is present. The old table's own two paused rows are why this was
-    // not converted on the "it never fires" reasoning (#15).
-    const cycles = db.prepare(`
-      SELECT COUNT(*) as c FROM work_events
-      WHERE work_id = ?
-        AND kind = 'transition'
-        AND (json_extract(payload, '$.to') = 'paused'
-             OR (json_extract(payload, '$.from') = 'paused'
-                 AND json_extract(payload, '$.to') != 'paused'))
-        AND created_at > (unixepoch('now') - ${SMELL_PAUSE_THRASH_WINDOW_MIN} * 60) * 1000
-    `).get(taskId) as { c: number } | undefined;
-    if (cycles && cycles.c >= SMELL_PAUSE_THRASH_CYCLES) {
-      // The window here is the rate definition of "thrash", not a scar; the
-      // count already reads structured spine transitions. Structured flag.
-      const flag = JSON.stringify({ kind: 'pause_resume_thrash', cycles: cycles.c, windowMin: SMELL_PAUSE_THRASH_WINDOW_MIN });
-      noteUnsettled(patchWork(taskId, { last_smell_flag: flag }, { touch: false }), 'pm: smell flag stamped', { taskId });
-      void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
-        taskId,
-        fromEntity: 'engine',
-        entryKind: 'smell_flag',
-        reason: flag,
-      }));
-      logger.info('Smell flag set: pause-resume thrash', { taskId, cycles: cycles.c });
     }
   }
 }
@@ -1537,8 +1490,7 @@ async function runPMReview(): Promise<void> {
   const doorbell = new Set(drainValidationDoorbell());
 
   // The 10-minute time gate avoids spamming the LLM when nothing meaningful is
-  // happening. But unvalidated-complete / blocked / paused tasks and pending
-  // override requests are time-sensitive: the sooner PM validates them, the
+  // happening. But handed-in tasks are time-sensitive: the sooner PM validates them, the
   // sooner real danglers surface to the user, so the review bypasses the
   // 10-minute cadence gate when validation work is queued.
   const pendingValidationCount = (() => {
@@ -1642,11 +1594,9 @@ async function runPMReview(): Promise<void> {
   const allTasks = listTasks({});
   // T18: `cancelled` is terminal; poking an agent about work the owner called off is the
   // failure this list exists to prevent, one status later.
-  const activeTasks = allTasks.filter(t => !['complete', 'fallen', 'cancelled', 'paused'].includes(t.status));
+  const activeTasks = allTasks.filter(t => !['complete', 'fallen', 'cancelled'].includes(t.status) && t.hold !== 'paused');
 
-  // Phase B.1: even when no tasks are "active" (in_progress / on_deck /
-  // blocked), there may still be unvalidated-complete or override-request
-  // rows that need PM judgment. Only return early when truly nothing
+  // Even when no tasks are "active" there may still be handed-in rows that need PM judgment. Only return early when truly nothing
   // requires PM attention. Cheap COUNT queries before deciding.
   if (activeTasks.length === 0) {
     const pendingCount = db.prepare(`
@@ -1738,7 +1688,7 @@ async function runPMReview(): Promise<void> {
     // 2. Overdue scheduled tasks
     if (task.nextRunAt) {
       const nextRunTime = new Date(task.nextRunAt.includes('Z') ? task.nextRunAt : task.nextRunAt + 'Z');
-      if (nextRunTime < nowDate && task.scheduleStatus === 'waiting') {
+      if (nextRunTime < nowDate && task.scheduleStatus === 'waiting' && !task.isPaused) {
         const overdueMin = Math.floor((nowDate.getTime() - nextRunTime.getTime()) / 60000);
         if (overdueMin > 5) {
           issues.push({
@@ -1746,18 +1696,6 @@ async function runPMReview(): Promise<void> {
             text: `OVERDUE: "${task.title}" was due ${overdueMin} minutes ago but hasn't fired.`,
           });
         }
-      }
-    }
-
-    // 3. Blocked tasks sitting too long
-    if (task.status === 'blocked') {
-      const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
-      const blockedMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
-      if (blockedMin > 30) {
-        issues.push({
-          stableId: `${task.id}|BLOCKED`,
-          text: `BLOCKED: "${task.title}" has been blocked for ${blockedMin} minutes. May need ${primaryName}'s attention.`,
-        });
       }
     }
 
@@ -1796,7 +1734,7 @@ async function runPMReview(): Promise<void> {
     // scheduler's cleanupStaleRuns is responsible for those (v2.3.7);
     // PM nagging only adds noise on top.
     const IN_PROGRESS_IDLE_THRESHOLD_MIN = 2;
-    if (task.status === 'in_progress' && task.assignedTo) {
+    if (task.status === 'in_progress' && !task.hold && task.assignedTo) {
       let waitingForFutureFire = false;
       if (task.nextRunAt) {
         const nextRunMs = new Date(task.nextRunAt.includes('Z') ? task.nextRunAt : task.nextRunAt + 'Z').getTime();
@@ -1845,10 +1783,8 @@ async function runPMReview(): Promise<void> {
   //     trigger's key, never the PM's, so the row lands here exactly as it always did.
   //   * a pending close request — the worker said it was finished and RULING 1 says that is
   //     Key 1. The row does not move until this rung blesses it, so it is still sitting in
-  //     whichever non-terminal state it was worked from (`claimed`, `paused` after an owner wait
-  //     — round-5 S5, event 22401 — or `on_deck` after a rejected pause). Which states those are is
-  //     `handedInExpr`'s to say, not this query's — the paused one was missing here
-  //     for exactly as long as this query answered it itself.
+  //     whichever non-terminal state it was worked from. Which states those are is
+  //     `handedInExpr`'s to say, not this query's.
   // Reading only the first shape is how the queue would go quiet while work waited in it.
   // Review M1: the room each row's ledger listing may take is the PM's OWN measured assembly budget
   // (the same `dialedPolicy` the turn's fit check uses), split across the rows this review asks about.
@@ -1980,7 +1916,7 @@ async function runPMReview(): Promise<void> {
         line += ` [next run: ${t.nextRunAt}]`;
       }
     }
-    if (t.status === 'blocked') line += ' [BLOCKED]';
+    if (t.hold === 'blocked') line += ' [BLOCKED]';
     // Include task description so PM can make informed decisions
     if (t.description) {
       const desc = t.description.length > 150 ? t.description.slice(0, 150) + '...' : t.description;
@@ -2273,7 +2209,7 @@ export async function runPokeCheck(): Promise<void> {
     const candidates = db.prepare(`
       SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to, t.parent_id AS project_id
       FROM work t
-      WHERE ${taskScope('t')} AND t.state = 'on_deck'
+      WHERE ${taskScope('t')} AND t.state = 'open'
         AND t.a2a_thread_id IS NOT NULL
         AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled')
         AND t.is_paused = 0
@@ -2322,11 +2258,10 @@ export async function runPokeCheck(): Promise<void> {
   }
 
   // ── Engine-level quick checks (still needed for immediate alerts) ──
-  const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'cancelled', 'paused'].includes(t.status));
+  const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'cancelled'].includes(t.status) && t.hold !== 'paused');
 
   // 2026-06-02 bug fix: also count tasks that need PM judgment but are not
-  // "active" (complete-but-unvalidated, blocked-but-unvalidated, paused-but-
-  // unvalidated, pending override requests). Without this, a completed task
+  // "active" (handed in). Without this, a completed task
   // sits with complete_validated=0 forever because activeTasks is 0, the
   // polled review never fires, and the event-driven debounce is the only
   // path that could wake the PM. Belt-and-suspenders.
@@ -2357,7 +2292,7 @@ export async function runPokeCheck(): Promise<void> {
   }
 
   // ── Engine-level in_progress poke chain (nudge → urgent → escalate) ──
-  await checkInOn(allActiveTasks.filter(t => t.status === 'in_progress'));
+  await checkInOn(allActiveTasks.filter(t => t.status === 'in_progress' && !t.hold));
 }
 
 /** v3.5 D1 (fix round 3): the check-in for a continued measured job, asked at its PARK — the boundary
@@ -2366,7 +2301,7 @@ export async function runPokeCheck(): Promise<void> {
  *  handed to the continuation as a PM rider, which it reads before it acts (fix round 4). */
 export async function checkInAtThePark(taskId: string): Promise<void> {
   const task = getTask(taskId);
-  if (task?.status === 'in_progress') await checkInOn([task], true);
+  if (task?.status === 'in_progress' && !task.hold) await checkInOn([task], true);
 }
 
 /** The check-in ladder over these in-progress tasks (the sweep's own loop). */

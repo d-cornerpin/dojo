@@ -621,7 +621,7 @@ export function openBoardCounts(agentId: string): BoardCounts {
        COALESCE(sum(CASE WHEN w.kind = 'ask' AND w.state = 'blocked' THEN 1 ELSE 0 END), 0)
          AS asksBlocked,
        COALESCE(sum(CASE WHEN ${TRACKER_ROWS} THEN 1 ELSE 0 END), 0) AS tracker,
-       COALESCE(sum(CASE WHEN ${TRACKER_ROWS} AND w.state = 'blocked' THEN 1 ELSE 0 END), 0)
+       COALESCE(sum(CASE WHEN ${TRACKER_ROWS} AND w.hold_kind = 'blocked' THEN 1 ELSE 0 END), 0)
          AS trackerBlocked
        FROM work w
       WHERE w.agent_id = ? AND w.closed_at IS NULL`,

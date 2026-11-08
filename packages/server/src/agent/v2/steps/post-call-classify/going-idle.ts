@@ -127,7 +127,7 @@ export async function runGoingIdle(
       SELECT w.id AS id, w.title AS title FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0
+        AND w.is_paused = 0 AND w.hold_kind IS NULL
       ORDER BY w.updated_at DESC
       LIMIT 5
     `).all(agentId) as Array<{ id: string; title: string }>;
@@ -284,7 +284,7 @@ export async function runGoingIdle(
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0
+        AND w.is_paused = 0 AND w.hold_kind IS NULL
         AND w.repeat_interval IS NOT NULL
       ORDER BY w.updated_at DESC
       LIMIT 10

@@ -51,12 +51,9 @@ export async function runTrackerCloseout(
     // The pre-turn system message already gave the agent a chance to
     // engage with the tracker BEFORE generating any response. If they
     // produced text instead of calling a tracker tool, they forfeited the
-    // chance. The gate USED TO auto-pause the danglers here and pre-bless
-    // the pause (pause_validated=1) so the PM could never re-flag it, a
-    // forgery of the PM's key. De-fanged: the danglers keep their TRUE
-    // status (one-shots stay in_progress), the recurring janitorial reset
-    // stays, and the miss is escalated to the PM (visible A2A) to decide
-    // per task. The turn then ends.
+    // chance. The danglers keep their TRUE status (one-shots stay
+    // in_progress), the recurring janitorial reset stays, and the miss is
+    // escalated to the PM (visible A2A) to decide per task. The turn then ends.
     //
     // No "second chance" hard nudge: the prior implementation streamed a
     // second response to the user before the duplicate detector could
@@ -102,12 +99,8 @@ export async function runTrackerCloseout(
           }, agentId);
         }
 
-        // Demolition Phase 1.4: the gate no longer PAUSES one-shot danglers
-        // or pre-blesses a pause (pause_validated=1). That flag was an
-        // engine-authored "PM-blessed" verdict the PM sweep could never
-        // re-flag, a forgery of the PM's key. One-shot danglers now stay
-        // in_progress and are escalated to the PM (which decides per task).
-        // Recurring danglers keep the janitorial reset (a single missed
+        // One-shot danglers stay in_progress and are escalated to the PM
+        // (which decides per task). Recurring danglers keep the janitorial reset (a single missed
         // close-out fails THIS run via forceResetStuckRecurringTask, never
         // pausing/closing the whole schedule).
         const { forceResetStuckRecurringTask } = await import('../../../../scheduler/runner.js');

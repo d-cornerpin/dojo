@@ -188,7 +188,7 @@ export function stampTasksAtTurnFinalize(input: {
       `SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
           AND w.agent_id = ?
-          AND w.state IN ('claimed', 'on_deck', 'blocked')
+          AND w.state IN ('claimed', 'open')
           AND (
             (w.source_message_id IS NOT NULL AND w.source_message_id = ?)
             OR w.origin_turn = ?

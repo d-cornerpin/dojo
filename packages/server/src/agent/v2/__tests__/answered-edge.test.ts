@@ -344,16 +344,6 @@ describe('1e — "settled" is ONE query: is anything open for a human counterpar
     db().prepare("DELETE FROM messages WHERE id = 'm-1'").run();
     expect(hasOpenHumanWork(AGENT)).toBe(false);
   });
-
-  it('a PAUSED ask is not OPEN: the ball is with the owner, so the agent is settled', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'paused', by: 'agent', actorId: AGENT, reason: 'waiting on the owner' });
-    expect(hasOpenHumanWork(AGENT)).toBe(false);
-  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -432,10 +422,7 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
 
     const r = pauseDriveWorkWaitingOnOwner(AGENT, 6);
     expect(r.paused).toBe(1);
-    const row = db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status, status_before_pause FROM work WHERE id = ?").get('t-1') as
-      { status: string; status_before_pause: string | null };
-    expect(row.status).toBe('paused');
-    expect(row.status_before_pause).toBe('in_progress');
+    expect(db().prepare('SELECT state, hold_kind FROM work WHERE id = ?').get('t-1')).toEqual({ state: 'claimed', hold_kind: 'paused' });
   });
 
   it('NEGATIVE (P2 drive boundary): a turn that ACTED is still working — nothing is paused', () => {
@@ -580,18 +567,11 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     seedDelivery('d1', { turn_number: 6 });
     seedLegacyTask('t-1');
     pauseDriveWorkWaitingOnOwner(AGENT, 6);
-    // PHASE-2 T10G — RE-EXPRESSED, and STRICTLY STRONGER than it was. The property is the
-    // clause's own title and it has not moved: the pause must be findable, not merely applied.
-    // What changed is WHERE the record lives and how good it is. This site used to write a
-    // best-effort `task_log` transition row AFTER `setTrackerStatus` returned; the pause is now
-    // recorded by `transition()` INSIDE the state-change transaction, so a crash can no longer
-    // apply the pause and lose its record. Asserted through `listTaskLog` — the same projection
-    // the owner's Activity panel reads — so the clause covers the render path too, and in
-    // TRACKER vocabulary (`paused`), which is what a human looking for it would search for.
+    // Asserted through `listTaskLog`, the projection the owner's Activity panel reads.
     const log = listTaskLog('t-1');
-    expect(log.some((e) => e.entryKind === 'transition' && e.toStatus === 'paused')).toBe(true);
+    expect(log.some((e) => e.entryKind === 'hold_set' && e.toStatus === 'paused')).toBe(true);
     // The reason travels with it: an audit line with no why is the thing the spine replaced.
-    expect(log.find((e) => e.toStatus === 'paused')!.reason).toContain('waiting on them');
+    expect(log.find((e) => e.toStatus === 'paused')!.reason).toContain('waits on them');
   });
 });
 
@@ -608,7 +588,7 @@ describe('t139 round 2 — the engine pause fires only on work linked to the req
     answeredTurn();
     seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 2 });
     expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: 'msg-x' }).paused).toBe(1);
-    expect(stateOf('t-1')).toBe('paused');
+    expect(stateOf('t-1')).toBe('claimed');
   });
 
   it('work linked to a DIFFERENT request is not paused (a status question never parks the job)', () => {
@@ -676,12 +656,7 @@ describe('THE REOPEN EDGE IS DELETED (R-V333-5, t139) — the paused work stays 
     seedDelivery('d1', { turn_number: 6 });
     seedLegacyTask('t-1');
     expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(1);
-    const row = db().prepare('SELECT state, status_before_pause FROM work WHERE id = ?').get('t-1') as
-      { state: string; status_before_pause: string | null };
-    expect(row.state).toBe('paused');
-    // The engine's own record that IT paused the row is still written — the task list reads
-    // it to say "waiting on the owner".
-    expect(row.status_before_pause).not.toBeNull();
+    expect(db().prepare('SELECT hold_kind FROM work WHERE id = ?').get('t-1')).toEqual({ hold_kind: 'paused' });
   });
 
   it('NEGATIVE: another agent\'s paused work is untouched', () => {
@@ -701,7 +676,7 @@ describe('THE REOPEN EDGE IS DELETED (R-V333-5, t139) — the paused work stays 
     seedLegacyTask('t-1');
     pauseDriveWorkWaitingOnOwner(AGENT, 6);
     const row = db().prepare(
-      `SELECT state AS status, updated_at FROM work WHERE id = ? AND state = 'paused'`,
+      `SELECT state AS status, updated_at FROM work WHERE id = ? AND hold_kind = 'paused'`,
     ).get('t-1') as { status: string; updated_at: string } | undefined;
     expect(row?.updated_at).toBeTruthy();
   });

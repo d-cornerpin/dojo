@@ -850,7 +850,7 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     interface StalledTask { id: string; title: string; status: string }
     const stalledTasks = db.prepare(`
       SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('claimed', 'on_deck')
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('claimed', 'open')
       ORDER BY w.updated_at DESC LIMIT 5
     `).all(agentId) as StalledTask[];
 

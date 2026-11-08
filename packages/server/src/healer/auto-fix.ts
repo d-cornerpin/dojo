@@ -356,10 +356,10 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // also what makes this pass idempotent: a row it has cleared is no longer selected.
   const db = getDb();
   const orphans = db.prepare(`
-    SELECT w.id AS id, w.state AS state, w.assignee_agent AS assignee
+    SELECT w.id AS id, w.hold_kind AS hold, w.assignee_agent AS assignee
       FROM work w ${ORPHANED_TASK_JOIN('w', 'a')}
      WHERE ${ORPHANED_TASK_WHERE('w', 'a')}
-  `).all() as Array<{ id: string; state: string; assignee: string }>;
+  `).all() as Array<{ id: string; hold: string | null; assignee: string }>;
   let changed = 0;
   for (const o of orphans) {
     // ONE ROW CANNOT TAKE THE PASS DOWN ANY MORE. The write above is fixed, so the known
@@ -367,7 +367,7 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
     // that a per-row fault was escaping into the caller and silently ending the sweep.
     try {
       // Paused tasks stay paused (the user explicitly paused them — don't silently unpause).
-      if (o.state !== 'paused') {
+      if (o.hold !== 'paused') {
         const r = setTrackerStatus(o.id, 'on_deck', {
           by: 'healer', actorId: 'healer',
           reason: 'assigned agent no longer exists; returned to the deck for reassignment',

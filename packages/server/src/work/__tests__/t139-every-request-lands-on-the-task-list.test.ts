@@ -205,7 +205,7 @@ import { insertMessage, insertEngineEvent } from '../../memory/message-store.js'
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { composeTurnDeliverySummary } from '../../tracker/task-stamps.js';
 import { renderMessageTimeStamp } from '../../memory/message-stamp.js';
-import { setTrackerStatus } from '../tracker-store.js';
+import { setHold, holdOf } from '../done/hold.js';
 import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
@@ -885,11 +885,7 @@ function backdate(taskId: string, msgId: string, days: number): void {
  *  turn that served nothing or wrote to the tracker), so these clauses — which are about what
  *  happens to work that IS waiting — put it there directly. */
 function parkWaitingOnOwner(taskId: string): void {
-  const r = setTrackerStatus(taskId, 'paused', {
-    by: 'agent', actorId: PRIMARY, expectedState: 'claimed',
-    reason: 'turn 1 delivered a reply to the person and executed no effectful call; the work is waiting on them',
-  });
-  expect(r.kind).toBe('applied');
+  expect(setHold(taskId, 'paused', 'turn 1 answered the person and did nothing else; the work waits on them', 'engine').ok).toBe(true);
 }
 
 describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
@@ -900,9 +896,7 @@ describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
     await runV2Turn(PRIMARY);
     const id = taskIdTitled('Team headshots');
     parkWaitingOnOwner(id);
-    const paused = mockDb.current!.prepare('SELECT state, status_before_pause FROM work WHERE id = ?').get(id) as { state: string; status_before_pause: string | null };
-    expect(paused.state).toBe('paused');                 // parked, waiting on the owner
-    expect(paused.status_before_pause).not.toBeNull();   // ...with the pause record the reopen keyed on
+    expect(holdOf(id)?.kind).toBe('paused');   // parked, waiting on the owner
     backdate(id, 'msg-old-hs', 30);
 
     ownerSays('msg-ping-2', 'You there?');
@@ -910,15 +904,14 @@ describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
     // turn-end re-pause would look identical afterwards, so the state is read mid-turn.
     const seen: string[] = [];
     callModelSpy.mockImplementation(async () => {
-      seen.push((mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state);
+      seen.push(holdOf(id)?.kind ?? 'none');
       return { content: 'Yes, here.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
     });
     await runV2Turn(PRIMARY);
 
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every((st) => st === 'paused')).toBe(true);
-    const after = mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string };
-    expect(after.state).toBe('paused');
+    expect(holdOf(id)?.kind).toBe('paused');
     // requirement preserved: the waiting task never vanishes — it is on the list, labelled.
     expect(await taskList()).toContain('Team headshots');
   });
@@ -929,7 +922,7 @@ describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
     await runV2Turn(PRIMARY);
     const id = taskIdTitled('Newsletter intro');
     parkWaitingOnOwner(id);
-    expect((mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state).toBe('paused');
+    expect(holdOf(id)?.kind).toBe('paused');
 
     ownerSays('msg-a', 'Casual, please.');
     script([

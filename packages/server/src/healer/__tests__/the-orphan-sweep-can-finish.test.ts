@@ -26,6 +26,7 @@
 // own defect.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { holdOf } from '../../work/done/hold.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -117,14 +118,15 @@ describe('§1 the orphan sweep unassigns without violating NOT NULL', () => {
     const row = rowOf('orph-0001');
     expect(row.assignee_agent, 'nobody in particular is assigned now').toBeNull();
     expect(row.agent_id, 'and NOT NULL is not violated — the holder is the row\'s history').toBe(DEAD);
-    expect(row.state, 'the work is back on the deck for reassignment').toBe('on_deck');
+    expect(row.state, 'the work is back in Open for reassignment').toBe('open');
   });
 
   it('a PAUSED orphan is unassigned but NOT unpaused — the owner paused it on purpose', () => {
-    seedOrphan('orph-0002', 'paused');
+    seedTrackerTask(mockDb.current!, { id: 'orph-0002', title: 'a job whose owner is gone', status: 'in_progress', agentId: DEAD, hold_kind: 'paused', hold_reason: 'waiting on the owner' });
     runSweep();
     const row = rowOf('orph-0002');
-    expect(row.state, 'the pause is the owner\'s and the healer does not undo it').toBe('paused');
+    expect(row.state, 'the pause is the owner\'s and the healer does not undo it').toBe('claimed');
+    expect(holdOf('orph-0002')?.kind).toBe('paused');
     expect(row.assignee_agent).toBeNull();
   });
 

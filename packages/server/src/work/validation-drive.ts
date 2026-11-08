@@ -46,7 +46,7 @@ import { recipientIdsMatch } from '../agent/recipient-identity.js';
 import { isOwnerIMessageRecipient } from '../services/safe-senders.js';
 import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
-  taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, handedInExpr, lastEntryEventIdExpr, WORK_EVENT,
+  taskScope, msToText, STATE_TO_STATUS_SQL, handedInExpr, WORK_EVENT,
 } from './tracker-view.js';
 
 const logger = createLogger('validation-drive');
@@ -197,17 +197,15 @@ export function validationAttemptCount(workId: string): number {
  * THE LAW: a two-key COMPLETE row may be reported to the OWNER as unvalidated only once the
  * platform holds a record that its validator was actually asked.
  *
- * SCOPE, STATED. The `paused` and `blocked` arms are a different verdict with no coverage
- * recorder behind them, so they are NOT gated — gating them would invent the very silence
- * this task removes. Their behaviour is byte-unchanged, and negative controls pin it.
- *
- * T21 REFINES THE WORD "paused", it does not widen this law: a paused row that has FILED A
- * CLOSE is a close, not a pause, and the coverage recorder behind closes is exactly what this
- * law is about. A paused row with no close request is untouched — the negative control.
+ * SCOPE, STATED. A blocked hold needs no verdict, so it is NOT gated.
  */
 export const ownerEscalationOrderingExpr = (a: string): string =>
   `(CASE WHEN ${handedInExpr(a)}`
   + `  THEN ${validationAttemptRecordedExpr(a)} ELSE 1 END)`;
+
+/** The status word the owner's line uses: a blocked hold reads `blocked`. */
+const escalationStatusExpr = (a: string): string =>   // 2d
+  `CASE WHEN ${a}.hold_kind = 'blocked' THEN 'blocked' ELSE ${STATE_TO_STATUS_SQL(`${a}.state`)} END`;
 
 export interface OwnerEscalationRow {
   id: string;
@@ -215,11 +213,9 @@ export interface OwnerEscalationRow {
   status: string;
   assigned_to: string | null;
   updated: string;
-  /** 1 when an authority upheld the CURRENT block claim — "the PM agrees it is really stuck". */
-  blocked_validated: number;
   /** Recorded failures on this row and its delegated pieces (`workFailureCountExpr`). */
   failures: number;
-  /** What the agent said was in its way, from the newest blocked transition. NULL if none. */
+  /** What the agent said was in its way: the blocked hold's reason. NULL if none. */
   obstacle: string | null;
   /** The row's own priority — the key `POKE_THRESHOLDS` is indexed by, so the caller resolves
    *  this row's patience room through the ladder's table rather than guessing one. */
@@ -227,7 +223,7 @@ export interface OwnerEscalationRow {
   /** `updated_at` RAW, epoch ms. `updated` is the same instant rendered for the owner's sentence;
    *  this is the one the idle arithmetic runs on, because a clock is not a label. */
   updated_at_ms: number;
-  /** 1 when a STATE shape matched (unvalidated close, unvalidated pause, blocked). A row that is
+  /** 1 when a STATE shape matched (a hand-in, a blocked hold). A row that is
    *  here on the failure shape ALONE is 0, and only those are held to the assignee's patience. */
   by_state_arm: number;
 }
@@ -443,12 +439,13 @@ export function recordPersonTold(
  * the ladder about an old block on every later claim/release (driven RED in
  * `__tests__/t142-fix1-recipient-and-arms.test.ts`).
  */
-const episodeStartExpr = (a: string): string =>
-  `(CASE WHEN ${a}.state = 'blocked'`
-  + ` THEN COALESCE(${lastEntryEventIdExpr(a, `'blocked'`)}, 0) ELSE 0 END)`;
+const episodeStartExpr = (a: string): string =>   // 2d: a block's episode starts at its hold
+  `(CASE WHEN ${a}.hold_kind = 'blocked'`
+  + ` THEN COALESCE((SELECT MAX(he.id) FROM work_events he WHERE he.work_id = ${a}.id AND he.kind = 'audit'`
+  + `   AND json_extract(he.payload, '$.entry_kind') = 'hold_set'), 0) ELSE 0 END)`;
 
 /**
- * The row's newest NEWS on the log: its last transition, its last filed close request, or the
+ * The row's newest NEWS on the log: its last transition or hold, its last filed close request, or the
  * last failure of a piece it delegated. A tell counts only when it comes AFTER this — a person
  * told about the row before its current obstacle, close request or failure was not told about
  * THAT. This is what keeps the record from ever becoming a NEW silence on an arm that still
@@ -458,7 +455,8 @@ const episodeStartExpr = (a: string): string =>
 const latestNewsEventIdExpr = (a: string): string =>
   `MAX(`
   + `COALESCE((SELECT MAX(ne.id) FROM work_events ne WHERE ne.work_id = ${a}.id`
-  + `   AND ne.kind IN ('transition', 'validation_requested')), 0), `
+  + `   AND (ne.kind IN ('transition', 'validation_requested')`
+  + `        OR (ne.kind = 'audit' AND json_extract(ne.payload, '$.entry_kind') = 'hold_set'))), 0), `   // 2d
   + `COALESCE((SELECT MAX(fe.id) FROM work_events fe WHERE fe.kind = 'transition'`
   + `   AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})`
   + `   AND fe.work_id IN (${pieceIdsExpr(a)})), 0))`;
@@ -503,43 +501,8 @@ export const ownerEpisodeSettledExpr = (a: string): string =>
 // population from the one that escalated. One owner now; both callers interpolate it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * ── t124 FIX 1 — A BLESSED BLOCK IS NOT A SOLVED BLOCK, AND IT USED TO BE TREATED AS ONE. ──
- *
- * ⟨TOMBSTONE⟩ This arm read, from 2026-06-01 to t124:
- *
- *     OR (w.state = 'blocked' AND <blocked_validated> = 0)
- *
- * The conjunct is REMOVED, and its removal is the headline fix of the escalation lane.
- *
- * WHAT IT DID, driven rather than argued (`overhaul-plans/pm-cluster-triage.md` §Q4b, live
- * drive run 1): `work_validate(kind="blocked", valid=true)` → `upholdClaim(…,'blocked',…)`
- * sets `blocked_validated = 1`, so the moment the PM CONFIRMED a block was real the row left
- * this predicate permanently. It was already outside the PM's own UNVALIDATED_BLOCK lens and
- * already outside the poke ladder (which filters `in_progress`). Three sweeps, and the one
- * state that means "the platform has verified this work is genuinely stuck" was reachable by
- * none of them. The drive measured the consequence directly: 6 passes, idleness backdated to
- * 9,800 s, **zero `lane='owner'` rows**.
- *
- * WHY READING THE FLAG WAS THE ERROR, not the number behind it. `blocked_validated` answers
- * *"has an authority agreed the claim is true?"* — it is Key 2 on a BLOCK claim, and the
- * authority agreeing makes the block MORE real, not less. The predicate was treating a
- * verdict of "yes, genuinely stuck" as a resolution. Nothing in the uphold unblocks anything:
- * `upholdClaim` writes an adjudication and `tracker/tools.ts` then asks the primary, on an
- * `events`-lane notice, to "surface it to the user or unblock it manually" — a request to an
- * LLM, not a mechanism.
- *
- * SO THE ARM IS NOW THE STATE ALONE, and the bound is the one the sweep always had: the
- * top-level suppressor, `ownerEpisodeSettledExpr` (t142 scoped it from "per row, forever" to
- * "per episode"). A blocked row gets ONE trip up the ladder per block — two steers at the
- * primary, then the platform's own surface — whether or not the PM blessed it. It cannot
- * loop, and it can no longer be cancelled by the blessing.
- *
- * THE NEGATIVE CONTROL IS THE OTHER TWO ARMS: `close` and `pause` KEEP their validation
- * conjunct, because for those two an uphold IS the resolution (the work is done / the pause is
- * legitimate) and there is nothing left to tell anybody.
- */
-export const blockedNeedsOwnerExpr = (a: string): string => `${a}.state = 'blocked'`;
+/** A task held blocked: one trip up the ladder per block (`ownerEpisodeSettledExpr`), with no verdict. */
+export const blockedNeedsOwnerExpr = (a: string): string => `${a}.hold_kind = 'blocked'`;   // 2d
 
 /**
  * ── t124 — THE FAILURE COUNTER THE OWNER ALREADY BELIEVED IN. ──
@@ -716,20 +679,12 @@ export const workFailureCountExpr = (a: string): string =>
  * anyone's problem: `done` is delivered, `failed` and `abandoned` are closed, and `abandoned` is
  * where a cancel lands.
  *
- * `paused` is excluded too, and that one is NOT in the reviewer's required fix — it is this round's
- * own addition, for the same defect class caught one state earlier. A pause is the owner holding
- * the ball, and the platform's own tool contract promises him silence in it: *"Paused tasks are
- * INVISIBLE to the PM agent, no pokes, no nags, ever"* (`agent/tools/definitions.ts`). A paused row
- * that once failed would otherwise be nagged about on the strength of a failure that is no longer
- * what is happening. Coverage is not lost: a pause that nobody validated still escalates through
- * `unvalidatedPauseExpr`, which is the arm that OWNS that state and applies its own validation
- * gate — and the whole bug here was this arm bypassing another arm's gate.
- *
- * What stays admissible is live work: `open`, `on_deck`, `claimed`, `blocked`. That is the set the
- * owner's case lives in — a declined ASSIGN left `claimed` on the agent that refused it.
+ * A paused hold is excluded too: the tool contract promises silence in it (*"Paused tasks are
+ * INVISIBLE to the PM agent, no pokes, no nags, ever"*). What stays admissible is live work, the
+ * set the owner's case lives in: a declined ASSIGN left `claimed` on the agent that refused it.
  */
-const failureArmStateBound = (a: string): string =>
-  `${a}.state NOT IN (${[...TERMINAL_STATES, 'paused'].map((st) => `'${st}'`).join(', ')})`;
+const failureArmStateBound = (a: string): string =>   // 2d
+  `${a}.state NOT IN (${TERMINAL_STATES.map((st) => `'${st}'`).join(', ')}) AND ${a}.hold_kind IS NOT 'paused'`;
 
 export const anyRecordedFailureExpr = (a: string): string =>
   `(${workFailureCountExpr(a)} >= 1 AND ${failureArmStateBound(a)})`;
@@ -775,26 +730,6 @@ export function workFailureCount(workId: string): number {
     return 0;
   }
 }
-
-/**
- * WHAT THE AGENT SAID WAS IN ITS WAY — the newest blocked transition's own note.
- *
- * This is a RECORDED sentence, not a generated one, and it is the only part of the owner's
- * alert that can say what was actually tried. `tracker/tools.ts` hard-gates it at creation:
- * `status="blocked"` is REFUSED below 15 characters of `notes`, with a steer naming the shape
- * ("need API key for service X", "external service Y is returning 500s"). So on the blocked
- * arm this is reliably present and reliably specific — the one thing the platform knows about
- * the obstacle that it did not compose itself.
- *
- * `$.note` and not `$.reason`: `transition()` writes the CALLER's prose to `note` and its own
- * mechanical description to `reason` (for a status change that reads
- * `work_update(action="status") -> blocked`, which tells the owner nothing he can act on).
- */
-export const statedObstacleExpr = (a: string): string =>
-  `(SELECT json_extract(te.payload, '$.note') FROM work_events te`
-  + `  WHERE te.work_id = ${a}.id AND te.kind = 'transition'`
-  + `    AND json_extract(te.payload, '$.to') = 'blocked'`
-  + `  ORDER BY te.id DESC LIMIT 1)`;
 
 /**
  * THE STATE ARMS — the four shapes of "this is the owner's problem", in one place.
@@ -846,11 +781,10 @@ export function selectRowsForOwnerEscalation(
   const serviceParams = serviceAgentIds.length > 0 ? [...serviceAgentIds] : ['__none__'];
   const placeholders = serviceParams.map(() => '?').join(',');
   return getDb().prepare(`
-    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+    SELECT w.id AS id, w.title AS title, ${escalationStatusExpr('w')} AS status,
            w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated,
-           ${validatedExpr('w', 'blocked')} AS blocked_validated,
            ${workFailureCountExpr('w')} AS failures,
-           ${statedObstacleExpr('w')} AS obstacle,
+           w.hold_reason AS obstacle,
            COALESCE(w.priority, 'normal') AS priority,
            w.updated_at AS updated_at_ms,
            (CASE WHEN ${ownerEscalationStateArmsExpr('w')} THEN 1 ELSE 0 END) AS by_state_arm
@@ -864,10 +798,8 @@ export function selectRowsForOwnerEscalation(
       -- migration 139 means the worker's own close leaves the row where it was with a
       -- Key-1 request on it. Reading only the done arm would let exactly the rows this
       -- sweep exists for age out of its sight; handedInExpr is both shapes and
-      -- the whole state set they can sit in (T21). An active missed_runs_paused_at means
-      -- the ENGINE paused this task for missed runs (alertMissedRuns), not the agent — not
-      -- the owner's call; the PM sweep adjudicates that unvalidated pause and D12 owns its
-      -- resolution. The blocked and failure-count arms are t124's; §3a argues both.
+      -- the whole state set they can sit in (T21). The blocked and failure-count arms are
+      -- t124's; §3a argues both.
       AND ${ownerEscalationShapesExpr('w')}
       -- SWEEP CORE-2 item 1 — THE ORDERING LAW. The owner is not told his validator did not
       -- rule while the platform holds no record that it was ever asked.
@@ -900,11 +832,10 @@ export function selectRowsSkippedAsDelivered(
   const placeholders = serviceParams.map(() => '?').join(',');
   try {
     return getDb().prepare(`
-      SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+      SELECT w.id AS id, w.title AS title, ${escalationStatusExpr('w')} AS status,
              w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated,
-             ${validatedExpr('w', 'blocked')} AS blocked_validated,
              ${workFailureCountExpr('w')} AS failures,
-             ${statedObstacleExpr('w')} AS obstacle,
+             w.hold_reason AS obstacle,
              COALESCE(w.priority, 'normal') AS priority,
              w.updated_at AS updated_at_ms,
              (CASE WHEN ${ownerEscalationStateArmsExpr('w')} THEN 1 ELSE 0 END) AS by_state_arm,
@@ -1059,7 +990,6 @@ export function ownerEscalationAlertLine(p: {
   agentName: string;
   steers: number;
   failures: number;
-  blockedValidated: boolean;
   obstacle: string | null;
 }): string {
   const title = p.title.length > 60 ? `${p.title.slice(0, 60)}…` : p.title;
@@ -1093,16 +1023,8 @@ export function ownerEscalationAlertLine(p: {
     `"${title}" has been ${p.status} since ${p.since}, and the Dojo has no record of anyone bringing it to you.`,
   ];
 
-  // THE VALIDATOR'S VERDICT, three-valued and never collapsed. "Upheld" is the case fix 1
-  // opened and it is the STRONGEST thing the platform can say — the block was checked and is
-  // real — so it must not be delivered in the words for "we could not check".
-  if (p.status === 'blocked') {
-    parts.push(p.blockedValidated
-      ? `Your PM checked it and confirmed the block is real.`
-      : `Your PM has not been able to confirm it.`);
-  } else {
-    parts.push(`Your PM cannot confirm it.`);
-  }
+  // A block needs no verdict, so only a hand-in waits on the PM.
+  if (p.status !== 'blocked') parts.push(`Your PM cannot confirm it.`);
 
   // WHAT THE AGENT SAID WAS IN ITS WAY. Quoted, never paraphrased, and whitespace-collapsed
   // the way every other owner-facing composer in this module treats stored prose.

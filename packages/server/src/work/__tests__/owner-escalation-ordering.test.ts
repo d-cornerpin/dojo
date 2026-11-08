@@ -169,7 +169,7 @@ describe('THE ORDERING LAW — the owner is not told about work nobody tried to 
   });
 
   it('NEGATIVE CONTROL: an unvalidated BLOCK still escalates with no attempt recorded', () => {
-    seedWork('b1', { state: 'blocked' });
+    seedWork('b1', { hold_kind: 'blocked', hold_reason: 'need the vendor key' });
     expect(candidates()).toEqual(['b1']);
   });
 
@@ -183,7 +183,7 @@ describe('THE ORDERING LAW — the owner is not told about work nobody tried to 
     mockDb.current!.prepare('UPDATE work SET agent_id = ? WHERE id = ?').run('dreamer', 'service');
     recordAttempt('service', VALIDATION_ATTEMPT_MISS);
     // an engine missed-runs pause is not the owner's call
-    seedWork('missed', { state: 'paused', missed_runs_paused_at: T });
+    seedWork('missed', { is_paused: 1, missed_runs_paused_at: T });
     // and a row younger than the bound is not stale yet
     seedKeyOneFiled('young');
     recordAttempt('young', VALIDATION_ATTEMPT_MISS);

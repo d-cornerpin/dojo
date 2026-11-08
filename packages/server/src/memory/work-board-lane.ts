@@ -81,8 +81,8 @@ export interface BoardTask {
   /** t139: the tracker status. The block carries every UNFINISHED task, not only in-progress
    *  ones, so a line that is waiting says so (`BOARD_STATUSES`). */
   status?: string;
-  /** The engine's own record that IT paused the row (waiting on the person who asked). */
-  statusBeforePause?: string | null;
+  /** A Working task on hold, paused or blocked (`work/done/hold.ts`). */
+  hold?: 'paused' | 'blocked' | null;
   /** When the task was opened — round 2 lists the NEWEST request first. */
   createdAt?: string;
 }
@@ -93,7 +93,7 @@ export interface BoardTask {
  *
  * It read `in_progress` alone. Driven through the real dashboard delivery door
  * (`work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`), an owner's long ask whose
- * turn answered "on it" and made no effectful call had its task moved to `paused` by the engine
+ * turn answered "on it" and made no effectful call had its task held paused by the engine
  * (`agent/v2/answered-edge.ts`), and the task — with the owner's words — vanished from the list
  * while the work was still owed. The list is the ONE record of what is current; a waiting task
  * is still current, so it is SHOWN and LABELLED, never hidden.
@@ -221,7 +221,7 @@ function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): str
   const title = t.title.length > caps.title ? `${t.title.slice(0, caps.title)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
   if (v.waiting) {
-    line += `\n  Status: ${t.status} since ${recordedInstant(v.waiting.since)} — ${waitingOn(v, caps)}. `
+    line += `\n  Status: ${t.hold ?? t.status} since ${recordedInstant(v.waiting.since)} — ${waitingOn(v, caps)}. `
       + 'Not current work: do not resume it unless asked.';
   }
   if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
@@ -235,9 +235,8 @@ function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): str
   return line;
 }
 
-/** WHO paused it is the transition's own `by` (round 3): `status_before_pause` is written for
- *  every pause, so it cannot tell the engine's "waiting on the person" from an owner pausing the
- *  job himself — which is not a question waiting on his answer. */
+/** WHO paused it is the hold's own actor (round 3), which tells the engine's "waiting on the
+ *  person" from an owner pausing the job himself, which is not a question waiting on his answer. */
 function waitingOn(v: TaskView, caps: TermCaps): string {
   switch (v.waiting?.by) {
     case 'blocked': return 'waiting on what blocked it (its last note says what)';
@@ -505,16 +504,16 @@ export async function buildWorkBoardLane(agentId: string, view?: TaskListView): 
     const newestFirst = (a: BoardTask, b: BoardTask): number =>
       (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
     tasks = BOARD_STATUSES.flatMap((status) =>
-      (listTasks({ status, assignedTo: agentId }) as unknown as BoardTask[]).sort(newestFirst));
+      (listTasks({ status, assignedTo: agentId }) as unknown as BoardTask[]).filter((t) => status !== 'in_progress' || !t.hold).sort(newestFirst));
     // t181: an on_deck task with NO schedule is waiting, not queued — nothing will bring it back, so it is listed.
-    tasks.push(...(listTasks({ status: 'on_deck', assignedTo: agentId }) as unknown as BoardTask[]).filter((t) => unscheduled(t.id)).sort(newestFirst));
+    tasks.push(...(listTasks({ status: 'on_deck', assignedTo: agentId }) as unknown as BoardTask[]).filter((t) => !t.hold && unscheduled(t.id)).sort(newestFirst));
   } catch {
     return { attemptLedger: null, activeTasks: null };   // tracker may not be available
   }
   if (tasks.length === 0) return { attemptLedger: null, activeTasks: null };
 
   // The attempt ledger keeps its own subject: the work being DONE, i.e. in-progress tasks.
-  const inProgress = tasks.filter((t) => t.status === undefined || t.status === 'in_progress');
+  const inProgress = tasks.filter((t) => (t.status === undefined || t.status === 'in_progress') && !t.hold);
   // t207 (D6): THE LEDGER TAKES THE ROOM THE ARRAY LEAVES AFTER THE LIST. The list is laid out in the whole
   // room first; whatever it leaves unspent is the ledger's, and the ledger is never offered less than its own
   // guarantee (`attemptLedgerWorstCaseTokens`, derived from the renderer). When the list wanted the whole
@@ -550,12 +549,13 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: Tas
          LEFT JOIN conversations c ON c.id = m.conversation_id
         WHERE w.id = ?`,
     );
-    // Round 2: when a waiting task entered its state (its own transition record), whether its
+    // Round 2: when a waiting task entered its hold or Open (its own record), whether its
     // description was EDITED (its own audit record), and how many newer messages its request's
     // conversation holds (`ix_msg_conv_seq`). All per task, all point/range reads on indexes.
     const sinceStmt = db.prepare(
-      `SELECT created_at, json_extract(payload, '$.by') AS by FROM work_events
-        WHERE work_id = ? AND kind = 'transition' AND json_extract(payload, '$.to') = ?
+      `SELECT created_at, CASE WHEN kind = 'audit' THEN actor ELSE json_extract(payload, '$.by') END AS by FROM work_events
+        WHERE work_id = ? AND ((kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'hold_set' AND ? = 1)
+          OR (kind = 'transition' AND json_extract(payload, '$.to') = 'open' AND ? = 0))
         ORDER BY id DESC LIMIT 1`,
     );
     const editedStmt = db.prepare(
@@ -583,13 +583,13 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: Tas
         }
       } catch { /* stamps are best-effort */ }
       const { origin, conversationId, seq } = readOrigin(originStmt, t.id);
-      const isWaiting = t.status === 'paused' || t.status === 'blocked' || t.status === 'on_deck';
+      const isWaiting = !!t.hold || t.status === 'on_deck';
       let waiting: TaskView['waiting'] = null;
       if (isWaiting) {
-        const state = t.status ?? 'paused';
-        const into = sinceStmt.get(t.id, state) as { created_at: number | string; by: string | null } | undefined;
+        const held = t.hold ? 1 : 0;
+        const into = sinceStmt.get(t.id, held, held) as { created_at: number | string; by: string | null } | undefined;
         const since = into?.created_at ?? null;
-        const by: WaitingBy = t.status === 'blocked' ? 'blocked' : t.status === 'on_deck' ? 'later'
+        const by: WaitingBy = t.hold === 'blocked' ? 'blocked' : !t.hold ? 'later'
           : into?.by === 'engine' ? 'engine' : into?.by === 'owner' ? 'owner' : 'other';
         waiting = { since, by };
       }

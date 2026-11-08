@@ -30,7 +30,7 @@ export const TaskDetailPanel = ({
   onUpdate: () => void;
 }) => {
   const toast = useToast();
-  const [status, setStatus] = useState(task.status);
+  const [status, setStatus] = useState<string>(task.hold ?? task.status);
   const [priority, setPriority] = useState(task.priority);
   const [assignedTo, setAssignedTo] = useState(task.assignedTo || '');
   const [noteInput, setNoteInput] = useState('');
@@ -40,7 +40,7 @@ export const TaskDetailPanel = ({
   const [logLoading, setLogLoading] = useState(false);
 
   useEffect(() => {
-    setStatus(task.status);
+    setStatus(task.hold ?? task.status);
     setPriority(task.priority);
     setAssignedTo(task.assignedTo || '');
   }, [task]);
@@ -171,7 +171,7 @@ export const TaskDetailPanel = ({
               onChange={async (e) => {
                 const prevStatus = status;
                 const newStatus = e.target.value;
-                setStatus(newStatus as Task['status']);
+                setStatus(newStatus);
                 const ok = await handleFieldUpdate({ status: newStatus });
                 if (!ok) setStatus(prevStatus);
               }}

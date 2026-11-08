@@ -165,7 +165,7 @@ interface OpenWork { id: string; title: string; updated: number; opened: number 
 function openWorkOf(agentId: string, now: number): OpenWork[] {
   return getDb().prepare(`SELECT w.id, COALESCE(w.title, w.id) AS title, w.updated_at AS updated,
         MAX(w.opened_at, COALESCE(w.last_run_at, 0), ${taskMovedAtSql('w')}) AS opened
-      FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0
+      FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0 AND w.hold_kind IS NULL
         AND (w.scheduled_start IS NULL OR w.scheduled_start <= ?) AND COALESCE(w.schedule_status, '') != 'waiting'`)
     .all(agentId, now) as OpenWork[];
 }

@@ -542,7 +542,7 @@ export interface Project {
   title: string;
   description: string | null;
   level: number;
-  status: 'active' | 'complete' | 'paused' | 'cancelled';
+  status: 'active' | 'complete' | 'cancelled';
   createdBy: string;
   phaseCount: number;
   currentPhase: number;
@@ -553,9 +553,8 @@ export interface Project {
 
 export interface ProjectDetail extends Project {
   tasks: Task[];
-  /** T18: `cancelled` is counted apart from `failed`. Folding a user's cancellation into the
-   *  failure count is the same mislabel the status vocabulary carried, one layer up. */
-  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; cancelled: number; paused: number };
+  /** `cancelled` is counted apart from `failed`; `blocked` counts Working tasks held blocked. */
+  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; cancelled: number };
 }
 
 export interface Task {
@@ -566,7 +565,11 @@ export interface Task {
   /** T18: `cancelled` is the second TERMINAL outcome (spine `abandoned`), distinct from
    *  `fallen`. It renders in the same board column with its own word — see
    *  `dashboard/src/lib/task-status.ts`, which owns that rule. */
-  status: 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'blocked' | 'fallen' | 'paused' | 'cancelled';
+  status: 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'fallen' | 'cancelled';
+  /** Working (or Open) work on standby, with its reason. A hold is not a status: the task still
+   *  finishes by being handed in and decided. */
+  hold: 'paused' | 'blocked' | null;
+  holdReason: string | null;
   assignedTo: string | null;
   assignedToName: string | null;
   createdBy: string;
@@ -594,7 +597,6 @@ export interface Task {
   runCount: number;
   isPaused: boolean;
   pausedUntil: string | null;
-  statusBeforePause: string | null;
   scheduleStatus: string;
   assignedToGroup: string | null;
   /**
@@ -607,11 +609,8 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
-  // Phase B.1 validation flags. 1 = PM (or user) has blessed the matching
-  // status. 0 = awaiting validation, dashboard shows the bug icon.
-  pauseValidated: 0 | 1;
+  // 1 = PM (or user) has blessed the close. 0 = awaiting validation.
   completeValidated: 0 | 1;
-  blockedValidated: 0 | 1;
   // 5-minute escalation: timestamp when the engine asked the user about
   // an unvalidated transition. NULL until the sweep fires.
   validationEscalatedAt: string | null;

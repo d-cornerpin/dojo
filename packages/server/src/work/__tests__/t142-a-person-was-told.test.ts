@@ -54,6 +54,7 @@ vi.mock('../../agent/runtime.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { transition } from '../store.js';
+import { setHold, clearHold, holdOf } from '../done/hold.js';
 import {
   selectRowsForOwnerEscalation, ESCALATION_STEER_MARKER, recordPersonTold, escalationSteerCount,
 } from '../validation-drive.js';
@@ -124,13 +125,13 @@ const age = (id: string): void => {
   mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(T, id);
 };
 
+/** A block or pause is a hold; resuming lifts it; anything else is a state move. */
 function move(id: string, to: 'blocked' | 'claimed' | 'abandoned', by: 'agent' | 'owner' = 'agent'): void {
-  const r = transition(id, {
-    to, by, actorId: by === 'owner' ? 'owner' : ASSIGNEE,
-    reason: `work_update(action="status") -> ${to}`,
-    note: to === 'blocked' ? OBSTACLE : undefined,
-  });
-  expect(r.kind, `${id} -> ${to}`).toBe('applied');
+  const actor = by === 'owner' ? 'owner' : ASSIGNEE;
+  const ok = to === 'blocked' || to === 'paused' ? setHold(id, to, to === 'blocked' ? OBSTACLE : 'waiting on the owner', actor).ok
+    : to === 'claimed' && holdOf(id) ? clearHold(id, actor)
+      : transition(id, { to, by, actorId: actor, reason: `work_update(action="status") -> ${to}` }).kind === 'applied';
+  expect(ok, `${id} -> ${to}`).toBe(true);
 }
 
 function seedBlocked(id: string): void {

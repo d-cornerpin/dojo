@@ -275,7 +275,7 @@ const NON_PROSE_ATTRS: Record<string, string> = {
   scheduled_start: 'timestamp', repeat_interval: 'integer', repeat_unit: 'enum',
   repeat_end_type: 'enum', repeat_end_value: 'integer/timestamp',
   repeat_days_of_week: 'bitmask/CSV of day numbers', schedule_status: 'enum',
-  is_paused: 'boolean', paused_until: 'timestamp', status_before_pause: 'enum',
+  is_paused: 'boolean', paused_until: 'timestamp', hold_kind: 'enum', hold_at: 'timestamp',
   last_run_at: 'timestamp', missed_runs_paused_at: 'timestamp',
   anchor_local: 'wall-clock string', attempts: 'integer', tz: 'IANA zone id',
 };

@@ -27,8 +27,7 @@ import { getDb } from '../../../../db/connection.js';
 import { isPMAgent } from '../../../../config/platform.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
-import { setTrackerStatus } from '../../../../work/tracker-store.js';
-import { noteUnsettled } from '../../../../work/store.js';
+import { setHold } from '../../../../work/done/hold.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 // T53: `enqueueSteer` is no longer imported here. Both of this file's steers go through
@@ -159,7 +158,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
       const task = db2.prepare(`
         SELECT w.id AS id, w.title AS title, w.parent_id AS project_id,
                w.root_kind AS root_kind FROM work w
-        WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
+        WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.hold_kind IS NULL
         ORDER BY w.updated_at DESC LIMIT 1
       `).get(agentId) as { id: string; title: string; project_id: string | null; root_kind: string } | undefined;
       if (task) {
@@ -168,34 +167,8 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         if (!blockedWorkIsUserOrigin && task.root_kind === ENGINE_SCAFFOLD_ROOT_KIND) {
           blockedWorkIsUserOrigin = true;
         }
-        const noteLine = `Engine auto-blocked: ${breakerReason}. Likely needs human review or a re-stated goal.`;
-        // PHASE-2 T8b: through `transition()`, and `blocked_validated = 1` is now the
-        // upheld adjudication it always was in substance — the comment below already
-        // called it "the engine's validation"; it is a ROW saying so.
-        const blockRes = setTrackerStatus(task.id, 'blocked', {
-          by: 'agent', actorId: agentId,
-          reason: `engine auto-block: ${breakerReason}`,
-          note: noteLine,
-        });
-        noteUnsettled(blockRes, 'thrash gate: engine auto-block', { taskId: task.id });
-        // F1.4: no noteTransitionForReview call here. runPMReview surfaces any
-        // blocked task after 30 minutes regardless of blocked_validated (the
-        // pm-agent blocked-issue check), so the PM has its backstop. A fresh
-        // block (<30 min) would be dropped by that 30-min gate anyway, and
-        // re-validating a deterministic engine block would be theater:
-        // blocked_validated=1 IS the engine's validation.
-        void import('../../../../tracker/task-log.js').then(({ writeTaskLog }) => {
-          writeTaskLog({
-            taskId: task.id,
-            fromEntity: 'engine',
-            entryKind: 'observation',
-            fromStatus: 'in_progress',
-            toStatus: 'blocked',
-            actionTaken: 'engine auto-block (thrash gate ignored)',
-            reason: 'thrash:gate-ignored',
-            note: noteLine,
-          });
-        }).catch(() => { /* best effort */ });
+        const held = setHold(task.id, 'blocked', `engine auto-block: ${breakerReason}`, 'engine');
+        if (!held.ok) logger.warn('thrash gate: engine auto-block refused', { taskId: task.id, why: held.why }, agentId);
         void import('../../../../tracker/schema.js').then(({ getTask: schemaGetTask }) => {
           const fresh = schemaGetTask(task.id);
           if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });

@@ -141,8 +141,8 @@ describe('a schedule set on a finished recurring task', () => {
 
   it('R4-1 OWNER door is atomic: a hop that fails leaves the row exactly as it was (still finished, schedule unchanged)', async () => {
     const id = await finishedRecurring();
-    // The second hop (open -> on_deck) cannot land.
-    db().exec(`CREATE TRIGGER no_on_deck BEFORE UPDATE ON work WHEN NEW.id = '${id}' AND NEW.state = 'on_deck' BEGIN SELECT RAISE(ABORT, 'no on_deck'); END`);
+    // The reopen (done -> open) cannot land.
+    db().exec(`CREATE TRIGGER no_reopen BEFORE UPDATE ON work WHEN NEW.id = '${id}' AND NEW.state = 'open' BEGIN SELECT RAISE(ABORT, 'no reopen'); END`);
     const before = snapshot(id);
     const res = await put(id, SCHED());
     expect(res.status).not.toBe(200);
@@ -183,7 +183,7 @@ describe('a schedule set on a finished recurring task', () => {
 
   it('R5-1 OWNER door: a failed save answers a plain sentence (no raw database text), 500, nothing changed', async () => {
     const id = await finishedRecurring();
-    db().exec(`CREATE TRIGGER no_on_deck2 BEFORE UPDATE ON work WHEN NEW.id = '${id}' AND NEW.state = 'on_deck' BEGIN SELECT RAISE(ABORT, 'secret raw sqlite text'); END`);
+    db().exec(`CREATE TRIGGER no_reopen2 BEFORE UPDATE ON work WHEN NEW.id = '${id}' AND NEW.state = 'open' BEGIN SELECT RAISE(ABORT, 'secret raw sqlite text'); END`);
     const res = await put(id, SCHED());
     const body = await res.json() as { ok: boolean; error: string };
     expect(res.status).toBe(500);

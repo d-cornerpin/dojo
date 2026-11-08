@@ -267,25 +267,25 @@ describe('§3 the ADVANCE wiring — setTrackerStatus (the tracker\'s one status
     chargeEffort('t3', 42);
     expect(effortDelta(effortRow('t3'))).toBe(42);
 
-    const r = setTrackerStatus('t3', 'blocked', {
-      by: 'agent', actorId: 'a1', reason: 'waiting on the owner',
+    const r = setTrackerStatus('t3', 'on_deck', {
+      by: 'agent', actorId: 'a1', reason: 'back to Open',
     });
 
     expect(r.kind).toBe('applied');
-    expect(stateOf('t3')).toBe('blocked');
+    expect(stateOf('t3')).toBe('open');
     expect(effortDelta(effortRow('t3'))).toBe(0);   // baseline moved
     expect(effortRow('t3').effort_calls).toBe(42);  // lifetime total kept, not erased
   });
 
   it('the no-op-status adversarial case: a looping agent spamming the SAME status cannot reset its own meter', () => {
-    seedTrackerTask(mockDb.current!, { id: 't4', agentId: 'a1', status: 'blocked' });
+    seedTrackerTask(mockDb.current!, { id: 't4', agentId: 'a1', status: 'on_deck' });
     chargeEffort('t4', 77);
 
     // `transition()`'s own G4 gate refuses to move a row that is already there,
     // returning `no_change` rather than `applied` — spammed twice, exactly the loop
     // this meter exists to catch.
-    const r1 = setTrackerStatus('t4', 'blocked', { by: 'agent', actorId: 'a1', reason: 'still waiting' });
-    const r2 = setTrackerStatus('t4', 'blocked', { by: 'agent', actorId: 'a1', reason: 'still waiting' });
+    const r1 = setTrackerStatus('t4', 'on_deck', { by: 'agent', actorId: 'a1', reason: 'still waiting' });
+    const r2 = setTrackerStatus('t4', 'on_deck', { by: 'agent', actorId: 'a1', reason: 'still waiting' });
 
     expect(r1.kind).toBe('no_change');
     expect(r2.kind).toBe('no_change');
@@ -296,8 +296,8 @@ describe('§3 the ADVANCE wiring — setTrackerStatus (the tracker\'s one status
     seedTrackerTask(mockDb.current!, { id: 't5', agentId: 'a1', status: 'complete' });
     chargeEffort('t5', 9);
 
-    // done -> blocked is not a legal move (the LEGAL table in work/store.ts).
-    const r = setTrackerStatus('t5', 'blocked', { by: 'agent', actorId: 'a1', reason: 'try to reopen' });
+    // An agent does not reopen finished work (gate G8).
+    const r = setTrackerStatus('t5', 'on_deck', { by: 'agent', actorId: 'a1', reason: 'try to reopen' });
 
     expect(r.kind).toBe('refused');
     expect(effortDelta(effortRow('t5'))).toBe(9);

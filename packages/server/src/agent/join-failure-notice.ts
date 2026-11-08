@@ -44,7 +44,7 @@ import { getDb } from '../db/connection.js';
 import type { JoinPiece } from '../work/store.js';
 
 /** A piece that never produced an answer of any kind: the platform stopped waiting. */
-const NO_ANSWER_STATES = new Set(['abandoned', 'open', 'claimed', 'on_deck', 'blocked', 'paused']);
+const NO_ANSWER_STATES = new Set(['abandoned', 'open', 'claimed', 'blocked']);
 
 export interface PieceTally {
   /** A peer replied FAIL — something came back and it was a refusal. */

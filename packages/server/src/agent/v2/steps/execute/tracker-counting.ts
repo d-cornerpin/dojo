@@ -65,7 +65,7 @@ import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
 export function resolveCurrentClaimedTaskId(agentId: string): string | null {
   const row = getDb().prepare(
     `SELECT w.id AS id FROM work w
-     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
+     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.hold_kind IS NULL
      ORDER BY ${workingTaskOrder('w')} LIMIT 1`,
   ).get(agentId) as { id: string } | undefined;
   return row?.id ?? null;

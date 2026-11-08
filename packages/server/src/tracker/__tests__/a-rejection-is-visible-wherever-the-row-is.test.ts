@@ -56,6 +56,7 @@ import {
 } from '../../work/tracker-store.js';
 import { trackerListActive, trackerGetStatus } from '../tools.js';
 import { writeTaskLog } from '../task-log.js';
+import { setHold } from '../../work/done/hold.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
@@ -141,28 +142,10 @@ function seedS4Row(): string {
   return t;
 }
 
-/** A blocked row carrying the agent's own recorded reason and nothing else. */
+/** A task held blocked with the agent's own reason. */
 function seedBlockedWithNote(): string {
   const t = newTask('Find the notes folder');
-  setTrackerStatus(t, 'blocked', {
-    by: 'agent', actorId: AGENT, claim: 'requests-validation',
-    reason: 'work_update(action="status") -> blocked',
-  });
-  writeTaskLog({
-    taskId: t, fromEntity: `agent:${AGENT}`, entryKind: 'observation',
-    actionTaken: 'notes attached to status=blocked', note: BLOCKED_NOTE,
-  });
-  return t;
-}
-
-/** CONTROL fixture: a stopped row with NO recorded note of any kind. */
-function seedBareRow(status: 'blocked' | 'paused', title: string): string {
-  const t = newTask(title);
-  setTrackerStatus(t, status, {
-    by: 'agent', actorId: AGENT, claim: 'requests-validation',
-    reason: `work_update(action="status") -> ${status}`,
-    syncSchedulePause: status === 'paused',
-  });
+  setHold(t, 'blocked', BLOCKED_NOTE, AGENT);
   return t;
 }
 
@@ -207,14 +190,6 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
     seedBlockedWithNote();
     expect(trackerListActive(AGENT, { status: 'blocked' }))
       .toContain('Cannot locate the "notes folder"');
-  });
-
-  it('CONTROL: a row with no recorded notes renders EXACTLY as today', () => {
-    const id = seedBareRow('paused', 'Nothing was ever written down here');
-    const body = section(trackerListActive(AGENT, {}), 'Paused Tasks (1):');
-    expect(body).toEqual([
-      `  [${id.slice(0, 8)}] Nothing was ever written down here [HarnessBot] (normal)`,
-    ]);
   });
 
   it('CONTROL: On Deck rows are untouched — this door is Blocked and Paused only', () => {

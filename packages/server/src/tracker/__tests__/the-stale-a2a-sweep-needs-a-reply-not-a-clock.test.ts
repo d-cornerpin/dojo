@@ -102,7 +102,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     mockDb.current!.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES ('m1', ?, 'assistant', 'hi', ?)")
       .run(RECEIVER, Date.now());
     await runPokeCheck();
-    expect(stateOf('t-chatty'), 'activity elsewhere is a guess, not a record').toBe('on_deck');
+    expect(stateOf('t-chatty'), 'activity elsewhere is a guess, not a record').toBe('open');
   });
 
   it.skip('2c: a ticket younger than 30 minutes is closed the moment the receiver replies on its thread', async () => {
@@ -118,7 +118,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a2', ?, 'thread-zzz', 'COMPLETE')")
       .run(RECEIVER);
     await runPokeCheck();
-    expect(stateOf('t-other')).toBe('on_deck');
+    expect(stateOf('t-other')).toBe('open');
   });
 
   // R11: only a FINAL reply (A2AIntent ANSWER, COMPLETE, DELIVERABLE, FAIL; shared/src/a2a-protocol.ts) ends a ticket.
@@ -127,7 +127,7 @@ describe('the stale A2A sweep acts on a recorded reply, never on a clock', () =>
     mockDb.current!.prepare("INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent) VALUES ('a9', ?, 'thread-ddd', ?)")
       .run(RECEIVER, intent);
     await runPokeCheck();
-    expect(stateOf('t-live')).toBe('on_deck');
+    expect(stateOf('t-live')).toBe('open');
   });
 
   it.skip.each(['ANSWER', 'COMPLETE', 'DELIVERABLE', 'FAIL'])('2c: a %s reply ends the ticket', async (intent) => {

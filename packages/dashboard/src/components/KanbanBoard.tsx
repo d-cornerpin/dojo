@@ -109,9 +109,7 @@ const columns: ColumnDef[] = [
   { key: 'in_progress', label: 'In Progress', flavor: 'kcol--progress' },
   { key: 'handed_in', label: 'Handed in', flavor: 'kcol--paused' },
   { key: 'sent_back', label: 'Sent back', flavor: 'kcol--blocked' },
-  { key: 'paused', label: 'Paused', flavor: 'kcol--paused' },
   { key: 'complete', label: 'Complete', flavor: 'kcol--complete' },
-  { key: 'blocked', label: 'Blocked', flavor: 'kcol--blocked' },
   // T18: this column holds BOTH terminal outcomes — a task that failed and one the owner
   // cancelled. It is one column with two words on the cards rather than a seventh column,
   // because the whole reason `cancelled` was folded into `fallen` for a year is that a
@@ -235,11 +233,7 @@ const DraggableTaskCard = ({
 //                 don't shove scheduled ones around.
 //   in_progress → earliest-started at top (asc updated_at — updated_at flips
 //                 to the transition time when status becomes in_progress).
-//   paused      → earliest-paused at top (asc updated_at — same proxy, the
-//                 longest-sitting paused tasks surface first so they aren't
-//                 forgotten).
 //   complete    → latest-completed at top (desc completed_at, fallback updated_at).
-//   blocked /
 //   fallen      → not specified by user; left on the existing desc updated_at
 //                 default for visual consistency.
 type Cmp = (a: Task, b: Task) => number;
@@ -264,9 +258,7 @@ const SORT_BY_COLUMN: Record<KanbanColumnKey, Cmp> = {
   in_progress: (a, b) => asc(a.updatedAt, b.updatedAt),
   handed_in: (a, b) => asc(a.updatedAt, b.updatedAt),
   sent_back: (a, b) => asc(a.updatedAt, b.updatedAt),
-  paused: (a, b) => asc(a.updatedAt, b.updatedAt),
   complete: (a, b) => desc(a.completedAt, b.completedAt) || desc(a.updatedAt, b.updatedAt),
-  blocked: (a, b) => desc(a.updatedAt, b.updatedAt),
   fallen: (a, b) => desc(a.updatedAt, b.updatedAt),
 };
 

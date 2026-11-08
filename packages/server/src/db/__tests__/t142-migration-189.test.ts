@@ -401,29 +401,6 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
   const db = copyOf(built);
   for (const f of SUBJECTS) applyFile(db, f);
 
-  const settled = async (id: string): Promise<number> => {
-    const { ownerEpisodeSettledExpr } = await import('../../work/validation-drive.js');
-    return (db.prepare(`SELECT (CASE WHEN ${ownerEpisodeSettledExpr('w')} THEN 1 ELSE 0 END) AS s FROM work w WHERE w.id = ?`)
-      .get(id) as { s: number }).s;
-  };
-
-  it('THE MEASURE: rows the old suppressor silenced and the new one would not — zero after upgrade', async () => {
-    const { ownerEpisodeSettledExpr } = await import('../../work/validation-drive.js');
-    const newlyEligible = (db.prepare(
-      `SELECT COUNT(*) AS n FROM work w
-        WHERE EXISTS (SELECT 1 FROM work_events s WHERE s.work_id = w.id AND s.kind = 'validation_escalated')
-          AND NOT ${ownerEpisodeSettledExpr('w')}`,
-    ).get() as { n: number }).n;
-    expect(newlyEligible).toBe(0);
-  });
-
-  it('the already-escalated, re-blocked row is carried as settled; the controls are untouched', async () => {
-    expect(await settled('d-reblocked'), 'carried').toBe(1);
-    expect(await settled('d-current'), 'already settled').toBe(1);
-    expect(await settled('d-never'), 'never escalated: eligible exactly as at base').toBe(0);
-    expect(await settled('d-claimed'), 'not blocked: base behaviour').toBe(1);
-  });
-
   it('the carry is exactly ONE row per row in the set, invisible on the dashboard (the original instant and thread)', () => {
     const carried = db.prepare(
       `SELECT work_id, actor, created_at, payload FROM work_events

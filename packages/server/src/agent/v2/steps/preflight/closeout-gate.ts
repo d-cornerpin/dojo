@@ -86,7 +86,7 @@ export async function runCloseoutGate(
       SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0
+        AND w.is_paused = 0 AND w.hold_kind IS NULL
         AND ${handedInExpr('w')} = 0
         AND ${taskMovedAtSql('w')} < ?
       ORDER BY ${taskMovedAtSql('w')} ASC
@@ -110,8 +110,8 @@ export async function runCloseoutGate(
       SELECT t.id AS id, t.title AS title, 'stranded' AS kind FROM work t
       INNER JOIN work p ON p.id = t.parent_id
       WHERE ${taskScope('t')} AND t.agent_id = ?
-        AND t.state = 'on_deck'
-        AND t.is_paused = 0
+        AND t.state = 'open'
+        AND t.is_paused = 0 AND t.hold_kind IS NULL
         AND ${handedInExpr('t')} = 0
         AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
         AND t.schedule_status != 'waiting'

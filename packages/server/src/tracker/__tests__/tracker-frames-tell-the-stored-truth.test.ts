@@ -199,7 +199,7 @@ describe('T34 controls: no frame spam, and nothing else moves', () => {
     const row = mockDb.current!.prepare(
       'SELECT state, schedule_status, next_run_at, scheduled_start FROM work WHERE id = ?',
     ).get(id) as Record<string, unknown>;
-    expect(row.state).toBe('on_deck');
+    expect(row.state).toBe('open');
     expect(row.schedule_status).toBe('waiting');
     expect(row.next_run_at).toBe(Date.parse(when));
     expect(row.scheduled_start).toBe(Date.parse(when));

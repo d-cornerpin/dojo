@@ -102,7 +102,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
     SELECT w.id AS id FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ?
       AND w.state = 'claimed'
-      AND w.is_paused = 0
+      AND w.is_paused = 0 AND w.hold_kind IS NULL
       AND w.id IN (${ids})
   `).all(agentId, ...tied) as Array<{ id: string }>;
 
@@ -111,8 +111,8 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
     SELECT t.id AS id FROM work t
     INNER JOIN work p ON p.id = t.parent_id
     WHERE ${taskScope('t')} AND t.agent_id = ?
-      AND t.state = 'on_deck'
-      AND t.is_paused = 0
+      AND t.state = 'open'
+      AND t.is_paused = 0 AND t.hold_kind IS NULL
       AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
       AND t.schedule_status != 'waiting'
       AND p.requester_id = ?
@@ -124,7 +124,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
       )
   `).all(agentId, now, agentId, ...tied) as Array<{ id: string }>;
 
-  // Disjoint by construction (`state = 'claimed'` vs `state = 'on_deck'`), so no id can be
+  // Disjoint by construction (`state = 'claimed'` vs `state = 'open'`), so no id can be
   // double-counted or double-touched.
   const targets = [...inProgress, ...stranded];
   const touch = db.prepare('UPDATE work SET updated_at = ? WHERE id = ?');
@@ -194,7 +194,7 @@ function handOverOneVerdict(agentId: string): string | null {
     SELECT w.id AS id, w.title AS title FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ?
       AND w.state = 'claimed'
-      AND w.is_paused = 0
+      AND w.is_paused = 0 AND w.hold_kind IS NULL
   `).all(agentId) as Array<{ id: string; title: string | null }>;
 
   for (const task of claimed) {

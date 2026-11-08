@@ -472,7 +472,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     JOIN work t ON t.agent_id = a.id AND ${taskScope('t')}
     WHERE a.status = 'idle'
       AND a.classification = 'apprentice'
-      AND t.state IN ('on_deck', 'claimed')
+      AND t.state IN ('open', 'claimed')
       AND a.created_at < datetime('now', '-30 minutes')
       AND NOT EXISTS (
         SELECT 1 FROM messages m

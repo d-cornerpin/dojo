@@ -37,13 +37,12 @@
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import type { TurnExitReason } from './turn-record.js';
-import { writeTaskLog } from '../../tracker/task-log.js';
-import { askIdForMessage, type WorkState } from '../../work/store.js';
+import { askIdForMessage } from '../../work/store.js';
 // T19 (D2): the DECLARED set of bubbles the platform has already ruled not-an-answer. One
 // owner, three readers (this file, `work/occurrences.ts`, `work/ask-remediation.ts`).
 import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
-import { taskScope, tsToMs, type TrackerStatus } from '../../work/tracker-view.js';
-import { setTrackerStatus } from '../../work/tracker-store.js';
+import { taskScope, tsToMs } from '../../work/tracker-view.js';
+import { setHold } from '../../work/done/hold.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
 import { withSessionBoundary } from '../../memory/session-boundary.js';
 // ROUND 3: the withdrawal predicate moved to its own module beside the report store (see the
@@ -638,9 +637,9 @@ export function turnOutcome(agentId: string, turnNumber: number | null | undefin
 //       the shape of the model's prose. There is no regex in this file and no text is read;
 //   (b) the REOPEN edge is part of the same requirement: the owner's next ask resumes the
 //       work to the exact state it was paused from;
-//   (c) paused work stays visible: `status='paused'` is a status the owner sees on the
-//       board and the daily brief reads (PHASE-2 T7 lands that surface), NOT the hidden
-//       `deliverable_shown` flag whose invisibility was the actual complaint behind P2.
+//   (c) paused work stays visible: a paused hold is a tag the owner sees on the board
+//       and the daily brief reads, NOT the hidden `deliverable_shown` flag whose
+//       invisibility was the actual complaint behind P2.
 //
 // WHY THE DIFFERENCE FROM `deliverable_shown` IS STRUCTURAL, not a matter of degree. The
 // deleted stamp inferred DELIVERY from the coexistence of a non-empty reply and open tasks,
@@ -804,45 +803,20 @@ export function pauseDriveWorkWaitingOnOwner(
   if (servedId !== undefined) params.push(servedId);
   if (sinceMs != null) params.push(sinceMs);
   const rows = db.prepare(
-    `SELECT w.id AS id, w.state AS state FROM work w
+    `SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
         AND w.agent_id = ? AND w.state IN (${DRIVE_STATES.join(', ')})
-        AND w.is_paused = 0 AND w.repeat_interval IS NULL
+        AND w.hold_kind IS NULL AND w.repeat_interval IS NULL
         AND (w.origin_turn IS NULL OR w.origin_turn <> ?)
         ${linkClause}
         ${sinceMs != null ? 'AND w.updated_at >= ?' : ''}
       ORDER BY w.updated_at DESC LIMIT 10`,
-  ).all(...params) as Array<{ id: string; state: string }>;
-  if (rows.length === 0) return none;
+  ).all(...params) as Array<{ id: string }>;
 
-  // The receipt this whole disposition is keyed on, resolved once: it is both the reason the
-  // pause is allowed and the evidence G6 requires of an engine assertion.
-  const receipt = terminalDeliveryForTurn(agentId, turnNumber, opts?.conversationId ?? null);
-  const ids: string[] = [];
-  for (const t of rows) {
-    const r = setTrackerStatus(t.id, 'paused', {
-      by: receipt ? 'engine' : 'agent', actorId: agentId,
-      evidenceRef: receipt,
-      expectedState: t.state as WorkState,
-      reason: `turn ${turnNumber} delivered a reply to the person and executed no effectful call; `
-        + 'the work is waiting on them, so it stops being driven and is surfaced by aging instead',
-    });
-    if (r.kind === 'applied') ids.push(t.id);
-  }
+  const ids = rows.map((t) => t.id).filter((id) => setHold(id, 'paused',
+    `turn ${turnNumber} answered the person and did nothing else; the work waits on them`, 'engine').ok);
   if (ids.length > 0) {
-    // Written SYNCHRONOUSLY, in the same tick as the disposition. An audit entry that
-    // lands one microtask later is an audit entry a crash can lose, and "the pause is
-    // recorded where somebody can find it" is a property this file's tests assert.
-    for (const id of ids) {
-      writeTaskLog({
-        taskId: id, fromEntity: 'engine', entryKind: 'transition',
-        fromStatus: 'in_progress', toStatus: 'paused',
-        actionTaken: 'waiting on the owner (turn answered, nothing performed, nothing closed)',
-        reason: `turn ${turnNumber} delivered a reply to the person and executed no effectful call; `
-          + 'the work is waiting on them, so it stops being driven and is surfaced by aging instead',
-      });
-    }
-    logger.info('turn-end disposition: drive work reconciled to paused (waiting on the owner)', {
+    logger.info('turn-end disposition: drive work held paused (waiting on the owner)', {
       agentId, turnNumber, count: ids.length, ids,
     }, agentId);
   }

@@ -179,7 +179,7 @@ function applySchema(db: Database.Database): void {
 function seedBlockedRow(opts: { upheld: boolean; id?: string; assignee?: string; upheldBy?: string }): string {
   const id = opts.id ?? TASK;
   seedTrackerTask(mockDb.current!, {
-    id, title: TITLE, status: 'blocked', agentId: opts.assignee ?? VICTIM,
+    id, title: TITLE, status: 'in_progress', hold_kind: 'blocked', hold_reason: BLOCK_REASON, agentId: opts.assignee ?? VICTIM,
     description: 'Pull the supplier statements and tie them to the ledger for the quarter.',
     notes: BLOCK_REASON,
   });
@@ -250,7 +250,7 @@ describe("§1 the primary cannot dispose of another agent's PM-upheld blocked wo
     seedBlockedRow({ upheld: false });
     const out = trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
     expect(out.startsWith('Error')).toBe(true);
-    expect(rowOf().state).toBe('blocked');
+    expect(rowOf().state).toBe('claimed');
   });
 
 
@@ -438,7 +438,7 @@ describe('§8 the direct setTrackerStatus path is gated too', () => {
       by: 'agent', actorId: PRIMARY, reason: 'apprentice called complete_task(status="fallen")',
     });
     expect(r.kind).toBe('refused');
-    expect(rowOf().state).toBe('blocked');
+    expect(rowOf().state).toBe('claimed');
   });
 
 

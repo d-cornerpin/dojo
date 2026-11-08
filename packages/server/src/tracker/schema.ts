@@ -76,7 +76,8 @@ interface TaskRow {
   run_count: number;
   is_paused: number;
   paused_until: string | null;
-  status_before_pause: string | null;
+  hold_kind: 'paused' | 'blocked' | null;
+  hold_reason: string | null;
   last_run_at: string | null;
   schedule_status: string;
   assigned_to_group: string | null;
@@ -84,9 +85,7 @@ interface TaskRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
-  pause_validated: number;
   complete_validated: number;
-  blocked_validated: number;
   validation_escalated_at: string | null;
   goal: string | null;
   result: string | null;
@@ -143,6 +142,8 @@ function mapTaskRow(row: TaskRow): Task {
     title: row.title,
     description: row.description,
     status: row.status as Task['status'],
+    hold: row.hold_kind ?? null,
+    holdReason: row.hold_reason ?? null,
     assignedTo: row.assigned_to,
     assignedToName: resolveAgentName(row.assigned_to),
     createdBy: row.created_by,
@@ -163,16 +164,13 @@ function mapTaskRow(row: TaskRow): Task {
     runCount: row.run_count ?? 0,
     isPaused: Boolean(row.is_paused),
     pausedUntil: row.paused_until ?? null,
-    statusBeforePause: row.status_before_pause ?? null,
     scheduleStatus: row.schedule_status ?? 'unscheduled',
     assignedToGroup: row.assigned_to_group ?? null,
     kind: row.kind ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
-    pauseValidated: (row.pause_validated ? 1 : 0) as 0 | 1,
     completeValidated: (row.complete_validated ? 1 : 0) as 0 | 1,
-    blockedValidated: (row.blocked_validated ? 1 : 0) as 0 | 1,
     validationEscalatedAt: row.validation_escalated_at ?? null,
     goal: row.goal ?? null,
     result: row.result ?? null,
@@ -315,7 +313,6 @@ export function getProject(id: string): ProjectDetail | null {
     blocked: 0,
     failed: 0,
     cancelled: 0,
-    paused: 0,
   };
 
   for (const task of tasks) {
@@ -323,11 +320,10 @@ export function getProject(id: string): ProjectDetail | null {
       case 'on_deck': taskCounts.pending++; break;
       case 'in_progress': taskCounts.inProgress++; break;
       case 'complete': taskCounts.complete++; break;
-      case 'blocked': taskCounts.blocked++; break;
       case 'fallen': taskCounts.failed++; break;
       case 'cancelled': taskCounts.cancelled++; break;
-      case 'paused': taskCounts.paused++; break;
     }
+    if (task.hold === 'blocked') taskCounts.blocked++;
   }
 
   return { ...project, tasks, taskCounts };
@@ -854,7 +850,10 @@ function taskListWhere(filter?: TaskListFilter): { conditions: string[]; params:
     conditions.push(dueScope('work'));
     params.push(Date.now());
   }
-  if (filter?.status) {
+  if (filter?.status === 'paused' || filter?.status === 'blocked') {
+    conditions.push('work.hold_kind = ?');   // a hold, not a state
+    params.push(filter.status);
+  } else if (filter?.status) {
     conditions.push('work.state = ?');
     params.push(statusToState(filter.status));
   }
@@ -938,7 +937,6 @@ export function updateTask(id: string, updates: Partial<{
   notes: string;
   title: string;
   description: string | null;
-  pausedUntil: string | null;
   // Editable structural fields, added so work_update(action="edit") can change them
   // without forcing a delete+recreate. None of these have notification or
   // scheduler side-effects that the simpler tools (update_status, pause)
@@ -973,7 +971,6 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.notes !== undefined) patch.notes = updates.notes;
   if (updates.title !== undefined) patch.title = updates.title;
   if (updates.description !== undefined) patch.description = updates.description;
-  if (updates.pausedUntil !== undefined) patch.paused_until = tsToMs(updates.pausedUntil);
   if (updates.dependsOn !== undefined) patch.depends_on = JSON.stringify(updates.dependsOn);
   if (updates.stepNumber !== undefined) patch.step_number = updates.stepNumber;
   if (updates.phase !== undefined) patch.phase = updates.phase;

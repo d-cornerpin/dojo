@@ -61,7 +61,8 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece,
 } from '../../work/store.js';
-import { openTrackerTask, setTrackerStatus } from '../../work/tracker-store.js';
+import { openTrackerTask } from '../../work/tracker-store.js';
+import { setHold } from '../../work/done/hold.js';
 import { JOIN_REDRIVE_BOUND } from '../../work/join-drive.js';
 import { resolveCompilePendingJoins } from '../a2a-transport.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -146,11 +147,7 @@ function modelCard(opts: {
     },
   });
   if (opts.state === 'blocked') {
-    setTrackerStatus(id, 'blocked', {
-      by: 'agent', actorId: opts.agentId ?? AGENT,
-      reason: 'waiting on the delegated pieces to come back',
-      note: 'waiting on the delegated pieces to come back before combining them',
-    });
+    setHold(id, 'blocked', 'waiting on the delegated pieces to come back before combining them', opts.agentId ?? AGENT);
   }
   return id;
 }
@@ -202,7 +199,7 @@ describe('T66: the disarm walk reaches the card the model opened for the same jo
       title: `Combine anniversary dinner plan and deliver to ${FX.n11}`,
       originTurn: CLAIM_TURN + 1, state: 'blocked',
     });
-    expect(workRow(card).state, 'premise: the card is open and blocked, as the measured row was').toBe('blocked');
+    expect(workRow(card).hold_kind, 'premise: the card is open and blocked, as the measured row was').toBe('blocked');
 
     await driveToTheRelay(askId);
 
@@ -255,7 +252,7 @@ describe('T66 CONTROLS — the walk reaches the tie and nothing else', () => {
     advanceTurnTo(CLAIM_TURN);
     const untied = modelCard({ title: 'Renew the passport', originTurn: 4000, state: 'blocked' });
     await driveToTheRelay(askId);
-    expect(workRow(untied).state, 'no tie, no close').toBe('blocked');
+    expect(workRow(untied).hold_kind, 'no tie, no close').toBe('blocked');
   });
 
   it('A CARD OPENED WITH NO ORIGIN TURN AT ALL stays open — an absent tie is not a match', async () => {
@@ -320,6 +317,6 @@ describe('T66 CONTROLS — the walk reaches the tie and nothing else', () => {
     // One pass only: the ladder is on its first redrive, nowhere near the relay.
     await drive();
     expect(auditEntries(askId)).not.toContain('join_engine_relay');
-    expect(workRow(card).state, 'the model still owns the job it was asked to do').toBe('blocked');
+    expect(workRow(card).hold_kind, 'the model still owns the job it was asked to do').toBe('blocked');
   });
 });

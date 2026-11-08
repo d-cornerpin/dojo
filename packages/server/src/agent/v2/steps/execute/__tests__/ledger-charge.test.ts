@@ -96,7 +96,7 @@ describe('the ledger charge', () => {
   });
 
   it('REVIEW FOCUS 4: the only task is paused — nothing is charged', () => {
-    seedTrackerTask(mockDb.current!, { id: 'paused', agentId: AGENT, status: 'paused' });
+    seedTrackerTask(mockDb.current!, { id: 'paused', agentId: AGENT, status: 'in_progress', hold_kind: 'paused', hold_reason: 'waiting on the owner' });
     countTrackerWorkThisIteration(stateWith(CALLS), ctxFor(CALLS), roundOf(CALLS));
     expect(ledger('paused')).toEqual([]);
     expect((mockDb.current!.prepare('SELECT COUNT(*) AS n FROM work_ledger').get() as { n: number }).n).toBe(0);
@@ -127,7 +127,7 @@ describe('the ledger charge', () => {
 
   it('fix round 1: a claimed task older than a more recently touched PAUSED one is the one charged', () => {
     seedTrackerTask(mockDb.current!, { id: 'claimed-old', agentId: AGENT, status: 'in_progress', updated_at: 1_700_000_000_000 });
-    seedTrackerTask(mockDb.current!, { id: 'paused-new', agentId: AGENT, status: 'paused', updated_at: 1_700_000_900_000 });
+    seedTrackerTask(mockDb.current!, { id: 'paused-new', agentId: AGENT, status: 'in_progress', hold_kind: 'paused', hold_reason: 'waiting on the owner', updated_at: 1_700_000_900_000 });
     countTrackerWorkThisIteration(stateWith(CALLS), ctxFor(CALLS), roundOf(CALLS));
     expect(ledger('claimed-old')).toEqual(['gmail:msg:failed-1', 'gmail:msg:ok-1', 'gmail:msg:ok-2']);
     expect(ledger('paused-new')).toEqual([]);

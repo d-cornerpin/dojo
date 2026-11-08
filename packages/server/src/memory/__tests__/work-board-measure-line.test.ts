@@ -1,6 +1,7 @@
 // v3.5 DONE IS MEASURED, Task A5 — the agent's own task board shows measured progress: what its
 // calls touched (the engine's ledger) and what the measure still returns, under the task's State
 // line, from the records alone. Through the REAL board builder on the real migration chain.
+import { setHold } from '../../work/done/hold.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -100,7 +101,7 @@ describe('the task board shows measured progress', () => {
     const id = task('Sort the inbox');
     setMeasure(id, MEASURE, { ok: true, count: 10 }, NOW - 600_000);
     touch(id, 3);
-    setTrackerStatus(id, 'blocked', { by: 'agent', actorId: AGENT, reason: 'the mailbox sign-in expired' });
+    setHold(id, 'blocked', 'the mailbox sign-in expired', AGENT);
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(block).toContain('Sort the inbox');
     expect(block).not.toContain('Progress:');

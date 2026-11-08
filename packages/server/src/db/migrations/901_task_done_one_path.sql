@@ -3,7 +3,9 @@
 -- Part A, and nothing else:
 --   work_events.kind gains handed_in, hand_in_refused, decided, proof_opened (work/event-kinds.ts
 --   carries the same list; the conformance test diffs the two);
---   work.state gains handed_in (waiting for a decision) and sent_back (the worker continues).
+--   work.state gains handed_in (waiting for a decision) and sent_back (the worker continues);
+--   work gains the hold: hold_kind (NULL, 'paused' or 'blocked'), hold_reason and hold_at. A held task
+--   keeps its state (work/done/hold.ts). 'blocked' stays legal in the state CHECK for chat asks.
 -- SQLite has no ADD CONSTRAINT, so both tables are rebuilt. `work` is rebuilt ONCE in this release:
 -- 2f edits this same CREATE to drop the dead columns. The rebuild drops every trigger and index on
 -- `work`, and the deliveries trigger that names it (a RENAME re-parses it), and re-creates them.
@@ -64,11 +66,12 @@ CREATE TABLE work_new (
   opened_at INTEGER NOT NULL CHECK (opened_at > 1600000000000),
   closed_at INTEGER, updated_at INTEGER NOT NULL,
   provenance TEXT NOT NULL DEFAULT 'live' CHECK (provenance IN ('live','migrated','rescued')), description TEXT, original_description TEXT, completion_summary TEXT, result TEXT, evidence_json TEXT, step_number INTEGER, total_steps INTEGER, phase INTEGER, depends_on TEXT, assigned_to_group TEXT, task_kind TEXT, level INTEGER, phase_count INTEGER, current_phase INTEGER, group_id TEXT, source_message_id TEXT, origin_turn INTEGER, origin_conv_key TEXT, origin_kind TEXT, a2a_thread_id TEXT, last_smell_flag TEXT, scheduled_start INTEGER, repeat_interval INTEGER, repeat_unit TEXT, repeat_end_type TEXT, repeat_end_value TEXT, repeat_days_of_week TEXT, schedule_status TEXT, is_paused INTEGER NOT NULL DEFAULT 0, paused_until INTEGER, status_before_pause TEXT, last_run_at INTEGER, missed_runs_paused_at INTEGER, last_activity_turn INTEGER, last_activity_at INTEGER, last_activity_outcome TEXT, last_answered_turn INTEGER, last_answered_at INTEGER, last_delivery_summary TEXT, effort_calls INTEGER NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0, measure_json TEXT, measure_initial INTEGER, measure_remaining INTEGER, measure_at INTEGER, plan_json TEXT,
+  hold_kind TEXT CHECK (hold_kind IN ('paused','blocked')), hold_reason TEXT, hold_at INTEGER,
   CHECK ((state IN ('done','failed','abandoned')) = (closed_at IS NOT NULL)),
   CHECK (state <> 'done' OR result_delivery_id IS NOT NULL),   -- done means DELIVERED
   CHECK (kind <> 'project' OR parent_id IS NULL)
 );
-INSERT INTO work_new SELECT * FROM work;
+INSERT INTO work_new SELECT *, NULL, NULL, NULL FROM work;
 DROP TABLE work;
 ALTER TABLE work_new RENAME TO work;
 

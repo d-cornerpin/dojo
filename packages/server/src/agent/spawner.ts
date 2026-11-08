@@ -19,9 +19,10 @@ import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import {
-  setTrackerStatus, patchWork, appendWorkNotes,
+  setTrackerStatus, patchWork,
 } from '../work/tracker-store.js';
 import { proofDelivery } from '../work/done/proof.js';
+import { setHold } from '../work/done/hold.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -565,46 +566,18 @@ export function terminateAgent(agentId: string, reason?: string): void {
   // Update status
   writeAgentStatus(agentId, 'terminated');
 
-  // v2.5.46 Layer 2, auto-pause in_progress tasks owned by the
-  // terminated agent. Without this they sit as zombies (the agent
-  // can never close them; PM keeps poking; user sees stale tasks
-  // forever). Pause (not complete) so the user can decide whether
-  // to reassign or close them.
+  // Its Working tasks are held paused (never closed) so the owner can reassign or close them.
   try {
     const danglers = db.prepare(`
-      SELECT w.id AS id, w.title AS title FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0
-    `).all(agentId) as Array<{ id: string; title: string }>;
-    if (danglers.length > 0) {
-      const note = `[${new Date().toISOString()}] Auto-paused: assigned agent "${agent.name}" was terminated (reason: ${reason ?? 'manual'}). Reassign or close from the dashboard.`;
-      // Demolition Phase 1.4 (B-1 follow-up): the pause lands UNVALIDATED
-      // (pause_validated stays 0). This engine-initiated pause used to
-      // pre-bless itself (pause_validated=1) so the PM sweep could never
-      // re-flag it, the same forgery pattern the two-key restoration removes
-      // from the loop and scheduler. The assignee was terminated so it can
-      // never turn its own key, but the pause is still an engine verdict the PM
-      // sweep should SEE (surfaced as UNVALIDATED_PAUSE) and adjudicate
-      // (reassign / close / leave), not one the engine forges. The user can
-      // also resolve these from the dashboard.
-      for (const dt of danglers) {
-        // PHASE-2 T8b: through `transition()`. `setTrackerStatus` carries the pause's own
-        // side-effects (is_paused, status_before_pause) so they cannot drift apart from the
-        // state they describe — the drift the two statements above could produce.
-        const r = setTrackerStatus(dt.id, 'paused', {
-          by: 'agent', actorId: agentId,
-          reason: `assigned agent "${agent.name}" was terminated (${reason ?? 'manual'}); work paused for reassignment`,
-        });
-        if (r.kind !== 'applied') {
-          logger.warn('terminateAgent: auto-pause refused', { taskId: dt.id, result: r });
-          continue;
-        }
-        appendWorkNotes(dt.id, note);
-      }
-      logger.info('terminateAgent: auto-paused in_progress tasks', {
-        agentId, count: danglers.length,
-        sample: danglers.slice(0, 3).map((t) => t.id.slice(0, 8)),
-      }, agentId);
+      SELECT w.id AS id FROM work w
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.hold_kind IS NULL
+    `).all(agentId) as Array<{ id: string }>;
+    const why = `assigned agent "${agent.name}" was terminated (${reason ?? 'manual'}); reassign or close it from the dashboard`;
+    for (const dt of danglers) {
+      const r = setHold(dt.id, 'paused', why, 'engine');
+      if (!r.ok) logger.warn('terminateAgent: auto-pause refused', { taskId: dt.id, why: r.why });
     }
+    if (danglers.length > 0) logger.info('terminateAgent: auto-paused in_progress tasks', { agentId, count: danglers.length }, agentId);
   } catch (autopauseErr) {
     logger.warn('terminateAgent: task auto-pause failed (non-fatal)', {
       agentId, error: autopauseErr instanceof Error ? autopauseErr.message : String(autopauseErr),
@@ -819,7 +792,7 @@ export async function completeAgent(
 
   // If task_id: update task status
   if (resolvedTaskId) {
-    const taskStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
+    const taskStatus = status;
     // Phase B.0: tasks.notes is read-only legacy. Snapshot prior status
     // for the task_log transition entry, then update the row without
     // touching the notes column. completion_summary stays as the
@@ -863,14 +836,19 @@ export async function completeAgent(
     // to a second site. Nothing changed at this call; the refusal arrives in `closeRes` and
     // the branch below already logs it. An apprentice closing out an ORDINARY block, or
     // reporting `complete`, is untouched — `complete` still files its Key-1 request.
-    const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
-      by: 'agent', actorId: agentId,
-      reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,
-      resultDeliveryId: taskStatus === 'complete' ? proofDelivery(resolvedTaskId) : null,
-    });
-    if (!workSettled(closeRes)) {
-      logger.warn('completeAgent: task close refused by the work gate',
-        { agentId, taskId: resolvedTaskId, taskStatus, result: closeRes }, agentId);
+    if (taskStatus === 'blocked') {
+      const held = setHold(resolvedTaskId, 'blocked', summary.split('\n')[0] || `apprentice "${agent.name}" is blocked`, agentId);
+      if (!held.ok) logger.warn('completeAgent: block refused', { agentId, taskId: resolvedTaskId, why: held.why }, agentId);
+    } else {
+      const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
+        by: 'agent', actorId: agentId,
+        reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,
+        resultDeliveryId: taskStatus === 'complete' ? proofDelivery(resolvedTaskId) : null,
+      });
+      if (!workSettled(closeRes)) {
+        logger.warn('completeAgent: task close refused by the work gate',
+          { agentId, taskId: resolvedTaskId, taskStatus, result: closeRes }, agentId);
+      }
     }
 
     void (await import('../tracker/task-log.js')).writeTaskLog({
@@ -921,7 +899,7 @@ export async function completeAgent(
   // falsely complete. Skips the primary (handled above) and paused tasks
   // (intentionally set aside).
   try {
-    const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
+    const bulkStatus = status;
     const primaryLineage = resolvedTaskId
       ? db.prepare('SELECT parent_id AS project_id, source_message_id FROM work WHERE id = ?')
           .get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
@@ -931,7 +909,7 @@ export async function completeAgent(
              w.source_message_id AS source_message_id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
-        AND w.is_paused = 0
+        AND w.hold_kind IS NULL
         AND w.id != COALESCE(?, '')
     `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null; source_message_id: string | null }>;
     const danglerLog = await import('../tracker/task-log.js');
@@ -941,22 +919,18 @@ export async function completeAgent(
         (dt.source_message_id !== null && dt.source_message_id === primaryLineage.source_message_id)
       );
       const disposition = sameWork ? bulkStatus : 'blocked';
-      // PHASE-2 T8T: a `complete` disposition here is INHERITED, not claimed — this row
-      // shares the primary task's work order and the primary's close already went through
-      // the gate. The engine is the one drawing that inference, so it says so and points at
-      // the delivery (G6). A non-complete disposition is not a two-key subject and keeps the
-      // actor it always had.
-      const inheritedDelivery = disposition === 'complete' ? proofDelivery(dt.id) : null;
-      const dRes = setTrackerStatus(dt.id, disposition, {
-        by: disposition === 'complete' ? 'engine' : 'agent', actorId: agentId,
-        reason: sameWork
-          ? 'shares the primary task\'s work order and inherits its close'
-          : 'lineage does not tie it to the completed work; blocked for reassignment',
-        evidenceRef: inheritedDelivery,
-        resultDeliveryId: inheritedDelivery,
-      });
-      if (!workSettled(dRes)) {
-        logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
+      if (disposition === 'blocked') {
+        const held = setHold(dt.id, 'blocked', `agent "${agent.name}" ended and this task is not part of its finished work; reassign it`, 'engine');
+        if (!held.ok) logger.warn('completeAgent: dangler hold refused', { taskId: dt.id, why: held.why });
+      } else {
+        const inheritedDelivery = disposition === 'complete' ? proofDelivery(dt.id) : null;
+        const dRes = setTrackerStatus(dt.id, disposition, {
+          by: disposition === 'complete' ? 'engine' : 'agent', actorId: agentId,
+          reason: 'shares the primary task\'s work order and inherits its close',
+          evidenceRef: inheritedDelivery,
+          resultDeliveryId: inheritedDelivery,
+        });
+        if (!workSettled(dRes)) logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
       }
 
       void danglerLog.writeTaskLog({

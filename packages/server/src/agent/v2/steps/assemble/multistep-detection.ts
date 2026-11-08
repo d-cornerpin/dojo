@@ -134,7 +134,7 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
         const db = getDb();
         const existingTask = db.prepare(`
           SELECT w.id AS id FROM work w
-          WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('on_deck', 'claimed', 'paused')
+          WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('open', 'claimed')
             AND w.updated_at >= ?
           LIMIT 1
         `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;

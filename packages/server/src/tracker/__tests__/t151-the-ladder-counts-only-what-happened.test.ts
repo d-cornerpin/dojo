@@ -383,7 +383,7 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
     vi.setSystemTime(now + MIN);
     expect(trackerUpdateStatus('helper', { taskId: 'task-s', status: 'blocked', notes: 'waiting on the supplier' })).toContain('[OK]');
     vi.setSystemTime(now + 2 * MIN);
-    db().prepare("UPDATE work SET state = 'claimed' WHERE id = 'task-s'").run();   // unblocked again
+    expect(trackerUpdateStatus('helper', { taskId: 'task-s', status: 'in_progress' })).toContain('[OK]');   // unblocked again
     db().prepare("UPDATE work SET updated_at = ? WHERE id = 'task-s'").run(now + 2 * MIN);
     await sweepAt(now + 3 * MIN);
     expect(remediations('task-s')).toBe(1);

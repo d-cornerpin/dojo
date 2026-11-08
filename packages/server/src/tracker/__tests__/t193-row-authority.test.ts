@@ -150,7 +150,7 @@ afterEach(() => {
 
 describe('B1 the reassign verb needs a cause the engine can check', () => {
   it('RED: an agent cannot take a BLOCKED task for itself', async () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'blocked', agentId: WORKER });
+    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, hold_kind: 'blocked', hold_reason: 'need the vendor key' });
     const r = await reassign(MAIN, { assigned_to: MAIN, cause: 'coordination' });
     expect(r.isError, r.content).toBe(true);
     expect(r.content).toMatch(/escalates to the owner/);

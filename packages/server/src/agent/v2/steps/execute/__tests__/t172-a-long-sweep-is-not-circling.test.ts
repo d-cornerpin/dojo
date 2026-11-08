@@ -257,7 +257,7 @@ describe('(iii) a real status change resets the meter, as it always did', () => 
     for (let i = 0; i < 100; i++) iterate([pageRead(1)]);
     expect(effortDelta(row(TASK))).toBe(100);
 
-    const r = setTrackerStatus(TASK, 'blocked', { by: 'agent', actorId: AGENT, reason: 'waiting on the owner' });
+    const r = setTrackerStatus(TASK, 'on_deck', { by: 'agent', actorId: AGENT, reason: 'back to Open' });
 
     expect(r.kind).toBe('applied');
     expect(effortDelta(row(TASK))).toBe(0);

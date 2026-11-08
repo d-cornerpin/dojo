@@ -7,12 +7,7 @@
 //
 // THREE translations happen here and they are separate facts:
 //
-//   1. VOCABULARY. `legacy_tasks.status` is `on_deck | in_progress | complete | blocked |
-//      fallen | paused` and `legacy_projects.status` adds `active | cancelled`. `work.state`
-//      is the spine's eight-value enum. Migration `135_work_spine.sql:290-300` and `:351-360`
-//      already fixed the forward map when it backfilled the table; this file carries the SAME
-//      map and its exact inverse, and `tracker-view.test.ts` proves the round trip rather
-//      than trusting it.
+//   1. VOCABULARY. The status words the tracker's readers see, from `work.state` and back.
 //
 //   2. TIME. The legacy tables store instants as SQLite-form TEXT (`datetime('now')`),
 //      `work` as INTEGER epoch-ms (migration `137`'s own header says so). Readers get the
@@ -37,53 +32,42 @@ import { TERMINAL_STATE_NAMES } from './terminal-states.js';
 // 1 — VOCABULARY
 // ════════════════════════════════════════════════════════════════════════════════
 
-/** Every status value the two legacy tables could hold. Measured, not guessed: migration
- *  `135`'s CASE arms are the enumeration (it read the lived-in body, where projects carry
- *  `complete`, `cancelled` and `active`), and the task side adds nothing beyond them. */
+/** The status words the tracker's readers see. A task waiting in Open reads `on_deck`, a project
+ *  `active`. Paused and blocked are holds on Working work (`work/done/hold.ts`), not statuses. */
 export type TrackerStatus =
-  | 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'blocked' | 'fallen' | 'paused'
-  | 'active' | 'cancelled';
+  | 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'fallen' | 'active' | 'cancelled';
 
-/** The forward map, character for character the one migration `135` used. */
 const STATUS_TO_STATE: Record<TrackerStatus, WorkState> = {
-  on_deck: 'on_deck',
+  on_deck: 'open',
   in_progress: 'claimed',
   handed_in: 'handed_in',
   sent_back: 'sent_back',
   complete: 'done',
-  blocked: 'blocked',
   fallen: 'failed',
-  paused: 'paused',
   active: 'open',
   cancelled: 'abandoned',
 };
 
-/** Its exact inverse. Total in both directions — that is the property the test asserts, and
- *  it is why `open`/`abandoned` come back as `active`/`cancelled` rather than being folded
- *  into a nearby task status: a lossy arm here would silently rewrite a row's meaning. */
 const STATE_TO_STATUS: Record<WorkState, TrackerStatus> = {
-  on_deck: 'on_deck',
+  open: 'on_deck',
   claimed: 'in_progress',
+  blocked: 'in_progress',
   handed_in: 'handed_in',
   sent_back: 'sent_back',
   done: 'complete',
-  blocked: 'blocked',
   failed: 'fallen',
-  paused: 'paused',
-  open: 'active',
   abandoned: 'cancelled',
 };
 
-/** Translate a legacy tracker status to the spine state. Unknown input follows `135`'s own
- *  default arm (`ELSE 'open'`) for the same reason it gave: surfacing work that may be
+/** Translate a status word to the spine state. Unknown input reads as Open: surfacing work that may be
  *  finished is recoverable, silently terminating live work is not. */
 export function statusToState(status: string): WorkState {
   return STATUS_TO_STATE[status as TrackerStatus] ?? 'open';
 }
 
-/** Translate a spine state back to the status the tracker's consumers read. */
+/** Translate a spine state back to the status word a task's readers see. */
 export function stateToStatus(state: string): TrackerStatus {
-  return STATE_TO_STATUS[state as WorkState] ?? 'active';
+  return STATE_TO_STATUS[state as WorkState] ?? 'on_deck';
 }
 
 /** Both directions as SQL, for the predicates and projections that cannot round-trip
@@ -93,7 +77,8 @@ export const STATE_TO_STATUS_SQL = (col: string): string =>
   + ` WHEN 'claimed' THEN 'in_progress'`
   + ` WHEN 'done' THEN 'complete'`
   + ` WHEN 'failed' THEN 'fallen'`
-  + ` WHEN 'open' THEN 'active'`
+  + ` WHEN 'open' THEN 'on_deck'`
+  + ` WHEN 'blocked' THEN 'in_progress'`
   + ` WHEN 'abandoned' THEN 'cancelled'`
   + ` ELSE ${col} END`;
 
@@ -163,10 +148,8 @@ export const projectScope = (a = 'w'): string =>
  * both thresholds, neither site selects a row this predicate does not. The thresholds
  * belong to the ACTIONS; the word belongs here, with no threshold at all.
  *
- * BOTH paused clauses are load-bearing: `work/tracker-store.ts` (`syncSchedulePause`) sets
- * `is_paused = 1` WITHOUT touching `schedule_status`, so a row can be paused while its
- * status still reads `'waiting'`. runner excludes it by the flag, pm-agent by its own
- * active-status filter — only a predicate carrying both agrees with both.
+ * BOTH paused clauses are load-bearing: a row can carry `is_paused = 1` while its
+ * `schedule_status` still reads `'waiting'`, and runner and pm-agent both exclude it by the flag.
  *
  * Reconciliation + containment measurement: `tracker/__tests__/census-wire-through-seam.test.ts`.
  *
@@ -251,81 +234,14 @@ export const lastEntryEventIdExpr = (a: string, stateSql: string): string =>
 const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
 
 /**
- * `<state>_validated`: 1 when an authority upheld the CURRENT claim.
- *
- * Scoped to "at or after the row last entered that state" so the flag resets exactly where
- * the column did — a retask that sends the row back to `in_progress` and then a fresh close
- * gets a fresh, unvalidated claim, which is what `tracker/tools.ts`'s retask block
- * (`pause_validated = 0, complete_validated = 0, blocked_validated = 0`) was doing by hand.
- *
- * ── PHASE-2 T8T: `done` CARRIES ONE EXTRA CLAUSE, AND IT IS THE POINT OF THE WHOLE TASK ──
- *
- * RULING 1 makes `transition()` file an upheld `claim_state='done'` adjudication for a
- * SYSTEM closer, because migration `139`'s trigger refuses a task/project `done` without
- * one. That row is a CLOSE RECEIPT — "the engine pointed at a delivery" — and it is not a
- * verdict. `complete_validated` is the verdict: "an authority read this against the goal and
- * blessed it." Two different questions, and reading the receipt as the verdict would stamp
- * `complete_validated = 1` on every engine close, which is migration `108`'s demolished
- * forgery restored (*"engineCloseDeliveredTask wrote status='complete' AND
- * complete_validated=1"*) and a direct contradiction of the owner ruling of 2026-07-19
- * carried verbatim at `tracker/tools.ts:256-270` (*"The engine files ONLY Key 1 … the PM
- * independently validates (Key 2 untouched) and rejects/reopens garbage"*).
- *
- * The clause is `done`-ONLY on purpose. `blocked` has a deliberate engine uphold
- * (`agent/v2/loop.ts:2566`, *"blocked_validated=1 IS the engine's validation"*) and `paused`
- * has the scheduler's timed-out verdict (`scheduler/runner.ts:288`); neither is touched by
- * the trigger and neither may be scoped away. Asserted both ways in
- * `work/__tests__/two-key-completion.test.ts` §5.
- *
- * ── t129 FIX ROUND: `opts.excludeSystemClosers` — THE ONE DIFFERENCE, DECLARED ──
- *
- * The blocked-work DISPOSAL door (`setTrackerStatus`) asks a question of the same rows and
- * needs the same freshness scoping, but NOT the same answer about machine writers, so it
- * passes this flag instead of re-typing the expression. The first cut of that gate DID re-type
- * it and dropped the last-entry clause, which made one upheld block mark a row for life:
- * blocked -> upheld -> resolved forward -> blocked again on a fresh obstacle read as "still
- * upheld" and refused the assignee's own ordinary close-out. Two copies of one predicate, one
- * of them repaired, is the drift this file's own comments keep closing — so the gate now calls
- * THIS builder and the single divergence is an argument with a name.
- *
- * WHY THE FLAG RATHER THAN WIDENING THE `done` ARM: the two questions are genuinely different
- * and both answers are already ruled. The BOARD asks *"is this block validated?"* and an
- * engine auto-block IS a validated block — the paragraph above is that ruling, and
- * `two-key-completion.test.ts`'s *"the engine can still uphold a BLOCKED claim"* pins it. The
- * DOOR asks *"has an authority RULED on this block, such that disposing of it is the owner's
- * call?"* — and of `scheduler/runner.ts:316` (`'verdict request timed out; block recorded'`)
- * and `pre-call-gates/thrash-gate.ts:180` (`'deterministic engine block'`) that is false: a
- * verdict request that merely EXPIRED, and a thrash circuit-breaker, are the platform failing
- * to get a ruling rather than giving one. Treating either as a ruling would hand rows to the
- * owner permanently on the strength of a timeout. The exclusion list is the same
- * `SYSTEM_CLOSER_ROLES` the `done` arm uses, read from the same constant, so a machine writer
- * added to one list is excluded from both.
- *
- * ── t142: "AT OR AFTER" IS A SEQUENCE QUESTION, AND IT IS ASKED ON THE SEQUENCE ──
- * ⟨TOMBSTONE⟩ The freshness clause read `adj.created_at >= <last entry's created_at>` — a
- * clock in `adjudications` against a clock in `work_events`. Blocked -> upheld -> resolved
- * forward -> blocked again inside one millisecond therefore read UPHELD, and every reader
- * below inherited it: the owner was told "Your PM checked it" about a block nobody had
- * checked, the disposal door above refused the assignee's own close-out as "ruled", and the
- * board showed a stale blessing. The ties failed toward over-refusal, never toward
- * destruction — still wrong, and wrong in front of the owner.
- *
- * Now each verdict carries its place on the event log (`adjudications.event_seq`, stamped by
- * migration `189c`'s trigger with the id of the verdict's companion event — the `transition`
- * that filed it, or its `claim_upheld`), and the clause is `event_seq >= <id of the last
- * entry>`. An authoritative entry's own verdict IS that entry's companion, so it is current;
- * an uphold filed after the entry is current; an uphold filed before a re-entry is not —
- * whatever the clocks say. Driven both ways in `__tests__/t142-sequence-freshness.test.ts`.
- * requirement preserved: the same three verdicts are current as before in every case where
- * the clocks differed; only the tie is decided differently, and decided by the record.
+ * `<state>_validated`: 1 when an authority upheld the CURRENT claim, scoped on the event log to at or
+ * after the row last entered that state (`adjudications.event_seq`, migration 189c). For `done` a
+ * system closer's receipt is not a verdict, so those roles are excluded.
  */
-export const validatedExpr = (
-  a: string, state: WorkState, opts?: { excludeSystemClosers?: boolean },
-): string =>
+export const validatedExpr = (a: string, state: WorkState): string =>
   `(CASE WHEN EXISTS (SELECT 1 FROM adjudications adj`
   + ` WHERE adj.work_id = ${a}.id AND adj.claim_state = '${state}' AND adj.verdict = 'upheld'`
-  + (state === 'done' || opts?.excludeSystemClosers
-      ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
+  + (state === 'done' ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
   + `   AND adj.event_seq >= COALESCE(${lastEntryEventIdExpr(a, `'${state}'`)}, 0)) THEN 1 ELSE 0 END)`;
 
 /** Board work handed in and waiting for its decision (`work/done/`), as 1/0. The readers of the
@@ -434,7 +350,8 @@ export const taskRowColumns = (): string => `SELECT
   work.attempts AS run_count,
   work.is_paused AS is_paused,
   ${msToText('work.paused_until')} AS paused_until,
-  work.status_before_pause AS status_before_pause,
+  work.hold_kind AS hold_kind,
+  work.hold_reason AS hold_reason,
   ${msToText('work.last_run_at')} AS last_run_at,
   COALESCE(work.schedule_status, 'unscheduled') AS schedule_status,
   work.assigned_to_group AS assigned_to_group,
@@ -442,9 +359,7 @@ export const taskRowColumns = (): string => `SELECT
   ${msToText('work.opened_at')} AS created_at,
   ${msToText('work.updated_at')} AS updated_at,
   ${msToText('work.closed_at')} AS completed_at,
-  ${validatedExpr('work', 'paused')} AS pause_validated,
   ${validatedExpr('work', 'done')} AS complete_validated,
-  ${validatedExpr('work', 'blocked')} AS blocked_validated,
   ${validationEscalatedAtExpr('work')} AS validation_escalated_at,
   work.goal AS goal,
   work.result AS result,
@@ -503,14 +418,14 @@ export const scheduleRowColumns = (a = 'w'): string => `
   ${STATE_TO_STATUS_SQL(a + '.state')} AS status
 `;
 
-/** The legacy `ProjectRow` projection. `legacy_projects` had no `assigned_to`; its status
- *  vocabulary is the `active | complete | cancelled` arm of the same map. */
+/** The legacy `ProjectRow` projection. `legacy_projects` had no `assigned_to`; an open project
+ *  reads `active`. */
 export const projectRowColumns = (): string => `SELECT
   work.id AS id,
   work.title AS title,
   work.description AS description,
   COALESCE(work.level, 1) AS level,
-  ${STATE_TO_STATUS_SQL('work.state')} AS status,
+  CASE WHEN work.state = 'open' THEN 'active' ELSE ${STATE_TO_STATUS_SQL('work.state')} END AS status,
   work.requester_id AS created_by,
   COALESCE(work.phase_count, 1) AS phase_count,
   COALESCE(work.current_phase, 1) AS current_phase,

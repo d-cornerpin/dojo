@@ -82,8 +82,8 @@ describe('the discriminated result the caller must read', () => {
   });
 
   it('noop when the row is already there — never reported as a change', () => {
-    seedWork('w1', { state: 'paused' });
-    const r = transition('w1', { to: 'paused', by: 'agent', reason: 'again' });
+    seedWork('w1', { state: 'open' });
+    const r = transition('w1', { to: 'open', by: 'agent', reason: 'again' });
     expect(r.kind).toBe('no_change');
     expect(events('w1')).toHaveLength(0);       // a no-op writes no history
   });
@@ -129,95 +129,34 @@ describe('G2 — every transition states its reason', () => {
 
 describe('G5 — the legal-transition table', () => {
   it('refuses a move that is not on the table, and allows the neighbouring one that is', () => {
-    // ⚠ THE NEGATIVE CONTROL MOVED, AND THAT IS t89's ARGUMENT. This clause used `on_deck -> done`
-    // as its illegal example; that move is now LEGAL, because `on_deck` was the only non-terminal state
-    // without a `done` edge and the PM's override-approval path could therefore never complete a queued
-    // task — three validations on a user's box were stuck in pending forever, re-driving the PM review
-    // every minute, each attempt refused with exactly this message. The control is now a move that is
-    // illegal BY DESIGN rather than by omission: a TERMINAL row has almost no outgoing edges, so
-    // `failed -> blocked` is refused while `failed -> open` is allowed for an authority. (`failed`
-    // rather than `done` because a `done` row needs a real delivery receipt to exist at all — the CHECK
-    // and the foreign key both say so, which is the authority rule this change leaves alone.)
     seedWork('w1', { state: 'failed', closed_at: T });
     const bad = transition('w1', { to: 'blocked', by: 'agent', reason: 'x' });
     expect(bad.kind).toBe('refused');
     if (bad.kind === 'refused') expect(bad.reason).toBe('illegal-transition');
-    // …and the neighbouring move that IS on the table, kept from this clause's original form.
-    seedWork('w2', { state: 'on_deck' });
+    seedWork('w2', { state: 'open' });
     expect(transition('w2', { to: 'claimed', by: 'agent', reason: 'x' }).kind).toBe('applied');
   });
 
-  it('⚠ t89: THE QUEUE CAN REACH AN OUTCOME — a PM may complete a queued task', () => {
-    // The capture's exact shape: the PM verifies from the audit trail that the work genuinely happened
-    // and the agent simply forgot to close the tracker (its own prompt names that case), so it approves
-    // an override to complete. Before this the move was refused as illegal, `setTaskStatus` returned
-    // falsy, and the caller reported "task was deleted before override approval could land" — a refused
-    // transition and a vanished row look identical to it. Forever, once a minute.
-    seedWork('w1', { state: 'on_deck', kind: 'commitment' });   // board work ends only by a decision (G9)
-    const r = transition('w1', {
-      to: 'done', by: 'pm', actorId: 'pm-fixture',
-      reason: 'PM approved override request: audit shows the work landed',
-      // The real path supplies this too (`deliveryForTaskClose` at the override-approval site): `done`
-      // requires a delivery receipt from EVERY actor, authority included, and t89 does not touch that.
-      resultDeliveryId: 'd-1',
-    });
-    expect(r.kind === 'refused' ? `refused: ${r.reason}` : r.kind).toBe('applied');
-  });
-
-  it('…and the AUTHORITY gate is untouched: a queued task still cannot self-complete', () => {
-    // An edge, not a bypass. `done` still requires a delivery receipt or an authoritative actor, so an
-    // agent cannot use the new edge to close its own work without one.
-    seedWork('w1', { state: 'on_deck' });
-    const r = transition('w1', { to: 'done', by: 'agent', actorId: 'a-1', reason: 'I think it is done' });
-    expect(r.kind).toBe('refused');
-    // ⚠ AND REFUSED BY THE RIGHT GATE: the delivery requirement, not the transition table. That is the
-    // difference between "this move does not exist" (the omission t89 fixes) and "you have not earned
-    // this move" (the rule t89 leaves exactly as it was).
+  it('Open work can reach an outcome, and done still needs a delivery', () => {
+    seedWork('w1', { state: 'open', kind: 'commitment' });   // board work ends only by a decision (G9)
+    expect(transition('w1', { to: 'done', by: 'pm', actorId: 'pm-fixture', reason: 'the work landed', resultDeliveryId: 'd-1' }).kind).toBe('applied');
+    seedWork('w2', { state: 'open' });
+    const r = transition('w2', { to: 'done', by: 'agent', actorId: 'a-1', reason: 'I think it is done' });
     if (r.kind === 'refused') expect(r.reason).toBe('done-requires-delivery');
+    expect(r.kind).toBe('refused');
   });
 
-  // ── PHASE-2 T8c2 item 7 — putting work BACK IN THE QUEUE ──
-  // `on_deck` was unreachable: eleven production callers move to it and every one moves from
-  // `claimed` or `paused`, neither of which had it. Measured on the box before the fix: 536
-  // recorded transitions, ZERO into `on_deck` from any state. The rule now is that `on_deck`
-  // is a non-terminal QUEUE state and every non-terminal state may return to it.
-
-  it('the scheduler can return a finished recurring run to the queue (claimed -> on_deck)', () => {
-    // `runner.ts:1010`, "run finished; waiting for the next occurrence" — the cadence reset
-    // every recurring schedule depends on, refused silently until this task.
+  it('the scheduler returns a finished recurring run to Open (claimed -> open)', () => {
     seedWork('w1', { state: 'claimed' });
-    const r = transition('w1', {
-      to: 'on_deck', by: 'scheduler', actorId: 'scheduler',
-      reason: 'run finished; waiting for the next occurrence',
-    });
-    expect(r.kind).toBe('applied');
+    expect(transition('w1', { to: 'open', by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence' }).kind).toBe('applied');
   });
 
-  it('the PM ladders auto-reset can requeue an idle claim (claimed -> on_deck)', () => {
-    seedWork('w1', { state: 'claimed' });
-    expect(transition('w1', {
-      to: 'on_deck', by: 'pm', actorId: 'pm', claim: 'authoritative',
-      reason: 'auto-reset: the escalation ladder ran out',
-    }).kind).toBe('applied');
-  });
-
-  it('a resumed schedule can requeue (paused -> on_deck) and a blocked one can too', () => {
-    seedWork('w1', { state: 'paused' });
-    expect(transition('w1', { to: 'on_deck', by: 'agent', reason: 'schedule resumed' }).kind).toBe('applied');
-    seedWork('w2', { state: 'blocked' });
-    expect(transition('w2', { to: 'on_deck', by: 'agent', reason: 'unblocked, back in the queue' }).kind).toBe('applied');
-  });
-
-  it('NEGATIVE CONTROL: a TERMINAL row still cannot be requeued directly', () => {
-    // The widening is deliberately scoped to non-terminal states. A settled row keeps its
-    // single `open` reopen edge, so `reopen-requires-authority` keeps its whole subject —
-    // if `done -> on_deck` were legal, a confused model could resurrect settled work with
-    // no authority at all.
+  it('NEGATIVE CONTROL: a TERMINAL row goes back to Open only for an authority', () => {
     for (const state of ['done', 'failed', 'abandoned'] as const) {
       seedWork(`t-${state}`, { state, closed_at: 1700000000001, result_delivery_id: 'd-1' });
-      const r = transition(`t-${state}`, { to: 'on_deck', by: 'agent', reason: 'try to requeue' });
+      const r = transition(`t-${state}`, { to: 'open', by: 'agent', reason: 'try to requeue' });
       expect(r.kind).toBe('refused');
-      if (r.kind === 'refused') expect(r.reason).toBe('illegal-transition');
+      if (r.kind === 'refused') expect(r.reason).toBe('reopen-requires-authority');
     }
   });
 });
@@ -369,7 +308,7 @@ describe('effects run INSIDE, once, on every applied path', () => {
     seedWork('parent', { kind: 'project', remaining_children: 1 });
     seedWork('c1', { parent_id: 'parent', state: 'open' });
     transition('c1', { to: 'claimed', by: 'agent', reason: 'x' });
-    transition('c1', { to: 'paused', by: 'agent', reason: 'x' });
+    transition('c1', { to: 'open', by: 'agent', reason: 'x' });
     expect(rowOf('parent').remaining_children).toBe(1);
     expect(events('parent')).toHaveLength(0);
   });

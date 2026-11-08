@@ -19,13 +19,14 @@ import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import { withUnit } from '../db/unit.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
-  handedInExpr, type TrackerStatus,
+  handedInExpr,
 } from '../work/tracker-view.js';
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts,
   recordValidationEscalation,
 } from '../work/tracker-store.js';
 import { proofDelivery } from '../work/done/proof.js';
+import { clearHold } from '../work/done/hold.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
@@ -143,46 +144,17 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   }
   if (!assignedAgent) assignedAgent = getPrimaryAgentId();
 
-  // Pause the task while the agent decides (prevents re-firing on every
-  // scheduler tick). The agent's resolve call will unpause + apply the
-  // chosen action. D12: stamp missed_runs_paused_at so the engine can
-  // deterministically auto-resolve as SKIP when nothing resolves this
-  // pause once the agent has run a whole turn past it; the model tool clears
-  // the stamp on every action and therefore takes precedence when called
-  // first. The UPDATE is guarded on is_paused = 0 so overlapping ticks or
-  // processes pause and notify exactly once.
-  //
-  // Demolition Phase 1 (two-key restoration): this pause lands UNVALIDATED
-  // (pause_validated stays 0). It used to stamp pause_validated=1, an
-  // engine pre-blessing that made the pause authoritative so the PM's two-key
-  // validation could never re-flag it. Per the restoration, no engine path
-  // pre-blesses: the pause lands unvalidated so the PM sweep SEES it and can
-  // adjudicate it (validate or reject). The engine still OWNS the resolution of
-  // this specific pause via D12: autoResolveStaleMissedRunPauses keys ONLY on
-  // is_paused + missed_runs_paused_at (never pause_validated) and skips to the
-  // next future anchor once the agent has run a whole turn past it, so it is a
-  // transient pause, not a forever-unvalidated dangler. The OWNER-facing
-  // validation sweep (sweepUnvalidatedTasksForUserEscalation) still skips it via
-  // its missed_runs_paused_at guard (now load-bearing, see there), so the owner
-  // is never asked to validate an engine missed-runs pause; the PM is the one
-  // that sees and adjudicates it. The PM sweep's stableId dedup keeps this from
-  // pathological re-poking.
+  // Pause the schedule while the agent decides (prevents re-firing on every tick). The agent's
+  // resolve call unpauses and applies its choice. `missed_runs_paused_at` lets the engine resolve
+  // it as a skip once the agent has run a whole turn past it (autoResolveStaleMissedRunPauses).
+  // The schedule's own flag is the pause: the task's state does not move.
   const alreadyPaused = db.prepare('SELECT is_paused FROM work WHERE id = ?')
     .get(taskId) as { is_paused: number } | undefined;
-  const pausedRes = alreadyPaused && alreadyPaused.is_paused === 0
-    ? setTrackerStatus(taskId, 'paused', {
-        by: 'scheduler', actorId: 'scheduler',
-        reason: 'runs were missed while the platform was down or the task was stuck',
-      })
-    : null;
-  const paused = { changes: pausedRes && pausedRes.kind === 'applied' ? 1 : 0 };
-  if (paused.changes === 1) {
-    noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', missed_runs_paused_at: Date.now() }), 'scheduler: paused after too many missed runs', { taskId });
-  }
-  if (paused.changes === 0) {
+  if (!alreadyPaused || alreadyPaused.is_paused !== 0) {
     logger.info('Scheduler: missed-runs pause already set elsewhere, skipping duplicate alert', { taskId });
     return;
   }
+  noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', missed_runs_paused_at: Date.now() }), 'scheduler: paused after too many missed runs', { taskId });
 
   const cadence = repeatInterval && repeatUnit
     ? (repeatInterval === 1 ? `every ${repeatUnit.replace(/s$/, '')}` : `every ${repeatInterval} ${repeatUnit}`)
@@ -449,7 +421,7 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         const ownerLine = ownerEscalationAlertLine({
           title: t.title, status: t.status, since: t.updated, agentName,
           steers: steersSpent, failures: t.failures,
-          blockedValidated: t.blocked_validated === 1, obstacle: t.obstacle,
+          obstacle: t.obstacle,
         });
         const ghost = recordFloorGhost({
           agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
@@ -460,7 +432,7 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
             steers: steersSpent, task_title: t.title,
             // The facts the sentence was built from, on the row's own durable history, so the
             // alert can be audited against what the platform knew when it spoke.
-            failures: t.failures, blocked_validated: t.blocked_validated,
+            failures: t.failures,
             stated_obstacle: t.obstacle, since: t.updated,
           },
         }, { broadcast });
@@ -593,11 +565,6 @@ export async function autoResolveStaleMissedRunPauses(): Promise<void> {
         const guard = db.prepare('SELECT is_paused, missed_runs_paused_at FROM work WHERE id = ?')
           .get(taskId) as { is_paused: number; missed_runs_paused_at: number | null } | undefined;
         if (!guard || guard.is_paused !== 1 || guard.missed_runs_paused_at == null) continue;
-        const releasedRes = setTrackerStatus(taskId, 'on_deck', {
-          by: 'scheduler', actorId: 'scheduler', expectedState: 'paused',
-          reason: `${MISSED_RUNS_PASSED_OVER}; skipped to the next anchor`,
-        });
-        if (releasedRes.kind !== 'applied') continue;
         noteUnsettled(setNextRun(taskId, {
           at: tsToMs(nextRun),
           alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
@@ -1598,7 +1565,7 @@ export function cleanupStaleRuns(): void {
     SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to
     FROM work t
     WHERE ${taskScope('t')} AND t.schedule_status = 'running'
-      AND t.state != 'paused'
+      AND t.hold_kind IS NOT 'paused'
       AND t.agent_id IS NOT NULL
       AND MAX(
         COALESCE(
@@ -1647,7 +1614,7 @@ export function cleanupStaleRuns(): void {
     SELECT t.id AS id, t.title AS title
     FROM work t
     WHERE ${taskScope('t')} AND t.schedule_status = 'running'
-      AND t.state != 'paused'
+      AND t.hold_kind IS NOT 'paused'
       AND t.agent_id IS NULL
       AND t.last_run_at < ?
   `).all(Date.now() - 5 * 60_000) as Array<{ id: string; title: string }>;
@@ -1697,7 +1664,7 @@ export function cleanupStaleRuns(): void {
       AND t.repeat_unit IS NOT NULL
       AND t.next_run_at IS NULL
       AND t.is_paused = 0
-      AND t.state NOT IN ('done', 'failed', 'abandoned', 'paused')
+      AND t.state NOT IN ('done', 'failed', 'abandoned')
       AND t.schedule_status != 'completed'
       AND t.schedule_status != 'running'
   `).all() as Array<{ id: string; title: string }>;
@@ -1925,42 +1892,16 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 // requirement preserved: "once per hour is plenty", asserted by
 // `scheduler/__tests__/scheduler-owns-its-clock.test.ts` A5.
 
-/**
- * Auto-resume paused tasks whose paused_until time has passed.
- * Restores the task to its pre-pause status (status_before_pause) and clears
- * the pause fields. The PM agent will then see the task in its normal state
- * and the process continues as usual.
- */
+/** Lift every paused hold whose resume time (`paused_until`) has passed. */
 export function resumeExpiredPauses(): void {
-  const db = getDb();
-
-  const expired = db.prepare(`
-    SELECT w.id AS id, w.title AS title, w.status_before_pause AS status_before_pause,
-           ${msToText('w.paused_until')} AS paused_until
-    FROM work w
-    WHERE ${taskScope('w')} AND w.state = 'paused'
-      AND w.paused_until IS NOT NULL
-      AND w.paused_until <= ?
-  `).all(Date.now()) as Array<{ id: string; title: string; status_before_pause: string | null; paused_until: string }>;
-
-  for (const task of expired) {
-    const restoreStatus = (task.status_before_pause ?? 'on_deck') as TrackerStatus;
-    noteUnsettled(setTrackerStatus(task.id, restoreStatus, {
-      by: 'scheduler', actorId: 'scheduler',
-      reason: `the pause expired at ${task.paused_until}`,
-    }), 'scheduler: pause expired', { taskId: task.id });
-
-    logger.info('Auto-resumed paused task (pause expired)', {
-      taskId: task.id,
-      title: task.title,
-      restoredStatus: restoreStatus,
-      pausedUntil: task.paused_until,
-    });
-
-    // Re-broadcast the fresh FULL task row so the kanban card reflects the
-    // auto-resume. Matches the canonical emitters (data: <full row>, no cast);
-    // a partial payload would blow away the card's other fields.
-    const fresh = getTask(task.id);
+  const expired = getDb().prepare(`
+    SELECT w.id AS id FROM work w
+    WHERE ${taskScope('w')} AND w.hold_kind = 'paused' AND w.paused_until IS NOT NULL AND w.paused_until <= ?
+  `).all(Date.now()) as Array<{ id: string }>;
+  for (const { id } of expired) {
+    if (!clearHold(id, 'scheduler')) continue;
+    logger.info('Auto-resumed paused task (pause expired)', { taskId: id });
+    const fresh = getTask(id);
     if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
   }
 }

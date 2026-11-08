@@ -68,16 +68,13 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
   // agent is ACTUALLY working right now — not just because the task status
   // is in_progress (which can persist after the agent finishes or errors).
   const isActive = task.status === 'in_progress' && !!agentIsWorking;
-  const isBlocked = task.status === 'blocked';
-  const isPaused = task.status === 'paused';
+  const isBlocked = task.hold === 'blocked';
+  const isPaused = task.hold === 'paused';
   // Paused and complete cards read as dimmed in the prototype.
   const isDim = isPaused || task.status === 'complete';
   const outcomeLabel = terminalOutcomeLabel(task.status);
 
-  const awaitingValidation =
-    (task.status === 'complete' && task.completeValidated === 0) ||
-    (task.status === 'paused' && task.pauseValidated === 0) ||
-    (task.status === 'blocked' && task.blockedValidated === 0);
+  const awaitingValidation = task.status === 'complete' && task.completeValidated === 0;
 
   // The repeat line (e.g. "Every weekday · 13 runs") sits in .kcard__sub.
   let repeatLine: string | null = null;
@@ -111,19 +108,11 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
       {/* Repeat cadence / run count. */}
       {repeatLine && <div className="kcard__sub">{repeatLine}</div>}
 
-      {/* Paused indicator, shown for all paused tasks, with resume time if set. */}
-      {isPaused && (
-        <div className="kcard__sub">
-          {task.pausedUntil
-            ? `Paused until ${formatShortDateTime(task.pausedUntil)}`
-            : 'Paused indefinitely'}
-        </div>
-      )}
-
-      {/* Needs-resolution warning for indefinitely paused, non-recurring tasks. */}
-      {isPaused && !task.pausedUntil && !task.repeatInterval && (
-        <div className="kcard__warn" title="Paused with no auto-resume and no recurring schedule. Agents sometimes pause as a sloppy substitute for complete/blocked. Open the task to resolve it.">
-          Needs resolution
+      {/* A held Working task: its hold and reason, with the resume time if set. */}
+      {task.hold && (
+        <div className="kcard__warn" title={task.holdReason ?? undefined}>
+          {isPaused ? 'Paused' : 'Blocked'}: {task.holdReason}
+          {isPaused && task.pausedUntil ? ` (until ${formatShortDateTime(task.pausedUntil)})` : ''}
         </div>
       )}
 

@@ -91,7 +91,7 @@ export async function completeTaskRefusal(agentId: string): Promise<string | nul
   if (!taskId) return null;
   const row = getDb().prepare(`SELECT w.state AS state, ${handedInExpr('w')} AS pending FROM work w WHERE w.id = ?`)
     .get(taskId) as { state: string; pending: number } | undefined;
-  if (!row || row.pending === 1 || !['claimed', 'on_deck'].includes(row.state)) return null;
+  if (!row || row.pending === 1 || !['claimed', 'open'].includes(row.state)) return null;
   await remeasureTask(agentId, taskId);
   return remainderRefusal(taskId, 'complete_task(status="complete")');
 }

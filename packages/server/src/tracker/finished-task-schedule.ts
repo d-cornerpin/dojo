@@ -43,8 +43,8 @@ const refusedWhy = (o: WorkOutcome | WorkPatchOutcome): string =>
 
 /**
  * The OWNER door's write. A live row just takes the schedule. A FINISHED row means "run it again":
- * the reopen hops (a finished row's only way back is `open`, status 'active'; `on_deck` is where a
- * recurring task waits) and the schedule write land in ONE unit, so either the task comes back
+ * the reopen (a finished row's only way back is Open, where a recurring task waits) and the
+ * schedule write land in ONE unit, so either the task comes back
  * armed or nothing changes at all. The caller has already computed everything `arm` writes.
  * Returns null, or the plain-words refusal (the unit has rolled back).
  */
@@ -54,13 +54,11 @@ export function armScheduleOnOwnerSave(taskId: string, arm: () => WorkPatchOutco
   try {
     withUnit(() => {
       if (finished) {
-        for (const to of ['active', 'on_deck'] as const) {
-          const hop = setTrackerStatus(taskId, to, {
-            by: 'owner', actorId: 'user',
-            reason: 'the owner set a new schedule on a finished task (dashboard PUT /tracker/tasks/:id)',
-          });
-          if (!workSettled(hop)) throw new ReopenRefused(refusedWhy(hop));
-        }
+        const hop = setTrackerStatus(taskId, 'on_deck', {
+          by: 'owner', actorId: 'user',
+          reason: 'the owner set a new schedule on a finished task (dashboard PUT /tracker/tasks/:id)',
+        });
+        if (!workSettled(hop)) throw new ReopenRefused(refusedWhy(hop));
       }
       const armed = arm();
       if (unsettled(armed)) throw new ReopenRefused(refusedWhy(armed));

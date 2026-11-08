@@ -64,7 +64,8 @@ export function createWorkTable(db: DatabaseType.Database): void {
       -- task burned since it last genuinely advanced."
       effort_calls INTEGER NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0,
       -- v3.5 (migration 200): the task's measure and the engine's reading of it.
-      measure_json TEXT, measure_initial INTEGER, measure_remaining INTEGER, measure_at INTEGER
+      measure_json TEXT, measure_initial INTEGER, measure_remaining INTEGER, measure_at INTEGER,
+      hold_kind TEXT, hold_reason TEXT, hold_at INTEGER
     );
     -- v3.5 (migration 200): the items a task's calls touched. A reference into work(id), so every
     -- deleter clears it (work-refs.ts) and a fixture without it would make those paths throw.
@@ -151,8 +152,8 @@ export interface SeedTask {
 }
 
 const STATUS_TO_STATE: Record<string, string> = {
-  on_deck: 'on_deck', in_progress: 'claimed', complete: 'done', blocked: 'blocked',
-  fallen: 'failed', paused: 'paused', active: 'open', cancelled: 'abandoned',
+  on_deck: 'open', in_progress: 'claimed', complete: 'done',
+  fallen: 'failed', active: 'open', cancelled: 'abandoned',
 };
 
 /** Seed one tracker task row. Extra keys are written as-is to their `work` column, so a test

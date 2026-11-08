@@ -52,7 +52,7 @@ export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from '.
 const logger = createLogger('work-store');
 
 export type WorkState =
-  | 'open' | 'claimed' | 'handed_in' | 'sent_back' | 'done' | 'failed' | 'abandoned' | 'paused' | 'blocked' | 'on_deck';
+  | 'open' | 'claimed' | 'handed_in' | 'sent_back' | 'done' | 'failed' | 'abandoned' | 'blocked';
 
 export type WorkKind = 'ask' | 'task' | 'project' | 'occurrence' | 'commitment';
 
@@ -69,51 +69,15 @@ export { TERMINAL_STATES, isTerminal };
  *  Reopening a TERMINAL row is legal but only for an authority (see gate G8): "late answer
  *  reopens the work" is a real requirement, and it is also exactly the move a confused model
  *  makes on a stale id. */
-// ⚠ PHASE-2 T8c2 item 7 — `on_deck` WAS UNREACHABLE, AND THE MEASUREMENT IS WHY THIS ROW
-// CHANGED. Eleven production call sites ask to put work back in the queue: the scheduler's
-// recurring cadence reset ("run finished; waiting for the next occurrence",
-// `runner.ts:1010`), its unfired release, the PM ladder's rung-4 auto-reset
-// (`pm-agent.ts:1771`), scheduling a task for later, resuming a paused schedule, resolving
-// missed runs, the healer, and the owner dragging a card on the dashboard. Every one of them
-// moves from `claimed` or `paused`, and NEITHER had `on_deck` in its row — so every one was
-// refused with `illegal-transition`, silently, because most of those callers do not read the
-// result. Measured on this box before the fix: 536 recorded transitions across 8 distinct
-// moves and **ZERO into `on_deck` from any state**, with zero rows sitting in it.
-//
-// It is a regression with a date: before PHASE-2 T8b these went through
-// `tracker/schema.ts:updateTask({status})`, an ungated column patch, and simply worked. T8b
-// correctly routed them through this gate; the table it routed them into was written (T2)
-// before those callers existed and nobody enumerated them against it. `on_deck -> claimed`
-// was already legal, so the asymmetry was an omission, not a decision.
-//
-// THE RULE, stated so the next reader does not have to infer it: `on_deck` is a NON-TERMINAL
-// QUEUE state, and every non-terminal state may return to it. Terminal states are untouched —
-// they still have exactly the one `open` reopen edge, so the reopen-requires-authority gate
-// below keeps its whole subject. Asserted with negative controls in
-// `__tests__/transition.test.ts`.
-//
-// ⚠ AND THE SAME OMISSION IN THE OTHER DIRECTION, FOUND ON A USER'S BOX (t89, capture-4). `on_deck` was
-// the ONLY non-terminal state with no `done` edge: `open`, `claimed`, `paused` and `blocked` all have
-// one. So a QUEUED task could never be completed — and the PM's own override-approval path is exactly
-// the caller that needs to complete one. Measured consequence on that box: three validations stuck
-// PERMANENTLY in pending, each re-driving the PM review every minute forever, every attempt refused with
-// `on_deck -> done is not a legal move`, and the caller reporting "task was deleted before override
-// approval could land" because a refused transition and a vanished row look the same to it.
-//
-// COMPLETING A QUEUED TASK IS A REAL REQUIREMENT, not a loophole: the capture's own case is the PM
-// verifying from the audit trail that work genuinely happened and the agent simply forgot to close the
-// tracker (the PM's prompt names that case explicitly), and a scheduled task whose work was done out of
-// band is the same shape. The authority gate is untouched — `done` still requires a delivery receipt or
-// an authoritative actor — so this adds an edge, not a bypass. The rule above now reads in both
-// directions: a non-terminal state may return to the queue, AND the queue may reach any outcome.
+// Every open state may go back to Open (a recurring row waits there between runs) and reach any
+// outcome; a terminal state only reopens. A hold (paused, blocked) is not a state: `work/done/hold.ts`.
+// `blocked` is a chat ask's state (its delegated work is outstanding), never a board row's.
 const LEGAL: Record<WorkState, readonly WorkState[]> = {
-  open:      ['claimed', 'handed_in', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
-  on_deck:   ['open', 'claimed', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
-  claimed:   ['open', 'handed_in', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
-  sent_back: ['open', 'claimed', 'handed_in', 'on_deck', 'paused', 'blocked', 'abandoned'],
+  open:      ['claimed', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
+  claimed:   ['open', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
+  sent_back: ['open', 'claimed', 'handed_in', 'abandoned'],
   handed_in: ['sent_back', 'done', 'failed', 'abandoned'],
-  paused:    ['open', 'claimed', 'on_deck', 'blocked', 'done', 'failed', 'abandoned'],
-  blocked:   ['open', 'claimed', 'on_deck', 'paused', 'done', 'failed', 'abandoned'],
+  blocked:   ['open', 'claimed', 'done', 'failed', 'abandoned'],
   done:      ['open'],
   failed:    ['open', 'abandoned'],
   abandoned: ['open'],
@@ -361,6 +325,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
          -- a settled row is not waiting to be compiled. The flag is cleared HERE rather
          -- than at the three call sites that settle a join, so it cannot survive its row.
          compile_pending = CASE WHEN ? = 1 THEN 0 ELSE compile_pending END,
+         -- a hold lasts only while the row stays where it is (work/done/hold.ts)
+         hold_kind = NULL, hold_reason = NULL, hold_at = NULL, paused_until = NULL,
          updated_at = ?
        WHERE id = ?`,
     ).run(
@@ -977,7 +943,7 @@ export interface JoinState {
   outcome: 'compile' | 'fail-closed';
 }
 
-const CHILD_OPEN_STATES = "('open','claimed','paused','blocked','on_deck')";
+const CHILD_OPEN_STATES = "('open','claimed','blocked')";
 
 /**
  * Open the join for a delegation turn: N children under the owner's ask, the countdown on
@@ -1835,7 +1801,7 @@ export const COMMITMENT_AGING_DAYS = 7;
 
 /** The states an obligation is still owed in. A `claimed` ask is being served RIGHT NOW by the
  *  turn holding it, so it is not something the model needs reminding about. */
-const OWED_STATES = "('open','paused','blocked','on_deck')";
+const OWED_STATES = "('open','blocked')";
 
 /** Kinds that are obligations to a person rather than board work. Both are hidden from the
  *  project board by the same rule (T3: `kind='ask'` never appears there). */

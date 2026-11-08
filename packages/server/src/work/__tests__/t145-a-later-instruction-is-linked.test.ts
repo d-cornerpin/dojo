@@ -17,6 +17,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 
+import { setHold } from '../done/hold.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -467,7 +468,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     expect(estimateTokens(list)).toBeLessThanOrEqual(2500);
     expect(list).toMatch(/\[\d+ older later messages? sent while this task was open[^\]]*the newest of them is message msg-l\d+; history_get\(id="msg-l\d+"\) returns it\]/);
     // a waiting task prints no later messages (it is not current work): pointer only
-    setTrackerStatus(id, 'paused', { by: 'agent', actorId: PRIMARY, reason: 'waiting on the owner to answer the question I asked' });
+    setHold(id, 'paused', 'waiting on the owner to answer the question I asked', PRIMARY);
     const waiting = (await buildWorkBoardLane(PRIMARY)).activeTasks ?? '';
     expect(waiting).not.toContain('Further change number');
   });

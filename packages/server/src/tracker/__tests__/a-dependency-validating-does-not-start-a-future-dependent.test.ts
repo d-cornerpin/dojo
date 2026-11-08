@@ -56,7 +56,7 @@ import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 const db = (): Database.Database => mockDb.current!;
 const HOUR = 3_600_000;
 const status = (id: string): string => (db().prepare(
-  "SELECT CASE state WHEN 'on_deck' THEN 'on_deck' WHEN 'blocked' THEN 'blocked' WHEN 'claimed' THEN 'in_progress' ELSE state END AS s FROM work WHERE id = ?",
+  "SELECT CASE state WHEN 'open' THEN 'on_deck' WHEN 'claimed' THEN 'in_progress' ELSE state END AS s FROM work WHERE id = ?",
 ).get(id) as { s: string }).s;
 
 beforeEach(() => {
@@ -81,33 +81,27 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('a dependency validating makes the dependent eligible; it starts at its own time', () => {
-  const dependent = (id: string, state: 'on_deck' | 'blocked', startMs: number | null): void => {
+  const dependent = (id: string, startMs: number | null): void => {
     seedTrackerTask(db(), {
-      id, agentId: 'helper', status: state, title: `step ${id}`,
+      id, agentId: 'helper', status: 'on_deck', title: `step ${id}`,
       depends_on: JSON.stringify(['dep-1']), scheduled_start: startMs,
     } as never);
   };
 
   it('a dependent with a FUTURE scheduled start is not started when its dependency validates', () => {
-    dependent('d-future', 'on_deck', Date.now() + 5 * HOUR);
+    dependent('d-future', Date.now() + 5 * HOUR);
     checkDependencies('dep-1');
     expect(status('d-future')).toBe('on_deck');
   });
 
-  it('a blocked dependent with a future start becomes waiting for its time (on deck), not started', () => {
-    dependent('d-blocked', 'blocked', Date.now() + 5 * HOUR);
-    checkDependencies('dep-1');
-    expect(status('d-blocked')).toBe('on_deck');
-  });
-
   it('a dependent with no scheduled start starts at once', () => {
-    dependent('d-none', 'on_deck', null);
+    dependent('d-none', null);
     checkDependencies('dep-1');
     expect(status('d-none')).toBe('in_progress');
   });
 
   it('a dependent whose scheduled start is already past starts at once', () => {
-    dependent('d-past', 'blocked', Date.now() - 2 * HOUR);
+    dependent('d-past', Date.now() - 2 * HOUR);
     checkDependencies('dep-1');
     expect(status('d-past')).toBe('in_progress');
   });

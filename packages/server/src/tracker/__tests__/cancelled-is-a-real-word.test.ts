@@ -30,6 +30,7 @@
 // round-3 investigation examined were genuine failures and stay `fallen`/Failed.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { holdOf } from '../../work/done/hold.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -142,14 +143,15 @@ describe('§1 status:"cancelled" lands on the spine as `abandoned`', () => {
     // the synonym table: G7 refuses `done` without a resolving delivery, and `on_deck` is
     // reserved for tasks that carry a future schedule. Asserting on either here would be
     // testing that gate, not this mapping.
-    const cases: Array<[string, string, string, string]> = [
-      ['in progress', 'claimed', 'wordinprog-01', 'on_deck'],
-      ['on hold', 'paused', 'wordonhold-01', 'in_progress'],
-      ['stuck', 'blocked', 'wordstuck-01', 'in_progress'],
-      ['stalled', 'blocked', 'wordstalled-01', 'in_progress'],
-      ['parked', 'paused', 'wordparked-01', 'in_progress'],
+    // [word, the state it lands in, the hold it sets (paused and blocked are holds), id, from]
+    const cases: Array<[string, string, string | null, string, string]> = [
+      ['in progress', 'claimed', null, 'wordinprog-01', 'on_deck'],
+      ['on hold', 'claimed', 'paused', 'wordonhold-01', 'in_progress'],
+      ['stuck', 'claimed', 'blocked', 'wordstuck-01', 'in_progress'],
+      ['stalled', 'claimed', 'blocked', 'wordstalled-01', 'in_progress'],
+      ['parked', 'claimed', 'paused', 'wordparked-01', 'in_progress'],
     ];
-    for (const [word, state, id, from] of cases) {
+    for (const [word, state, hold, id, from] of cases) {
       seedTrackerTask(mockDb.current!, { id, title: word, status: from });
       const out = trackerUpdateStatus(AGENT, {
         taskId: id, status: word,
@@ -157,6 +159,7 @@ describe('§1 status:"cancelled" lands on the spine as `abandoned`', () => {
       });
       expect(out, `${word}: ${out}`).toContain('[OK]');
       expect(rowOf(id).state, word).toBe(state);
+      expect(holdOf(id)?.kind ?? null, word).toBe(hold);
     }
   });
 
@@ -235,7 +238,7 @@ describe('§4 a cancelled row is visible on the board, with its own word', () =>
   });
 
   it('every other status still resolves to its own column, unchanged', () => {
-    for (const s of ['on_deck', 'in_progress', 'paused', 'complete', 'blocked', 'fallen'] as const) {
+    for (const s of ['on_deck', 'in_progress', 'complete', 'fallen'] as const) {
       expect(columnKeyForStatus(s), s).toBe(s === 'cancelled' ? 'fallen' : s);
     }
   });

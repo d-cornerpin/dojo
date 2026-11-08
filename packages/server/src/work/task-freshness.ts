@@ -193,7 +193,7 @@ function settleJob(agentId: string): { tasks: string[]; asks: string[] } {
   const db = getDb();
   const tasks = !inFlight ? [] : (db.prepare(
     `SELECT w.id AS id FROM work w WHERE w.id IN (${c.ids.map(() => '?').join(', ')})
-       AND w.state IN ('claimed', 'on_deck', 'blocked')`).all(...c.ids) as Array<{ id: string }>).map((r) => r.id);
+       AND w.state IN ('claimed', 'open')`).all(...c.ids) as Array<{ id: string }>).map((r) => r.id);
   const asks = !inFlight || c.asks.length === 0 ? [] : (db.prepare(
     `SELECT w.root_id AS id FROM work w WHERE w.kind = 'ask' AND w.state = 'claimed'
        AND w.root_id IN (${c.asks.map(() => '?').join(', ')})`).all(...c.asks) as Array<{ id: string }>).map((r) => r.id);

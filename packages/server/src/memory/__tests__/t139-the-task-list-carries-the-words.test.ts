@@ -56,6 +56,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createTask } from '../../tracker/schema.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
+import { setHold } from '../../work/done/hold.js';
 import { updateTask, listTasks } from '../../tracker/schema.js';
 import { writeTaskLog } from '../../tracker/task-log.js';
 import { assembleContext } from '../assembler.js';
@@ -228,10 +229,9 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
     ownerSays('msg-paused', old, DAY_ONE - 31 * 86_400_000);
     vi.setSystemTime(DAY_ONE - 30 * 86_400_000);
     const id = task('Conference flights', undefined, 'msg-paused');
-    const r = setTrackerStatus(id, 'paused', { by: 'agent', actorId: AGENT, reason: 'waiting on the person' });
-    expect(r.kind).toBe('applied');
+    expect(setHold(id, 'paused', 'waiting on the person', AGENT).ok).toBe(true);
     const pausedAt = (mockDb.current!.prepare(
-      "SELECT created_at FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1",
+      "SELECT created_at FROM work_events WHERE work_id = ? AND kind = 'audit' ORDER BY id DESC LIMIT 1",
     ).get(id) as { created_at: number }).created_at;
     // A live 8,000-char request beside it gets the WHOLE pool.
     const live = longAsk(8000, 'LIVE');
@@ -252,13 +252,11 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
     expect(block.indexOf('Live job')).toBeLessThan(block.indexOf('Conference flights'));
   });
 
-  // ROUND 3 (re-review minor): `status_before_pause` is written for EVERY pause, so a task the
-  // OWNER paused himself read "waiting on <owner> to answer". Who paused it is the transition's
-  // own `by`, and an owner's pause is not a question waiting on his answer.
+  // Who paused it is the hold's own actor, and an owner's pause is not a question waiting on his answer.
   it('a task the OWNER paused is labelled as paused by the owner, never "waiting on <owner> to answer"', async () => {
     ownerSays('msg-ownerpause', 'Book the photographer for the launch.', DAY_ONE - 60_000);
     const id = task('Photographer', undefined, 'msg-ownerpause');
-    expect(setTrackerStatus(id, 'paused', { by: 'owner', actorId: 'owner', reason: 'owner paused it' }).kind).toBe('applied');
+    expect(setHold(id, 'paused', 'owner paused it', 'owner').ok).toBe(true);
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(block).toMatch(/Status: paused since \[[^\]]+\] — paused by the owner/);
@@ -268,12 +266,7 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
   it('CONTROL: the engine\'s own waiting-on-owner pause still says whose answer it waits for', async () => {
     ownerSays('msg-enginepause', 'Draft the newsletter intro.', DAY_ONE - 60_000);
     const id = task('Newsletter', undefined, 'msg-enginepause');
-    // The engine's pause cites the delivery it is keyed on (G6), exactly as the disposition does.
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
-       VALUES ('dl-x', ?, 1, 'dashboard', 'dashboard', 'delivered', datetime('now'))`,
-    ).run(AGENT);
-    expect(setTrackerStatus(id, 'paused', { by: 'engine', actorId: AGENT, evidenceRef: 'dl-x', reason: 'waiting on the person' }).kind).toBe('applied');
+    expect(setHold(id, 'paused', 'waiting on the person', 'engine').ok).toBe(true);
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(block).toMatch(/waiting on [^\n]+ to answer/);

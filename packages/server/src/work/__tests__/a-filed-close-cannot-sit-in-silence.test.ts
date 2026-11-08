@@ -146,10 +146,10 @@ describe('the card can see that a close was requested', () => {
   it('the branches that were already there are byte-unchanged', () => {
     seedWork('w2');
     // A real transition and a real verdict still render exactly as before.
-    const moved = transition('w2', { to: 'paused', by: 'agent', actorId: AGENT, reason: 'waiting on them' });
+    const moved = transition('w2', { to: 'open', by: 'agent', actorId: AGENT, reason: 'back to Open' });
     expect(moved.kind).toBe('applied');
     const trail = readAuditTrail('w2');
-    expect(trail.some((r) => r.entry_kind === 'transition' && r.to_status === 'paused')).toBe(true);
+    expect(trail.some((r) => r.entry_kind === 'transition' && r.to_status === 'on_deck')).toBe(true);
   });
 });
 

@@ -340,7 +340,7 @@ describe('§5 the spine writer retires the memory', () => {
     seedVault({ id: 'v-roof', content: BOB_ROOF });
     seedCommitment({ id: 'cmt:5a0d68d9039e', title: 'Email the roof quote to Bob (promise-bmsbcibqqem).', state: 'open' });
     const out = transition('cmt:5a0d68d9039e', {
-      to: 'paused', by: 'agent', actorId: AGENT, reason: 'waiting on Bob',
+      to: 'claimed', by: 'agent', actorId: AGENT, reason: 'working on it',
     });
     expect(out.kind).toBe('applied');
     expect(isObsolete('v-roof')).toBe(0);

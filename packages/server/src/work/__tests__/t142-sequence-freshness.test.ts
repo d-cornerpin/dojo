@@ -190,15 +190,11 @@ describe('§4 census: one builder, every reader, no clock', () => {
   });
 
   it('THE APPLICATION, not the prose: the built clause compares event_seq to an event id', () => {
-    for (const state of ['blocked', 'paused', 'done'] as const) {
-      const sql = validatedExpr('w', state);
-      expect(sql).toContain("adj.event_seq >= COALESCE((SELECT MAX(e.id) FROM work_events e");
-      expect(sql).toContain(`json_extract(e.payload, '$.to') = '${state}'`);
-      expect(sql, 'no clock anywhere in the freshness clause').not.toMatch(/created_at/);
-    }
-    const disposal = validatedExpr('w', 'blocked', { excludeSystemClosers: true });
-    expect(disposal).toContain('adj.event_seq >= ');
-    expect(disposal).toContain('NOT IN');
+    const sql = validatedExpr('w', 'done');
+    expect(sql).toContain("adj.event_seq >= COALESCE((SELECT MAX(e.id) FROM work_events e");
+    expect(sql).toContain(`json_extract(e.payload, '$.to') = 'done'`);
+    expect(sql, 'no clock anywhere in the freshness clause').not.toMatch(/created_at/);
+    expect(sql, 'a system closer\'s receipt is not a verdict').toContain('NOT IN');
   });
 });
 

@@ -71,7 +71,7 @@ describe('§1 the pieces\' own states say which failure happened', () => {
     expect(tallyPieces([piece('failed', 'I cannot do this')])).toEqual({ refused: 1, empty: 0, silent: 0 });
     expect(tallyPieces([piece('done', '')])).toEqual({ refused: 0, empty: 1, silent: 0 });
     // Anything still open is silence too: nothing has come back from it.
-    for (const s of ['open', 'claimed', 'on_deck', 'blocked', 'paused']) {
+    for (const s of ['open', 'claimed', 'blocked']) {
       expect(tallyPieces([piece(s)]).silent, `${s} is not an answer`).toBe(1);
     }
   });

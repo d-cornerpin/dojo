@@ -205,15 +205,15 @@ describe('a state change is recorded ONCE, by the spine', () => {
 
   it('the transition renders in TRACKER vocabulary, not spine vocabulary (RULING 10)', () => {
     // The one owner-visible decision in this absorption. The spine event says
-    // `open -> claimed`; the history the owner has always read says `active -> in_progress`.
+    // `open -> claimed`; the history the owner reads says `on_deck -> in_progress` (an Open task).
     // T2's own CASE mapping (`STATE_TO_STATUS_SQL`) is the translator, so this is a re-point
     // and not an invention.
     seedWork('w1', { state: 'open' });
     transition('w1', { to: 'claimed', by: 'agent', actorId: AGENT, reason: 'picked it up' });
     const t = listTaskLog('w1').find((e) => e.entryKind === 'transition')!;
-    expect(t.fromStatus).toBe('active');
+    expect(t.fromStatus).toBe('on_deck');
     expect(t.toStatus).toBe('in_progress');
-    expect(formatEntryLine(t)).toContain('active → in_progress');
+    expect(formatEntryLine(t)).toContain('on_deck → in_progress');
     expect(formatEntryLine(t)).not.toContain('claimed');
   });
 
