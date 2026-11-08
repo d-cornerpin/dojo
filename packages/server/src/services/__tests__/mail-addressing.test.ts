@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAddressList, placeMailbox, type MailAddress } from '../mail-addressing.js';
+import { parseAddressList, placeMailbox, type MailAddress } from '../mail-inbound-facts.js';
 
 // Build a MailAddress without the noise; display defaults to null.
 const A = (address: string, display: string | null = null): MailAddress => ({ address, display });

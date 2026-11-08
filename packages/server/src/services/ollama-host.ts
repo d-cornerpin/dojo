@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE COMMANDS THE DOJO RUNS ON THIS MAC TO LOOK AFTER ITS OLLAMA (v3.5, moved out of `ollama-model-limit.ts`
-// and extended by Fix W): who listens on Ollama's port, which program that really is, launchd's environment,
+// THE COMMANDS THE DOJO RUNS ON THIS MAC TO LOOK AFTER ITS OLLAMA: who listens on Ollama's port, which program
+// that really is, launchd's environment,
 // the Ollama app's processes, and Homebrew and its service. Every command is behind the
 // `OllamaHost` seam so a test reads the argv of the real ones and runs fakes for the rest; a test run never
 // reaches the real set (`getOllamaHost`).
@@ -85,13 +85,13 @@ export function makeRealDeps(
         if (!pid) return null;
         // The program the process really runs: its first text mapping (`-d txt`), which lsof reports as the file on
         // disk, links resolved. `ps -o comm=` reports the path it was STARTED by, so a `serve` started through the
-        // CLI link into the app read as not the app (field failure, Fix W).
+        // CLI link into the app would read as not the app.
         const fields = (await run('lsof', ['-nP', '-a', '-p', String(pid), '-d', 'txt', '-Fn'])).stdout.split('\n');   // `f<fd>` then `n<path>`, per mapping
         const mapped = fields.slice(fields.indexOf('ftxt') + 1).find((l) => l.startsWith('n/'))?.slice(1);
         return { pid, path: mapped ?? (await run('ps', ['-o', 'comm=', '-p', String(pid)])).stdout.trim() };
       } catch { return null; }
     },
-    // This user's own processes only (fix round 5): another user's Ollama app is not ours to signal.
+    // This user's own processes only: another user's Ollama app is not ours to signal.
     appPids: async () => { try { return pids((await run('pgrep', ['-x', '-u', String(process.getuid?.() ?? ''), 'Ollama'])).stdout); } catch { return []; } },
     appInstalled: async () => {   // `/bin/test -d`: the bundle is there (no file-system import for one yes/no)
       for (const p of ['/Applications/Ollama.app', join(homeDir(), 'Applications', 'Ollama.app')]) { try { await run('/bin/test', ['-d', p]); return true; } catch { /* not here */ } }
@@ -100,7 +100,7 @@ export function makeRealDeps(
     terminate: (pid) => { try { kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
     alive: (pid) => { try { return kill(pid, 0); } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } },
     // Exactly how Ollama's CLI starts the Mac app (`cmd/start_darwin.go`): hidden, fast start-up. Run under the
-    // platform's child-process bound (`child-idle-bound.ts`) at the app-start patience below (fix round 5, NB4-2).
+    // platform's child-process bound (`child-idle-bound.ts`) at the app-start patience below.
     launchApp: async () => {
       await attachIdleBound(spawnChild('/usr/bin/open', ['-j', '-a', 'Ollama', '--args', '--fast-startup']), { idleMs: WAIT_MS, ceilingMs: WAIT_MS });
     },
@@ -160,5 +160,5 @@ const REAL = makeRealDeps(
 let override: OllamaHost | null = null;
 /** A test's fake host for the code that is not handed one (null puts the real one back). */
 export function overrideOllamaHost(host: OllamaHost | null): void { override = host; }
-/** The host the platform uses, or null in a test run with no fake: the real launchctl, brew and app are never touched by a test. */
-export function getOllamaHost(): OllamaHost | null { return override ?? (isTestRun() ? null : REAL); }
+/** The host the platform uses, or null off a Mac and in a test run with no fake: a test never touches the real launchctl, brew or app. */
+export function getOllamaHost(): OllamaHost | null { return override ?? (isTestRun() || process.platform !== 'darwin' ? null : REAL); }

@@ -14,10 +14,8 @@ vi.mock('../../../db/connection.js', () => ({
 
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
-import {
-  ensureStandardModelsOncePerVersion, standardInstallSettled, standardModelRowId,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
-} from '../../../services/local-standard.js';
+import { standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../../services/local-standard.js';
+import { upkeep, upkeepSettled } from '../../../services/ollama-upkeep.js';
 
 const ollama = { installed: new Set<string>(), pulls: [] as string[], calls: [] as string[] };
 
@@ -60,7 +58,7 @@ afterEach(() => {
 });
 
 /** The install runs in the background; wait for it the way a poller would, starting nothing. */
-const settled = (): Promise<void> => standardInstallSettled();
+const settled = (): Promise<void> => upkeepSettled();
 
 describe('setup installs the pair once Ollama is up and the embedder is present', () => {
   it('auto-configure starts the install with no choice asked, and GET /ollama/standard reports it', async () => {
@@ -95,39 +93,34 @@ describe('setup installs the pair once Ollama is up and the embedder is present'
   });
 });
 
-describe('an updating box gets the pair once per version', () => {
+describe('every Dojo start runs the upkeep', () => {
   const seedLocalProvider = (): void => {
     mockDb.current!.prepare(`INSERT INTO providers (id, name, type, base_url, auth_type, is_validated)
       VALUES ('ollama-local', 'Ollama (Local)', 'ollama', 'http://localhost:11434', 'none', 1)`).run();
   };
 
-  it('runs on the first boot of a version, not on the second, and again on the next version', async () => {
+  it('installs the pair at a start and pulls nothing again at the next', async () => {
     seedLocalProvider();
-    expect(await ensureStandardModelsOncePerVersion('3.5.0')).toBe(true);
+    await upkeep('boot');
     expect(ollama.pulls).toHaveLength(2);
-
-    ollama.calls = [];
-    expect(await ensureStandardModelsOncePerVersion('3.5.0')).toBe(false);
-    expect(ollama.calls).toEqual([]);
-
-    expect(await ensureStandardModelsOncePerVersion('3.5.1')).toBe(true);
+    await upkeep('boot');
     expect(ollama.calls).toContain('/api/tags');
-    expect(ollama.pulls).toHaveLength(2);   // already installed: nothing pulled again
+    expect(ollama.pulls).toHaveLength(2);
   });
 
-  it('a box that never set up Ollama is left to setup (nothing created, nothing stamped)', async () => {
-    expect(await ensureStandardModelsOncePerVersion('3.5.0')).toBe(false);
+  it('a box that never set up Ollama is left to setup (nothing created, nothing asked)', async () => {
+    await upkeep('boot');
     expect(ollama.calls).toEqual([]);
     expect(mockDb.current!.prepare("SELECT COUNT(*) AS n FROM providers WHERE type = 'ollama'").get()).toEqual({ n: 0 });
   });
 
-  it('an install that could not finish is tried again at the next boot of the same version', async () => {
+  it('an install that could not finish is tried again at the next start', async () => {
     seedLocalProvider();
     const realFetch = globalThis.fetch;
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed: ECONNREFUSED'); }));
-    expect(await ensureStandardModelsOncePerVersion('3.5.0')).toBe(true);
+    await upkeep('boot');
     vi.stubGlobal('fetch', realFetch);
-    expect(await ensureStandardModelsOncePerVersion('3.5.0')).toBe(true);
+    await upkeep('boot');
     expect(ollama.pulls).toHaveLength(2);
   });
 });

@@ -167,7 +167,7 @@ describe('a holder, or the owner, grants it', () => {
     expect(offered(granted.agentId)).toBe(true);
     const ok = await call(granted.agentId);
     expect(ok.isError, ok.content).toBe(false);
-    expect(ok.content).toMatch(/^agents — /);
+    expect(ok.content).toMatch(/^agents\n\nid /);
     expect(offered(plain.agentId)).toBe(false);
     expect((await call(plain.agentId)).isError).toBe(true);
   });

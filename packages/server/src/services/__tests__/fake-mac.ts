@@ -1,8 +1,6 @@
-// A MAC THAT BEHAVES LIKE ONE, for the tests of the Dojo's Ollama upkeep (field failure 2). Nothing real runs.
-//
-// The fake that hid field failure 2 had `brew upgrade` bump the RUNNING version. On a real Mac `brew` replaces the program
-// ON DISK only, and the process that serves keeps the program it started with until it is stopped and another is started.
-// Here, likewise:
+// A MAC THAT BEHAVES LIKE ONE, for the tests of the Dojo's Ollama upkeep. Nothing real runs. On a real Mac `brew` replaces
+// the program ON DISK only, and the process that serves keeps the program it started with until it is stopped and another
+// is started. Here, likewise:
 //   · `brew upgrade|install ollama` and `brew upgrade|install --cask …` change what is on disk, nothing else;
 //   · the version Ollama answers (`/api/version`, over real HTTP) changes only when a serve STARTS (the app opened,
 //     Homebrew's service restarted, a supervisor's respawn), from the program on disk at that moment;
@@ -17,7 +15,6 @@
 //   · a listener need not be Ollama at all (Docker Desktop forwarding a container, an `ssh -L` tunnel).
 import http from 'node:http';
 import type { OllamaHost } from '../ollama-host.js';
-import { localHeld } from '../ollama-quiet.js';
 import { ollamaAtLeast } from '../ollama-version.js';
 import { STANDARD_DECISION_MODEL } from '../local-standard.js';
 
@@ -84,7 +81,7 @@ export type Mac = OllamaHost & {
   latest: string;
   env: Record<string, string>;
   brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number;
-  heldDuringBrew: boolean[]; downAtBrew: boolean[];
+  downAtBrew: boolean[];
   hasBrewInstalled: boolean; failBrew: boolean; failBrewOnce: boolean; cliOk: boolean; serviceWorks: boolean; serveWorks: boolean; failCask: boolean;
   relaunchGate: Promise<void>;
   /** A supervisor that starts this program again whenever its serve stops (a launchd job of the owner's). `program` null:
@@ -127,7 +124,7 @@ export function fakeMac(o: { running?: Serve | null; formula?: string | null; ap
     set running(v: Serve | null) { serve = v; ollama.serving = v ? { version: v.version } : null; },
     disk: { formula: o.formula ?? null, app: o.app ?? null, appCask: o.appCask === undefined ? (o.app ? 'ollama-app' : null) : o.appCask },
     latest: LATEST, env: {},
-    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, heldDuringBrew: [], downAtBrew: [], serves: [], log: [],
+    brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, downAtBrew: [], serves: [], log: [],
     hasBrewInstalled: true, failBrew: false, failBrewOnce: false, cliOk: true, serviceWorks: true, serveWorks: true, failCask: false, relaunchGate: Promise.resolve(), respawn: null,
     cli: null, startMs: 0, appStartMs: 0, macos: 15, now: 0, serviceLoaded: false,
     wait: (ms) => tick(ms),
@@ -154,7 +151,7 @@ export function fakeMac(o: { running?: Serve | null; formula?: string | null; ap
     macosMajor: async () => m.macos,
     cliRuns: async () => m.cliOk && (m.disk.formula !== null || m.disk.app !== null || m.cli !== null),
     brew: async (args) => {
-      m.brews.push(args); m.heldDuringBrew.push(localHeld()); m.downAtBrew.push(!serve);
+      m.brews.push(args); m.downAtBrew.push(!serve);
       if (m.failBrewOnce) { m.failBrewOnce = false; throw new Error('brew hiccup (raw)'); }
       if (m.failBrew) throw new Error('Error: brew exploded (raw)');
       if (args[0] === 'fetch') return;   // the download only: nothing on disk changes

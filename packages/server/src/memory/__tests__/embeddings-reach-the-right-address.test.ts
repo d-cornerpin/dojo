@@ -23,7 +23,6 @@ vi.mock('../../db/connection.js', () => ({
     return h.db.current;
   },
 }));
-vi.mock('../../services/ollama-quiet.js', () => ({ localWorkBegins: async () => () => {} }));
 
 const realFetch = globalThis.fetch;
 let requested: string[];

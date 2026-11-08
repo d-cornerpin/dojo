@@ -15,12 +15,8 @@ import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
-import {
-  ensureLocalOllamaProvider, startStandardInstall, standardState, standardProgressLines,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS,
-} from '../../services/local-standard.js';
-import { ensureOllamaModelLimit } from '../../services/ollama-model-limit.js';
-import { releasePairHold, ollamaCurrentForModel } from '../../services/ollama-pair-gate.js';
+import { ensureLocalOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { standardProgressLines, standardState, upkeep } from '../../services/ollama-upkeep.js';
 import { isVersionRefusal, plainPullError } from '../../services/ollama-version.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
@@ -140,10 +136,8 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'ollama-start': {
-        // Field failure 2: the one Ollama upkeep (`ollama-upgrade.ts`, through the start hook) starts what was installed as a kind
-        // that lasts (the app, or Homebrew's service), at the version the Dojo's models need, with the loaded-model limit in launchd.
-        ensureLocalOllamaProvider();
-        void ensureOllamaModelLimit().catch((err) => logger.warn('Starting Ollama failed', { error: String(err) })); // fire and forget
+        // The one Ollama upkeep starts what was installed as a kind that lasts, current, with the loaded-model limit.
+        void upkeep('setup');
         // Wait a moment for it to start
         await new Promise(r => setTimeout(r, 3000));
         try {
@@ -269,16 +263,16 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
   const model = body.model as string;
   try {
     const pull = () => pullOllamaModel(model, { onProgress: (p) => { currentPullProgress = p; } });
-    let outcome = await pull();   // field failure 2: one that needs a newer Ollama gets Repair's upkeep (made current), then again
-    const upkeep = !outcome.ok && isVersionRefusal(outcome.error) ? await ollamaCurrentForModel(ensureLocalOllamaProvider(), STANDARD_TAGS.length) : null;
-    if (upkeep?.ok) outcome = await pull();
+    let outcome = await pull();   // one that needs a newer Ollama: the upkeep makes Ollama newer, then it is pulled again
+    const current = !outcome.ok && isVersionRefusal(outcome.error) ? await upkeep('setup', 'newer') : null;
+    if (current?.ok) outcome = await pull();
     if (outcome.ok) {
       currentPullProgress = null;
       return c.json({ ok: true, data: { model, pulled: true, status: outcome.status } });
     }
     if (outcome.stalled) return routeFailure(c, logger, new Error(outcome.error), { status: 500 });
     logger.warn('Manual model pull failed', { model, error: outcome.error });
-    return c.json({ ok: false, error: plainPullError(outcome.error, upkeep?.line) }, 500);
+    return c.json({ ok: false, error: plainPullError(outcome.error, current?.line) }, 500);
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }
@@ -308,8 +302,7 @@ setupDepsRouter.get('/ollama/standard', async (c) => {
 
 // POST /ollama/standard — install or repair them (the Ollama tile's Repair button), in the background
 setupDepsRouter.post('/ollama/standard', (c) => {
-  releasePairHold();   // Repair looks at Ollama's version afresh: it upgrades it when it can, else says so once
-  startStandardInstall();
+  void upkeep('repair');
   return c.json({ ok: true, data: { started: true } });
 });
 
@@ -354,11 +347,7 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
       }
 
       logger.info('Ollama model discovery complete', { total: models.length, added });
-      // v3.5: Ollama answers and the embedder is present — the Dojo's two models install themselves.
-      if (models.some((m) => m.name.startsWith('nomic-embed-text'))) {
-        void ensureOllamaModelLimit();   // owner decision 2026-10-24; its restart waits for the install below (fix round 4)
-        startStandardInstall();
-      }
+      if (models.some((m) => m.name.startsWith('nomic-embed-text'))) void upkeep('setup');   // Ollama answers and the embedder is in: the pair installs itself
       return c.json({ ok: true, data: { providerId, modelsFound: models.length, modelsAdded: added } });
     }
   } catch { /* ignore */ }

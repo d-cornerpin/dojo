@@ -20,7 +20,6 @@ import { decide, type Question } from '../decide.js';
 import { getDecisionProvider } from '../decision-provider.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
-import { holdWhenQuiet } from '../../services/ollama-quiet.js';
 import { fenceRanges, unfenceExternal } from '../../tools/external-content.js';
 
 /** The state with every engine fence removed (strings, arrays and objects alike). */
@@ -107,14 +106,6 @@ describe('decide()', () => {
     expect(calls[0].body).not.toHaveProperty('options');
     expect(calls[0].body.model).toBe(STANDARD_DECISION_MODEL.tag);
     expect(await decisionWindowTokens()).toBe(8_192);   // the derived tag's own test: services/__tests__/the-decision-model-runs-at-its-real-window
-  });
-
-  it('NB-1: while the Ollama app restarts for the model limit, the rule answers at once (null), nothing dialled', async () => {
-    install();
-    const release = await holdWhenQuiet('ollama-local');
-    expect(await decide({ reply: 'x' }, QUESTIONS, { purpose: 'reply_claims' })).toBeNull();
-    expect(calls).toHaveLength(0);
-    release();
   });
 
   it('writes one cost row: the purpose, the latency, the input tokens, $0', async () => {

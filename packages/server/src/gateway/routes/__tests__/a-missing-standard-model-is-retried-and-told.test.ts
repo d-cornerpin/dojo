@@ -13,9 +13,10 @@ const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; agentId?: 
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: (f: { type?: string }) => { frames.list.push(f); }, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../../db/migrations.js';
-import { ensureStandardModelsOncePerVersion, standardInstallSettled, standardModelRowId, STANDARD_MODELS_MISSING_WORDS } from '../../../services/local-standard.js';
+import { standardModelRowId } from '../../../services/local-standard.js';
+import { upkeep, upkeepSettled } from '../../../services/ollama-upkeep.js';
 import { checkOllamaHealth } from '../../../services/ollama.js';
-import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { healerOwnerCards, STANDARD_MODELS_MISSING_WORDS } from '../../../healer/owner-notices.js';
 // Load the lazily-imported decision window (its chain loads playwright, which writes globalThis.fetch
 // once at load) at COLLECTION, so that write can never land inside a test's stubbed fetch.
 import '../../../services/decision-window.js';
@@ -52,57 +53,56 @@ const cards = (): string[] => frames.list.filter((f) => f.type === 'chat:error' 
 
 describe('a pair that failed to install', () => {
   it('is installed without a reboot once Ollama answers again (the health check is the signal)', async () => {
-    await ensureStandardModelsOncePerVersion('3.5.0');
+    await upkeep('boot');
     expect(standardModelRowId('writer')).toBeNull();
     ollama.registryDown = false;
     expect(await checkOllamaHealth('http://localhost:11434')).toBe(true);
-    await standardInstallSettled();
+    await upkeepSettled();
     expect(standardModelRowId('writer')).toBeTruthy();
     expect(standardModelRowId('decision')).toBeTruthy();
   });
 
   it('the owner is told ONCE through the dashboard card system, and the card ends when the pair is in', async () => {
-    await ensureStandardModelsOncePerVersion('3.5.0');
+    await upkeep('boot');
     await checkOllamaHealth('http://localhost:11434');
-    await standardInstallSettled();
+    await upkeepSettled();
     expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
-    // v3.5 field fix 3 (#9, OR-FIELD3 (c)): the Dojo keeps trying by itself, so it is an INFORMATIONAL card: a toast that
-    // leaves by itself, never re-derived on a reload (it was a lasting card).
+    // The Dojo keeps trying by itself, so it is an INFORMATIONAL card: a toast that leaves by itself, never re-derived on a reload.
     expect(frames.list.filter((f) => f.error === STANDARD_MODELS_MISSING_WORDS && f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
     ollama.registryDown = false;
     await checkOllamaHealth('http://localhost:11434');
-    await standardInstallSettled();
-    expect(frames.list.some((f) => f.severity === 'info' && f.error === STANDARD_MODELS_MISSING_WORDS)).toBe(true);
+    await upkeepSettled();
+    expect(frames.list.some((f) => f.severity === 'info' && (f as { cardKey?: string }).cardKey === 'ollama')).toBe(true);
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
   });
 
   it('A5: an updated box whose Ollama does not answer is told too (the writer never installs otherwise)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed: ECONNREFUSED'); }));
-    await ensureStandardModelsOncePerVersion('3.5.0');
+    await upkeep('boot');
     expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
   });
 
   it('N4: Ollama slow at boot, then answering with both models already there → registered, and the card ends', async () => {
     const real = globalThis.fetch;
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed: ECONNREFUSED'); }));
-    await ensureStandardModelsOncePerVersion('3.5.0');
+    await upkeep('boot');
     expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
     vi.stubGlobal('fetch', real);
     ollama.installed.add('tev1:4b-q4_K_M');
     ollama.installed.add('qwen3.5:4b');
     await checkOllamaHealth('http://localhost:11434');
-    await standardInstallSettled();
+    await upkeepSettled();
     expect(standardModelRowId('writer')).toBeTruthy();
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
   });
 
   it('a health check of a box with both models installed starts nothing', async () => {
     ollama.registryDown = false;
-    await ensureStandardModelsOncePerVersion('3.5.0');
+    await upkeep('boot');
     const pullsBefore = vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).endsWith('/api/pull')).length;
     await checkOllamaHealth('http://localhost:11434');
-    await standardInstallSettled();
+    await upkeepSettled();
     expect(vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).endsWith('/api/pull')).length).toBe(pullsBefore);
   });
 });

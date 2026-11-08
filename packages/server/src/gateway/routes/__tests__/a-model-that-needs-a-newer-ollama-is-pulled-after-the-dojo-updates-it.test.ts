@@ -1,7 +1,5 @@
-// FIELD FAILURE 2, THE SETUP SCREEN'S OWN PULL: a model the owner pulls (an agent's model) that the registry refuses as
-// needing a newer Ollama. Before, setup told him "Download the latest from ollama.com, then try again". Owner ruling
-// OR-UPKEEP-AUTOMATIC: the same upkeep as Repair makes Ollama current (`ensureOllamaCurrent`), then the model is pulled again;
-// no text tells him to download or restart anything. `fake-mac.ts` plays the Mac; the route's fixed localhost address is
+// THE SETUP SCREEN'S OWN PULL: a model the owner pulls (an agent's model) that the registry refuses as needing a newer
+// Ollama. The one upkeep makes Ollama newer, then the model is pulled again; no text tells him to download or restart anything. `fake-mac.ts` plays the Mac; the route's fixed localhost address is
 // pointed at the fake Ollama, so the real Ollama on this machine is never reached.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -17,7 +15,7 @@ vi.mock('../../ws.js', () => ({ broadcast: (f: { error?: string }) => { frames.l
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
 import { overrideOllamaHost } from '../../../services/ollama-host.js';
-import { ollamaRestartSettled } from '../../../services/ollama-model-limit.js';
+import { upkeepSettled } from '../../../services/ollama-upkeep.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac } from '../../../services/__tests__/fake-mac.js';
 
 const MODEL = 'agent-model:7b';
@@ -37,7 +35,7 @@ beforeEach(async () => {
   frames.list.length = 0;
 });
 afterEach(async () => {
-  await ollamaRestartSettled();
+  await upkeepSettled();
   overrideOllamaHost(null); vi.unstubAllGlobals();
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;

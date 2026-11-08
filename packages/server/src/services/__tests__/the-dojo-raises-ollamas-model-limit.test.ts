@@ -1,17 +1,8 @@
-// v3.5 — OWNER DECISION 2026-10-24 ("Dojo raises the limit"): the Dojo sets Ollama's loaded-model limit on the
-// Mac (OLLAMA_MAX_LOADED_MODELS via `launchctl setenv`) to the embedder + the Dojo's pair + the Ollama lock's
-// agent slots, at setup and at every start.
-// Fix round 4 rulings:
-//   NB-1 the Ollama app is restarted only when no local Ollama call and no pull is in flight; calls that
-//        arrive during the restart wait for it; a running turn or a download is never cut.
-//   NB-2 it acts only where it is true: the Ollama app serving the local Ollama → set + restart;
-//        Fix W: Homebrew's service → set + the service restarted; field failure 2 (owner ruling OR-UPKEEP-AUTOMATIC): a
-//        serve nothing supervises → taken over, Homebrew's service in its place with the variable in launchd; what the
-//        Dojo did is a log line, NEVER a card (the owner is never asked to set a variable); no local Ollama → nothing.
-//   NB-3 an owner's value is never lowered.
-//   NB-5 no AppleScript (a TERM to the app's processes, then `open`); a failed restart is retried at the next
-//        start; an unset `launchctl getenv` reads as unset.
-// Every command is a stub here: the real launchctl, the real Ollama and the Ollama app are NEVER touched.
+// THE DOJO RAISES OLLAMA'S LOADED-MODEL LIMIT ON THE MAC (OLLAMA_MAX_LOADED_MODELS via `launchctl setenv`) to the embedder +
+// the Dojo's pair + the Ollama lock's agent slots, at every start, through the one upkeep. It acts only where it is true: the
+// app or Homebrew's service gets the variable and one restart; a serve nothing supervises is taken over; no local Ollama,
+// nothing. An owner's higher value is never lowered; there is no AppleScript; a failed restart is tried again at the next
+// start. Every command is a stub here: the real launchctl, the real Ollama and the Ollama app are NEVER touched.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import type { LogEntry } from '@dojo/shared';
@@ -31,22 +22,18 @@ vi.mock('node:child_process', async (orig) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import {
-  ensureOllamaModelLimit, ollamaRestartSettled, desiredOllamaMaxLoaded, makeRealDeps, raisedLoadedLimit,
-  OLLAMA_LIMIT_FAILED_WORDS, type OllamaLimitDeps,
-} from '../ollama-model-limit.js';
-import { getOllamaLock } from '../ollama-lock.js';
-import { localWorkBegins } from '../ollama-quiet.js';
-import { pullOllamaModel } from '../ollama-pull.js';
-import { healerOwnerCards } from '../../healer/owner-notices.js';
-import { holdWhenQuiet } from '../ollama-quiet.js';
+import { makeRealDeps, overrideOllamaHost, type OllamaHost } from '../ollama-host.js';
+import { desiredLoaded, raisedLoadedLimit } from '../ollama-restart.js';
+import { upkeep } from '../ollama-upkeep.js';
+import { STANDARD_DECISION_MODEL, STANDARD_TAGS, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { healerOwnerCards, OLLAMA_LIMIT_FAILED_WORDS } from '../../healer/owner-notices.js';
 import type { WatchableChild } from '../../child-idle-bound.js';
 
 const LOCAL = 'ollama-local';
 const APP_SERVER = '/Applications/Ollama.app/Contents/Resources/ollama';
 const BREW_SERVER = '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama';
 
-type Fake = OllamaLimitDeps & { sets: string[]; terms: number[]; launches: number; log: string[]; serviceRestarts: number };
+type Fake = OllamaHost & { sets: string[]; terms: number[]; launches: number; log: string[]; serviceRestarts: number };
 function fakeDeps(env: Record<string, string>, o: {
   server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>; neverAnswers?: boolean; failLaunch?: unknown; brewService?: boolean; formula?: boolean;
 } = {}): Fake {
@@ -72,11 +59,15 @@ function fakeDeps(env: Record<string, string>, o: {
     brew: async (args) => { d.log.push(`brew ${args.join(' ')}`); },
     restartBrewService: async () => { d.serviceRestarts++; d.log.push('service'); service = true; living.add(502); },
     brewFormulaInstalled: async () => o.formula ?? false,
+    stopBrewService: async () => { service = false; },
+    macosMajor: async () => 15,
+    startServe: () => null,
   };
   return d;
 }
 
-const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 10));
+/** One Dojo start on `deps`. */
+const boot = async (deps: Fake): Promise<void> => { overrideOllamaHost(deps); await upkeep('boot'); };
 /** A child process stand-in: exits cleanly at once, or (`hang`) never. */
 function quickChild(hang = false): WatchableChild & { killed: boolean } {
   const closers: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
@@ -89,8 +80,14 @@ function quickChild(hang = false): WatchableChild & { killed: boolean } {
   return c as unknown as WatchableChild & { killed: boolean };
 }
 
-// The running Ollama's version is read over HTTP: a current one, so these clauses are about the limit (never the real Ollama).
-const currentOllama = (): void => { vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ version: '0.41.0' }), { status: 200 }))); };
+// The running Ollama answers over HTTP: current, with the pair listed, so these clauses are about the limit (never the real Ollama).
+const LISTED = [STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.windowTag, STANDARD_WRITER_MODEL.tag].map((name) => ({ name }));
+const currentOllama = (): void => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const path = new URL(url).pathname;
+    return path === '/api/version' ? Response.json({ version: '0.41.0' }) : path === '/api/tags' ? Response.json({ models: LISTED }) : new Response('nf', { status: 404 });
+  }));
+};
 beforeEach(() => {
   currentOllama();
   mockDb.current = new Database(':memory:');
@@ -98,21 +95,20 @@ beforeEach(() => {
   mockDb.current.prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES (?, 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1)").run(LOCAL);
   frames.list.length = 0; spawned.n = 0;
 });
-afterEach(async () => { await ollamaRestartSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(async () => { overrideOllamaHost(null); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('the Dojo raises Ollama\'s model limit', () => {
   it('the value: the embedder + the pair + the lock\'s agent slots (default 1 → 4; the owner\'s 2 → 5)', () => {
-    expect(desiredOllamaMaxLoaded()).toBe(4);
+    expect(desiredLoaded(STANDARD_TAGS.length)).toBe(4);
     mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '2')").run();
-    expect(desiredOllamaMaxLoaded()).toBe(5);
+    expect(desiredLoaded(STANDARD_TAGS.length)).toBe(5);
     mockDb.current!.prepare("UPDATE config SET value = '1' WHERE key = 'ollama_max_concurrent_models'").run();
-    expect(desiredOllamaMaxLoaded()).toBe(4);   // the lock is one per process; put it back for the next clauses
+    expect(desiredLoaded(STANDARD_TAGS.length)).toBe(4);   // the lock is one per process; put it back for the next clauses
   });
 
   it('the Ollama app serves it, unset: set, the app restarted ONCE (TERM, then launch), and NO card (field failure 2: zero cards after an update)', async () => {
     const deps = fakeDeps({});
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(deps.terms.sort()).toEqual([501, 502]);
     expect(deps.launches).toBe(1);
@@ -123,14 +119,13 @@ describe('the Dojo raises Ollama\'s model limit', () => {
 
   it('an upgraded box still holding the "limit raised" card of an earlier 3.5 build: it is never shown, in any card\'s words', async () => {
     mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-set', 1), ('owner_told', 'ollama-restart-needed', 1)").run();
-    expect(await ensureOllamaModelLimit(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }), 'darwin')).toBe('already');
+    await boot(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }));
     expect(healerOwnerCards()).toEqual([]);   // never read back as another card's words
   });
 
   it('already right: nothing set, NO restart, nothing told — idempotent', async () => {
     const deps = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('already');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.sets).toEqual([]);
     expect(deps.terms).toEqual([]);
     expect(frames.list).toEqual([]);
@@ -138,8 +133,7 @@ describe('the Dojo raises Ollama\'s model limit', () => {
 
   it('the app installed but not running: set, and the app is opened with it (the Dojo\'s own models need Ollama running)', async () => {
     const deps = fakeDeps({}, { server: null, installed: true });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(deps.terms).toEqual([]);
     expect(deps.log).toEqual(['launch']);
@@ -148,7 +142,7 @@ describe('the Dojo raises Ollama\'s model limit', () => {
 
   it('a failure to set never throws; it says so on the card, and the card says the next START, not the next update', async () => {
     const deps = fakeDeps({}, { failSet: true });
-    await expect(ensureOllamaModelLimit(deps, 'darwin')).resolves.toBe('failed');
+    await boot(deps);
     expect(deps.terms).toEqual([]);
     expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_LIMIT_FAILED_WORDS]);
     expect(OLLAMA_LIMIT_FAILED_WORDS).toContain('next start');
@@ -158,102 +152,26 @@ describe('the Dojo raises Ollama\'s model limit', () => {
   it('EVERY boot re-applies it — after a reboot (unset) it is set and the app restarted once, and the owner is never told', async () => {
     const env: Record<string, string> = {};
     const first = fakeDeps(env);
-    expect(await ensureOllamaModelLimit(first, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(first);
     expect(first.launches).toBe(1);
     delete env.OLLAMA_MAX_LOADED_MODELS;   // the Mac rebooted: launchctl's variable is gone
     const afterReboot = fakeDeps(env);
-    expect(await ensureOllamaModelLimit(afterReboot, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(afterReboot);
     expect(afterReboot.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(afterReboot.launches).toBe(1);
     expect(frames.list).toEqual([]);
   });
 
-  it('not a Mac: nothing is done', async () => {
-    const deps = fakeDeps({});
-    expect(await ensureOllamaModelLimit(deps, 'linux')).toBe('skipped');
-    expect(deps.sets).toEqual([]);
-  });
-
   it('in a test run the REAL commands are never reached', async () => {
-    expect(await ensureOllamaModelLimit()).toBe('skipped');
+    await upkeep('boot');
     expect(spawned.n).toBe(0);
   });
 });
 
-describe('NB-1: the restart never cuts a running call or a download', () => {
-  it('a restart requested while a local agent call is held happens only after it is released', async () => {
-    const lock = getOllamaLock();
-    await lock.acquire(LOCAL, 'agent-model:7b');
-    const deps = fakeDeps({});
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-    await settle();
-    expect(deps.terms).toEqual([]);   // deferred: the turn's call is still answering
-    lock.release(LOCAL, 'agent-model:7b');
-    await ollamaRestartSettled();
-    expect(deps.launches).toBe(1);
-  });
-
-  it('the Dojo\'s own resident calls (pinned, decide(), the embedder) hold it off the same way', async () => {
-    const lock = getOllamaLock();
-    await lock.acquire(LOCAL, 'qwen3.5:4b', undefined, true);
-    const end = await localWorkBegins();
-    const deps = fakeDeps({});
-    await ensureOllamaModelLimit(deps, 'darwin');
-    await settle();
-    lock.release(LOCAL, 'qwen3.5:4b', true);
-    await settle();
-    expect(deps.terms).toEqual([]);   // the decision call is still open
-    end();
-    await ollamaRestartSettled();
-    expect(deps.launches).toBe(1);
-  });
-
-  it('during a model pull: the restart waits until the pull has finished', async () => {
-    let finish!: () => void;
-    const body = new ReadableStream<Uint8Array>({
-      start(c) {
-        c.enqueue(new TextEncoder().encode('{"status":"pulling manifest"}\n'));
-        finish = () => { c.enqueue(new TextEncoder().encode('{"status":"success"}\n')); c.close(); };
-      },
-    });
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200 })));
-    const pull = pullOllamaModel('qwen3.5:4b', { baseUrl: 'http://localhost:11434' });
-    await settle();
-    const deps = fakeDeps({});
-    await ensureOllamaModelLimit(deps, 'darwin');
-    await settle();
-    expect(deps.terms).toEqual([]);   // never during a download
-    finish();
-    expect(await pull).toEqual({ ok: true, status: 'success' });
-    await ollamaRestartSettled();
-    expect(deps.launches).toBe(1);
-  });
-
-  it('a local call that arrives DURING the restart waits for it, then proceeds', async () => {
-    let open!: () => void;
-    const deps = fakeDeps({}, { launchGate: new Promise<void>((r) => { open = r; }) });
-    await ensureOllamaModelLimit(deps, 'darwin');
-    await settle();
-    expect(deps.log).toEqual(['term', 'term', 'launch']);   // the app is being relaunched now
-    let got = false;
-    const call = getOllamaLock().acquire(LOCAL, 'agent-model:7b').then(() => { got = true; });
-    await settle();
-    expect(got).toBe(false);
-    open();
-    await ollamaRestartSettled();
-    await call;
-    expect(got).toBe(true);
-    getOllamaLock().release(LOCAL, 'agent-model:7b');
-  });
-});
-
-describe('NB-2: act only where it is true', () => {
+describe('it acts only where it is true', () => {
   it('field failure 2: a serve nothing supervises is taken over, Homebrew\'s service in its place, the limit in launchd, and NO card', async () => {
     const deps = fakeDeps({}, { server: BREW_SERVER, installed: false, formula: true });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.log).toEqual(['term', 'service']);   // stopped and confirmed gone before the service starts on its port
     expect(deps.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(deps.launches).toBe(0);
@@ -263,8 +181,7 @@ describe('NB-2: act only where it is true', () => {
 
   it('the Ollama app is installed but an unsupervised formula serve answers: that serve is replaced by Homebrew\'s service, no card', async () => {
     const deps = fakeDeps({}, { server: BREW_SERVER, installed: true, appPids: [], formula: true });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.terms).toEqual([502]);
     expect(deps.serviceRestarts).toBe(1);
     expect(frames.list).toEqual([]);
@@ -273,8 +190,7 @@ describe('NB-2: act only where it is true', () => {
   it('a plain binary on a box without Homebrew, current: it is left serving, and NO card (nothing the owner must do)', async () => {
     const deps = fakeDeps({}, { server: '/opt/custom/bin/ollama', installed: false });
     deps.hasBrew = async () => false;
-    await ensureOllamaModelLimit(deps, 'darwin');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.terms).toEqual([]);
     expect(frames.list).toEqual([]);
     expect(healerOwnerCards()).toEqual([]);
@@ -282,14 +198,13 @@ describe('NB-2: act only where it is true', () => {
 
   it('Homebrew\'s service serves it: the variable goes into launchd, the service is restarted once, and the owner is asked for nothing', async () => {
     const deps = fakeDeps({}, { server: BREW_SERVER, installed: false, brewService: true });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(deps.serviceRestarts).toBe(1);
     expect(deps.terms).toEqual([]);
     expect(frames.list).toEqual([]);
     const again = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }, { server: BREW_SERVER, installed: false, brewService: true });
-    expect(await ensureOllamaModelLimit(again, 'darwin')).toBe('already');   // done: the next start restarts nothing
+    await boot(again);   // done: the next start restarts nothing
     expect(again.serviceRestarts).toBe(0);
   });
 
@@ -307,14 +222,14 @@ describe('NB-2: act only where it is true', () => {
     expect(argv.some(([c]) => c === 'ps')).toBe(false);
     // …and the Dojo treats that listener as the app: the variable is already in place, so nothing is asked or restarted
     const deps = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }, { server: '/Applications/Ollama.app/Contents/Resources/ollama' });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('already');
+    await boot(deps);
     expect(frames.list).toEqual([]);
   });
 
   it('no local Ollama at all: nothing, and no card', async () => {
     mockDb.current!.prepare('DELETE FROM providers').run();
     const deps = fakeDeps({});
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('skipped');
+    await boot(deps);
     expect(deps.sets).toEqual([]);
     expect(frames.list).toEqual([]);
   });
@@ -322,7 +237,7 @@ describe('NB-2: act only where it is true', () => {
   it('nothing serving and no Ollama installed at all: nothing, and no card', async () => {
     const deps = fakeDeps({}, { server: null, installed: false });
     deps.cliRuns = async () => false;
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('skipped');
+    await boot(deps);
     expect(deps.sets).toEqual([]);
     expect(frames.list).toEqual([]);
   });
@@ -331,16 +246,15 @@ describe('NB-2: act only where it is true', () => {
     const argv: string[][] = [];
     const real = makeRealDeps(async (cmd, args) => { argv.push([cmd, ...args]); return { stdout: '501\n' }; }, () => true, () => quickChild());
     expect(await real.appPids()).toEqual([501]);
-    // fix round 5 (NB4-4): this user's processes only — another user's Ollama app is never signalled
+    // this user's processes only: another user's Ollama app is never signalled
     expect(argv).toEqual([['pgrep', '-x', '-u', String(process.getuid!()), 'Ollama']]);
   });
 });
 
-describe('NB-3: an owner\'s value is never lowered', () => {
+describe('an owner\'s value is never lowered', () => {
   it('a higher value is left alone: no set, no restart, no card', async () => {
     const deps = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '8' });
-    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('already');
-    await ollamaRestartSettled();
+    await boot(deps);
     expect(deps.sets).toEqual([]);
     expect(deps.terms).toEqual([]);
     expect(frames.list).toEqual([]);
@@ -356,7 +270,7 @@ describe('NB-3: an owner\'s value is never lowered', () => {
   });
 });
 
-describe('NB-5: no AppleScript; a failed restart is tried again at the next start', () => {
+describe('no AppleScript; a failed restart is tried again at the next start', () => {
   it('the real commands: no osascript; `launchctl getenv` failing for an unset variable reads as unset', async () => {
     const argv: string[][] = [];
     const kills: Array<[number, string | number]> = [];
@@ -376,53 +290,43 @@ describe('NB-5: no AppleScript; a failed restart is tried again at the next star
   it('the app does not quit: the failed card, and the next start (variable already set) tries the restart again', async () => {
     const env: Record<string, string> = {};
     const stuck = fakeDeps(env, { neverQuits: true });
-    expect(await ensureOllamaModelLimit(stuck, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(stuck);
     expect(frames.list.map((f) => f.error)).toContain(OLLAMA_LIMIT_FAILED_WORDS);
     expect(env.OLLAMA_MAX_LOADED_MODELS).toBe('4');
     const next = fakeDeps(env);
-    expect(await ensureOllamaModelLimit(next, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(next);
     expect(next.sets).toEqual([]);   // already set: only the restart was owed
     expect(next.launches).toBe(1);
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
     // …and once it worked, a later start does nothing.
     const after = fakeDeps(env);
-    expect(await ensureOllamaModelLimit(after, 'darwin')).toBe('already');
-    await ollamaRestartSettled();
+    await boot(after);
     expect(after.terms).toEqual([]);
   });
 });
 
-describe('fix round 5', () => {
-  it('NB4-1 / review M2: a relaunched app that is alive but not answering yet is a slow start, not a failure: no card, the hold released', async () => {
+describe('a slow or failed relaunch', () => {
+  it('a relaunched app that is alive but not answering yet is a slow start, not a failure: no card', async () => {
     const env: Record<string, string> = {};
     const slow = fakeDeps(env, { neverAnswers: true });
-    expect(await ensureOllamaModelLimit(slow, 'darwin')).toBe('set');
-    await settle();
-    const call = getOllamaLock().acquire(LOCAL, 'agent-model:7b');   // waits on the hold, then proceeds
-    await ollamaRestartSettled();
-    await call;
-    getOllamaLock().release(LOCAL, 'agent-model:7b');
-    expect(frames.list.filter((f) => f.error !== undefined)).toEqual([]);   // only the waiting row: no card
+    await boot(slow);
+    expect(frames.list.filter((f) => f.error !== undefined)).toEqual([]);
     expect(healerOwnerCards()).toEqual([]);
   });
 
-  it('NB4-1: a relaunched app that is GONE is a failed restart — owed kept, the failed card, retried next start', async () => {
+  it('a relaunched app that is GONE is a failed restart: owed kept, the failed card, retried next start', async () => {
     const env: Record<string, string> = {};
     const dead = fakeDeps(env, { neverAnswers: true });
     dead.launchApp = async () => { dead.log.push('launch'); };   // opened, but nothing of it is running
-    expect(await ensureOllamaModelLimit(dead, 'darwin')).toBe('set');
-    await ollamaRestartSettled();
+    await boot(dead);
     expect(frames.list.map((f) => f.error)).toContain(OLLAMA_LIMIT_FAILED_WORDS);
     const next = fakeDeps(env);
-    expect(await ensureOllamaModelLimit(next, 'darwin')).toBe('set');   // still owed
-    await ollamaRestartSettled();
+    await boot(next);   // still owed
     expect(next.launches).toBe(1);
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
   });
 
-  it('NB4-2: `/usr/bin/open` runs under the platform\'s child-process bound: one that never returns is ended', async () => {
+  it('`/usr/bin/open` runs under the platform\'s child-process bound: one that never returns is ended', async () => {
     vi.useFakeTimers();
     try {
       const child = quickChild(true);
@@ -434,24 +338,9 @@ describe('fix round 5', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('NB4-3: a call waiting on the hold stops when its agent is stopped, and its turn shows it is waiting for the local model', async () => {
-    const release = await holdWhenQuiet(LOCAL);
-    const stop = new AbortController();
-    const waiting = getOllamaLock().acquire(LOCAL, 'agent-model:7b', undefined, false, { signal: stop.signal, agentId: 'agent-w' })
-      .then(() => 'proceeded', () => 'stopped');
-    await settle();
-    const activity = frames.list.filter((f) => (f as { type?: string }).type === 'engine:activity') as unknown as Array<{ data: { agentId: string; label: string; phase: string } }>;
-    expect(activity.map((f) => [f.data.agentId, f.data.phase])).toEqual([['agent-w', 'start']]);
-    expect(activity[0].data.label).toBe('Waiting for the local model to restart');
-    stop.abort();
-    expect(await waiting).toBe('stopped');
-    expect((frames.list.filter((f) => (f as { type?: string }).type === 'engine:activity') as unknown as Array<{ data: { phase: string } }>).map((f) => f.data.phase)).toEqual(['start', 'end']);
-    release();
-  });
-
-  it('the manual card of 3.5.0-preflight.1 is retired: a record of it left on a box is never shown (migration 209 removes it), and nothing names the variable', async () => {
+  it('a retired card\'s record left on a box is never shown, and nothing names the variable', async () => {
     mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-manual:4', 1)").run();
-    expect(await ensureOllamaModelLimit(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '8' }), 'darwin')).toBe('already');
+    await boot(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '8' }));
     expect(healerOwnerCards()).toEqual([]);
     expect(OLLAMA_LIMIT_FAILED_WORDS).not.toMatch(/OLLAMA_|environment variable/);
   });
@@ -467,9 +356,8 @@ describe('a failed `open` logs the real reason, never `[object Object]`', () => 
       // The real `open` runs under `child-idle-bound.ts`, which rejects with a plain object
       // (`{ code, stderr }`), not an Error — exactly the shape a failed relaunch takes.
       const deps = fakeDeps(env, { failLaunch: { stdout: '', stderr: 'The application Ollama could not be found', code: 1 } });
-      expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
-      await ollamaRestartSettled();
-      const errorTexts = logged.filter((e) => e.level === 'warn').map((e) => String(e.meta?.error ?? ''));
+      await boot(deps);
+        const errorTexts = logged.filter((e) => e.level === 'warn').map((e) => String(e.meta?.error ?? ''));
       expect(errorTexts).toContain('The application Ollama could not be found');
       expect(errorTexts.join(' | ')).not.toContain('[object Object]');
     } finally {

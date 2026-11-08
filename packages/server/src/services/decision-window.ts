@@ -5,7 +5,7 @@
 // ignores `num_ctx` in `options`, at the top level and as `context_length`; the decision model's runner stays
 // at its model file's own 8,192 and Ollama refuses any longer request. A derived tag carrying
 // `PARAMETER num_ctx N` (`FROM` the standard decision model) does start its runner at N, and its weights are
-// the same blobs, so nothing more is downloaded. So at install (`services/local-standard.ts`) the Dojo makes
+// the same blobs, so nothing more is downloaded. So at install (`services/ollama-upkeep.ts`) the Dojo makes
 // that tag with N = the window it reserves for the decision model, and `decide()` asks the tag.
 //
 // N is ONE number with one origin: the summary check reads a job's source rows and its summary — the writer's
@@ -65,7 +65,7 @@ let toldFailure = false;
  * Create or refresh the derived decision tag at the window this box reserves; idempotent (a tag already at
  * that window is left alone; concurrent callers share one run). Returns the window the tag has, or null when
  * it could not be made — then `decide()` asks the base tag at its built-in window, and the Ollama health
- * check's retry (`local-standard.ts retryStandardModelsIfMissing`) tries again. Never throws.
+ * check's door (`ollama-upkeep.ts upkeepWhenIncomplete`) tries again. Never throws.
  */
 export function ensureDecisionWindowTag(baseUrl: string): Promise<number | null> {
   if (!inFlight) inFlight = makeTag(baseUrl).finally(() => { inFlight = null; });

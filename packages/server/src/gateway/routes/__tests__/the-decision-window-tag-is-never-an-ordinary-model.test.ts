@@ -21,7 +21,11 @@ vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unkn
 import { runMigrations } from '../../../db/migrations.js';
 import { configRouter } from '../config.js';
 import { setupDepsRouter } from '../setup-deps.js';
-import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, ensureStandardModels, retryStandardModelsIfMissing, standardInstallSettled, withoutDojoInternalTags } from '../../../services/local-standard.js';
+import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, withoutDojoInternalTags } from '../../../services/local-standard.js';
+import { standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../../../services/ollama-upkeep.js';
+
+/** The upkeep as Repair runs it, then the Settings state. */
+const repair = async (): Promise<Awaited<ReturnType<typeof standardState>>> => { await upkeep('repair'); return standardState(); };
 import { decisionTagWindow } from '../../../services/dojo-working-memory.js';
 import { refuseUnfitLocalModel } from '../../../agent/local-model-fit.js';
 
@@ -70,7 +74,7 @@ describe('no door makes it a model anyone can pick', () => {
 
   it('setup\'s discovery does not register it either, and setup\'s model list (with its Remove button) does not show it', async () => {
     await setupDepsRouter.request('/ollama/auto-configure', { method: 'POST' });
-    await standardInstallSettled();
+    await upkeepSettled();
     expect(rowFor(WINDOW_TAG)).toBeUndefined();
     const listed = (await (await setupDepsRouter.request('/ollama/models')).json()) as { data: Array<{ name: string }> };
     expect(listed.data.map((m) => m.name)).not.toContain(WINDOW_TAG);
@@ -91,7 +95,7 @@ describe('no door makes it a model anyone can pick', () => {
 describe('a missing or failed window tag is made again locally by the retry hook, never downloaded', () => {
   const install = async (): Promise<void> => {
     db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type) VALUES ('ollama-local', 'Ollama', 'ollama', ?, 'none')").run(BASE);
-    await ensureStandardModels();
+    await repair();
   };
 
   it('removed by hand: the Ollama health check\'s retry clears the recorded window (decide() falls back at once) and makes it again', async () => {
@@ -101,8 +105,8 @@ describe('a missing or failed window tag is made again locally by the retry hook
     expect(decisionTagWindow()).not.toBeNull();
     ollama.names = ollama.names.filter((n) => n !== WINDOW_TAG);   // removed in Ollama
     const creates = ollama.creates;
-    retryStandardModelsIfMissing(ollama.names, BASE);
-    await standardInstallSettled();
+    upkeepWhenIncomplete(ollama.names, BASE);
+    await upkeepSettled();
     expect(ollama.creates).toBe(creates + 1);
     expect(ollama.pulls).toBe(0);
     expect(decisionTagWindow()).not.toBeNull();
@@ -115,8 +119,8 @@ describe('a missing or failed window tag is made again locally by the retry hook
     await install();
     expect(decisionTagWindow()).toBeNull();
     ollama.createOk = true;
-    retryStandardModelsIfMissing(ollama.names, BASE);
-    await standardInstallSettled();
+    upkeepWhenIncomplete(ollama.names, BASE);
+    await upkeepSettled();
     expect(decisionTagWindow()).not.toBeNull();
     expect(ollama.pulls).toBe(0);
   });

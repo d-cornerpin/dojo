@@ -24,7 +24,7 @@ const num = (description: string) => ({ type: 'number', description });
 
 export const dojoInspectDefinition: ToolDefinition = {
   name: 'dojo_inspect',
-  description: "Look at anything that happened in your own Dojo, read-only. what=timeline (the story of an agent, task, project, turn or time window, every record merged in order), conversation (any agent's messages), logs (the platform log), state (the configuration and health page), schema (every table and column, with meanings), sql (a read-only query), code_search / code_read (the platform's own source and docs). Use this before any shell command about the Dojo; call load_tool_docs('dojo_inspect') for every argument.",
+  description: "Look at anything that happened in your own Dojo, read-only. what=timeline (the story of an agent, task, project, turn or time window, every record merged in order), conversation (any agent's messages), logs (the platform log), state (the configuration and health page), schema (every table and column), sql (a read-only query), code_search / code_read (the platform's own source and docs). Use this before any shell command about the Dojo; call load_tool_docs('dojo_inspect') for every argument.",
   // The sql view runs each query in a child process on a read-only connection, through the
   // process door, so the agent's stop ends a runaway query (`inspect/sql-child.ts`). That door
   // matches the program the call's capability names, exactly: `process.execPath`, absolute.
@@ -54,7 +54,7 @@ export const dojoInspectDefinition: ToolDefinition = {
       level: { type: 'string', enum: ['debug', 'info', 'warn', 'error'], description: 'logs: this level and above.' },
       component: str('logs: one component name.'),
       tail: num('logs: only the last N matching lines.'),
-      table: str('schema: one table\'s columns and meanings (omit for every table).'),
+      table: str('schema: one table\'s columns (omit for every table).'),
       query: str('sql: one SELECT, WITH or EXPLAIN statement.'),
       path: str('code_read: a file path in the repo (e.g. packages/server/src/index.ts); code_search: a path prefix.'),
       from: num('code_read: first line (from 1).'),

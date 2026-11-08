@@ -1,4 +1,4 @@
-// v3.5 fix round 1 (A3 lead c) — OLLAMA'S LOADED-MODEL LIMIT. Ollama's scheduler keeps at most
+// OLLAMA'S LOADED-MODEL LIMIT. Ollama's scheduler keeps at most
 // OLLAMA_MAX_LOADED_MODELS runners (default 3 × GPUs; Apple Silicon is one GPU, so 3) and, at that
 // limit, unloads one idle runner (shortest keep-alive first) to load the next. The embedder and the
 // Dojo's resident pair are three runners by themselves, so an agent's local model would evict one and
@@ -16,14 +16,14 @@ import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
 import { getOllamaLock } from '../../../services/ollama-lock.js';
 import { overrideOllamaHost } from '../../../services/ollama-host.js';
-import { ollamaRestartSettled } from '../../../services/ollama-model-limit.js';
+import { upkeepSettled } from '../../../services/ollama-upkeep.js';
 import { fakeMac, type Mac } from '../../../services/__tests__/fake-mac.js';
 
-// Field failure 2: setup's "start" goes through the one Ollama upkeep (a fake Mac here: nothing real runs). What setup
+// Setup's "start" goes through the one Ollama upkeep (a fake Mac here: nothing real runs). What setup
 // installed is started as a kind that LASTS (Homebrew's service, here), never as a child of the Dojo that dies with it, and
 // the limit is in launchd's environment, which the service starts with.
 let mac: Mac;
-const start = async (): Promise<void> => { await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' }); await ollamaRestartSettled(); };
+const start = async (): Promise<void> => { await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' }); await upkeepSettled(); };
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -49,7 +49,7 @@ describe('setup starts Ollama with room for the Dojo\'s models', () => {
     expect(mac.setenvs).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
   }, 10_000);
 
-  it('fix round 4 (NB-3): an owner\'s own higher value is never lowered', async () => {
+  it('an owner\'s own higher value is never lowered', async () => {
     mac.env.OLLAMA_MAX_LOADED_MODELS = '8';
     await start();
     expect(mac.running?.by).toBe('brew-service');

@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { openAgentCall } from '../agent/abortable-call.js';
-import { localWorkBegins } from '../services/ollama-quiet.js';
+import { localWorkBegins } from '../services/ollama-lock.js';
 import { openAiCompatibleUrl } from '../services/openai-compatible-url.js';
 import { readEmbeddingConfig, embeddingModelKey, type EmbeddingConfig } from './embedding-model.js';
 
@@ -126,7 +126,7 @@ export async function generateEmbedding(
 
   if (config.provider === 'ollama') {
     const baseUrl = config.baseUrl.replace(/\/+$/, '');
-    const endLocalWork = await localWorkBegins(baseUrl, { signal: slot?.signal, agentId: opts?.agentId });   // v3.5: work the model-limit restart waits for
+    const endLocalWork = localWorkBegins(baseUrl);   // an Ollama restart waits for it
     try {
     // C12: adaptive retry, on a token-context overflow, halve the input and retry (up to
     // 3x) so a dense input still embeds instead of dropping to un-searchable.

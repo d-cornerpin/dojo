@@ -30,10 +30,10 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 vi.mock('../../gateway/routes/update.js', () => ({ getCurrentVersion: () => '3.5.0' }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { ensureStandardModelsAtBoot, retryStandardModelsIfMissing, standardInstallSettled, standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ollamaRestartSettled } from '../ollama-model-limit.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { ollamaAtLeast } from '../ollama-version.js';
 import { onTheModel } from '../../agent/decision-policy.js';
@@ -73,10 +73,9 @@ async function expectSettingsTellTheTruth(): Promise<void> {
   expect(!!getDecisionProvider()).toBe(ollama.installed.has(DECISION));
 }
 
-/** The update's first boot, as `index.ts` runs it: the start hook (Ollama upkeep + the install once per version). */
+/** The update's first boot, as `index.ts` runs it. */
 async function updateFirstBoot(): Promise<void> {
-  await ensureStandardModelsAtBoot();
-  await ollamaRestartSettled(); await standardInstallSettled();
+  await upkeep('boot');
 }
 
 beforeEach(async () => {
@@ -96,7 +95,7 @@ beforeEach(async () => {
   frames.list.length = 0;
 });
 afterEach(async () => {
-  await standardInstallSettled(); await ollamaRestartSettled();
+  await upkeepSettled();
   overrideOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
@@ -150,7 +149,7 @@ describe('his box, upgraded from 3.4.1', () => {
     const told = liveCards().length;
     mac.failBrew = false;                 // the network is back; the owner presses Repair once
     await setupDepsRouter.request('/ollama/standard', { method: 'POST' });
-    await standardInstallSettled(); await ollamaRestartSettled();
+    await upkeepSettled();
     expect(liveCards().length).toBe(told);   // zero new cards
     expect(await standingCards()).toEqual([]);   // and the one card ended
     expect(ollama.serving?.version).toBe(LATEST);
@@ -160,7 +159,7 @@ describe('his box, upgraded from 3.4.1', () => {
     // A second Repair is idempotent: no new card, no pull, nothing restarted
     const [pulls, restarts] = [ollama.pulls.length, mac.serviceRestarts];
     await setupDepsRouter.request('/ollama/standard', { method: 'POST' });
-    await standardInstallSettled();
+    await upkeepSettled();
     expect([ollama.pulls.length, mac.serviceRestarts, liveCards().length]).toEqual([pulls, restarts, told]);
   });
 
@@ -180,24 +179,23 @@ describe('his box, upgraded from 3.4.1', () => {
     const seen: string[] = [];
     await setupDepsRouter.request('/ollama/standard', { method: 'POST' });
     for (let i = 0; i < 3; i++) { seen.push((await settings()).decision); await new Promise((r) => setTimeout(r, 0)); }
-    await standardInstallSettled(); await ollamaRestartSettled();
+    await upkeepSettled();
     expect(seen.every((s) => s === 'pulling' || s === 'installed')).toBe(true);
     expect(seen[0]).toBe('pulling');
     expect((await settings()).decision).toBe('installed');
   });
 });
 
-// FIELD FIX 2 ROUND 5 (the paid run on 9400b4dc, RED 0/5): on the dev box Ollama was current and listed the decision model, yet
-// migration 209 had disabled its row and removed decision_model_id, and nothing re-enabled them because no install was needed.
-// What is registered must follow what Ollama lists at every boot it answers and at every health answer, never an install.
+// Migration 209 disables every decision row and removes decision_model_id; what is registered must follow what Ollama
+// lists, at every boot it answers and at every health answer that finds the pair incomplete.
 describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and health answer', () => {
   const MIGRATION_209 = (): string => fs.readFileSync(path.resolve(__dirname, '../../db/migrations/209_field_failure_2_retired_records.sql'), 'utf8');
   const DECISION_ROW = 'ollama-tev1-4b-q4-K-M';
-  /** A v3.5 box: both models in Ollama and registered, the decision model assigned, the version already stamped (no install owed). */
+  /** A box with both models in Ollama and registered, the decision model assigned. */
   function v35Box(listed: boolean): void {
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES (?, 'ollama-local', ?, ?, '[\"decision\"]', 1)").run(DECISION_ROW, DECISION, DECISION);
     db().prepare("UPDATE models SET capabilities = '[\"chat\"]' WHERE api_model_id = ?").run(WRITER);
-    db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', ?), ('standard_models_version', '3.5.0')").run(DECISION_ROW);
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', ?)").run(DECISION_ROW);
     if (listed) ollama.installed.add(DECISION);
     mac = fakeMac({ running: appServe(LATEST), app: LATEST }); overrideOllamaHost(mac);   // current, and the app: nothing to take over
   }
@@ -234,8 +232,8 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     ollama.installed.add(DECISION);   // pulled by hand, or the registry was back
     const pulls = ollama.pulls.length;
     const told = liveCards().length;   // the boot told the one missing-models card: the registry was unreachable
-    retryStandardModelsIfMissing([...ollama.installed], ollama.serving ? (db().prepare("SELECT base_url FROM providers WHERE id = 'ollama-local'").get() as { base_url: string }).base_url : '');
-    await standardInstallSettled();
+    upkeepWhenIncomplete([...ollama.installed], ollama.serving ? (db().prepare("SELECT base_url FROM providers WHERE id = 'ollama-local'").get() as { base_url: string }).base_url : '');
+    await upkeepSettled();
     expect(decisionRow()?.is_enabled).toBe(1);
     expect(decisionId()).toBe(DECISION_ROW);
     expect(ollama.pulls.length).toBe(pulls);   // nothing was installed for it
@@ -243,8 +241,8 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     expect(await standingCards()).toEqual([]);   // and the missing-models card ended
   });
 
-  // Round 6 (re-review 2 LOW-D). These names state the dependency migration 209's decision lines rely on: its "not registered
-  // until Ollama lists it" is healed ONLY because the reconcile runs on every health answer and at boot. Keep it there.
+  // Migration 209's "not registered until Ollama lists it" is healed only because the upkeep registers the rows at boot and at
+  // an incomplete health answer.
   it('(d) migration 209 healed with no dashboard: Ollama down at the boot\'s first look, then up as the start hook\'s own start comes up: the queued boot ask registers it', async () => {
     v35Box(true);
     mac = fakeMac({ running: null, app: LATEST }); overrideOllamaHost(mac);
@@ -262,7 +260,7 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     db().exec(MIGRATION_209());
     await updateFirstBoot();
     expect(getDecisionProvider()).toBeNull();
-    mac.running = appServe(LATEST);   // the owner opened Ollama himself, hours later
+    mac.disk.app = LATEST; mac.running = appServe(LATEST);   // the owner installed and opened Ollama himself, hours later
     expect(getDecisionProvider()).toBeNull();   // this judgment keeps its rule, and asks
     for (let i = 0; i < 50 && decisionRow()?.is_enabled !== 1; i++) await new Promise((r) => setTimeout(r, 20));
     expect(decisionRow()?.is_enabled).toBe(1);

@@ -10,8 +10,7 @@
 import { fenceExternal } from './external-content.js';
 import { isOwnerIMessageRecipient } from '../services/safe-senders.js';
 import { isPrimaryAgent, isSystemServiceAgent } from '../config/platform.js';
-import type { MailAddress } from '../services/mail-addressing.js';
-import type { MailAddressingFacts } from '../services/mail-inbound-facts.js';
+import type { MailAddress, MailAddressingFacts } from '../services/mail-inbound-facts.js';
 
 /** An inbound iMessage (`services/imessage-bridge.ts`): a contact's text is addressed to the agent. */
 export function inboundIMessageText(fromTheOwner: boolean, senderLabel: string, text: string): string {

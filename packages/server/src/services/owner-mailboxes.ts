@@ -1,8 +1,17 @@
-// The owner's mailboxes (owner ruling 2026-10-27): the addresses of the connected Google and
-// Microsoft accounts of kind 'user'. Read from the account tables every time, never stored twice.
+// The owner's mailboxes: the addresses of the connected Google and Microsoft accounts of kind 'user'. Read from the
+// account tables every time, never stored twice.
 import { listGoogleAccounts } from '../google/accounts.js';
 import { listMicrosoftAccounts } from '../microsoft/accounts.js';
-import { ownerEmailAddresses } from './owner-email-addresses.js';
+
+/** One bare email address (one @, a dot after it, no spaces, angle brackets, commas or semicolons). */
+const BARE_EMAIL = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
+/** The address, trimmed and lowercased, when the WHOLE string is a bare email address; else null. No fuzzy matching:
+ *  'own-er@x.com' and 'owner@x.com' are two addresses, so a From address compares exactly. */
+export function cleanEmailAddress(candidate: unknown): string | null {
+  if (typeof candidate !== 'string') return null;
+  const address = candidate.trim().toLowerCase();
+  return BARE_EMAIL.test(address) ? address : null;
+}
 
 export type MailboxProvider = 'google' | 'microsoft';
 
@@ -25,7 +34,7 @@ export function ownerMailboxesFrom(
   const seen = new Set<string>();
   const add = (accounts: ReadonlyArray<AccountLike>, provider: MailboxProvider): void => {
     for (const a of accounts) {
-      const address = ownerEmailAddresses([a.email])[0];
+      const address = cleanEmailAddress(a.email);
       if (!address || seen.has(address)) continue;
       seen.add(address);
       out.push({ address, provider, accountId: a.id });

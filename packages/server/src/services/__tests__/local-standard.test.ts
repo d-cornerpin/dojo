@@ -13,15 +13,16 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
-import {
-  ensureStandardModels, standardState, standardModelRowId,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
-} from '../local-standard.js';
+import { standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { standardState, upkeep } from '../ollama-upkeep.js';
 import { getSystemModel } from '../../router/selector.js';
 import { summaryWriterCandidates } from '../../memory/writer.js';
 
 const ROLE_KEYS = ['healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model', 'imaginer_brain_model'];
 const db = (): Database.Database => mockDb.current!;
+
+/** The upkeep as Repair runs it, then the Settings state. */
+const repair = async (): Promise<Awaited<ReturnType<typeof standardState>>> => { await upkeep('repair'); return standardState(); };
 
 /** A scripted Ollama: what is installed, and every pull asked of it. */
 const ollama = { installed: new Set<string>(), pulls: [] as string[], up: true };
@@ -73,10 +74,10 @@ const configValue = (k: string): string | undefined =>
 const systemTier = (): string[] =>
   (db().prepare("SELECT model_id FROM router_tier_models WHERE tier_id = 'system' ORDER BY priority").all() as Array<{ model_id: string }>).map((r) => r.model_id);
 
-describe('ensureStandardModels', () => {
+describe('the upkeep installs the pair', () => {
   it('on a box with neither model pulls both, registers both rows, assigns the tier and the two keys, and leaves the role agents alone', async () => {
     const before = roleKeys();
-    const state = await ensureStandardModels();
+    const state = await repair();
     expect(ollama.pulls).toEqual([STANDARD_DECISION_MODEL.tag, STANDARD_WRITER_MODEL.tag]);
 
     const rows = db().prepare("SELECT api_model_id, is_enabled, provider_id FROM models WHERE api_model_id IN (?, ?) ORDER BY api_model_id")
@@ -102,12 +103,12 @@ describe('ensureStandardModels', () => {
   });
 
   it('with both present pulls nothing and still repairs a missing assignment', async () => {
-    await ensureStandardModels();
+    await repair();
     ollama.pulls = [];
     db().prepare("DELETE FROM router_tier_models WHERE tier_id = 'system'").run();
     db().prepare("DELETE FROM config WHERE key IN ('decision_model_id', 'compaction_model_id')").run();
 
-    await ensureStandardModels();
+    await repair();
     expect(ollama.pulls).toEqual([]);
     expect(systemTier()).toEqual([standardModelRowId('writer')]);
     expect(configValue('decision_model_id')).toBe(standardModelRowId('decision'));
@@ -118,18 +119,18 @@ describe('ensureStandardModels', () => {
     db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('cloud', 'Cloud', 'anthropic', NULL, 'api_key', 1)").run();
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('big-writer', 'cloud', 'Big', 'big', '[\"chat\"]', 200000, 1)").run();
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'big-writer')").run();
-    await ensureStandardModels();
+    await repair();
     expect(configValue('compaction_model_id')).toBe('big-writer');
   });
 
   it('the engine answers with the writer afterwards: the system tier and the first summary writer', async () => {
-    await ensureStandardModels();
+    await repair();
     expect(getSystemModel()).toBe(standardModelRowId('writer'));
     expect(summaryWriterCandidates()[0]).toBe(standardModelRowId('writer'));   // an auto-routed agent: the writer as the fallback
   });
 
   it('getSystemModel answers the writer even when the tier row was lost', async () => {
-    await ensureStandardModels();
+    await repair();
     db().prepare("DELETE FROM router_tier_models WHERE tier_id = 'system'").run();
     expect(getSystemModel()).toBe(standardModelRowId('writer'));
   });
@@ -138,7 +139,7 @@ describe('ensureStandardModels', () => {
 describe('standardState (REVIEW FOCUS 3: nothing silently fails)', () => {
   it('says Ollama is not running when it does not answer, and pulls nothing', async () => {
     ollama.up = false;
-    const s = await ensureStandardModels();
+    const s = await repair();
     expect(s.ollama).not.toBe('running');
     expect(s.note).toMatch(/Ollama is not/);
   });
@@ -153,7 +154,7 @@ describe('standardState (REVIEW FOCUS 3: nothing silently fails)', () => {
   it('installed on a 16 GB box: the plain installed sentence', async () => {
     const os = await import('node:os');
     const spy = vi.spyOn(os.default, 'totalmem').mockReturnValue(16 * 1024 ** 3);
-    await ensureStandardModels();
+    await repair();
     expect((await standardState()).note).toBe('Both standard models are installed (6.2 GB).');
     spy.mockRestore();
   });
@@ -161,7 +162,7 @@ describe('standardState (REVIEW FOCUS 3: nothing silently fails)', () => {
   it('installed on an 8 GB box: the memory squeeze is explained', async () => {
     const os = await import('node:os');
     const spy = vi.spyOn(os.default, 'totalmem').mockReturnValue(8 * 1024 ** 3);
-    await ensureStandardModels();
+    await repair();
     expect((await standardState()).note).toBe(
       "This box has 8 GB; the Dojo's two models need about 6 GB of memory beside the desktop and the engine, so a local agent model will not fit alongside them.",
     );

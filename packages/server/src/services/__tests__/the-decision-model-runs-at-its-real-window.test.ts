@@ -14,7 +14,11 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { ensureStandardModels, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
+import { standardState, upkeep } from '../ollama-upkeep.js';
+
+/** The upkeep as Repair runs it, then the Settings state. */
+const repair = async (): Promise<Awaited<ReturnType<typeof standardState>>> => { await upkeep('repair'); return standardState(); };
 import { decisionWindowTokens, writerJobWindowTokens } from '../dojo-working-memory.js';
 import { MEASURED_CHARS_PER_TOKEN } from '../token-density.js';
 import { decide, type Question } from '../../agent/decide.js';
@@ -67,7 +71,7 @@ const Q: Record<string, Question> = { q: { type: 'noul', instructions: 'Is `repl
 
 describe('install makes the decision model\'s window real', () => {
   it('creates the derived tag FROM the standard decision model at the window the memory fit reserves, and decide() asks it', async () => {
-    await ensureStandardModels();
+    await repair();
     expect(ollama.creates).toHaveLength(1);
     const made = ollama.creates[0] as { model: string; from: string; parameters: { num_ctx: number } };
     expect(made).toMatchObject({ model: STANDARD_DECISION_MODEL.windowTag, from: STANDARD_DECISION_MODEL.tag });
@@ -80,31 +84,31 @@ describe('install makes the decision model\'s window real', () => {
   });
 
   it('is idempotent: a tag already at that window is left alone; a tag at another window is refreshed', async () => {
-    await ensureStandardModels();
-    await ensureStandardModels();
+    await repair();
+    await repair();
     expect(ollama.creates).toHaveLength(1);
     const want = (ollama.creates[0].parameters as { num_ctx: number }).num_ctx;
     ollama.tagWindow = 8_192;   // e.g. made by hand, or under an older density
-    await ensureStandardModels();
+    await repair();
     expect(ollama.creates).toHaveLength(2);
     expect(ollama.creates[1]).toMatchObject({ model: STANDARD_DECISION_MODEL.windowTag, parameters: { num_ctx: want } });
   });
 
   it('an Ollama that cannot create it: decide() keeps the base tag at its measured built-in 8,192, and the next install tries again', async () => {
     ollama.createOk = false;
-    await ensureStandardModels();
+    await repair();
     expect(await decisionWindowTokens()).toBe(8_192);
     await decide({ reply: 'x' }, Q, { purpose: 'probe' });
     expect(ollama.asked.map((a) => a.model)).toEqual([STANDARD_DECISION_MODEL.tag]);
     ollama.createOk = true;
-    await ensureStandardModels();
+    await repair();
     expect(await decisionWindowTokens()).toBeGreaterThan(8_192);
   });
 });
 
 describe('decide()\'s requests fit that window and Ollama\'s 64 KiB body', () => {
   it('sends no num_ctx (Ollama ignores it), and never dials a body over 64 KiB', async () => {
-    await ensureStandardModels();
+    await repair();
     await decide({ reply: 'x' }, Q, { purpose: 'probe' });
     expect(ollama.asked[0].keys).toEqual(['model', 'state', 'questions', 'keep_alive']);
     ollama.asked.length = 0;
@@ -113,7 +117,7 @@ describe('decide()\'s requests fit that window and Ollama\'s 64 KiB body', () =>
   });
 
   it('a large check of multi-byte text: every part is under 64 KiB on the wire and within the window at the box\'s density; nothing is cut', async () => {
-    await ensureStandardModels();
+    await repair();
     const window = await decisionWindowTokens();
     const row = (i: number): string => `[USER · the owner] row ${i} ${'é—'.repeat(900)}`;   // 3-byte and 2-byte characters
     const source = Array.from({ length: 120 }, (_, i) => row(i)).join('\n---\n');

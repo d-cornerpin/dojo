@@ -7,7 +7,7 @@ import { createLogger } from '../logger.js';
 import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider, type DecisionProvider } from './decision-provider.js';
-import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
+import { localWorkBegins } from '../services/ollama-lock.js';
 import { MEASURED_CHARS_PER_TOKEN, tokensAt } from '../services/token-density.js';
 import { decideCountedBytes, decideRequestBody, decideTimeoutMs, fencedState } from './decide-sizing.js';
 
@@ -85,9 +85,7 @@ export async function decide(
 async function sent(
   provider: DecisionProvider, state: unknown, questions: Record<string, Question>, opts: DecideOpts, stop: AbortSignal | null,
 ): Promise<Record<string, Answer> | null> {
-  // While the Ollama app restarts to apply the model limit the rule answers; otherwise the restart waits for this call.
-  if (localHeld()) return null;
-  const endLocalWork = await localWorkBegins();
+  const endLocalWork = localWorkBegins();   // an Ollama restart waits for this call
   try {
     const names = Object.keys(questions);
     const stateTokens = tokensAt(JSON.stringify(fencedState(state)).length, MEASURED_CHARS_PER_TOKEN);

@@ -12,7 +12,7 @@
 // database, the model retry or a memory reader.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-vi.mock('../local-standard.js', () => ({ retryStandardModelsIfMissing: vi.fn() }));
+vi.mock('../ollama-upkeep.js', () => ({ upkeepWhenIncomplete: vi.fn() }));
 vi.mock('../../db/connection.js', () => ({ getDb: () => { throw new Error('unused'); } }));
 vi.mock('../../memory/writer.js', () => ({ clearOn: vi.fn() }));
 

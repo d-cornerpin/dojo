@@ -104,7 +104,7 @@ describe('the grant: the main agent and the Healer by default, anyone else only 
     expect(holds(GRANTED)).toBe(true);
     const r = await call(GRANTED, { what: 'schema', table: 'agents' });
     expect(r.isError).toBe(false);
-    expect(r.content).toMatch(/^agents — /);
+    expect(r.content).toMatch(/^agents\n\nid /);
   });
 
   it('a deny that names it wins, even for the main agent', async () => {

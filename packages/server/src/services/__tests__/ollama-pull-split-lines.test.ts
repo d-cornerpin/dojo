@@ -6,10 +6,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pullOllamaModel, type PullProgress } from '../ollama-pull.js';
 
-vi.mock('../ollama-quiet.js', () => ({
-  localWorkBegins: async () => () => undefined,
-}));
-
 function streamOfBytes(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     start(c) {

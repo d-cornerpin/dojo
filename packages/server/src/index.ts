@@ -995,12 +995,12 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j. v3.5: the Dojo's two standard models, once per version (an updating box gets them; the install sizes
-  // their rows itself), beside RAM-aware num_ctx recommendations for Ollama models without one. Never blocks boot.
+  // 4j. The Ollama upkeep (Ollama current, its model limit, the Dojo's two standard models), beside RAM-aware num_ctx
+  // recommendations for Ollama models without one. Never blocks boot.
   {
     void (async () => {
       try {
-        void import('./agent/decision-ask.js').catch((err) => logger.error('the decision seam could not be installed; every judgment stays with its rule', { error: err instanceof Error ? err.message : String(err) })); void import('./services/local-standard.js').then((m) => m.ensureStandardModelsAtBoot()).catch((err) => logger.warn('the standard models were not ensured at boot', { error: err instanceof Error ? err.message : String(err) }));   // a download must not hold the backfill
+        void import('./agent/decision-ask.js').catch((err) => logger.error('the decision seam could not be installed; every judgment stays with its rule', { error: err instanceof Error ? err.message : String(err) })); void import('./services/ollama-upkeep.js').then((m) => m.upkeep('boot')).catch((err) => logger.warn('the Ollama upkeep did not run at boot', { error: err instanceof Error ? err.message : String(err) }));   // a download must not hold the backfill
         const { backfillRecommendedNumCtx } = await import('./services/num-ctx-calculator.js');
         await backfillRecommendedNumCtx();
       } catch (err) {

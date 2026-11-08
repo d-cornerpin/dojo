@@ -31,6 +31,7 @@ import { msToUtcText } from '../work/tracker-view.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
 import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
 import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS } from './local-model-notice-words.js';
+import { heldOllamaVersion } from '../services/ollama-version.js';
 export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS };
 
 const TOLD = 'owner_told';
@@ -57,7 +58,7 @@ let routerFloorName: (() => string | null) | null = null;
 /** Called once by `router/router-window.ts` at load: the name of the router's smallest model, or null. */
 export function registerRouterFloorName(read: () => string | null): void { routerFloorName = read; }
 /** The owner cards whose words can change while they stand are matched by their condition key (N42 r2). */
-export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') || key.startsWith('stall:') || key === 'embedding-switch' ? key : undefined);
+export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') || key.startsWith('stall:') || key === 'embedding-switch' || key === 'ollama' ? key : undefined);
 /** A task the stall ladder brought to the owner (`work/done/ladder.ts`): one card per task per day. */
 export const stallKey = (workId: string): string => `stall:${workId}`;
 const STALL_TRIED: Record<string, string> = {
@@ -172,14 +173,13 @@ export function wordsOf(key: string): string {
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
     : kind === 'embedding-switch' ? embeddingSwitchWords(countMemoriesOnOtherModels())
-    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : kind === 'ollama-too-old' ? OLLAMA_TOO_OLD_WORDS : kind === 'ollama-down' ? OLLAMA_DOWN_WORDS
-    : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
+    : kind === 'ollama' ? (heldOllamaVersion() !== null ? OLLAMA_TOO_OLD_WORDS : '')   // the upkeep's notice stands only while a version is held
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
     : kind === 'healer-broken' ? HEALER_BROKEN_WORDS
     : '';   // review H4: a key no card has (one an earlier build told and this one retired) has no words, and is never shown
 }
 
-/** Is the condition `key` told and standing (not dismissed)? (The missing-models card waits behind the upkeep's own one.) */
+/** Is the condition `key` told and standing (not dismissed)? */
 export function ownerToldOf(key: string): boolean {
   try { return !!getDb().prepare('SELECT 1 FROM healer_state t WHERE t.scope = ? AND t.key = ? AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)').get(TOLD, key, DISMISSED); } catch { return false; }
 }
@@ -230,13 +230,11 @@ export function ownerConditionsOnAgentGone(agentId: string): void {
   ownerConditionCleared(`nofit:${agentId}`);
 }
 
-/** v3.5 field fix 3 (#9, OR-FIELD3 (c)): the conditions whose card is INFORMATIONAL (the Dojo retries or checks by
- *  itself; nothing for the owner to do). Their frame is a toast that leaves by itself, so a reload never re-derives
- *  them; the told-record stays (it is still told once per condition). Their callers declare the same class
- *  (`local-standard.ts`, `ollama-model-limit.ts`, `local-model-fit.ts`, `embedding-switch.ts`; pinned by the t138 census). */
+/** The conditions whose card is INFORMATIONAL (the Dojo retries or checks by itself; nothing for the owner to do). Their
+ *  frame is a toast that leaves by itself, so a reload never re-derives them; the told-record stays. Their callers
+ *  declare the same class (`local-model-fit.ts`, `embedding-switch.ts`). */
 export function isInformationalCondition(key: string): boolean {
-  return key === 'standard-models' || key === 'ollama-limit-failed' || key.startsWith('fitunchecked:') || key === 'embedding-switch'   // review round L1
-    || key === 'ollama-down';   // audit #7: the Dojo retries; the card asks nothing of him
+  return key.startsWith('fitunchecked:') || key === 'embedding-switch';
 }
 
 /** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed, and ACTION cards only. */
@@ -257,7 +255,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('stall:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama-too-old' || key === 'ollama-down' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('stall:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'ollama' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

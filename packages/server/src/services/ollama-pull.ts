@@ -11,7 +11,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { idleStreamDeadline } from './idle-stream-deadline.js';
-import { localWorkBegins } from './ollama-quiet.js';
+import { localWorkBegins } from './ollama-lock.js';
 
 // The pull's three bounds, each named for its own job. A registry that never answers is a different
 // failure from one that stops mid-download, and neither is "this model is too big".
@@ -45,8 +45,7 @@ export async function pullOllamaModel(
   const report = opts.onProgress ?? (() => { /* nobody is watching */ });
   report({ model, status: 'starting', completed: 0, total: 0, layers: 0, error: null });
 
-  // v3.5 fix round 4: a pull from THIS box's Ollama is in-flight work — the model-limit restart never cuts it.
-  const endLocalWork = await localWorkBegins(baseUrl);
+  const endLocalWork = localWorkBegins(baseUrl);   // an Ollama restart never cuts a pull
   const pullDeadline = idleStreamDeadline({
     firstByteMs: OLLAMA_PULL_FIRST_BYTE_MS,
     idleMs: OLLAMA_PULL_IDLE_MS,

@@ -271,7 +271,12 @@ ALTER TABLE summary_checks DROP COLUMN dropped;
 --     have no reader. A dropped wait costs one more try, never a summary.
 DELETE FROM healer_state WHERE scope IN ('summary_writer_not_answering', 'summary_span_waiting', 'summary_unwritable', 'summary_span_refused');
 
--- 12. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
+-- 12. The Ollama upkeep raises one owner notice ('ollama') and stores one held version; the older notice keys and the
+--     once-per-version stamp of the standard models have no reader.
+DELETE FROM healer_state WHERE scope IN ('owner_told', 'owner_dismissed') AND key IN ('standard-models', 'ollama-too-old', 'ollama-down', 'ollama-limit-failed');
+DELETE FROM config WHERE key = 'standard_models_version';
+
+-- 13. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
 --     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.
 CREATE TEMP TABLE _td_assert (name TEXT PRIMARY KEY, ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _td_assert (name, ok) VALUES
@@ -302,7 +307,7 @@ INSERT INTO _td_assert (name, ok) VALUES
    (SELECT COUNT(*) FROM (SELECT class, n FROM _td_before EXCEPT
       SELECT m.class, COUNT(*) FROM _td_map m JOIN work w ON w.id = m.id AND w.state = m.to_state AND w.hold_kind IS m.hold_kind GROUP BY m.class)) = 0);
 
--- 13. The report, read once by the boot log.
+-- 14. The report, read once by the boot log.
 INSERT INTO config (key, value) VALUES ('task_done_upgrade_last', json_object(
   'at', (SELECT ms FROM _td_now),
   'classes', (SELECT json_group_object(class, n) FROM _td_before),

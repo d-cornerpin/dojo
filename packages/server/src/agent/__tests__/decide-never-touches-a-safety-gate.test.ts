@@ -121,7 +121,7 @@ describe('1. no import path leads from a gate file to the decision code', () => 
     }
   }
   it('the walk is not blind: with the declared exemption removed it finds the real chain from the destructive gate', () => {
-    expect(chainToSink(path.join(SRC, 'agent/destructive-gate.ts'), [])).toMatch(/services\/decision-window\.ts -> agent\/decide\.ts$/);
+    expect(chainToSink(path.join(SRC, 'agent/destructive-gate.ts'), [])).toMatch(/ -> agent\/decide\.ts$/);
   });
   it('the walk follows a dynamic import: the engine\'s own asker is found from the server\'s boot', () => {
     expect(chainToSink(path.join(SRC, 'index.ts'))).toMatch(/agent\/decision-ask\.ts$/);

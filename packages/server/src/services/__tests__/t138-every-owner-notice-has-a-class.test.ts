@@ -310,17 +310,9 @@ const CARD_CENSUS: Record<string, CardSite[]> = {
   'services/imessage-bridge.ts': [
     { cls: 'action', what: 'every critical or notice text the platform sends him (the sendAlert census above)', why: 'by ruling, the phone door carries true blockers only' },
   ],
-  'services/local-standard.ts': [
-    { cls: 'informational', what: "the Dojo's own two local models could not be installed yet (at boot)", why: 'nothing to do: the Dojo keeps trying whenever Ollama runs (OR-UPKEEP-AUTOMATIC)' },
-    { cls: 'informational', what: "the Dojo's own two local models could not be installed yet (after an install pass)", why: 'the same condition, the same answer' },
-  ],
-  'services/ollama-model-limit.ts': [
-    { cls: 'informational', what: "the Dojo could not raise Ollama's loaded-model limit", why: 'nothing to do: everything keeps working and the Dojo tries again at its next start' },
-  ],
-  'services/ollama-upgrade.ts': [
-    { cls: 'action', what: 'a local model needs a newer Ollama and the Dojo could not update it by itself', why: 'one of the few cases the Dojo cannot fix (another user\'s or the system\'s Ollama, no Homebrew): OR-UPKEEP-AUTOMATIC\'s ONE plain card' },
-    { cls: 'informational', what: 'Ollama stopped during its update and has not come back', why: 'audit #7: the Dojo tries again at its next start; the card asks nothing of him (no hidden Repair button)' },
-    { cls: 'informational', what: 'the same condition, from the restart path', why: 'the same answer' },
+  'services/ollama-upkeep.ts': [
+    { cls: 'informational', what: "the Ollama upkeep's one notice: the pair not installed yet, the limit not raised, or Ollama down after its update", why: 'nothing to do: the Dojo retries by itself at the next start or health answer' },
+    { cls: 'action', what: 'a local model needs a newer Ollama and the Dojo could not update it by itself', why: 'one of the few cases the Dojo cannot fix (another user\'s or the system\'s Ollama, no Homebrew); it stands while the version is held' },
   ],
   'work/done/ladder.ts': [
     { cls: 'action', what: 'a task is stuck: waiting for his decision, or the ladder above him ran out', why: 'he decides, closes or cancels it on the board; once a day per task, never a text' },
@@ -370,7 +362,7 @@ describe('the owner-card door census (field fix 3 #9)', () => {
 
   it('a card that needs no action is never re-derived on a reload: the healer list skips the informational conditions', () => {
     const notices = fs.readFileSync(path.join(SRC, 'healer/owner-notices.ts'), 'utf8');
-    for (const key of ["'standard-models'", "'ollama-limit-failed'", "'fitunchecked:'", "'embedding-switch'", "'ollama-down'"]) {
+    for (const key of ["'fitunchecked:'", "'embedding-switch'"]) {
       expect(/export function isInformationalCondition[\s\S]*?\n}/.exec(notices)?.[0], `${key} is informational`).toContain(key);
     }
     expect(notices).toMatch(/!isInformationalCondition\(key\)/);

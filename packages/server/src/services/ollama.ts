@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { retryStandardModelsIfMissing } from './local-standard.js';
+import { upkeepWhenIncomplete } from './ollama-upkeep.js';
 import { getDb } from '../db/connection.js';
 import { clearOn } from '../memory/writer.js';
 
@@ -43,8 +43,7 @@ export async function checkOllamaHealth(baseUrl?: string): Promise<boolean> {
     if (healthy) {
       const data = await response.json() as { models?: Array<{ name: string }> };
       cachedStatus.models = (data.models ?? []).map(m => m.name);
-      // v3.5 (fix round 1, I-2): Ollama answering is the signal to retry a missing standard model.
-      retryStandardModelsIfMissing(cachedStatus.models, url);
+      upkeepWhenIncomplete(cachedStatus.models, url);   // Ollama answering is the signal to finish the pair
       ollamaAnswered(url);   // t268 breaker fix: a waiting summary writer on this Ollama is re-tested
     }
 
