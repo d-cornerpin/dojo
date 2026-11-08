@@ -644,16 +644,6 @@ export async function escalateCloseoutMissToPM(ctx: {
   }
 }
 
-/** Humane rendering of the structured smell flag for the PM model's context.
- *  Legacy prose flags (pre-P6b rows) pass through unchanged. */
-function renderSmellFlag(raw: string): string {
-  try {
-    const f = JSON.parse(raw) as { kind?: string; elapsedSec?: number; cycles?: number; windowMin?: number };
-    if (f.kind === 'complete_dodges_poke') return `closed within ${f.elapsedSec}s of the last poke with no non-tracker tool calls on the closing turn`;
-  } catch { /* legacy prose flag */ }
-  return raw;
-}
-
 // ── PM LLM Review, runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
@@ -1129,8 +1119,7 @@ function buildEffortReviewPrompt(
 }
 
 /**
- * Parse the PM's reply defensively — the same style `renderSmellFlag` and the evidence-array
- * parse above it already use in this file (try/catch, a sentinel on failure, never a throw).
+ * Parse the PM's reply defensively, in the style the evidence-array parse in this file uses (try/catch, a sentinel on failure, never a throw).
  * `null` means "no usable verdict landed"; the caller leaves the baseline untouched, so the
  * SAME pending request is retried the next time `runPMReview` runs, rather than the review
  * being silently lost or a guess being wired to either action.
@@ -1695,7 +1684,7 @@ async function runPMReview(): Promise<void> {
 
   // ── Phase B.1: UNVALIDATED_COMPLETE ──
   // Every task whose close is filed and unblessed needs a PM judgment. Read the goal,
-  // result, evidence, and any smell_flag context; open files / pull audit log entries when
+  // result and evidence; open files / pull audit log entries when
   // evidence points there.
   //
   // PHASE-2 T8T — THIS RUNG HAS TWO SHAPES NOW, AND THAT IS THE WHOLE POINT OF THE TRIGGER.
@@ -1721,7 +1710,7 @@ async function runPMReview(): Promise<void> {
   })();
   const unvalidatedCompleteRows = db.prepare(`
     SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
-           w.result AS result, w.evidence_json AS evidence_json, w.last_smell_flag AS last_smell_flag,
+           w.result AS result, w.evidence_json AS evidence_json,
            w.requester_id AS created_by, w.parent_id AS project_id,
            w.repeat_interval AS repeat_interval, ${msToText('w.next_run_at')} AS next_run_at,
            w.priority AS priority, ${msToText('w.updated_at')} AS updated_at,
@@ -1752,7 +1741,7 @@ async function runPMReview(): Promise<void> {
     LIMIT 10
   `).all(Date.now() - 15_000, ...doorbellIn.params) as Array<{
     id: string; title: string; assigned_to: string | null; goal: string | null;
-    result: string | null; evidence_json: string | null; last_smell_flag: string | null;
+    result: string | null; evidence_json: string | null;
     created_by: string; project_id: string | null;
     repeat_interval: number | null; next_run_at: string | null;
     priority: string; updated_at: string; updated_at_ms: number; attempts_recorded: number;
@@ -1776,9 +1765,6 @@ async function runPMReview(): Promise<void> {
       : 'unassigned';
     const isRecurringRun = cTask.repeat_interval !== null && cTask.next_run_at !== null;
 
-    const smellLine = cTask.last_smell_flag
-      ? `\n  ⚠ SMELL_FLAG: ${renderSmellFlag(cTask.last_smell_flag)}`
-      : '';
     const runLine = isRecurringRun
       ? `\n  A run of a recurring task (next fire at ${cTask.next_run_at}); the schedule goes on whatever you decide.`
       : '';
@@ -1819,7 +1805,7 @@ async function runPMReview(): Promise<void> {
       text: unvalidatedCompleteText(cTask.id, {
         proof,
         title: cTask.title, agentName, goal: cTask.goal, result: cTask.result, priority: cTask.priority, revertCount: cTask.revert_count,
-        headExtras: `${doorbellLine}${smellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}`,
+        headExtras: `${doorbellLine}${runLine}${goalEditLine}`, evidenceBlock: `${evidenceLines}${lastNoteLine}`,
         ledgerRoomTokens: reviewLedgerRoomTokens(pmBudgetTokens, unvalidatedCompleteRows.length),
       }),
     });

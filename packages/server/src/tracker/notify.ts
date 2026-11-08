@@ -145,9 +145,7 @@ export function injectTaskAssignmentNotification(
       content,
       sourceAgentId: creatorAgentId === 'dojo-system' ? null : creatorAgentId,
       originIntent: 'tracker',
-      // P1 lineage spine: the task this notice assigns, as a COLUMN. The
-      // terminal-task retire (claimAssignmentNoticeForTerminalTask) becomes a
-      // keyed UPDATE at P2 instead of a content LIKE scan.
+      // The task this notice assigns, as a column, so a hand-in retires it by key.
       work: { taskId, runId: null, rootKind: 'task', rootId: taskId },
     });
 

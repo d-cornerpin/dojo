@@ -46,11 +46,9 @@ vi.mock('../../agent/runtime.js', () => ({
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
 vi.mock('../../tracker/pm-agent.js', () => ({
   ensurePMAgentRunning: () => { /* no-op */ },
-  noteCloseForReview: () => { /* no-op */ },
 }));
 vi.mock('../../tracker/notify.js', () => ({
   injectTaskAssignmentNotification: () => { /* no-op */ },
-  claimAssignmentNoticeForTerminalTask: () => false,
 }));
 
 import { createTask, createProject, autoCreateAssignTask } from '../../tracker/schema.js';

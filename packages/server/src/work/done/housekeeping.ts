@@ -5,7 +5,7 @@ import { getDb } from '../../db/connection.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { transition, type WorkState } from '../store.js';
 import { SERVICE_ROOT_KIND } from '../tracker-view.js';
-import { unitOrRollback, recordAdjudication } from './record.js';
+import { unitOrRollback, recordAdjudication, workerOf } from './record.js';
 import type { HandInInput, HandInResult } from './hand-in.js';
 
 export const isHousekeeping = (workId: string): boolean =>
@@ -13,8 +13,9 @@ export const isHousekeeping = (workId: string): boolean =>
 
 /** Settle a housekeeping row on the engine's receipt: done when finished, failed when it can't be done. */
 export function settleHousekeeping(input: HandInInput): HandInResult {
-  const row = getDb().prepare('SELECT state, COALESCE(assignee_agent, agent_id) AS worker FROM work WHERE id = ?').get(input.workId) as { state: WorkState; worker: string };
-  if (input.by.kind === 'worker' && input.by.agentId !== row.worker) return { kind: 'refused', text: `Refused: ${input.workId} is ${row.worker}'s housekeeping, not yours.` };
+  const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(input.workId) as { state: WorkState };
+  const worker = workerOf(input.workId);
+  if (input.by.kind === 'worker' && input.by.agentId !== worker) return { kind: 'refused', text: `Refused: ${input.workId} is ${worker}'s housekeeping, not yours.` };
   const to: WorkState = input.outcome === 'finished' ? 'done' : 'failed';
   const moved = unitOrRollback(() => {
     const receipt = deliveryIdOf(recordDecisionReceipt(input.workId, 'The engine', 'its own housekeeping receipt'));

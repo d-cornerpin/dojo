@@ -54,7 +54,6 @@ vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => undefined
 vi.mock('../../tracker/pm-agent.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensurePMAgentRunning: () => undefined,
-  noteCloseForReview: () => undefined,
 }));
 
 import fs from 'node:fs';

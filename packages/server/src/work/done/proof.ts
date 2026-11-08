@@ -43,14 +43,14 @@ const describe = (i: ProofItemInput, n: number): string => `Item ${n + 1} (${i.k
 
 /** THE proof check. The resolved items on success, else every refusal, each naming its item. */
 export function checkProof(
-  workId: string, workerId: string, outcome: HandInOutcome, items: ProofItemInput[],
+  workId: string, workerId: string, outcome: HandInOutcome, items: ProofItemInput[], byEngine = false,
 ): { ok: true; items: ResolvedItem[] } | { ok: false; refusals: ProofRefusal[] } {
   if (items.length === 0) {
     return { ok: false, refusals: [{ index: -1, why: 'The hand-in has no proof items. Name the records that show the work: a file, a message, a command, a receipt or the measure.' }] };
   }
   const task = taskOf(workId);
   if (!task) return { ok: false, refusals: [{ index: -1, why: `There is no task ${workId}.` }] };
-  const ctx: ProofContext = { task, asker: askerOf(workId), workerId, outcome };
+  const ctx: ProofContext = { task, asker: askerOf(workId), workerId, outcome, byEngine };
   const refusals: ProofRefusal[] = [];
   const resolved: ResolvedItem[] = [];
   const seen = new Set<string>();

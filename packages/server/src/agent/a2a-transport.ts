@@ -2284,7 +2284,8 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           }), 'a2a: join settled on the engine relay of the landed pieces', join.id);
           // The cards the model opened for this same job are handed in for it: the owner has the result.
           for (const card of scaffoldCardsOfRelay(join.id, agentId)) {
-            engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${deliveryId.slice(0, 8)})`);
+            engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${deliveryId.slice(0, 8)})`,
+              { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] });
           }
         } else {
           logger.warn('compile drive: the engine relay of the landed pieces recorded no delivery', {

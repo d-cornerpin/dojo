@@ -1162,13 +1162,17 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   const because = nextRun
     ? `scheduled run #${task.run_count as number} finished (${status}); the next run is at ${nextRun}`
     : `the final scheduled run #${task.run_count as number} ${failedFinalRun ? 'failed' : `finished (${status})`}${summary ? `: ${summary.slice(0, 200)}` : ''}`;
-  const handed = engineHandIn(taskId, because, { scope: nextRun ? 'run' : 'schedule', outcome: failedFinalRun ? 'cant_be_done' : undefined });
-  if (handed.kind !== 'handed_in') logger.info('Scheduler: the run was not handed in', { taskId, runId, why: handed.text.slice(0, 200) });
-  writeTaskLog({
-    taskId, fromEntity: 'scheduler', entryKind: 'transition', fromStatus: 'in_progress', toStatus: 'handed_in',
-    actionTaken: nextRun ? `scheduler ran #${task.run_count as number}, next at ${nextRun}` : `scheduler ran final run #${task.run_count as number}, no more runs`,
-    reason: `run finished with status=${status}`, note: summary || null,
+  const handed = engineHandIn(taskId, because, {
+    scope: nextRun ? 'run' : 'schedule', outcome: failedFinalRun ? 'cant_be_done' : undefined,
+    items: delivered && status !== 'failed' ? [{ kind: 'delivery', ref: delivered }] : undefined,
   });
+  if (handed.kind === 'handed_in') {
+    writeTaskLog({
+      taskId, fromEntity: 'scheduler', entryKind: 'transition', fromStatus: 'in_progress', toStatus: 'handed_in',
+      actionTaken: nextRun ? `scheduler ran #${task.run_count as number}, next at ${nextRun}` : `scheduler ran final run #${task.run_count as number}, no more runs`,
+      reason: `run finished with status=${status}`, note: summary || null,
+    });
+  } else logger.info('Scheduler: the run was not handed in', { taskId, runId, why: handed.text.slice(0, 200) });
 
   if (nextRun) {
     noteUnsettled(setNextRun(taskId, {
@@ -1545,7 +1549,7 @@ export function cleanupStaleRuns(): void {
       AND t.repeat_unit IS NOT NULL
       AND t.next_run_at IS NULL
       AND t.is_paused = 0
-      AND t.state NOT IN ('done', 'failed', 'abandoned')
+      AND t.state NOT IN ('done', 'failed', 'abandoned', 'handed_in')
       AND t.schedule_status != 'completed'
       AND t.schedule_status != 'running'
   `).all() as Array<{ id: string; title: string }>;
@@ -1657,7 +1661,7 @@ function recoverMissingNextRun(taskId: string): void {
       taskId, title: task.title, nextRun,
     });
   } else {
-    engineHandIn(taskId, 'the schedule has no run left to fire: its repeat config yields no future occurrence', { scope: 'schedule' });
+    engineHandIn(taskId, 'the schedule has no run left to fire: its repeat config yields no future occurrence', { scope: 'schedule', outcome: 'cant_be_done' });
     noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: missing next_run_at had no future occurrence, schedule completed', { taskId });
     logger.warn('Scheduler: recurring task had no recoverable next run; handed in for its worker', { taskId, title: task.title });
   }
@@ -1705,7 +1709,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
     }), 'scheduler: stuck recurring task reset onto its next occurrence', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
-    engineHandIn(taskId, 'the stuck recurring task has no future run left', { scope: 'schedule' });
+    engineHandIn(taskId, 'the stuck recurring task has no future run left', { scope: 'schedule', outcome: 'cant_be_done' });
     if (task.schedule_status !== 'completed') noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: stuck recurring task had no next occurrence, schedule completed', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task with no future runs; handed in for its worker', { taskId, title: task.title });
   }

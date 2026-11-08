@@ -61,12 +61,10 @@ vi.mock('../../agent/agent-notice.js', async (orig) => ({
 vi.mock('../../tracker/pm-agent.js', async (orig) => ({
   ...(await orig<typeof import('../../tracker/pm-agent.js')>()),
   ensurePMAgentRunning: () => { /* no-op */ },
-  noteCloseForReview: () => { /* no-op */ },
 }));
 vi.mock('../../tracker/notify.js', async (orig) => ({
   ...(await orig<typeof import('../../tracker/notify.js')>()),
   injectTaskAssignmentNotification: () => { /* no-op */ },
-  claimAssignmentNoticeForTerminalTask: () => false,
 }));
 
 import { runMigrations } from '../../db/migrations.js';

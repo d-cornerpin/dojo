@@ -511,7 +511,8 @@ export async function finalizeTurnRecord(
           `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ? AND w.state = 'claimed' AND w.is_paused = 0`,
         ).all(agentId, turnNumber) as Array<{ id: string }>;
         for (const t of sameTurnOpen) {
-          if (engineProof(t.id).length > 0) engineHandIn(t.id, `turn ${turnNumber} opened this task and delivered it`, { outcome: 'finished' });
+          const counted = engineProof(t.id).map(({ kind, ref }) => ({ kind, ref }));
+          if (counted.length > 0) engineHandIn(t.id, `turn ${turnNumber} opened this task and delivered it`, { outcome: 'finished', items: counted });
         }
       } catch { /* best effort; the ladder remains the backup */ }
     }

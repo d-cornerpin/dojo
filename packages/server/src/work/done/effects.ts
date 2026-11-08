@@ -1,9 +1,8 @@
 // What happens at the two moments of board work, each a short ordered list of calls.
 //   At the hand-in (the work is delivered): a run's schedule advances, the asker who never got the work
 //   on its thread is relayed it, prompts queued for the work retire, and the decider is woken.
-//   At the decision (the work is accepted, or not): dependents unblock, a can't-be-done project closes its
-//   open tasks, the project is derived from its tasks, a finished schedule stops, and a send-back
-//   reaches the worker of record.
+//   At the decision (the work is accepted, or not): dependents unblock, the project is derived from its
+//   tasks, a finished schedule stops, and a send-back reaches the worker of record.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { ringValidationDoorbell } from '../validation-drive.js';
@@ -14,9 +13,8 @@ import { sendAgentMessage } from '../../agent/agent-bus.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { writeAssignee } from '../row-authority.js';
 import { recordMove } from '../move-record.js';
-import { transition, isTerminal, type Actor, type WorkState } from '../store.js';
-import { taskScope } from '../tracker-view.js';
-import { latestHandIn, workerOf } from './record.js';
+import { isTerminal, type WorkState } from '../store.js';
+import { latestHandIn, workerOf, OWNER_ID } from './record.js';
 import { settleProject } from './project-state.js';
 
 const logger = createLogger('work-effects');
@@ -51,29 +49,16 @@ export function onDecided(workId: string, decisionId: number): void {
   const db = getDb();
   const d = db.prepare("SELECT actor, payload FROM work_events WHERE id = ? AND work_id = ? AND kind = 'decided'").get(decisionId, workId) as
     { actor: string; payload: string } | undefined;
-  const row = db.prepare('SELECT kind, parent_id, title FROM work WHERE id = ?').get(workId) as { kind: string; parent_id: string | null; title: string | null } | undefined;
+  const row = db.prepare('SELECT parent_id, title FROM work WHERE id = ?').get(workId) as { parent_id: string | null; title: string | null } | undefined;
   if (!d || !row) return;
   const { verdict, reason, to } = JSON.parse(d.payload) as { verdict: string; reason: string; to: WorkState };
   if (verdict === 'send_back') { sendBackHint(workId, row.title, d.actor, reason); return; }
   if (!isTerminal(to)) return;
   if (to === 'done') checkDependencies(workId);
-  if (row.kind === 'project' && to === 'failed') closeOpenTasksWith(workId, d.actor, reason);
   if (row.parent_id) settleProject(row.parent_id);
   void import('../../scheduler/runner.js')
     .then(({ terminateLiveScheduleOnFallen }) => terminateLiveScheduleOnFallen(workId, `the work was decided ${to}`, 'schedule stopped at its decision'))
     .catch((err: unknown) => logger.warn('decision: the schedule could not be stopped', { workId, error: String(err) }));
-}
-
-/** A can't-be-done project closes each task still open under it, by the same decider and reason. */
-function closeOpenTasksWith(projectId: string, deciderId: string, reason: string): void {
-  const open = getDb().prepare(
-    `SELECT w.id FROM work w WHERE w.parent_id = ? AND ${taskScope('w')} AND w.state NOT IN ('done','failed','abandoned')`,
-  ).all(projectId) as Array<{ id: string }>;
-  const by: Actor = deciderId === 'user' ? 'owner' : deciderId === getPMAgentId() ? 'pm' : 'agent';
-  for (const t of open) {
-    const r = transition(t.id, { to: 'failed', by, actorId: deciderId, claim: 'decided', reason: `closed with its project: ${reason}` });
-    if (r.kind !== 'applied') logger.warn('project decision: an open task did not close with it', { projectId, taskId: t.id, outcome: r });
-  }
 }
 
 /** A terminated agent's work goes back to the agent that spawned it, else to the primary. */
@@ -90,7 +75,7 @@ function sendBackHint(workId: string, title: string | null, deciderId: string, r
   if (to !== worker && writeAssignee(workId, { agentId: to }) > 0) {
     recordMove({ taskId: workId, actor: 'engine', from: worker, to: { agentId: to }, cause: 'assignee_gone', door: 'send-back' });
   }
-  sendAgentMessage(deciderId === 'user' ? getPMAgentId() : deciderId, to, 'status',
+  sendAgentMessage(deciderId === OWNER_ID ? getPMAgentId() : deciderId, to, 'status',
     `[Engine hint: "${title ?? workId}" [${workId}] was sent back${to !== worker ? ` (its worker ${worker} has ended, so it is yours now)` : ''}: ${reason}. `
     + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]', { taskId: workId, event: 'sent_back' });
 }

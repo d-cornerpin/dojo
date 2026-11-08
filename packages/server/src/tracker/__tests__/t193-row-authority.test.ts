@@ -37,11 +37,9 @@ vi.mock('../../memory/message-store.js', async (importOriginal) => ({
 }));
 vi.mock('../pm-agent.js', () => ({
   ensurePMAgentRunning: () => { /* no-op */ },
-  noteCloseForReview: () => { /* no-op */ },
 }));
 vi.mock('../notify.js', () => ({
   injectTaskAssignmentNotification: () => { /* no-op */ },
-  claimAssignmentNoticeForTerminalTask: () => false,
 }));
 vi.mock('../../config/platform.js', () => ({
   getPrimaryAgentId: () => MAIN,

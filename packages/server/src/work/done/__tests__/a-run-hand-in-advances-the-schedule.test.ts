@@ -57,6 +57,31 @@ describe('a run hand-in advances the schedule', () => {
     expect(due(NEXT + 1_000)).toBe(true);
   });
 
+  it('a run that delivered to the person its schedule serves, not the asker, is handed in finished on that delivery', async () => {
+    freshBoard();
+    aRunInFlight('run-1', Date.now() - 30_000);
+    const at = Math.floor(Date.now() / 1000) * 1000;
+    doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at) VALUES ('m-third', ?, 'owner', 'assistant', 'Your table for four is booked for Friday.', 1, ?, ?)").run(WORKER, at, at);
+    doneDb().prepare(
+      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at)
+       VALUES ('dlv-third', ?, 'imessage_send', 'imessage', 'friend@example.com', 'm-third', 'delivered', datetime('now'), datetime('now'))`,
+    ).run(WORKER);
+    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
+    expect(latestHandIn(TASK)).toMatchObject({ outcome: 'finished', items: [expect.objectContaining({ kind: 'delivery', ref: 'dlv-third' })] });
+  });
+
+  it('a handed-in run whose next run went missing is left alone by the recovery sweep', async () => {
+    freshBoard();
+    aRunInFlight('run-1', Date.now() - 30_000);
+    deliveredToOwner();
+    await onTaskRunComplete(TASK, 'complete', 'ran');
+    doneDb().prepare("UPDATE work SET next_run_at = NULL WHERE id = ?").run(TASK);
+    const before = doneDb().prepare('SELECT state, schedule_status, updated_at FROM work WHERE id = ?').get(TASK);
+    cleanupStaleRuns();
+    expect(doneDb().prepare('SELECT state, schedule_status, updated_at FROM work WHERE id = ?').get(TASK)).toEqual(before);
+    expect(eventCount('decided')).toBe(0);
+  });
+
   it('a later run cannot be handed in on an earlier run\'s delivery', async () => {
     freshBoard();
     const earlier = deliveredToOwner();

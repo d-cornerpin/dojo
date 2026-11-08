@@ -21,8 +21,8 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
-vi.mock('../pm-agent.js', () => ({ ensurePMAgentRunning: () => {}, noteCloseForReview: () => {} }));
-vi.mock('../notify.js', () => ({ injectTaskAssignmentNotification: () => {}, claimAssignmentNoticeForTerminalTask: () => false }));
+vi.mock('../pm-agent.js', () => ({ ensurePMAgentRunning: () => {} }));
+vi.mock('../notify.js', () => ({ injectTaskAssignmentNotification: () => {} }));
 const { countMeasure } = vi.hoisted(() => ({ countMeasure: vi.fn() }));
 vi.mock('../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../work/measure.js')>()), countMeasure }));
 // A2: the tools this agent holds. The facts themselves are read from the real definitions.

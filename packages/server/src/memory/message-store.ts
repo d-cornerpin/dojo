@@ -795,7 +795,7 @@ export function recordServingTurnByRowid(
  * lived-in body every one of these rows predates migration 112, carries NO task_id, and
  * FOURTEEN are still pending. Deleting this arm would leave those fourteen un-retirable, and
  * an un-retired assignment notice is re-delivered as a fresh "begin working on this task"
- * prompt — the exact incident `claimAssignmentNoticeForTerminalTask` exists to prevent.
+ * prompt, the incident the hand-in's prompt retire (`work/done/effects.ts`) exists to prevent.
  *
  * What DID change: the arm is now scoped to `task_id IS NULL`, i.e. to the only rows the
  * KEYED retirement (`retireEngineEventsForTask` -> `sweepByReferent{referent:'task_id'}`)

@@ -301,8 +301,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     };
   }
 
-  // ── G10: handed-in work waits for its decision; only the next run of its schedule moves it sooner. ──
-  if (row.state === 'handed_in' && (input.to === 'open' || input.to === 'claimed') && input.by !== 'scheduler' && input.claim !== 'decided') {
+  // ── G10: handed-in work waits for its decision; only the next run of its schedule firing moves it sooner. ──
+  if (row.state === 'handed_in' && (input.to === 'open' || input.to === 'claimed') && !(input.by === 'scheduler' && input.to === 'claimed') && input.claim !== 'decided') {
     return { kind: 'refused', workId, reason: 'needs-decision', detail: 'handed-in work waits for a decision: it is approved or sent back, not moved' };
   }
 

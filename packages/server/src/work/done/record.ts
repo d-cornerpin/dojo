@@ -7,6 +7,9 @@ import { PATIENCE_ENTRY } from '../../tracker/assignee-patience.js';
 import type { WorkOutcome, WorkState } from '../store.js';
 import type { HandInOutcome, ResolvedItem } from './proof-kinds.js';
 
+/** The owner's id wherever a decision or a decider names him. */
+export const OWNER_ID = 'user';
+
 /** `run`: one run of a live schedule, which goes on; `schedule`: the scheduled work as a whole. */
 export type HandInScope = 'run' | 'schedule';
 

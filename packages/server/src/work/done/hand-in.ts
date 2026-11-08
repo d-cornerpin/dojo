@@ -70,7 +70,7 @@ export function handIn(input: HandInInput): HandInResult {
     whys.push(`Its ${row.open_tasks} open task${row.open_tasks === 1 ? ' is' : 's are'} not finished; a project is done when its tasks are. Hand it in as can't be done to close them with it.`);
   }
   if (left > 0) whys.push(`Its measure still lists ${left} item${left === 1 ? '' : 's'}, so it is not finished. Finish them, or hand it in as can't be done with a remainder item naming them and why.`);
-  const proof = checkProof(row.id, row.worker, input.outcome, input.items);
+  const proof = checkProof(row.id, row.worker, input.outcome, input.items, engine);
   if (!proof.ok) whys.push(...proof.refusals.map((r) => r.why));
   if (!proof.ok || whys.length > 0) {
     appendWorkEvent(row.id, 'hand_in_refused', filedBy, { outcome: input.outcome, reasons: whys.map((w) => redactHandedCredentials(row.worker, w)) });
@@ -99,17 +99,17 @@ export function handIn(input: HandInInput): HandInResult {
 }
 
 /** The engine hands work in for its worker, from the worker's own records: finished on what `proofFor`
- *  finds (or `items`), else can't be done on an engine record that says why. `outcome` asks for one of
- *  the two only. It never sets done. */
+ *  finds (or `items`) when that proof passes, else can't be done on an engine record that says why.
+ *  `outcome` asks for one of the two only. One hand-in is filed; it never sets done. */
 export function engineHandIn(
   workId: string, because: string, opts: { outcome?: HandInOutcome; items?: ProofItemInput[]; scope?: HandInScope } = {},
 ): HandInResult {
-  const by: HandInBy = { kind: 'engine', onBehalfOf: workerOf(workId), because };
+  const worker = workerOf(workId);
+  const by: HandInBy = { kind: 'engine', onBehalfOf: worker, because };
   const items = opts.items ?? (opts.outcome === 'cant_be_done' ? [] : proofFor(workId).map(({ kind, ref }) => ({ kind, ref })));
-  if (opts.outcome !== 'cant_be_done' && items.length > 0) {
-    const r = handIn({ workId, by, outcome: 'finished', items, note: because, scope: opts.scope });
-    if (r.kind === 'handed_in' || opts.outcome === 'finished') return r;
-  }
+  const finished = opts.outcome !== 'cant_be_done' && items.length > 0 && measuredItemsLeft(workId) === 0
+    && checkProof(workId, worker, 'finished', items, true).ok;
+  if (finished) return handIn({ workId, by, outcome: 'finished', items, note: because, scope: opts.scope });
   if (opts.outcome === 'finished') return { kind: 'refused', text: `Refused: the engine found no proof on record for ${workId}.` };
   const record: ProofItemInput = { kind: 'remainder', ref: 'engine record', facts: { reason: because } };
   return handIn({ workId, by, outcome: 'cant_be_done', items: [...(opts.outcome === 'cant_be_done' ? items : []), record], note: because, scope: opts.scope });

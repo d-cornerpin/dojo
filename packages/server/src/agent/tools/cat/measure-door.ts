@@ -95,7 +95,9 @@ export async function completeTaskHandIn(agentId: string, status: 'complete' | '
   await remeasureTask(agentId, taskId);
   const r = handIn({
     workId: taskId, by: { kind: 'worker', agentId }, outcome: status === 'complete' ? 'finished' : 'cant_be_done',
-    items: proofFor(taskId).map(({ kind, ref }) => ({ kind, ref })), note: summary,
+    items: status === 'complete' ? proofFor(taskId).map(({ kind, ref }) => ({ kind, ref }))
+      : [{ kind: 'remainder', ref: 'what was not done', facts: { reason: summary } }],
+    note: summary,
   });
   return r.kind === 'handed_in' ? null
     : `${r.text}\nYou are not ended. Hand the task in yourself with work_update(action="hand_in", task_id="${taskId}", outcome, proof, note), then call complete_task again.`;

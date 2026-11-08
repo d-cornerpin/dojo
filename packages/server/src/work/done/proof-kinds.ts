@@ -22,7 +22,9 @@ export interface ResolvedItem { kind: ProofKind; ref: string; label: string; fac
 /** `ask`: the ask the task exists for, when it has one, with the delivery its settlement recorded (the
  *  engine's own reading of which line answered it). */
 export interface ProofTask { id: string; title: string | null; openedAt: number; ask: { receipt: string | null } | null }
-export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome }
+/** `byEngine`: the engine files this hand-in for its worker, and the engine's own delivery for the work
+ *  (a relay, a scheduled run's line to whoever it serves) is the worker of record's delivery. */
+export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome; byEngine?: boolean }
 export type Resolution = { ok: true; item: ResolvedItem } | { ok: false; why: string };
 
 /** The label every reader shows for each kind. A delivery is the worker's own message, never "the answer". */
@@ -100,13 +102,13 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
     outcome: string; created_at: string; text: string | null } | undefined;
   if (!d) return '';
   if (d.outcome !== 'delivered') return `was not delivered (its outcome is ${d.outcome})`;
-  if (isEngineTool(d.tool) || d.origin_intent === START_ACK_ORIGIN_INTENT) {
+  if (d.origin_intent === START_ACK_ORIGIN_INTENT || (isEngineTool(d.tool) && !ctx.byEngine)) {
     return "is the engine's own line or acknowledgement, not the worker's message";
   }
   if ((NON_ANSWERING_DISPLAY_KINDS as readonly string[]).includes(d.display_kind ?? '')) return 'is a tool chip or working note, not a message';
   const own = ownRow(ctx, d.agent_id, sqlTimeMs(d.created_at));
   if (own) return own;
-  if (!deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
+  if (!ctx.byEngine && !deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
   if (d.channel === 'a2a' && !handsOverWork(intentOf(d.detail) ?? intentOf(d.text))) return 'does not hand over the work (its intent is not an answer or a deliverable)';
   if (d.text === null) return 'carries no text on record, so it shows no work';
   if (claim(ctx, d.text)) return 'is only a status claim, which is never proof';

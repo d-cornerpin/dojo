@@ -76,4 +76,20 @@ describe('a hand-in needs real proof', () => {
     expect(stateOf('proj-1')).toBe('failed');
     expect(stateOf()).toBe('failed');
   });
+
+  it('a scheduled task closed with its can\'t-be-done project is decided like any task, and never fires again', async () => {
+    freshBoard();
+    const at = Date.now() - 60_000;
+    doneDb().prepare(
+      `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+       VALUES ('proj-2', 'project', ?, 'owner', 'tracker', 'proj-2', 'open', 'task', 1, 0, 'The weekly digest', ?, ?)`,
+    ).run(WORKER, at, at);
+    doneDb().prepare("UPDATE work SET parent_id = 'proj-2', repeat_interval = 1, repeat_unit = 'days', schedule_status = 'waiting', next_run_at = ? WHERE id = ?").run(Date.now() + 3_600_000, TASK);
+    await call(WORKER, 'work_update', { action: 'hand_in', project_id: 'proj-2', outcome: 'cant_be_done', proof: [{ kind: 'remainder', ref: 'the digest', reason: 'the owner stopped the weekly digest' }], note: 'Stopped' });
+    await call(PM, 'work_validate', { action: 'open_proof', task_id: 'proj-2', item: 0 });
+    expect((await call(PM, 'work_validate', { action: 'decide', task_id: 'proj-2', verdict: 'approve', reason: 'The owner stopped it' })).isError).toBe(false);
+    expect(stateOf()).toBe('failed');
+    expect(eventCount('decided')).toBe(1);
+    await vi.waitFor(() => expect(doneDb().prepare('SELECT schedule_status, next_run_at FROM work WHERE id = ?').get(TASK)).toEqual({ schedule_status: 'completed', next_run_at: null }));
+  });
 });

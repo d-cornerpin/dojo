@@ -58,13 +58,11 @@ vi.mock('../../memory/message-store.js', async (importOriginal) => ({
 }));
 vi.mock('../pm-agent.js', () => ({
   ensurePMAgentRunning: () => { /* no-op */ },
-  noteCloseForReview: () => { /* no-op */ },
   // §5's trackerValidateComplete terminal-close path dynamically imports this.
   checkDependencies: () => { /* no-op */ },
 }));
 vi.mock('../notify.js', () => ({
   injectTaskAssignmentNotification: () => { /* no-op */ },
-  claimAssignmentNoticeForTerminalTask: () => false,
 }));
 vi.mock('../../config/platform.js', () => ({
   getPrimaryAgentId: () => 'primary',

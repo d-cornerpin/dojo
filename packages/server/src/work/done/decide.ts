@@ -1,4 +1,6 @@
-// THE DECISION: the one way board work becomes Done, Closed (couldn't be done), Sent back or Cancelled.
+// THE DECISION: how board work that was handed in, or that the owner closes, becomes Done, Closed
+// (couldn't be done), Sent back or Cancelled. (The other two ends are a project derived from its tasks,
+// `project-state.ts`, and a service agent's housekeeping, `housekeeping.ts`.)
 //   - approve / send_back decide a waiting hand-in. The caller is `whoDecides` (never the worker) or
 //     the owner. An agent approves only after opening every proof item (`open-proof.ts`); the owner
 //     is exempt. The reason is one line saying how the proof meets the goal, or what is missing.
@@ -7,15 +9,16 @@
 //     to Open for its next run, and a send-back is a hint to the worker.
 // The owner decides from the dashboard (decider null), or approves or sends back a hand-in he was
 // asked about by his own words relayed by an agent, verified against his messages (`ownerQuoteProof`).
-// One unit: the adjudication, the `decided` event and the transition with `claim: 'decided'`, which is
-// the only claim that ends board work.
+// One unit per row (`applyDecision`): the adjudication, the `decided` event and the transition with
+// `claim: 'decided'`, then the decision's effects (`effects.ts`). A can't-be-done project closes each of
+// its open tasks the same way.
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId } from '../../config/platform.js';
 import { ownerQuoteProof } from '../../tracker/owner-words.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
-import { transition, appendWorkEvent, isTerminal, type Actor, type WorkState } from '../store.js';
+import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
-import { latestHandIn, workersOf, unitOrRollback, recordAdjudication } from './record.js';
+import { latestHandIn, workersOf, unitOrRollback, recordAdjudication, OWNER_ID } from './record.js';
 import { openedEveryItem } from './open-proof.js';
 import { proofDelivery } from './proof.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
@@ -34,7 +37,6 @@ export interface DecideInput {
 }
 export type DecideResult = { kind: 'decided'; to: WorkState; text: string } | { kind: 'refused'; text: string };
 
-const OWNER_ID = 'user';
 const VERDICTS: readonly Verdict[] = ['approve', 'send_back', 'cancel', 'owner_done'];
 const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
 
@@ -80,6 +82,25 @@ function settleOn(workId: string, decider: string): string | null {
   return delivered ?? deliveryIdOf(recordDecisionReceipt(workId, decider === OWNER_ID ? 'The owner' : `Agent ${decider}`, 'a decision on its hand-in'));
 }
 
+interface Applied { verdict: Verdict; reason: string; deciderId: string; by: Actor; outcome: 'finished' | 'cant_be_done'; run: boolean }
+
+/** One row moved by a decision, as one unit, then the decision's effects. */
+function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): WorkOutcome {
+  let decisionId = 0;
+  const moved = unitOrRollback(() => {
+    const resultDeliveryId = to === 'done' ? settleOn(id, p.deciderId) : null;
+    const rejected = p.verdict === 'send_back';
+    recordAdjudication(id, rejected || p.run ? (p.outcome === 'finished' ? 'done' : 'failed') : to, p.deciderId, resultDeliveryId, p.reason, rejected ? 'rejected' : 'upheld');
+    decisionId = appendWorkEvent(id, 'decided', p.deciderId, { verdict: p.verdict, reason: p.reason, to });
+    return transition(id, {
+      to, by: p.by, actorId: p.deciderId, reason: `${p.verdict}: ${p.reason}`, expectedState: from,
+      claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
+    });
+  });
+  if (moved.kind === 'applied') onDecided(id, decisionId);
+  return moved;
+}
+
 /** THE DECISION (header). */
 export function decide(input: DecideInput): DecideResult {
   if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
@@ -109,20 +130,16 @@ export function decide(input: DecideInput): DecideResult {
   const run = last?.scope === 'run' && (input.verdict === 'approve' || input.verdict === 'send_back');
   const to: WorkState = run ? 'open' : input.verdict === 'send_back' ? 'sent_back' : input.verdict === 'cancel' ? 'abandoned'
     : input.verdict === 'owner_done' || outcome === 'finished' ? 'done' : 'failed';
-  let decisionId = 0;
-  const moved = unitOrRollback(() => {
-    const resultDeliveryId = to === 'done' ? settleOn(row.id, deciderId) : null;
-    const rejected = input.verdict === 'send_back';
-    recordAdjudication(row.id, rejected || run ? (outcome === 'finished' ? 'done' : 'failed') : to, deciderId, resultDeliveryId, reason, rejected ? 'rejected' : 'upheld');
-    decisionId = appendWorkEvent(row.id, 'decided', deciderId, { verdict: input.verdict, reason, to });
-    return transition(row.id, {
-      to, by, actorId: deciderId, reason: `${input.verdict}: ${reason}`, expectedState: row.state,
-      claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
-    });
-  });
+  const p = { verdict: input.verdict, reason, deciderId, by, outcome, run };
+  const moved = applyDecision(row.id, row.state, to, p);
   if (moved.kind !== 'applied') return refused(`${name} could not move to ${to}: ${moved.detail}.`);
   if (input.verdict === 'owner_done') recordOwnerRemainder(row.id);
-  onDecided(row.id, decisionId);
+  if (to === 'failed') {
+    const open = getDb().prepare(
+      `SELECT w.id, w.state FROM work w WHERE w.parent_id = ? AND ${taskScope('w')} AND w.state NOT IN ('done','failed','abandoned')`,
+    ).all(row.id) as Array<{ id: string; state: WorkState }>;
+    for (const t of open) applyDecision(t.id, t.state, 'failed', { ...p, reason: `closed with its project: ${reason}`, outcome: 'cant_be_done', run: false });
+  }
   const words: Partial<Record<WorkState, string>> = { done: 'Done', failed: "Closed: couldn't be done", sent_back: 'Sent back to its worker', abandoned: 'Cancelled', open: 'decided for this run; the schedule goes on' };
   return { kind: 'decided', to, text: `Decided: ${name} is ${words[to]}. Reason: ${reason}` };
 }

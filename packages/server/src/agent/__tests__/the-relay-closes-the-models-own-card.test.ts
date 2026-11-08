@@ -209,6 +209,10 @@ describe('T66: the disarm walk reaches the card the model opened for the same jo
       .toContain(CLAIM_TURN + 1);
     expect(workRow(card).state, 'the card is handed in, not left blocked and not set done').toBe('handed_in');
     expect(handInsOf(card)).toEqual([{ actor: 'engine', note: expect.stringMatching(/the engine relayed the compiled result/) }]);
+    const record = JSON.parse((mockDb.current!.prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'handed_in'").get(card) as { payload: string }).payload) as
+      { outcome: string; items: Array<{ kind: string; ref: string }> };
+    expect(record.outcome, 'finished, on the relay\'s own delivery').toBe('finished');
+    expect(record.items).toEqual([expect.objectContaining({ kind: 'delivery', ref: workRow(askId).result_delivery_id })]);
     expect(mockDb.current!.prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = 'decided'").get(card)).toEqual({ c: 0 });
   });
 
