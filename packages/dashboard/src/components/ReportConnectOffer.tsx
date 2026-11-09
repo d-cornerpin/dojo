@@ -4,14 +4,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { connectOfferSentence } from '../lib/report-edits';
 import { connectLabel, problemText, CONNECT_FAILED_FALLBACK, CONNECT_REFUSED_FALLBACK } from '../lib/github-card';
 
-// Connect GitHub, offered on the report card itself (v3.4 E2, owner decision 16).
-//
-// A box with no GitHub connection can only hand a report over by paste. Connecting turns the same
-// Post button into a filed issue with nothing to copy. This is the EXISTING device flow
-// (`api.connectGithub`, the same one Settings uses): the owner types a short code at GitHub and
-// the server polls until GitHub answers. Nothing here posts, decides or stores anything; when the
-// connection lands the card refetches and its consent sentence changes by itself.
-//
+// Connect GitHub, offered on the report card: connecting turns the paste-only handover into a
+// filed issue. Existing device flow (api.connectGithub); nothing here posts, decides or stores.
 // The sentence about what the sign-in grants lives in `lib/report-edits.ts` so the server's
 // suite can read it. It must not be copied into this file.
 export const ReportConnectOffer = ({ github, onChanged }: {

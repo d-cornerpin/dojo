@@ -3,18 +3,11 @@ import { duplicateQuestion, type DuplicateMatch } from '../lib/report-edits';
 import { CopyReportButton } from './CopyReportButton';
 import { CopyAndOpenButton } from './CopyAndOpenButton';
 
-// ── WHAT HAPPENED TO THE REPORT — THE TWO PANELS THAT COME AFTER POST (DOJO-REPORT T7) ──
-//
-// Split out of `ReportPreviewCard.tsx` when the duplicate question arrived: the card was at 235
-// lines against the growth detector's 240-line crossing for an unpinned file, and the plan's own
-// instruction for that case is SPLIT, never pin. The seam is a real one rather than a line
-// budget dressed up — everything here is what the owner sees AFTER the decision, and it decides
-// nothing. No `fetch`, no state, no rules; the sentences it shows come from `lib/report-edits.ts`
-// where the server's suite can drive them, exactly as the card's own sentence does.
-//
-// ⚠ THE CONSENT SENTENCES MUST NOT BE COPIED INTO THIS FILE. A second copy is a claim about
-// where an owner's words go that nothing checks, and the census in
-// `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts` reads this file too.
+// What happened to the report: the two panels the owner sees AFTER the decision. They decide
+// nothing: no fetch, no state, no rules; the sentences they show come from `lib/report-edits.ts`
+// where the server's suite can drive them.
+// THE CONSENT SENTENCES MUST NOT BE COPIED INTO THIS FILE. A second copy is a claim about where
+// an owner's words go that nothing checks, and the census test reads this file too.
 
 export const DeliveredPanel = ({ delivery, onDone }: {
   delivery: api.ReportDelivery;
@@ -27,27 +20,8 @@ export const DeliveredPanel = ({ delivery, onDone }: {
         <p className="text-xs text-ui/80">
           Posted. <a className="text-cp-teal underline" href={delivery.issueUrl} target="_blank" rel="noreferrer">Open the issue</a>
         </p>
-        {/* THE REPORT LANDED AND IS NOT QUITE WHAT WAS APPROVED (T8). GitHub needs write access
-            to set labels on a new issue and needs none to open one, so an outside reporter's
-            labels do not survive — usually because GitHub answers 201 and SAVES THE ISSUE
-            WITHOUT THEM, silently, which is what it did live on 2026-09-26 and what its own
-            reference says it does (T8 LIVE D-B); occasionally because it refuses the labelled
-            request outright. The server measures which labels are actually on the issue after
-            filing it, and this sentence is the SERVER's, verbatim. WHAT IT CARRIES DIFFERS BY
-            BRANCH — there are THREE, not two, and the previous two-way split (re-review N3) was
-            wrong about the commonest one:
-              * REFUSAL (403/422, then accepted bare): GitHub's own words, because GitHub gave
-                them, plus the controlled result — same issue refused with labels and accepted
-                without them.
-              * SILENT FULL DROP (201, the read-back shows NO labels — the live 2026-09-26 case):
-                the measurement AND GitHub's documented rule, because a total drop is exactly
-                what that rule describes ("labels are silently dropped otherwise").
-              * SILENT PARTIAL DROP (201, some labels kept): the MEASUREMENT ALONE. A label that
-                SURVIVED refutes the documented rule, so citing it here would send the owner to
-                fix a permission the measurement proves they already have (that is fix F3), and
-                the sentence says in so many words that it will not guess.
-            Either way only someone with write access can label it now.
-            Rendered as a notice, not an error: nothing failed. */}
+        {/* GitHub drops an outside reporter's labels when filing; the server measures which
+            survived and writes this sentence, shown here verbatim. A notice, not an error. */}
         {delivery.labelsDropped && (
           <p className="text-xs text-ui/80 bg-cp-amber/10 border border-cp-amber/25 rounded-lg p-2 whitespace-pre-wrap">
             {delivery.labelsDropped}
@@ -76,11 +50,8 @@ export const DeliveredPanel = ({ delivery, onDone }: {
   </div>
 );
 
-/**
- * The duplicate question. NOTHING HAS BEEN POSTED when this is on screen and the owner's
- * approval has been handed back, so every button here is a fresh decision — including Cancel,
- * which leaves the report exactly where it was, still waiting.
- */
+// The duplicate question. Nothing has been posted and the approval was handed back, so every
+// button here is a fresh decision, including Cancel, which leaves the report waiting.
 export const DuplicatePanel = ({ match, busy, onAdd, onSeparate, onDismiss }: {
   match: DuplicateMatch; busy: boolean;
   onAdd: () => void; onSeparate: () => void; onDismiss: () => void;

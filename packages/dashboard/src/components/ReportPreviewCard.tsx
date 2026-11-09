@@ -6,31 +6,17 @@ import { briefEditsFor, briefIsPostable, postTargetSentence, type BriefFields, t
 import { DeliveredPanel, DuplicatePanel } from './ReportDeliveryPanel';
 import { ReportConnectOffer } from './ReportConnectOffer';
 
-// ── THE PREVIEW CARD — THE ONLY DOOR TO POSTING (DOJO-REPORT T6) ──
-//
-// Owner ruling D4: *"the user sees the exact text before anything posts. No preview, no post."*
-// Everything below is that sentence; nothing below is decoration.
-//
-// ── THE BRIEF IS RENDERED VERBATIM, AND THAT IS A DESIGN DECISION ──
-// Each field goes into a `<p className="whitespace-pre-wrap">`, so what the owner reads is the
-// string byte for byte. This card deliberately does NOT use `<Markdown>`: a renderer would show
-// *emphasis* where the text says `*emphasis*`, and the owner would approve one thing while
-// another was published. A clause reads this file and refuses the import.
-//
-// ── THE DECISIONS ARE NOT IN THIS FILE ──
-// This package gained a component runner on 2026-09-26; these decisions stay where they are.
-// The sentence that says where the report goes, the
-// only-what-moved edit rule, and the "is this postable" check all live in `lib/report-edits.ts`
-// and are driven from the server's suite against the real doors. What is left here is JSX, two
-// subscriptions and the busy flags. ⚠ THE CONSENT SENTENCE MUST NOT BE COPIED INTO THIS FILE:
-// a second copy is a claim about where an owner's words go that nothing checks, and a census
-// refuses the two phrases by name.
-//
-// ── ONE REPORT AT A TIME, AND THE DELIVERY OUTLIVES THE ROW ──
-// A queue of consent decisions is how a gate becomes a habit, so the rest wait their turn. And
-// on an unconnected box the answer carries a file path and a prefilled link while the row leaves
-// the list the instant it is delivered — so the answer is held until the owner dismisses it,
-// otherwise D2's paste-and-post half is written to disk and never shown.
+// THE ONLY DOOR TO POSTING: the owner sees the exact text before anything posts. No preview, no post.
+// Each field renders in `whitespace-pre-wrap`, never `<Markdown>`: a renderer would show *emphasis*
+// where the text says `*emphasis*`, and the owner would approve one thing while another published.
+// A clause reads this file and refuses the `<Markdown>` import.
+// The decisions are not in this file: the destination sentence, the only-what-moved edit rule and
+// the "is this postable" check live in `lib/report-edits.ts`, driven from the server's suite.
+// THE CONSENT SENTENCE MUST NOT BE COPIED INTO THIS FILE: a second copy is a claim about where an
+// owner's words go that nothing checks, and a census refuses the two phrases by name.
+// One report at a time: a queue of consent decisions is how a gate becomes a habit, so the rest
+// wait their turn. On an unconnected box the delivery answer carries a file path and a prefilled
+// link, and the row leaves the list the instant it is delivered: hold the answer until dismissed.
 
 const SECTIONS: ReadonlyArray<readonly [keyof BriefFields, string]> = [
   ['whatHappened', 'What happened'],
@@ -47,7 +33,7 @@ const briefOf = (r: api.ReportRow): BriefFields => ({
 
 export const ReportPreviewCard = () => {
   const [reports, setReports] = useState<api.ReportRow[]>([]);
-  // The DESTINATION, from the same answer the rows came in — so the consent sentence can never
+  // The DESTINATION, from the same answer the rows came in, so the consent sentence can never
   // name a repository a different fetch resolved. `''` until the list door has answered.
   const [destination, setDestination] = useState('');
   const [github, setGithub] = useState<api.GithubStatus | null>(null);
@@ -87,11 +73,9 @@ export const ReportPreviewCard = () => {
 
   const report = reports[0] ?? null;
 
-  // THE ONE DOOR, and the only place this card sends anything. `choice` is the owner's answer to
-  // a duplicate the door already showed them — absent on the ordinary press, which is what makes
-  // the question a question. A failure leaves the report ON THE CARD: the route hands the
-  // approval back when nothing was delivered, so pressing Post again is a fresh decision, not a
-  // retry of one already spent.
+  // THE ONE DOOR, the only place this card sends anything. `choice` answers a duplicate the door
+  // already showed and is absent on the ordinary press. A failure leaves the report ON THE CARD:
+  // the route hands the approval back when nothing was delivered, so Post again is a fresh decision.
   const handlePost = async (choice?: api.PostChoice): Promise<void> => {
     if (!report) return;
     setBusy(true);
@@ -118,7 +102,7 @@ export const ReportPreviewCard = () => {
     const result = await api.editReportBrief(report.id, edits);
     setBusy(false);
     if (!result.ok) { setProblem(result.error); return; }
-    // Back to the preview. SAVING IS NEVER APPROVING — the owner re-reads and presses Post.
+    // Back to the preview. SAVING IS NEVER APPROVING: the owner re-reads, then presses Post.
     setForm(null);
     void load();
   };
@@ -137,9 +121,8 @@ export const ReportPreviewCard = () => {
 
   if (delivery) return <DeliveredPanel delivery={delivery} onDone={() => setDelivery(null)} />;
 
-  // NOTHING WAS POSTED and the approval has been handed back, so all three answers are live
-  // decisions — including "Not now", which simply returns to the preview with the report still
-  // waiting. The card never answers this question on the owner's behalf.
+  // NOTHING WAS POSTED and the approval was handed back, so all three answers are live decisions,
+  // including "Not now". The card never answers this question on the owner's behalf.
   if (duplicate) {
     return (
       <DuplicatePanel

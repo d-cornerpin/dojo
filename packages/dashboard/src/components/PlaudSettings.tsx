@@ -5,34 +5,13 @@ import { useToast } from '../hooks/useToast';
 import { formatDateShort } from '../lib/dates';
 import { PlaudDisconnectedPanel } from './PlaudDisconnectedPanel';
 
-// Plaud is a meeting-recording / AI-summary service. Single account per
-// Dojo install (no slot model). Auth flow is interactive:
-//   1. Click Connect → backend spawns `plaud login` subprocess
-//   2. CLI emits an OAuth URL → backend broadcasts as `plaud:auth_url`
-//   3. User clicks URL, signs in, browser callback completes the dance
-//   4. CLI subprocess exits 0 → backend broadcasts `plaud:connected`
-//      (or `plaud:login_failed` on non-zero exit)
-//
-// Once connected, agents see plaud_* tools the next time their tool
-// surface is assembled. The CLI owns ~/.plaud/tokens.json and refreshes
-// silently after that.
-//
-// ── UX-REPAIR T38 (owner report) ──
-// TWO things this card used to leave the user to find out the hard way.
-//
-// (a) WHERE THE LOGIN HAPPENS. That `plaud login` subprocess runs on the Mac
-// the platform is installed on, and the CLI opens a browser THERE. The server
-// asks it not to (`BROWSER=none`, `NO_OPEN=1`, so it prints the URL instead),
-// but the owner watched a browser window open on the Mac anyway — those hints
-// evidently do not take on this CLI. Either way the sign-in finishes on that
-// machine, which matters enormously when the dashboard is being driven from a
-// phone or another computer. The card now says so before the click, and the
-// printed URL stays as the way to finish from wherever you are.
-//
-// (b) THAT THE LOGIN CAN EXPIRE. `status.connected` was the only state, so an
-// expired login rendered as "Connected as … since 25 May" forever while every
-// agent tool call failed. `reauthRequired` is the third state, served by the
-// route (never re-derived here), and it renders as an instruction.
+// Plaud is a meeting-recording / AI-summary service. Single account per Dojo
+// install (no slot model); connecting runs `plaud login` on the Dojo host.
+// The CLI may open the sign-in browser on that host even when asked not to, so
+// the card says where the sign-in finishes and keeps the printed URL for
+// anyone driving the dashboard from another device.
+// `reauthRequired` is a third state served by the route, never re-derived here:
+// an expired login must never render as Connected.
 
 export const PlaudSettings = () => {
   const [status, setStatus] = useState<api.PlaudStatus | null>(null);
@@ -67,7 +46,6 @@ export const PlaudSettings = () => {
     loadStatus();
   }, []);
 
-  // Listen for Plaud auth events via the WebSocket event-bus.
   useEffect(() => {
     const unsubUrl = subscribe('plaud:auth_url', (msg: unknown) => {
       const m = msg as { url?: string };
@@ -112,8 +90,8 @@ export const PlaudSettings = () => {
       toast.info('A Plaud login is already in progress.');
       loadStatus();
     }
-    // Otherwise wait for the WebSocket events (plaud:auth_url, then
-    // plaud:connected or plaud:login_failed).
+    // Otherwise the WebSocket events (plaud:auth_url, plaud:connected,
+    // plaud:login_failed) finish the job.
   };
 
   const handleCancel = async () => {

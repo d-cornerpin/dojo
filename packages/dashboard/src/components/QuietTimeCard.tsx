@@ -3,10 +3,8 @@ import type { AgentDetail } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 
-// t143 (OR-LONG-JOBS): how long this agent may show no sign of work at all — no tokens in or out,
-// no request open, no tool started or finished — before the owner is told it has gone silent.
-// Empty means the default, 2 hours. A known-slow agent can be given longer; there is no upper
-// limit. Same settings-card primitives as the Memory card beside it.
+// How long this agent may show no sign of work at all before the owner is told it went silent.
+// Empty means the 2-hour default; a known-slow agent can be given longer, with no upper limit.
 export const DEFAULT_QUIET_MINUTES = 120;
 
 export const QuietTimeCard = ({ agent, onUpdated }: { agent: AgentDetail; onUpdated: () => void }) => {
