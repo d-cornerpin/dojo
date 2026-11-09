@@ -13,7 +13,7 @@ import { sendAgentMessage } from '../../agent/agent-bus.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { writeAssignee } from '../row-authority.js';
 import { recordMove } from '../move-record.js';
-import { isTerminal, noteUnsettled, type WorkState } from '../store.js';
+import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
 import { latestHandIn, workerOf, OWNER_ID } from './record.js';
 import { settleProject } from './project-state.js';
 
@@ -148,7 +148,7 @@ export function checkDependencies(completedTaskId: string): void {
       return depTask?.status === 'complete';
     });
 
-    if (allDepsComplete) {
+    if (allDepsComplete && !ownerHoldStands(row.id, false)) {
       // A dependency validating makes the task ELIGIBLE; it does not start it ahead of its own schedule.
       // A task with a start still in the future waits on deck and the scheduler fires it then (it was only
       // skipping it for the unmet dependency). Tasks without a future schedule

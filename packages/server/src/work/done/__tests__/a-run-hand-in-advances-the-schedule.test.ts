@@ -121,6 +121,8 @@ describe('a run hand-in advances the schedule', () => {
     expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(false);
     const hints = doneDb().prepare("SELECT content FROM messages WHERE agent_id = ? AND content LIKE '[Engine hint: a run of%'").all(WORKER) as Array<{ content: string }>;
     expect(hints).toHaveLength(1);
+    const trail = doneDb().prepare("SELECT json_extract(payload, '$.reason') AS reason, json_extract(payload, '$.action_taken') AS action FROM work_events WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'ladder_hint'").all(TASK);
+    expect(trail).toEqual([{ reason: 'Reminded the worker that this run\'s result was not delivered.', action: null }]);
   });
 
   it('a run that only told another agent is recorded undelivered', async () => {

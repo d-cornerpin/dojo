@@ -11,7 +11,7 @@ import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { holdOf } from '../hold.js';
 import { freshBoard, call, PM, WORKER, TASK } from './helpers/decision-world.js';
 
-const REFUSED = 'Refused: The owner paused this task. Only the owner can resume it.';
+const REFUSED = 'Refused: The owner put this task on hold. Only the owner can release it.';
 const put = (body: Record<string, unknown>) => trackerRouter.request(`/tasks/${TASK}`, {
   method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 });

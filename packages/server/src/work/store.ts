@@ -85,7 +85,7 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
 };
 
 /** The sentence every refused lift or overwrite of an owner's hold carries. */
-export const OWNER_HOLD_REFUSAL = 'The owner paused this task. Only the owner can resume it.';
+export const OWNER_HOLD_REFUSAL = 'The owner put this task on hold. Only the owner can release it.';
 /** True when the owner holds the row and someone else is acting: then the hold is neither lifted nor replaced. */
 export function ownerHoldStands(workId: string, ownerActing: boolean): boolean {
   return !ownerActing && !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${heldByOwnerSql('w')}`).get(workId);

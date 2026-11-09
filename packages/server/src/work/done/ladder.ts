@@ -44,6 +44,7 @@ const LIVE = [...WORKING_STATES, 'handed_in'];
 /** The mark one entry of each wake carries (in its evidence field, which the trail does not show). */
 const WAKE = '{"wake":1}';
 const SAID: Record<string, string> = { [LADDER_ENTRY.hint]: 'Reminded the worker.', [LADDER_ENTRY.pm]: 'Told the project manager.', [LADDER_ENTRY.decider]: 'Asked the main agent to decide.' };
+const UNDELIVERED_SAID = 'Reminded the worker that this run\'s result was not delivered.';
 
 /** Every engine hint the ladder sends, in one table. */
 export const LADDER_HINT = {
@@ -147,13 +148,14 @@ function pmPending(pmId: string, now: number): boolean {
 /** One engine hint to `agentId` naming each row, as an events-lane re-drive that owes no reply, recorded on every
  *  row it names so it is never sent twice for the same step. `key` names a one-row hint that is not a stall step. */
 export async function hintOnce(agentId: string, rows: Array<{ workId: string; text: string }>, key?: string): Promise<boolean> {
-  if (key && getDb().prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = '${AUDIT_KIND}' AND json_extract(payload, '$.entry_kind') = ? AND json_extract(payload, '$.action_taken') = ?`).get(rows[0].workId, LADDER_ENTRY.hint, key)) return false;
+  const mark = key ? JSON.stringify({ wake: 1, key }) : WAKE;
+  if (key && getDb().prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = '${AUDIT_KIND}' AND json_extract(payload, '$.entry_kind') = ? AND json_extract(payload, '$.evidence_json') = ?`).get(rows[0].workId, LADDER_ENTRY.hint, mark)) return false;
   const { redriveWithoutReply } = await import('../../agent/agent-notice.js');
   const mine = (workId: string): boolean => agentId === workerOf(workId);
   const content = `[Engine hint: ${rows.map((r) => `${r.text} [${r.workId}]`).join(' ')}]`;
   const sent = await redriveWithoutReply({ toAgentId: agentId, fromAgentId: null, content, taskId: rows.find((r) => mine(r.workId))?.workId ?? null });
   const kind = (workId: string): string => (mine(workId) ? LADDER_ENTRY.hint : LADDER_ENTRY.decider);
-  if (sent) rows.forEach((r, i) => appendAuditEntry(r.workId, 'engine', { entryKind: kind(r.workId), actionTaken: key ?? null, reason: SAID[kind(r.workId)], evidenceJson: i === 0 ? WAKE : null }));
+  if (sent) rows.forEach((r, i) => appendAuditEntry(r.workId, 'engine', { entryKind: kind(r.workId), reason: key ? UNDELIVERED_SAID : SAID[kind(r.workId)], evidenceJson: i === 0 ? mark : null }));
   return sent;
 }
 

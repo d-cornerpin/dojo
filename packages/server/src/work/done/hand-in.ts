@@ -88,7 +88,7 @@ export function handIn(input: HandInInput): HandInResult {
       reason: input.by.kind === 'engine' ? `engine hand-in for ${row.worker}: ${input.by.because.trim()}` : `handed in (${outcomeWords(input.outcome)}): ${note}`,
     });
   });
-  if (moved.kind !== 'applied') return refused(row, [`The work could not move to handed in: ${moved.detail}.`]);
+  if (moved.kind !== 'applied') return refused(row, [moved.reason === 'owner-hold' ? moved.detail : `The work could not move to handed in: ${moved.detail}.`]);
   onHandedIn(row.id, eventId);
   const n = proof.items.length;
   const withTasks = row.kind === 'project' && row.open_tasks > 0 ? ` Its ${row.open_tasks} open task${row.open_tasks === 1 ? ' closes' : 's close'} with it.` : '';

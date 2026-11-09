@@ -147,12 +147,11 @@ export const projectScope = (a = 'w'): string =>
  *
  * Reconciliation + containment measurement: `tracker/__tests__/census-wire-through-seam.test.ts`.
  *
- * A row handed in as a whole waits for its decision and does not fire; a run's hand-in never holds
- * the next run. `work_update(filter:"overdue")` reads this same expression.
+ * A row the owner holds, or handed in as a whole, does not fire; a run's hand-in never holds the next run. `work_update(filter:"overdue")` reads this same expression.
  */
 export const dueScope = (a = 'w'): string =>
   `${a}.next_run_at IS NOT NULL AND ${a}.next_run_at <= ?`
-  + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0`
+  + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0 AND NOT ${heldByOwnerSql(a)}`
   + ` AND (${handedInExpr(a)} = 0 OR (SELECT json_extract(h.payload, '$.scope') FROM work_events h`
   + ` WHERE h.work_id = ${a}.id AND h.kind = 'handed_in' ORDER BY h.id DESC LIMIT 1) IS 'run')`;
 
