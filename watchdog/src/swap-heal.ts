@@ -1,17 +1,8 @@
-// ════════════════════════════════════════
-// Watchdog: repairing a cut-off platform swap (v3.4, t197)
-//
-// Every install switches `~/.dojo/platform` with two renames (live -> backup, staged ->
-// live). A crash between them leaves NO platform folder: launchd cannot start the platform,
-// so nothing inside the platform can repair it. This daemon can. When the folder is missing
-// it runs `rollback.sh --heal`, which finishes the update when the staged tree the record
-// names is whole, and otherwise puts the newest whole backup back. Either way the box ends
-// wholly on one version, and the owner is told which, in plain words.
-//
-// Pure decisions here (unit-driven against a scratch folder); index.ts does the sending and
-// spawning. Independent of the platform like the rest of this package: the lock rule mirrors
-// `packages/server/src/update/install-tree.ts` (`acquireSwapLock`) and `rollback.sh`.
-// ════════════════════════════════════════
+// Watchdog: repairing a cut-off platform swap.
+// Every install switches `~/.dojo/platform` with two renames (live -> backup, staged -> live);
+// a crash between them leaves NO platform folder: launchd cannot start the platform, so nothing
+// inside the platform can repair it. This daemon can: with the folder missing it runs
+// `rollback.sh --heal`, finishing the update if the staged tree is whole, else restoring the newest backup.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,7 +29,7 @@ function swapInProgress(dojoDir: string): boolean {
   let holder: number | null = null;
   try { holder = Number(fs.readFileSync(path.join(lock, 'pid'), 'utf-8').trim()) || null; } catch { /* no pid */ }
   if (holder !== null) return pidAlive(holder);
-  // No pid: being taken this instant, or a pre-v3.4 leftover once it is old.
+  // No pid: either being taken this instant, or an old leftover once it is stale.
   try { return Date.now() - fs.statSync(lock).mtimeMs < 60_000; } catch { return false; }
 }
 

@@ -1,46 +1,20 @@
-// ════════════════════════════════════════
-// Watchdog alert dedup / recovery ledger (FA-W5 / FA-W6).
-//
-// Extracted from index.ts by SWEEP CORE-2 item 6 — MOVED, not rewritten: the
-// cooldown, the send-once rule and the always-send-recovery rule are the same
-// ones FA-W6 landed, and `index.ts` is the only caller.
-//
-// WHY IT MOVED. `index.ts` starts a daemon at import: it runs a check cycle,
-// installs a 2-minute interval and opens the platform DB. So the ledger could
-// not be driven by a test without starting a watchdog, which meant the piece
-// SWEEP-F T5 names — "alert dedup/recovery ledger persisted (restart loses no
-// recovery message)" — could only ever be READ rather than proven. This file is
-// side-effect free at import, exactly like auto-rollback.ts and for the same
-// reason.
-//
-// WHAT IT IS. The watchdog used to keep this ledger in process memory only, so a
-// launchd KeepAlive restart mid-incident wiped it: still-active issues re-alerted
-// and recoveries for issues that resolved while it was down were lost entirely
-// (FA-W6). It lives in a small JSON file the watchdog alone owns, beside its
-// heartbeat, so the watchdog keeps strict read-only discipline over the platform
-// DB and its dedup/recovery contract survives a restart.
-// ════════════════════════════════════════
+// Watchdog alert dedup / recovery ledger: what the watchdog texts the owner about, and nothing else.
+// First occurrence sends, a still-active issue waits 2 hours,
+// a resolution sends one recovery; persisted so the rules hold across a restart.
 
 import fs from 'node:fs';
 import path from 'node:path';
 
-// First occurrence: send immediately. Same issue still active: suppress for 2
-// hours. Issue resolved: send a recovery message, once.
 export const ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 
 export type AlertLedger = Record<string, { lastSentAt: number; active: boolean }>;
 
-/** What the watchdog texts the owner about, and nothing else: the platform down or back, an update that failed and
- *  was rolled back, the Mac short of memory or disk, a damaged database. */
 export type AlertKey = 'platform_down' | 'platform_missing' | 'platform_restart_failed' | 'auto_rollback' | 'auto_rollback_failed'
   | 'memory_low' | 'disk_low' | 'db_integrity';
 
 export interface WatchdogState {
-  /** Liveness the platform reads (FA-W5). */
   lastHeartbeat: string | null;
   lastAlert: { message: string; at: string } | null;
-  /** Alert dedup/recovery ledger (FA-W6): persisted so send-once, the 2h
-   *  cooldown and always-send-recovery hold ACROSS a KeepAlive restart. */
   alertState: AlertLedger;
 }
 
@@ -48,17 +22,8 @@ export function emptyState(): WatchdogState {
   return { lastHeartbeat: null, lastAlert: null, alertState: {} };
 }
 
-/**
- * Read the persisted state. A corrupt or unreadable store starts CLEAN rather
- * than crashing the daemon: the worst case is one restart's dedup/recovery
- * slipping (the pre-FA-W6 behaviour), and a watchdog that will not start because
- * its own bookkeeping file is malformed is worse than one that re-alerts once.
- *
- * Every entry is validated field by field — a hand-edited or half-written file
- * must not be able to put a string where a timestamp belongs and have the
- * cooldown arithmetic silently produce NaN (which compares false against every
- * bound, i.e. suppresses every alert for ever).
- */
+/** A corrupt or unreadable store starts CLEAN: an unstartable watchdog is worse than one
+ *  that re-alerts once. Fields are validated so a bad file cannot put NaN in the cooldown math. */
 export function readState(statePath: string): WatchdogState {
   try {
     if (!fs.existsSync(statePath)) return emptyState();
@@ -86,18 +51,8 @@ export function readState(statePath: string): WatchdogState {
 
 let tmpCounter = 0;
 
-/**
- * Crash-safe atomic write: temp file then rename (rename is atomic on POSIX, so
- * a crash mid-write can never leave a half-written store — a reader sees either
- * the old file or the new one). Chosen over a tiny sqlite: one small document,
- * no schema, no second DB to keep read-only-safe.
- *
- * The temp name carries the pid: the watchdog is restarted by launchd and a
- * KeepAlive revival can briefly overlap its predecessor, so a fixed `.tmp` is
- * two processes writing one buffer.
- *
- * Returns whether it persisted. Best-effort: never throws into the check cycle.
- */
+/** Crash-safe write (temp then rename); the temp name carries the pid because a KeepAlive revival
+ *  can briefly overlap its predecessor. Best-effort: never throws into the check cycle. */
 export function persistState(state: WatchdogState, statePath: string): boolean {
   try {
     const dir = path.dirname(statePath);
@@ -111,15 +66,10 @@ export function persistState(state: WatchdogState, statePath: string): boolean {
   }
 }
 
-/**
- * Should this alert go out now? Mutates `state` when the answer is yes, so the
- * caller persists once afterwards. `nowMs` is a parameter so the cooldown can be
- * driven without waiting two hours.
- */
+/** Should this alert go out now? Mutates `state` when yes so the caller persists once. */
 export function shouldSendAlert(state: WatchdogState, alertKey: string, nowMs: number = Date.now()): boolean {
   const entry = state.alertState[alertKey];
   if (!entry || !entry.active) {
-    // First time, or the issue had resolved and has come back.
     state.alertState[alertKey] = { lastSentAt: nowMs, active: true };
     return true;
   }
@@ -130,29 +80,15 @@ export function shouldSendAlert(state: WatchdogState, alertKey: string, nowMs: n
   return false;
 }
 
-/**
- * `shouldSendAlert`, but only when there is someone to tell. With no recipient it
- * answers no and leaves `state` untouched, so an alert that could not be sent is
- * not recorded as "already told" (which would silence it for the whole cooldown
- * and leave a later recovery text with no DOWN before it).
- */
+/** `shouldSendAlert`, but only with a recipient: an alert that could not be sent is not recorded
+ *  as "already told", which would silence it through the cooldown and orphan its later recovery. */
 export function claimAlert(state: WatchdogState, alertKey: AlertKey, recipient: string, nowMs: number = Date.now()): boolean {
   if (!recipient) return false;
   return shouldSendAlert(state, alertKey, nowMs);
 }
 
-/**
- * Retire an active alert. Returns true exactly once per incident — when the
- * alert WAS active — which is the caller's signal to send the recovery message.
- *
- * CALL ORDER MATTERS AND THE CALLERS ARE HELD TO IT (SWEEP CORE-2 item 6): this
- * must not run until the recovery message has somewhere to go. Retiring the
- * entry first and then discovering there is no recipient drops the owner's "it
- * is back" message permanently — the ledger now says nothing was ever active, so
- * nothing will ever retry it, and he is left holding a "Dojo platform is DOWN"
- * text with no sequel. `index.ts` resolves the recipient first; the
- * watchdog-self-integrity suite refuses the other order.
- */
+/** Retire an active alert; true exactly once per incident, the caller's signal to send the recovery.
+ *  CALL ORDER: resolve the recipient first; retiring without one loses the recovery. */
 export function markAlertResolved(state: WatchdogState, alertKey: string): boolean {
   const entry = state.alertState[alertKey];
   if (entry?.active) {
@@ -162,13 +98,8 @@ export function markAlertResolved(state: WatchdogState, alertKey: string): boole
   return false;
 }
 
-/**
- * Plain-words status for a database so damaged that `PRAGMA integrity_check`
- * THROWS instead of answering (better-sqlite3 raises SQLITE_CORRUPT / SQLITE_NOTADB
- * rather than returning rows). Null for anything else: a busy or locked database
- * (SQLITE_BUSY, SQLITE_LOCKED, the open timeout) or an unopenable path is
- * transient and must stay quiet.
- */
+/** Plain words for a database so damaged that `PRAGMA integrity_check` THROWS instead of returning rows
+ *  (SQLITE_CORRUPT, SQLITE_NOTADB). Null otherwise: busy, locked, unopenable stay quiet. */
 export function integrityFailureFromError(err: unknown): string | null {
   const code = (err as { code?: unknown } | null | undefined)?.code;
   if (typeof code !== 'string') return null;

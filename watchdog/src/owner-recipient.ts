@@ -1,10 +1,4 @@
-// Who the watchdog may text. Pure, so it can be driven (index.ts starts a daemon at import).
-//
-// Owner ruling: the owner star never moves on its own, and an owner may remove it on purpose. So the
-// watchdog texts (1) the legacy default-sender address if it is an approved sender (the owner's own
-// designation, which the dashboard clears when the owner entry is removed), else (2) the STARRED entry.
-// It never falls back to the first entry: with no owner it texts nobody. (A bare-address list's first
-// entry is its documented old owner form; the caller marks it starred before it gets here.)
+// approved legacy default-sender, else the starred owner; never the first entry: removal is deliberate.
 
 export type ApprovedSender = { address: string; is_primary?: boolean };
 
