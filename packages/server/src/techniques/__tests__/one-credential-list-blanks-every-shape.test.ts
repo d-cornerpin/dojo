@@ -39,3 +39,11 @@ describe('one credential list', () => {
     });
   }
 });
+
+describe('the exporter places each placeholder once', () => {
+  it('a URL with a user, a password and a host becomes one placeholder, and the manifest names only that one', () => {
+    const { scrubbed, placeholders } = scrubFiles([{ path: 'a.md', content: 'db postgres://admin:s3cretPw9@db.example.com/x' }]);
+    expect(scrubbed.get('a.md')).toBe('db {{NEEDS_FROM_USER:SERVICE_URL_WITH_CREDENTIALS}}/x');
+    expect(placeholders.map((p) => p.label)).toEqual(['SERVICE_URL_WITH_CREDENTIALS']);
+  });
+});

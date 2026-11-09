@@ -68,6 +68,7 @@ export const PATTERNS: Pattern[] = [
   { name: 'bearer-run', regex: /\bbearer\s+([^\s"'`,;<>)]{12,})/gi, keep: notACredentialLiteral, label: () => 'BEARER_TOKEN', hint: 'Bearer token used in an Authorization header.' },
   { name: 'basic-auth-header', regex: /\bauthorization["']?\s*[:=]\s*["']?basic\s+([A-Za-z0-9+/]{4,}={0,2})/gi },
   { name: 'basic-auth', regex: /\bBasic\s+((?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2})/g },
+  { name: 'url-creds', regex: /\b(?:https?|postgres(?:ql)?|mysql|mongodb|redis|amqp|ftp|ssh):\/\/[^\s:/@]+:[^\s/@]+@[^\s/]+/g, label: () => 'SERVICE_URL_WITH_CREDENTIALS', hint: 'A connection URL containing inline credentials. Provide the URL with your own user/password.' },
   { name: 'url-password-any-scheme', regex: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:([^\s/@]+)@/gi },
   { name: 'tunnel-token', regex: /\beyJ[A-Za-z0-9+/_-]{60,}={0,2}(?![A-Za-z0-9.])/g },
   { name: 'cookie-header', regex: /\b(?:set-)?cookie\s*:[ \t]*([^\r\n]+)/gi },
@@ -142,12 +143,6 @@ export const PATTERNS: Pattern[] = [
     hint: 'JSON Web Token (JWT). Typically a session or bearer token — get a fresh one for your install.',
   },
   {
-    name: 'url-creds',
-    regex: /\b(?:https?|postgres(?:ql)?|mysql|mongodb|redis|amqp|ftp|ssh):\/\/[^\s:/@]+:[^\s/@]+@[^\s/]+/g,
-    label: () => 'SERVICE_URL_WITH_CREDENTIALS',
-    hint: 'A connection URL containing inline credentials. Provide the URL with your own user/password.',
-  },
-  {
     name: 'bearer-header',
     regex: /\b[Bb]earer\s+([a-zA-Z0-9._-]{20,})\b/g,
     label: () => 'BEARER_TOKEN',
@@ -204,7 +199,7 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
     for (const pattern of PATTERNS) {
       content = content.replace(pattern.regex, (match, ...rest) => {
         const secret = secretOf(pattern, match, rest);
-        if (secret === null) return match;
+        if (secret === null || (secret || match).includes('{{NEEDS_FROM_USER:')) return match;   // a placeholder is never wrapped again
         // Build a fake exec result so the label() callback can use capture groups.
         const execLike = Object.assign([match, ...rest.slice(0, -2)] as unknown as RegExpExecArray, {
           index: 0,

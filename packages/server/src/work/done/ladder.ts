@@ -65,12 +65,13 @@ function ladderStep(workId: string, now: number): LadderStep {
   const row = getDb().prepare(`SELECT w.state, w.updated_at, ${stallSinceSql('w')} AS since FROM work w WHERE w.id = ?`).get(workId) as { state: string; updated_at: number; since: number } | undefined;
   if (!row || !['claimed', 'sent_back', 'handed_in'].includes(row.state)) return { reached: 0, due: null };
   const evs = eventsOf(workId);
-  const asked = (since: number): boolean => !!newest(evs, isKind(OWNER_ASK), Math.min(since, now - DAY_MS));   // one owner card a day
+  const asked = (since: number): boolean => !!newest(evs, isKind(OWNER_ASK), since);
+  const owner = (due: boolean): 'owner' | null => (due && !newest(evs, isKind(OWNER_ASK), now - DAY_MS) ? 'owner' : null);   // one owner card a day
   const decider = whoDecides(workId);
   if (row.state === 'handed_in') {
     const handAt = newest(evs, isKind('handed_in'))?.at ?? row.updated_at;
     const old = now - handAt >= OWNER_FLOOR_MS;
-    if (decider?.kind === 'owner') return asked(handAt) ? { reached: 4, due: null } : { reached: 3, due: old ? 'owner' : null };
+    if (decider?.kind === 'owner') return asked(handAt) ? { reached: 4, due: null } : { reached: 3, due: owner(old) };
     if (decider?.agentId === getPMAgentId()) {
       const last = Math.max(handAt, newest(evs, isEntry(REVIEW_MISS_ENTRY), handAt)?.at ?? 0);
       return { reached: 2, due: now - last >= patienceBoundMs(decider.agentId) ? 'pm' : null };
@@ -78,7 +79,7 @@ function ladderStep(workId: string, now: number): LadderStep {
     const told = newest(evs, isEntry(LADDER_ENTRY.decider), handAt);
     if (!told) return { reached: 2, due: 'decider' };
     if (asked(handAt)) return { reached: 4, due: null };
-    return { reached: 3, due: old && now - told.at >= patienceBoundMs(getPrimaryAgentId()) ? 'owner' : null };
+    return { reached: 3, due: owner(old && now - told.at >= patienceBoundMs(getPrimaryAgentId())) };
   }
   const backs = sendBacks(workId);
   if (backs.length >= SEND_BACKS_BEFORE_ESCALATION) {
@@ -86,7 +87,7 @@ function ladderStep(workId: string, now: number): LadderStep {
     const handAt = newest(evs, isKind('handed_in'))?.at ?? third;
     if (!newest(evs, isEntry(LADDER_ENTRY.decider), third) && !asked(third)) {
       if (decider?.kind !== 'owner') return { reached: 2, due: 'decider' };
-      return { reached: 3, due: now - handAt >= OWNER_FLOOR_MS ? 'owner' : null };
+      return { reached: 3, due: owner(now - handAt >= OWNER_FLOOR_MS) };
     }
   }
   const lastTurnIn = newest(evs, (e) => e.kind === 'handed_in' || e.kind === 'decided')?.at ?? 0;
@@ -97,7 +98,7 @@ function ladderStep(workId: string, now: number): LadderStep {
   const hint = newest(evs, isEntry(LADDER_ENTRY.hint), since);
   const pm = newest(evs, isEntry(LADDER_ENTRY.pm), since);
   if (asked(since)) return { reached: 4, due: null };
-  if (pm) return { reached: 2, due: now - pm.at >= bound && now - since >= OWNER_FLOOR_MS ? 'owner' : null };
+  if (pm) return { reached: 2, due: owner(now - pm.at >= bound && now - since >= OWNER_FLOOR_MS) };
   if (hint) return { reached: 1, due: now - hint.at >= bound ? 'pm' : null };
   return { reached: 0, due: now - since >= bound ? 'hint' : null };
 }

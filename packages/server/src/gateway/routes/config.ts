@@ -18,7 +18,7 @@ import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
 import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance } from '../../costs/provider-balance-check.js';
-import { dismissOwnerNotice, ownerNoticeKeyOf, ownerToldOf } from '../../healer/owner-notices.js';
+import { dismissOwnerNotice, ownerToldOf } from '../../healer/owner-notices.js';
 import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
@@ -2891,13 +2891,12 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 // GET /api/config/owner-notices: the owner cards still standing
 configRouter.get('/owner-notices', (c) => c.json({ ok: true, data: servedOwnerNotices() }));
 
-// POST /api/config/owner-notices/dismiss: { cardKey } (or { words }), the card's X
+// POST /api/config/owner-notices/dismiss: { cardKey }, the card's X
 configRouter.post('/owner-notices/dismiss', async (c) => {
-  const body = await c.req.json().catch(() => null) as { words?: unknown; cardKey?: unknown } | null;
-  if (typeof body?.cardKey !== 'string' && typeof body?.words !== 'string') return c.json({ ok: false, error: 'cardKey or words is required' }, 400);
-  const key = typeof body.cardKey === 'string' ? body.cardKey : ownerNoticeKeyOf(body.words as string);
-  const hit = key !== null && ownerToldOf(key);
-  if (hit) dismissOwnerNotice(key);
+  const body = await c.req.json().catch(() => null) as { cardKey?: unknown } | null;
+  if (typeof body?.cardKey !== 'string') return c.json({ ok: false, error: 'cardKey is required' }, 400);
+  const hit = ownerToldOf(body.cardKey);
+  if (hit) dismissOwnerNotice(body.cardKey);
   return c.json({ ok: true, data: { dismissed: hit ? 1 : 0 } });
 });
 

@@ -48,6 +48,21 @@ describe('blocked work reaches the owner', () => {
     expect(stallCards()).toHaveLength(1);
   });
 
+  it('a task that stalls again within a day of the card is hinted and told to the PM again, never carded twice that day', async () => {
+    for (let i = 0; i < 3; i++) { backdate(6 * MIN); await runLadder(); }
+    expect(stallCards()).toHaveLength(1);
+    doneDb().prepare("INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES (?, 'activity', ?, '{}', ?)").run(TASK, WORKER, Date.now() + 1000);   // it moves after the card
+    backdate(6 * MIN);
+    await runLadder();
+    expect(hintsTo(WORKER), 'the new stall is hinted on schedule').toHaveLength(2);
+    backdate(6 * MIN);
+    await runLadder();
+    expect(entries(TASK, LADDER_ENTRY.pm), 'and the PM is told again').toBe(2);
+    backdate(6 * MIN);
+    await runLadder();
+    expect(stallCards(), 'the owner is not carded twice for the task within the day').toHaveLength(1);
+  });
+
   it('a task the owner cancelled reaches nobody', async () => {
     expect(decide({ workId: TASK, deciderAgentId: null, verdict: 'cancel', reason: 'The move is off' }).kind).toBe('decided');
     backdate(60 * MIN);

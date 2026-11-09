@@ -196,7 +196,7 @@ describe('BROKEN: once per incident, and the incident ends on healthy work', () 
     await failedCall(OUT_OF_CREDIT);
     const words = JSON.parse((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string }).n).words as string;
     const res = await configRouter.request('/owner-notices/dismiss', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ words }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cardKey: 'broken:helper' }),
     });
     expect(((await res.json()) as { data: { dismissed: number } }).data.dismissed).toBe(1);
     expect(await cardsOnLoad()).not.toContain(words);

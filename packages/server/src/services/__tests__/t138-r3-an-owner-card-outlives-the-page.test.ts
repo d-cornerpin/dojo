@@ -181,7 +181,7 @@ async function boot() {
     /** The card's X. */
     dismiss: async (words: string): Promise<number> => {
       const r = await configRouter.request('/owner-notices/dismiss', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ words }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cardKey: ((await (await configRouter.request('/owner-notices')).json()) as { data: Array<{ words: string; cardKey: string }> }).data.find((c) => c.words === words)?.cardKey ?? 'no-card' }),   // the card's own key
       });
       expect(r.status).toBe(200);
       return ((await r.json()) as { data: { dismissed: number } }).data.dismissed;

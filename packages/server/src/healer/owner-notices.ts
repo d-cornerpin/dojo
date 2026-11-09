@@ -157,11 +157,6 @@ export function dismissOwnerNotice(key: string): void {
   frame(toldWords(key), 'info', key);
 }
 
-/** The key of the told notice carrying exactly these words, or null. */
-export function ownerNoticeKeyOf(words: string): string | null {
-  return (getDb().prepare('SELECT key FROM healer_state WHERE scope = ? AND value = ?').get(TOLD, words) as { key: string } | undefined)?.key ?? null;
-}
-
 /** Is the condition `key` told and standing (not dismissed)? */
 export function ownerToldOf(key: string): boolean {
   try { return !!getDb().prepare('SELECT 1 FROM healer_state t WHERE t.scope = ? AND t.key = ? AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)').get(TOLD, key, DISMISSED); } catch { return false; }
