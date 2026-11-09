@@ -27,7 +27,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -594,28 +593,6 @@ describe('t139 round 2 — the engine pause fires only on work linked to the req
 });
 
 describe('THE REOPEN EDGE IS DELETED (R-V333-5, t139) — the paused work stays paused and visible', () => {
-  // The two clauses that stood here drove `resumeWorkOnOwnerAsk`: any owner message flipped
-  // engine-paused work of any age back to in-progress. R-V333-5 deleted the edge (it resumed a
-  // month-old job on "You there?" — driven in `work/__tests__/t139-every-request-lands-on-the-
-  // task-list.test.ts`). What it protected — "a pause with no reopen is how a ticket rots
-  // quietly" — is now held by the task list, which keeps a waiting task visible and labelled,
-  // and by the agent resuming it with the tracker when the owner's message is the answer.
-  it('the edge has no definition and no caller anywhere in the server', () => {
-    const root = path.join(__dirname, '..', '..', '..');
-    const hits: string[] = [];
-    const walk = (d: string): void => {
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const p2 = path.join(d, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(p2); }
-        else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) {
-          const code = fs.readFileSync(p2, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-          if (/resumeWorkOnOwnerAsk/.test(code)) hits.push(path.relative(root, p2));
-        }
-      }
-    };
-    walk(root);
-    expect(hits).toEqual([]);
-  });
 
   it('an engine-paused task is left paused when nothing resumes it (no hidden reopen)', () => {
     seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });

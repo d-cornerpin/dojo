@@ -31,7 +31,7 @@
 // while an ALS store travels with the async work that created it.
 // ════════════════════════════════════════════════════════════════════════════════
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { channelOfSendTool, type WsEvent } from '@dojo/shared';
+import { channelOfSendTool, PLATFORM_SENDER, type WsEvent } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { turnContext } from '../turn-context.js';
@@ -44,11 +44,9 @@ const logger = createLogger('outbound');
 export type DeliveryChannel = DeliveryInput['channel'];
 export type DeliveryOutcome = DeliveryInput['outcome'];
 
-/** The sender of a platform outbound that no agent authored: a watchdog-class alert, the
- *  first-run welcome, an approval prompt from the healer. `deliveries.agent_id` is NOT NULL
- *  and carries no foreign key, and every agent-scoped reader filters by a real agent id, so
- *  these rows are counted and never masquerade as an agent's own traffic. */
-export const PLATFORM_SENDER = 'platform';
+/** `deliveries.agent_id` is NOT NULL with no foreign key, and every agent-scoped reader filters by a real agent id, so
+ *  rows from `PLATFORM_SENDER` are counted and never masquerade as an agent's own traffic. */
+export { PLATFORM_SENDER };
 
 /** What a caller declares before a send. Everything here is identity; nothing is evidence. */
 export interface OutboundIntent {

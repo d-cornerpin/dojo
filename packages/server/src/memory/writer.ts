@@ -231,8 +231,7 @@ export function spanWaitsForAWriter(agentId: string): boolean {
 
 export const whenAWriterCanRun = (agentId: string): Promise<void> => wakes.get(agentId)?.at ?? Promise.resolve();
 
-/** Test-only reset of the in-process wakes and the marks in the test's own database. */
+/** Test-only reset of the in-process wakes. */
 export function __resetSummaryWriterHealthForTests(): void {
   wakes.clear();
-  try { getDb().prepare(`DELETE FROM healer_state WHERE scope IN (${REASONS.map(() => '?').join(',')})`).run(...REASONS.map((r) => SCOPE + r)); } catch { /* no database in this test */ }
 }

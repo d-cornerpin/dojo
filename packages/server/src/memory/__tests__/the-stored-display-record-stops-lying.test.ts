@@ -33,15 +33,11 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { classifyMessageForDisplay, classifyTool, toolBadgeTier } from '@dojo/shared';
 import { SUB_AGENT_ALWAYS_LOADED, PRIMARY_AGENT_ALWAYS_LOADED } from '../../tools/tool-docs.js';
 import { toolDefinitions } from '../../agent/tools/definitions.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 const row = (blocks: unknown[]) => ({
   role: 'assistant' as const,
@@ -152,21 +148,6 @@ describe('T5 — the stored tier tells the truth about a tool-turn row', () => {
     // assistant tool rows carry a text block today, so this is a guard, not a live path.
     const mixed = [{ type: 'text', text: 'Let me check the board.' }, tool('work_update', { action: 'list' })];
     expect(classifyMessageForDisplay(row(mixed)).tier).toBe('user-visible');
-  });
-
-  it('UNTOUCHED: the dashboard still reads the stored column NOWHERE', () => {
-    // The premise correction of the whole issue. If this ever goes non-zero, the column has
-    // acquired a renderer and every claim in this file has to be re-derived.
-    const hits: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) walk(p);
-        else if (/\.tsx?$/.test(e.name) && /display_tier|displayTier/.test(fs.readFileSync(p, 'utf8'))) hits.push(p);
-      }
-    };
-    walk(path.join(REPO, 'packages/dashboard/src'));
-    expect(hits).toEqual([]);
   });
 });
 

@@ -418,3 +418,22 @@ describe('T83: engineEventKeepFullId is computed for ANY pending engine event, n
     expect(keepFullIdPassedToAssembler()).toBeNull();
   });
 });
+
+describe('owner law 2026-07-09: a person\'s turn stays a person\'s turn before the model runs', () => {
+  const a2aSignals = { isA2ATurn: true, mostRecentIsA2A: true, hasUnansweredUser: false };
+  const flipped = () => broadcastSpy.mock.calls.filter(([f]) => (f as { turnKind?: string }).turnKind === 'a2a');
+
+  it('a human counterparty is never stamped a2a, whatever the A2A signals say', async () => {
+    const ctx = ctxFor(a2aSignals);
+    await runAssemble(freshState(), ctx);
+    expect(ctx.turnCtx.kind).not.toBe('a2a');
+    expect(flipped()).toEqual([]);
+  });
+
+  it('CONTROL: an agent counterparty with the same signals is stamped a2a and says so', async () => {
+    const ctx = ctxFor({ ...a2aSignals, counterparty: { kind: 'agent', id: 'peer', displayName: 'Peer' } as unknown as AssembleContext['counterparty'] });
+    await runAssemble(freshState(), ctx);
+    expect(ctx.turnCtx.kind).toBe('a2a');
+    expect(flipped()).toHaveLength(1);
+  });
+});

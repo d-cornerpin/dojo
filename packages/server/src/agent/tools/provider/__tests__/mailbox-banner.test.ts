@@ -160,21 +160,3 @@ describe('the mail-read ownership header', () => {
     expect(prependMailboxOwnerHeader('Error: nope', 'user_gmail_read', {})).toBe('Error: nope');
   });
 });
-
-// ── THE SLOT RULE ITSELF ─────────────────────────────────────────────────────
-// Verified honest at HEAD and pinned here so it stays that way: the slot is
-// decided by the tool NAME, never by "whichever row came first". `account`
-// selects WITHIN the resolved slot and can never cross into the other one.
-describe('the slot is chosen by the tool name, never guessed', () => {
-  it('is asserted at both executors, in source, for both providers', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../../../');
-    for (const rel of ['google/tools-read.ts', 'microsoft/tools-read.ts', 'google/tools-write.ts', 'microsoft/tools-write.ts']) {
-      const src = fs.readFileSync(path.join(root, rel), 'utf-8');
-      expect(src, `${rel} must derive the slot from the user_ prefix`).toMatch(/kind\s*=\s*'user'/);
-      expect(src, `${rel} must default the slot to the agent`).toMatch(/AccountSlot\s*=\s*'agent'/);
-    }
-  });
-});

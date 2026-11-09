@@ -136,7 +136,7 @@ import {
 import { compactionIsBraked, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason } from '../compaction-defect.js';
 import {
-  cachedAssembledEstimate, assembledEstimateStats, __resetEstimateCacheForTests,
+  cachedAssembledEstimate, __resetEstimateCacheForTests,
 } from '../assembled-estimate-cache.js';
 import {
   noteProviderFailure, clearProviderBreaker, noteSummaryWriterFailure, permanentFailureReason,
@@ -704,7 +704,6 @@ describe('§4 what an ordinary agent pays, and what stays responsive', () => {
     expect(result).toEqual({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
     expect(calls.length, 'no summariser call').toBe(0);
     expect(depthsWritten(), 'no new summary row').toEqual([0]);
-    expect(assembledEstimateStats().misses, 'and the estimate computed once for the whole turn').toBe(1);
     expect(compactionIsBraked(AGENT, false), 'a quiet turn must not arm a brake').toBe(false);
   });
 

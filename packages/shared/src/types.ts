@@ -538,6 +538,9 @@ export interface ProjectDetail extends Project {
 /** A Working task with no movement for this long is left quiet and labelled on the board. */
 export const DORMANT_MS = 14 * 24 * 60 * 60 * 1000;
 
+/** Who speaks a platform outbound or owner card: no agent authored it. */
+export const PLATFORM_SENDER = 'platform';
+
 export interface Task {
   id: string;
   projectId: string | null;

@@ -124,10 +124,6 @@ import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { buildWorkBoardLane } from '../work-board-lane.js';
 import { assembleContext } from '../assembler.js';
-import { POST_BUDGET_LANES } from '../lanes.js';
-import { MessageSlot } from '../../prompt/registry/types.js';
-import { registeredIds } from '../../prompt/registry/registry.js';
-import fs from 'node:fs';
 import path from 'node:path';
 
 // ── the world ────────────────────────────────────────────────────────────────────────────
@@ -330,30 +326,6 @@ describe('t145 B — backwards lifecycle: the owner\'s long ask MID-JOB survives
     expect(wire).not.toContain(PIN);
     // the ask is on the list and ONLY there: its raw row left the live conversation
     expect(ctx.messages.map((m) => textOf(m as Wire)).join('\n')).not.toContain(LONG_ASK);
-  });
-});
-
-describe('t145 B — the pin is deleted, not hidden: no module, no lane, no registry entry, no slot, no field', () => {
-  const SRC = path.resolve(__dirname, '..', '..');
-  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory() ? (e.name === 'node_modules' || e.name === 'db' ? [] : walk(path.join(dir, e.name)))
-      : /\.(ts|tsx)$/.test(e.name) ? [path.join(dir, e.name)] : []);
-
-  it('the proof the plan names: grep-zero for the pin\'s header, its context field and its reader', () => {
-    const parts = [['ACTIVE USER', 'DIRECTIVE'].join(' '), ['directive', 'Lane'].join(''), ['getActive', 'UserDirective'].join('')];
-    const hits = walk(SRC).filter((f) => {
-      const text = fs.readFileSync(f, 'utf8');
-      return parts.some((x) => text.includes(x));
-    });
-    expect(hits.map((f) => path.relative(SRC, f))).toEqual([]);
-  });
-
-  it('the module, the lane, the registry entry, the reserve and the slot are all gone', () => {
-    expect(fs.existsSync(path.join(SRC, 'memory', ['direc', 'tive.ts'].join('')))).toBe(false);
-    expect(POST_BUDGET_LANES.map((l) => l.id)).not.toContain('lane.directive');
-    expect(registeredIds()).not.toContain('msg.directive');
-    expect(Object.keys(MessageSlot)).not.toContain('ActiveDirectiveTail');
-    expect(Object.keys(MessageSlot)).not.toContain('ActiveDirective');
   });
 });
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { WsEvent, ChatErrorEvent } from '@dojo/shared';
-import { useToast, OWNER_ALERT_SPEAKER, type ToastAction } from '../hooks/useToast';
+import { PLATFORM_SENDER, type WsEvent, type ChatErrorEvent } from '@dojo/shared';
+import { useToast, type ToastAction } from '../hooks/useToast';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useDojoOrb } from './orb/OrbProvider';
 
@@ -102,7 +102,7 @@ export function Dojo3Notifications() {
   useEffect(() => {
     const unsub = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
-      if (e.agentId === OWNER_ALERT_SPEAKER) return; // an owner all-clear is no agent recovering
+      if (e.agentId === PLATFORM_SENDER) return; // an owner all-clear is no agent recovering
       if (e.code === 'AGENT_RECOVERED' || e.severity === 'info') {
         for (const t of toastsRef.current) if (t.level === 'error' && !t.sticky) removeToast(t.id);
       }

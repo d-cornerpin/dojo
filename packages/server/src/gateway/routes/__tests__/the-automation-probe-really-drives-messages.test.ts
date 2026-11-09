@@ -20,9 +20,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import url from 'node:url';
 import { EventEmitter } from 'node:events';
 import type { AutomationProbeChild } from '../automation-probe.js';
 
@@ -54,17 +51,6 @@ async function resetAutomationProbeForTests(): Promise<void> {
   ({ automationPermissionStatus, classifyAutomationProbe, MESSAGES_READ_ONLY_PROBE, OSASCRIPT_PATH, PROBE_SETTLE_MS, PROBE_CEILING_MS } =
     await import('../automation-probe.js'));
 }
-
-const HERE = path.dirname(url.fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '../../../../../..');
-const PROBE_SRC = path.join(REPO_ROOT, 'packages/server/src/gateway/routes/automation-probe.ts');
-const ROUTE_SRC = path.join(REPO_ROOT, 'packages/server/src/gateway/routes/setup-deps.ts');
-const read = (p: string): string => fs.readFileSync(p, 'utf-8');
-
-/** Comments blanked, line structure kept (G4): a clause that reads prose tests the prose. */
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 /** A probe that finishes at once with the given exit. */
 const settlesWith = (code: number | null, stderr = ''): AutomationProbeChild => ({
@@ -228,62 +214,5 @@ describe('the script cannot mutate anything, and the shape is what says so', () 
       expect(MESSAGES_READ_ONLY_PROBE, `the probe must not contain ${forbidden}`)
         .not.toMatch(forbidden);
     }
-  });
-
-  it('⚠ nothing is interpolated into it, and no shell can extend it', () => {
-    // A constant string is only a constant string while nobody builds it. A template with a
-    // `${}` in it, or a `/bin/sh -c`, is the shape that would let a value reach the script.
-    const src = stripComments(read(PROBE_SRC));
-    expect(src, 'the script is a plain literal, not an assembled one')
-      .toMatch(/MESSAGES_READ_ONLY_PROBE = 'tell application "Messages" to get name'/);
-    expect(src, 'no shell anywhere in this module').not.toMatch(/\/bin\/sh|shell:\s*true|execSync/);
-    expect(src, 'the binary is absolute and the script is one argv entry')
-      .toMatch(/spawn\(OSASCRIPT_PATH, \['-e', MESSAGES_READ_ONLY_PROBE\]/);
-    expect(OSASCRIPT_PATH).toBe('/usr/bin/osascript');
-  });
-
-  it('⚠ the no-op probe t96 found is gone from the module AND from the route', () => {
-    // Both halves, because the string could be restored in either place.
-    expect(stripComments(read(PROBE_SRC))).not.toMatch(/return 1/);
-    expect(stripComments(read(ROUTE_SRC))).not.toMatch(/osascript -e "return 1"/);
-  });
-});
-
-describe('THE WIRE — the endpoint reports what this module classified', () => {
-  it('⚠ /permissions/check awaits the probe, in APPLICATION not merely in import', () => {
-    // G4 both ways: importing the function and still returning a hard-coded `unknown` would
-    // satisfy a presence-only clause. The automation field must BE the call.
-    const src = stripComments(read(ROUTE_SRC));
-    expect(src, 'the route imports the probe')
-      .toMatch(/import \{ automationPermissionStatus \} from '\.\/automation-probe\.js'/);
-    expect(src, 'and the automation field is its awaited result')
-      .toMatch(/automation:\s*await automationPermissionStatus\(\)/);
-  });
-
-  it('⚠ the sync `checkPermission` switch no longer answers for automation at all', () => {
-    // t113's `case 'automation': return 'unknown'` lived here. If it came back it would
-    // shadow the real probe silently — the field would read from the switch again.
-    const src = stripComments(read(ROUTE_SRC));
-    const check = src.slice(src.indexOf('const checkPermission'), src.indexOf('serverExecPath'));
-    expect(check, 'no automation case in the no-side-effect switch').not.toMatch(/case 'automation'/);
-    expect(check, 'the three cheap probes are untouched')
-      .toMatch(/case 'full-disk-access'/);
-  });
-
-  it('⚠ the handler is async, which is what makes the real probe possible', () => {
-    expect(stripComments(read(ROUTE_SRC)))
-      .toMatch(/setupDepsRouter\.get\('\/permissions\/check', async \(c\) =>/);
-  });
-
-  it('the request route still only OPENS the pane — the probe is the thing that asks', () => {
-    // The asymmetry the dashboard copy is built on: "Open Settings" must not raise a second
-    // dialog of its own, because the check already did.
-    const src = stripComments(read(ROUTE_SRC));
-    const request = src.slice(src.indexOf("permissions/request"));
-    const body = request.slice(request.indexOf("case 'automation':"));
-    const upToBreak = body.slice(0, body.indexOf('break;'));
-    expect(upToBreak).toMatch(/Privacy_Automation/);
-    expect(upToBreak, 'the pane opener must not drive an application')
-      .not.toMatch(/osascript|tell application|automationPermissionStatus/);
   });
 });

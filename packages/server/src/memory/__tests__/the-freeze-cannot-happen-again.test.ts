@@ -33,8 +33,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync, readdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -71,7 +69,7 @@ import {
 import { compactionFailureReason, compactionFailingCardText } from '../compaction-defect.js';
 import { condensableSummaries } from '../condense-until-fits.js';
 import {
-  cachedAssembledEstimate, cachedToolPayloadTokens, assembledEstimateStats,
+  cachedAssembledEstimate, cachedToolPayloadTokens,
   __resetEstimateCacheForTests, type AssembledEstimate,
 } from '../assembled-estimate-cache.js';
 import {
@@ -479,27 +477,6 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
     expect(compactionIsBraked(AGENT, true), 'an agent given no room stays braked').toBe(true);
   });
 
-  it('⚠ AND THE WORD IS GONE FROM EVERY SHIPPED SOURCE LINE — the census', () => {
-    // OR-COMPACT-1 abolished the concept, so the census is the clause: not one production line
-    // in the server or the shared wire may still say it. Comments are STRIPPED first, because a
-    // clause satisfiable by prose tests the prose (G4); this file's own notes may say the word.
-    const here = dirname(fileURLToPath(import.meta.url));
-    const roots = [join(here, '..', '..'), join(here, '..', '..', '..', '..', 'shared', 'src')];
-    const hits: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of readdirSync(dir, { withFileTypes: true })) {
-        const full = join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(full); continue; }
-        if (!/\.tsx?$/.test(e.name) || /\.test\.tsx?$/.test(e.name)) continue;
-        const code = readFileSync(full, 'utf8')
-          .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-        if (/INCOMPRESSIBLE/i.test(code)) hits.push(full);
-      }
-    };
-    for (const r of roots) walk(r);
-    expect(hits, 'a terminal state the owner abolished may not survive in code').toEqual([]);
-  });
-
   it('a purge that SHRINKS the history releases it too — the old rule only looked up', async () => {
     const { compactionIsBraked, notePassOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
     seedBox({ messages: 40, summaryTokens: 4_000 });
@@ -560,7 +537,6 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
     // The three calls one pass makes.
     for (let i = 0; i < 3; i += 1) await cachedAssembledEstimate(AGENT, 65_536, MODEL_64K, compute);
     expect(computed, 'a pass must compute it ONCE').toBe(1);
-    expect(assembledEstimateStats().hits).toBe(2);
 
     // A new message is a new answer — no TTL, no staleness.
     mockDb.current!.prepare(

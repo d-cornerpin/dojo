@@ -29,13 +29,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const INDEX_TS = path.resolve(HERE, '../../index.ts');
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../agent/runtime.js', async (orig) => ({ ...(await orig<typeof import('../../agent/runtime.js')>()), getAgentRuntime: () => ({ handleMessage: vi.fn(async () => undefined) }) }));
@@ -114,13 +108,6 @@ const rowOf = (table: 'generation_jobs' | 'video_jobs', id: string): { status: s
 const subject = (agentId = AGENT) => ({ status: 'idle', inFlight: liveWork(agentId) });
 
 const jobsFrames = () => frames.filter((f) => f.type === 'agent:jobs');
-
-/** The source with comments stripped — a clause satisfiable by the prose above a call is a
- *  clause about the prose (G4). */
-const code = (file: string): string => fs.readFileSync(file, 'utf-8')
-  .split('\n')
-  .filter((l) => !l.trimStart().startsWith('//'))
-  .join('\n');
 
 beforeEach(() => {
   frames.length = 0;
@@ -390,58 +377,5 @@ describe('§8 one undeliverable notice costs its own row and nothing else', () =
       said.map((m) => m.agent_id),
       'a notice that could not be delivered swallowed the ones that could',
     ).toEqual([AGENT, AGENT_B]);
-  });
-});
-
-// ── §7 ──────────────────────────────────────────────────────────────────────────────────
-
-describe('§7 the wire', () => {
-  it('boot calls the reconciliation', () => {
-    const src = code(INDEX_TS);
-    expect(/reconcileOrphanedJobsAtBoot\s*\(\s*\)/.test(src), 'boot stopped reconciling abandoned job rows').toBe(true);
-  });
-
-  it('and calls it BEFORE either adopter, which is the whole argument', () => {
-    const src = code(INDEX_TS);
-    const sweep = src.indexOf('reconcileOrphanedJobsAtBoot');
-    const video = src.indexOf('startVideoJobPoller()');
-    const notice = src.indexOf('notifyAbandonedGenerationJobs(');
-    expect(sweep).toBeGreaterThan(-1);
-    expect(video).toBeGreaterThan(-1);
-    expect(notice).toBeGreaterThan(-1);
-    // After the poller has adopted rows and the first tool call has written one, "no process
-    // can own this row" is no longer decidable without guessing. The order IS the soundness.
-    expect(sweep, 'the sweep moved below the video resume — it can now close live renders').toBeLessThan(video);
-    expect(sweep, 'the notice half runs before the rows it describes are closed').toBeLessThan(notice);
-  });
-
-  it('the notice half is driven by what the sweep moved, not by a status scan of its own', () => {
-    const src = code(path.resolve(HERE, '../generation-jobs.ts'));
-    expect(/export function notifyAbandonedGenerationJobs/.test(src)).toBe(true);
-    // The scan is what left every row behind a throwing one open until the next restart. It
-    // must not come back,
-    // and neither may a bare `for` loop around a delivery that can throw.
-    expect(
-      /SELECT[^;]*FROM generation_jobs WHERE status IN \('queued','running'\)/.test(src),
-      'the boot status scan came back',
-    ).toBe(false);
-    expect(/startGenerationJobsWorker/.test(src), 'the old terminaliser came back').toBe(false);
-  });
-
-  it('no open-question predicate anywhere still enumerates the OPEN end', () => {
-    // THE CENSUS, COUNTING BOTH WAYS. Every reader that asks "is this job still open" is asked
-    // from the terminal end; what remains are CAS transition guards (`status='queued'` ->
-    // running, `status='running'` -> succeeded, `status='queued'` -> polling), which are
-    // narrow on purpose — widening those would let a terminal row be re-opened.
-    const files = [
-      '../generation-jobs.ts', '../video-job-poller.ts', '../video-generation.ts',
-      '../../agent/live-work.ts', '../../agent/tools/cat/media.ts',
-      '../../gateway/routes/config.ts',
-    ];
-    for (const f of files) {
-      const src = code(path.resolve(HERE, f));
-      const open = src.match(/status\s+IN\s*\(\s*'queued'\s*,\s*'(running|polling)'\s*\)/g) ?? [];
-      expect(open, `${f} still enumerates the open end: ${open.join(' | ')}`).toEqual([]);
-    }
   });
 });

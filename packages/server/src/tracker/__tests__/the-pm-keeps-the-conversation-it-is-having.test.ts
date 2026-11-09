@@ -31,9 +31,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -47,15 +44,10 @@ vi.mock('../../db/connection.js', () => ({
 import { assembleContext } from '../../memory/assembler.js';
 import { deleteAgentDebrisBefore } from '../../memory/message-store.js';
 import { runMigrations } from '../../db/migrations.js';
+import { PM_MAX_MESSAGES } from '../pm-agent.js';
 
 const PM = 'pm';                 // config/platform.ts: `pm_agent_id` defaults to 'pm'
 const MODEL = 'pm-wipe-model';
-
-// ⚠ `fileURLToPath`, NEVER `.pathname` — the repo's real path contains spaces, and
-// `.pathname` percent-encodes them, which turned a source-reading gate red in v3.2.1 while
-// being invisible to every worktree that ran under a space-free scratchpad.
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const readSrc = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf-8');
 
 function seedModel(): void {
   const db = mockDb.current!;
@@ -128,10 +120,7 @@ function driveTheSixtySecondSweep(): number {
   const db = mockDb.current!;
   // `pruneOldPMMessages`'s own cutoff shape: the Nth-newest row, walked forward off any `tool`
   // row so the kept window cannot open on an orphaned tool result.
-  // Read from the product source, never copied: a hardcoded copy that drifted above the real
-  // constant would make every clause in this file silently vacuous (the pruner would return
-  // early and the sweep would be a no-op), which is the failure M1 already caught once.
-  const PM_MAX = Number(/const PM_MAX_MESSAGES = (\d+)/.exec(readSrc('tracker/pm-agent.ts'))![1]);
+  const PM_MAX = PM_MAX_MESSAGES;
   const total = (db.prepare('SELECT COUNT(*) AS c FROM messages WHERE agent_id = ?')
     .get(PM) as { c: number }).c;
   if (total <= PM_MAX) return 0;

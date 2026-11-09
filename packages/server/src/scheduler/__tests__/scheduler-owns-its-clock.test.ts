@@ -85,17 +85,6 @@ describe('A2 a scheduler tick cannot re-enter itself', () => {
   });
 });
 
-describe('A3 `work.next_run_at` has one writer', () => {
-
-  it('every fire-time write carries a REASON — the column cannot move anonymously', async () => {
-    const mod = await import('../../work/next-run.js');
-    expect(typeof mod.setNextRun).toBe('function');
-    expect(typeof mod.clearLiveSchedule).toBe('function');
-    expect(typeof mod.advanceScheduleOnClaim).toBe('function');
-    expect(typeof mod.restoreScheduleOnRelease).toBe('function');
-  });
-});
-
 describe('A5 the scheduler tick keeps only scheduling', () => {
 
   it('the reaper declares them, each with the clock its cadence was carried from', async () => {

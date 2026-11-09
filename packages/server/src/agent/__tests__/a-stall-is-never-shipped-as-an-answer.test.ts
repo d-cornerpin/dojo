@@ -288,7 +288,6 @@ const stopOnFirstChunk = (c: AbortController): ((chunk: string) => void) => {
 
 beforeEach(() => {
   fs.rmSync(FAKE_HOME, { recursive: true, force: true });
-  fs.mkdirSync(path.join(FAKE_DOJO, 'logs'), { recursive: true });   // the logger, loaded once, keeps writing here
   clearSecretsCache();
   clearClientCache();
   const db = new Database(':memory:');

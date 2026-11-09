@@ -378,10 +378,9 @@ export interface ChatErrorEvent {
   /** v3.5 field fix 3 (#9): an owner card's class. `action` (absent means action, as every card before it): the
    *  owner must do something, a sticky card holding the orb's red alert. `informational`: a plain toast that
    *  leaves by itself, never red. Background progress is no card at all (`engine:activity`).
-   *  Audit #7: an AGENT's chat:error declares it too. There, only `action` with severity `error` is sticky and red;
-   *  an `error` frame that declares no class reads as a warning (the census `every-sticky-red-card-asks-for-action`
-   *  makes every server site that sends `error` declare one). */
-  cardClass?: 'action' | 'informational';
+   *  An agent's chat:error declares it too; there only `action` with severity `error` is sticky and red. Required, so
+   *  every site that sends a card says which it is. */
+  cardClass: 'action' | 'informational';
 }
 
 export interface LogEntryEvent {

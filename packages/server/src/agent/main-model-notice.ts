@@ -31,7 +31,7 @@ export function noteSmallMainModelOnce(agentId: string, modelId: string | null |
       modelId, window: w.window,
     }, agentId);
     broadcast({
-      type: 'chat:error',
+      type: 'chat:error', cardClass: 'informational',
       agentId,
       error: `${smallMainModelMessage(w.name, w.window)} This agent keeps working as it is; the notice is shown once.`,
       code: 'MAIN_MODEL_SMALL',

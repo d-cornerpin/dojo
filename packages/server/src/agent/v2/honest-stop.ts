@@ -231,7 +231,7 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
   if (alreadyTold) return true;
 
   noteInChat(agentId, `[System (platform notice): ${stop.words}]`, noticeIdentityFor(agentId, state.lastUserMessageId));   // the notice IS that message's line (its id), so a later message does not re-tell it
-  broadcast({ type: 'chat:error', agentId, error: stop.kind === 'no_model_fits' ? noFitOwnerWords(agentId) : stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
+  broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: stop.kind === 'no_model_fits' ? noFitOwnerWords(agentId) : stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
   // A no-fit agent is a broken agent the owner must act on: one text and its lasting card, in the same words.
   if (stop.kind === 'no_model_fits' && tellOwner(`nofit:${agentId}`, wordsOf(`nofit:${agentId}`))) void sendAlert(wordsOf(`nofit:${agentId}`), 'notice', { kind: 'broken-agent', agentId });
   if (stop.kind === 'budget_stop') budgetStopToTell(stop.budget, (words) => void sendAlert(words, 'notice', { kind: 'budget' }));   // once per budget window, however many agents stop

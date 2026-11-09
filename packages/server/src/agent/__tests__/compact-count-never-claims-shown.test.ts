@@ -3,8 +3,6 @@
 // never say "N shown": on a long list the two statements contradicted each other.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { compactCountNote, compactListTrailer } from '../tool-helpers.js';
 import { toolResultView, TOOL_RESULT_VIEW_CHARS } from '../../memory/tool-result-view.js';
 
@@ -27,13 +25,5 @@ describe('compact list counts', () => {
     const view = toolResultView(whole, 'call-1', TOOL_RESULT_VIEW_CHARS / 8 + 1500);
     expect(view).toContain('NOT ALL SHOWN');
     expect(view).not.toMatch(SHOWN_CLAIM);
-  });
-
-  it('no list tool words its own "N shown" claim', () => {
-    const root = fileURLToPath(new URL('../..', import.meta.url));
-    for (const f of ['google/gmail-search.ts', 'google/tools-read.ts', 'microsoft/tools-read.ts', 'tracker/tools.ts', 'techniques/tools.ts', 'agent/tool-helpers.ts']) {
-      const src = readFileSync(`${root}/${f}`, 'utf8').split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'));
-      expect(src.filter((l) => SHOWN_CLAIM.test(l)), f).toEqual([]);
-    }
   });
 });

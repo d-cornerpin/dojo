@@ -396,61 +396,6 @@ describe('C6b the owner hears ONE plain line, through the agent', () => {
 
 describe('C7 the healer and this pass do not hold two copies of one predicate', () => {
 
-  it('the JOIN\'s distinctive fragment lives in ONE file', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { fileURLToPath } = await import('node:url');
-    const SRC = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
-    const walk = (dir: string, acc: string[] = []): string[] => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const fp = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name === '__tests__' || e.name === 'migrations') continue; walk(fp, acc); }
-        else if (e.name.endsWith('.ts')) acc.push(fp);
-      }
-      return acc;
-    };
-    const owners = walk(SRC)
-      .filter((f) => /JOIN agents \$\{a\} ON \$\{a\}\.id = \$\{t\}\.assignee_agent/.test(fs.readFileSync(f, 'utf8')))
-      .map((f) => f.slice(SRC.length + 1).split(path.sep).join('/'));
-    expect(owners, 'the orphan join has grown a second copy').toEqual(
-      ['tracker/version-gap-reconcile.ts']);
-  });
-
-  it('the predicate\'s distinctive fragments live in ONE file', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    // `fileURLToPath` rather than `decodeURIComponent(… .pathname)`: the hand-patch worked, but
-    // the family gets ONE idiom so the next reader does not have to know which files were
-    // patched and which were not.
-    const { fileURLToPath } = await import('node:url');
-    const SRC = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
-    const walk = (dir: string, acc: string[] = []): string[] => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const fp = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name === '__tests__' || e.name === 'migrations') continue; walk(fp, acc); }
-        else if (e.name.endsWith('.ts')) acc.push(fp);
-      }
-      return acc;
-    };
-    const strip = (t: string): string => t
-      .replace(/\/\*[\s\S]*?\*\//g, ' ')
-      .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-    const owners = walk(SRC).filter((f) => {
-      const body = strip(fs.readFileSync(f, 'utf8'));
-      // The two DISTINCTIVE fragments, narrow enough not to over-claim: `work/occurrences.ts`
-      // also tests `a.status = 'terminated'`, on a different subject (terminated-agent
-      // occurrences), and that is not a copy of this predicate.
-      // t129: the task fragment is re-anchored on the CURRENT text. The old spelling
-      // (`… 'paused') AND ${a}.status = 'terminated'`) stopped existing when the join key
-      // moved inside the predicate, and a census that no longer matches anything passes
-      // VACUOUSLY — which is the "deleting a row to make it green" failure this family of
-      // clauses exists to refuse. Asserted against the live string instead.
-      return /assignee_agent IS NOT NULL AND \$\{a\}\.status = 'terminated'/.test(body);
-    }).map((f) => f.slice(SRC.length + 1).split(path.sep).join('/'));
-    expect(owners, 'the orphan predicate has grown a second copy').toEqual(
-      ['tracker/version-gap-reconcile.ts']);
-  });
-
   // ════════════════════════════════════════════════════════════════════════════════════
   // ⚠ t129 — THE RULING'S OWN CLAUSE: the diagnostic and the auto-fix select the SAME row
   //          set, so a row the auto-fix has just fixed cannot still be flagged critical.

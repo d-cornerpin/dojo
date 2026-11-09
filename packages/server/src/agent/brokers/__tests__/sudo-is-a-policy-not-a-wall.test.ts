@@ -366,17 +366,14 @@ describe('§5 the password-prompt message', () => {
     expect(sudoPasswordPromptMessage('dojo', 'gated')).toContain('sudo policy is `gated`');
   });
 
-  it('NOTHING WRITES SUDOERS — the drop-in is a string the human runs', async () => {
-    // v1 refuses to write its own sudoers, on instruction and on merit. Held structurally: no module
-    // in the sudo family may reference the sudoers directory as a write target.
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const dir = path.dirname(url.fileURLToPath(import.meta.url));
-    for (const f of ['sudo-policy.ts', 'sudo-probe.ts']) {
-      const src = fs.readFileSync(path.join(dir, '..', f), 'utf8');
-      expect(src, f).not.toMatch(/writeFile|appendFile|createWriteStream/);
+  it('NOTHING WRITES SUDOERS: reading and holding sudo lines writes no file', async () => {
+    const fs = (await import('node:fs')).default;
+    const writes = [vi.spyOn(fs, 'writeFileSync'), vi.spyOn(fs, 'appendFileSync')];
+    for (const line of ['sudo tee /etc/sudoers.d/dojo', 'echo "dojo ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers']) {
+      isSudoLine(line); parseSudo(line); isSudoHoldRequired('exec', { command: line });
     }
+    expect(writes.flatMap((w) => w.mock.calls.map((c) => String(c[0])))).toEqual([]);
+    for (const w of writes) w.mockRestore();
   });
 });
 

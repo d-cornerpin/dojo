@@ -387,7 +387,7 @@ export async function runPMReview(): Promise<void> {
 // t123 RAISED THIS FROM 30 TO 60, for coherence with the lane rather than as a tuning nudge.
 // t206: a FLOOR now. The PM's tail is every row since its newest fold, often more than 60 rows,
 // so the pruner also stops at the fold boundary: it removes only rows a fold took out of view.
-const PM_MAX_MESSAGES = 60;
+export const PM_MAX_MESSAGES = 60;
 
 /** Prune old PM engine rows to bound the table, never at or past the fold boundary (t206): the
  *  cut is the older of the newest `PM_MAX_MESSAGES` rows and the boundary. Exported for t206 §1d. */

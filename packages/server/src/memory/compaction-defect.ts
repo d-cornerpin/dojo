@@ -158,7 +158,7 @@ export function reportCompactionDefect(
   lastCardAt.set(agentId, Date.now());
   try {
     broadcast({
-      type: 'chat:error',
+      type: 'chat:error', cardClass: 'informational',
       agentId,
       error: compactionFailingCardText(stage, agentId),
       code: 'COMPACTION_FAILING',

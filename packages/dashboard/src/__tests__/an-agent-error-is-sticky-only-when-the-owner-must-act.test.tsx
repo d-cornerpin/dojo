@@ -34,7 +34,6 @@ vi.mock('../hooks/useToast', async () => {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
     ToastContainer: () => null,
-    OWNER_ALERT_SPEAKER: 'platform',
   };
 });
 

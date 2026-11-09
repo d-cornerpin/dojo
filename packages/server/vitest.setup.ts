@@ -58,8 +58,7 @@ process.env.USERPROFILE = home;
 // are not the defect this guards — layer 2 already makes their home the scratch one,
 // and throwing at them would only make the guard unusable. The rule enforced here is
 // the one we can actually keep: nothing under `packages/server` calls `os.homedir()`
-// except `src/home.ts`, which is also asserted statically, without running anything,
-// in `src/__tests__/tests-stay-home.test.ts`.
+// except `src/home.ts`, and that call too throws while VITEST is set.
 const realHomedir = (): string => realHome;
 (globalThis as Record<string, unknown>).__dojoRealHomedir = realHomedir;
 

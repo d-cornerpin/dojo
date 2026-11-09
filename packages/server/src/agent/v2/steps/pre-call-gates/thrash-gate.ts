@@ -266,7 +266,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
     }
     try {
       broadcast({
-        type: 'chat:error',
+        type: 'chat:error', cardClass: 'informational',
         agentId,
         error: `Engine auto-blocked task, ${breakerReason}.`,
         code: 'TASK_THRASH_PAUSED',
@@ -355,7 +355,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
       });
       try {
         broadcast({
-          type: 'chat:error',
+          type: 'chat:error', cardClass: 'informational',
           agentId,
           error: `Engine refusing further ${thrash.toolName} calls with these args, continue with different input, or block the task if it cannot proceed.`,
           code: 'TASK_THRASH_PAUSED',

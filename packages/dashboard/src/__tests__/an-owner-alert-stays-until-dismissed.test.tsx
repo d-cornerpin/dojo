@@ -41,7 +41,8 @@ vi.mock('../hooks/useWebSocket', async () => {
   return { useWebSocket: fakeUseWebSocket };
 });
 
-import { ToastProvider, useToast, OWNER_ALERT_SPEAKER } from '../hooks/useToast';
+import { ToastProvider, useToast } from '../hooks/useToast';
+import { PLATFORM_SENDER } from '@dojo/shared';
 import { OrbProvider } from '../components/orb/OrbProvider';
 import { Dojo3Notifications } from '../components/Dojo3Notifications';
 import { GlobalAlerts } from '../App';
@@ -64,7 +65,7 @@ const mount = () => render(
 );
 
 const ownerAlert = (words: string, severity: 'warning' | 'error' = 'warning') => act(() => {
-  emitFrame('chat:error', { agentId: OWNER_ALERT_SPEAKER, error: words, severity, retryable: false });
+  emitFrame('chat:error', { agentId: PLATFORM_SENDER, error: words, severity, retryable: false });
 });
 const dismissButtons = () => screen.queryAllByRole('button', { name: 'Dismiss notification' });
 const BUDGET = 'Budget alert: 50% of your daily budget is used ($5.10 of $10.00 in the last 24 hours).';

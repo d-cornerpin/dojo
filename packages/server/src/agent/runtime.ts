@@ -337,7 +337,7 @@ export async function enforceModelCapabilities(
         logger.warn('Vision gate: stripped images from turn', {
           modelId, imagesStripped, imagesCaptioned, fallbackUsable,
         }, agentId);
-        broadcast({ type: 'chat:error', agentId, error: userMsg, severity: 'warning', retryable: false });
+        broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: userMsg, severity: 'warning', retryable: false });
       } else if (imagesCaptioned > 0) {
         logger.info('Vision gate: captioned images via fallback', {
           modelId, imagesCaptioned, fallbackModelId: fallback?.modelId,
@@ -359,7 +359,7 @@ export async function enforceModelCapabilities(
       const userMsg =
         `This model can't use tools, the agent will reply with text only. Switch to a tool-capable model in Settings → Models for file access, browser, scheduling, etc.`;
       logger.warn('Tools gate: disabling tools for this turn', { modelId }, agentId);
-      broadcast({ type: 'chat:error', agentId, error: userMsg, severity: 'warning', retryable: false });
+      broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: userMsg, severity: 'warning', retryable: false });
     }
   }
 
@@ -1095,7 +1095,7 @@ class AgentRuntime {
                 .all(agentId, poisoned.key, MAX_DRAIN_STUCK + 1) as Array<{ r: string | null }>).map((t) => t.r);
               logger.error('drain: quarantined a poisoned conversation after repeated failed serves; serving the next instead', { agentId, convKey: poisoned.key, rowsQuarantined: quarantined, headRowid: head, exitReasons }, agentId);
               try {
-                broadcast({ type: 'chat:error', agentId, error: `Couldn't process a message from ${poisoned.key} after several tries, set it aside so your other messages get through.`, code: 'STUCK_REPEATING', severity: 'warning', retryable: false });
+                broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: `Couldn't process a message from ${poisoned.key} after several tries, set it aside so your other messages get through.`, code: 'STUCK_REPEATING', severity: 'warning', retryable: false });
               } catch { /* best effort */ }
               clearDrainLadder(agentId, 'human_conversation');
               const remaining = getWaitingHumanConversations(agentId);
@@ -1756,7 +1756,7 @@ function repairOrphanedModelPointers(): void {
       // doesn't iMessage them.
       try {
         broadcast({
-          type: 'chat:error',
+          type: 'chat:error', cardClass: 'informational',
           agentId: agent.id,
           // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the Dojo speaking, never "I"; the agent is told.
           error: orphanedModelRepairText(agent.name),

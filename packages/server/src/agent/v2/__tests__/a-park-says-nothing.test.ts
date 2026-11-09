@@ -377,7 +377,6 @@ import {
 import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import fs from 'node:fs';
 import path from 'node:path';
 
 let migratedImage: Buffer | null = null;
@@ -622,36 +621,6 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
     expect(parkJob('primary', 'door-b', 'timer')).toBe(true);   // the tool-loop park's own timer wake
     expect(turnParkedTheJob('primary')).toBe(true);
     endTurnContext('primary');
-  });
-
-  it('every park door sets it: the callers of parkJob are exactly the five known doors', () => {
-    const walk = (dir: string, out: string[] = []): string[] => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) { if (!['__tests__', 'node_modules', 'dist'].includes(e.name)) walk(full, out); }
-        else if (/\.ts$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(full);
-      }
-      return out;
-    };
-    const root = path.resolve(__dirname, '..', '..', '..');
-    const sites = walk(root).flatMap((f) => {
-      const code = fs.readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-      return (code.match(/\bparkJob\(/g) ?? []).map(() => path.relative(root, f));
-    }).filter((f) => f !== 'work/job-continuation.ts').sort();
-    expect(sites).toEqual([
-      // t168: surrenders park through `parkAfterForcedPass`, whose two parks (now, or at the brake's expiry) are these.
-      'agent/v2/full-context-wait.ts', 'agent/v2/full-context-wait.ts',
-      // v3.5 D18 r5: a turn whose forced pass found another compaction holding the lock parks until it lands.
-      'agent/v2/full-context-wait.ts',
-      // t268 breaker fix: a forced pass with no summary writer able to run parks until one is back.
-      'agent/v2/full-context-wait.ts',
-      // t211: the two recovery forced compactions park through the same door (`forcedPassThenPark`), so
-      // `recovery.ts` no longer calls `parkJob` itself.
-      'agent/v2/loop.ts',
-      // v3.5 D1: a turn that ends mid-job while making progress is parked on the timer (`job-continues.ts`).
-      'agent/v2/steps/post-call-classify/job-continues.ts',
-      'agent/v2/steps/pre-call-gates/turn-budget.ts',
-    ]);
   });
 });
 

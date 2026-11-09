@@ -104,7 +104,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
       loopCount: state.loopCount,
     }, agentId);
     broadcast({
-      type: 'chat:error',
+      type: 'chat:error', cardClass: 'informational',
       agentId,
       error: 'Agent got stuck repeating itself. Send a follow-up to redirect it.',
       code: 'STUCK_REPEATING',
@@ -161,7 +161,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
         loopCount: state.loopCount,
       }, agentId);
       broadcast({
-        type: 'chat:error',
+        type: 'chat:error', cardClass: 'informational',
         agentId,
         error: 'Agent stopped, searches kept coming up empty. The info may not be in memory yet.',
         code: 'NO_RESULTS',

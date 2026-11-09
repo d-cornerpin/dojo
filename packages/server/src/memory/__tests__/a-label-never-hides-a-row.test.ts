@@ -1,14 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t141 — "NO ROW VISIBLE TODAY BECOMES INVISIBLE", AS A PROPERTY; AND THE DELETIONS, AS CENSUSES.
-//
-// §1 enumerates EVERY own-row shape the scopers can meet (role × lane × label × stamp × turn)
-// and compares the live scopers against the PRE-t141 rule restated as an oracle over the state
-// the old writer would have left. They must agree on every shape. That is the owner's rule
-// ("label, never hide") made mechanical: labelling may change what a row SAYS, never WHETHER it
-// is in view.
-//
-// §2 are the deletion censuses (G4: comment-stripped, counted in both directions).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Owner rule "label, never hide": every own-row shape the scopers can meet (role, lane, label, stamp, turn) is in view
+// exactly when the rule before labelling would have kept it. Labelling may change what a row says, never whether it is seen.
 import { describe, it, expect } from 'vitest';
 import type { Message, MessageOrigin } from '@dojo/shared';
 import { scopeToHumanConversation, scopeToA2AThread } from '../assembler.js';

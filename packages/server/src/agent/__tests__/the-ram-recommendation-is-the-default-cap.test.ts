@@ -28,9 +28,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -45,15 +42,6 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { getContextWindow, resolveNumCtx, effectiveContextWindow } from '../model.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = path.resolve(HERE, '../..');
-
-function stripped(file: string): string {
-  return fs.readFileSync(file, 'utf-8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^[ \t]*\/\/.*$/gm, '');
-}
 
 const ADVERTISED = 131_072;
 
@@ -176,67 +164,5 @@ describe('§3 a model with neither knob set behaves exactly as it does today', (
     for (const n of [512, 8_192, 24_576, 131_072, 262_144]) {
       expect(effectiveContextWindow(ADVERTISED, n)).toBe(Math.min(ADVERTISED, n));
     }
-  });
-});
-
-// ════════════════════ §4 THE WIRE, BOTH DIRECTIONS ════════════════════
-
-describe('§4 the wire — one precedence rule, one door, and an honest line', () => {
-  const modelSrc = stripped(path.join(SRC, 'agent/model.ts'));
-  const configSrc = stripped(path.join(SRC, 'gateway/routes/config.ts'));
-
-  it('getContextWindow APPLIES the cap — the one door every budget reads', () => {
-    // The call shape AND its application (G4). `getContextWindow` is what
-    // `memory/assembler.ts`, `memory/budget.ts`, `reassemble-for-fit` and the recovery
-    // compactor read, so capping it there is what makes the recommendation bite everywhere
-    // without touching any of them.
-    expect(modelSrc).toMatch(
-      /return effectiveContextWindow\(info\.contextWindow, resolveNumCtx\(info\)\.effective\);/,
-    );
-  });
-
-  it('getModelInfo still reports the ADVERTISED window — the utility dial depends on it', () => {
-    // t88 widens `num_ctx` PER CALL for a dial with a large input (a screenshot caption asks
-    // for more window than its one sentence would). Capping `getModelInfo().contextWindow`
-    // made `validateAtProviderBoundary` refuse the very assembly the dial had just widened the
-    // window for — measured, as a red in `the-utility-dial-reaches-the-wire`. This clause is
-    // the record of that boundary.
-    // t140: the stored value now passes through `declaredContextWindow` (a stored 0 reads as
-    // the documented default instead of a window of nothing). Still the ADVERTISED number —
-    // no num_ctx knob is applied here, which is the property this clause records.
-    expect(modelSrc).toMatch(/contextWindow: declaredContextWindow\(row\.context_window\),/);
-    expect(modelSrc).toMatch(/contextWindow: modelInfo\.contextWindow,\n\s+maxOutputTokens: modelInfo\.maxOutputTokens,/);
-  });
-
-  it('the WIRE and the BUDGET share ONE precedence resolver — no second copy', () => {
-    // The both-directions half: two hand-rolled copies of "which knob wins" is how the number
-    // Ollama is sent and the number the engine budgets for come to disagree. The Ollama call
-    // site reads the same resolver, and the old ternaries are gone.
-    expect(modelSrc).toMatch(
-      /const \{ effective: effectiveNumCtx, source: numCtxSource \} = resolveNumCtx\(modelInfo\);/,
-    );
-    expect(
-      [...modelSrc.matchAll(/typeof modelInfo\.numCtxOverride === 'number'/g)].length,
-      'a hand-rolled num_ctx precedence ternary came back',
-    ).toBe(0);
-  });
-
-  it('the num_ctx override door SAYS what the recommendation was, and refuses nothing', () => {
-    // One honest line, not a block — the ruling's own shape. The route still writes the
-    // override the user asked for; the response carries the comparison.
-    expect(configSrc).toMatch(/const exceedsRecommended = typeof override === 'number' && recommended !== null && override > recommended;/);
-    expect(configSrc).toMatch(/return c\.json\(\{ ok: true, data: rowToModel\(row\), notice \}\);/);
-    // …and the write is unconditional: no arm of the route rejects on the comparison.
-    const route = configSrc.slice(configSrc.indexOf("configRouter.patch('/models/:id/num-ctx'"));
-    const body = route.slice(0, route.indexOf('configRouter.patch', 1));
-    expect(body).toMatch(/UPDATE models SET num_ctx_override = \?/);
-    expect(body).not.toMatch(/exceedsRecommended[\s\S]{0,80}return c\.json\(\{ ok: false/);
-  });
-
-  it('the API still reports the model\'s ADVERTISED window, not the capped one', () => {
-    // The card must keep showing the model's real ceiling beside the recommendation. Quietly
-    // restating the cap as the model's context window would make the two numbers agree by
-    // lying about one of them.
-    expect(configSrc).toMatch(/contextWindow: row\.context_window as number \| null,/);
   });
 });

@@ -26,7 +26,7 @@ import {
   claimAlert as claimAlertIn,
   integrityFailureFromError,
   markAlertResolved as markAlertResolvedIn,
-  type WatchdogState,
+  type WatchdogState, type AlertKey,
 } from './alert-ledger.js';
 import { diskFloorBytes, toGb } from './disk-floor.js';
 import { decideSwapHeal, interruptedUpdateText, claimInterruptedNotice } from './swap-heal.js';
@@ -249,7 +249,7 @@ function saveState(): void {
   }
 }
 
-function claimAlertFor(alertKey: string, recipient: string): boolean {
+function claimAlertFor(alertKey: AlertKey, recipient: string): boolean {
   const send = claimAlertIn(state, alertKey, recipient);
   if (send) saveState();
   return send;
@@ -274,7 +274,7 @@ function markAlertResolved(alertKey: string): boolean {
  * Recipient first means an unreachable owner POSTPONES the recovery instead of
  * destroying it.
  */
-function resolveAndTell(alertKey: string, text: string): boolean {
+function resolveAndTell(alertKey: AlertKey, text: string): boolean {
   const to = getImessageRecipient();
   if (!to) {
     if (state.alertState[alertKey]?.active) {

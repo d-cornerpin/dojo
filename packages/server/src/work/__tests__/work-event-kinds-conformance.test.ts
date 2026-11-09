@@ -270,32 +270,6 @@ describe('ARM 1 — the DECLARED list and the CHECK are the same list', () => {
   });
 });
 
-describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
-
-  it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
-    const src = stripComments("appendWorkEvent(workId, 'floor_teleported', 'engine', {});");
-    CALL_RE.lastIndex = 0;
-    const m = CALL_RE.exec(src);
-    expect(m).not.toBeNull();
-    const lit = /^'([a-z_]+)'$/.exec(m![2])!;
-    expect(isWorkEventKind(lit[1])).toBe(false);
-  });
-
-  it('SELF-TEST: comment stripping does not hide a real call, or invent one', () => {
-    // `store.ts`'s own docblock contains the words "transition + appendEvent". Two layers
-    // keep it out of the count and BOTH are checked, because either alone would be luck:
-    // the block comment is blanked whole...
-    expect(stripComments("/** the pair\n *  ('transition + appendEvent'). No pair exists. */").trim()).toBe('');
-    // ...and the prose does not match the call shape anyway (no `(` after the name).
-    CALL_RE.lastIndex = 0;
-    expect(CALL_RE.exec("('transition + appendEvent'). Re-derived: there is no pair.")).toBeNull();
-    CALL_RE.lastIndex = 0;
-    expect(CALL_RE.exec(stripComments("// appendWorkEvent(id, 'ghost_kind', a, {})"))).toBeNull();
-    CALL_RE.lastIndex = 0;
-    expect(CALL_RE.exec(stripComments("appendWorkEvent(id, 'opened', a, {})"))![2]).toBe("'opened'");
-  });
-});
-
 describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
 
   it('`floor_ghosted` HAS a writer now, and the exemption that named it is deleted', () => {

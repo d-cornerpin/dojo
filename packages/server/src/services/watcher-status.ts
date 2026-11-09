@@ -130,7 +130,7 @@ export function maybeAlertOnRecovery(params: {
   const message = `${label} has recovered and is polling normally again.${tail}`;
   try {
     broadcast({
-      type: 'chat:error',
+      type: 'chat:error', cardClass: 'informational',
       agentId: 'system',
       error: message,
       severity: 'info',

@@ -65,8 +65,6 @@ interface Entry { key: string; value: AssembledEstimate }
 const estimates = new Map<string, Entry>();
 const toolPayloads = new Map<string, { key: string; tokens: number }>();
 
-let hits = 0;
-let misses = 0;
 
 /**
  * The two cheap reads that make the key exact. Indexed, sub-millisecond.
@@ -104,11 +102,7 @@ export async function cachedAssembledEstimate(
     return compute();
   }
   const cached = estimates.get(agentId);
-  if (cached && cached.key === key) {
-    hits += 1;
-    return cached.value;
-  }
-  misses += 1;
+  if (cached && cached.key === key) return cached.value;
   const value = await compute();
   estimates.set(agentId, { key, value });
   return value;
@@ -162,15 +156,8 @@ export async function cachedToolPayloadTokens(
   return tokens;
 }
 
-/** Observability for the reproduction: the headline is that a pass goes 3 → 1. */
-export function assembledEstimateStats(): { hits: number; misses: number } {
-  return { hits, misses };
-}
-
 export function __resetEstimateCacheForTests(): void {
   estimates.clear();
   toolPayloads.clear();
-  hits = 0;
-  misses = 0;
   logger.debug('assembled-estimate cache reset');
 }

@@ -728,7 +728,7 @@ export function onAgentRecovered(agentId: string, basis: RecoveryBasis = 'eviden
     const agentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     const name = agentRow?.name ?? agentId;
     broadcast({
-      type: 'chat:error',
+      type: 'chat:error', cardClass: 'informational',
       agentId,
       error: `${name} recovered and is back to work.`,
       code: 'AGENT_RECOVERED',

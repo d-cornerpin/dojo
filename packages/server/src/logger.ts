@@ -34,15 +34,11 @@ export function setLogBroadcast(callback: (entry: LogEntry) => void): void {
 
 let writeBuffer: string[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
-let logDirChecked = false;
 let lastRotateCheck = 0;
 
+/** Made on every flush: the folder can vanish under a running server (cleared by hand, or replaced by an import). */
 function ensureLogDir(): void {
-  if (logDirChecked) return;
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-  }
-  logDirChecked = true;
+  fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
 function rotateIfNeeded(): void {
@@ -76,16 +72,17 @@ function flushBuffer(): void {
   const lines = writeBuffer.join('');
   writeBuffer = [];
 
-  ensureLogDir();
   rotateIfNeeded();
-
-  // Async write — doesn't block the event loop
-  fs.appendFile(LOG_FILE, lines, 'utf-8', (err) => {
-    if (err) {
-      // Last resort: stderr (don't recurse into logger)
-      process.stderr.write(`Logger write error: ${err.message}\n`);
-    }
-  });
+  // Async, so the event loop is never blocked. The folder is made before the write, and once more if it vanished
+  // while the write was on its way; stderr is the last resort (the logger never logs about itself).
+  const write = (again: boolean): void => {
+    ensureLogDir();
+    fs.appendFile(LOG_FILE, lines, 'utf-8', (err) => {
+      if (err && again && (err as NodeJS.ErrnoException).code === 'ENOENT') write(false);
+      else if (err) process.stderr.write(`Logger write error: ${err.message}\n`);
+    });
+  };
+  write(true);
 }
 
 /** Serialise one entry to a JSON line without ever throwing.

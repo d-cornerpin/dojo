@@ -279,7 +279,7 @@ systemRouter.post('/debug-toast', async (c) => {
   const severity = (body.severity as 'info' | 'warning' | 'error' | undefined) ?? 'info';
   const message = (body.message as string | undefined) ?? `Test ${severity.toUpperCase()} toast at ${new Date().toLocaleTimeString()}`;
   broadcast({
-    type: 'chat:error',
+    type: 'chat:error', cardClass: 'informational',
     agentId,
     error: message,
     code: severity === 'info' ? 'AGENT_RECOVERED' : severity === 'warning' ? 'CONTEXT_HIGH' : 'MODEL_FAILED',

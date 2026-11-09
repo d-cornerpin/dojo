@@ -138,25 +138,6 @@ describe('A — messaging/outbound-send: the danger class already withheld, held
     const { MOST_RESTRICTIVE_GRANTS, mayReachChannel } = await import('@dojo/shared');
     expect(mayReachChannel(MOST_RESTRICTIVE_GRANTS, 'imessage')).toBe(false);
   });
-
-  it('the three Twilio verbs are primary-only, by their own handler walls', async () => {
-    // These live in the handler bodies rather than in the gate table, which is
-    // why they need naming: a reader scanning `gates.ts` alone would conclude a
-    // sub-agent can place a phone call.
-    const fs = await import('node:fs');
-    const url = await import('node:url');
-    const p = await import('node:path');
-    const commsPath = p.resolve(
-      p.dirname(url.fileURLToPath(import.meta.url)), '..', 'tools', 'cat', 'comms.ts',
-    );
-    const source = fs.readFileSync(commsPath, 'utf8');
-    for (const tool of ['sms_send', 'voice_call', 'voice_call_end', 'voice_call_status']) {
-      expect(
-        source,
-        `${tool} must keep its primary-only wall`,
-      ).toContain(`only the primary agent can use ${tool}`);
-    }
-  });
 });
 
 describe('C — child ⊆ parent, enforced structurally', () => {

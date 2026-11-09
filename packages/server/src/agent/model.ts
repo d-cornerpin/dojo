@@ -1067,7 +1067,7 @@ export async function buildNativeOllamaMessages(
 
             if (extracted.truncated) {
               broadcast({
-                type: 'chat:error',
+                type: 'chat:error', cardClass: 'informational',
                 agentId,
                 error: `"${title}" was too large, only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
                 severity: 'warning',
@@ -1083,7 +1083,7 @@ export async function buildNativeOllamaMessages(
               reason,
             }, agentId);
             broadcast({
-              type: 'chat:error',
+              type: 'chat:error', cardClass: 'informational',
               agentId,
               error: `Couldn't read "${title}", the agent will respond without it.`,
               severity: 'warning',
@@ -1918,7 +1918,7 @@ export async function buildOpenAIMessages(
 
             if (extracted.truncated) {
               broadcast({
-                type: 'chat:error',
+                type: 'chat:error', cardClass: 'informational',
                 agentId,
                 error: `"${title}" was too large, only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
                 severity: 'warning',
@@ -1934,7 +1934,7 @@ export async function buildOpenAIMessages(
               reason,
             }, agentId);
             broadcast({
-              type: 'chat:error',
+              type: 'chat:error', cardClass: 'informational',
               agentId,
               error: `Couldn't read "${title}", the agent will respond without it.`,
               severity: 'warning',

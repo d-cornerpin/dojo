@@ -117,7 +117,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     }, agentId);
     state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
     broadcast({
-      type: 'chat:error',
+      type: 'chat:error', cardClass: 'informational',
       agentId,
       error: 'Agent kept thinking until it ran out of room, twice, without answering. Send your message again to retry.',
       code: 'MODEL_FAILED',
@@ -280,7 +280,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       }, { broadcast });
     } else {
       broadcast({
-        type: 'chat:error',
+        type: 'chat:error', cardClass: 'informational',
         agentId,
         error: 'Agent gave an empty reply. Send your message again to retry.',
         code: 'MODEL_FAILED',

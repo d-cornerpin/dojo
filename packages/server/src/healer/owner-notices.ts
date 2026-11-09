@@ -3,6 +3,7 @@
 // `healer_state` ('owner_told': key, first-told time, sentence; 'owner_dismissed': his X), and pushes the card. A
 // notice's rows go when its condition ends; the dashboard's reload list reads the same rows.
 
+import { PLATFORM_SENDER } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
@@ -15,15 +16,13 @@ export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_W
 
 export const TOLD = 'owner_told';
 export const DISMISSED = 'owner_dismissed';
-/** `PLATFORM_SENDER` (agent/v2/outbound.ts), spelled here rather than imported from outbound; the dashboard reads it. */
-const PLATFORM_SENDER = 'platform';
 
 /** What a card asks of the owner: `action` (sticky, stands on reload) or `informational` (a toast that leaves by itself). */
 export type OwnerCardClass = 'action' | 'informational';
 
 function frame(words: string, severity: 'error' | 'warning' | 'info', cardKey: string, cardClass?: OwnerCardClass): void {
   try {
-    broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubTechnicalDetail(words), severity, retryable: false, cardKey, ...(cardClass ? { cardClass } : {}) });
+    broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubTechnicalDetail(words), severity, retryable: false, cardKey, cardClass: cardClass ?? 'action' });
   } catch { /* a card is best-effort; the record is what matters */ }
 }
 
@@ -108,7 +107,8 @@ export function wordsOf(key: string): string {
 
 /** Tell the owner `words` under `key`; true on the first telling (of the key, or of any key under `family`), when a
  *  caller that also texts him texts. The same words change nothing; new words replace the card live and lift a dismissal. */
-export function tellOwner(key: string, words: string, family?: string): boolean {
+export function tellOwner(key: string, sentence: string, family?: string): boolean {
+  const words = sentence.replace(/\s*\u2014\s*/g, ', ');   // the owner's standing rule: no em-dash reaches him
   try {
     const db = getDb();
     const first = !db.prepare(`SELECT 1 FROM healer_state WHERE scope = ? AND (key = ? OR (? IS NOT NULL AND key LIKE ? || '%'))`).get(TOLD, key, family ?? null, family ?? null);

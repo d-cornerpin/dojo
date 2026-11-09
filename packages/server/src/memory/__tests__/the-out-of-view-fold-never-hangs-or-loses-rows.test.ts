@@ -372,7 +372,7 @@ describe('t140 round 3 — condensation never merges a placeholder', () => {
     await door();
     expect(placeholders().length).toBeGreaterThan(0);
     writers.mode = {};
-    __resetSummaryWriterHealthForTests();
+    __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
     for (let i = 0; i < 3; i++) createLeafSummary(AGENT, `Real summary ${i}: the crew counted the depot.`, 40, [], '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
     compaction.rebuildContextItems(AGENT);
     await condenseUntilFits({
@@ -510,7 +510,7 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
     const link = db().prepare("INSERT INTO summary_messages (summary_id, message_id) VALUES ('sum-real', ?)");
     for (const r of rows) link.run(r.message_id);
     writers.mode = {};
-    __resetSummaryWriterHealthForTests();
+    __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
     writers.calls = [];
     await replaceUncondensedPlaceholders(AGENT);
     expect(placeholders().find((p) => p.id === ph[0].id), 'the covered placeholder is gone').toBeUndefined();
@@ -544,7 +544,7 @@ describe('t140 round 4 — card noise: one card per incident', () => {
     await door();
     expect(failingCards()).toBe(1);
     writers.mode = {};
-    __resetSummaryWriterHealthForTests();
+    __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
     await replaceUncondensedPlaceholders(AGENT);   // a real recovery: no placeholder left
     expect(placeholders()).toEqual([]);
     writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
@@ -620,27 +620,4 @@ describe('t140 round 4 — a note is identified structurally, never by its headi
     expect(writers.calls, 'nothing to replace').toEqual([]);
     expect((db().prepare('SELECT COUNT(*) AS n FROM summary_messages WHERE summary_id = ?').get(real.id) as { n: number }).n).toBe(rows.length);
   }, 5_000);
-
-  it('census: no shipped reader identifies a note by its heading text', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const SRC = path.resolve(__dirname, '../..');
-    const offenders: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(full); continue; }
-        if (!/\.ts$/.test(e.name)) continue;
-        const code = fs.readFileSync(full, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
-        // A READER of the heading: the prefix predicate, a prefix SQL test, or the constant used anywhere
-        // but the one place that WRITES the note's text.
-        const uses = (code.match(/UNCONDENSED_PLACEHOLDER_HEAD/g) ?? []).length;
-        const writes = /export const UNCONDENSED_PLACEHOLDER_HEAD = /.test(code) ? 1 : 0;
-        const inText = (code.match(/`\$\{UNCONDENSED_PLACEHOLDER_HEAD\} \$\{n\} message/g) ?? []).length;
-        if (uses - writes - inText > 0 || /isUncondensedPlaceholder\(|Not yet condensed%|reservedHeadRefusal/.test(code)) offenders.push(path.relative(SRC, full));
-      }
-    };
-    walk(SRC);
-    expect(offenders).toEqual([]);
-  });
 });

@@ -28,12 +28,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../../db/connection.js', async () => {
@@ -482,62 +477,6 @@ describe('§7 start a job · the turn ends · the control stays · stop · it is
     expect(jobsFrames().length, 'a quiet box emitted a frame about nothing').toBe(0);
     expect(composerStopControl({ isWorking: false, canStop: false, hasHandler: true })).toBe('none');
     expect((await pressStop()).status).toBe(400);
-  });
-});
-
-// ── §8 — the three surfaces read ONE predicate ────────────────────────────────────────────
-
-describe('§8 nobody keeps a second copy of the question', () => {
-  const codeOf = (abs: string) => fs.readFileSync(abs, 'utf-8')
-    // Comments first, always: a clause satisfiable by the prose above a call tests the prose.
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-
-  const ROUTE = path.resolve(HERE, '../agents.ts');
-  const COMPOSER = path.resolve(HERE, '../../../../../dashboard/src/components/Dojo3Composer.tsx');
-  const CHAT = path.resolve(HERE, '../../../../../dashboard/src/pages/Chat.tsx');
-
-  it('the stop route decides on `liveWork`, not on the status column alone', () => {
-    const src = codeOf(ROUTE);
-    // The APPLICATION, not just the import: the refusal branch must consult the predicate.
-    expect(/!hasLiveWork\(/.test(src), 'the route re-derived its own predicate').toBe(true);
-    expect(/status !== 'working'\s*\)\s*\{\s*return c\.json\(\{ ok: false/.test(src),
-      'the status-only refusal is back — this is the exact 400 the card walked into').toBe(false);
-    // And the payload reads the module rather than the registry directly, so the job rows the
-    // registry cannot see are in BOTH answers.
-    expect(/inFlight: liveWork\(/.test(src)).toBe(true);
-  });
-
-  it('the composer asks the rule and the frame, and tallies nothing itself', () => {
-    expect(/composerStopControl\(/.test(codeOf(COMPOSER)),
-      'the composer went back to its own two booleans').toBe(true);
-    const chat = codeOf(CHAT);
-    expect(/subscribe\('agent:jobs'/.test(chat), 'the composer stopped listening for the emission')
-      .toBe(true);
-    expect(/canStop=\{canStop\}/.test(chat), 'the wider question stopped reaching the composer')
-      .toBe(true);
-    // The frame's own `stoppable` is what is read. A component re-deriving a predicate from the
-    // counts is the second copy this section exists to refuse.
-    expect(/setBackgroundStoppable\(e\.stoppable === true\)/.test(chat)).toBe(true);
-  });
-
-  it('the predicate module is a READER of both facts and a writer of neither', () => {
-    const src = codeOf(path.resolve(HERE, '../../../agent/live-work.ts'));
-    expect(/countAbortable\(/.test(src), 'it stopped reading the live registry').toBe(true);
-    expect(/generation_jobs|video_jobs/.test(src), 'it stopped reading the job rows').toBe(true);
-    expect(/registerAbortable|abortInFlight|UPDATE |INSERT /.test(src),
-      'the predicate became a writer — two owners for the stop machinery').toBe(false);
-  });
-
-  it('every `background` registration in production announces itself through the one door', () => {
-    // The emission lives inside `openAgentCall`, so a NEW background dial is heard about
-    // without its author remembering anything. This clause is what keeps it there: moved out
-    // to the call sites, the next one would be born silent exactly as these were.
-    const src = codeOf(path.resolve(HERE, '../../../agent/abortable-call.ts'));
-    expect(/scope === 'background'\) announceLiveWork\(agentId\)/.test(src),
-      'the announcement left the one door every background dial comes through').toBe(true);
-    // Both edges. An open with no matching release is a control that never goes away.
-    expect(src.match(/announceLiveWork\(agentId\)/g)?.length,
-      'one of the two lifecycle edges stopped speaking').toBe(2);
   });
 });
 

@@ -364,6 +364,24 @@ function handoffState(): AgentTurnState {
   } as unknown as Partial<AgentTurnState>);
 }
 
+describe('owner law 2026-07-09: the hand-off floor never charges a peer box with silence', () => {
+  const ghosted = (): unknown[] => broadcastSpy.mock.calls.map(([f]) => f).filter((f) => (f as { code?: string }).code === 'FLOOR_GHOSTED');
+  const climb = async (ctx: PostCallClassifyContext): Promise<void> => {
+    let queue = handoffState().steerQueue;
+    for (let i = 0; i < 3; i += 1) queue = (await runHandoffFloors({ ...handoffState(), steerQueue: queue } as AgentTurnState, ctx, emptyReply())).state.steerQueue;
+  };
+
+  it('an agent sender past the ladder gets no ghost notice', async () => {
+    await climb(classifyCtx({ counterpartyIsAgentSender: true }));
+    expect(ghosted()).toEqual([]);
+  });
+
+  it('CONTROL: a person past the ladder is told the agent went quiet', async () => {
+    await climb(classifyCtx());
+    expect(ghosted()).toHaveLength(1);
+  });
+});
+
 describe('§1 a2a-handoff-floor', () => {
   it('the queue still delivers the handoff steer, and the floor still buys its extra round', async () => {
     const out = await runHandoffFloors(handoffState(), classifyCtx(), emptyReply());

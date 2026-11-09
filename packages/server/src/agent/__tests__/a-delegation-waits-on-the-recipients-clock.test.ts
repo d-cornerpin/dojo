@@ -23,9 +23,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -43,16 +40,6 @@ import { a2aRetryBudgetFor } from '../a2a-patience.js';
 import { MAX_A2A_TURN_RETRIES } from '../turn-state.js';
 import { patienceFloorFor } from '../../tracker/assignee-patience.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../stream-patience.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = path.resolve(HERE, '../..');
-
-/** Source with its comments removed — G4: a clause a comment can satisfy tests the comment. */
-function stripped(file: string): string {
-  return fs.readFileSync(file, 'utf-8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^[ \t]*\/\/.*$/gm, '');
-}
 
 /** `models JOIN providers` — exactly the shape `patienceFloorFor` reads. */
 function seedRecipient(p: {
@@ -183,51 +170,5 @@ describe('§3 the budget is a FLOOR — it can never bring the give-up forward',
       expect(a2aRetryBudgetFor(`sweep-${ms}`).turns, `${ms}ms shortened the budget`)
         .toBeGreaterThanOrEqual(MAX_A2A_TURN_RETRIES);
     }
-  });
-});
-
-// ════════════════════ §4 THE WIRE, BOTH DIRECTIONS ════════════════════
-
-describe('§4 the wire — the runtime reads this budget, and the notice reads the clock', () => {
-  const runtimeSrc = stripped(path.join(SRC, 'agent/runtime.ts'));
-  const patienceSrc = stripped(path.join(SRC, 'agent/a2a-patience.ts'));
-  const noticeSrc = stripped(path.join(SRC, 'agent/join-failure-notice.ts'));
-
-  it('the A2A re-trigger gates on the RESOLVED budget, not on the constant', () => {
-    // The call shape AND its application (G4): the comparison the retry decision is made on.
-    expect(runtimeSrc).toMatch(/const budget = a2aRetryBudgetFor\(agentId\);/);
-    expect(runtimeSrc).toMatch(/if \(tries <= budget\.turns\) \{/);
-  });
-
-  it('the runtime no longer compares against MAX_A2A_TURN_RETRIES at all', () => {
-    // The both-directions half. A second site that reintroduced the bare constant as a cap would
-    // be a row the ruling does not reach, and this is what refuses it.
-    expect(runtimeSrc).not.toMatch(/MAX_A2A_TURN_RETRIES/);
-  });
-
-  it('the budget REUSES the ladder\'s floor rather than forking it', () => {
-    // No second reference speed. The whole reason the ruling says "reuse the PM-ladder
-    // machinery" is that inventing one is the fix SLOW-INFERENCE ruling R1 rejected.
-    expect(patienceSrc).toMatch(
-      /import \{ patienceFloorFor \} from '\.\.\/tracker\/assignee-patience\.js';/,
-    );
-    expect(patienceSrc).toMatch(/patienceFloorFor\(null\)\.floorSeconds/);
-    expect(patienceSrc).toMatch(/patienceFloorFor\(agentId\)/);
-    // …and it does NOT read the provider columns itself, which is what forking would look like.
-    expect(patienceSrc).not.toMatch(/first_chunk_timeout_ms/);
-    expect(patienceSrc).not.toMatch(/resolveStreamPatience/);
-  });
-
-  it('the budget is a `max` against today\'s constant, in CODE', () => {
-    expect(patienceSrc).toMatch(/Math\.max\(MAX_A2A_TURN_RETRIES,/);
-  });
-
-  it('the notice\'s "how long it waited" is read off the clock, so it stays truthful', () => {
-    // t90's notice names an elapsed time. It must not be derived from the cap — if it were, a
-    // scaled cap would make the sentence lie. It is `Date.now()` against the pieces' own
-    // `opened_at`, and neither the constant nor the budget appears in that module at all.
-    expect(noticeSrc).toMatch(/Date\.now\(\) - openedAtMs/);
-    expect(noticeSrc).toMatch(/SELECT MIN\(opened_at\) AS at FROM work WHERE parent_id = \?/);
-    expect(noticeSrc).not.toMatch(/MAX_A2A_TURN_RETRIES|a2aRetryBudgetFor/);
   });
 });

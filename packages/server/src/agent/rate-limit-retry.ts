@@ -199,7 +199,7 @@ function scheduleNextAttempt(
           const agentRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
           if (agentRow?.model_id === 'auto') {
             broadcast({
-              type: 'chat:error',
+              type: 'chat:error', cardClass: 'informational',
               agentId,
               error: `Still rate-limited after ${formatDuration(Math.round(elapsedMs / 1000))}. The auto-router will try a different model on the next attempt.`,
               code: 'RATE_LIMITED',

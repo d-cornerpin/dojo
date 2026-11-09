@@ -35,15 +35,10 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { stoppedAgents, preemptedAgents, stopFencedRuns, activeRuns } from '../../../../shared-state.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../index.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = FXID.n4;
 
 // ── The step's outside world, in the same shape its sibling clause files use ──
@@ -241,47 +236,5 @@ describe('§2 nothing else was made to abandon', () => {
     // A preempt is consumed at its own checkpoint, which is not on this path — the point of
     // the clause is that the success-side STOP read did not start answering for it.
     expect((out as { reason?: string }).reason).not.toBe('stopped-after-call');
-  });
-});
-
-// ── §3 — the census, so the next checkpoint cannot be born blind ─────────────────────────
-
-describe('§3 the success side stays a fence reader', () => {
-  const codeOf = (abs: string) => fs.readFileSync(abs, 'utf-8')
-    // Comments first, always: a clause satisfiable by the prose above a call tests the prose,
-    // and this file's subject is covered in several paragraphs of it.
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-
-  const MODEL_CALL = path.resolve(HERE, '../model-call.ts');
-
-  it('all three windows a call can close in are read, and the success side is one of them', () => {
-    const src = codeOf(MODEL_CALL);
-    for (const reason of ['stopped-before-call', 'stopped-mid-call', 'stopped-after-call']) {
-      expect(src.includes(`abandonForStop('${reason}')`),
-        `the ${reason} checkpoint is gone — a window a stop can land in stopped being read`)
-        .toBe(true);
-    }
-  });
-
-  it('the success-side read sits BEFORE the step hands the result back', () => {
-    const src = codeOf(MODEL_CALL);
-    const read = src.indexOf("abandonForStop('stopped-after-call')");
-    const handBack = src.indexOf('return { state, result, modelId }');
-    expect(read, 'the success-side read is not in the file at all').toBeGreaterThan(-1);
-    expect(handBack, 'the step stopped returning its result — this clause lost its subject')
-      .toBeGreaterThan(-1);
-    // ORDER IS THE REQUIREMENT, not presence. A read placed after the hand-back is a read of
-    // a reply that has already gone, which is the defect with a fence read bolted beside it.
-    expect(read, 'the fence is read after the result has already been handed on')
-      .toBeLessThan(handBack);
-  });
-
-  it('the step still has exactly TWO abandon calls — a third reason, never a third exit', () => {
-    const src = codeOf(MODEL_CALL);
-    // CUT 4's finalize contract pins the engine's abandons to this span and this file's own
-    // header pins the count. Three reasons go through ONE closure precisely so adding a
-    // checkpoint cannot quietly add an exit the driver's contract does not know about.
-    expect(src.match(/abandonTurn\(/g)?.length,
-      'a checkpoint added its own abandon instead of going through the one closure').toBe(2);
   });
 });

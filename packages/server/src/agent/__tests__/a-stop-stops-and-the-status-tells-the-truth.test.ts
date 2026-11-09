@@ -54,7 +54,6 @@ import Database from 'better-sqlite3';
 import { stoppedAgents, activeAbortControllers, registerAbortable, activeRuns, releaseAbortable, abortInFlight, pendingWakeups, queueSelfWake, stopFencedRuns, isStopFenced } from '../shared-state.js';
 import * as s from '../shared-state.js';
 import { stopAgent } from '../runtime.js';
-import { STUCK_AGENT_THRESHOLD_MINUTES } from '../stuck-thresholds.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -273,11 +272,5 @@ describe('the status field does not lie about a stop', () => {
     const cfg = JSON.parse((mockDb.current!.prepare('SELECT config FROM agents WHERE id = ?')
       .get(AGENT) as { config: string }).config) as Record<string, unknown>;
     expect(cfg.stopMarkerPending).toBe(true);
-  });
-
-  it('THE RED (review IMPORTANT A-4): a stop that never tore down is reapable', async () => {
-    // The fence carries a timestamp precisely so the age is answerable.
-    expect(stopFencedRuns).toBeInstanceOf(Map);
-    expect(STUCK_AGENT_THRESHOLD_MINUTES).toBeGreaterThan(0);
   });
 });

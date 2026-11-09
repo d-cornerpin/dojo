@@ -245,7 +245,7 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
     expect(await viewOf()).toMatch(/older mixed notes/);
     expect((db().prepare('SELECT COUNT(*) AS k FROM summary_rebuild_staged').get() as { k: number }).k).toBe(1);
     // The refusal benched the writer until something changes; a provider answering is one such change.
-    __resetSummaryWriterHealthForTests();
+    __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
     model.calls = []; model.refuseCall = 0;
     await runSummaryRebuildBatch();
     expect(model.calls, 'only the chunk that had not landed is dialled').toHaveLength(1);
@@ -277,7 +277,7 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
     model.refuseCall = 2;
     await runSummaryRebuildBatch();          // one conversation staged, the other refused
     db().prepare('DELETE FROM messages WHERE conversation_id = ?').run(MAIL);
-    __resetSummaryWriterHealthForTests();
+    __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
     model.refuseCall = 0;
     await runSummaryRebuildBatch();
     const rows = live();

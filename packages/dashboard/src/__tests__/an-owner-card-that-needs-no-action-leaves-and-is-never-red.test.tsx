@@ -25,7 +25,8 @@ vi.mock('../hooks/useWebSocket', async () => {
   return { useWebSocket: fakeUseWebSocket };
 });
 
-import { ToastProvider, OWNER_ALERT_SPEAKER } from '../hooks/useToast';
+import { ToastProvider } from '../hooks/useToast';
+import { PLATFORM_SENDER } from '@dojo/shared';
 import { Dojo3Notifications } from '../components/Dojo3Notifications';
 import { GlobalAlerts } from '../App';
 
@@ -36,7 +37,7 @@ const mount = () => render(
   </ToastProvider>,
 );
 const card = (words: string, cardClass?: 'action' | 'informational') => act(() => {
-  emitFrame('chat:error', { agentId: OWNER_ALERT_SPEAKER, error: words, severity: 'warning', retryable: false, ...(cardClass ? { cardClass } : {}) });
+  emitFrame('chat:error', { agentId: PLATFORM_SENDER, error: words, severity: 'warning', retryable: false, ...(cardClass ? { cardClass } : {}) });
 });
 const redAlertHeld = (): boolean => orb.setAlert.mock.calls.some((c) => c[0] === 1);
 

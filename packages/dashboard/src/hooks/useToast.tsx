@@ -55,8 +55,6 @@ export interface ActionToastOptions {
   needsAction?: boolean;
 }
 
-/** Who speaks an owner card's frame: the server's `PLATFORM_SENDER`, the platform, not an agent. */
-export const OWNER_ALERT_SPEAKER = 'platform';
 
 export interface Toast {
   id: number;

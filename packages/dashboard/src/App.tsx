@@ -2,8 +2,8 @@ import { Routes, Route, Navigate, useNavigate, useLocation, Outlet } from 'react
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
-import { ToastProvider, useToast, OWNER_ALERT_SPEAKER } from './hooks/useToast';
-import type { WsEvent, ChatErrorEvent } from '@dojo/shared';
+import { ToastProvider, useToast } from './hooks/useToast';
+import { PLATFORM_SENDER, type WsEvent, type ChatErrorEvent } from '@dojo/shared';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
 import { Chat } from './pages/Chat';
@@ -321,7 +321,7 @@ export const GlobalAlerts = () => {
   useEffect(() => {
     const unsub = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
-      if (e.agentId !== OWNER_ALERT_SPEAKER) return;
+      if (e.agentId !== PLATFORM_SENDER) return;
       if (e.severity === 'info') removeToastByKey(`owner-alert:${e.cardKey ?? e.error}`);
       else showOwnerCard(e.error, e.severity === 'error', e.cardKey, e.cardClass);
     });

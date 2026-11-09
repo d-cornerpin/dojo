@@ -30,6 +30,11 @@ export const ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 
 export type AlertLedger = Record<string, { lastSentAt: number; active: boolean }>;
 
+/** What the watchdog texts the owner about, and nothing else: the platform down or back, an update that failed and
+ *  was rolled back, the Mac short of memory or disk, a damaged database. */
+export type AlertKey = 'platform_down' | 'platform_missing' | 'platform_restart_failed' | 'auto_rollback' | 'auto_rollback_failed'
+  | 'memory_low' | 'disk_low' | 'db_integrity';
+
 export interface WatchdogState {
   /** Liveness the platform reads (FA-W5). */
   lastHeartbeat: string | null;
@@ -131,7 +136,7 @@ export function shouldSendAlert(state: WatchdogState, alertKey: string, nowMs: n
  * not recorded as "already told" (which would silence it for the whole cooldown
  * and leave a later recovery text with no DOWN before it).
  */
-export function claimAlert(state: WatchdogState, alertKey: string, recipient: string, nowMs: number = Date.now()): boolean {
+export function claimAlert(state: WatchdogState, alertKey: AlertKey, recipient: string, nowMs: number = Date.now()): boolean {
   if (!recipient) return false;
   return shouldSendAlert(state, alertKey, nowMs);
 }

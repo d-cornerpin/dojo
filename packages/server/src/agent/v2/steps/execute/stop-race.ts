@@ -116,5 +116,5 @@ function ownerWords(tool: string, completed: boolean): string {
 }
 
 function tellOwner(agentId: string, words: string): void {
-  try { broadcast({ type: 'chat:error', agentId, error: words, severity: 'warning', retryable: false }); } catch { /* best effort */ }
+  try { broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: words, severity: 'warning', retryable: false }); } catch { /* best effort */ }
 }

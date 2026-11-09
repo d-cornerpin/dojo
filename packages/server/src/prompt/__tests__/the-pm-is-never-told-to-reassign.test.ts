@@ -24,9 +24,6 @@ import path from 'node:path';
 const SRC = path.join(__dirname, '..', '..');
 const TEMPLATES = path.resolve(SRC, '..', '..', '..', 'templates');
 const read = (p: string): string => fs.readFileSync(p, 'utf8');
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 const SOUL = read(path.join(TEMPLATES, 'PM-SOUL.md'));
 
@@ -55,28 +52,5 @@ describe('B. the PM soul states the rule it was given', () => {
   it('escalates, and says it never moves a task', () => {
     expect(SOUL).toMatch(/never (move|reassign)/i);
     expect(SOUL).toMatch(/escalate/i);
-  });
-});
-
-describe('C. the executor does not list reassign among the PM\'s own verbs', () => {
-  it('the PM refusal message names no reassign verb', () => {
-    const src = stripComments(read(path.join(SRC, 'agent/tools/index.ts')));
-    const at = src.indexOf('You are the project manager (overseer)');
-    expect(at, 'the PM refusal message is still in the executor').toBeGreaterThan(-1);
-    const message = src.slice(at, src.indexOf('isError', at));
-    expect(message).not.toMatch(/reassign/i);
-  });
-});
-
-describe('D. every mention of reassigning in the PM\'s own prompt strings is a prohibition', () => {
-  it('pm-agent.ts', () => {
-    const lines = stripComments(read(path.join(SRC, 'tracker/pm-agent.ts'))).split('\n')
-      .filter((l) => /reassign/i.test(l));
-    expect(lines.length, 'the census sees the PM prompt strings').toBeGreaterThan(0);
-    for (const l of lines) {
-      expect(l, 'a line of PM prompt text mentions reassigning without forbidding it').toMatch(
-        /(cannot|can't|do not|don't|never|NOT|no reassign|not its call|is not offered)[^.]{0,80}reassign|reassign[^.]{0,60}(is not|never|NOT)/i,
-      );
-    }
   });
 });

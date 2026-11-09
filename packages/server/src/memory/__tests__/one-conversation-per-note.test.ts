@@ -264,7 +264,7 @@ describe('t144 round 2 — rows stranded below the boundary are always retried (
     // The vault is back. This fold's writer refuses everything, so NOTHING new lands — the stranded rows are still owed.
     archive.mockImplementation(() => 'archive-1');
     model.refuseWhen = 'Crate manifest';
-    __resetSummaryWriterHealthForTests(); __resetBrakesForTests();
+    __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run(); __resetBrakesForTests();
     await foldThrough('[b60]');
     model.window = 1_000_000;
     expect(lostRows(viewText(await assembleContext(AGENT, WRITER)))).toEqual([]);

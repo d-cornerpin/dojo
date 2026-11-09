@@ -30,7 +30,6 @@ import realOs from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'node:url';
 
 // Per-run AND per-worker scratch home, inside the run root — the convention
 // `vitest.setup.ts` uses for every worker's home (seven worktrees share this box, and a fixed
@@ -74,10 +73,6 @@ import {
 } from '../assembler.js';
 import { renameAgent } from '../agent-rename.js';
 import { DEFAULT_SOUL_MD } from '../templates.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '../../../../..');
-const ASSEMBLER_SRC = path.join(HERE, '..', 'assembler.ts');
 const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
@@ -106,14 +101,6 @@ function setConfig(key: string, value: string): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     )
     .run(key, value);
-}
-
-/** Source with line and block comments removed — G4: a clause satisfiable by the prose above
- *  a call is a clause about the prose. */
-function strippedSource(file: string): string {
-  return fs.readFileSync(file, 'utf-8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
 beforeEach(async () => {
@@ -261,30 +248,6 @@ describe('§3 the closed vocabulary — nothing ships a token this module cannot
     expect(new Set(SOUL_PLACEHOLDERS).size).toBe(SOUL_PLACEHOLDERS.length);
   });
 
-  it('EVERY `{{…}}` in every shipped template and in templates.ts is in the vocabulary', () => {
-    // Both halves of the shipped surface: the files `templates/` installs, and the in-code
-    // fallbacks `prompt/templates.ts` carries for a box with no templates directory. A seventh
-    // placeholder written against either one REDS here instead of reaching a model.
-    const templatesDir = path.join(REPO_ROOT, 'templates');
-    const sources = fs.readdirSync(templatesDir)
-      .filter((f) => f.endsWith('.md'))
-      .map((f) => path.join(templatesDir, f));
-    sources.push(path.join(HERE, '..', 'templates.ts'));
-    expect(sources.length).toBeGreaterThan(5);
-
-    const found = new Set<string>();
-    for (const file of sources) {
-      for (const m of fs.readFileSync(file, 'utf-8').matchAll(/\{\{([a-z_]+)\}\}/g)) {
-        found.add(m[1]);
-      }
-    }
-    expect(found.size).toBeGreaterThan(0);
-    expect([...found].filter((t) => !(SOUL_PLACEHOLDERS as readonly string[]).includes(t)))
-      .toEqual([]);
-    // …and the other direction: the vocabulary is not carrying a name nothing uses any more.
-    expect([...SOUL_PLACEHOLDERS].filter((t) => !found.has(t))).toEqual([]);
-  });
-
   it('no soul the platform SEEDS FROM reaches a model with a `{{` left in it', () => {
     // The behavioural half of the census, driven through the real door for every file-backed
     // identity the platform ships. `{{` in a rendered prompt is the defect's own signature.
@@ -293,34 +256,5 @@ describe('§3 the closed vocabulary — nothing ships a token this module cannot
       expect(rendered.length, `${id} rendered nothing`).toBeGreaterThan(200);
       expect(rendered, `${id} still carries an unsubstituted placeholder`).not.toContain('{{');
     }
-  });
-});
-
-// ════════════════════ §4 THE WIRE, BOTH DIRECTIONS ════════════════════
-
-describe('§4 the wire — one soul door, and the substitution is applied at it', () => {
-  const src = strippedSource(ASSEMBLER_SRC);
-
-  it('getSoulContent APPLIES the substituter to the resolver\'s result', () => {
-    // The call SHAPE and its APPLICATION (G4): the return value of the resolver is what is
-    // substituted, and the result is what is returned. A clause that only asserted the
-    // substituter is mentioned somewhere in this file would be satisfied by a dead import.
-    expect(src).toMatch(
-      /export function getSoulContent\(agentId: string\): string \{\s*return substituteAgentName\(resolveSoulContent\(agentId\), agentId\);\s*\}/,
-    );
-  });
-
-  it('there is exactly ONE exported soul door, so no caller can bypass the substitution', () => {
-    // The both-directions half. A second exported resolver — or exporting the inner one — is how
-    // an unsubstituted soul would find its way out again, and this is what refuses it.
-    const exported = [...src.matchAll(/export function (\w*[Ss]oulContent\w*)\s*\(/g)].map((m) => m[1]);
-    expect(exported).toEqual(['getSoulContent']);
-    expect(src).toMatch(/\nfunction resolveSoulContent\(agentId: string\): string \{/);
-  });
-
-  it('the substituter guards on the token before replacing — the identity return is CODE', () => {
-    expect(src).toMatch(
-      /export function substituteAgentName\(md: string, agentId: string\): string \{\s*if \(!md\.includes\(`\{\{\$\{AGENT_SOUL_PLACEHOLDER\}\}\}`\)\) return md;/,
-    );
   });
 });

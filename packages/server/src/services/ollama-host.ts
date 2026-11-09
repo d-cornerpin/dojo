@@ -2,8 +2,8 @@
 // THE COMMANDS THE DOJO RUNS ON THIS MAC TO LOOK AFTER ITS OLLAMA: who listens on Ollama's port, which program
 // that really is, launchd's environment,
 // the Ollama app's processes, and Homebrew and its service. Every command is behind the
-// `OllamaHost` seam so a test reads the argv of the real ones and runs fakes for the rest; a test run never
-// reaches the real set (`getOllamaHost`).
+// `OllamaHost` seam so a test reads the argv of the real ones and runs fakes for the rest (the test setup fakes
+// `getOllamaHost`).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { execFile, spawn } from 'node:child_process';

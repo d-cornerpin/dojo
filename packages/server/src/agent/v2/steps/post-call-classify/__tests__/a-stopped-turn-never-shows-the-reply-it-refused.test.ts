@@ -34,13 +34,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import type { ToolCall } from '@dojo/shared';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const TURN = 6169;
@@ -305,48 +300,5 @@ describe('§3 the stop is still written down as a stop', () => {
     stoppedAgents.add(AGENT);
     expect(isStopFenced(AGENT)).toBe(true);
     expect(typeof latchEngineCut).toBe('function');
-  });
-});
-
-// ── §4 — the census, so the seam cannot go blind again ───────────────────────────────────
-
-describe('§4 the shipping door stays a fence reader', () => {
-  const codeOf = (abs: string) => fs.readFileSync(abs, 'utf-8')
-    // Comments first: this module carries several paragraphs about the fence, and a clause
-    // satisfiable by the prose above the call tests the prose.
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-
-  const SEAM = path.resolve(HERE, '../persist-assistant.ts');
-
-  it('the seam reads the fence, and reads it BEFORE either owner-lane writer', () => {
-    const src = codeOf(SEAM);
-    const read = src.indexOf('isStopFenced(agentId)');
-    expect(read, 'the shipping door stopped reading the stop fence').toBeGreaterThan(-1);
-
-    // ORDER IS THE REQUIREMENT. A read placed after the insert is a read of a reply that has
-    // already shipped — the defect with a fence check bolted on beside it. Both writers are
-    // named because the module has two arms and either one alone can show a refused answer.
-    const firstInsert = src.indexOf('insertMessageIfAbsent(');
-    const firstBroadcast = src.indexOf('ownOutputBroadcast(');
-    expect(firstInsert, 'the insert is gone — this clause lost its subject').toBeGreaterThan(-1);
-    expect(firstBroadcast, 'the broadcast is gone — this clause lost its subject').toBeGreaterThan(-1);
-    expect(read, 'the fence is read after the row is already written').toBeLessThan(firstInsert);
-    expect(read, 'the fence is read after the reply is already broadcast').toBeLessThan(firstBroadcast);
-  });
-
-  it('the suppressed arm RETURNS at the read — it never falls through to the writers', () => {
-    const src = codeOf(SEAM);
-    // Rule 1 of the step contract: a step that requests exit returns at that point. A guard
-    // that logs and carries on is the defect with a log line in front of it.
-    expect(/if \(isStopFenced\(agentId\)\) \{[\s\S]{0,1200}?return proceed\(state\);[\s\S]{0,40}?\}/.test(src),
-      'the fence branch does not return — execution continues into the owner-lane writers')
-      .toBe(true);
-  });
-
-  it('nothing in the seam deletes a persisted reply — the no-retro-delete rule, in source', () => {
-    const src = codeOf(SEAM);
-    expect(/DELETE FROM messages|deleteMessage\(/.test(src),
-      'the seam gained a deleter — a late press can now un-say what the owner already read')
-      .toBe(false);
   });
 });

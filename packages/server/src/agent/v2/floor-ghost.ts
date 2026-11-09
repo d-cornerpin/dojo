@@ -193,7 +193,7 @@ export function recordFloorGhost(input: FloorGhostInput, deps: FloorGhostDeps): 
   // 3 — THE HEALTH SURFACE.
   try {
     deps.broadcast({
-      type: 'chat:error', agentId,
+      type: 'chat:error', cardClass: 'informational', agentId,
       error: ownerLine,
       code: 'FLOOR_GHOSTED',
       severity: 'warning',
