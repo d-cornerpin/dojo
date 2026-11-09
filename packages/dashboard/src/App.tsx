@@ -27,7 +27,6 @@ import { ActiveAgentProvider } from './components/ActiveAgentProvider';
 import { RightDockProvider } from './components/RightDockProvider';
 import { TechniqueSessionProvider } from './components/TechniqueSessionProvider';
 
-// ── Auth guard — redirects to login if not authenticated ──
 
 const RequireAuth = () => {
   const { isAuthenticated, isLoading } = useAuth();
@@ -47,7 +46,6 @@ const RequireAuth = () => {
   return <Outlet />;
 };
 
-// ── Setup redirect — checks if OOBE is needed ──
 
 const SetupGate = () => {
   const { isAuthenticated } = useAuth();
@@ -77,9 +75,8 @@ const SetupGate = () => {
   return <Outlet />;
 };
 
-// ── WebSocket shell — single provider for all dashboard pages ──
-// Mounts ONLY after authentication, so the token always exists.
-// Persists across page navigation (single mount).
+// Mounts only after authentication (so the token exists) and persists across
+// navigation, so one WebSocket connection serves every page.
 
 const WebSocketShell = () => {
   return (
@@ -89,30 +86,21 @@ const WebSocketShell = () => {
   );
 };
 
-// ── Dashboard layout with sidebar ──
 
-// Shared chrome for every authenticated surface: the toast system. Both the
-// dojo3 stage and the full-page surfaces render inside it via <Outlet/>.
+// Shared chrome for every authenticated surface: the toast system.
 const DashboardChrome = () => (
-  // ToastProvider is shared; the dojo3 stage renders its own orb-anchored
-  // notification cards (Dojo3Notifications), while the full-page chrome below
-  // keeps the classic corner ToastContainer — same queue, two surfaces.
+  // One toast queue feeds two surfaces: the dojo3 stage's orb-anchored cards
+  // (Dojo3Notifications) and the full-page corner ToastContainer.
   <ToastProvider>
     <SystemRestartOverlay />
     <Outlet />
   </ToastProvider>
 );
 
-// ── Server-restart overlay (FA-G5) ──
-//
-// The server broadcasts system:restart right before it exits to restart under
-// launchd. Without a consumer, every OTHER connected device (and any restart
-// not triggered from the local Settings button, e.g. agent-controls or remote) just
-// saw the socket drop and churned through raw reconnect attempts. This mounts
-// ONE overlay at the chrome level (inside WebSocketShell, above every routed
-// page) so any device rides out the ~1-2s gap with a plain "Restarting…" screen
-// instead of connection noise, then clears itself once the socket reconnects.
-// The local Settings inline note stays; this covers the cases it can't.
+// The server broadcasts system:restart just before it exits to restart. One
+// chrome-level overlay lets every connected device (not just the one that
+// triggered the restart) ride out the gap instead of raw reconnect noise, and
+// clears once the socket reports 'connected' again.
 const SystemRestartOverlay = () => {
   const { subscribe, connectionStatus } = useWebSocket();
   const [restarting, setRestarting] = useState(false);
@@ -143,9 +131,9 @@ const SystemRestartOverlay = () => {
     }
   }, [restarting, connectionStatus]);
 
-  // Safety net: never wedge the overlay if a reconnect never lands (dev server
-  // killed for good). The socket layer already redirects to /login after
-  // repeated failures; this is a belt-and-suspenders clear.
+  // Safety net: clear the overlay if a reconnect never lands (dev server
+  // killed for good). The socket layer already redirects to /login on
+  // repeated failures; this is the backstop.
   useEffect(() => {
     if (!restarting) return;
     const t = setTimeout(() => setRestarting(false), 60_000);
@@ -171,19 +159,14 @@ const SystemRestartOverlay = () => {
   );
 };
 
-// The PERSISTENT dojo3 shell: one Chat (stage + orb) that stays mounted
-// across all panel surfaces, so the orb never reloads on navigation. The
-// routed page is injected as the panel content via <Outlet/>; on "/" there
-// is no panel (just the chat). Because this layout element stays mounted
-// while any of its child routes match, navigating Agents -> Vault -> ...
-// only swaps the panel content, not the orb.
+// Persistent dojo3 shell: one Chat (stage + orb) stays mounted across all
+// panel routes, so navigation swaps only panel content, never the orb.
 const Dojo3Shell = () => {
   const location = useLocation();
   const isHome = location.pathname === '/';
-  // Technique build/edit routes don't overlay a panel — the chat itself becomes
-  // the trainer conversation (slides nothing, stays in focus) and the Technique
-  // Mat docks on the right. Their <Outlet/> mounts the session controller
-  // outside the panel slot so it can start the session + open the dock.
+  // Technique build/edit mount no panel: the chat becomes the trainer
+  // conversation, the Mat docks right, and their <Outlet /> runs the session
+  // controller outside the panel slot.
   const isTechniqueBuild = /^\/techniques\/(new|[^/]+\/edit)$/.test(location.pathname);
   const showPanel = !isHome && !isTechniqueBuild;
   return (
@@ -207,7 +190,6 @@ const Dojo3Shell = () => {
 };
 
 
-// ── Routes ──
 
 const AppRoutes = () => {
   return (
@@ -256,33 +238,23 @@ const AppRoutes = () => {
   );
 };
 
-// ── Global WebSocket-driven alerts (uses the shared toast system) ──
 
 export const GlobalAlerts = () => {
   const { subscribe, connectionStatus } = useWebSocket();
   const toast = useToast();
   const { addActionToast, removeToastByKey } = toast;
 
-  // D-B v2 (owner-directed): the Healer's consent asks no longer toast. They queue
-  // in the Healer section of Vitals (HealerVitals) in plain language, and the only
-  // out-of-band lane is a text for a critical diagnostic while the owner is away.
-  // The urgent-approval toast wiring (present-on-frame + re-present-on-load/reconnect
-  // + orb reddening) is retired here. The generic action-toast capability stays in
-  // useToast for other features; this consumer is removed. HealerVitals keeps its
-  // own healer:proposal subscription, so the WS frames are still emitted.
+  // Healer consent asks are not toasted here: HealerVitals keeps its own
+  // healer:proposal subscription and queues them in the Vitals page.
 
-  // Every text the Dojo sends the owner (the server's owner-notice door, `sendAlert`) also
-  // arrives here, in the same words, as a `chat:error` spoken by the platform rather than an
-  // agent, and stays (sticky) until he presses its X, which tells the server. The same words on
-  // screen are one card. An all-clear's `info` frame removes the card it names and raises none.
-  // On load and on every reconnect the server's cards are asked for again, re-derived from the
-  // alert state it keeps, so a card outlives the page (t138 rounds 2-3).
-  // v3.5 N42 r2: a card whose words can change while it stands carries `cardKey` (its condition), and is one
-  // card per key: its end frame and its X find it by the key, whatever its words became.
-  // v3.5 field fix 3 (#9, owner ruling OR-FIELD3 (c)): a card declares its class. `action` (absent means action) keeps
-  // the sticky card and the orb's red alert. `informational` is a plain info toast that leaves by itself; nothing to
-  // dismiss on the server, since the owner-notices list never re-derives it. Background progress is no card at all:
-  // it arrives as `engine:activity`, the orb's task glyph (`useOrbActivity`).
+  // Owner notices reach this tab as platform-spoken `chat:error` frames and stay
+  // sticky until dismissed (the X tells the server). On every connect the server's
+  // standing cards are re-fetched, so a card outlives a page reload; an `info`
+  // frame is an all-clear that removes the card it names.
+  // cardKey groups one condition's changing words into one card: the end frame and
+  // the X find it by key, whatever its words became.
+  // A card declares its class: `action` (absent means action) stays sticky and keeps
+  // the orb's red alert; `informational` is a self-expiring toast with nothing to dismiss server-side.
   const showOwnerCard = useCallback((words: string, critical: boolean, cardKey?: string, cardClass?: 'action' | 'informational') => {
     const dedupeKey = `owner-alert:${cardKey ?? words}`;
     if (cardKey) removeToastByKey(dedupeKey);   // new words for the same condition replace the card
@@ -299,9 +271,9 @@ export const GlobalAlerts = () => {
     });
   }, [addActionToast, removeToastByKey]);
 
-  // Every owner card on screen — from an earlier load OR a live frame whose END this tab missed
-  // while away — is reconciled against what the server says still stands (t138 r6, review M2).
-  // The list carries ACTION cards only (field fix 3 #9); an informational toast leaves by itself.
+  // Reconcile on-screen owner cards against what the server says still stands: a tab
+  // that missed a card's end frame while away must drop it. The list carries action
+  // cards only; an informational toast leaves by itself.
   const onScreen = useRef(toast.toasts);
   onScreen.current = toast.toasts;
   useEffect(() => {
@@ -343,9 +315,6 @@ export const GlobalAlerts = () => {
       }
     });
 
-    // D-B v2: the Healer's consent asks are no longer toasted here (retired). They
-    // live in the Healer section of Vitals; HealerVitals owns the healer:proposal
-    // subscription for its live refresh.
 
     return () => { unsub(); unsub2(); unsub3(); };
   }, [subscribe, toast, showOwnerCard, removeToastByKey]);
@@ -353,13 +322,9 @@ export const GlobalAlerts = () => {
   return null; // rendering is handled by ToastContainer
 };
 
-// ── Agent-driven navigation ──
-//
-// Lets the agent move the user's view (open a page or a Settings tab) in
-// response to "take me to X" / "where do I change Y?". The server emits
-// ui:navigate (from the open_page / open_settings tools); this handler is
-// the only place that consumes it. Mounted inside Dojo3Shell so it sits
-// within both the router (useNavigate) and the WebSocket context.
+// The server emits ui:navigate (from the open_page / open_settings tools); this
+// is its only consumer. It mounts inside Dojo3Shell so it has both the router
+// (useNavigate) and the WebSocket context.
 const NavigationHandler = () => {
   const { subscribe } = useWebSocket();
   const navigate = useNavigate();
