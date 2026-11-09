@@ -74,7 +74,7 @@ vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
   const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-the-18-storm');
-  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs), isTestRun: (): boolean => true };
+  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs) };
 });
 interface LogLine { level: string; message: string; meta: Record<string, unknown> }
 const logLines: LogLine[] = [];

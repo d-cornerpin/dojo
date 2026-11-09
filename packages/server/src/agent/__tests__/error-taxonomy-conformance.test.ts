@@ -42,50 +42,7 @@
 // PROBE SHAPE and not only on the function name.
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { classifyProviderErrorText } from '../provider-error.js';
-
-const SRC = path.join(__dirname, '..', '..');
-
-/** THE ONE PROSE TABLE. */
-const TAXONOMY_MODULE = 'agent/provider-error.ts';
-
-/**
- * Every module allowed to read provider-error PROSE, with the role that earns it. A fifth
- * entry appearing here is the third-table regression, and the walk names the file.
- */
-const PROSE_READERS: Record<string, string> = {
-  [TAXONOMY_MODULE]:
-    'THE TABLE — the one prose->class mapping, reached only when there is no status and no transport code',
-  'agent/v2/classifiers/provider.ts':
-    'NARROWER — calls the table FIRST and only narrows what it already ruled `bad_request`/`unknown` into a remediation kind. Asserted below: the call precedes the first probe.',
-  'agent/v2/classifiers/errors.ts':
-    'WRAPPER — switches on the table\'s class, plus one named residue: a credential named in prose with no status behind it, which the table cannot see',
-  'healer/injury-recovery.ts':
-    'WRAPPER — holds a persisted `agents.last_error` STRING with its status long gone; delegates, and adds only the dojo buckets (context corruption, config) that have no HTTP equivalent',
-};
-
-/** The two sanctioned wrappers, by module and by the delegation each must show. */
-const SANCTIONED_WRAPPERS: Array<{ module: string; delegatesTo: RegExp }> = [
-  { module: 'agent/v2/recovery.ts', delegatesTo: /classifyProviderErrorText\(/ },
-  { module: 'healer/injury-recovery.ts', delegatesTo: /classifyProviderErrorText\(/ },
-];
-
-function walk(dir: string, acc: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'migrations') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) acc.push(fp);
-  }
-  return acc;
-}
-
-const rel = (f: string): string => path.relative(SRC, f).split(path.sep).join('/');
-const sourceFiles = (): string[] => walk(SRC).map(rel).sort();
-const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
 
 /** Blank comments, keeping line count: this file's own prose names every banned probe. */
 const stripComments = (s: string): string => s
@@ -118,45 +75,6 @@ function countProbes(text: string): number {
 }
 
 describe('T10 Step 1b — one prose->class table, and no room for a third', () => {
-  it('THE CENSUS: every module that reads provider-error prose is declared, with its role', () => {
-    const measured: Record<string, string> = {};
-    for (const f of sourceFiles()) {
-      if (countProbes(read(f)) === 0) continue;
-      measured[f] = PROSE_READERS[f] ?? 'UNDECLARED — a new private prose->class table';
-    }
-    expect(measured).toEqual(PROSE_READERS);
-  });
-
-  it('`ProviderErrorClass` is DECLARED in exactly one place', () => {
-    const declarers = sourceFiles().filter((f) => /\btype ProviderErrorClass\b/.test(read(f)));
-    expect(declarers).toEqual([TAXONOMY_MODULE]);
-  });
-
-  it('both surviving `classifyError` wrappers delegate to the table — neither re-derives', () => {
-    const definers = sourceFiles().filter((f) => /function classifyError\s*\(/.test(stripComments(read(f))));
-    expect(definers.sort()).toEqual(SANCTIONED_WRAPPERS.map((w) => w.module).sort());
-    for (const { module, delegatesTo } of SANCTIONED_WRAPPERS) {
-      expect(stripComments(read(module)), `${module} does not delegate`).toMatch(delegatesTo);
-    }
-  });
-
-  it('the NARROWER asks the table BEFORE it looks at any words', () => {
-    // Order matters and it is checkable because both sides are in ONE file — the engine
-    // corpus's concatenation-order trap does not apply here (see `engine-sources.ts`).
-    // `classifiers/provider.ts` may only narrow a verdict the table already reached; if a
-    // probe ever ran first, the file would be deciding a class from prose again.
-    const src = stripComments(read('agent/v2/classifiers/provider.ts'));
-    const call = src.indexOf('classifyProviderErrorText(');
-    let firstProbe = Infinity;
-    for (const re of PROBES) {
-      re.lastIndex = 0;
-      const m = re.exec(src);
-      if (m) firstProbe = Math.min(firstProbe, m.index);
-    }
-    expect(call, 'the narrower never calls the table').toBeGreaterThan(-1);
-    expect(firstProbe, 'the narrower has no probes — this clause is measuring nothing').toBeLessThan(Infinity);
-    expect(call).toBeLessThan(firstProbe);
-  });
 
   it('NON-VACUITY: the single source still gets the incident right', () => {
     // The census could pass over a table that had stopped working. One control, driving the

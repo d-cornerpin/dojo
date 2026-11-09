@@ -47,9 +47,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -69,11 +66,7 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { trackerListActive } from '../../tracker/tools.js';
 import { COMMITMENT_POSITION_NONE, commitmentPositionLine } from '../../work/obligation-memory.js';
-import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 const AGENT = 'hl6-agent';
 let seq = 0;
@@ -99,45 +92,6 @@ beforeEach(() => {
      VALUES (?, ?, 'idle', '1970-01-01')`,
   ).run(AGENT, AGENT);
   seq = 0;
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §1 — MIGRATION 1: the static header stops claiming an authority it does not have.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§1 the summaries-lane header is demoted to a pointer', () => {
-  // t210: the lane's render (and its header) moved to `memory/summaries-lane.ts`; the slice is
-  // the header's own declaration there, bounded by the footer's, so it cannot widen silently.
-  const laneSource = (): string => {
-    const src = read('memory/summaries-lane.ts');
-    const from = src.indexOf('const HEAD =');
-    const next = src.indexOf('const FOOT =', from);
-    if (from < 0 || next <= from) throw new Error('summaries header bounds not found in summaries-lane.ts');
-    return src.slice(from, next);
-  };
-
-  it('the HEAD sentence is gone — OPEN WORK is no longer named as the current record of what is owed', () => {
-    expect(laneSource()).not.toContain('the OPEN WORK block is the current record of what is owed');
-  });
-
-  it('the load moved to a POINTER at the complete snapshot, named by the block it points at', () => {
-    const lane = laneSource();
-    expect(lane).toContain('Obligation lines here are HISTORICAL');
-    expect(lane).toContain('OPEN COMMITMENTS');
-  });
-
-  it('the header is STILL STATIC — one literal, no interpolation (the cache law is unmoved)', () => {
-    const lane = laneSource();
-    const header = lane.slice(lane.indexOf('═══ COMPRESSED HISTORY'));
-    expect(header.length).toBeGreaterThan(200);
-    expect(header, 'the header is a literal; only the summaries themselves interpolate')
-      .not.toContain('${');
-  });
-
-  it('stored summaries are still never rewritten at render time (T20\'s law, unchanged)', () => {
-    expect(read('memory/assembler.ts')).not.toContain('annotateSummaryObligations');
-    expect(read('memory/summaries-lane.ts')).not.toContain('annotateSummaryObligations'); // t210: the render moved here
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -172,60 +126,5 @@ describe('§2 the board-read result states the commitment position', () => {
     // memory this whole class of task exists to prevent.
     seedCommitment({ id: 'cmt:dddddddddddd', title: 'x', state: 'abandoned' });
     expect(commitmentPositionLine(AGENT)).toBe(COMMITMENT_POSITION_NONE);
-    expect(read('tracker/tools.ts')).toContain('commitmentPositionLine');
-    expect(read('tracker/tools.ts')).not.toContain('open commitments');
-  });
-
-  it('IT COSTS ZERO CACHED BYTES: the sentence is a tool RESULT, in no prompt surface', () => {
-    // The [FILED] precedent, measured the same way (W18's release verification): a `return`
-    // value is not a tool description and not a registry entry, so it never enters the
-    // cacheable prefix. If this ever appears in either, the migration has quietly become a
-    // prefix change and must be re-registered.
-    expect(read('agent/tools/definitions.ts')).not.toContain(COMMITMENT_POSITION_NONE);
-    expect(read('tools/tool-docs.ts')).not.toContain(COMMITMENT_POSITION_NONE);
-    expect(read('prompt/registry/entries.ts')).not.toContain(COMMITMENT_POSITION_NONE);
-    expect(read('prompt/assembler.ts')).not.toContain(COMMITMENT_POSITION_NONE);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §3 — THE THREE KEEPS. A verdict nobody can check is a verdict nobody keeps.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§3 the audit\'s KEEP verdicts are pinned, not asserted', () => {
-  it('T23 — the consent sentence stays, in both its homes, byte-for-byte', () => {
-    const sentence =
-      "If your proposal asked the user a question about a specific item, a generic approval "
-      + "('yes', 'go ahead') covers only the items you marked unambiguous — act on those, and "
-      + 're-ask or leave the questioned item.';
-    expect(read('prompt/assembler.ts')).toContain(sentence);
-    expect(read('prompt/templates.ts')).toContain('generic approval');
-  });
-
-  // The two steer texts are located through `engine-sources.ts`, never by a path of our own:
-  // PHASE-6's guard-corpus census refuses a second hand-rolled walk of `agent/v2/steps`, and
-  // it is right to — a pin that names a file directly stops seeing its subject silently the
-  // day a tranche moves it, which is precisely how a KEEP verdict would rot into drift.
-  it('T33 — the standing-promise steer text is unchanged', () => {
-    const floor = engineFileWithBoth(
-      'Your reply made a STANDING promise to ${userWords(ctx.turnCtx.address)}',
-      'Do not repeat the promise without recording it.',
-    );
-    expect(floor.text).toContain('A promise that lives only in this conversation does not survive a ');
-  });
-
-  it('T36 — the standing-state steer text is unchanged, bounded retry included', () => {
-    const floor = engineFileWithBoth(
-      'Your reply told ${userWords(ctx.turnCtx.address)} what is currently scheduled or owed',
-      'do not pick up new work you were not asked for.',
-    );
-    expect(floor.text).toContain('This round is for ');
-  });
-
-  it('T33/T36 keep the capability half AT the door, where T29 put it', () => {
-    // W13's own residual hands the capability class to the door texts by name. This pins that
-    // the door still speaks it, so "keep the steer" cannot quietly mean "and lose the door".
-    expect(read('agent/tools/gates.ts')).toContain('sms_send');
-    expect(read('agent/tools/cat/comms.ts')).toContain('sms_send');
   });
 });

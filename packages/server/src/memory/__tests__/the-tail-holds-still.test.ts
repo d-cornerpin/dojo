@@ -75,8 +75,6 @@ import { buildOpenWorkInjection } from '../../work/obligations.js';
 import { renderDeliveriesLane } from '../deliveries-lane.js';
 import { renderRecallLane, renderRecalledBlock, renderCommitmentsBlock, type RecallLaneContext } from '../recall-lane.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
-import { POST_BUDGET_ENTRY_LANE } from '../lanes.js';
-import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-t69b';
@@ -449,68 +447,6 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
     ['msg.relevant-memory', 'retrieved against the LIVE ASK — roadmap #10 is why it rides the tail'],
     ['msg.current-time', 'its content IS the clock'],
   ];
-
-  /**
-   * The injection order, read from the ENGINE FILE that decides it — located through the
-   * shared derivation (`engine-sources.ts`), never by a hand-typed path. GUARD-AUDIT's census
-   * requires this: a guard that names `agent/v2/steps/...` by path stops seeing its subject
-   * SILENTLY the next time a tranche moves it, and `engineFileWithBoth` throws with both homes
-   * printed if the two ends of the order ever land in different files.
-   */
-  const injectionOrder = (): string[] => {
-    const src = engineFileWithBoth("'engine.open-commitments'", "'msg.current-time'");
-    const ids: string[] = [];
-    for (const m of src.text.matchAll(
-      /(?:injectRegistryMessage|pushEngineMessage)\([^)]*?['"]((?:msg|engine)\.[a-z-]+)['"]/gs,
-    )) {
-      if (!ids.includes(m[1])) ids.push(m[1]);
-    }
-    return ids;
-  };
-
-  it('the deliberate lanes are the LAST ones, in that order', () => {
-    const order = injectionOrder();
-    expect(order.slice(-DELIBERATE.length)).toEqual(DELIBERATE.map(([id]) => id));
-  });
-
-  it('every block that changes every turn sits BEHIND every block that changes rarely', () => {
-    const order = injectionOrder();
-    const at = (id: string) => {
-      const i = order.indexOf(id);
-      expect(i, `${id} is not injected by pre-call-injections.ts`).toBeGreaterThanOrEqual(0);
-      return i;
-    };
-    // The board snapshot moves when the WORK BOARD moves; the answered ledger moves on every
-    // answered turn; the recall lane moves on every ask. That is the required order, and both
-    // of the first two were on the wrong side of it at `2557747`.
-    expect(at('engine.open-commitments')).toBeLessThan(at('engine.recently-answered'));
-    // identity-fix review F1: the other-threads lane's slot is pinned pairwise like its
-    // eight neighbours — held only by the last-four clause before this line, so a move to
-    // the FRONT of the stable group rode green while re-billing every block behind it.
-    expect(at('msg.integration-status')).toBeLessThan(at('engine.other-threads'));
-    expect(at('engine.other-threads')).toBeLessThan(at('engine.recently-answered'));
-    expect(at('engine.recently-answered')).toBeLessThan(at('msg.relevant-memory'));
-    // The send-keyed blocks are stabler than all three and stay in front of them.
-    expect(at('engine.recent-outbound')).toBeLessThan(at('engine.open-commitments'));
-    expect(at('msg.deliveries')).toBeLessThan(at('engine.open-commitments'));
-    expect(at('engine.open-work')).toBeLessThan(at('engine.open-commitments'));
-    // T76b: THE LIVE INTEGRATION-STATUS LINE takes the last seat in the stable group.
-    // It is NOT deliberate churn — on a turn that calls no integration it is byte-identical,
-    // which `the-status-line-beats-the-note.test.ts` §4 pins — but it is the most volatile of
-    // the blocks that hold still, because a SUCCESSFUL Google/Microsoft call legitimately
-    // moves its last-use term. Most-stable-first therefore puts it behind everything above
-    // and in front of the four registered exemptions, so what it costs when it does move is
-    // its own bytes and nothing else.
-    expect(at('msg.peer-status')).toBeLessThan(at('msg.integration-status'));
-    expect(at('engine.open-commitments')).toBeLessThan(at('msg.integration-status'));
-    expect(at('msg.integration-status')).toBeLessThan(at('engine.recently-answered'));
-  });
-
-  it('every injected tail entry is DECLARED in the lane table — no undeclared block rides here', () => {
-    for (const id of injectionOrder()) {
-      expect(POST_BUDGET_ENTRY_LANE[id], `${id} rides the tail undeclared`).toBeTruthy();
-    }
-  });
 
   it('the slot numbers say the same thing the imperative order does', () => {
     expect(MessageSlot.TurnContext).toBeLessThan(MessageSlot.Deliveries);

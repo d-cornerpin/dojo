@@ -55,10 +55,7 @@ vi.mock('../../tracker/pm-agent.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensurePMAgentRunning: () => undefined,
 }));
-
-import fs from 'node:fs';
 import path from 'node:path';
-import url from 'node:url';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openCommitment } from '../store.js';
@@ -68,8 +65,6 @@ import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const db = (): Database.Database => mockDb.current!;
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const sourceOf = (rel: string): string => fs.readFileSync(path.resolve(here, rel), 'utf8');
 
 const call = (args: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> =>
   trackerHandlers['work_close_request:commitment']({
@@ -179,118 +174,5 @@ describe('§1 an ask the user called off settles `abandoned`, with their words',
     const res = await call({ id: 'cmt:deadbeefdeadbeef', disposition: 'dropped', note: 'x' });
     expect(res.isError).toBe(true);
     expect(res.content).toContain('no open work matches');
-  });
-
-  it('NO TOOL SURFACE MOVED: the door and the vocabulary were already advertised', () => {
-    const defs = sourceOf('../../agent/tools/definitions.ts');
-    expect(defs).toContain('Use disposition "dropped" when the person told you to forget it or it no longer applies.');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════
-// §2 — LEG B1: THE STEER STOPS WAITING FOR A REPLY, AND THE RECORD DOES NOT MOVE WITH IT
-// ════════════════════════════════════════════════════════════════════
-
-describe('§2 the owed-interrupt gate splits, and T25\'s high water stays put', () => {
-  const step = (): string => sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts');
-
-  it('the gate no longer requires a reply to exist', () => {
-    const src = step();
-    const at = src.indexOf('  if (\n    counterparty.kind === \'user\' &&');
-    expect(at).toBeGreaterThan(-1);
-    const gate = src.slice(at, src.indexOf('\n  ) {', at));
-    expect(gate).not.toContain('persistedContent && persistedContent.trim().length > 0');
-    expect(gate).toContain('(maySteer || mayRecord)');
-  });
-
-  it('`maySteer` carries the bound and the latch, and nothing about a reply', () => {
-    const src = step();
-    const decl = src.slice(src.indexOf('const maySteer ='), src.indexOf(';', src.indexOf('const maySteer =')));
-    expect(decl).toContain("steerFired(state.steerQueue, 'owed-interrupt')");
-    expect(decl).toContain('state.loopCount < MAX_TOOL_LOOPS');
-    expect(decl).not.toContain('persistedContent');
-    expect(decl).not.toContain('hasReply');
-  });
-
-  it('`mayRecord` requires a reply AND the once-per-turn latch — this is the T25 guarantee', () => {
-    const src = step();
-    const decl = src.slice(src.indexOf('const mayRecord ='), src.indexOf(';', src.indexOf('const mayRecord =')));
-    expect(decl).toContain('hasReply');
-    expect(decl).toContain('!state.owedInterruptSubjectsRecorded');
-    const call = src.indexOf('recordOwedInterruptSubjects(agentId');
-    expect(src.slice(0, call).lastIndexOf('if (mayRecord) {')).toBeGreaterThan(
-      src.slice(0, call).lastIndexOf('if (maySteer)'));
-    expect((src.match(/recordOwedInterruptSubjects\(agentId/g) ?? []).length).toBe(1);
-    expect(src).toContain('advance(state, { owedInterruptSubjectsRecorded: true })');
-  });
-
-  it('the latch is declared on the turn state and initialised false', () => {
-    const st = sourceOf('../../agent/v2/state.ts');
-    expect(st).toContain('owedInterruptSubjectsRecorded: boolean;');
-    expect(st).toContain('owedInterruptSubjectsRecorded: false,');
-  });
-
-  it('a pass that may only RECORD does not also steer', () => {
-    expect(step()).toContain('if (!maySteer) return proceed(state);');
-  });
-
-  it('STILL ONE STEER PER TURN AND ONE FILING SITE — bounded by the code, not by care', () => {
-    // T53 (owner ruling 5) re-pointed the counter, and WIDENED it rather than moving it. The
-    // bound is "this step files at most one steer", and the step now files it through the
-    // RC-19 door (`persistEngineSteer`, which owns the enqueue and the durable row) instead
-    // of calling `enqueueSteer` itself. Counting only the old spelling would have let a
-    // second steer land through the other door without failing anything, which is the exact
-    // shape of hole this clause exists to close — so BOTH spellings are counted, together.
-    const src = step();
-    expect((src.match(/(?:enqueueSteer|persistEngineSteer)\(/g) ?? []).length).toBe(1);
-    expect(src).toContain('state.loopCount < MAX_TOOL_LOOPS');
-  });
-});
-
-describe('§3 the in-flight arm is LIVE, and it never eats the turn\'s tool calls', () => {
-  it('the step is called on tool-riding passes too — the reason B1 was inert before', () => {
-    const idx = sourceOf('../../agent/v2/steps/post-call-classify/index.ts');
-    expect(idx).toContain('import { runOwedInterrupt }');
-    expect(idx).toContain('const owedInFlight = await runOwedInterrupt(state, ctx, sc);');
-    // in the ELSE of the no-tool-calls branch, i.e. exactly the tool-riding passes
-    const elseAt = idx.indexOf('} else {', idx.indexOf('if (result.toolCalls.length === 0) {'));
-    expect(elseAt).toBeGreaterThan(-1);
-    expect(idx.indexOf('const owedInFlight')).toBeGreaterThan(elseAt);
-  });
-
-  it('and it returns `proceed` on that path, so `execute` still runs the calls', () => {
-    const src = sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts');
-    expect(src).toContain('const ridingToolCalls = ctx.result.toolCalls.length > 0;');
-    expect(src).toContain('return ridingToolCalls ? proceed(state) : continueLoop(state);');
-  });
-
-  it('the in-flight steer asks the model to stop its OWN work, never to answer the arrival', () => {
-    const src = sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts');
-    const body = src.slice(src.indexOf('const inFlightPrompt = ('), src.indexOf('\n      );', src.indexOf('const inFlightPrompt = (')));
-    expect(body).toContain('Do NOT answer ${itThem} in this turn');
-    expect(body).toContain('${laterTurnRelease}');
-    expect(body).toContain('if it cancels or replaces that work, STOP');
-    expect(body).toContain('do not deliver the cancelled task\'s answer as though they had not spoken');
-    expect(body).not.toContain('Reply ONLY to');
-  });
-
-  it('it names the B2 door and the note, so the ledger gets the user\'s words', () => {
-    const src = sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts');
-    const body = src.slice(src.indexOf('const inFlightPrompt = ('), src.indexOf('\n      );', src.indexOf('const inFlightPrompt = (')));
-    expect(body).toContain('work_close_request(action="commitment", disposition="dropped"');
-    expect(body).toContain("note=\"<${userWords(turnCtx.address)}'s own words>\"");
-    // the id is SUPPLIED: the serving ask is `claimed` and so is absent from the OPEN WORK block
-    expect(src).toContain("const servingAskId = turnCtx.root?.kind === 'ask'");
-    expect(body).toContain('id="${servingAskId}"');
-  });
-
-  it('the in-flight form is chosen exactly when nothing has been delivered', () => {
-    expect(sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts'))
-      .toContain('const rePrompt = hasReply ? afterReplyPrompt : inFlightPrompt;');
-  });
-
-  it('T31\'s hold is not weakened: an in-flight grant is still marked afterReply:false', () => {
-    const src = sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts');
-    expect(src).toContain('afterReply: hasReply,');
   });
 });

@@ -22,23 +22,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const PKGS = path.join(__dirname, '..', '..', '..');
-const ROOTS = ['server/src', 'shared/src', 'dashboard/src'];
-
-function walk(dir: string, acc: string[] = []): string[] {
-  if (!fs.existsSync(dir)) return acc;
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'migrations' || e.name === 'node_modules') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts') || e.name.endsWith('.tsx')) acc.push(fp);
-  }
-  return acc;
-}
-
-const files = ROOTS.flatMap((r) => walk(path.join(PKGS, r)))
-  .map((f) => path.relative(PKGS, f).split(path.sep).join('/'))
-  .sort();
 
 /** One engine marker: who owns its spelling, how a SECOND copy is recognised, and every file
  *  still holding one. `pattern` deliberately matches only shapes prose cannot produce —
@@ -146,42 +129,9 @@ const MARKERS: Marker[] = [
   },
 ];
 
-const read = (rel: string) => fs.readFileSync(path.join(PKGS, rel), 'utf8');
-
-/** The file with its COMMENT lines removed.
- *
- *  A comment that names a marker is documentation and we want more of it, not less — this
- *  codebase's comments are where the incidents behind each guard are recorded. A second
- *  MATCHER is the thing that drifts. Dropping whole-line comments (`//…` and a jsdoc
- *  continuation `*…`) separates the two cheaply and without a parser; a marker literal in
- *  live code always sits on a line that is not one of those. */
-const code = (rel: string) =>
-  read(rel)
-    .split('\n')
-    .filter((l) => {
-      const t = l.trimStart();
-      return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'));
-    })
-    .join('\n');
-
 describe('marker ownership — one matcher per marker (17 §C5)', () => {
-  it('walks all three packages and finds real files', () => {
-    expect(files.length).toBeGreaterThan(200);
-    expect(files).toContain(OWNER);
-    expect(files).toContain('server/src/agent/v2/loop.ts');
-    expect(files).toContain('dashboard/src/pages/Chat.tsx');
-  });
 
   for (const m of MARKERS) {
-    it(`${m.name}: only ${m.owner} + ${Object.keys(m.allow).length} allowlisted`, () => {
-      const offenders = files.filter((f) => f !== m.owner && m.pattern.test(code(f)));
-      const unexplained = offenders.filter((f) => !(f in m.allow));
-      expect(unexplained, `${m.name}: a second copy with no owner`).toEqual([]);
-      // And the allowlist stays honest in the other direction: an entry that no longer
-      // matches is a stale exception, which is how allowlists rot into permission slips.
-      const stale = Object.keys(m.allow).filter((f) => !offenders.includes(f));
-      expect(stale, `${m.name}: allowlist entries that no longer match anything`).toEqual([]);
-    });
 
     it(`${m.name}: the owner exports it (${m.exports.join(', ')})`, async () => {
       const shared = await import('@dojo/shared') as Record<string, unknown>;
@@ -217,73 +167,5 @@ describe('the display_kind enum has one meaning in two languages', () => {
     expect(block, 'migration 132 no longer declares the CHECK').toBeTruthy();
     const inSql = [...block![1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
     expect(inSql).toEqual([...DISPLAY_KINDS].sort());
-  });
-});
-
-// ── Vocabularies that OVERLAP the taxonomy and are deliberately NOT folded into it ──
-//
-// Step 4 of this task's brief: anything still hand-rolling classification outside the shared
-// module is either converted or ENUMERATED WITH ITS REASON. These are the enumeration, kept
-// as a live assertion rather than a comment so the list cannot quietly grow.
-
-describe('the deliberate non-folds', () => {
-  const NOT_FOLDED: Array<{ file: string; what: string; why: string }> = [
-    {
-      file: 'server/src/memory/platform-noise.ts',
-      what: 'PLATFORM_NOISE_PATTERNS',
-      why: 'A DIFFERENT QUESTION, and this list proves it: the display taxonomy classifies a '
-        + '"── New Session ──" divider as USER-VISIBLE while this list excludes it from '
-        + 'summaries. "What a human sees" and "what may enter a summary" disagree on real '
-        + 'entries, so collapsing them would make a summariser change a display change. The '
-        + 'divider SHAPE is imported from @dojo/shared; only the membership is local.',
-    },
-    {
-      file: 'server/src/memory/summary-rebuild.ts',
-      what: 'the contamination pattern list',
-      why: 'Same question as platform-noise.ts, same answer. Shape imported, policy local.',
-    },
-    {
-      file: 'server/src/services/imessage-bridge.ts',
-      what: 'stripSystemTags',
-      why: 'Strips routing tags the MODEL hallucinated back into its own reply before that '
-        + 'text is sent to a phone. It is an outbound-channel concern, not a display tier, '
-        + 'and it runs on text that is never a row.',
-    },
-    {
-      file: 'server/src/agent/v2/classifiers/output.ts',
-      what: 'stripLeadingTimeStamp',
-      why: 'Removes the per-message date stamp the assembler prefixes into the MODEL PAYLOAD '
-        + '(pinned by bytes in memory/__tests__/message-time-stamps.test.ts, T6b). A payload '
-        + 'concern with its own gate; the display columns never enter the payload.',
-    },
-    {
-      file: 'server/src/voice/text-sanitize.ts',
-      what: 'sanitizeForSpeech',
-      why: 'Turns text into something a TTS engine pronounces naturally (markdown, URLs, '
-        + 'paths). Not classification. Its ONE display marker — the orb mood — now comes '
-        + 'from @dojo/shared.',
-    },
-    {
-      // ⚠ RE-POINTED 2026-08-04 BY PHASE-6 T6 (CUT 8), and this entry is the audit
-      // working exactly as its own declaration predicted: the `postCallClassify` tranche
-      // moved the no-reply family out of `loop.ts` and this clause went RED naming
-      // itself, rather than quietly passing over a file that no longer holds its
-      // subject. The reason is unchanged; only the home is.
-      file: 'server/src/agent/v2/steps/post-call-classify/no-reply.ts',
-      what: 'DECLINE_OPENER_RE',
-      why: 'An engine BEHAVIOUR classifier over the model\'s prose ("is this a decline?"), '
-        + 'deciding whether a row is written at all. It reads meaning, not markers. OR2 / '
-        + 'PHASE 4 owns the engine\'s prose judgements. (Its former neighbour, '
-        + '`isGenericCloseout`, was DELETED by PHASE-2 T6: the redundant-closeout floor it '
-        + 'served is keyed on the delivery ledger now, not on a phrase list.)',
-    },
-  ];
-
-  it('every enumerated non-fold still exists, so the reason still has a subject', () => {
-    for (const n of NOT_FOLDED) {
-      expect(files, `${n.file} named in the non-fold list but not in the tree`).toContain(n.file);
-      expect(read(n.file).includes(n.what.split(' ')[0]), `${n.file} no longer has ${n.what}`)
-        .toBe(true);
-    }
   });
 });

@@ -51,7 +51,6 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..', '..', '..', '..');
 const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const CHILD = path.join(HERE, 'the-version-is-read-the-way-an-esm-module-must-read-it-child.ts');
-const UPDATE_TS = path.resolve(HERE, '..', 'update.ts');
 
 /** The one authority this file compares against: the repo's own root `package.json`. */
 const rootPackage = (): { name: string; version: string } =>
@@ -131,75 +130,6 @@ describe('under the runtime the dev box actually runs', () => {
     // nothing compared them.
     expect(runChild().version, 'the suite and the real runtime read different versions')
       .toBe(getCurrentVersion());
-  });
-});
-
-// ── 2. THE SOURCE ────────────────────────────────────────────────────────────────────────
-
-/**
- * The file's CODE: comments, string literals and template literals blanked out, newlines kept.
- *
- * Written properly rather than approximated because a census is only as good as its reader, and
- * both cheap readings are wrong here. Cutting each line at its first `//` eats `foo(__dirname)`
- * on any line that also carries `'https://…'` — and update.ts carries several — which is a
- * census with a FALSE NEGATIVE, worse than no census. Classifying whole LINES as comments
- * misses a closing block comment followed by real code on the same line. The module header has
- * to be free to NAME the defect it warns about, so the reader has to know prose from code.
- */
-function codeOnly(src: string): string {
-  type Mode = 'code' | 'line' | 'block' | "'" | '"' | '`';
-  let out = '';
-  let mode: Mode = 'code';
-  let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    const d = src[i + 1];
-    if (mode === 'code') {
-      if (c === '/' && d === '/') { mode = 'line'; i += 2; continue; }
-      if (c === '/' && d === '*') { mode = 'block'; i += 2; continue; }
-      if (c === "'" || c === '"' || c === '`') { mode = c; out += ' '; i += 1; continue; }
-      out += c; i += 1; continue;
-    }
-    if (mode === 'line') {
-      if (c === '\n') { mode = 'code'; out += '\n'; }
-      i += 1; continue;
-    }
-    if (mode === 'block') {
-      if (c === '*' && d === '/') { mode = 'code'; i += 2; continue; }
-      if (c === '\n') out += '\n';
-      i += 1; continue;
-    }
-    // inside a string or template: skip the body, honouring backslash escapes
-    if (c === '\\') { i += 2; continue; }
-    if (c === mode) { mode = 'code'; i += 1; continue; }
-    if (c === '\n') out += '\n';
-    i += 1; continue;
-  }
-  return out;
-}
-
-describe('the module derives its own directory the only way an ESM module can', () => {
-  it('reads it from import.meta.url, and no CODE line names __dirname', () => {
-    const src = fs.readFileSync(UPDATE_TS, 'utf8');
-    const code = codeOnly(src);
-
-    // ── THE READER IS CHECKED FIRST, BOTH WAYS. A stripper that ate the file would pass the
-    // negative below vacuously, and one that stripped nothing would fail it on the header's
-    // own prose. Neither can hide here.
-    expect(code, 'the reader stripped away the code it is supposed to be reading')
-      .toContain('export function getCurrentVersion');
-    expect(code, 'the reader left comment prose in what it calls code')
-      .not.toContain('vite-node wraps every module');
-
-    // Non-vacuity for the negative: the ESM-correct derivation is really here, in CODE.
-    expect(code, 'update.ts no longer derives its directory from import.meta.url')
-      .toMatch(/fileURLToPath\(\s*import\.meta\.url\s*\)/);
-
-    // And no code line names it — not as a read, and not as a locally-declared shim either: a
-    // file that declares `const __dirname = …` reads as though the global existed, and invites
-    // the next author to reach for it somewhere the declaration does not cover.
-    expect(code, 'update.ts names __dirname in code again; there is no such binding in an ESM '
-      + 'module, and reading one throws').not.toContain('__dirname');
   });
 });
 

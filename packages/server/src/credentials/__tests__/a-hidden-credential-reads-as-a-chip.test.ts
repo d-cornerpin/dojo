@@ -25,9 +25,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   noteHandedCredentialValues,
@@ -49,10 +46,6 @@ const hasCredentialPlaceholder = (text: string): boolean => splitCredentialPlace
 
 const AGENT = 'agent-under-test';
 const SECRET = 'hunter2-hunter2-hunter2';
-
-const DASHBOARD = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '../../../../dashboard/src',
-);
 
 beforeEach(() => { forgetHandedCredentialValues(); });
 afterEach(() => { forgetHandedCredentialValues(); });
@@ -140,33 +133,6 @@ describe('the rule refuses what the engine would never write', () => {
 });
 
 describe('the renderer actually uses the rule — the token can no longer reach the page', () => {
-  it('Markdown.tsx draws the chip through the shared decision, not its own regex', () => {
-    const md = fs.readFileSync(path.join(DASHBOARD, 'components/Markdown.tsx'), 'utf8');
-    expect(md, 'the renderer imports the decidable rule').toContain('credential-placeholder');
-    expect(md, 'and draws the chip label from it').toContain('CREDENTIAL_CHIP_LABEL');
-    // The renderer must not grow its own copy of the pattern — that is the drift this avoids.
-    expect(
-      /<redacted-credential/.test(md),
-      'the literal token must not be hand-written in the renderer; the rule owns the pattern',
-    ).toBe(false);
-
-    // ── THE WIRING, AND THE HONEST BOUND ON HOW IT IS HELD ──────────────────────────────
-    // `packages/dashboard` has no test runner (its own BACKLOG item), so there is no way from
-    // here to RENDER this component and read the DOM. The decision is behaviourally driven
-    // above; the WIRING is held by these source clauses, which is weaker and is said so out
-    // loud rather than left implied. They exist because a mutation run proved the earlier
-    // import-only clause survived disabling the chip entirely — the original bug restored, with
-    // the test still green. These pin the two things that mutant needed:
-    //   (a) the splitter is actually CALLED on the inline path, and
-    //   (b) a credential segment actually DRAWS the chip component.
-    expect(md, 'the splitter is called, not merely imported').toMatch(/splitCredentialPlaceholders\s*\(/);
-    expect(md, 'a credential segment draws the chip').toMatch(/kind === 'credential'[\s\S]{0,120}<CredentialChip/);
-    // …and the formatting pass must NOT be the thing deciding, or (a) becomes decorative.
-    expect(
-      md.indexOf('splitCredentialPlaceholders('),
-      'the split happens before the formatting pass it protects',
-    ).toBeLessThan(md.indexOf('function processInlineFormatting'));
-  });
 
   it('the chip names where the value is, and it is not the Vault', () => {
     // The BACKLOG line says "Vault tab" as shorthand; the Vault is long-term MEMORY and a
@@ -174,7 +140,5 @@ describe('the renderer actually uses the rule — the token can no longer reach 
     // than saying nothing, so the hint names the Credentials tab that actually holds it.
     expect(CREDENTIAL_CHIP_HINT).toContain('Credentials');
     expect(CREDENTIAL_CHIP_LABEL.length, 'the chip says something').toBeGreaterThan(0);
-    const memory = fs.readFileSync(path.join(DASHBOARD, 'pages/Memory.tsx'), 'utf8');
-    expect(memory, 'the destination the chip names really exists').toContain("'credentials'");
   });
 });

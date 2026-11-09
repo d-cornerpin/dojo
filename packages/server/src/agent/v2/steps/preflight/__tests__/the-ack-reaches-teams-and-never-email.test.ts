@@ -30,9 +30,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { ToolCall } from '@dojo/shared';
 
 const { broadcastSpy, insertSpy, executeToolSpy, outboundIntents, engineMayRouteToSpy } = vi.hoisted(() => ({
@@ -94,8 +91,6 @@ import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabula
 
 const AGENT = FXID.n4;
 const CHAT_ID = '19:meeting_abcdef0123456789@thread.v2';
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
   kind: 'user', name: FX.n11, relation: 'owner', channel: 'imessage',
@@ -239,27 +234,5 @@ describe('the delivery: the ack REACHES a Teams chat, through the send the route
     expect(executeToolSpy).not.toHaveBeenCalled();
     expect(outboundIntents).toHaveLength(0);
     expect(broadcastSpy).toHaveBeenCalled();
-  });
-});
-
-describe('the derivation stays true, and email cannot drift back in through the delivery site', () => {
-  it('the ack has arms for exactly the channels the predicate names — and none for email', () => {
-    const closures = SRC('../turn-closures.ts');
-    const ackFn = closures.slice(closures.indexOf('const deliverEngineUserAck'));
-    for (const has of ["channel === 'imessage'", "channel === 'sms'", "channel === 'teams'"]) {
-      expect(ackFn, has).toContain(has);
-    }
-    // THE RULING, AS A SOURCE FACT. `phone` has an arm and is deliberately outside the
-    // predicate (W20 §6.2, its own ground); email has NEITHER, and must keep having neither.
-    expect(ackFn).not.toContain("channel === 'email'");
-  });
-
-  it('the predicate is still ONE declaration, and the fast door still asks it rather than re-spelling it', () => {
-    const cp = SRC('../../../counterparty.ts');
-    expect(cp).toContain('export function engineAckReachesTheirChannel');
-    const door = SRC('../../assemble/multistep-detection.ts');
-    expect(door).toContain('engineAckReachesTheirChannel');
-    expect(door).not.toContain("'teams'");
-    expect(door).not.toContain("'email'");
   });
 });

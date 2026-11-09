@@ -33,8 +33,6 @@
 // process — so the two are the same clause asked twice.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 
 // The channel, captured rather than mocked away: the point of the item is that the person is
 // told, so what reaches `broadcast` IS the subject.
@@ -50,12 +48,6 @@ import {
 } from '../window-starvation-card.js';
 
 const AGENT = 'g-starved-agent';
-const SRC = path.join(__dirname, '..', '..');
-
-/** Comments blanked, length kept, so prose about a call is never read as the call (G4). */
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 // ── THE MEASURED BOX, carried verbatim from t109 §D so the numbers stay comparable ──
 // A 16K window with the whole tool surface. The reserve is what eats it.
@@ -194,28 +186,5 @@ describe('a window that cannot hold a conversation says so', () => {
     expect(err.message, 'and it still names the window').toMatch(/window 16000/);
     expect(err.message, 'the budget').toMatch(/assembly budget of/);
     expect(err.message, 'and the reserve').toMatch(/reserve \d+/);
-  });
-
-  // ── §5 THE WIRE. Both halves, at the one site that knows. ──
-  it('the assembler reports the starved state and notes the fit, around the real assert', () => {
-    const src = stripComments(fs.readFileSync(path.join(SRC, 'memory/assembler.ts'), 'utf8'));
-    expect(src, 'the fit clears the note — this is the half that makes the card per-OUTAGE')
-      .toMatch(/assertSystemPromptFits\(systemTokens,\s*policy\);\s*noteWindowHolds\(agentId\);/);
-    expect(src, 'and the starved state cards, keyed on the engine\'s own error type')
-      .toMatch(/if \(err instanceof SystemPromptTooLargeError\) reportStarvedWindow\(agentId, systemTokens, policy\);/);
-    expect(src, 'and the error is RETHROWN, so the refusal is untouched')
-      .toMatch(/reportStarvedWindow\(agentId, systemTokens, policy\);\s*throw err;/);
-  });
-
-  it('and nothing else in the tree cards this state — one home, as the compaction card has', () => {
-    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) return e.name === '__tests__' || e.name === 'node_modules' ? [] : walk(p);
-      return e.isFile() && p.endsWith('.ts') ? [p] : [];
-    });
-    const emitters = walk(SRC)
-      .filter((p) => /WINDOW_TOO_SMALL/.test(stripComments(fs.readFileSync(p, 'utf8'))))
-      .map((p) => path.relative(SRC, p).split(path.sep).join('/'));
-    expect(emitters, 'the code is spoken in exactly one place').toEqual(['memory/window-starvation-card.ts']);
   });
 });

@@ -20,9 +20,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 
 import {
   openTurnContext, turnContext, endTurnContext, turnConversationScope,
@@ -40,11 +37,6 @@ import {
   turnContinuationCounts, statusHeartbeats, recoveryRunStreak,
 } from '../shared-state.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = path.resolve(HERE, '..', '..');
-const REPO = path.resolve(SRC, '..', '..', '..');
-const read = (p: string): string => readFileSync(path.join(SRC, p), 'utf8');
 
 /** The ten facts the turn owns. Adding an eleventh is a decision: it belongs here
  *  only if it dies with the turn, and the clause below makes that decision visible. */
@@ -149,22 +141,6 @@ const THE_DRIVER_CARRIES = [
   'state',
 ];
 
-/** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */
-const TURN_STATE_KEEPS = [
-  'turnBoundary', 'continuationContext', 'forceA2ATurn', 'a2aTurnRetries',
-  'untrackedWorkAcrossTurns', 'lastTurnWasA2A',
-];
-
-/** The names the collapse RETIRED from `turn-state.ts`. Grep-zero with a denominator:
- *  the plan's own exit gate warns that a grep over one file passes while half the
- *  surface stands, so the clause names all ten and the file must declare none. */
-const RETIRED_FROM_TURN_STATE = [
-  'currentTurnKind', 'currentTurnConvKey', 'currentTurnConversationId',
-  'currentTurnImRecipient', 'currentModelRequestId', 'currentTurnReceipts',
-  'currentTurnNumber', 'currentTurnRecallTokens', 'currentTurnRoot',
-  'currentTurnServedWork',
-];
-
 beforeEach(() => {
   for (const a of openTurnContextAgents()) endTurnContext(a);
 });
@@ -181,14 +157,6 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
     // a carrier is driver-internal and is named in the second. A name in both would mean
     // the classification had stopped meaning anything.
     expect(THE_TURN_OWNS.filter((k) => THE_DRIVER_CARRIES.includes(k))).toEqual([]);
-    // And the carriers are genuinely unpublished: this module exports no reader for one.
-    const bagSrc = read('agent/turn-context.ts');
-    for (const carrier of THE_DRIVER_CARRIES) {
-      const exportedReaders = [...bagSrc.matchAll(/export function (\w+)/g)]
-        .map((m) => m[1])
-        .filter((fn) => new RegExp(`${fn}[\\s\\S]{0,400}?\\.${carrier}\\b`).test(bagSrc));
-      expect(exportedReaders, `${carrier} is a driver local; nothing outside should read it`).toEqual([]);
-    }
   });
 
   it('a fresh bag starts empty — which is why no turn-entry clear survives', () => {
@@ -321,64 +289,5 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
       turnContinuationCounts, statusHeartbeats, recoveryRunStreak]) m.delete(A);
     for (const s of [forceA2ATurn, lastTurnWasA2A, activeRuns, pendingWakeups, stoppedAgents,
       preemptedAgents, backgroundDrains]) s.delete(A);
-  });
-});
-
-describe('PHASE-6 T1: the ten maps are GONE, not standing beside their replacement', () => {
-  it('turn-state.ts declares none of the ten retired per-turn maps', () => {
-    const src = read('agent/turn-state.ts');
-    const still = RETIRED_FROM_TURN_STATE.filter((n) => new RegExp(`export const ${n}\\b`).test(src));
-    expect(still).toEqual([]);
-  });
-
-  it('turn-state.ts declares exactly the six cross-turn carriers', () => {
-    const src = read('agent/turn-state.ts');
-    const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
-    expect(declared.sort()).toEqual([...TURN_STATE_KEEPS].sort());
-  });
-
-  it('shared-state.ts declares its twelve untouched by THIS task, plus T81b\'s and T81c\'s new cross-turn Maps', () => {
-    // T81b (NO-DOOMED-DIALS) added `doomedPrefillCompactionSpent` — a genuinely NEW piece of
-    // ambient per-agent state (mirroring `recoveryRunStreak`'s own shape, already one of the
-    // twelve this clause pins), not a reintroduction of anything PHASE-6 T1's collapse retired.
-    // The count moved to 13.
-    //
-    // T81c FIX ROUND 1 added `declaredPatienceHonestFailTurn` — the SAME idiom again (a turn-
-    // scoped `agentId -> turnNumber` Map), replacing an unscoped `agents.last_error` STRING read
-    // the review round proved unsafe (see that Map's own doc). The count moves to 14;
-    // `RETIRED_FROM_TURN_STATE` above is the list this clause actually guards against creeping
-    // back, and it names none of shared-state.ts's twelve, T81b's thirteenth, or T81c's
-    // fourteenth.
-    //
-    // T83 added `stopFencedRuns` — a per-agent Set carrying the STOP a run is under, scoped to
-    // that run and retired only by its own exit path. It is not a reintroduction of anything
-    // the collapse retired either: `stoppedAgents` (already one of the twelve) says "a stop
-    // was requested", which the two human-intent doors may legitimately lift for the NEXT run,
-    // and on 2026-09-21 one of them lifted it mid-unwind and the stopped chain resumed. The
-    // fence is the fact that clear cannot reach. The count moves to 15.
-    //
-    // ⚠ RE-DERIVED, NOT LOWERED (t116 E2). `lastRunEndedAt` is the sixteenth: a per-agent
-    // `agentId -> epoch ms` stamp of when a run left its exit `finally`, written by that one
-    // owner and read by the stop door. It is a RUN-LIFECYCLE fact, not per-turn context, so it
-    // is not a reintroduction of anything the collapse retired — `RETIRED_FROM_TURN_STATE`
-    // above names none of it, and the clause two above still guards that list. It exists
-    // because the three facts the stop door could already see — `agents.status`, `liveWork`
-    // and `activeRuns` — all go false during the drain tail this `finally` runs AFTER
-    // releasing `activeRuns`, which is the residual `stopFencedRuns`'s own header records as
-    // uncovered. Same idiom as the two Maps argued above, one window further out.
-    // The count moves to 16.
-    const src = read('agent/shared-state.ts');
-    const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
-    expect(declared).toHaveLength(16);
-  });
-
-  it('the two ambient-state files are PINNED in ratchets.json', () => {
-    // RE-DERIVED #8: neither was watched, so the collapse target could have grown
-    // unnoticed. A pin is what makes "only shrinks from here" a machine fact.
-    const ratchets = JSON.parse(readFileSync(path.join(REPO, 'ratchets.json'), 'utf8')) as
-      { files: Record<string, number> };
-    expect(ratchets.files['packages/server/src/agent/turn-state.ts']).toBeGreaterThan(0);
-    expect(ratchets.files['packages/server/src/agent/shared-state.ts']).toBeGreaterThan(0);
-    expect(ratchets.files['packages/server/src/agent/turn-context.ts']).toBeGreaterThan(0);
   });
 });

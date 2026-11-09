@@ -1,0 +1,127 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t138 — AN AGENT THAT BREAKS REACHES THE OWNER'S PHONE (OR-V333-SET (3), the second class).
+//
+// At v3.3.2 the two agent-trouble notices in `agent/errors.ts` — "paused after repeated errors"
+// and the strike-3 rate-limit notice — were sent as `'warning'`, which `sendAlert` drops before
+// the phone (a v2.3.19 demotion: "a single agent paused is NOT a true blocker"). The owner has
+// since ruled that a broken agent is exactly one of the two things the platform may tell him
+// directly. Driven through the real error-loop door (`recordError`, backed by the durable
+// `error_loop_state` table) and the real `sendAlert` / iMessage door.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+// RED-FIRST at 00a2b34d: clauses marked `it.fails` are the witness, failing before the fix;
+// the fix commits flip them to `it`.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const HOME = path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'dojo-t138-agent-trouble');
+
+vi.mock('../../home.js', async () => {
+  const p = await import('node:path');
+  const o = await import('node:os');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t138-agent-trouble');
+  return {
+    homeDir: (): string => dir,
+    dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
+  };
+});
+
+const mockDb: { current: Database.Database | null } = { current: null };
+vi.mock('../../db/connection.js', async () => {
+  const p = await import('node:path');
+  const o = await import('node:os');
+  return {
+    getDb: () => {
+      if (!mockDb.current) throw new Error('test DB not initialized');
+      return mockDb.current;
+    },
+    closeDb: vi.fn(),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t138-agent-trouble', 'dojo.db'),
+  };
+});
+
+const { transport } = vi.hoisted(() => ({ transport: [] as string[] }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('node:child_process')>();
+  const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
+  return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
+});
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../../services/imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
+
+import { runMigrations } from '../../db/migrations.js';
+
+// Each clause boots the real module graph (the iMessage door pulls in the engine) and runs the
+// full migration chain; that is an import cost, not a timing assertion, and on a box shared by
+// many suites it can pass the 30 s default. Nothing here measures time.
+vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
+import { recordError, notifyRateLimitHit } from '../errors.js';
+
+const OWNER = 'owner@example.test';
+const db = (): Database.Database => mockDb.current!;
+
+beforeEach(() => {
+  fs.rmSync(HOME, { recursive: true, force: true });
+  fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
+  const d = new Database(':memory:');
+  d.pragma('foreign_keys = ON');
+  mockDb.current = d;
+  runMigrations();
+  transport.length = 0;
+  d.prepare(`INSERT INTO config (key, value) VALUES ('imessage_approved_senders', ?)`)
+    .run(JSON.stringify([{ address: OWNER, name: 'Owner', is_primary: true }]));
+  d.prepare(`INSERT INTO agents (id, name, model_id, status, created_at, updated_at)
+             VALUES ('ag', 'Helper', NULL, 'idle', datetime('now'), datetime('now'))`).run();
+});
+
+afterEach(() => {
+  mockDb.current?.close();
+  mockDb.current = null;
+});
+
+// v3.5 E19b: an owner text is sent asynchronously now, so its ledger row lands once the send
+// settles. The stand-in runner resolves at once, so one turn of the event loop (the REAL
+// setImmediate, captured before any fake timers) drains the whole chain; then the read runs.
+const realSetImmediate = setImmediate;
+const settled = async <T>(read: () => T): Promise<T> => { await new Promise((r) => realSetImmediate(r)); return read(); };
+const ownerOutbounds = (): number => (db().prepare(
+  "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
+).get(OWNER) as { n: number }).n;
+const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
+
+describe('BROKEN: an agent paused after repeated errors', () => {
+  it('the trip that pauses the agent texts the owner once, naming the agent', async () => {
+    let paused = false;
+    for (let i = 0; i < 10 && !paused; i++) paused = recordError('ag');
+    expect(paused).toBe(true);
+    expect((await settled(ownerOutbounds))).toBe(1);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toContain('Helper');
+    expect(sent()[0]).toContain('paused');
+  });
+});
+
+describe('NOT A BLOCKER: the strike-3 rate-limit notice (fix round 1, ruling R-V333-4)', () => {
+  // "… will retry automatically" asks nothing of the owner, so it stays off the phone (the
+  // owner's v2.3.19 request: true blockers only). The dashboard already shows the agent as
+  // rate-limited (rate-limit-retry.ts writes the status and broadcasts it); "retries exhausted"
+  // stays on the phone at `critical`.
+  it('never reaches the phone', async () => {
+    notifyRateLimitHit('ag', 'rate_limit');
+    expect((await settled(ownerOutbounds))).toBe(0);
+    expect(sent()).toHaveLength(0);
+  });
+});

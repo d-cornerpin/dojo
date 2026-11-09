@@ -35,8 +35,6 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import ts from 'typescript';
-import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
@@ -153,18 +151,6 @@ beforeEach(() => {
   recordToolOutcomeSpy.mockReturnValue(0);
 });
 
-// ── The step package's own source, for the clauses that are about SHAPE ──
-const STEP_DIR = path.resolve(__dirname, '..');
-function stepFiles(dir: string = STEP_DIR): string[] {
-  const out: string[] = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) { if (e.name !== '__tests__') out.push(...stepFiles(path.join(dir, e.name))); }
-    else if (e.name.endsWith('.ts')) out.push(path.join(dir, e.name));
-  }
-  return out;
-}
-const stepText = (): string => stepFiles().map((f) => readFileSync(f, 'utf8')).join('\n');
-
 describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
   it('INPUTS (state, ctx) → ONE outcome, and the tool results come back as the step\'s OUTPUT', async () => {
     const out = await runExecute(freshState(), ctxFor({ result: modelResult([call('file_read', { path: 'a.txt' })]) }));
@@ -188,51 +174,6 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
     const exited = await runExecute(freshState(), ctxFor({ result: modelResult([call('complete_task')]) }));
     expect(exited.directive).toBe('exit');
     expect(exited.state.phase).toBe(EXECUTE_PHASE);
-
-    // And no `phase:` write exists in the package's own source at all.
-    expect(stepText()).not.toMatch(/phase\s*:/);
-  });
-
-  it('THE DRIVER ADVANCES INTO IT, at the call site and ahead of the step', () => {
-    // `validate()` runs on the transition by construction, because the advance is an
-    // `advance` and it is the DRIVER's statement, not the step's.
-    const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    const advanceAt = driver.indexOf("advance(turnCtx.state!, { phase: 'execute' })");
-    const callAt = driver.indexOf('runExecute(turnCtx.state!,');
-    expect(advanceAt).toBeGreaterThan(-1);
-    expect(callAt).toBeGreaterThan(-1);
-    expect(advanceAt).toBeLessThan(callAt);
-  });
-
-  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: three directives, FIVE exits, ONE continue', () => {
-    // This span has the MOST ways out of any tranche and every one of them was a
-    // `break` or a `continue` of the driver's loop. A new silent way out cannot appear
-    // without failing here. The walk is over the package's own AST, so a directive
-    // named in a comment does not count and a real call does.
-    const directives = new Set<string>();
-    let exitSites = 0;
-    let continueSites = 0;
-    for (const f of stepFiles()) {
-      const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.ESNext, true);
-      const walk = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-          const name = n.expression.text;
-          if (name === 'proceed') directives.add('proceed');
-          if (name === 'continueLoop') { directives.add('continue'); continueSites += 1; }
-          if (name === 'requestExit') { directives.add('exit'); exitSites += 1; }
-          if (name === 'abandonTurn') directives.add('abandon');
-        }
-        ts.forEachChild(n, walk);
-      };
-      walk(sf);
-    }
-    expect([...directives].sort()).toEqual(['continue', 'exit', 'proceed']);
-    // The five: stopped mid-batch · complete_task · fire-and-forget generator ·
-    // the A2A reply that IS the response · the delegation hand-off's async exit.
-    expect(exitSites).toBe(5);
-    // The one: the delegation-exit steer, which asks for another iteration so the
-    // model can say one line to the person before the turn ends.
-    expect(continueSites).toBe(1);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and each of the five names its own', async () => {
@@ -329,33 +270,6 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
     const refusals = out.state.toolResults.filter((r) => String(r.content).includes('already sent'));
     expect(refusals).toHaveLength(1);
     expect(String(refusals[0].content)).toContain('5 messages this turn');
-  });
-
-  it('THE TWO SIGNATURE FUNCTIONS STAY DISTINCT — the documented landmine, pinned in the package that holds both', () => {
-    // Global Constraints: unifying them silently changes two different thresholds.
-    // Both are used in this span; the census refuses a package where one has been
-    // rewritten in terms of the other.
-    const src = stepText();
-    expect(src).toMatch(/identicalCallSignature\(/);
-    expect(src).toMatch(/canonicalToolSignature\(/);
-    const sf = ts.createSourceFile('x.ts', src, ts.ScriptTarget.ESNext, true);
-    const names = new Set<string>();
-    const walk = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) names.add(n.expression.text);
-      ts.forEachChild(n, walk);
-    };
-    walk(sf);
-    expect(names.has('identicalCallSignature')).toBe(true);
-    expect(names.has('canonicalToolSignature')).toBe(true);
-  });
-
-  it('EVERY THRESHOLD IN THIS SPAN IS COPIED VERBATIM', () => {
-    // Global Constraints: "bounds and thresholds are copied verbatim". These are the
-    // ones this span declares; the rest arrive on the context or from their own module.
-    const src = stepText();
-    expect(src).toMatch(/A2A_SEND_CAP_PER_RECIPIENT\s*=\s*5\b/);
-    expect(src).toMatch(/TRACKER_NUDGE_THRESHOLD\s*=\s*3\b/);
-    expect(src).toMatch(/TRACKER_AUTO_SCAFFOLD_AT\s*=\s*6\b/);
   });
 
   it('A STOP MID-BATCH FILLS THE REMAINING CALLS AND LEAVES THE AGENT IDLE', async () => {

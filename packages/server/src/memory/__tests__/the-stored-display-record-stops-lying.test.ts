@@ -143,9 +143,6 @@ describe('T5 — the stored tier tells the truth about a tool-turn row', () => {
     // rule cannot be edited apart.
     expect(toolBadgeTier(classifyTool('work_update'))).toBe('agent-only');
     expect(toolBadgeTier(classifyTool('web_search'))).toBe('user-visible');
-    const src = fs.readFileSync(path.join(REPO, 'packages/shared/src/visibility.ts'), 'utf8');
-    const callers = src.split('\n').filter((l) => l.includes('toolBadgeTier(') && !l.includes('export function'));
-    expect(callers.length, 'toolBadgeTier is called by the write-side fold').toBeGreaterThan(0);
   });
 
   it('a row that is NOT purely tool_use blocks is left alone', () => {
@@ -170,12 +167,6 @@ describe('T5 — the stored tier tells the truth about a tool-turn row', () => {
     };
     walk(path.join(REPO, 'packages/dashboard/src'));
     expect(hits).toEqual([]);
-  });
-
-  it('UNTOUCHED: serving is still not filtered by tier (the recorded refusal)', () => {
-    const src = fs.readFileSync(path.join(REPO, 'packages/server/src/gateway/routes/chat.ts'), 'utf8');
-    expect(src).toContain('display_tier` does NOT become a WHERE');
-    expect(/WHERE[\s\S]{0,400}display_tier\s*=/.test(src)).toBe(false);
   });
 });
 

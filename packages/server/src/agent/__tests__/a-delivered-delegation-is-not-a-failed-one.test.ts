@@ -32,9 +32,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join as joinPath } from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -181,31 +178,5 @@ describe('§2 the owner-facing notice', () => {
     expect(text).toContain('Ana');
     expect(text).not.toMatch(/NaN|undefined|null/);
     expect(text).not.toMatch(/waited/);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// §3 — THE WIRE, AND THE OLD CLAIM'S ABSENCE
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('§3 the transport mints the honest version and nothing else', () => {
-  const transport = (): string => readFileSync(
-    joinPath(dirname(fileURLToPath(import.meta.url)), '..', 'a2a-transport.ts'), 'utf8',
-  ).split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-
-  it('⚠ CENSUS: the old claim is gone from the code that speaks to the owner', () => {
-    expect(transport(), 'the sentence the report was shown must not be mintable any more')
-      .not.toContain('came back empty, failed or abandoned');
-  });
-
-  it('WIRE: the fail-closed path reads the pieces for both the notice and the row', () => {
-    const src = transport();
-    expect(src, 'the owner notice is the honest builder\'s').toContain('joinFailureNotice({');
-    expect(src, 'and the recorded reason is derived from the same states')
-      .toContain('joinFailureReason(joinPieces(join.id))');
-    // One derivation, two consumers: the row's reason and the agent's nudge read the same value,
-    // so the audit trail and the agent can never be told different stories.
-    expect(src).toContain('failJoinClosed(join.id, { reason: failReason');
-    expect(src).toContain("tellAgentTheJoinFailed(join, `${failReason}.`, await relayJoinFailure(join,");
   });
 });

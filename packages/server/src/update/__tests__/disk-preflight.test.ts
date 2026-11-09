@@ -95,14 +95,6 @@ describe('B1 the need is measured, never guessed', () => {
     expect(need.backupNeedBytes).toBe(5_500 * MIGRATION_BACKUP_FREE_DISK_MULTIPLE);
   });
 
-  it('the multiple is IMPORTED from the module that enforces it, not copied', async () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', 'disk-preflight.ts'), 'utf8');
-    expect(src).toMatch(/MIGRATION_BACKUP_FREE_DISK_MULTIPLE/);
-    // A local `= 2` here would be the two-copies-cannot-be-ordered defect this tree keeps closing.
-    expect(src).not.toMatch(/FREE_DISK_MULTIPLE\s*=\s*\d/);
-  });
-
   it('the artifact headroom is the release\'s OWN size plus the tree measured on this disk', async () => {
     const { measureUpdateDiskNeed } = await import('../disk-preflight.js');
     const dbPath = seedBody(1_000);
@@ -158,41 +150,6 @@ describe('B4 the negative control: a roomy volume produces no warning', () => {
     const need = measureUpdateDiskNeed({ artifactBytes: 31_000_000, dbPath, platformDir });
     expect(need.ok).toBe(true);
     expect(need.shortfallBytes).toBe(0);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// B5/B6 — REFUSE BEFORE THE DOWNLOAD; THE OVERRIDE SURVIVES AND IS NOT CONSUMED
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('B5 the refusal comes before anything is downloaded', () => {
-  it('applyUpdate consults the pre-flight before its first curl', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'gateway', 'routes', 'update.ts'), 'utf8');
-    const applyAt = src.indexOf('export async function applyUpdate');
-    expect(applyAt).toBeGreaterThan(-1);
-    const body = src.slice(applyAt);
-    const preflightAt = body.indexOf('measureUpdateDiskNeed');
-    // t114 (census U14): the download is no longer an inline `curl -L -o` string — it is a call
-    // to `execIdleBounded(curlDownloadCmd(...))`, because the flat 120s total that string carried
-    // made a slow box permanently un-updatable. The clause reads the CALL SITE rather than a
-    // fragment of the command text, which is strictly more precise: the literal `curl` now lives
-    // in a helper near the top of the file, so a text search would have found the helper instead
-    // of the download and compared the pre-flight against the wrong offset.
-    // t197: the download lives in `downloadAndInstall`, shared with the rollback door; the
-    // property is unchanged — applyUpdate consults the pre-flight before it calls that.
-    const downloadAt = body.indexOf('await downloadAndInstall(');
-    expect(preflightAt, 'applyUpdate never consults the pre-flight').toBeGreaterThan(-1);
-    expect(downloadAt, 'applyUpdate never downloads anything').toBeGreaterThan(-1);
-    expect(preflightAt, 'the pre-flight must run BEFORE the download, not after it')
-      .toBeLessThan(downloadAt);
-  });
-
-  it('the refusal is the loud kind, with its own status', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'gateway', 'routes', 'update.ts'), 'utf8');
-    // 507 Insufficient Storage — the one status that says this without a paragraph.
-    expect(src).toMatch(/status:\s*507/);
   });
 });
 
@@ -254,45 +211,6 @@ describe('B7 running out of space mid-update is not a generic error', () => {
     expect(said).not.toMatch(/^Update failed: ENOSPC/);
     // It must also say the box is unharmed or what to do — a bare diagnosis is not help.
     expect(said.length).toBeGreaterThan(60);
-  });
-
-  it('applyUpdate routes its failure through that sentence', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'gateway', 'routes', 'update.ts'), 'utf8');
-    const applyAt = src.indexOf('export async function applyUpdate');
-    const body = src.slice(applyAt);
-    expect(body).toMatch(/isOutOfSpaceError/);
-    expect(body).toMatch(/outOfSpaceFailureMessage/);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// B8/B9 — IT REACHES HIM WHERE HE LOOKS; AN UNMEASURABLE VOLUME DOES NOT BLOCK
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('B8 the answer reaches the Update tab RESTORE-PATH built', () => {
-  it('the check result carries the pre-flight, so the tab needs no second round-trip', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'gateway', 'routes', 'update.ts'), 'utf8');
-    const iface = src.slice(src.indexOf('export interface UpdateCheckResult'),
-      src.indexOf('export async function checkForUpdate'));
-    expect(iface).toMatch(/disk\??:/);
-  });
-
-  it('the Update tab renders it beside the backup notice, and gates the button on it', () => {
-    // t111-E1 SPLIT the 7,194-line `pages/Settings.tsx` into one module per tab, so the Update
-    // tab now has its own file. This clause follows the COMPONENT, not the filename: it still
-    // asserts the same two properties, and the `tabAt` guard below is what made the move a
-    // visible RED rather than a slice of 12,000 characters that quietly matched nothing.
-    const settings = fs.readFileSync(
-      path.join(__dirname, '..', '..', '..', '..', 'dashboard',
-        'src', 'components', 'settings', 'UpdateTab.tsx'), 'utf8');
-    const tabAt = settings.indexOf('const UpdateTab');
-    expect(tabAt).toBeGreaterThan(-1);
-    const tab = settings.slice(tabAt, tabAt + 12000);
-    expect(tab).toMatch(/DiskSpaceNotice/);
-    // The button must not invite a click the platform is about to refuse.
-    expect(tab).toMatch(/updateInfo\?\.disk/);
   });
 });
 

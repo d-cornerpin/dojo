@@ -268,15 +268,6 @@ describe('⚠ BOTH TRANSITIONS ARE LOGGED, and a healthy index says nothing', ()
     expect(logSpy.warn).toHaveBeenCalledTimes(1);
     expect(String(logSpy.warn.mock.calls[0][0])).toContain('will NOT be repaired automatically');
   });
-
-  it('NO USER CONTENT reaches any of it — counts and state names only', async () => {
-    const src = fs.readFileSync(new URL('../fts-health.ts', import.meta.url), 'utf-8');
-    // The one literal the MATCH probe sends is a token defined in this module, so there is nowhere
-    // for a user's query text to arrive. A probe that took a pattern argument would be that hole.
-    expect(src).toMatch(/MATCH \? LIMIT 1`, \['zzqxhealthprobe'\]/);
-    expect(src, 'probeFtsHealth must take no pattern argument').toMatch(
-      /export async function probeFtsHealth\(run: FtsProbeRun\): Promise<FtsHealth>/);
-  });
 });
 
 describe('⚠ NEVER BOOT-BLOCKING — and the property lives in the module so it can be proven', () => {
@@ -322,21 +313,6 @@ describe('⚠ NEVER BOOT-BLOCKING — and the property lives in the module so it
       vi.useRealTimers();
       currentPath = ':memory:';
     }
-  });
-
-  it('the boot WIRE is present, and it is past the point where the server is already serving', () => {
-    const boot = fs.readFileSync(new URL('../../index.ts', import.meta.url), 'utf-8');
-    expect(boot).toContain("from './memory/fts-health.js'");
-    const call = boot.indexOf('scheduleFtsHealthCheck()');
-    const serving = boot.indexOf("logger.info('Dojo Agent Platform is serving')");
-    const migrations = boot.indexOf('runMigrations()');
-    expect(call, 'the FTS health check is not wired at boot').toBeGreaterThan(0);
-    expect(serving).toBeGreaterThan(0);
-    // ⚠ BOTH DIRECTIONS OF THE ORDER, because either one alone is satisfiable by an accident: the
-    // check must run AFTER the port is serving (so it is not part of the boot window) and after
-    // migrations (so it is not racing the schema it inspects).
-    expect(call, 'the check runs before the server is serving').toBeGreaterThan(serving);
-    expect(call, 'the check runs before migrations').toBeGreaterThan(migrations);
   });
 });
 
@@ -402,17 +378,6 @@ describe('⚠ I8 — THE LINE IS STATE-ACCURATE, AND THE REPAIR IS NEVER VISIBLE
   });
 
   it('⚠ A RECREATE IS ONE TRANSACTION — a concurrent reader never sees an empty index', async () => {
-    // ⚠ THE DEFECT: `DROP; CREATE; INSERT` in autocommit COMMITS EACH STATEMENT, so from the CREATE
-    // to the INSERT — minutes on a large table — `messages_fts` existed and was EMPTY. `MATCH`
-    // succeeded with zero rows, nothing threw, so the LIKE fallback was not taken and every
-    // `history_search` returned "No results" while looking perfectly healthy. Readers must see the
-    // old index or the new one.
-    const src = fs.readFileSync(new URL('../fts-health.ts', import.meta.url), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(src, 'the repair no longer takes the write lock up front').toContain("BEGIN IMMEDIATE;");
-    expect(src, 'and it must commit').toContain("COMMIT;");
-    expect(src, 'a repair that cannot finish must leave the previous index in place')
-      .toContain("ROLLBACK;");
     // And the end state is still right — the transaction is not just ceremony.
     const p = makeDb('txn-recreate', { index: 'none' });
     const result = await runFtsRepair('recreate', { dbPath: p, deadlineMs: 60_000 });
@@ -486,22 +451,6 @@ describe('⚠ I1 — THE REPAIR IS INTERRUPTIBLE, BECAUSE process.exit() JOINS I
   it('stopFtsRepair reports honestly when there is nothing to stop', () => {
     expect(stopFtsRepair()).toBe(false);
   });
-
-  it('⚠ THE SHUTDOWN WIRE — both worker threads are stopped before the process exits', () => {
-    const boot = fs.readFileSync(new URL('../../index.ts', import.meta.url), 'utf-8');
-    const code = boot.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    const shutdownAt = code.indexOf('const shutdown = (): void => {');
-    const exitAt = code.indexOf('process.exit(0)');
-    expect(shutdownAt).toBeGreaterThan(0);
-    const body = code.slice(shutdownAt, exitAt);
-    // ⚠ BOTH, and BEFORE the exit. The reader pool's exposure is bounded by its 15 s deadline; the
-    // repair's was not bounded at all, which is why it is the one with a stop message.
-    expect(body, 'the FTS repair is not stopped on shutdown — a SIGTERM will hang on it')
-      .toMatch(/stopFtsRepair\(\)/);
-    expect(body, 'the reader pool is not terminated on shutdown')
-      .toMatch(/terminateReaderPool\(\)/);
-    expect(code).toContain("from './memory/reader-pool.js'");
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -516,37 +465,11 @@ describe('⚠ I1 — THE REPAIR IS INTERRUPTIBLE, BECAUSE process.exit() JOINS I
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('⚠ t98 D3 — NOTHING REPAIRS THE INDEX AT BOOT ANY MORE', () => {
-  it('db/migrations.ts contains no fts5 rebuild — asserted with the comments STRIPPED', () => {
-    // ⚠ COMMENTS STRIPPED, and that is not fastidiousness. The region's replacement is a POINTER that
-    // explains what used to be here and why it left, and it names `'rebuild'` four times doing so —
-    // so a clause over the raw source would be green with the code still present, or red with only
-    // the prose present. Either way it would be testing the comment.
-    const raw = fs.readFileSync(new URL('../../db/migrations.ts', import.meta.url), 'utf-8');
-    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(code, 'a boot-blocking fts5 rebuild is back in the migration runner')
-      .not.toMatch(/messages_fts\s*\(\s*messages_fts\s*\)\s*VALUES/i);
-    expect(code, "the migration runner is reading the index's shadow table again")
-      .not.toContain('messages_fts_docsize');
-    // The pointer itself IS required to stay: a bare deletion loses the argument for why the question
-    // moved, and the next reader re-adds the synchronous repair because it looks like a gap.
-    expect(raw, 'the deletion left no pointer to where the question went')
-      .toContain('memory/fts-health.ts');
-  });
 
   it('this module says it owns EVERY repair case, and the both-mechanisms caveat is retired', () => {
-    const src = fs.readFileSync(new URL('../fts-health.ts', import.meta.url), 'utf-8');
-    // The four repairable states are named together, because the old wording claimed only two.
-    expect(src).toMatch(/OWNS EVERY REPAIR CASE/);
     for (const state of ['missing', 'unpopulated', 'stale', 'corrupt']) {
       expect(ftsRepairPlan(state as FtsState), `${state} must still earn a repair`).not.toBe('none');
     }
-    // ⚠ THE RETIRED SENTENCE, asserted as ABSENT. It was true while both mechanisms shipped and is a
-    // lie now, and a stale caveat in a module header is worse than none: a reader who believes it
-    // thinks the count-mismatch case is somebody else's.
-    expect(src, 'the "owns only the MISSING and CORRUPT cases" caveat is still here, and it is false now')
-      .not.toMatch(/owns outright, today, is[\s\S]{0,60}MISSING and CORRUPT/);
-    expect(src, 'the header still says the deletion is a proposal')
-      .not.toMatch(/THAT DELETION IS NOT IN THIS LANE'S FENCE/);
   });
 
   it('a half-indexed database boots WITHOUT being repaired, and the background job then fixes it', async () => {

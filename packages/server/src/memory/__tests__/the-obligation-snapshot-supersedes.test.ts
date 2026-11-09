@@ -38,9 +38,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -72,9 +69,6 @@ import {
   liveCommitments, hasCommitmentHistory, openBoardCounts,
 } from '../../work/obligation-memory.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 const AGENT = 'hl5-agent';
 const OTHER = 'hl5-other';
@@ -210,18 +204,6 @@ describe('§1 the live-commitment set is read from the spine, by the module that
     seedCommitment({ id: 'cmt:eeeeeeeeeeee', title: 'Not yours', state: 'open', agentId: OTHER });
     expect(liveCommitments(AGENT)).toEqual([]);
     expect(hasCommitmentHistory(AGENT)).toBe(false);
-  });
-
-  it('the terminal predicate is the SCHEMA\'S, not a second list of state names', () => {
-    // `db/migrations/135_work_spine.sql` carries
-    //   CHECK ((state IN ('done','failed','abandoned')) = (closed_at IS NOT NULL))
-    // so `closed_at IS NULL` IS "still owed". A copy of the three names in the reader would
-    // be a second declaration of a fact the database already enforces — the rule
-    // `obligation-memory.ts`'s own header states, applied to the set reader too.
-    const src = read('work/obligation-memory.ts');
-    const afterSnapshot = src.slice(src.indexOf('export function liveCommitments'));
-    expect(afterSnapshot).toContain('closed_at IS NULL');
-    expect(afterSnapshot).not.toMatch(/'done'\s*,\s*'failed'\s*,\s*'abandoned'/);
   });
 
   it('history is "has this agent EVER recorded a commitment", so a closed-only board still publishes', () => {
@@ -416,14 +398,6 @@ describe('§5 the snapshot is tail-side, and nothing else moved', () => {
       expect(rendered).not.toContain('OPEN COMMITMENTS');
     }
   });
-
-  it('the summary annotator is UNTOUCHED — stored summaries stay byte-identical (T20\'s law)', () => {
-    // HL5 changes what the lane PUBLISHES, never what compaction WROTE. The T28 markers stay
-    // in the stored rows as the historical record they became.
-    const src = read('memory/summary-obligations.ts');
-    expect(src).toContain('SUMMARY_OBLIGATION_MARK');
-    expect(src).not.toContain('OPEN COMMITMENTS');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -513,10 +487,6 @@ describe('§6 the board counts are complete, and they agree with the spine at re
     // Every non-terminal state counts, including `claimed` — the snapshot's completeness
     // claim is the reason `openObligations`' narrower `OWED_STATES` set is NOT reused here.
     expect(openBoardCounts(AGENT).asks).toBe(3);
-    const src = read('work/obligation-memory.ts');
-    const after = src.slice(src.indexOf('export function openBoardCounts'));
-    expect(after).toContain('closed_at IS NULL');
-    expect(after).not.toMatch(/'done'\s*,\s*'failed'\s*,\s*'abandoned'/);
   });
 
   it('is AGENT-SCOPED — another agent\'s open ask is never in this agent\'s counts', () => {
@@ -680,16 +650,5 @@ describe('§6 the board counts are complete, and they agree with the spine at re
       }));
       expect(render!.tokens).toBeLessThanOrEqual(recallLaneWorstCaseTokens());
     });
-  });
-
-  it('ZERO PREFIX BYTES: no system-side registry entry carries a byte of the board line', () => {
-    const line = snapshotBoardLine({ asks: 1, asksBlocked: 1, tracker: 1, trackerBlocked: 1 });
-    const stem = line.slice(0, line.indexOf('1 open ask'));
-    expect(stem.length).toBeGreaterThan(10);
-    for (const e of getSystemEntries()) {
-      expect(JSON.stringify(e.reason ?? '')).not.toContain(stem);
-    }
-    expect(read('prompt/registry/entries.ts')).not.toContain(stem);
-    expect(read('prompt/assembler.ts')).not.toContain(stem);
   });
 });

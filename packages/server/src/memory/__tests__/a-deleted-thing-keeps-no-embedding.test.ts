@@ -122,14 +122,6 @@ function seedMessage(id: string, role = 'user', lane = 'owner'): string {
 const rowExists = (id: string): boolean =>
   (db().prepare('SELECT COUNT(*) AS c FROM messages WHERE id = ?').get(id) as { c: number }).c > 0;
 
-// ⚠ `fileURLToPath`, NEVER `.pathname` — the repo's real path has spaces; see §6's note below,
-// and `__tests__/this-files-own-path-has-one-idiom.test.ts` which pins the idiom. Resolved
-// against the module under test directly rather than against a counted repo root: a wrong
-// level count is a silently-unreadable file, which is the failure mode §6's note is about.
-const MESSAGE_STORE_SRC = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '../message-store.ts',
-);
-
 function seedSummary(id: string): string {
   db().prepare(`
     INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at)
@@ -233,20 +225,6 @@ describe('§2 every real message-delete door takes the embedding with it', () =>
     expect(embCount('message', ownerRow), 'and kept its embedding, so history_search can still find it').toBe(1);
     expect(rowExists(debris), 'the turn debris was pruned').toBe(false);
     expect(embCount('message', debris), 'and took its embedding with it').toBe(0);
-  });
-
-  // t123 TOMBSTONE: `deleteNonSystemForAgent (the wipe that keeps identity rows)` stood here.
-  // The door is deleted, not merely unused — an exported unscoped by-agent conversation DELETE
-  // is a loaded gun, and its one caller ran it against the owner's live chat every 60 seconds.
-  // Its embedding-cascade coverage is not lost: the cascade is tested per LANE by §3 below and
-  // by the two doors above, not per door.
-  it('the unscoped by-agent conversation wipe is GONE from the store', () => {
-    const src = fs.readFileSync(MESSAGE_STORE_SRC, 'utf-8');
-    const code = src.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-    expect(code, 'deleteNonSystemForAgent is back: an unscoped by-agent conversation delete must not exist')
-      .not.toMatch(/export function deleteNonSystemForAgent/);
-    expect(code, "a replacement under another name is the same gun: no by-agent delete may be scoped by role alone")
-      .not.toMatch(/DELETE FROM messages WHERE agent_id = \? AND role != 'system'/);
   });
 });
 

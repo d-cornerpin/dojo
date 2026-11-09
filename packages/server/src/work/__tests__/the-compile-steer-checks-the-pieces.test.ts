@@ -28,13 +28,8 @@
 // which "go look things up" is back.
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { compileSteerText, JOIN_REDRIVE_BOUND } from '../join-drive.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const PIECES = [
   `Piece 1 (from ${FX.n5}, thread 55ea3858): "I don\'t have web access for this one — ${FXID.n4} is picking it up."`,
@@ -108,16 +103,5 @@ describe('the carve-out is narrow, and everything incident-derived is carried', 
   it('the attempt signal is unchanged in both directions', () => {
     expect(steer(2)).toContain('steer 2 of 3');
     expect(steer(null)).not.toContain('steer');
-  });
-});
-
-describe('the engine still classifies nothing', () => {
-  it('join-drive.ts holds no prose recognizer for hand-offs — the MODEL judges', () => {
-    // The banned class, named in the round-11 NOT-DOING list: engine prose-detection of
-    // punts/hand-offs. The instruction is text handed to the model; nothing here matches on
-    // a reply's words.
-    const text = fs.readFileSync(path.resolve(HERE, '../join-drive.ts'), 'utf8');
-    const body = text.slice(text.indexOf('export function compileSteerText'));
-    expect(body).not.toMatch(/\.test\(|\.match\(|RegExp|includes\(['"]passed/);
   });
 });

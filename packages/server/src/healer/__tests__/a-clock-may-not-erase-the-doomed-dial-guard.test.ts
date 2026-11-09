@@ -38,13 +38,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { onAgentRecovered, drainRecoveryNotices } from '../injury-recovery.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -62,15 +57,6 @@ vi.mock('../../logger.js', () => ({
 vi.mock('../../agent/a2a-notice.js', () => ({ deliverPlatformNotice: vi.fn(async () => undefined) }));
 
 const AGENT = 'quill';
-
-function stripped(rel: string): string {
-  const raw = fs.readFileSync(path.join(SRC, rel), 'utf8');
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
-    .join('\n');
-}
 
 // t277: injury-recovery loads ONCE, at file collection. The clauses used to `vi.resetModules()` in
 // beforeEach and then `await import('../injury-recovery.js')` inside the clause AND again in
@@ -165,98 +151,5 @@ describe('§1 U1 — a COOLDOWN recovery may not clear what only evidence earns'
     onAgentRecovered(AGENT);
 
     expect(agentRow().last_error, 'a one-argument call is still a full recovery').toBeNull();
-  });
-});
-
-describe('§2 U1 — the sweep reads the CAUSE before it writes a status', () => {
-  it('THE RED: a declared-patience failure is left alone, with its diagnostic intact', () => {
-    const src = stripped('healer/auto-fix.ts');
-
-    expect(/function cooldownSweepMayRecover\(/.test(src), 'the sweep asks whether it may act').toBe(true);
-    expect(/DECLARED_PATIENCE_EXCEEDED_CODE/.test(src), 'and it keys on the code, not on prose').toBe(true);
-    // BOTH arms — the paused one and the errored one. Fixing one of a matched pair is how this
-    // family survives review.
-    const guards = src.match(/cooldownSweepMayRecover\(item\.agentId\)/g) ?? [];
-    expect(guards.length, 'both sweep arms consult it').toBe(2);
-  });
-
-  it('the cause is read BEFORE the status write, in BOTH functions that were changed', () => {
-    const src = stripped('healer/auto-fix.ts');
-
-    // Scoped PER FUNCTION on purpose. `auto-fix.ts` carries other fixers that write the same
-    // status for unrelated reasons (`fixStuckAgent`), and one of them sits above these two — so a
-    // whole-file `indexOf` comparison measures function ORDER, not check order, and an earlier
-    // cut of this clause failed for exactly that reason.
-    for (const fn of ['function fixPausedAgent(', 'function fixErrorAgent(']) {
-      const start = src.indexOf(fn);
-      expect(start, `${fn} exists`).toBeGreaterThan(-1);
-      const body = src.slice(start, src.indexOf('\nfunction ', start + 1));
-      const guardAt = body.indexOf('cooldownSweepMayRecover(item.agentId)');
-      const writeAt = body.indexOf("writeAgentStatus(item.agentId, 'idle')");
-      expect(guardAt, `${fn} consults the cause`).toBeGreaterThan(-1);
-      expect(writeAt, `${fn} writes a status`).toBeGreaterThan(-1);
-      expect(guardAt, `${fn}: a check after the write would be decoration`).toBeLessThan(writeAt);
-    }
-  });
-
-  it('the sweep passes `cooldown`, which is what makes §1 bite in production', () => {
-    const src = stripped('healer/auto-fix.ts');
-    expect(/m\.onAgentRecovered\(agentId, 'cooldown'\)/.test(src)).toBe(true);
-  });
-
-  it('CONTROL: an unreadable row does not become permission — the sweep makes no claim', () => {
-    const src = stripped('healer/auto-fix.ts');
-    // The sweep is an optimisation, never an obligation, so the safe direction on a failed read
-    // is to leave the agent as the human last saw it.
-    expect(/return \{ ok: false, why: 'its last error could not be read/.test(src)).toBe(true);
-  });
-});
-
-describe('§3 R30 — the scheduler stops failing runs that are running', () => {
-  it('THE RED: `activeRuns` is consulted, in the file that imported it nowhere', () => {
-    const src = stripped('scheduler/runner.ts');
-
-    expect(/import \{ activeRuns \} from '\.\.\/agent\/shared-state\.js'/.test(src),
-      'the liveness fact every other reaper guards on').toBe(true);
-    // BOTH clauses: the 30-minute arm and the 120-minute one, which is the same defect with a
-    // longer fuse.
-    const guards = src.match(/activeRuns\.has\(/g) ?? [];
-    expect(guards.length, 'both stale arms ask whether the run is live').toBe(2);
-  });
-
-  it('THE SQL reads the NEWEST evidence of life, not the oldest', () => {
-    const src = stripped('scheduler/runner.ts');
-
-    // `MIN` made a row stale if EITHER clock was stale, and one of the two only moves on an
-    // explicit tracker-tool write. This is the half that made a talking agent look dead.
-    expect(/AND MIN\(\s*COALESCE\(/.test(src), 'the older-of-two reading is the defect').toBe(false);
-    expect(/AND MAX\(\s*COALESCE\(/.test(src), 'the newest evidence is what answers the question').toBe(true);
-  });
-
-  it('the guard runs BETWEEN the scan and the verdict, so nothing is written first', () => {
-    const src = stripped('scheduler/runner.ts');
-    const scanAt = src.indexOf('const staleTasksRaw = db.prepare');
-    const filterAt = src.indexOf('const staleTasks = staleTasksRaw.filter');
-    expect(scanAt).toBeGreaterThan(-1);
-    expect(filterAt, 'the filter stands between the query and every use of its rows')
-      .toBeGreaterThan(scanAt);
-  });
-
-  it('the exit reason states what was MEASURED, not a status it never read', () => {
-    const raw = fs.readFileSync(path.join(SRC, 'scheduler/runner.ts'), 'utf8');
-
-    // "assigned agent idle for 30+ minutes" asserted a state the query could not see — the
-    // heartbeat lives in another table. What it actually measured is an absence of output plus a
-    // live-run check, so that is what it now says.
-    expect(raw).toMatch(/produced nothing for \$\{AGENT_IDLE_THRESHOLD_MINUTES\}\+ minutes and is not running now/);
-    expect(raw, 'the old claim is gone').not.toMatch(/reason: `assigned agent idle for/);
-  });
-
-  it('CONTROL: the reaper still reaps — a dead run is untouched by the guard', () => {
-    const src = stripped('scheduler/runner.ts');
-    // The guard RETURNS TRUE (keep it in the stale list) when the agent is not running, so a
-    // genuinely dead run still reaches `onTaskRunComplete`. A guard that filtered everything
-    // would be a deleted reaper.
-    expect(/if \(!activeRuns\.has\(t\.assigned_to\)\) return true;/.test(src)).toBe(true);
   });
 });

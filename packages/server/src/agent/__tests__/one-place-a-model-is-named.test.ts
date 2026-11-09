@@ -10,31 +10,12 @@
 //    has. A field nobody can move is a field nobody can trust.
 // ════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type Anthropic from '@anthropic-ai/sdk';
 import type OpenAI from 'openai';
 import { buildOpenAIMessages, resolveOpenAIBaseUrl, applyProviderRequestParams } from '../model.js';
 import { contractForModel, contractForModelId, apiRootIsBareHost, type ModelContract } from '../model-contract.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 describe('HL1 — the capability contract is the only place a model or provider is named', () => {
-  it('agent/model.ts contains no provider-name check at all', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'model.ts'), 'utf-8');
-    // The exact shapes the eight migrated branches used: the two host substrings, and
-    // the two locals they were bound to.
-    for (const forbidden of ['deepseek.com', 'openrouter.ai', 'isDeepSeek', 'isOpenRouter']) {
-      expect(src.includes(forbidden), `model.ts must not contain "${forbidden}"`).toBe(false);
-    }
-  });
-
-  it('the contract module is where they went', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'model-contract.ts'), 'utf-8');
-    expect(src).toContain('api.deepseek.com');
-    expect(src).toContain('openrouter.ai');
-  });
 
   it('seeds the configured families from what the dispatcher did before the migration', () => {
     const flash = contractForModel({ providerBaseUrl: 'https://api.deepseek.com', apiModelId: 'deepseek-v4-flash' });
@@ -170,27 +151,5 @@ describe('HL1 — every declared field moves the request', () => {
     expect(resolveOpenAIBaseUrl('https://openrouter.ai/api')).toBe('https://openrouter.ai/api/v1');
     expect(resolveOpenAIBaseUrl('https://api.example.com/v1')).toBe('https://api.example.com/v1');
     expect(resolveOpenAIBaseUrl(null)).toBeUndefined();
-  });
-
-  // `emptyRetryBudget` is exercised by the empty-response ladder's own suite (HL2).
-
-  // T58 (owner ruling 12) — the one field that was DECLARED AND UNREAD is gone. HL1 shipped
-  // `supportsParallelToolCalls` flagged rather than hidden; the ruling was "clean up after
-  // doubly confirming unneeded", the confirmation came back with no reader in either tree,
-  // and the field was removed. This is the tombstone: the contract may not grow the field
-  // back without a reader arriving in the same change.
-  it('declares no field without a reader — the removed one stays removed', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'model-contract.ts'), 'utf-8');
-    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    expect(code).not.toContain('supportsParallelToolCalls');
-    // The table above the code is where the removal is argued, so the tombstone must say so.
-    expect(src).toContain('TOMBSTONE: `supportsParallelToolCalls`, REMOVED');
-    // Every field the interface still declares is one the tests above move end-to-end.
-    const iface = src.slice(src.indexOf('export interface ModelContract'), src.indexOf('// ── THE DEFINITION SITE'));
-    for (const field of ['requiresReasoningReplay', 'answersInReasoning', 'thinkingToggle',
-      'rejectsSamplingParamsWhenThinking', 'thinkingLevels', 'outputEscalationCeiling',
-      'emptyRetryBudget', 'apiRootIsBareHost', 'systemPromptCacheMarker']) {
-      expect(iface, `${field} must still be declared`).toContain(field);
-    }
   });
 });

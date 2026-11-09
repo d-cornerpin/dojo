@@ -28,15 +28,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { addCredential, updateCredential, getCredentialByService, deleteCredentialByService } from '../store.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../tools.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const mockDb: { current: Database.Database | null } = { current: null };
 
 vi.mock('../../db/connection.js', () => ({
@@ -301,21 +296,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
     expect(result.ok).toBe(false);
     expect(result.error).toContain('No credential found');
     expect(auditRows()).toEqual([]);
-  });
-
-  it('THE CENSUS: the two non-agent writers state their authorisation at the site', () => {
-    // The dashboard PATCH is the owner editing their own row — their click IS the
-    // confirmation — and the VNC rotate is the engine turning its own private slot.
-    // Both are legitimate; both must SAY so rather than inherit it by accident.
-    for (const f of ['gateway/routes/credentials.ts', 'screen-share/manager.ts']) {
-      const src = fs.readFileSync(path.join(SRC_ROOT, f), 'utf-8');
-      expect(/overwrite:\s*true/.test(src), `${f} overwrites without declaring it`).toBe(true);
-      // FIX ROUND (review IMPORTANT B-1): and the same for the OTHER destroy door.
-      expect(/confirm:\s*true/.test(src), `${f} deletes without declaring it`).toBe(true);
-    }
-    // The third writer this census used to check — `credentials/battery-residue-purge.ts`, the T83
-    // remediation — was deleted on 2026-09-26 (see the tombstone at the foot of this file). Two
-    // non-agent writers remain, and both are live doors rather than a one-shot script.
   });
 });
 

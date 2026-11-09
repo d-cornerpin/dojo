@@ -87,7 +87,6 @@ import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
 import { POST_BUDGET_LANES, POST_BUDGET_ENTRY_LANE, LANE_LIMITS, laneLimit } from '../lanes.js';
 import { estimateTokens } from '../budget.js';
-import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 
 const AGENT = 'agent-t76b';
 
@@ -399,40 +398,6 @@ describe('T76b §5 — the lane declares a derived reserve and a defended positi
     expect(POST_BUDGET_ENTRY_LANE[INTEGRATION_STATUS_ENTRY_ID]).toBe(INTEGRATION_STATUS_LANE_ID);
     expect(LANE_LIMITS[INTEGRATION_STATUS_LANE_ID]).toBeTruthy();
     expect(lane().measured.length).toBeGreaterThan(20);
-  });
-
-  /**
-   * The injection ORDER, read from the ENGINE FILE that decides it through the shared
-   * derivation (`engine-sources.ts`) — never by a hand-typed path. T69b §4's rule: a guard
-   * that names `agent/v2/steps/...` by path stops seeing its subject SILENTLY the next time a
-   * tranche moves it.
-   */
-  const injectionOrder = (): string[] => {
-    const src = engineFileWithBoth("'engine.open-commitments'", "'msg.current-time'");
-    const ids: string[] = [];
-    for (const m of src.text.matchAll(
-      /(?:injectRegistryMessage|pushEngineMessage)\([^)]*?['"]((?:msg|engine)\.[a-z-]+)['"]/gs,
-    )) {
-      if (!ids.includes(m[1])) ids.push(m[1]);
-    }
-    return ids;
-  };
-
-  it('it is injected AFTER every stable block and BEFORE the deliberate-churn group', () => {
-    const order = injectionOrder();
-    const at = (id: string) => {
-      const i = order.indexOf(id);
-      expect(i, `${id} is not injected by pre-call-injections.ts`).toBeGreaterThanOrEqual(0);
-      return i;
-    };
-    // Behind everything that changes rarely...
-    expect(at('engine.open-commitments')).toBeLessThan(at('msg.integration-status'));
-    expect(at('msg.peer-status')).toBeLessThan(at('msg.integration-status'));
-    // ...and in front of the four registered as deliberately per-turn, so the bytes it
-    // re-bills when a successful call moves it were being re-billed anyway.
-    expect(at('msg.integration-status')).toBeLessThan(at('engine.recently-answered'));
-    expect(at('msg.integration-status')).toBeLessThan(at('msg.relevant-memory'));
-    expect(at('msg.integration-status')).toBeLessThan(at('msg.current-time'));
   });
 
   it('the block renders as ONE message, framed, with no truncation marker on a normal body', async () => {

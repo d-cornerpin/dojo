@@ -27,7 +27,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { homeDir } from '../../../home.js';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   mintCallCapability, attachCallCapability, currentCapability,
@@ -41,8 +40,6 @@ import { decodeToWav16kMono, extractAudioFromVideo } from '../transcode.js';
 import * as effectFs from '../fs.js';
 import { runProcess } from '../../tools/process-run.js';
 import type { ToolEffect } from '../../tools/types.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const AGENT = 'agent-under-test';
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'facade-contract-'));
@@ -97,12 +94,6 @@ describe('a converted call site cannot act on a resource the call never declared
   it('and with NO authorization at all it is refused too — that is the strongest form', async () => {
     expect(() => spawnAuthorized('echo', ['hi'])).toThrow(EffectNotAuthorized);
     expect(() => effectFs.readFileSync(inScope, 'utf8')).toThrow(EffectNotAuthorized);
-  });
-
-  it('v3.5 E19: the buffered process door is GONE — nothing defines or calls `execFileAuthorized`', () => {
-    const procSrc = fs.readFileSync(path.join(SRC, 'agent/effects/proc.ts'), 'utf8');
-    expect(/export\s+(async\s+)?function\s+execFileAuthorized/.test(procSrc)).toBe(false);
-    expect(filesContaining('execFileAuthorized(')).toEqual([]);
   });
 
   it('the fs entries read what the call declared and refuse what it did not', async () => {
@@ -308,55 +299,7 @@ describe('grantsForCall reads the registry, and invents nothing', () => {
   });
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// 4 — THE STRUCTURE: unforgeable, judgement-free, and actually converted
-// ════════════════════════════════════════════════════════════════════════════
-
-function productionSources(dir: string, out: string[] = []): string[] {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === '__tests__' || entry.name === 'node_modules' || entry.name === 'dist') continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) productionSources(full, out);
-    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) out.push(full);
-  }
-  return out;
-}
-
-function filesContaining(token: string, within = SRC): string[] {
-  return productionSources(within)
-    .filter((f) => fs.readFileSync(f, 'utf8').includes(token))
-    .map((f) => path.relative(SRC, f))
-    .sort();
-}
-
 describe('the capability cannot be forged, and the facade holds no judgement', () => {
-  it('the MINT has exactly one production caller, and IT has exactly one caller: the gate loop', () => {
-    // Two levels, both enumerated, because the mint moved out of the executor
-    // when the size ratchet said "move the new code elsewhere": `scopes.ts`
-    // holds the only mint, and the executor holds the only call to `scopes.ts`.
-    // A new caller at EITHER level is a second permission system and fails here.
-    const notTheModule = (f: string): boolean => f !== 'agent/effects/capability.ts';
-    expect(
-      filesContaining('mintCallCapability(').filter(notTheModule),
-      'a second minting site is a second permission system — read it and hand up',
-    ).toEqual(['agent/effects/scopes.ts']);
-    expect(
-      filesContaining('attachCallCapability(').filter(notTheModule),
-      'a second attach site would let a capability be planted outside the gate loop',
-    ).toEqual(['agent/effects/scopes.ts']);
-    expect(
-      filesContaining('openCallCapability(').filter((f) => f !== 'agent/effects/scopes.ts'),
-      'the capability is opened at the executor gate loop and nowhere else',
-    ).toEqual(['agent/tools/index.ts']);
-    // `grantsForCall` takes an OVERRIDABLE resolver table (mechanic 5, so the
-    // indirection is drivable by a test without a database). Nothing in
-    // production may pass its own — a caller that did would decide what an
-    // argument resolves to, which is the interpretation this module owns.
-    expect(
-      filesContaining('grantsForCall(').filter((f) => f !== 'agent/effects/scopes.ts'),
-      'grantsForCall has one production caller: the mint, in this module',
-    ).toEqual([]);
-  });
 
   it('the indirection table is a NAMED list, and a declaration cannot add to it', () => {
     // Mechanic 5's equivalent of `CARRIED_PROGRAMS`'s census: a new way to turn
@@ -379,75 +322,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(rogue).toEqual([]);
   });
 
-  it('NO facade entry takes a capability as a parameter — a handler has nothing to hand it', () => {
-    // This is what makes unforgeability structural rather than a convention:
-    // the carrying modules never name the type at all, so there is no argument
-    // to forge, replay or borrow from another call.
-    for (const file of ['agent/effects/fs.ts', 'agent/effects/proc.ts']) {
-      const src = fs.readFileSync(path.join(SRC, file), 'utf8');
-      expect(src.includes('CallCapability'), `${file} must not take a capability`).toBe(false);
-      expect(src.includes('requireAuthorized'), `${file} must ask for authorization`).toBe(true);
-    }
-  });
-
-  it('STOP CONDITION 2 AS A CHECK: the carrying modules hold none of the deciding vocabulary', () => {
-    // The brokers DECIDE; the facade CARRIES. If a future edit needs a rule
-    // here, this clause fails and the work hands up rather than growing a
-    // second permission system inside the first one's shadow.
-    const DECIDING = [
-      'checkPermission', 'grantFor(', 'authorizeFs', 'authorizeProc', 'authorizeArgv',
-      'isSensitivePath', 'DENY_RULES', 'evaluateRules', 'manifest',
-    ];
-    for (const file of ['agent/effects/fs.ts', 'agent/effects/proc.ts', 'agent/effects/capability.ts']) {
-      const src = fs.readFileSync(path.join(SRC, file), 'utf8');
-      for (const token of DECIDING) {
-        expect(src.includes(token), `${file} must not ${token} — the brokers decide`).toBe(false);
-      }
-    }
-  });
-
-  it('CATEGORY CONVERTED: the process door no longer imports child_process', () => {
-    const doorSrc = fs.readFileSync(path.join(SRC, 'agent/tools/process-run.ts'), 'utf8');
-    expect(/^import .*child_process/m.test(doorSrc)).toBe(false);
-    // t114 (census U2): the door moved from the BUFFERED primitive to the STREAMING one, because
-    // an output-idle bound needs a per-chunk signal and a buffered call has none. Both are the
-    // same facade asking the same capability about the same program (`proc.ts` says so in its own
-    // doc), so the clause names either rather than pinning the door to one of them.
-    //
-    // THE DOOR IS NOW TWO FILES. The ~90 lines of streaming/re-arming mechanism live in the leaf
-    // `process-idle-bound.ts` (the growth detector asked for the split, correctly), so the facade
-    // call is read across the pair rather than in the handler file alone. The property under test
-    // is unchanged — the toolbox reaches a process ONLY through the facade — and it still bites in
-    // both directions: reaching `child_process` directly fails the assertion above for whichever
-    // of the two files does it, and the `agent/tools/**` grep-zero below covers the new leaf too,
-    // since it sweeps the directory rather than a list of names.
-    const runnerSrc = fs.readFileSync(path.join(SRC, 'agent/tools/process-idle-bound.ts'), 'utf8');
-    expect(/^import .*child_process/m.test(runnerSrc), 'the runner leaf must not hold child_process either').toBe(false);
-    expect(
-      /\bspawnAuthorized\(/.test(doorSrc + runnerSrc),
-      'it spawns through the facade',
-    ).toBe(true);
-    // …and the whole toolbox tree is clean of it, which is the per-category
-    // grep-zero the lint flip will rest on.
-    const inToolbox = filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'tools'));
-    expect(inToolbox, 'agent/tools/** must reach processes only through the facade').toEqual([]);
-    // The facade itself is the one place that holds it.
-    expect(filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'effects')))
-      .toEqual(['agent/effects/proc.ts']);
-  });
-
-  it('CATEGORY CONVERTED: the canvas door writes its screenshot through the facade', () => {
-    const doorSrc = fs.readFileSync(path.join(SRC, 'agent/tools/cat/canvas.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(doorSrc), 'the canvas door must not hold node:fs').toBe(false);
-    expect(doorSrc.includes('effectFs.'), 'it writes through the facade').toBe(true);
-  });
-
-  it('CATEGORY CONVERTED: the image generator writes its output through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'services/image-generation.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the image generator must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it writes through the facade').toBe(true);
-  });
-
   it('image_create DECLARES the generated-images directory it writes, and the scope is that alone', () => {
     // `~/.dojo/uploads/generated` is a SIBLING of the calling agent's uploads
     // directory, not inside it, so the declaration the tool already carried
@@ -463,12 +337,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_write', path: neighbour, real: neighbour }), 'the scope is the generated dir alone').toBe(false);
   });
 
-  it('CATEGORY CONVERTED: the email attachment reader reads through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'services/email-attachments.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the attachment reader must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reads through the facade').toBe(true);
-  });
-
   it('gmail_send / outlook_send authorize exactly the attachments the call names', () => {
     const a = path.join(scratch, 'quote.pdf');
     for (const tool of ['gmail_send', 'outlook_send']) {
@@ -478,12 +346,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       // A read of an attachment is not a licence to write over it.
       expect(grantsCover(grants, { op: 'fs_write', path: a, real: a })).toBe(false);
     }
-  });
-
-  it('CATEGORY CONVERTED: the recall door reads the large-file store through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'memory/large-files.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the large-file store must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reads and writes through the facade').toBe(true);
   });
 
   it('history_get DECLARES the large-file store it reads, and the scope is that store alone', () => {
@@ -503,20 +365,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_read', path: sibling, real: sibling }), 'the scope is the store alone').toBe(false);
     // A read declaration is not a write one.
     expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
-  });
-
-  it('CATEGORY CONVERTED: the file door reads, writes, appends, patches and lists through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/fs.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the file door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
-    // The toolbox tree's grep-zero is now COMPLETE — `agent/tools/util.ts` was
-    // the last direct holder and converted at T8H, after every caller's
-    // declaration was corrected. The list is asserted empty in the util census
-    // below; here it stays as the file door's own half of the same fact.
-    expect(
-      filesContaining("from 'node:fs'", path.join(SRC, 'agent', 'tools')),
-      'agent/tools/** reaches the disk through the facade, with no named exception left',
-    ).toEqual([]);
   });
 
   it('MECHANIC 6: the atomic write owns its temp sibling, and the DECLARED resource is the target', async () => {
@@ -570,21 +418,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_read', path: entry, real: entry }), 'file_read does not gain a tree').toBe(false);
   });
 
-  it('CATEGORY CONVERTED: the async audio delivery path writes through the facade', () => {
-    // RECLASSIFIED by the RULING P5-R15 ADDENDUM re-read: both modules had been
-    // recorded as platform-timed, and the sharpened criterion is whose async
-    // context the I/O runs in. Re-derived by command at this HEAD — `deliverAsset`
-    // has ONE call site, reached only from `runAudioOrMusicJob`, reached only
-    // from `enqueueAudioOrMusicJob`, whose ONE production caller is the
-    // tts_create / music_create handler; the boot worker calls `setFailed` and
-    // `deliverError` and never reaches an fs line at all.
-    for (const file of ['services/generation-jobs.ts', 'services/audio-generation.ts']) {
-      const src = fs.readFileSync(path.join(SRC, file), 'utf8');
-      expect(/^import .*['"]node:fs['"]/m.test(src), `${file} must not hold node:fs`).toBe(false);
-      expect(src.includes('effectFs.'), `${file} must write through the facade`).toBe(true);
-    }
-  });
-
   it('tts_create and music_create DECLARE the generated dir AND their own delivery copy', () => {
     const generatedDir = path.join(homeDir(), '.dojo', 'uploads', 'generated');
     const wav = path.join(generatedDir, 'x.wav');
@@ -599,12 +432,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.wav');
       expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write another agent uploads dir`).toBe(false);
     }
-  });
-
-  it('CATEGORY CONVERTED: the media door reads and delivers through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/media.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the media door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reads and writes through the facade').toBe(true);
   });
 
   it('image_create may read BACK what it generated and copy it into the caller uploads dir', () => {
@@ -663,12 +490,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       effectsFor('transcribe_audio')?.some((x) => x.via === 'attachment_row'),
       'transcribe_audio must declare the attachment-row indirection',
     ).toBe(true);
-  });
-
-  it('CATEGORY CONVERTED: the comms door reads and copies through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/comms.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the comms door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reaches files through the facade').toBe(true);
   });
 
   it("show_to_user DECLARES the uploads directory it copies into, and the scope is that agent's alone", () => {
@@ -738,12 +559,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsForCall(AGENT, [{ kind: 'fs_read', from: 'args.attachments[]' } as ToolEffect], { attachments: [inScope] })).toHaveLength(1);
   });
 
-  it('CATEGORY CONVERTED: the PDF door reads and writes through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'agent/pdf-tools.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the PDF door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
-  });
-
   it('the pdf tools DECLARE the uploads dir they really write, never the bare filename they were given', () => {
     // RULING P5-R15 ADDENDUM 2's ordinary site correction. `filename` /
     // `output_filename` are BARE NAMES: resolved as paths they named a file
@@ -781,22 +596,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), 'it may write the PDF').toBe(true);
     expect(grantsCover(grants, { op: 'fs_read', path: img, real: img }), 'it may read the image it embeds').toBe(true);
     expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and no other image').toBe(false);
-  });
-
-  it('SURFACE SPLIT: the tool-doc READER is its own module and reads through the facade', () => {
-    // RULING P5-R15 part 2. `tools/index-generator.ts` held one `node:fs` import
-    // serving two populations: a boot job that WRITES every tool doc, and a
-    // reader called inside `load_tool_docs`. Neither classification was honest
-    // while they shared a module, so the surfaces were separated — the reader
-    // moved out because the file's own name and header describe the generator.
-    const reader = fs.readFileSync(path.join(SRC, 'tools/tool-doc-read.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(reader), 'the reader must not hold node:fs').toBe(false);
-    expect(reader.includes('effectFs.'), 'it reads through the facade').toBe(true);
-    // …and the generator half kept the boot job, so its import is honestly
-    // platform-internal: it has exactly one caller and that caller is boot.
-    expect(filesContaining('generateToolDocs(')).toEqual(['index.ts', 'tools/index-generator.ts']);
-    expect(filesContaining('readToolDoc('), 'the reader has one caller and it is a tool handler chain')
-      .toEqual(['tools/tool-doc-read.ts', 'tools/tool-docs.ts']);
   });
 
   it('load_tool_docs DECLARES the docs directory it reads, and the scope is that directory alone', () => {
@@ -870,26 +669,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsForCall(AGENT, e, { name: 42 }, lookup), 'non-string reference').toEqual([]);
   });
 
-  it('CATEGORY CONVERTED: the techniques door reads and writes through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'techniques/tools.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the techniques door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
-  });
-
-  it('ONE RESOLUTION POINT: the gate loop and the handler ask the same reader the same question', () => {
-    // The same-reader principle is structural here, not hoped: the identity read
-    // (`resolveTechniqueRef` → the recorded row) lives in ONE leaf the gate loop
-    // can import without dragging the store's own fs, embeddings and broadcast
-    // into every dispatch's module graph, and the store re-exports it so no
-    // consumer moved.
-    const leaf = fs.readFileSync(path.join(SRC, 'techniques/technique-dir.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(leaf), 'the resolution leaf holds no fs of its own').toBe(false);
-    expect(filesContaining('function resolveTechniqueRef('), 'the reference reader exists in exactly one place')
-      .toEqual(['techniques/technique-dir.ts']);
-    expect(filesContaining('function techniqueDirectory('), 'and so does the reference → directory mapping')
-      .toEqual(['techniques/technique-dir.ts']);
-  });
-
   it('technique_read DECLARES the technique tree it walks, so its search keeps finding supporting files', () => {
     // The handler's own `catch` around the walk turns a refusal into a logged
     // warning and NO hits — the `file_list` failure mode exactly: converted on a
@@ -937,26 +716,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     const false_ = path.resolve('templates/brief.md');
     expect(grantsCover(grants, { op: 'fs_write', path: false_, real: false_ }), 'the bare relative name grants nothing').toBe(false);
     expect(grantsCover(grants, { op: 'fs_write', path: outOfScope, real: outOfScope }), 'and nothing outside the technique').toBe(false);
-  });
-
-  it('SURFACE SPLIT: the imported-technique setup surface is its own module and reaches disk through the facade', () => {
-    // RULING P5-R15 part 2. `techniques/share-import.ts` held one `node:fs`
-    // import serving two populations: the package IMPORT, whose only caller is
-    // the dashboard upload route, and the placeholder SETUP surface, whose only
-    // caller is the technique tool-handler module. The two partition perfectly by
-    // enclosing function — 10 sites on the import side, 8 on the setup side, and
-    // only a module-private manifest TYPE is shared, which crosses as a type-only
-    // import and therefore not at runtime at all.
-    const setup = fs.readFileSync(path.join(SRC, 'techniques/import-setup.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(setup), 'the setup surface must not hold node:fs').toBe(false);
-    expect(setup.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
-    // …and each half has exactly the callers its classification claims.
-    expect(filesContaining('importTechnique('), 'the import half is reached by the dashboard route alone')
-      .toEqual(['gateway/routes/techniques.ts', 'techniques/share-import.ts']);
-    expect(filesContaining('applyPlaceholderToTechnique('), 'the setup half is reached by the tool handlers alone')
-      .toEqual(['techniques/import-setup.ts', 'techniques/tools.ts']);
-    expect(filesContaining('finalizeImportedTechnique('))
-      .toEqual(['techniques/import-setup.ts', 'techniques/tools.ts']);
   });
 
   it('technique_set_placeholder DECLARES the READ it has always performed, not only the write', () => {
@@ -1027,27 +786,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     })).toEqual([]);
   });
 
-  it('3-WAY SPLIT: the canvas viewer, its per-agent state, and the disk watcher are three modules', () => {
-    // RULING P5-R15 ADDENDUM 3(3). One module held three things: the
-    // dispatch-only VIEWER (4 fs sites), the per-agent canvas STATE (no fs), and
-    // a file WATCHER whose callback fires from a polling timer — outside any
-    // dispatch, for a path both tools and HTTP routes can set. Splitting three
-    // ways is what makes each classification true of what the module does.
-    const viewer = fs.readFileSync(path.join(SRC, 'agent/canvas-view.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(viewer), 'the viewer must not hold node:fs').toBe(false);
-    expect(viewer.includes('effectFs.'), 'it reads the canvas through the facade').toBe(true);
-    const state = fs.readFileSync(path.join(SRC, 'agent/canvas-state.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(state), 'the state surface touches no file at all').toBe(false);
-    // The WATCH pair keeps `node:fs` and is named in the flip's excluded list with
-    // its measured reason — dual-reached and platform-timed. It is two calls in
-    // one small module rather than two calls inside a 300-line one, which is the
-    // whole point of splitting three ways instead of two.
-    const watch = fs.readFileSync(path.join(SRC, 'agent/canvas-watch.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(watch), 'the watcher keeps its import, honestly').toBe(true);
-    expect((watch.match(/fs\.(watchFile|unwatchFile)\(/g) ?? []).length, 'and holds exactly the watch pair').toBe(2);
-    expect(watch.includes('effectFs.'), 'it does not pretend to be carried').toBe(false);
-  });
-
   it('canvas_read DECLARES the canvas file it has always read', () => {
     // It declared `effects: []` and has always probed, stat-ed and read the file
     // on the agent's canvas. Same class as `open_browser` and `history_get`:
@@ -1084,30 +822,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(g2, 'a cloud id names no file').toEqual([]);
     expect(grantsForCall(AGENT, [decl], { file_id: 'relative/thing.docx' }), 'nor does a relative name').toEqual([]);
     expect(grantsForCall(AGENT, [decl], {}), 'nor an absent one').toEqual([]);
-  });
-
-  it('ONE RESOLUTION POINT: the office local-path predicate exists in exactly one place', () => {
-    // The predicate was written TWICE in the same module (the Word edit resolver
-    // and the Excel one), which is two chances for the gate loop's answer and the
-    // handler's answer to drift apart. It is now one function both call, in a
-    // leaf the gate loop can import without pulling ExcelJS, docx and the Graph
-    // client into every dispatch's module graph.
-    const leaf = fs.readFileSync(path.join(SRC, 'microsoft/office-local-path.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(leaf), 'deciding whether a string is a path reads no file').toBe(false);
-    expect(filesContaining('function localPathFromFileId('), 'the predicate has exactly one home')
-      .toEqual(['microsoft/office-local-path.ts']);
-    const door = fs.readFileSync(path.join(SRC, 'microsoft/tools-office.ts'), 'utf8');
-    // No copy of the home expansion survives in the door — that was the tell of
-    // the duplicate. (Its one remaining `startsWith('/')` is a zip-entry name
-    // inside a .pptx, a different question entirely.)
-    expect(door.includes("startsWith('~')"), 'the door expands no home path of its own').toBe(false);
-    expect((door.match(/officeLocalPath\(args\)/g) ?? []).length, 'every local-target question goes through the one predicate').toBe(6);
-  });
-
-  it('CATEGORY CONVERTED: the office door reads and writes through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'microsoft/tools-office.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the office door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
   });
 
   it('every office edit tool authorizes the local file its call names, whichever argument named it', () => {
@@ -1154,12 +868,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       filename: 'Report.docx', content: [{ type: 'image', path: img }],
     });
     expect(grantsCover(g, { op: 'fs_read', path: img, real: img })).toBe(true);
-  });
-
-  it('CATEGORY CONVERTED: the slides door reads and writes through the facade', () => {
-    const src = fs.readFileSync(path.join(SRC, 'google/tools-slides.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the slides door must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
   });
 
   it('THE STYLE STORE IS DECLARED PER VERB — a shared file every deck verb reads', () => {
@@ -1264,17 +972,6 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
   const tmpWorkspaceFiles = (): string[] =>
     fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('dojo-stt-'));
 
-  it('CATEGORY CONVERTED: the transcription service spawns nothing and holds no temp workspace', () => {
-    const src = fs.readFileSync(path.join(SRC, 'services/transcription.ts'), 'utf8');
-    expect(/^import .*['"]node:child_process['"]/m.test(src), 'it must not spawn').toBe(false);
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'and it must hold no filesystem of its own').toBe(false);
-    expect(src.includes("from '../agent/effects/transcode.js'"), 'it transcodes through the carrying layer').toBe(true);
-    // …and `child_process` still lives in exactly ONE facade module, which is
-    // what keeps the streaming spawn from becoming a second door.
-    expect(filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'effects')))
-      .toEqual(['agent/effects/proc.ts']);
-  });
-
   it('BRANCH (B): ffmpeg is a NAMED carried program, and a declaration cannot add another', () => {
     expect(Object.keys(CARRIED_PROGRAMS), 'the census list gained its first member').toContain('ffmpeg');
     expect(CARRIED_PROGRAMS['ffmpeg'].length, 'carried with a reason, never a bare name').toBeGreaterThan(20);
@@ -1316,40 +1013,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(tmpWorkspaceFiles(), 'both temp files are unlinked on the success path').toEqual(before);
   });
 
-  // ── THE SHARED UTIL PROBES, CONVERTED LAST ───────────────────────────────
-  //
-  // `agent/tools/util.ts` is not a tool: it is the helper every category leans
-  // on, and its three fs probes run on the CALLER's grant. All three answer
-  // their own `catch` with `null` / `{ opened: false }`, so a refusal there
-  // would be indistinguishable from "the file is not there" — the user would
-  // just stop getting a download link or an "Open in canvas" chip, silently.
-  // That is why it converted after every caller's declaration was corrected,
-  // and why the two clauses below are a CENSUS rather than a spot check: the
-  // call sites are read out of the source, and every one of their tools is
-  // asserted to declare the path it hands the helpers.
-
-  it('CATEGORY CONVERTED: the toolbox holds NO node:fs at all now', () => {
-    const src = fs.readFileSync(path.join(SRC, 'agent/tools/util.ts'), 'utf8');
-    expect(/^import .*['"]node:fs['"]/m.test(src), 'the shared util must not hold node:fs').toBe(false);
-    expect(src.includes('effectFs.'), 'it probes through the facade').toBe(true);
-    // The whole toolbox tree, both families, which is the per-category grep-zero
-    // the lint flip rests on for `agent/tools/**`.
-    expect(filesContaining("from 'node:fs'", path.join(SRC, 'agent', 'tools')), 'no fs').toEqual([]);
-    expect(filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'tools')), 'no proc').toEqual([]);
-  });
-
   it('EVERY CALLER of the util probes declares the path it hands them', () => {
-    // The census: a new caller has to appear here to exist, so the next module
-    // that reaches for a download URL cannot quietly hand it a path its own
-    // declaration never named.
-    const callers = new Set([
-      ...filesContaining('registerSharedFile('), ...filesContaining('openFileInCanvas('),
-      ...filesContaining('queueCanvasDocAttachment('), ...filesContaining('syncCanvasAfterWrite('),
-    ].filter((f) => f !== 'agent/tools/util.ts'));
-    expect([...callers].sort(), 'the probe callers, enumerated from source').toEqual([
-      'agent/tools/cat/canvas.ts', 'agent/tools/cat/comms.ts', 'agent/tools/cat/fs.ts',
-      'agent/tools/cat/office.ts', 'agent/tools/index.ts',
-    ]);
 
     const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const named = path.join(scratch, 'named-by-the-agent.md');

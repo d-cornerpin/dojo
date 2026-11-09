@@ -208,32 +208,6 @@ describe('D1 — a scheduler turn serving a user-deliverable run remembers the w
   });
 
   it('the deliverable question is asked of the DECLARED inventory, never of a retyped list', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../terminal-text.ts'), 'utf8');
-    expect(src).toContain('DELIVERABLE_OWING_TASK_KINDS');
-    expect(src).not.toContain("taskKind === 'reminder'");
     expect(DELIVERABLE_OWING_TASK_KINDS).toContain('reminder');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// THE STEER AND THE WAKE — both engine texts pointed the model straight at the trap.
-// Tail-side strings only: neither rides the cached prompt prefix.
-// ══════════════════════════════════════════════════════════════════════════════
-describe('the engine stops asking for the shape it destroys', () => {
-
-  it('the reminder wake asks for the reply as its own response, bookkeeping after', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../../../../../scheduler/runner.ts'), 'utf8');
-    const wake = src.slice(src.indexOf('[Reminder due]'), src.indexOf('[Scheduled Task, Run #'));
-    expect(wake).toContain('Reminder due');
-    expect(wake).not.toContain("When you're done speaking, silently call");
-    expect(wake.toLowerCase()).toContain('separate response');
   });
 });

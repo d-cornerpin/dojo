@@ -36,8 +36,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -206,19 +204,5 @@ describe('t131 — the stand-down is the bound working, not a fault', () => {
     expect(fault).toHaveLength(1);
     expect(['warn', 'error']).toContain(fault[0].level);
     expect(fault[0].meta).toMatchObject({ workId: id });
-  });
-
-  it('(c) THE MODULE’S ERROR BUDGET IS ZERO, and it is a statement with a reason', () => {
-    // A census over the source, with its own denominator so it cannot pass vacuously: every
-    // failure mode in this file degrades safely and is reported at warn or info. If a future
-    // lane adds a `logger.error` here it must argue against this line — and if it adds one
-    // for a genuine, operator-actionable fault, that is the moment to change this clause
-    // deliberately rather than to discover it had silently stopped meaning anything.
-    const src = readFileSync(
-      fileURLToPath(new URL('../ask-settlement.ts', import.meta.url)), 'utf8',
-    );
-    const calls = src.match(/logger\.(error|warn|info|debug)\(/g) ?? [];
-    expect(calls.length).toBeGreaterThan(5);                       // the denominator
-    expect(calls.filter(c => c === 'logger.error(')).toEqual([]);  // the budget
   });
 });

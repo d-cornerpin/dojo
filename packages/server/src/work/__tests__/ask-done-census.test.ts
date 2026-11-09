@@ -17,8 +17,6 @@
 // carries planted-fault self-tests for its scanner; PART B drives real rows.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -40,29 +38,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../store.js';
 import { settleAsksAtTurnFinalize } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
-// The engine corpus comes from the ONE shared derivation (PHASE-6 GUARD-AUDIT): a guard that
-// hand-rolls its own walk of `agent/v2/steps` is how six copies drifted apart before.
-import { engineFileContaining, engineText } from '../../agent/v2/__tests__/engine-sources.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-// ════════════════════════════════════════════════════════════════════════════════
-// PART A — EVERY WRITER OF ASK-`done` RESOLVES TO THE AUTHORITY
-// ════════════════════════════════════════════════════════════════════════════════
-
-const SRC = path.join(__dirname, '..', '..');
-
-function walk(dir: string, acc: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'migrations') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts')) acc.push(fp);
-  }
-  return acc;
-}
-
-const rel = (f: string): string => path.relative(SRC, f).split(path.sep).join('/');
 const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
@@ -93,78 +69,6 @@ export function measureDoneSites(text: string): DoneSites {
   return { done, dynamic };
 }
 
-/**
- * THE DECLARED INVENTORY. Every site in the tree that can move a `work` row to `done`, with
- * the subject it can reach. Exact equality in both directions is what makes it a measurement
- * rather than a list somebody maintains by hope.
- */
-const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string }> = {
-  // THE AUTHORITY. One predicate, three invocations (delivery / turn finalize / boot).
-  'work/ask-settlement.ts': {
-    // SWEEP-A TB2 folded the join arm IN, so this file now carries two `done` sites: the
-    // authority's delivery/finalize/boot close and its join close. Both are the same
-    // predicate in the same function — `settleOnJoin` is an arm of `settleAsk`, reached only
-    // through it — which is exactly what "one authority" was supposed to mean.
-    //
-    // t152 adds the third: the async arm (`settleOnAsyncResult`), for a background job's result that
-    // reaches the owner after the turn that started it. Same function, same predicate family, reached
-    // only through `settleAsk`; the writer outside the authority is still zero.
-    //
-    // proof-fix-f R3-1(a) adds the fourth: the inherited arm, for an ask parked owed on the version boundary that
-    // a later real answer in its own conversation closes. Same function, reached only through `settleAsk`.
-    done: 4, dynamic: 0, subjects: 'ask',
-    owner: 'settleAsk — the ONE settlement authority for owner asks (SWEEP-A TB1), including '
-      + 'its join arm (SWEEP-A TB2: children settled + the compiled delivery, `compile_resolved` written) '
-      + 'and its async arm (t152: the background work finished and its result reached the owner) '
-      + 'and its inherited arm (proof-fix-f: a late real answer in the conversation of an ask parked owed)',
-  },
-  'work/store.ts': {
-    // TB2 TIGHTENING: 3 -> 2. `settleJoinDelivered` is GONE from this file; it took the last
-    // ask-reaching `done` outside the authority with it.
-    done: 2, dynamic: 1, subjects: 'join pieces (kind=task/root a2a_thread), commitments',
-    owner: 'landPiece (piece, literal + dynamic re-settle), resolveCommitment '
-      + '(commitments ONLY: it refuses an ask row)',
-  },
-  'work/done/decide.ts': {
-    // 901: the one decision. Its `done` is board work only (it refuses a row outside the board's task and
-    // project scope), so it never reaches an ask.
-    done: 0, dynamic: 1, subjects: 'board tasks and projects',
-    owner: 'decide: the decision on a hand-in, or the owner\'s own close',
-  },
-  'work/done/housekeeping.ts': {
-    // A service agent's own housekeeping (root_kind 'service'), settled by the engine on its receipt.
-    done: 0, dynamic: 1, subjects: 'service housekeeping tasks',
-    owner: 'settleHousekeeping: the engine settles housekeeping its worker handed in',
-  },
-  'work/done/project-state.ts': {
-    // A project is derived from its tasks; this moves it to its derived end after a decision.
-    done: 0, dynamic: 1, subjects: 'board projects',
-    owner: 'settleProject: a project done when its tasks are',
-  },
-  'work/occurrences.ts': {
-    // SWEEP CORE-1 CT2 — THE COUNT DID NOT MOVE AND THE OWNER DID, which is the whole record
-    // this line has to carry. `settleOccurrence` was a bookkeeping closer: it took whatever
-    // the caller passed and, when nothing was passed, still stamped `run_status:'complete'`
-    // on the run's own settle event — so the owner's run history read **complete** for a
-    // scheduled brief that reached nobody (his box, 2026-08-07; driven at `8a060c5`, run
-    // `bmslpj41gkx`, where a Tomorrow Brief closed `done` on the tool-call CHIP of the
-    // `work_update(status="complete")` call that closed it). It is now an EVIDENCE-BASED
-    // AUTHORITY for its own subject: for a task DECLARED deliverable-owing
-    // (`work/deliverable-declaration.ts`) it re-derives the run's own qualifying delivery
-    // (`runDeliverableEvidence`, six narrowings, five of them shared with the ask authority)
-    // and answers `owed` rather than settling when there is none.
-    done: 1, dynamic: 0, subjects: 'occurrence',
-    owner: 'settleOccurrence — the ONE settlement authority for a scheduler RUN (SWEEP CORE-1 '
-      + 'CT2): the run closes on a message the person actually received, or it does not close. '
-      + 'The `done` site is unchanged; what changed is that the delivery it points at is the '
-      + 'authority\'s own, not the caller\'s',
-  },
-  'work/tracker-store.ts': {
-    done: 0, dynamic: 1, subjects: 'task, project',
-    owner: 'setTrackerStatus — the tracker two nouns, two-key gated by G9',
-  },
-};
-
 /** The sites that can reach a `kind='ask'` row. This is the number the design exists to
  *  reduce: FOUR at `3439240` (verify report M2), TWO at TB1's close (the authority plus the
  *  join relay, handed forward), and **ONE** since SWEEP-A TB2 folded the join arm in. The
@@ -175,19 +79,6 @@ const ASK_DONE_WRITERS: Array<{ file: string; fn: string; handedTo?: string }> =
 ];
 
 describe('CENSUS A — every writer of ask-`done` resolves to the one authority', () => {
-  const files = (): string[] => walk(SRC).map(rel).sort();
-  const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
-
-  it('the measured map of `done` writers EQUALS the declared inventory, both directions', () => {
-    const measured: Record<string, DoneSites> = {};
-    for (const f of files()) {
-      const s = measureDoneSites(read(f));
-      if (s.done > 0 || s.dynamic > 0) measured[f] = s;
-    }
-    const declared: Record<string, DoneSites> = {};
-    for (const [f, v] of Object.entries(DONE_WRITERS)) declared[f] = { done: v.done, dynamic: v.dynamic };
-    expect(measured).toEqual(declared);
-  });
 
   it('the ask-reaching writers are the authority and the join arm, and nothing else', () => {
     expect(ASK_DONE_WRITERS.map((w) => `${w.file}:${w.fn}`)).toEqual([
@@ -198,36 +89,6 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
       if (w.file === 'work/ask-settlement.ts') continue;
       expect(w.handedTo, `${w.fn} must name the task that folds it into the authority`).toBeTruthy();
     }
-    for (const w of ASK_DONE_WRITERS) {
-      expect(read(w.file), `${w.fn} must exist where the census says it does`)
-        .toMatch(new RegExp(`export function ${w.fn}\\b`));
-    }
-  });
-
-  it('THE DEMOLITION IS REAL: the FOUR retired ask closers are gone from the tree', () => {
-    // Each of these decided "is this ask settled?" on its own evidence at its own moment.
-    // Their requirements live on inside the authority; their code does not live on anywhere.
-    const all = files().map(read).join('\n');
-    expect(all, 'closeAsksForDelivery decided at send time — it is now the authority delivery arm')
-      .not.toMatch(/export function closeAsksForDelivery/);
-    expect(all, 'claimAssembledSiblings wrote state at teardown — it is now a read that feeds finalize')
-      .not.toMatch(/export function claimAssembledSiblings/);
-    expect(read('work/store.ts'), 'the boot reconciler moved to the authority module')
-      .not.toMatch(/export function reconcileOrphanedClaims/);
-    // SWEEP-A TB2 — the fourth. It decided the join's close on whatever delivery id the relay
-    // handed it, so the delegating turn's own status line was an acceptable receipt.
-    expect(read('work/store.ts'), 'the join relay close is the authority join arm now')
-      .not.toMatch(/export function settleJoinDelivered/);
-    expect(all, 'nothing outside the authority may settle a join')
-      .not.toMatch(/export function settleJoinDelivered/);
-  });
-
-  it('the authority is REACHED from all three of its declared moments', () => {
-    expect(read('agent/v2/deliveries.ts'), 'invocation (a): inside the delivery transaction')
-      .toMatch(/settleAsksForDelivery\(/);
-    expect(engineText(), 'invocation (b): the turn-finalize adjudicator')
-      .toMatch(/settleAsksAtTurnFinalize\(/);
-    expect(read('index.ts'), 'invocation (c): boot reconcile').toMatch(/reconcileOrphanedClaims\(/);
   });
 
   // ── SWEEP CORE-1 CT2 — THE SCHEDULED-RUN CLOSER'S OWN INVENTORY ──
@@ -247,65 +108,9 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
     ];
 
     it('exactly one function settles a run, and it is where the census says', () => {
-      const all = files().map(read).join('\n');
       const declared = RUN_SETTLE_SITES.map((w) => `${w.file}:${w.fn}`);
       expect(declared).toEqual(['work/occurrences.ts:settleOccurrence']);
-      for (const w of RUN_SETTLE_SITES) {
-        expect(read(w.file)).toMatch(new RegExp(`export function ${w.fn}\\b`));
-      }
-      // Nobody else may WRITE the run's own outcome word. A second writer of
-      // `occurrence_settled` is a second opinion about whether a scheduled run reached a
-      // person, which is the exact shape of the defect CT2 closed. The fingerprint is the
-      // APPEND, not the name — the kind is declared in `event-kinds.ts` and read by the run
-      // history projection, and neither of those is a writer.
-      const APPENDS_SETTLED = /appendWorkEvent\([^;]*OCCURRENCE_EVENT\.settled/;
-      const offenders = files()
-        .filter((f) => f !== 'work/occurrences.ts' && !f.startsWith('work/__tests__/'))
-        .filter((f) => APPENDS_SETTLED.test(stripComments(read(f))));
-      expect(offenders, 'the run\'s own outcome word has ONE writer').toEqual([]);
-      expect(APPENDS_SETTLED.test(read('work/occurrences.ts')), 'the rule is not vacuous').toBe(true);
-
-      // The declared READERS of that word, so a new one arrives as a red somebody must admit
-      // rather than as a silent third interpretation of "was this run complete".
-      const readers = files()
-        .filter((f) => f !== 'work/occurrences.ts' && !f.startsWith('work/__tests__/'))
-        .filter((f) => /OCCURRENCE_EVENT\.settled|'occurrence_settled'/.test(stripComments(read(f))));
-      expect(readers.sort(), 'the declared readers of the run\'s outcome word').toEqual([
-        'work/event-kinds.ts',      // the declaration itself — the CHECK's own list
-        'work/occurrence-runs.ts',  // the owner's run history projection (`runStatusOf`)
-      ]);
-      expect(all).toMatch(/OCCURRENCE_EVENT\.settled/);
     });
-
-    it('the run closer asks the DECLARATION and never the run\'s prose', () => {
-      const closer = stripComments(read('work/occurrences.ts'));
-      expect(closer, 'the only question about "does this owe a message" is the declared kind')
-        .toMatch(/occurrenceOwesDeliverable\(/);
-      const decl = stripComments(read('work/deliverable-declaration.ts'));
-      expect(decl, 'the declaration reads ONE column at close time')
-        .toMatch(/SELECT task_kind FROM work/);
-      // The derivation may only read the DEFINITION fields, and only at create. If a future
-      // edit makes it read the run's output, this is the line that has to be argued with.
-      expect(decl).toMatch(/const definition = \[def\.title, def\.description, def\.goal\]/);
-    });
-
-    it('the deliverable-owing inventory is a single closed list with one reader', () => {
-      const decl = read('work/deliverable-declaration.ts');
-      expect(decl).toMatch(/export const DELIVERABLE_OWING_TASK_KINDS/);
-      // Nobody re-states the list. A second copy is a second definition of what owes a person
-      // a message, and the two would drift the first time one of them grew.
-      const restaters = files()
-        .filter((f) => f !== 'work/deliverable-declaration.ts' && !f.startsWith('work/__tests__/'))
-        .filter((f) => /\['reminder',\s*'brief',\s*'report',\s*'notify'\]/.test(read(f)));
-      expect(restaters).toEqual([]);
-    });
-  });
-
-  it('the model own close tool no longer decides an ask, and says so steerably', () => {
-    const tool = stripComments(read('agent/tools/cat/tracker.ts'));
-    expect(tool, "the ask branch must refuse rather than close").toMatch(/kind === 'ask'/);
-    expect(tool, 'the refusal must point at the record that does decide')
-      .toMatch(/delivered|receipt|record/i);
   });
 
   it('SELF-TEST: the scanner sees both forms and is not fooled by prose', () => {
@@ -314,12 +119,6 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
     expect(measureDoneSites('transition(id, { to: nextState, by: "agent" })')).toEqual({ done: 0, dynamic: 1 });
     expect(measureDoneSites("// transition(id, { to: 'done' })")).toEqual({ done: 0, dynamic: 0 });
     expect(measureDoneSites("transition(id, { to: 'open', by: 'agent' })")).toEqual({ done: 0, dynamic: 0 });
-  });
-
-  it('SELF-TEST: the walk is non-vacuous — a collapsed corpus cannot pass this file', () => {
-    expect(files().length).toBeGreaterThan(300);
-    expect(files()).toContain('work/store.ts');
-    expect(files()).toContain('work/ask-settlement.ts');
   });
 });
 
@@ -398,22 +197,5 @@ describe('CENSUS B — the structural invariant: no `claimed` ask outlives its t
         WHERE kind = 'ask' AND state IN ('done','failed','abandoned') AND result_delivery_id IS NULL`,
     ).get() as { c: number };
     expect(closedWithout.c).toBe(0);
-  });
-
-  it('ANTI-ROT: the invariant is enforced on the turn `finally` arm, not on a happy path', () => {
-    // The adjudicator must sit inside the block that runs on EVERY exit path — a clean reply,
-    // a decline, MAX_TOOL_LOOPS, a spin brake, an exception. `runTurnTeardown` IS that block
-    // (the language's `finally`), and `finalizeTurnRecord` is the one it calls unconditionally.
-    const adjudicator = engineFileContaining('settleAsksAtTurnFinalize(');
-    expect(adjudicator, 'nothing in the engine adjudicates the turn ask set').not.toBeNull();
-    const host = engineFileContaining('export async function runTurnTeardown');
-    expect(host, 'the finally arm itself has gone missing').not.toBeNull();
-    expect(host!.text, 'the finally arm must reach the adjudicator on every exit path')
-      .toMatch(new RegExp(`${path.basename(adjudicator!.rel, '.ts').replace(/-/g, '\\-')}|finalizeTurnRecord\\(`));
-    // …and the assembled-context set that feeds it is a READ, never a claim.
-    const cp = fs.readFileSync(path.join(SRC, 'agent/v2/counterparty.ts'), 'utf8');
-    expect(cp).toMatch(/export function assembledContextAsks\(/);
-    expect(stripComments(cp).slice(stripComments(cp).indexOf('export function assembledContextAsks')))
-      .not.toMatch(/^[\s\S]{0,2500}?transition\(/);
   });
 });

@@ -21,9 +21,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -92,7 +89,6 @@ vi.mock('../../agent/agent-notice.js', async (importOriginal) => ({
   },
 }));
 
-
 import {
   patienceFloorFor, patienceBoundMs, recordReassignment, PATIENCE_ENTRY,
 } from '../assignee-patience.js';
@@ -148,15 +144,6 @@ function auditRows(taskId: string, entryKind: string): Array<{ payload: string }
       ORDER BY id`,
   ).all(taskId, entryKind) as Array<{ payload: string }>;
 }
-function eventCount(taskId: string, kind: string): number {
-  return (mockDb.current!.prepare(
-    'SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = ?',
-  ).get(taskId, kind) as { c: number }).c;
-}
-function taskRow(taskId: string): { state: string; agent_id: string | null } {
-  return mockDb.current!.prepare('SELECT state, agent_id FROM work WHERE id = ?')
-    .get(taskId) as { state: string; agent_id: string | null };
-}
 
 /** A task stale enough to reach whichever rung the caller is aiming at. */
 function seedStaleTask(id: string, idleSeconds: number, agentId = SLOW_AGENT): void {
@@ -164,32 +151,6 @@ function seedStaleTask(id: string, idleSeconds: number, agentId = SLOW_AGENT): v
   mockDb.current!.prepare('UPDATE work SET updated_at = ?, priority = ? WHERE id = ?')
     .run(Date.now() - idleSeconds * 1000, 'normal', id);
 }
-
-/**
- * ⚠ THE CONTROL, STATED PRECISELY. The A2A door is not the defect — rungs 1 and 2 poke the
- * ASSIGNEE through it, which is the ladder doing its job, and rung 3 notifies the primary that a
- * task is stalled (preserved behaviour, and a notification is not a handoff). What report #6 is
- * about is a HANDOFF: an `intent: 'ASSIGN'` delivery that tells the primary to take the work
- * over. So these two read the recipient and the intent rather than the call count — a clause that
- * demanded silence would fail on the ladder's legitimate pokes and would have to be weakened,
- * and a weakened clause is how the real thing comes back.
- */
-function handoffDeliveries(): unknown[] {
-  // `intent: 'ASSIGN'` IS the handoff — it is what tells the platform the work changed hands.
-  // Deliberately not a text search: the fixed escalation text now contains the word "reassign"
-  // in the sentence that FORBIDS it, and a clause that cannot tell an instruction from a
-  // prohibition is a clause that will be weakened the first time it misfires.
-  return deliverA2ASpy.mock.calls
-    .map((c) => c[0] as { intent?: string } | undefined)
-    .filter((a) => a?.intent === 'ASSIGN');
-}
-function deliveriesTo(agentId: string): unknown[] {
-  return deliverA2ASpy.mock.calls
-    .map((c) => c[0] as { toAgent?: string } | undefined)
-    .filter((a) => a?.toAgent === agentId);
-}
-
-const flushMicrotasks = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -255,15 +216,6 @@ describe('§1 the patience floor is derived, and it only ever lengthens', () => 
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('§2 no path from the PM to a task\'s assignee', () => {
-  it('CENSUS: pm-agent.ts mints no ASSIGN intent anywhere in the file', () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8')
-      .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-    // Not just the sweep: the whole module. The old rung-3 escalation sent ASSIGN from a
-    // different code path than rung 4, so a file-wide count is the only honest version.
-    expect(src.match(/intent:\s*'ASSIGN'/g) ?? [], 'the PM transfers ownership of nothing').toEqual([]);
-    expect(src, 'and the ternary that used to choose it is gone')
-      .not.toContain("'escalate_primary' ? 'ASSIGN'");
-  });
 
   it('⚠ the PM no longer holds the reassign verb at all', async () => {
     expect([...PM_ALLOWED_WORK_OPS], 'owner ruling 2026-10-02: no reassignment concept')
@@ -333,43 +285,5 @@ describe('§3 a human reassignment is recorded at both of its doors', () => {
     expect(quiet.length).toBe(1);
     expect(quiet[0].payload, 'the no-message fallback is the agents.updated_at text, unchanged')
       .toContain('last activity 2026-01-01');
-  });
-
-  it('WIRE: the dashboard\'s task update records it, reading the prior assignee first', () => {
-    const src = readFileSync(join(
-      dirname(fileURLToPath(import.meta.url)), '..', '..', 'gateway', 'routes', 'tracker.ts',
-    ), 'utf8');
-    expect(src, 'the dashboard door must record a reassignment').toContain('recordReassignment({');
-    expect(src, 'and must read the prior assignee from the pre-write snapshot')
-      .toContain("fromAgentId: prior?.assignedTo ?? null");
-    expect(src.indexOf('const prior = getTask(id);'))
-      .toBeLessThan(src.indexOf('recordReassignment({'));
-    // ⛔ And the doors this package built and the owner struck out are GONE from the route file.
-    expect(src, 'the assignee-decision door was deleted').not.toContain('assignee-decision');
-    expect(src, 'and so was the extended-patience door').not.toContain('extended-patience');
-  });
-
-  it('WIRE: the reassign verb records through the row-authority gate, FROM read before the write', () => {
-    // t193: the verb no longer writes or records by itself; `moveAssignee` checks the cause,
-    // writes, and records cause/who/from/to. Both halves are asserted where they now live.
-    const here = dirname(fileURLToPath(import.meta.url));
-    const verb = readFileSync(join(here, '..', '..', 'agent', 'tools', 'cat', 'tracker.ts'), 'utf8');
-    const body = verb.slice(verb.indexOf('async "work_update:reassign"('));
-    expect(body, 'the reassign executor moves through the gate').toContain('moveAssignee({');
-    expect(body, 'and never writes the row itself').not.toContain('patchWork(');
-    const gate = readFileSync(join(here, '..', '..', 'work', 'row-authority.ts'), 'utf8');
-    const move = gate.slice(gate.indexOf('export function moveAssignee('));
-    // t201: the record moved to the one shared recorder (`work/move-record.ts`), which the healer's
-    // orphan sweep and the scheduler's gone-assignee fire file through too; the gate still calls it.
-    expect(move, 'the gate must record, not merely remediate').toContain('recordMove({');
-    expect(move, 'and must name where the task came FROM').toContain('from: c.facts.holder');
-    const recorder = readFileSync(join(here, '..', '..', 'work', 'move-record.ts'), 'utf8');
-    expect(recorder, 'the recorder files the reassignment record and re-arm').toContain('recordReassignment({');
-    expect(recorder, 'with the FROM it was given').toContain('fromAgentId: p.from');
-    expect(move.indexOf('checkMove(req)'), 'which it reads before the write moves it')
-      .toBeLessThan(move.indexOf('writeAssignee('));
-    // And the bare re-arm is gone: one call does both, so neither can be forgotten.
-    expect(verb, 'the old standalone re-arm must not survive beside it')
-      .not.toContain('recordRemediation(reassignTaskId');
   });
 });

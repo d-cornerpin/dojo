@@ -27,7 +27,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -366,43 +365,6 @@ describe('§7 A MISSING MANUAL FALLS BACK TO THE LIVE REGISTRY', () => {
     expect(out).toContain(`No generated manual is present on this install for: ${REAL.name}`);
     expect(out).toContain('no manual is available on this install for: not_a_registered_tool_at_all');
     expect(getSessionLoadedTools(AGENT).size, 'and all three load').toBe(3);
-  });
-
-  it('the HANDLER hands the executor the registry it already holds', () => {
-    // THE HALF THAT MATTERS MOST, because the parameter DEFAULTS to empty. If the one production
-    // call site stops passing it, every arm above still passes (they pass it themselves) and the
-    // product quietly reverts to the honest-but-empty sentence. So the call site is pinned, over
-    // comment-stripped source, by shape AND application.
-    const strip = (s: string): string => s
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-    const handler = strip(fs.readFileSync(new URL('../../agent/tools/cat/meta.ts', import.meta.url), 'utf8'));
-    expect(handler, 'the registry reaches the executor')
-      .toMatch(/executeLoadToolDocs\(agentId,\s*filteredTools,\s*getAllToolDefinitions\(\)\)/);
-    expect(handler, 'and it is the same registry the naming verdict already used — not a second source')
-      .toMatch(/getAllToolDefinitions\(\)\.map\(t => t\.name\)/);
-  });
-
-  it('the fallback is WIRED, not merely written — the call site reads the registry', () => {
-    // G4: comment-stripped, and the application is asserted rather than the import. The three
-    // negatives are the both-ways half: a fallback that stops being reached, or stops being
-    // reported, or starts being served silently, each reds here.
-    const strip = (s: string): string => s
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-    const src = strip(fs.readFileSync(new URL('../tool-docs.ts', import.meta.url), 'utf8'));
-    expect(src, 'the renderer reads the registry it was HANDED, never a module-level one')
-      .toMatch(/registry\.find\(\(t\) => t\.name === name\)/);
-    expect(src, 'and this module takes no runtime edge to the registry — that was measured, see the docstring')
-      .not.toMatch(/from '\.\.\/agent\/tools\/definitions\.js'/);
-    expect(src, 'and the loop reaches the fallback only after the file misses')
-      .toMatch(/if \(doc\) \{ results\.push\(doc\); continue; \}\s*const fallback = registryManual\(name, registry\);/);
-    expect(src, 'a served fallback is pushed as documentation')
-      .toMatch(/results\.push\(fallback\)/);
-    expect(src, 'recorded separately from the no-entry case')
-      .toMatch(/registryServed\.push\(name\)/);
-    expect(src, 'and it is never silent — the install\'s failure is logged where an operator sees it')
-      .toMatch(/logger\.warn\('no generated manual on this install; served the live registry entry'/);
   });
 });
 

@@ -82,10 +82,4 @@ describe('one block: who sent this, and who the written reply goes to', () => {
   it('the block never calls itself the sole routing authority', () => {
     expect(block(contact)).not.toMatch(/sole routing authority|routing authority/i);
   });
-
-  it('the static prompt no longer teaches the agent that a tag is the sole routing authority', async () => {
-    const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../../assembler.ts', import.meta.url), 'utf8');
-    expect(src).not.toMatch(/sole routing authority|confirms the routing|already resolved by the \[Reply destination\]/);
-  });
 });

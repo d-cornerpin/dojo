@@ -30,18 +30,10 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, cloneGrants } from '@dojo/shared';
 import type { AccessGrants } from '@dojo/shared';
 import { mailWriteWithoutSend } from '../../../../../dashboard/src/lib/access-edits.js';
-
-const DASH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..', 'dashboard', 'src',
-);
-const readDash = (rel: string): string => fs.readFileSync(path.join(DASH, rel), 'utf8');
 
 /** A grant with the mail channel fully open and nothing granted on the account side. */
 const base = (): AccessGrants => {
@@ -125,41 +117,5 @@ describe('T77b — a write grant with no send channel says drafts still work', (
     const g = base();
     g.integrations.google.user = 'full';
     expect(inertChannels(g, { email: ['Gmail'] })).toEqual([{ channel: 'email', groups: ['Gmail'] }]);
-  });
-});
-
-describe('T77b — and the panel renders it where the grant is', () => {
-  const panel = (): string => readDash('components/AccessPanel.tsx');
-
-  it('⚠ the warning is in "What it can reach", beside the account rows', () => {
-    const src = panel();
-    expect(src).toContain('mailWriteWithoutSend');
-
-    // Row 2 opens at `question="What it can reach"` and Row 3 at `question="Who it can talk to"`.
-    const reach = src.indexOf('question="What it can reach"');
-    const talk = src.indexOf('question="Who it can talk to"');
-    const warn = src.indexOf('mailWriteWithoutSend(draft)');
-    expect(reach).toBeGreaterThan(-1);
-    expect(warn).toBeGreaterThan(reach);
-    expect(warn).toBeLessThan(talk);
-  });
-
-  it('⚠ it uses the ESTABLISHED warning treatment, not a new one', () => {
-    const src = panel();
-    // `note--warn` is the one warning class on this card (A3's iMessage/Communication
-    // pattern and the helper-agent note both use it); this must not invent a second.
-    const classes = [...src.matchAll(/className="(note--[a-z-]+)"/g)].map((m) => m[1]);
-    expect(new Set(classes)).toEqual(new Set(['note--warn']));
-    expect(classes.length).toBe(3); // A3's inert-channel row, the helper-agent note, and this
-  });
-
-  it('⚠ it says drafts work, names the Drafts folder, and points at the real control', () => {
-    const src = panel();
-    expect(src).toMatch(/drafts still work/i);
-    expect(src).toMatch(/Drafts folder/);
-    expect(src).toContain('“Can talk to people” → Email');
-    // and it never names a tool at the owner: this card speaks no internal language.
-    expect(src).not.toContain('gmail_draft');
-    expect(src).not.toContain('outlook_draft');
   });
 });

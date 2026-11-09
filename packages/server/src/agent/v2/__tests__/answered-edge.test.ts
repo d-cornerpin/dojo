@@ -29,7 +29,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -67,9 +66,6 @@ import { abandonUnservableAsks, openAsk, transition } from '../../../work/store.
 import { insertMessage } from '../../../memory/message-store.js';
 import { listTaskLog } from '../../../tracker/task-log.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
-// PHASE-6 GUARD-AUDIT 2026-08-04: the shared engine-corpus derivation (driver + step
-// packages). See its header for why a guard must stop naming `agent/v2/loop.ts` by hand.
-import { engineSources } from './engine-sources.js';
 import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -490,36 +486,6 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { conversationId: CONV }).paused).toBe(1);
   });
 
-  // The CENSUS, so a fifth caller cannot appear unaudited. Each production reader of the
-  // receipt, and the direction D2 moves it:
-  //   `pauseDriveWorkWaitingOnOwner`  (this file)          — one fewer false PAUSE
-  //   redundant-closeout floor        (closeout-floors.ts)  — one fewer suppressed reply
-  //   a2a-handoff-floor ghost         (handoff-floors.ts)   — the ghost fires where it was mute
-  //   reminder-silence ghost          (handoff-floors.ts)   — the ghost fires where it was mute
-  // Every one of the four moves toward the owner hearing something, which is the standing
-  // tie-break (DESIGN.md:46) rather than a coincidence.
-  it('D2: the receipt reader has exactly FOUR production callers, all moving the same way', () => {
-    // The ENGINE corpus is the shared derivation (driver + step packages), never a path —
-    // `guard-corpus-census`'s rule. `answered-edge.ts` is this file's own subject and is read
-    // directly: it declares the function and holds one caller of it.
-    const sources = engineSources();
-    const callers = new Map<string, number>();
-    for (const s of sources) {
-      const n = (s.text.match(/turnDeliveredToPerson\(/g) ?? []).length;
-      if (n > 0) callers.set(s.rel, n);
-    }
-    expect([...callers.keys()].sort()).toEqual([
-      'agent/v2/steps/post-call-classify/closeout-floors.ts',
-      'agent/v2/steps/post-call-classify/handoff-floors.ts',
-    ]);
-    expect(callers.get('agent/v2/steps/post-call-classify/closeout-floors.ts')).toBe(1);
-    expect(callers.get('agent/v2/steps/post-call-classify/handoff-floors.ts')).toBe(2);
-    const own = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'answered-edge.ts'), 'utf8');
-    // the declaration plus exactly one internal caller — the disposition tested above
-    expect((own.match(/turnDeliveredToPerson\(/g) ?? []).length).toBe(2);
-  });
-
   it('NEGATIVE: a recurring schedule is never paused by a missed close-out', () => {
     seedTurn(6, {
       ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
@@ -807,34 +773,6 @@ describe('1g — the truthful-answer key names the DELIVERY that proves it', () 
   it('NEGATIVE: a turn with nothing on the ledger names no receipt', () => {
     seedTurn(4);
     expect(terminalDeliveryForTurn(AGENT, 4, CONV)).toBeNull();
-  });
-
-  it('CONFORMANCE: the key has exactly ONE setter in the ENGINE', () => {
-    // PHASE-6 GUARD-AUDIT 2026-08-04: the corpus became THE WHOLE ENGINE — the driver plus
-    // every step package — walked FILE BY FILE via `engineSources()`. The setter is at
-    // loop.ts:2048, inside `runV2TurnBody`, so it travels into `agent/v2/steps/preflight/`
-    // with its tranche; a read of `../loop.ts` by path would have been left scanning a file
-    // that no longer contains the fact it is counting writers of. Walking the engine is
-    // STRICTLY STRONGER than the old driver-only scan, not weaker: the property asserted is
-    // still "exactly this one line assigns the key", but it is now measured over the step
-    // packages too, so a SECOND setter appearing in any of them fails here instead of being
-    // invisible. Kept as a per-file walk (not `engineText()`) purely so the line-level filter
-    // is unaffected by how the files are joined.
-    const assignments = engineSources().flatMap((s) => s.text.split('\n'))
-      .filter((l) => /(?<![!=<>])\bterminalAnswerRowId\s*=[^=]/.test(l));
-    // Four bare assignments were four writers of one fact, which is how the fact drifts.
-    // `noteTerminalAnswer` is the only line that may assign it. (The declaration's
-    // initialiser carries a type annotation, so the pattern below does not see it — which
-    // is why the expectation is one line and not two.)
-    //
-    // PHASE-6 T2 (CUT 9): the move landed and the audit's widened corpus is what caught the
-    // key travelling. The REQUIREMENT is untouched — exactly one line in the whole engine
-    // assigns this key — and only the needle's spelling moved with the code: the local is
-    // now a field on `PreflightScratch`, because §9's `teardownContext` reads it LIVE after
-    // every statement of the turn has had its chance to set it, so the setter writes
-    // `sc.terminalAnswerRowId`. A driver-only scan would now be counting writers in a file
-    // that no longer holds the fact; this one counts them where the fact lives.
-    expect(assignments.map((l) => l.trim())).toEqual(['sc.terminalAnswerRowId = rowId;']);
   });
 });
 

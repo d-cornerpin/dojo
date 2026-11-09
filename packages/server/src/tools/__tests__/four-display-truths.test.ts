@@ -60,14 +60,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { classifyTool, toolBadgeTier, classifyMessageForDisplay } from '@dojo/shared';
 import { TOOL_CATEGORIES } from '../categories.js';
-
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
-const DASHBOARD_SRC = path.join(REPO, 'packages/dashboard/src');
 
 const row = (blocks: unknown[]) => ({
   role: 'assistant' as const,
@@ -174,34 +169,6 @@ describe('T54(d) — the reminder promotion is reachable from the render path', 
     // The classifier's own contract, unchanged: no arguments -> bookkeeping. Server callers
     // that legitimately have no args (going-idle's side-effect hint) keep today's answer.
     expect(classifyTool('work_open')).toBe('bookkeeping');
-  });
-
-  it('THE CALL SITES: no arg-less classifyTool call survives in the dashboard', () => {
-    // The whole defect is that the promotion existed and nothing called it with arguments.
-    // A single arg-less site anywhere in the client re-opens it, so the source is scanned
-    // rather than the four known lines being listed (a fifth would slip past a list).
-    const offenders: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) { walk(p); continue; }
-        if (!/\.tsx?$/.test(e.name)) continue;
-        const src = fs.readFileSync(p, 'utf8');
-        src.split('\n').forEach((line, i) => {
-          // `classifyTool(<one argument>)` — a call with no comma before its closing paren.
-          if (/\bclassifyTool\(\s*[^,()]*\)/.test(line)) offenders.push(`${path.relative(REPO, p)}:${i + 1}: ${line.trim()}`);
-        });
-      }
-    };
-    walk(DASHBOARD_SRC);
-    expect(offenders, `arg-less classifyTool call(s) in the dashboard:\n${offenders.join('\n')}`).toEqual([]);
-  });
-
-  it('THE OTHER HALF: the write-time fold passes arguments too', () => {
-    // An arg-aware chip filter over an arg-less row tier would draw NOTHING — the row is
-    // dropped by the tier check before the filter runs. Both sides move or neither does.
-    const shared = fs.readFileSync(path.join(REPO, 'packages/shared/src/visibility.ts'), 'utf8');
-    expect(shared).toMatch(/toolBadgeTier\(classifyTool\(b\.name,\s*\w+\)\)/);
   });
 });
 

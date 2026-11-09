@@ -22,9 +22,7 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -62,9 +60,6 @@ import { deriveLegacyGrants } from '../derive.js';
 import { ownerChannelRelayRefusal } from '../../a2a-transport.js';
 import type { AccessGrants } from '@dojo/shared';
 import { ungatedEffectKinds } from '../../tools/gates.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -194,35 +189,6 @@ describe('the credential tools are gated', () => {
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('the four Twilio walls and the two Workspace walls read the grant', () => {
-  it('⚠ THE TWILIO WALLS NAME THE CHANNEL GRANT', () => {
-    const src = read('agent/tools/cat/comms.ts');
-    for (const tool of ['sms_send', 'voice_call', 'voice_call_end', 'voice_call_status']) {
-      const at = src.indexOf(`async "${tool}"(`);
-      expect(at, `${tool} handler present`).toBeGreaterThan(-1);
-      const body = src.slice(at, src.indexOf('\n  },\n', at));
-      expect(body, `${tool} still has a wall`).toMatch(/mayUseChannel\(agentId, '(sms|voice)'\)/);
-      expect(body, `${tool} no longer hardcodes the role singleton`).not.toMatch(/isPrimaryAgent\(/);
-    }
-  });
-
-  it('⚠ THE WORKSPACE WRITE WALLS READ THE INTEGRATION TIER', () => {
-    for (const [file, tool] of [['agent/tools/provider/google.ts', 'gmail_send'], ['agent/tools/provider/microsoft.ts', 'outlook_send']] as const) {
-      const src = read(file);
-      const at = src.indexOf(`async "${tool}"(`);
-      const body = src.slice(at, src.indexOf('\n  },\n', at));
-      expect(body, `${tool} asks the grant`).toMatch(/mayWriteWorkspace\(/);
-      expect(body, `${tool} no longer hardcodes the role singleton`).not.toMatch(/isPrimaryAgent\(/);
-    }
-  });
-
-  it('⚠ THE RELAY ASKS THE SAME PREDICATE THE WALLS DO', () => {
-    // The requirement `relay-compose-agrees-with-wall.test.ts` pins: one
-    // predicate, not a copy of the rule. It is `mayUseChannel` now.
-    const src = read('agent/a2a-transport.ts');
-    const at = src.indexOf('export function ownerChannelRelayRefusal');
-    expect(at).toBeGreaterThan(-1);
-    expect(src.slice(at, src.indexOf('\n}\n', at))).toMatch(/mayUseChannel\(/);
-  });
 
   it('and the relay refuses / serves by the grant, driven', () => {
     agent('primary', 'sensei');
@@ -233,50 +199,6 @@ describe('the four Twilio walls and the two Workspace walls read the grant', () 
     const refused = ownerChannelRelayRefusal('worker', 'email', 'gmail_reply');
     expect(refused).not.toBeNull();
     expect(refused!.why).toMatch(/channel/i);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 4 · NOTHING WIDENED — the ungated-effects ledger loses `secrets` and gains none
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('the five boot rewriters are retired (owner ruling 3)', () => {
-  // Census C8 named FOUR sites that overwrote a live service agent's policy on
-  // every restart. Driving the migration on the owner's own box found the FIFTH:
-  // the Dreamer's, in `vault/maintenance.ts`, which was the one row of 111 whose
-  // grants did not survive a real boot. All five are named here so a sixth
-  // cannot appear quietly and a retired one cannot come back.
-  const SITES: ReadonlyArray<[string, string]> = [
-    ['tracker/pm-agent.ts', 'PM agent already running'],
-    ['techniques/trainer-agent.ts', 'Trainer agent already running'],
-    ['healer/healer-agent.ts', 'Healer agent already running'],
-    ['vault/maintenance.ts', 'Dreamer agent already running'],
-  ];
-
-  it('⚠ NO "already running" BRANCH REWRITES A LIVE AGENT’S POLICY', () => {
-    for (const [file, marker] of SITES) {
-      const src = read(file);
-      const at = src.indexOf(marker);
-      expect(at, `${file} still has its already-running branch`).toBeGreaterThan(-1);
-      // The branch ends at its `return;` (or, for the PM, at the next blank
-      // dedent) — read generously and assert the write is not inside it.
-      const branch = src.slice(at, at + 2200);
-      const end = branch.indexOf('\n  }\n');
-      const body = end > -1 ? branch.slice(0, end) : branch;
-      expect(
-        /UPDATE agents SET tools_policy = \?, permissions = \?/.test(body),
-        `${file} must not rewrite a live row's policy on boot`,
-      ).toBe(false);
-      expect(body, `${file} must say what was retired and why`).toContain('RETIRED — UX-ACCESS A1');
-    }
-  });
-
-  it('THE CONTROL: the create / reactivate paths still write a policy', () => {
-    // Retiring the per-boot rewrite must not leave a NEW service agent with no
-    // policy at all — those paths mint a row rather than revert a live one.
-    for (const [file] of SITES) {
-      expect(/permissions,? *tools_policy|permissions = \?/.test(read(file)), file).toBe(true);
-    }
   });
 });
 

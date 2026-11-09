@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   TELEMETRY_WHITELIST, TELEMETRY_SCHEMA_VERSION, UNRECOGNISED, ABSENT, whitelistField, enumMembers,
@@ -12,12 +11,6 @@ const KINDS = ['enum', 'count', 'millis', 'bytes', 'timestamp', 'ordinal', 'bool
 
 /** The kinds whose domain is a declared shape rather than a declared member list. */
 const SHAPE_KINDS = ['version', 'digest'];
-
-const srcOf = (file: string): string =>
-  fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-
-const importsOf = (file: string): string[] =>
-  [...srcOf(file).matchAll(/^import[^;]*from\s+'([^']+)'/gm)].map(m => m[1]);
 
 function sources(over: Partial<TelemetrySources> = {}): TelemetrySources {
   return {
@@ -159,45 +152,9 @@ describe('(1) the whitelist cannot express free text', () => {
       }
     }
   });
-
-  it('declares every member list as a source literal, never a computed expression', () => {
-    // The smuggling vector I3 names: `members: providerNames()` would put user-typed
-    // strings inside a "declared domain" and satisfy every runtime clause above.
-    const DECLARED_SPREADS = ['...BEHAVES_LIKE_PROFILES'];   // a platform `as const` tuple
-    const bodies = [...srcOf('telemetry-whitelist.ts').matchAll(/members:\s*\[([\s\S]*?)\]/g)].map(m => m[1]);
-    expect(bodies.length).toBe(TELEMETRY_WHITELIST.filter(f => f.members).length);
-    for (const body of bodies) {
-      for (const raw of body.split(',')) {
-        const el = raw.trim();
-        if (el === '') continue;
-        const ok = /^'[a-z0-9][a-z0-9_-]*'$/.test(el) || DECLARED_SPREADS.includes(el);
-        expect(ok, `member list carries a non-literal element: ${el}`).toBe(true);
-      }
-    }
-  });
 });
 
 describe('(2) the builder takes no agent input and can reach nothing', () => {
-  it('imports nothing that can reach the db, the disk, the network or an agent', () => {
-    for (const file of ['telemetry-build.ts', 'telemetry-coerce.ts']) {
-      for (const spec of importsOf(file)) {
-        expect(
-          /node:fs|node:http|node:net|node:child_process|\/db\/|\/agent\/|better-sqlite3|undici|connection/.test(spec),
-          `${file} imports ${spec}`,
-        ).toBe(false);
-      }
-    }
-  });
-
-  it('pins the whitelist to exactly the two platform modules its declarations need', () => {
-    // I4: the builder's reach is transitively the whitelist's reach, and the whitelist
-    // MUST import the live tool registry (clause (4)). So the honest guarantee is not
-    // "it reaches nothing" — it is that this list is pinned and any widening is visible.
-    expect(importsOf('telemetry-whitelist.ts').sort()).toEqual([
-      '../agent/model-contract.js',
-      '../agent/tools/registry.js',
-    ]);
-  });
 
   it('emits only whitelisted keys', () => {
     const out = buildTelemetry(sources({

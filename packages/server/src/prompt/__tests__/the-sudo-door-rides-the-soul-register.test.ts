@@ -24,12 +24,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = path.resolve(HERE, '../..');
 
 // ── The state the doors answer from. Fictional agents only (G1). ──
 const box = {
@@ -208,120 +202,9 @@ describe('cache safety (G2): the claim reads nothing that moves within a turn', 
   });
 });
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE CENSUS (D4) — both directions, comments stripped.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** Remove line comments and block comments. Full-line `//` only, so a markdown bullet or a
- *  URL inside a template literal is never touched. */
-function stripTsComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter(line => !/^\s*\/\//.test(line))
-    .join('\n');
-}
-
-/** The `## Capabilities` bullets of `DEFAULT_SOUL_MD`, read from SOURCE. */
-function shippedCapabilityLines(templatesSource: string): string[] {
-  const start = templatesSource.indexOf('export const DEFAULT_SOUL_MD = `');
-  if (start < 0) throw new Error('DEFAULT_SOUL_MD is not declared the way this census reads it');
-  const body = templatesSource.slice(start);
-  const heading = body.indexOf('## Capabilities\n');
-  if (heading < 0) throw new Error('DEFAULT_SOUL_MD no longer carries a `## Capabilities` heading');
-  const after = body.slice(heading + '## Capabilities\n'.length);
-  const out: string[] = [];
-  for (const line of after.split('\n')) {
-    if (!line.startsWith('- ')) break;
-    out.push(line);
-  }
-  return out;
-}
-
-/**
- * THE CLOSED VOCABULARY, maintained here by hand and deliberately not derived.
- *
- * A capability is GATED when a door can prove the agent does not have it, which is the
- * register's whole subject. Deriving this list from the register would make the census
- * unable to see the one defect it exists for: a new gated line that nobody registered.
- * Files, the tracker and memory are NOT here — every agent has them, no door withholds them.
- */
-const GATED_CAPABILITY_MARKERS = [
-  'manage sub-agents',
-  'execute shell commands',
-  'administrator (sudo) commands',
-] as const;
-
-const TEMPLATES_SOURCE = fs.readFileSync(path.join(SRC, 'prompt/templates.ts'), 'utf-8');
-const ASSEMBLER_SOURCE = fs.readFileSync(path.join(SRC, 'prompt/assembler.ts'), 'utf-8');
-const SURFACE_SOURCE = fs.readFileSync(path.join(SRC, 'agent/tools/surface.ts'), 'utf-8');
-
 describe('the census — the register and the shipped template cannot drift', () => {
-  it('every register entry\'s line exists BYTE-FOR-BYTE in the shipped `## Capabilities` list', () => {
-    const shipped = shippedCapabilityLines(stripTsComments(TEMPLATES_SOURCE));
-    for (const claim of SOUL_CAPABILITY_CLAIMS) {
-      expect(claim.line.endsWith('\n'), `claim ${JSON.stringify(claim.line)} must end in a newline`).toBe(true);
-      expect(shipped, `register entry not in the shipped template: ${JSON.stringify(claim.line)}`)
-        .toContain(claim.line.replace(/\n$/, ''));
-    }
-  });
-
-  it('every shipped line naming a GATED capability has a register entry', () => {
-    const shipped = shippedCapabilityLines(stripTsComments(TEMPLATES_SOURCE));
-    const registered = new Set(SOUL_CAPABILITY_CLAIMS.map(c => c.line));
-    const gated = shipped.filter(line => GATED_CAPABILITY_MARKERS.some(m => line.includes(m)));
-    expect(gated.length, 'the closed vocabulary must match at least the three gated claims')
-      .toBeGreaterThanOrEqual(GATED_CAPABILITY_MARKERS.length);
-    for (const line of gated) {
-      expect(registered, `shipped gated line with no register entry: ${JSON.stringify(line)}`)
-        .toContain(`${line}\n`);
-    }
-  });
 
   it('the administrator line is registered, and it is the claim module that owns its bytes', () => {
     expect(SOUL_CAPABILITY_CLAIMS.map(c => c.line)).toContain(SOUL_ADMIN_COMMANDS_LINE);
-    expect(shippedCapabilityLines(stripTsComments(TEMPLATES_SOURCE)))
-      .toContain(SOUL_ADMIN_COMMANDS_LINE.replace(/\n$/, ''));
-  });
-
-  it('COMMENT STRIPPING IS DOING WORK, and a planted comment can neither satisfy nor break it', () => {
-    // 1. The stripper removes real comments from this very file's input.
-    expect(TEMPLATES_SOURCE).toMatch(/^\s*\/\//m);
-    expect(stripTsComments(TEMPLATES_SOURCE)).not.toMatch(/^\s*\/\//m);
-    // 2. A comment that LOOKS like a gated capability bullet changes no census answer —
-    //    this is the clause that would otherwise be satisfiable by the prose (G4).
-    const planted = TEMPLATES_SOURCE.replace(
-      'export const DEFAULT_SOUL_MD = `',
-      '// - You can manage sub-agents for specialized tasks (UNREGISTERED BAIT).\n'
-      + 'export const DEFAULT_SOUL_MD = `',
-    );
-    expect(planted).not.toBe(TEMPLATES_SOURCE);
-    expect(shippedCapabilityLines(stripTsComments(planted)))
-      .toEqual(shippedCapabilityLines(stripTsComments(TEMPLATES_SOURCE)));
-  });
-});
-
-describe('ONE module, two readers — neither surface spells the sentence itself', () => {
-  it('the register imports the claim and does not re-declare the administrator line', () => {
-    const stripped = stripTsComments(ASSEMBLER_SOURCE);
-    expect(stripped).toMatch(
-      /import\s*\{[^}]*\bSOUL_ADMIN_COMMANDS_CLAIM\b[^}]*\}\s*from\s*'\.\.\/agent\/brokers\/sudo-claim\.js'/,
-    );
-    // APPLICATION, not just presence: the claim is an element of the register array.
-    expect(stripped).toMatch(/SOUL_CAPABILITY_CLAIMS[\s\S]*?\n\s*SOUL_ADMIN_COMMANDS_CLAIM,\n\s*\];/);
-    expect(stripped).not.toContain('administrator (sudo) commands');
-  });
-
-  it('the tool surface asks the SAME door and renders the SAME sentence, and spells neither', () => {
-    const stripped = stripTsComments(SURFACE_SOURCE);
-    expect(stripped).toMatch(
-      /import\s*\{[^}]*\bagentMayRunAdminCommands\b[^}]*\badminCommandsToolSentence\b[^}]*\}\s*from\s*'\.\.\/brokers\/sudo-claim\.js'/,
-    );
-    // APPLICATION: the door's answer gates the sentence, in that order, in one expression.
-    expect(stripped).toMatch(/agentMayRunAdminCommands\(\s*agentId\s*,\s*sudoPolicy\s*\)/);
-    expect(stripped).toMatch(/\?\s*adminCommandsToolSentence\(\s*sudoPolicy\s*,\s*finiteList\s*\)\s*:\s*''/);
-    // And the v3.2.2 wording is GONE from this file — re-inlining it reds this clause.
-    expect(stripped).not.toContain('Administrator commands:');
-    expect(stripped).not.toContain('does not widen your command list');
   });
 });

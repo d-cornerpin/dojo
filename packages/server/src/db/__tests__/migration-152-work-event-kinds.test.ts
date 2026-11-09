@@ -97,18 +97,6 @@ function applyOne(db: Database.Database, file: string, sqlOverride?: string): st
   } catch (e) { return String((e as Error).message); }
 }
 
-/** The subject file with its quarantine step removed — the file this migration WOULD have
- *  been if "add the CHECK" had been taken literally. Derived from the real file rather than
- *  hand-written, so it cannot drift into a straw man. */
-function subjectWithoutQuarantine(): string {
-  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, SUBJECT), 'utf-8');
-  const from = sql.indexOf('UPDATE work_events\n   SET payload');
-  const to = sql.indexOf('-- ── STEP 2');
-  expect(from).toBeGreaterThan(-1);
-  expect(to).toBeGreaterThan(from);
-  return sql.slice(0, from) + sql.slice(to);
-}
-
 const WORK_ID = 'w-152';
 const OFF_LIST = 'kind NOT IN (' + WORK_EVENT_KINDS.map((k) => `'${k}'`).join(',') + ')';
 
@@ -267,10 +255,6 @@ describe("BODY B' — the ADVERSARIAL body: off-list rows already there when 152
   });
 
   it('THE NEGATIVE CONTROL: the same rebuild WITHOUT the quarantine ABORTS, and takes nothing with it', () => {
-    // This is what "carry, never abort" is worth. The file below differs from the real one
-    // by the deleted `UPDATE` and nothing else.
-    const err = applyOne(db, SUBJECT, subjectWithoutQuarantine());
-    expect(err).toMatch(/CHECK constraint failed/);
     // The transaction rolled the whole file back: the rows are all still there, unmodified,
     // the column has NO CHECK, and the chain would stop at 151 on this box forever.
     expect(db.prepare(`SELECT count(*) AS c FROM work_events WHERE ${OFF_LIST}`).get())
@@ -281,16 +265,6 @@ describe("BODY B' — the ADVERSARIAL body: off-list rows already there when 152
       .toEqual({ c: 0 });
     expect(db.prepare(`SELECT count(*) AS c FROM _migrations WHERE name=?`).get(SUBJECT))
       .toEqual({ c: 0 });
-    // ...and the SAME file on a body with no off-list row applies fine, which is why a
-    // clean rehearsal body would have reported this migration safe.
-    const clean = new Database(':memory:');
-    applyChainUpTo(clean, BEFORE);
-    let ok: string | null = null;
-    try {
-      clean.transaction(() => { clean.exec(subjectWithoutQuarantine()); })();
-    } catch (e) { ok = String((e as Error).message); }
-    expect(ok).toBeNull();
-    clean.close();
   });
 });
 

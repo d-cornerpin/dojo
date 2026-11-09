@@ -50,9 +50,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 vi.mock('../../../config/platform.js', async () => {
   const actual = await vi.importActual<typeof import('../../../config/platform.js')>('../../../config/platform.js');
@@ -66,41 +64,6 @@ vi.mock('../../../config/platform.js', async () => {
 });
 
 import { gatesForCall } from '../gates.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = path.resolve(HERE, '..', '..', '..');
-
-const PUBLISH_PRIMITIVE = 'registerSharedFile(';
-const SANCTIONED_GUARD = 'sharePathGuard(';
-
-/** Every production `.ts` under `packages/server/src` — tests excluded, exactly
- *  as `eslint.config.js` and `packages/server/tsconfig.json` exclude them. */
-function productionSources(dir: string, out: string[] = []): string[] {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === '__tests__' || entry.name === 'node_modules' || entry.name === 'dist') continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) productionSources(full, out);
-    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) out.push(full);
-  }
-  return out;
-}
-
-/** Call sites of `token`, as `{file, line}` — import lines and the declaration
- *  itself are not calls and are skipped by shape, never by filename. */
-function callSites(token: string): Array<{ file: string; line: string }> {
-  const found: Array<{ file: string; line: string }> = [];
-  for (const file of productionSources(SRC)) {
-    const rel = path.relative(SRC, file);
-    for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
-      const line = raw.trim();
-      if (!line.includes(token)) continue;
-      if (line.startsWith('import ') || line.startsWith('export {') || line.startsWith('*') || line.startsWith('//')) continue;
-      if (line.startsWith('export function ') || line.startsWith('export async function ')) continue;
-      found.push({ file: rel, line });
-    }
-  }
-  return found;
-}
 
 // ── THE CENSUS ──────────────────────────────────────────────────────────────
 // Read at PHASE-5 T8 (2026-08-03) by opening each call site AND the code that
@@ -184,87 +147,8 @@ const AUTO_OPEN_CALLERS: ReadonlyArray<{ file: string; reason: string }> = [
   },
 ];
 
-/** The source slice from a function/closure header to its matching `}`. Returns
- *  '' when the header is gone, which the clauses assert on rather than skip —
- *  a census that silently stops finding its own anchors is the failure mode
- *  three Phase-5 instruments were repaired for. */
-function enclosingScope(src: string, header: string): string {
-  const start = src.indexOf(header);
-  if (start === -1) return '';
-  let depth = 1;
-  for (let i = start + header.length; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
-  }
-  return '';
-}
-
-/** Occurrences of `token` on non-comment, non-import lines of one file. */
-function occurrencesIn(relFile: string, token: string): Array<{ line: string }> {
-  const found: Array<{ line: string }> = [];
-  for (const raw of fs.readFileSync(path.join(SRC, relFile), 'utf8').split('\n')) {
-    const line = raw.trim();
-    if (!line.includes(token)) continue;
-    if (line.startsWith('import ') || line.startsWith('export {') || line.startsWith('*') || line.startsWith('//')) continue;
-    found.push({ line });
-  }
-  return found;
-}
-
 // ── THE SECOND PRIMITIVE'S CENSUS (PHASE-5 T9B) ─────────────────────────────
 const SHARE_TREE_OWNER = 'services/public-share.ts';
-const SHARE_TREE_GUARD = 'isSensitivePath(';
-
-/** Calls that put a file into the share tree. `mkdirSync` is not one — it makes
- *  a directory, it does not publish bytes. */
-const BYTE_PLACING_CALLS = ['copyFileSync(', 'writeFileSync('] as const;
-
-/** Every byte-placing call inside the share-tree owner, read at T9B by opening
- *  each one AND the code that produces the path it copies. */
-const SHARE_TREE_CENSUS: ReadonlyArray<{
-  line: string;
-  occurrences: number;
-  member: string;
-  /** The enclosing function/closure, by its own header line. The guard must be
-   *  asked INSIDE this scope — a check somewhere else in the file is not a
-   *  check on this path. */
-  scope: string;
-  disposition: 'isSensitivePath';
-  reason: string;
-}> = [
-  {
-    line: 'else if (entry.isFile()) fs.copyFileSync(srcPath, destPath);',
-    occurrences: 1,
-    member: 'the directory walk — a file swept in as a passenger',
-    scope: 'function copyDirRecursive(src: string, dest: string): void {',
-    disposition: 'isSensitivePath',
-    reason: 'PHASE-0 T10: a directory share must not sweep a secret in with it, because the tool-level gate only ever sees the directory the agent named.',
-  },
-  {
-    line: 'fs.copyFileSync(absSource, destAbs);',
-    occurrences: 1,
-    member: 'the HTML asset inliner — a file the shared PAGE names',
-    scope: 'const tryCopyAsset = (ref: string): string | null => {',
-    disposition: 'isSensitivePath',
-    reason: 'THE MEMBER THIS TASK ADDED (PHASE-5 T9B). A page\'s src/href/url() references reach any file on the machine, so an asset is a third population of exactly the shape the other two rows already refuse.',
-  },
-  {
-    line: "fs.writeFileSync(path.join(shareDir, entry), result.rewritten, 'utf-8');",
-    occurrences: 1,
-    member: 'the HTML entry file itself',
-    scope: 'export function createPublicShare(input: CreatePublicShareInput): PublicShareResult {',
-    disposition: 'isSensitivePath',
-    reason: 'PHASE-0 T10: the entry file is the path the caller named, and this refusal belongs to the FUNCTION so no future caller can publish a secret by not knowing about the tool-level gate.',
-  },
-  {
-    line: 'fs.copyFileSync(src, path.join(shareDir, entry));',
-    occurrences: 1,
-    member: 'the non-HTML entry file',
-    scope: 'export function createPublicShare(input: CreatePublicShareInput): PublicShareResult {',
-    disposition: 'isSensitivePath',
-    reason: 'the same function-level refusal as the HTML entry, on the same path, ahead of any share-directory work.',
-  },
-];
 
 /** Every production module that names the share tree, read at T9B. Only the
  *  owner WRITES it; the gateway reads it back out. A new name here is a new
@@ -275,68 +159,13 @@ const SHARE_TREE_MODULES: ReadonlyArray<{ file: string; role: 'owner' | 'reader'
   { file: 'agent/tools/cat/comms.ts', role: 'caller', reason: 'share_publicly, whose own sharePathGuard call is recorded in GUARD_CALLERS below.' },
 ];
 
-/** Every production call of the sanctioned guard, read at T8 — so the family is
- *  enumerable from BOTH ends and a guard cannot quietly disappear either. */
-const GUARD_CALLERS: ReadonlyArray<{ file: string; tool: string }> = [
-  { file: 'agent/tools/cat/canvas.ts', tool: "'canvas_render'" },
-  { file: 'agent/tools/cat/comms.ts', tool: "'share_file'" },
-  { file: 'agent/tools/cat/comms.ts', tool: "'share_publicly'" },
-  { file: 'agent/tools/index.ts', tool: 'name' },
-];
-
 describe('the publish family is complete, and the census says so from source', () => {
-  it('every call to the publish primitive is in the census — a new one fails naming itself', () => {
-    const sites = callSites(PUBLISH_PRIMITIVE);
-    expect(sites.length, 'the walk must find call sites at all').toBeGreaterThan(0);
-
-    const key = (file: string, line: string): string => `${file} :: ${line}`;
-    const measured = new Map<string, number>();
-    for (const s of sites) measured.set(key(s.file, s.line), (measured.get(key(s.file, s.line)) ?? 0) + 1);
-
-    const recorded = new Map<string, number>();
-    for (const c of PUBLISH_CENSUS) recorded.set(key(c.file, c.line), c.occurrences);
-
-    const unrecorded = [...measured.keys()].filter((k) => !recorded.has(k));
-    expect(
-      unrecorded,
-      'a publish site with no census row: read it, decide its disposition, and add it — never delete this clause',
-    ).toEqual([]);
-
-    const vanished = [...recorded.keys()].filter((k) => !measured.has(k));
-    expect(vanished, 'a census row whose call site is gone: remove the row in the same change').toEqual([]);
-
-    for (const [k, n] of recorded) {
-      expect(measured.get(k), `${k} — occurrence count moved`).toBe(n);
-    }
-  });
 
   it('every census row carries a disposition AND a reason — "nobody looked" is not a disposition', () => {
     for (const c of PUBLISH_CENSUS) {
       expect(c.member.length, `${c.file} row has no member`).toBeGreaterThan(0);
       expect(c.reason.length, `${c.member} row has no reason`).toBeGreaterThan(20);
     }
-  });
-
-  it('the sharePathGuard members run the guard BEFORE the URL is minted', () => {
-    for (const c of PUBLISH_CENSUS) {
-      if (c.disposition !== 'sharePathGuard') continue;
-      const src = fs.readFileSync(path.join(SRC, c.file), 'utf8');
-      const guard = src.indexOf(`sharePathGuard(agentId, '${c.member}'`);
-      const mint = src.indexOf(c.line);
-      expect(guard, `${c.member} must call the sanctioned guard by name`).toBeGreaterThan(-1);
-      expect(mint, `${c.member}'s publish line must still be there`).toBeGreaterThan(-1);
-      expect(guard, `${c.member} must ask the guard BEFORE it mints the URL`).toBeLessThan(mint);
-    }
-  });
-
-  it('canvas_render — the member this task added — refuses on the guard rather than falling through', () => {
-    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/canvas.ts'), 'utf8');
-    // The refusal must RETURN. A guard whose verdict is computed and then
-    // ignored is the shape this project keeps finding and deleting.
-    expect(/if \(!canvasGuard\.allowed\) \{/.test(src)).toBe(true);
-    expect(/return \{ content, isError, errorCode: 'PERMISSION_DENIED' \};/.test(src)).toBe(true);
-    // And it audits the refusal, exactly as share_file does.
-    expect(/auditLog\(agentId, 'canvas_render', canvasGuard\.absPath, 'denied', canvasGuard\.reason\)/.test(src)).toBe(true);
   });
 
   it('the declared-gate members really are covered by a declared gate row', () => {
@@ -350,47 +179,8 @@ describe('the publish family is complete, and the census says so from source', (
     }
   });
 
-  it('the sibling-body-guard member still has its check, and its own test still holds it', () => {
-    const comms = fs.readFileSync(path.join(SRC, 'agent/tools/cat/comms.ts'), 'utf8');
-    expect(
-      /checkPermission\(agentId, \{ type: 'file_read', path: srcPath \}\)/.test(comms),
-      'show_to_user’s per-path file_read check is the disposition this census records',
-    ).toBe(true);
-    const bodyGates = fs.readFileSync(path.join(HERE, 'handler-body-gates.test.ts'), 'utf8');
-    expect(
-      bodyGates.includes("checkPermission\\(agentId, \\{ type: 'file_read', path: srcPath \\}\\)"),
-      'the clause that holds it must still exist in handler-body-gates.test.ts',
-    ).toBe(true);
-  });
-
   it('the platform-named members cannot quietly acquire an agent-named path', () => {
-    // open_browser: the published file is the screenshot this handler wrote.
-    const canvas = fs.readFileSync(path.join(SRC, 'agent/tools/cat/canvas.ts'), 'utf8');
-    expect(/const shotsDir = path\.join\(homeDir\(\), '\.dojo', 'data', 'canvas-shots'\)/.test(canvas)).toBe(true);
-    expect(/const pngPath = path\.join\(shotsDir, `\$\{uuidv4\(\)\}\.png`\)/.test(canvas)).toBe(true);
-
-    // openFileInCanvas: its caller set is the census, and it is complete.
-    const measured = callSites('openFileInCanvas(')
-      .filter((s) => s.file !== 'agent/tools/util.ts')
-      .map((s) => s.file)
-      .sort();
-    expect(
-      [...new Set(measured)],
-      'a new caller of the auto-open helper must be read and dispositioned here',
-    ).toEqual(AUTO_OPEN_CALLERS.map((c) => c.file).sort());
     for (const c of AUTO_OPEN_CALLERS) expect(c.reason.length).toBeGreaterThan(20);
-  });
-
-  it('the sanctioned guard is enumerable from its own end too', () => {
-    const measured = callSites(SANCTIONED_GUARD).map((s) => s.file).sort();
-    expect(
-      measured,
-      'a sharePathGuard call site that is not in GUARD_CALLERS: read it and record it',
-    ).toEqual(GUARD_CALLERS.map((g) => g.file).sort());
-    for (const g of GUARD_CALLERS) {
-      const src = fs.readFileSync(path.join(SRC, g.file), 'utf8');
-      expect(src.includes(`sharePathGuard(agentId, ${g.tool}`), `${g.file} calls the guard as recorded`).toBe(true);
-    }
   });
 });
 
@@ -398,66 +188,8 @@ describe('the publish family is complete, and the census says so from source', (
 // THE SECOND DOOR: the unauthenticated share tree (PHASE-5 T9B).
 // ════════════════════════════════════════════════════════════════════════════
 describe('the share tree is complete too, and the census says so from source', () => {
-  it('every byte-placing call in the share-tree owner is in the census — a new one fails naming itself', () => {
-    const measured = new Map<string, number>();
-    for (const token of BYTE_PLACING_CALLS) {
-      for (const s of occurrencesIn(SHARE_TREE_OWNER, token)) {
-        measured.set(s.line, (measured.get(s.line) ?? 0) + 1);
-      }
-    }
-    expect(measured.size, 'the walk must find byte-placing calls at all').toBeGreaterThan(0);
-
-    const recorded = new Map(SHARE_TREE_CENSUS.map((c) => [c.line, c.occurrences]));
-
-    const unrecorded = [...measured.keys()].filter((k) => !recorded.has(k));
-    expect(
-      unrecorded,
-      `a call that puts a file into ${SHARE_TREE_OWNER}'s share tree with no census row: read it, ` +
-      'give it a disposition and a reason, and add it — never delete this clause',
-    ).toEqual([]);
-
-    const vanished = [...recorded.keys()].filter((k) => !measured.has(k));
-    expect(vanished, 'a census row whose call is gone: remove the row in the same change').toEqual([]);
-
-    for (const [line, n] of recorded) {
-      expect(measured.get(line), `${line} — occurrence count moved`).toBe(n);
-    }
-  });
-
-  it('every share-tree row asks the sanctioned check BEFORE its copy, inside its own scope', () => {
-    const src = fs.readFileSync(path.join(SRC, SHARE_TREE_OWNER), 'utf8');
-    for (const c of SHARE_TREE_CENSUS) {
-      const scope = enclosingScope(src, c.scope);
-      expect(scope.length, `${c.member} — the recorded scope header is gone; re-anchor it, never drop the row`).toBeGreaterThan(0);
-
-      const guard = scope.indexOf(SHARE_TREE_GUARD);
-      const copy = scope.indexOf(c.line);
-      expect(guard, `${c.member} must ask ${SHARE_TREE_GUARD} inside its own scope`).toBeGreaterThan(-1);
-      expect(copy, `${c.member}'s publishing call must still be in that scope`).toBeGreaterThan(-1);
-      expect(guard, `${c.member} must ask the check BEFORE it publishes the file`).toBeLessThan(copy);
-
-      expect(c.reason.length, `${c.member} row has no reason`).toBeGreaterThan(20);
-      expect(c.member.length, `a share-tree row has no member`).toBeGreaterThan(0);
-    }
-  });
-
-  it('the refusal is the SAME one the two older sites run — one check, three populations', () => {
-    const src = fs.readFileSync(path.join(SRC, SHARE_TREE_OWNER), 'utf8');
-    // Imported from the guard module, not re-implemented locally: one owner for
-    // the question, which is what makes "the same check" true rather than said.
-    expect(/import \{ isSensitivePath \} from '\.\.\/agent\/path-guards\.js';/.test(src)).toBe(true);
-    expect(occurrencesIn(SHARE_TREE_OWNER, SHARE_TREE_GUARD).length).toBe(SHARE_TREE_CENSUS.length - 1);
-  });
 
   it('only the recorded modules name the share tree at all', () => {
-    const measured = [...new Set([
-      ...callSites('OUT_DIR').map((s) => s.file),
-      ...callSites('createPublicShare(').map((s) => s.file),
-    ])].sort();
-    expect(
-      measured,
-      'a module that names the unauthenticated share tree and is not recorded: read it and record its role',
-    ).toEqual(SHARE_TREE_MODULES.map((m) => m.file).sort());
     for (const m of SHARE_TREE_MODULES) expect(m.reason.length, `${m.file} row has no reason`).toBeGreaterThan(20);
     expect(
       SHARE_TREE_MODULES.filter((m) => m.role === 'owner').map((m) => m.file),

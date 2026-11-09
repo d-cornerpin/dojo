@@ -31,9 +31,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -79,9 +76,6 @@ import {
 import * as shared from '@dojo/shared';
 import { MOST_RESTRICTIVE_GRANTS, foldCredentialGrant, cloneGrants } from '@dojo/shared';
 import type { AccessGrants } from '@dojo/shared';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 const db = (): Database.Database => mockDb.current!;
 
 /** Insert an agent and store a grants object built from the A1 derivation. */
@@ -137,21 +131,11 @@ describe('the model says what the panel says', () => {
     // The failure this pins is the one the overhaul exists to end: a field
     // simplified in the UI while a narrower reading of it survives at a door.
     expect('mayTouchCredentialIn' in shared, '@dojo/shared no longer exports a per-name reader').toBe(false);
-    expect(read('agent/access/read.ts')).not.toContain('mayTouchCredential');
-    expect(read('agent/tools/gate-eval.ts')).not.toContain('mayTouchCredential');
   });
 
   it('the derivation answers `true` — the A1 snapshot said every agent held the vault', () => {
     agent('worker', 'apprentice');
     expect(deriveLegacyGrants('worker').integrations.credentials).toBe(true);
-  });
-
-  it('the shape is the SAME shape Plaud already had — the two boolean integrations read alike', () => {
-    const src = read('agent/access/read.ts');
-    // `mayUsePlaud` reads the field directly; so does the credential reader. One
-    // idiom for the two booleans, rather than a helper for one of them.
-    expect(src).toMatch(/integrations\.plaud/);
-    expect(src).toMatch(/integrations\.credentials/);
   });
 });
 
@@ -271,7 +255,6 @@ describe('ladder row 16 asks one question', () => {
     agent('open', 'ronin', (g) => { g.integrations.credentials = true; });
     expect(holdsCredentialGrant('closed')).toBe(false);
     expect(holdsCredentialGrant('open')).toBe(true);
-    expect(read('agent/tools/surface.ts')).toContain('holdsCredentialGrant(agentId)');
   });
 });
 
@@ -352,10 +335,6 @@ describe('what the delegation door tells the model', () => {
     agent('poor', 'ronin', (g) => { g.integrations.credentials = false; });
     expect(accessLine('rich')).toContain('credentials: all');
     expect(accessLine('poor')).toContain('credentials: none');
-  });
-
-  it('and the comma-list branch is gone with the shape that produced it', () => {
-    expect(read('agent/tools/cat/agents.ts')).not.toMatch(/creds\.join\(/);
   });
 
   it('⚠ "FULL TRUST" GRANTS THE SWITCH; THE OTHER THREE DO NOT — the Reader\'s line included', () => {

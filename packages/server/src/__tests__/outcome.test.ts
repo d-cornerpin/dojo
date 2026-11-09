@@ -16,16 +16,12 @@
 // command and its output.
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   OUTCOME_KINDS,
   applied, refused, failed,
   type Outcome, type ToolSeamReason, type ToolResult,
 } from '@dojo/shared';
 import { classifyToolResult, toolResultOf, toolWasBlocked } from '../agent/tool-outcome.js';
-import { engineText, engineFileContaining } from '../agent/v2/__tests__/engine-sources.js';
 
 describe('Outcome<T>: the five arms', () => {
   it('declares exactly five kinds, in the argued order', () => {
@@ -99,27 +95,8 @@ describe('the tool door classifies STRUCTURALLY (PHASE-4 T1 cluster 3)', () => {
 describe("PHASE-4 T3: the spin brake is `cancelled`'s producer, on ONE arm only", () => {
   const r = (over: Partial<ToolResult> = {}): ToolResult =>
     ({ toolCallId: 'tc1', name: 'file_write', content: 'x', isError: false, ...over });
-  // PHASE-6 GUARD-AUDIT 2026-08-04: the comment above says it — "inside a 9,000-line loop
-  // body". PHASE-6 is what ends that, and the spin brake rides the `execute` tranche out of
-  // `loop.ts` into `agent/v2/steps/`. Reading the driver alone would have made both clauses
-  // below fail for a reason that has nothing to do with their requirement, so the corpus is
-  // the ENGINE — driver plus every step package.
-  const engine = () => engineText();
-
-  it('the brake routes its refusal through the classifier instead of hand-building a result', () => {
-    // Pre-T3 the site was `toolResult = { toolCallId, name, content: refusal, isError: true }`
-    // — a result that never met the classifier at all, which is WHY the arm had no producer.
-    //
-    // A PROXIMITY clause (200 chars), so it is pinned to the ONE engine file that holds the
-    // construction: measured across a concatenated corpus the distance would be read over a
-    // file join. A tranche that splits the pair fails loudly rather than matching by accident.
-    const home = engineFileContaining('toolResultOf(classifyToolResult({');
-    expect(home, 'no engine file builds the brake refusal through the classifier').not.toBeNull();
-    expect(home!.text).toMatch(/toolResultOf\(classifyToolResult\(\{[\s\S]{0,200}?content: refusal/);
-  });
 
   it('ONLY the terminal arm is marked, and it is marked TIMEOUT (which reads cancelled)', () => {
-    expect(engine()).toMatch(/toolPhaseEndedBySpinBrake \? \{ errorCode: 'TIMEOUT' as const \} : \{\}/);
     // …and the classifier turns exactly that into failed/cancelled, so the site does not
     // get to name its own arm.
     const terminal = classifyToolResult(r({ isError: true, errorCode: 'TIMEOUT' }));

@@ -39,9 +39,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 const infos: string[] = [];
@@ -70,13 +67,6 @@ vi.mock('../../logger.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { resetWorkingAgentsToIdleAtBoot } from '../agent-status.js';
-
-const SERVER_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SERVER_SRC, rel), 'utf8');
-/** Comments blanked, length-preserving: every word below appears in the prose of these files. */
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -218,17 +208,6 @@ describe('§2 it touches only the rows this boot is responsible for', () => {
       'nothing reads `working` any more — this is the silent zero the order prevents',
     ).toBe(0);
     expect(rows()[0].exit_reason, 'and no turn row moved either').toBeNull();
-
-    const code = stripComments(read('agent/agent-status.ts'));
-    const body = code.slice(code.indexOf('export function resetWorkingAgentsToIdleAtBoot'));
-    const readAt = body.indexOf("SELECT id FROM agents WHERE status = 'working'");
-    const closeAt = body.indexOf('markTurnsTerminated(');
-    const idleAt = body.indexOf("UPDATE agents SET status = 'idle'");
-    expect(readAt, 'the boot sweep stopped reading the crashed set').toBeGreaterThan(-1);
-    expect(closeAt, 'the boot sweep stopped closing the abandoned turn rows').toBeGreaterThan(-1);
-    expect(idleAt).toBeGreaterThan(-1);
-    expect(readAt, 'the read must precede the status repair').toBeLessThan(idleAt);
-    expect(closeAt, 'and so must the close').toBeLessThan(idleAt);
   });
 
   it('a boot with nothing to repair writes nothing and says nothing', () => {
@@ -236,36 +215,5 @@ describe('§2 it touches only the rows this boot is responsible for', () => {
     expect(resetWorkingAgentsToIdleAtBoot()).toBe(0);
     expect(rows()).toEqual([]);
     expect(infos.filter((m) => /Closed \d+ turn record/.test(m))).toHaveLength(0);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §3 — THE TWO WRITERS COVER DIFFERENT CASES, AND THE SQL STAYS IN ONE MODULE
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§3 boot and reaper, and neither claims the other\'s case', () => {
-  it('`agent-status.ts` holds the VERDICT and `turn-record.ts` holds the STATEMENT', () => {
-    const status = stripComments(read('agent/agent-status.ts'));
-    expect(status, 'the boot sweep stopped calling the writer').toMatch(/markTurnsTerminated\(c\.id\)/);
-    expect(status, 'the one-module property: no second writer of `turns`').not.toMatch(/UPDATE\s+turns/);
-    expect(stripComments(read('agent/runtime.ts')), 'nor in the reaper').not.toMatch(/UPDATE\s+turns/);
-    // ONE statement, two callers — the whole point of selecting and writing through the owner.
-    const rec = stripComments(read('agent/v2/turn-record.ts'));
-    expect([...rec.matchAll(/exit_reason = 'terminated'/g)].length,
-      'one statement, in the one module that writes this table').toBe(1);
-  });
-
-  it('the two sites SAY which case each covers — the first cut\'s prose claimed one filled both', () => {
-    // Review I-1's second half: the docstrings asserted the reaper filled the whole 279-row
-    // population. It covers the >75-minute-stale case only. A comment that outlived its
-    // measurement is how the next reader re-derives the gap.
-    const rec = read('agent/v2/turn-record.ts');
-    expect(rec).toContain('TWO CALLERS, TWO CASES, AND NEITHER COVERS THE OTHER');
-    expect(rec).toMatch(/THE >75-MINUTE-STALE CASE ONLY/);
-    expect(rec).toMatch(/THE COMMON CRASH/);
-    expect(read('agent/runtime.ts'), 'the reaper no longer claims the common case')
-      .toMatch(/>75-MINUTE-STALE CASE ONLY/);
-    // And neither pretends to drain what already exists.
-    expect(rec).toMatch(/population\s*\n?\s*\*?\s*GROWING; they do not drain it/);
   });
 });

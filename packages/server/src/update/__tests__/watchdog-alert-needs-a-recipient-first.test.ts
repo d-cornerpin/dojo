@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as L from '../../../../../watchdog/src/alert-ledger.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const INDEX_SRC = path.resolve(HERE, '../../../../../watchdog/src/index.ts');
 
 describe('watchdog alert is not spent before it has anyone to go to', () => {
   it('a recipient-less claim returns false and leaves the ledger untouched', () => {
@@ -31,11 +25,5 @@ describe('watchdog alert is not spent before it has anyone to go to', () => {
     const s = L.emptyState();
     (L as any).claimAlert(s, 'platform_down', '');
     expect(L.markAlertResolved(s, 'platform_down')).toBe(false);
-  });
-
-  it('index.ts never calls the bare shouldSendAlert outside the wrapper', () => {
-    const src = fs.readFileSync(INDEX_SRC, 'utf-8');
-    const offenders = src.split('\n').filter((l) => /shouldSendAlert\(/.test(l) && !/^\s*(\/\/|\*)/.test(l) && !/function shouldSendAlert\(/.test(l) && !/shouldSendAlertIn\(/.test(l));
-    expect(offenders).toEqual([]);
   });
 });

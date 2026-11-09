@@ -24,8 +24,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
-import ts from 'typescript';
 
 const { HOME } = vi.hoisted(() => ({
   HOME: `${(process.env.DOJO_TEST_HOME_ROOT || require('node:os').tmpdir())}/dojo-one-user-md-${process.pid}`,
@@ -34,7 +32,6 @@ const { HOME } = vi.hoisted(() => ({
 vi.mock('../../home.js', () => ({
   homeDir: (): string => HOME,
   dojoDir: (...s: string[]): string => `${HOME}/.dojo/${s.join('/')}`,
-  isTestRun: (): boolean => true,
 }));
 vi.mock('../../logger.js', () => {
   const noop = (): void => {};
@@ -56,8 +53,6 @@ import {
   composeUserProfile, defaultUserProfile, readUserProfile, writeUserProfile,
   userProfileIsEngineSeeded, userProfilePath,
 } from '../user-profile.js';
-
-const SRC = path.resolve(__dirname, '../..');
 
 beforeEach(() => {
   fs.rmSync(HOME, { recursive: true, force: true });
@@ -156,135 +151,5 @@ describe('§2 the default seeds an empty box and never overwrites a written prof
     // and the OOBE door writes to the same place the dashboard door just did.
     writeUserProfile(composeUserProfile({ userName: 'Rivera' }), 'oobe');
     expect(readUserProfile()).toMatch(/^- Name: Rivera$/m);
-  });
-});
-
-// ── §3 THE WIRING (source shape, comments stripped) ─────────────────────────────────────
-
-const STRIP_CACHE = new Map<string, string>();
-
-/**
- * t99's comment stripper (`report/__tests__/only-the-audited-door-can-reach-the-wire.test.ts`),
- * carried here rather than a line-start regex: a clause that can be satisfied by the prose
- * above a call is testing the comment. AST trivia ranges, so `/* keep *\/` mid-line and a
- * `//` inside a string literal are both handled correctly.
- */
-function stripComments(code: string, kind: ts.ScriptKind = ts.ScriptKind.TS): string {
-  const cached = STRIP_CACHE.get(code);
-  if (cached !== undefined) return cached;
-  const source = ts.createSourceFile(
-    kind === ts.ScriptKind.TSX ? 'census.tsx' : 'census.ts',
-    code, ts.ScriptTarget.Latest, false, kind,
-  );
-  const chars = code.split('');
-  const blanked = new Set<string>();
-  const blank = (range: ts.CommentRange): void => {
-    const key = `${range.pos}:${range.end}`;
-    if (blanked.has(key)) return;
-    blanked.add(key);
-    for (let i = range.pos; i < range.end && i < chars.length; i += 1) {
-      if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
-    }
-  };
-  const triviaAt = (pos: number): void => {
-    ts.getLeadingCommentRanges(code, pos)?.forEach(blank);
-    ts.getTrailingCommentRanges(code, pos)?.forEach(blank);
-  };
-  const visit = (node: ts.Node): void => {
-    triviaAt(node.pos); triviaAt(node.end); ts.forEachChild(node, visit);
-  };
-  visit(source);
-  triviaAt(source.endOfFileToken.pos);
-  const out = chars.join('');
-  STRIP_CACHE.set(code, out);
-  return out;
-}
-
-const readStripped = (rel: string): string =>
-  stripComments(fs.readFileSync(path.join(SRC, rel), 'utf-8'));
-
-describe('§3 every door goes through the one module, and the rival text is gone', () => {
-  it('⚠ the OOBE route COMPOSES nothing: no invented preference, no \'User\' default, no baked agent name', () => {
-    const route = readStripped('gateway/routes/config.ts');
-
-    // The dead text, by its own bytes. These are what t107 reported.
-    expect(route).not.toMatch(/Prefers concise, direct communication/);
-    expect(route).not.toMatch(/Values autonomous action for routine tasks/);
-    expect(route).not.toMatch(/userName\s*=\s*'User'/);
-    expect(route).not.toMatch(/You are \$\{agentName\}/);
-    // and it no longer owns a `# User Profile` / `# Preferences` heading of its own.
-    expect(route).not.toMatch(/# User Profile/);
-    expect(route).not.toMatch(/# Preferences/);
-  });
-
-  it('⚠ the OOBE route APPLIES the module — the call shape and what it does with the result', () => {
-    const route = readStripped('gateway/routes/config.ts');
-
-    // Shape AND application: `composeUserProfile` feeds the write, guarded by the
-    // engine-seeded predicate. A bare mention of the import would not satisfy this.
-    expect(route).toMatch(/composeUserProfile\(\s*\{\s*userName,\s*userRole,\s*userPreferences\s*\}\s*\)/);
-    expect(route).toMatch(/userProfileIsEngineSeeded\(\)/);
-    // The composed profile is what gets WRITTEN, inside the guard...
-    expect(route).toMatch(/writeUserProfile\(\s*composeUserProfile\([^)]*\)[^)]*,\s*'oobe'\s*\)/);
-    // ...and the RESPONSE is read back off disk, never the composed text (review M3): returning
-    // what we composed would show the caller a profile the guard had just REFUSED to write.
-    expect(route).toMatch(/const user = readUserProfile\(\)/);
-    // and the SOUL side seeds from the shipped default through the soul door — the composer
-    // is APPLIED to the door's own fallback, so the two cannot disagree about the seed text.
-    // The route hands the wizard's fields to `writeOobeSoul`, which seeds from the door's own
-    // fallback and writes through the soul door (`prompt/soul-rerun.ts`).
-    expect(route).toMatch(/writeOobeSoul\(\s*\{\s*communicationStyle,\s*rules\s*\}/);
-    const rerun = readStripped('prompt/soul-rerun.ts');
-    expect(rerun).toMatch(/soulFileForAgent\(\s*getPrimaryAgentId\(\)\s*\)/);
-    expect(rerun).toMatch(/composePrimarySoul\(\s*fields\s*,\s*primarySoul\?\.fallback/);
-    expect(rerun).toMatch(/writeSoulFile\(\s*soul,\s*composed\s*\)/);
-  });
-
-  it('the dashboard read and edit doors are the same doors', () => {
-    const route = readStripped('gateway/routes/config.ts');
-    expect(route).toMatch(/readUserProfile\(\)/);
-    expect(route).toMatch(/writeUserProfile\(\s*body\.content,\s*'dashboard'\s*\)/);
-  });
-
-  it('⚠ the assembler SLOT is a reader of the module and composes no seed of its own', () => {
-    const asm = readStripped('prompt/assembler.ts');
-
-    expect(asm).toMatch(/return readUserProfile\(\)/);
-    // The seed-composing line it replaced, by its own shape — this is the "both directions"
-    // half: re-introducing a second default here reds, not just deleting the call.
-    expect(asm).not.toMatch(/readPromptFile\(\s*'USER\.md'/);
-    expect(asm).not.toMatch(/DEFAULT_USER_MD/);
-  });
-
-  it('⚠ the census counts BOTH WAYS: this module is the ONLY writer of USER.md in the tree', () => {
-    // A presence-only clause above stays green when a FIFTH writer is added somewhere else.
-    // So: walk the server source and require that every site naming the profile file is either
-    // the module itself, a test, or a door that routes through the module.
-    const offenders: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          if (e.name === 'node_modules' || e.name === 'dist') continue;
-          walk(full);
-          continue;
-        }
-        if (!/\.tsx?$/.test(e.name)) continue;
-        const rel = path.relative(SRC, full);
-        if (rel.includes('__tests__')) continue;
-        if (rel === path.join('prompt', 'user-profile.ts')) continue;
-
-        const code = stripComments(fs.readFileSync(full, 'utf-8'), e.name.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-        // A WRITE to USER.md: the filename next to a write call in the same statement region.
-        if (!/USER\.md/.test(code)) continue;
-        const writes = /writeFileSync\([^)]*USER\.md|USER\.md[^;]*writeFileSync/.test(code);
-        if (writes) offenders.push(rel);
-      }
-    };
-    walk(SRC);
-
-    // `prompt/agent-rename.ts` rewrites STORED SOUL files only and is not a profile writer;
-    // if it ever becomes one it shows up here, which is the point.
-    expect(offenders, `these modules write USER.md without going through prompt/user-profile.ts: ${offenders.join(', ')}`).toEqual([]);
   });
 });

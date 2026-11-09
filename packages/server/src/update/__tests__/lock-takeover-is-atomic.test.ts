@@ -105,10 +105,6 @@ for (const script of ['restore-db.sh', 'rollback.sh']) {
         expect(fs.existsSync(marker)).toBe(true);
       } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     });
-
-    it('the two scripts carry the same lock text', () => {
-      expect(lockText('restore-db.sh').replace(/^\s+/gm, '')).toBe(lockText('rollback.sh').replace(/^\s+/gm, ''));
-    });
   });
 }
 

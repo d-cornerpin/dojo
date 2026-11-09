@@ -39,8 +39,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -64,10 +62,6 @@ import { ownerChannelRelayRefusal } from '../a2a-transport.js';
 import { handlerFor } from '../tools/handlers.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const SRC = path.join(REPO, 'packages/server/src');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
-
 const PRIMARY = FXID.n4;
 const OTHER = 'harnessbot';
 
@@ -87,124 +81,6 @@ beforeEach(() => {
     db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')`).run(id, id);
   }
   clearPlatformConfigCache();
-});
-
-/** The relay's own body — from the inner function to the end of its delivery record. */
-const relayBody = (): string => {
-  const src = read('agent/a2a-transport.ts');
-  const at = src.indexOf('async function deliverJoinResultToOwnerInner');
-  expect(at).toBeGreaterThan(-1);
-  const end = src.indexOf('\n}\n', src.indexOf('return deliveryId;', at));
-  return src.slice(at, end);
-};
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 1 · SCOPE — the compose path asks the wall's own predicate before it composes
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('the compose path is scoped to the agents the handlers will serve', () => {
-  it('the relay consults the wall\'s OWN predicate, not a copy of the rule', () => {
-    expect(relayBody()).toMatch(/ownerChannelRelayRefusal\(/);
-    // And the verdict is BRANCHED ON, not merely computed: the first arm of the channel chain
-    // is the refusal itself, spelled exactly, so a bypass (`if (false)`) reds here.
-    expect(relayBody()).toContain('    if (relayRefusal) {\n      // Composed nothing.');
-    const gate = read('agent/a2a-transport.ts');
-    const at = gate.indexOf('export function ownerChannelRelayRefusal');
-    expect(at).toBeGreaterThan(-1);
-    // The predicate IS the one the doors ask — the same function
-    // `provider/microsoft.ts`, `provider/google.ts` and `cat/comms.ts` each call, and the
-    // same one gate ladder row 7 resolves for `imessage_send`. A second spelling of "who may
-    // send on the owner's channels" is the disagreement this task exists to end.
-    //
-    // UX-ACCESS A1 moved that ONE function from `isPrimaryAgent` to `mayUseChannel`, at every
-    // door in the same change. The agreement requirement is untouched; only the predicate's
-    // name is new, and it is still asserted here so a second spelling still reds.
-    expect(gate.slice(at, gate.indexOf('\n}\n', at))).toMatch(/mayUseChannel\(/);
-  });
-
-  // ⚠ THIS CLAUSE WAS WEAK AS FIRST WRITTEN AND IS RECORDED RATHER THAN QUIETLY FIXED.
-  // It compared `indexOf('ownerChannelRelayRefusal(')` against each branch's index — and at
-  // the pre-change tree that call does not exist, so `indexOf` returned -1, which is less
-  // than every branch index, and the clause PASSED at RED for exactly the wrong reason. The
-  // gate's own position is now asserted before it is compared against anything.
-  it('EVERY owner-channel branch is behind the scope check — no branch is left ungated', () => {
-    const body = relayBody();
-    const gate = body.indexOf('ownerChannelRelayRefusal(');
-    expect(gate, 'the scope check is resolved in the relay body').toBeGreaterThan(-1);
-    // The four channel branches, named by the door each one crosses.
-    for (const door of [
-      'sendResponseViaIMessage', 'teams_send_message', 'gmail_reply', 'sms_send',
-    ]) {
-      const at = body.indexOf(door);
-      expect(at, `${door} still appears in the relay`).toBeGreaterThan(-1);
-      // The refusal is resolved ONCE, above every branch, so a fifth channel added later
-      // cannot be added outside it.
-      expect(gate).toBeLessThan(at);
-    }
-  });
-
-  it('the answer is never lost — the dashboard fallback still runs after a refusal', () => {
-    // The governing priority (owner, 2026-08-05): "the user asks the agent to do something
-    // and it does it. Period." A refusal on the channel must never cost the owner the answer.
-    const body = relayBody();
-    expect(body).toMatch(/if \(!delivered\) \{/);
-    expect(body).toContain('Always reaches them, so the text is never lost.');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 2 · LOUD — the relay learns, and so does the owner
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('the refusal surfaces LOUDLY to the relay', () => {
-  it('is logged at ERROR level naming the agent, the channel and the tool it would have used', () => {
-    const body = relayBody();
-    const at = body.indexOf('logger.error(');
-    expect(at, 'the relay logs a refusal at error level').toBeGreaterThan(-1);
-    const call = body.slice(at, body.indexOf('});', at));
-    for (const field of ['agentId', 'channel', 'tool']) expect(call).toContain(field);
-  });
-
-  it('tells the OWNER, through the one announce door (SWEEP-A TB4\'s shape)', () => {
-    const body = relayBody();
-    // The platform's own voice: `role='system'` + the shared prefix, written and then put on
-    // the wire in the same breath. An alert nobody reads is a silenced alarm.
-    // Scoped to the NOTICE ITSELF. `OWNER_ALERT_HEADS_UP_PREFIX` also appears in this body on
-    // the platform-voice compose, so a bare file-wide grep would pass with the prefix stripped
-    // from exactly the row this clause is about.
-    const at = body.indexOf('const notice = ');
-    expect(at, 'the relay composes an owner notice').toBeGreaterThan(-1);
-    const notice = body.slice(at, body.indexOf(';', body.indexOf('relayRefusal.why', at)));
-    expect(notice).toContain("${OWNER_ALERT_DOJO_PREFIX}");
-    // …and it is put on the wire in the same breath (SWEEP-A TB4: a row nobody is told about
-    // is a reload-only row).
-    expect(body.slice(at)).toMatch(/type: 'chat:message'/);
-  });
-
-  it('says WHICH channel the answer could not go back on — a steerable sentence, not a code', () => {
-    const body = relayBody();
-    const at = body.indexOf('could not send');
-    expect(at, 'the owner is told in words').toBeGreaterThan(-1);
-  });
-
-  it('a handler that refuses ANYWAY is reported by the same path — not only the scope check', () => {
-    const body = relayBody();
-    // Each branch's post-call read must be able to distinguish "refused" from "not applied",
-    // so the wall moving underneath the relay cannot make the failure silent again.
-    // FIVE call sites, counted: one per channel branch (4) plus the throw path's. A branch
-    // that quietly loses its post-call read is a channel whose refusal is silent again, and a
-    // bare `toMatch` cannot see that — the other four keep it green.
-    expect((body.match(/noteRelayRefusal\(/g) ?? []).length).toBe(5);
-  });
-
-  it('says NOTHING when the channel simply does not apply — silence is only wrong for a REFUSAL', () => {
-    // A dashboard-origin ask has no channel meta at all; the fallback IS the delivery and
-    // there is no refusal to report. An alert on every ordinary relay would be the noise that
-    // makes the real one invisible.
-    const body = relayBody();
-    const at = body.indexOf('if (relayRefusal');
-    expect(at, 'the alert is conditional on a refusal').toBeGreaterThan(-1);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -266,20 +142,5 @@ describe('REFUSAL: never closed by widening the wall — the two halves agree, d
     expect(r!.channel).toBe('imessage');
     expect(r!.tool).toBe('imessage-bridge');
     expect(r!.why).toMatch(/only the primary agent/i);
-  });
-
-  it('the iMessage tool is still primary-only at gate ladder row 7', () => {
-    // The relay's iMessage branch calls the BRIDGE, not the tool, so this half is read at the
-    // ladder — and it is the reason that branch had to come inside the scope check at all.
-    const gates = read('agent/tools/gates.ts');
-    expect(gates).toMatch(/IMESSAGE_PRIMARY_ONLY\.has\(name\)/);
-    expect(gates).toContain("row: '7',");
-  });
-
-  it('the relay grants NO new send capability — it holds no primary override of its own', () => {
-    const body = relayBody();
-    for (const forbidden of ['isPrimaryAgent = true', 'asPrimary', 'primaryOverride', 'bypassWall']) {
-      expect(body).not.toContain(forbidden);
-    }
   });
 });

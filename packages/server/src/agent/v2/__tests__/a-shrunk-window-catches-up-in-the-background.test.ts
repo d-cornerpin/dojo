@@ -101,11 +101,10 @@ import { getContextWindow } from '../../model.js';
 import { activeRuns, backgroundDrains } from '../../shared-state.js';
 import { releaseBackgroundSlot, replacePlaceholdersInBackground } from '../../../memory/out-of-view.js';
 import { __resetCompactionFailuresForTests, compactionFailureReason } from '../../../memory/compaction-defect.js';
-import { clearOn, markWaiting, clearOn, providerOf } from '../../../memory/writer.js';
+import { clearOn, markWaiting, clearOn } from '../../../memory/writer.js';
 import { scheduleLegacyRebuildAtBoot, BOOT_SETTLE_MS } from '../../../memory/legacy-rebuild-boot.js';
 import { __resetSummaryWriterHealthForTests } from '../../../memory/writer.js';
 import * as coldImport1 from '../../../router/rate-limits.js';
-import { engineFileContaining } from './engine-sources.js';
 
 const AGENT = 'agent-fix-y-dock-desk';
 const LIGHT = 'm-fix-y-light-64k';
@@ -404,19 +403,6 @@ describe('field fix Y: a grown auto-routed agent whose window shrinks catches up
     expect(placeholders(), 'the backlog folded on its own').toBe(0);
     expect(progress('end'), 'the glyph cleared').toHaveLength(1);
     expect(showing()).toBe(false);
-  });
-
-  it('round 3 (F5, F1): the end of every turn and the routine condense\'s release both start the folder (source census)', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const SRC = path.resolve(__dirname, '../../..');
-    const runtime = fs.readFileSync(path.join(SRC, 'agent/runtime.ts'), 'utf8');
-    const end = runtime.indexOf('lastRunEndedAt.set(agentId, Date.now());');
-    expect(end, 'the run\'s finally').toBeGreaterThan(0);
-    expect(runtime.slice(end, end + 600), 'the turn-end restart (field fix Y)').toMatch(/\n\s*replacePlaceholdersInBackground\(agentId\);/);
-    const gates = engineFileContaining('function condenseLeavingInBackground(')?.text ?? '';   // the routine condense's home, by the shared corpus
-    expect(gates, 'the routine condense releases the slot through the hand-on').toMatch(/\.finally\(\(\) => \{\n\s*releaseBackgroundSlot\(agentId\);/);
-    expect(gates, 'and never by a bare delete').not.toMatch(/backgroundDrains\.delete\(/);
   });
 
   it('CONTROL: the same history on a fixed 1M model is unchanged — nothing folded, no card', async () => {

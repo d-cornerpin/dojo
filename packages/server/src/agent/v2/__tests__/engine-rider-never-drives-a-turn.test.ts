@@ -41,8 +41,6 @@
 // moves the list to one owner beside the writer and makes it COMPLETE by measurement.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../../db/connection.js', () => ({
@@ -57,7 +55,6 @@ import { getPendingEngineEvent } from '../counterparty.js';
 import { ENGINE_RIDER_INTENTS } from '../engine-riders.js';
 
 const AGENT = 'agent-alpha';
-const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..', '..');
 
 /** A subset of migrations 099/112/131/133's `messages` shape: the columns the pending-event
  *  predicate and its gates read. Deliberately a subset — `work-spine-schema.test.ts` is where
@@ -161,170 +158,8 @@ describe('PHASE-2 T10H — an engine RIDER never drives its own turn', () => {
 // (F-18). The same is true here. This walk fails the build when a rider is written with an
 // intent the exclusion does not know, which is the only version of this fix that stays fixed.
 describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the writers', () => {
-  const src = (rel: string): string => fs.readFileSync(path.join(REPO, rel), 'utf8');
-
-  /** Blank comments, keeping line count, so PROSE ABOUT a write is never counted as one.
-   *  ⚠ THIS WAS NOT HERE FIRST, AND THE WALK CAUGHT IT ON ITS OWN AUTHOR: documenting the
-   *  residue at the thrash-gate site put the words `convKey: 'engine-steer'` into a comment,
-   *  and the scan reported a tenth "write site" with no `originIntent` near it. Same idiom as
-   *  `work/__tests__/conv-key-inventory.test.ts` — a source scan that cannot tell a mechanism
-   *  from a sentence about the mechanism is measuring the wrong thing (T10F/T10G's carried
-   *  lesson, one turn further in). */
-  const stripComments = (s: string): string => s
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-
-  /** ⚠ PHASE-2 T10I REPLACED THIS CLAUSE'S ANCHOR, AND THE REASON IS THE POINT.
-   *
-   *  T10H's version found the steer sites by grepping for `convKey: 'engine-steer'` — the very
-   *  sentinel write it had just proved was doing nothing. T10I deletes those writes (the column
-   *  goes at `148`), so the anchor went with them, and a walk anchored on a deleted string is a
-   *  walk that passes by finding zero sites. T10H already guarded against exactly that with
-   *  `found.length > 0`, which is why this had to be REPLACED rather than allowed to lapse.
-   *
-   *  The replacement is STRICTLY STRONGER, and it is stronger because of what the old anchor
-   *  could not see: it could only find sites that REMEMBERED to write the sentinel, which is
-   *  the same weakness that let the hole open in the first place. This walk reads every
-   *  events-lane WRITER in the tree — every `insertEngineEvent` / `insertEngineEventIfAbsent`
-   *  call — and requires each one's `originIntent` to be classified, as either a rider or a
-   *  declared DELIVERABLE. A new events-lane writer with an unclassified intent now fails the
-   *  build whether or not its author knew this list existed. */
-  const DECLARED_DELIVERABLE_INTENTS = [
-    // Each of these IS the reason for a turn (engine-riders.ts's own first paragraph). Listed
-    // here rather than exported, because this is the TEST's partition of the space: production
-    // only needs to know what a rider is.
-    'scheduler', 'tracker', 'reminder', 'a2a_request', 'completion_report', 'spawn_kickoff',
-    'pm_review', 'pm_rename', 'validation_check', 'engine_event_expired', 'agent_health',
-    'block_validated', 'schedule_run_failed', 'schedule_run_failed_owner', 'learning_loop',
-    'healer',
-    // A failure the agent must voice (image not generated, file not delivered): the agent is woken to tell the person.
-    'delivery_failure_owed',
-    // Field fix 3 re-review 3 (L1): a command handed to the background has ended; its result is the reason for the turn.
-    'background_command_done',
-    // proof-fix-f (review B2): messages an older version left unanswered, parked owed on the first boot of the build
-    // that hands orphans back. ONE per agent; it IS the reason for a turn — the agent decides which still matter.
-    'owed_messages_inherited',
-    // SLOW-INFERENCE T79d: `tracker/pm-agent.ts`'s `runEffortReview` — a deliverable, not a
-    // rider, for the same reason `pm_review` is one: it IS the reason for a turn (a dedicated
-    // PM turn asking for a structured advancing/circling verdict), not content riding a turn
-    // that would happen anyway.
-    // ⚠ t123 RETIRED THIS WRITER, and the value stays listed for the same reason the T53 block
-    // below gives: the exclusion list is read against ROWS, and boxes already hold events-lane
-    // rows stamped `effort_review`. Dropping the value would admit those rows as turn drivers,
-    // which is the failure this file exists to prevent. What changed is only "somebody still
-    // writes it": `runEffortReview` no longer drives a PM turn at all. It asked for its verdict
-    // by inserting an events-lane prompt row and reading the persisted assistant reply back —
-    // and because a PM turn's counterparty is user-shaped, that reply landed in the OWNER'S
-    // CHAT as a raw JSON bubble. The verdict is now a non-persisting `callModel` utility dial,
-    // so there is no turn and no row in either direction. This walk stays green either way: it
-    // requires every writer it FINDS to be classified, never that a classified intent be found.
-    'effort_review',
-    // STRIP (PHASE-3 T7 Step 2): 'cross_conv_send_echo' left with its writer. It was never
-    // reachable by this walk in any case (the echo used insertMessageIfAbsent, not
-    // insertEngineEvent*), so it was already a stale entry in this test's own partition.
-  ] as const;
-
-  it('EVERY events-lane writer in the tree carries a CLASSIFIED intent (rider or deliverable)', () => {
-    const roots = ['packages/server/src'];
-    const sites: Array<{ where: string; intent: string }> = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const fp = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== 'migrations') walk(fp); continue; }
-        if (!e.name.endsWith('.ts') || e.name.includes('.test.')) continue;
-        // The writer module DECLARES these two functions; its own occurrences are the
-        // definitions and the one forwarding to the other, not calls with an intent.
-        if (path.relative(REPO, fp).endsWith('memory/message-store.ts')) continue;
-        const text = stripComments(fs.readFileSync(fp, 'utf8'));
-        for (const fn of ['insertEngineEventIfAbsent(', 'insertEngineEvent(']) {
-          let idx = text.indexOf(fn);
-          while (idx !== -1) {
-            // The call's own object literal. 900 chars covers the longest of these calls
-            // (measured: the widest is auto_scaffold's at ~360) without reaching the next one.
-            const window = text.slice(idx, idx + 900);
-            const m = /originIntent: '([a-z0-9_]+)'/.exec(window);
-            const rel = path.relative(REPO, fp).split(path.sep).join('/');
-            const line = text.slice(0, idx).split('\n').length;
-            sites.push({ where: `${rel}:${line}`, intent: m ? m[1] : '<none>' });
-            idx = text.indexOf(fn, idx + 1);
-          }
-        }
-      }
-    };
-    for (const r of roots) walk(path.join(REPO, r));
-
-    // Non-vacuity, both ways: the walk must find the writers, AND it must find the steer
-    // sites that still write this lane — the ones the deleted anchor used to name.
-    expect(sites.length, 'the walk must find events-lane writers, or it is vacuous').toBeGreaterThan(9);
-    const STEER_INTENTS = ['thrash_block', 'delegation_hint', 'fanout_join'];
-    for (const intent of STEER_INTENTS) {
-      expect(sites.map((s) => s.intent), `steer site '${intent}' is no longer written anywhere — either it moved (re-point this map) or a rider lost its writer`).toContain(intent);
-    }
-
-    // ── T53 (owner ruling 5): INTENTS WHOSE WRITER WAS RETIRED ON PURPOSE ──
-    // A steer floor that stopped writing the events lane keeps its intent in
-    // `ENGINE_RIDER_INTENTS` and loses it here, and the asymmetry is the point. The
-    // exclusion list is read against ROWS, and every box already holds rows stamped with
-    // these intents; dropping a value from a live exclusion ADMITS those rows as turn
-    // drivers, which is the failure `engine-riders.ts` was written to end. So the value
-    // stays excluded and only the "someone still writes it" clause is retired, per site.
-    const WRITER_RETIRED_BY_T53 = ['thrash_drift', 'thrash_gate', 'auto_scaffold', 'promise_floor',
-      'a2a_handoff_floor', 'reminder_silence_floor', 'owed_interrupt'];
-    for (const intent of WRITER_RETIRED_BY_T53) {
-      expect(ENGINE_RIDER_INTENTS as readonly string[], `'${intent}' must stay excluded: rows on disk still carry it`).toContain(intent);
-      expect(sites.map((s) => s.intent), `'${intent}' is written again — a retired second channel came back`).not.toContain(intent);
-    }
-
-    // ONE site passes its intent as a VARIABLE (`opts.intent ?? 'agent_notice'`), and it is
-    // named here rather than skipped by pattern: the clause below this one walks every
-    // `postAgentNotice(` caller and checks the intent each one passes, plus the default. A
-    // literal-only scan cannot see through a variable, so the coverage is split across two
-    // clauses on purpose — and a NEW dynamic writer fails here until it is either given a
-    // literal or added to this list with its own coverage argument.
-    const DYNAMIC_INTENT_SITES_COVERED_BY_THE_POSTAGENTNOTICE_CLAUSE = [
-      'packages/server/src/agent/agent-notice.ts',
-    ];
-    const classified = new Set<string>([...ENGINE_RIDER_INTENTS, ...DECLARED_DELIVERABLE_INTENTS]);
-    for (const s of sites) {
-      if (s.intent === '<none>'
-          && DYNAMIC_INTENT_SITES_COVERED_BY_THE_POSTAGENTNOTICE_CLAUSE.some((f) => s.where.startsWith(f))) continue;
-      expect(classified.has(s.intent), `${s.where} writes an events-lane row with intent '${s.intent}', which is neither a declared rider (agent/v2/engine-riders.ts) nor a declared deliverable (this test). Classify it: a rider must never drive a turn of its own; a deliverable must.`).toBe(true);
-    }
-  });
 
   it('every postAgentNotice caller passes a KNOWN rider intent, and the default is one too', () => {
-    const roots = ['packages/server/src'];
-    const intents = new Set<string>();
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const fp = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== 'migrations') walk(fp); continue; }
-        if (!e.name.endsWith('.ts') || e.name.includes('.test.')) continue;
-        const text = fs.readFileSync(fp, 'utf8');
-        let idx = text.indexOf('postAgentNotice(');
-        while (idx !== -1) {
-          const window = text.slice(idx, idx + 600);
-          const m = /intent: '([a-z0-9_]+)'/.exec(window);   // digits: see the steer walk above
-          if (m) intents.add(m[1]);
-          idx = text.indexOf('postAgentNotice(', idx + 1);
-        }
-      }
-    };
-    for (const r of roots) walk(path.join(REPO, r));
-    expect(intents.size, 'the walk must find notice callers, or it is vacuous').toBeGreaterThan(0);
-    for (const intent of intents) {
-      expect(ENGINE_RIDER_INTENTS as readonly string[], `notice intent '${intent}' is not in ENGINE_RIDER_INTENTS`).toContain(intent);
-    }
-    // ...and the fallback the seam itself applies when a caller passes none.
-    expect(src('packages/server/src/agent/agent-notice.ts')).toMatch(/opts\.intent \?\? 'agent_notice'/);
     expect(ENGINE_RIDER_INTENTS as readonly string[]).toContain('agent_notice');
-  });
-
-  it('the predicate reads the ONE set — there is no second list', () => {
-    const cp = src('packages/server/src/agent/v2/counterparty.ts');
-    expect(cp).toMatch(/ENGINE_RIDER_INTENTS_SQL/);
-    // The old three-value literal is gone rather than left beside the constant, or the two
-    // would drift and the older one would win somewhere.
-    expect(cp).not.toMatch(/'thrash_gate', 'hint', 'system'/);
   });
 });

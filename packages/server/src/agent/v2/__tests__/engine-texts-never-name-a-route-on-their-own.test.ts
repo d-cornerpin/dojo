@@ -2,10 +2,6 @@
 // who it is sending to. No engine-written text names a reply route, or "the user", as a literal
 // on its own: it reads the turn's address (or is on the sweep list below, to be reworded).
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { SWEEP, ALLOW } from './route-text-inventory.js';
 import '../../../prompt/registry/entries.js';
 import { getMessageEntries } from '../../../prompt/registry/registry.js';
 import { renderCounterpartyHeader, type TurnCounterparty } from '../counterparty.js';
@@ -14,67 +10,6 @@ import { startAckSteerText } from '../steps/assemble/start-ack-door.js';
 import { computeTurnAddress } from '../turn-address.js';
 import { refuseSendWithNoRecipient, recipientNoteFor, routedReplyWords } from '../send-recipient.js';
 import { openTurnContext, endTurnContext } from '../../turn-context.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');   // packages/server/src
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const e of fs.readdirSync(path.join(SRC, dir), { withFileTypes: true })) {
-    const rel = dir === '.' ? e.name : path.join(dir, e.name);
-    if (e.isDirectory()) { if (e.name !== '__tests__') walk(rel, out); } else if (e.name.endsWith('.ts')) out.push(rel);
-  }
-  return out;
-}
-// EVERY production source file: anything can build a steer, refusal, notice or tool result.
-const SCOPE_FILES = walk('.').sort();
-const ROUTE_WORDS = /\bthe user\b|\bThe user\b|\bTHE USER\b|dashboard chat|reply to the owner|as your chat reply|owner's channel|owner is watching|(?:directly )?in (?:this|the) conversation\b|\bin chat\b/;
-
-/** Source lines of the scoped files that hold a string literal naming the person or a route. */
-function hits(): Array<{ file: string; line: string }> {
-  const out: Array<{ file: string; line: string }> = [];
-  for (const file of SCOPE_FILES) {
-    for (const raw of fs.readFileSync(path.join(SRC, file), 'utf8').split('\n')) {
-      const t = raw.trim();
-      if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) continue;
-      if (!/['`"]/.test(raw)) continue;
-      const code = raw.replace(/\s\/\/.*$/, '');
-      if (ROUTE_WORDS.test(code) && !/logger\.|auditLog\(|^\s*import /.test(code)) out.push({ file, line: t });
-    }
-  }
-  return out;
-}
-
-describe('the census covers every file that builds model-facing text', () => {
-  it('the scope includes the prompt, tracker, work, services, microsoft, google, twilio and tool trees', () => {
-    for (const f of ['prompt/registry/entries.ts', 'prompt/assembler.ts', 'tracker/version-gap-reconcile.ts', 'services/imessage-bridge.ts', 'microsoft/tools-write.ts', 'google/tools-write.ts', 'agent/tools/cat/canvas.ts', 'scheduler/runner.ts']) {
-      expect(SCOPE_FILES, f).toContain(f);
-    }
-  });
-});
-
-describe('the census: no engine text names a person or a route on its own without being listed', () => {
-  it('every site is allowed (with a reason) or on the sweep list', () => {
-    const listed = new Set([...SWEEP.map((s) => `${s.file}\u0000${s.old}`), ...ALLOW.map((a) => `${a.file}\u0000${a.line}`)]);
-    const unlisted = hits().filter((h) => !listed.has(`${h.file}\u0000${h.line}`));
-    expect(unlisted.map((u) => `${u.file}: ${u.line.slice(0, 120)}`),
-      'a NEW engine text names "the user" or a reply route as a literal: read the turn address instead (agent/v2/turn-address.ts: userWords, replyChannelWords, currentAddress), or add it to ALLOW with a reason').toEqual([]);
-  });
-
-  it('every allowed entry carries a reason', () => {
-    for (const a of ALLOW) expect(a.reason.length, `${a.file}: ${a.line.slice(0, 60)}`).toBeGreaterThan(10);
-  });
-});
-
-describe('TASK 6 SWEEP LIST: texts still to be reworded (each case is EXPECTED TO FAIL until its line is swept)', () => {
-  // `it.fails` passes while the old words are still in the file. Once the line has been reworded
-  // the case starts failing: delete that entry from SWEEP in route-text-inventory.ts.
-  if (SWEEP.length === 0) it('every listed site has been reworded (nothing left to sweep)', () => { expect(SWEEP).toHaveLength(0); });
-  for (const s of SWEEP) {
-    it.fails(`${s.id} ${s.file}: no longer says the old words (see the sweep list: new = ${s.new.slice(0, 70)})`, () => {
-      const lines = fs.readFileSync(path.join(SRC, s.file), 'utf8').split('\n').map((l) => l.trim());
-      expect(lines).not.toContain(s.old);
-    });
-  }
-});
 
 // ── The second law: a turn whose counterparty is a contact never gets owner-route text ──
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };

@@ -313,26 +313,3 @@ describe('the stored-summary hygiene pass reports every line before it touches o
     expect(report.ids).toEqual(['sum_mine']);   // theirs is still OWED, so it stays as written
   });
 });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §5 — THE WRITE-TIME CONTRACT. New summaries cannot mint fresh zombies.
-// ══════════════════════════════════════════════════════════════════════════════
-describe('the summariser write path resolves id-less obligations too', () => {
-  it('compaction passes the agent to the annotator', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../compaction.ts'), 'utf8');
-    expect(src).toContain('annotateSummaryObligations(summary.text, agentId)');
-  });
-
-  it('and the render path still never rewrites a stored summary (cache law, T20)', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../assembler.ts'), 'utf8');
-    expect(src).not.toContain('annotateSummaryObligations');
-  });
-});

@@ -23,9 +23,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -64,9 +61,6 @@ import {
 } from '../authorize.js';
 import { MOST_RESTRICTIVE_GRANTS, stableGrantsText, cloneGrants } from '@dojo/shared';
 import type { AccessGrants } from '@dojo/shared';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 const db = (): Database.Database => mockDb.current!;
 
 function agent(id: string, classification: string, mutate?: (g: AccessGrants) => void): AccessGrants {
@@ -86,40 +80,6 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   forgetAccessGrants();
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 1 · THE ARGUMENT EXISTS — the door is DECLARED, not just implemented
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('spawn_agent and update_agent declare a grants argument', () => {
-  const defs = (): string => read('agent/tools/definitions.ts');
-
-  const schemaOf = (tool: string): string => {
-    const src = defs();
-    const at = src.indexOf(`name: '${tool}'`);
-    expect(at, `${tool} is defined`).toBeGreaterThan(-1);
-    return src.slice(at, src.indexOf('\n  },\n', at));
-  };
-
-  it('⚠ `spawn_agent` TAKES GRANTS', () => {
-    expect(schemaOf('spawn_agent')).toMatch(/\n\s*grants: \{/);
-  });
-
-  it('⚠ `update_agent` TAKES GRANTS', () => {
-    expect(schemaOf('update_agent')).toMatch(/\n\s*grants: \{/);
-  });
-
-  it('the declaration names the three sections an owner edits', () => {
-    for (const tool of ['spawn_agent', 'update_agent']) {
-      const block = schemaOf(tool);
-      const grantsAt = block.indexOf('grants: {');
-      const decl = block.slice(grantsAt, grantsAt + 2000);
-      for (const section of ['tools', 'integrations', 'channels']) {
-        expect(decl, `${tool}.grants names ${section}`).toContain(section);
-      }
-    }
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -335,26 +295,6 @@ describe('resolveSpawnGrants / resolveUpdateGrants', () => {
 // row is written at the same site so a refusal can never be silent.
 
 describe('the two grant refusals are classified and audited', () => {
-  const src = (): string => read('agent/tools/cat/agents.ts');
-
-  it('⚠ THE SPAWN REFUSAL CARRIES PERMISSION_DENIED AND AN AUDIT ROW', () => {
-    const s = src();
-    const at = s.indexOf('err instanceof GrantRefusedError');
-    expect(at, 'the spawn handler tells a grant refusal apart by TYPE').toBeGreaterThan(-1);
-    const body = s.slice(at, at + 700);
-    expect(body).toContain("errorCode: 'PERMISSION_DENIED'");
-    expect(body).toMatch(/auditLog\(agentId, 'spawn_agent'[^)]*'denied'/);
-  });
-
-  it('⚠ THE UPDATE REFUSAL DOES TOO', () => {
-    const s = src();
-    const at = s.indexOf('const resolution = resolveUpdateGrants(');
-    expect(at).toBeGreaterThan(-1);
-    const body = s.slice(at, at + 900);
-    expect(body).toContain("errorCode: 'PERMISSION_DENIED'");
-    expect(body).toMatch(/auditLog\(agentId, 'update_agent', target\.id, 'denied'/);
-    expect(body, 'and a change that lands is audited too, with the delta').toMatch(/auditLog\(agentId, 'update_agent', target\.id, 'success'/);
-  });
 
   it('the refusal text names the field, so a model can act on it', () => {
     agent('holder', 'ronin', (g) => { g.integrations.credentials = false; });

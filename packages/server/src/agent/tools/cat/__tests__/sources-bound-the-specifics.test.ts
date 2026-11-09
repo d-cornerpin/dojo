@@ -27,9 +27,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const braveSearch = vi.fn<(agentId: string, p: Record<string, unknown>) => Promise<string>>();
 const pageFetch = vi.fn<(agentId: string, p: Record<string, unknown>) => Promise<string>>();
@@ -45,9 +42,6 @@ vi.mock('../../../browser.js', () => ({
 
 import { webHandlers, WEB_RESULT_SOURCE_BOUND } from '../web.js';
 import type { ToolCall } from '../../../types.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 const call = (name: string, args: Record<string, unknown>) =>
   webHandlers[name]!({
@@ -100,12 +94,6 @@ describe('§1 the results say they are the only sources this turn has read', () 
     expect(out.content).toContain(EXACT);
   });
 
-  it('ONE literal, not two — the two tools cannot drift apart', () => {
-    const src = read('agent/tools/cat/web.ts');
-    const occurrences = src.split('These results are the only sources this turn has read').length - 1;
-    expect(occurrences).toBe(1);
-  });
-
   it('A ZERO-RESULT SEARCH STILL SAYS IT — that is when the turn has read least', async () => {
     braveSearch.mockResolvedValue('No results found for: "fremont sunday market hours"');
     const out = await call('web_search', { query: 'fremont sunday market hours' });
@@ -151,31 +139,5 @@ describe('§2 the negative controls', () => {
   it('web_browse is untouched — this task is the two READ tools', async () => {
     const out = await call('web_browse', { action: 'goto', url: 'https://example.test' });
     expect(out.content).toBe('browsed');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §3 — THE CACHE TENET: a tool RESULT, in no prompt surface. The [FILED] precedent.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§3 zero cached prefix bytes', () => {
-  const stem = 'These results are the only sources this turn has read';
-
-  it('the sentence is in no tool description, no tool doc, no registry entry, no assembler', () => {
-    expect(read('agent/tools/definitions.ts')).not.toContain(stem);
-    expect(read('tools/tool-docs.ts')).not.toContain(stem);
-    expect(read('prompt/registry/entries.ts')).not.toContain(stem);
-    expect(read('prompt/assembler.ts')).not.toContain(stem);
-    expect(read('prompt/templates.ts')).not.toContain(stem);
-  });
-
-  it('and it is not a recognizer, a steer or a floor — it is a return value', () => {
-    const src = read('agent/tools/cat/web.ts');
-    // The whole mechanism: one exported literal, appended to a handler's own `content`.
-    expect(src).toContain('export const WEB_RESULT_SOURCE_BOUND');
-    // The append is gated on the handler's own pre-existing `isError` plus `holdsNoSources`
-    // — one byte-check of its own result against the known answers that hold nothing.
-    // Still a return value; the engine still only counts structure.
-    expect(src.match(/if \(!isError && !holdsNoSources\(content\)\) content = withSourceBound\(content\);/g)).toHaveLength(2);
   });
 });

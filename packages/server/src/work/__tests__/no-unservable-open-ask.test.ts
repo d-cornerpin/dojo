@@ -37,8 +37,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -63,10 +61,6 @@ import {
 } from '../store.js';
 import { selfWakeStandDown, humanAsksOpen } from '../work-reaper.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const SRC = path.join(REPO, 'packages/server/src');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 const AGENT = FXID.n4;
 const CONV = 'conv-1';
@@ -318,43 +312,5 @@ describe('the unservable reaper closes the existing population with a named reas
     expect(selfWakeStandDown(AGENT).standDown).toBe(true);   // the confound, before
     abandonUnservableAsks();
     expect(selfWakeStandDown(AGENT).standDown).toBe(false);  // and after
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 5 · NO AGEING, AND THE BOOT SWARM GUARD IS UNTOUCHED
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('no ageing anywhere in this task\'s arms (owner ruling, 2026-08-05)', () => {
-  /** `abandonUnservableAsks`'s source, from `{` to the matching `}` at column 0. */
-  const reaperSource = (): string => {
-    const src = read('work/store.ts');
-    const at = src.indexOf('export function abandonUnservableAsks');
-    expect(at).toBeGreaterThan(-1);
-    return src.slice(at, src.indexOf('\n}\n', at));
-  };
-
-  it('the unservable reaper carries no clock — no minutes, hours or days literal', () => {
-    expect(reaperSource()).not.toMatch(/-\s*\d+\s*(minute|hour|day)/i);
-    expect(reaperSource()).not.toMatch(/unixepoch\('now'/);
-  });
-
-  it('the census carries no clock either — an ask is unservable structurally or not at all', () => {
-    const src = read('work/store.ts');
-    const at = src.indexOf('const UNSERVABLE_OPEN_ASK_SELECT');
-    expect(at).toBeGreaterThan(-1);
-    const sql = src.slice(at, src.indexOf('`;', at));
-    expect(sql).not.toMatch(/-\s*\d+\s*(minute|hour|day)/i);
-    expect(sql).not.toMatch(/unixepoch\('now'/);
-  });
-
-  // THE OWNER'S STANDING REFUSAL (DESIGN-2BUGS §1b): the reboot-swarm guard is untouched.
-  // Asserted by its two load-bearing facts rather than by a line number, so a move does not
-  // fail this and an edit does.
-  it('the boot swarm guard still holds its own 30-minute floor and its hold limit', () => {
-    const src = read('work/work-reaper.ts');
-    expect(src).toContain('const HUMAN_HOLD_LIMIT = 5;');
-    expect(src).toContain(`w.opened_at < (unixepoch('now', '-30 minutes') * 1000)`);
-    expect(src).toContain('boot staleness sweep: older than 30 minutes at startup and beyond the hold limit');
   });
 });

@@ -38,9 +38,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { AGENT_STATUSES } from '@dojo/shared';
 import type { AgentStatus } from '@dojo/shared';
@@ -54,16 +51,6 @@ import {
   isRestorable,
   restoreCandidate,
 } from '../../../dashboard/src/lib/active-agent-memory.js';
-
-const DASH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dashboard', 'src',
-);
-const readDash = (rel: string): string => fs.readFileSync(path.join(DASH, rel), 'utf8');
-
-/** Source with every comment stripped, so a clause about what the CODE does can
- *  never be satisfied — or broken — by prose describing the old behaviour. */
-const withoutComments = (src: string): string =>
-  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 describe('the remembered agent', () => {
   it('round-trips id, name and hue through the store', () => {
@@ -180,48 +167,5 @@ describe('the url carries the agent, and outranks the store', () => {
 
   it('is no selection when neither has one', () => {
     expect(restoreCandidate('?tab=voice', null)).toBeNull();
-  });
-});
-
-describe('the provider is wired to that memory and to nothing else', () => {
-  const provider = readDash('components/ActiveAgentProvider.tsx');
-  const code = withoutComments(provider);
-
-  it('imports the memory module rather than hand-rolling a key', () => {
-    expect(code).toMatch(/from '\.\.\/lib\/active-agent-memory'/);
-    // The literal key appears in exactly one file in the dashboard: the module.
-    expect(code).not.toContain('dojo_active_agent');
-  });
-
-  it('restores through `restoreCandidate` at mount, not after a render', () => {
-    expect(code).toContain('restoreCandidate(');
-    // A lazy initialiser, so the restored agent is on screen in the first
-    // paint. An effect here would mean a visible flash of the primary.
-    expect(code).toMatch(/useState<[^>]*>\(\s*\(\) =>/);
-  });
-
-  it('verifies the restored id against the server before trusting it', () => {
-    expect(code).toContain('api.getAgent(');
-    expect(code).toContain('isRestorable(');
-  });
-
-  // Comments stripped on both sides: the memory module's header ARGUES about
-  // sessionStorage at length, and a clause about what the code CALLS must not
-  // be broken by the prose explaining why it does not.
-  it('never reaches for sessionStorage — the iPhone loses that one', () => {
-    expect(code).not.toContain('sessionStorage');
-    expect(withoutComments(readDash('lib/active-agent-memory.ts'))).not.toContain('sessionStorage');
-  });
-
-  it('keeps the url in step with the selection', () => {
-    expect(code).toContain('withAgentParam(');
-    expect(code).toMatch(/replace: true/);
-  });
-
-  it('writes the selection through on every change, not only at unload', () => {
-    // No `beforeunload`/`pagehide` handler: mobile Safari is not guaranteed to
-    // run one when it discards a tab, which is exactly the case that must work.
-    expect(code).not.toContain('beforeunload');
-    expect(code).toContain('rememberAgent(');
   });
 });

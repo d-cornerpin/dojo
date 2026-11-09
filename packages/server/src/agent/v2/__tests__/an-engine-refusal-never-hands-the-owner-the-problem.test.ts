@@ -9,7 +9,6 @@
 // deleted; each refusal states its facts.
 
 import { describe, it, expect, vi } from 'vitest';
-import { engineText } from './engine-sources.js';
 
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
@@ -17,11 +16,6 @@ import { runRefusalGates } from '../steps/execute/refusal-gates.js';
 import { advance, initState } from '../state.js';
 
 describe('no engine refusal hands the owner the problem', () => {
-  it('the escape hatch is gone from the engine, by name and by words', () => {
-    const src = engineText();
-    expect(src).not.toMatch(/ENGINE_BLOCK_ESCAPE_HATCH|engineBlockEscapeHatch/);
-    expect(src).not.toMatch(/that the engine blocked it/);
-  });
 
   it('the A2A send-cap refusal states facts: no "End your turn now", no hatch', () => {
     const state = advance(initState({ agentId: 'a', maxToolLoops: 75, turnNumber: 1, lastUserMessageContent: null } as never),

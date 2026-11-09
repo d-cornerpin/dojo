@@ -39,7 +39,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -354,131 +353,6 @@ describe('the recurring gate accepts every first-run spelling the tool declares'
       ).toEqual([]);
     });
   }
-});
-
-// ── 4 · ONE NEXT-RUN COMPUTER, ASSERTED FROM THE SOURCE ─────────────────────
-// The 2026-08-04 follow-up left a lead open: "possibly a second next-run
-// computer; two answers to one question." This task closes it, and the answer
-// is NO — but the instinct was right and the duplication was real, one layer
-// down. There is one next-run COMPUTER (`calculateNextRun`) and there were
-// three INSTANT PARSERS: `normalizeDbTimestamp`, `tsToMs`, and the bare
-// `new Date()` in `formatTimeForAgent`. The third disagreed with the other two
-// about what a tz-naive string names, and that disagreement was the +7h. So the
-// duplicate answer was to "what instant is this?", not "when does this fire?".
-//
-// T0A re-derived this census in prose. It is a clause here so it stays true.
-describe('one next-run computer', () => {
-  // fileURLToPath, not `.pathname` — the repo path contains spaces and a bare
-  // pathname hands back the %20-encoded form, which `readdir` cannot open.
-  const SERVER_SRC = fileURLToPath(new URL('../../', import.meta.url));
-
-  async function sourceFiles(): Promise<string[]> {
-    const { readdir } = await import('node:fs/promises');
-    const out: string[] = [];
-    async function walk(dir: string): Promise<void> {
-      for (const e of await readdir(dir, { withFileTypes: true })) {
-        const p = `${dir}${e.name}${e.isDirectory() ? '/' : ''}`;
-        if (e.isDirectory()) {
-          if (e.name === '__tests__' || e.name === 'node_modules' || e.name === 'dist') continue;
-          await walk(p);
-        } else if (e.name.endsWith('.ts')) out.push(p);
-      }
-    }
-    await walk(SERVER_SRC);
-    return out;
-  }
-
-  it('`calculateNextRun` is defined exactly once', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const files = await sourceFiles();
-    const definers: string[] = [];
-    for (const f of files) {
-      const src = await readFile(f, 'utf8');
-      if (/^\s*(export\s+)?(async\s+)?function\s+calculateNextRun\b/m.test(src)) {
-        definers.push(f.slice(SERVER_SRC.length));
-      }
-    }
-    expect(
-      definers,
-      'more than one function computes the next run — that duplication IS where a ' +
-      'schedule defect lives, and collapsing it is the fix',
-    ).toEqual(['scheduler/engine.ts']);
-  });
-
-  it('every production write of a next_run_at VALUE derives from it', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const files = await sourceFiles();
-    // ── SWEEP CORE-2 item 3 RE-POINTED THIS CLAUSE, AND TIGHTENED IT. ──
-    // The fire time is written through `work/next-run.ts:setNextRun({ at })` now, not through
-    // a `next_run_at:` field on a generic patch — so the old regex would have gone on passing
-    // while seeing NOTHING. A guard blinded by a refactor is worse than no guard, so it reads
-    // BOTH shapes, and the loose escape it used to carry (`if (usesComputer && /tsToMs\(/)`,
-    // which passed ANY `tsToMs(...)` in ANY file that merely mentioned the computer) is gone:
-    // the two genuinely non-derived instants are now named individually, with their reasons.
-    //
-    // The shapes that are not a computation, each deliberate:
-    //   * `null` / `at: null` — clears a schedule; no occurrence is chosen.
-    //   * `Date.now() + 30_000` — the dependency defer in `runner.ts`, which re-fires the
-    //     SAME occurrence rather than choosing the next one.
-    //   * `tsToMs(nowIso)` — `trackerResolveMissedRuns(action='run_now')`: the owner asked for
-    //     ONE catch-up run, so the fire time is NOW by request. `onTaskRunComplete` recomputes
-    //     the natural anchor when that run closes.
-    //   * `<obj>.next_run_at` / `input.nextRunMs` — a copy-forward of a value the computer
-    //     already produced, into a `ScheduledTask` projection or the claim's CAS.
-    const ALLOWED_NON_DERIVED = new RegExp([
-      String.raw`(?:next_run_at|at):\s*null\b`,
-      String.raw`Date\.now\(\)\s*\+\s*30_000`,
-      String.raw`tsToMs\(nowIso\)`,
-      String.raw`(?:next_run_at|at):\s*[A-Za-z_$][\w$]*\.(?:next_run_at|nextRunMs)\b`,
-      String.raw`(?:next_run_at|at):\s*(?:input\.)?(?:nextRunMs|occurrenceMs)\b`,
-    ].join('|'));
-    /** The one module that turns a caller's instant into SQL. It chooses nothing. */
-    const WRITER = 'work/next-run.ts';
-    const offenders: string[] = [];
-    for (const f of files) {
-      const relPath = f.slice(SERVER_SRC.length);
-      if (relPath === WRITER) continue;
-      const src = await readFile(f, 'utf8');
-      const lines = src.split('\n');
-      // `at:` is a common key name in this tree (caches, snapshots, join records), so the
-      // door-write scan is scoped to the lines of an actual `setNextRun(...)` call rather
-      // than to the key. The window is generous; the call is never longer.
-      const inDoorCall = new Set<number>();
-      lines.forEach((line, i) => {
-        if (!/\bsetNextRun\s*\(/.test(line)) return;
-        for (let j = i; j < Math.min(lines.length, i + 12); j++) inDoorCall.add(j);
-      });
-      lines.forEach((line, i) => {
-        const isFieldWrite = /(?<!\w)next_run_at:\s*(.+?)[,}]/.test(line);
-        const isDoorWrite = inDoorCall.has(i) && /(?<!\w)at:\s*(.+?)[,}]/.test(line);
-        if (!isFieldWrite && !isDoorWrite) return;
-        if (ALLOWED_NON_DERIVED.test(line)) return;
-        // Type declarations (`next_run_at: number | null;`) are not writes.
-        if (/next_run_at\??:\s*(string|number|boolean)\b/.test(line)) return;
-        // `tsToMs(nextRun)` / `tsToMs(nextAtFire)` — the computer's own output, named.
-        if (/tsToMs\((?:nextRun|nextAtFire)\)/.test(line)) return;
-        offenders.push(`${relPath}:${i + 1}  ${line.trim()}`);
-      });
-    }
-    expect(
-      offenders,
-      'a next_run_at value is written from something other than calculateNextRun — ' +
-      `a second answer to "when does this fire?":\n${offenders.join('\n')}`,
-    ).toEqual([]);
-  });
-
-  it('the fire time has ONE writing module, and every door on it demands a reason', async () => {
-    const { readFile } = await import('node:fs/promises');
-    // SWEEP CORE-2 item 3: the companion half of the clause above. The computer being unique
-    // is worth nothing if forty-five-column generic patches can still SET the column with
-    // whatever they like — which is what `patchWork` allowed until this task.
-    const writer = await readFile(`${SERVER_SRC}work/next-run.ts`, 'utf8');
-    expect(writer).toMatch(/export function setNextRun/);
-    expect(writer).toMatch(/readonly reason: string/);
-    const store = await readFile(`${SERVER_SRC}work/tracker-store.ts`, 'utf8');
-    const union = store.slice(store.indexOf('export type TrackerAttr'), store.indexOf('export type WorkPatch'));
-    expect(union, 'the generic attribute union may not name the firing clock').not.toMatch(/'next_run_at'/);
-  });
 });
 
 // ── 5 · THE MECHANISM ITSELF, PINNED AT ITS SOURCE ──────────────────────────

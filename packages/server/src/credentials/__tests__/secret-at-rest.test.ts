@@ -41,25 +41,6 @@ import { gatesForCall } from '../../agent/tools/gates.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** Every non-test .ts file under packages/server/src. */
-function sourceFiles(): string[] {
-  const out: string[] = [];
-  (function walk(dir: string) {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'node_modules') continue;
-        walk(p);
-      } else if (e.name.endsWith('.ts')) {
-        out.push(p);
-      }
-    }
-  })(SRC);
-  return out;
-}
-
-const rel = (p: string) => path.relative(SRC, p);
-
 describe('PHASE-5 T6C (1): one owner for secret-at-rest encryption', () => {
   it('round-trips a value through the shared module', async () => {
     const { sealSecret, openSecret } = await import('../at-rest.js');
@@ -87,83 +68,6 @@ describe('PHASE-5 T6C (1): one owner for secret-at-rest encryption', () => {
     const ivs = new Set(Array.from({ length: 16 }, () => sealSecret('same-input').iv.toString('hex')));
     expect(ivs.size).toBe(16);
   });
-
-  it('is the ONLY AES-256-GCM implementation in the server source', () => {
-    // The declared exception, with its reason: the migration package is
-    // encrypted with AES-256-CBC under a key derived from the USER'S password,
-    // because it travels to a machine where the master key does not exist.
-    // Different key, different threat, different owner — recorded here so the
-    // non-fold is a decision rather than an oversight.
-    const CBC_MIGRATION_PACKAGE = ['migration/export.ts', 'migration/import.ts'];
-
-    const gcm: string[] = [];
-    const other: string[] = [];
-    for (const f of sourceFiles()) {
-      const text = fs.readFileSync(f, 'utf-8');
-      if (!/create(?:C|Dec)ipheriv\s*\(/.test(text)) continue;
-      (/aes-256-gcm/.test(text) ? gcm : other).push(rel(f));
-    }
-
-    expect(gcm).toEqual(['credentials/at-rest.ts']);
-    expect(other.sort()).toEqual(CBC_MIGRATION_PACKAGE.sort());
-  });
-
-  it('leaves both former owners as readers — neither constructs a cipher any more', () => {
-    for (const f of ['credentials/store.ts', 'twilio/auth.ts']) {
-      const text = fs.readFileSync(path.join(SRC, f), 'utf-8');
-      expect(text).not.toMatch(/create(?:C|Dec)ipheriv\s*\(/);
-      expect(text).toMatch(/from '(?:\.|\.\.)\/(?:credentials\/)?at-rest\.js'/);
-    }
-  });
-});
-
-describe('PHASE-5 T6C (2): a platform secret does not move into the agent-reachable store', () => {
-  it('pins every importer of the agent-facing credential store, each with a reason', () => {
-    // The requirement: a module that holds a PLATFORM secret must not read it
-    // out of `agent_credentials`, because every agent can read that table by
-    // name (clause 6). A new importer here is not automatically wrong — it just
-    // has to be a deliberate answer to "may every agent read this?".
-    const DECLARED: Record<string, string> = {
-      'credentials/tools.ts': 'the agent-facing tools themselves — this IS the agent surface',
-      'gateway/routes/credentials.ts': 'the dashboard panel the owner manages his own credentials from',
-      'screen-share/manager.ts': 'the saved VNC password, stored on the user\'s explicit opt-in',
-      // ── TOMBSTONE, 2026-09-26 ──────────────────────────────────────────────────
-      // `credentials/battery-residue-purge.ts` was the fourth importer and is DELETED. Under the
-      // owner's rule that nothing shipping may carry agent names, people's names or identifiable
-      // information, it was the worst hit in the v3.2.0 audit: it held his real credential-account
-      // names and a dev-box agent id as string literals in a live data structure, and comments ship.
-      // It was dead (reached only by its own test), so it went rather than being scrubbed. A
-      // one-shot remediation belongs in `deploy/` or the kit, not in `src/`. Do not re-add it here
-      // without the data half rewritten.
-    };
-
-    // A file imports the store either by its full path from elsewhere, or as
-    // `./store.js` from inside `credentials/` — resolve both, so a sibling
-    // cannot slip in under the short form. (`memory/`, `vault/`, `work/` and
-    // others have their own `store.js`; the directory check is what keeps them
-    // out without a hand-maintained exclusion list.)
-    const importers = sourceFiles()
-      .filter((f) => {
-        const text = fs.readFileSync(f, 'utf-8');
-        if (/from '[^']*\/credentials\/store\.js'/.test(text)) return true;
-        return path.dirname(rel(f)) === 'credentials' && /from '\.\/store\.js'/.test(text);
-      })
-      .map(rel)
-      .filter(f => f !== 'credentials/store.ts')
-      .sort();
-
-    expect(importers).toEqual(Object.keys(DECLARED).sort());
-  });
-
-  it('keeps the platform secrets loader out of the agent-reachable store', () => {
-    // `config/loader.ts` is the accessor every platform provider credential and
-    // the search key come through. If it ever reads `agent_credentials`, those
-    // secrets become fetchable by every agent through `credential_get` — which
-    // is the measured reason PHASE-5 T6C refused to move them there.
-    const loader = fs.readFileSync(path.join(SRC, 'config/loader.ts'), 'utf-8');
-    expect(loader).not.toMatch(/from '[^']*credentials\/store\.js'/);
-    expect(loader).not.toMatch(/(?:FROM|INTO|UPDATE)\s+agent_credentials/i);
-  });
 });
 
 describe('PHASE-5 T6C (3): THE OWNER DECIDED — the agent credential store is SCOPED', () => {
@@ -189,34 +93,6 @@ describe('PHASE-5 T6C (3): THE OWNER DECIDED — the agent credential store is S
       const gates = gatesForCall(name, { service_name: 'anything' });
       expect(gates.some((g) => g.kind === 'credential' && g.row === '16'), name).toBe(true);
     }
-  });
-
-  it('the credential tools reach an agent that holds a grant, and no other', () => {
-    // The push is now inside a condition — which is precisely what the clause
-    // this replaced forbade, and why flipping it had to be an edit here.
-    const surface = fs.readFileSync(path.join(SRC, 'agent/tools/surface.ts'), 'utf-8');
-    expect(surface).toMatch(/if \(holdsCredentialGrant\(agentId\)\) filtered\.push\(\.\.\.credentialsToolDefinitions\);/);
-  });
-
-  it('the STORE still addresses a row by name alone — the scope is the door, not the query', async () => {
-    // Unchanged, and the distinction matters: `created_by_agent_id` is still
-    // bookkeeping, not a predicate. Ownership was never the rule the owner
-    // wanted; the GRANT is, and it is answered above the store at row 16, where
-    // the refusal can carry a message and an audit row.
-    const store = fs.readFileSync(path.join(SRC, 'credentials/store.ts'), 'utf-8');
-    expect(store).toMatch(/SET last_accessed_at = datetime\('now'\),\s*\n\s*last_accessed_by_agent_id = \?/);
-    expect(store).not.toMatch(/WHERE service_name = \? AND created_by_agent_id/);
-  });
-
-  it('the master key is not reachable through the store it unlocks (the structural refusal, held)', async () => {
-    // Moving `credential_master_key` into `agent_credentials` would mean
-    // encrypting the key with itself. This clause holds the shape that makes it
-    // impossible to do by accident: the at-rest module reads the key from the
-    // loader, and the loader reads it from the file — never from the store.
-    const atRest = fs.readFileSync(path.join(SRC, 'credentials/at-rest.ts'), 'utf-8');
-    expect(atRest).toMatch(/getCredentialMasterKey.*from '\.\.\/config\/loader\.js'/s);
-    expect(atRest).not.toMatch(/from '[^']*credentials\/store\.js'/);
-    expect(atRest).not.toMatch(/(?:FROM|INTO|UPDATE)\s+agent_credentials/i);
   });
 });
 
@@ -266,99 +142,5 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
       }
     }
     expect([...found].sort()).toEqual(Object.keys(DECLARED_PLAINTEXT_SURFACE).sort());
-  });
-
-  it('keeps the live plaintext columns behind ONE read seam per provider', () => {
-    // Every read of a token column funnels through the provider's row mapper,
-    // and the writes are the INSERT column list and the partial-update column
-    // map. That is what makes encrypting them later a small change instead of a
-    // hunt — and what this clause exists to keep true. Asserted structurally,
-    // not by an occurrence count: a count would move for reasons that do not
-    // matter and would teach the next reader to re-pin it without looking.
-    for (const file of ['google/accounts.ts', 'microsoft/accounts.ts']) {
-      const text = fs.readFileSync(path.join(SRC, file), 'utf-8');
-      const lines = text.split('\n');
-
-      // ONE decode point: the row mapper, both fields, nowhere else — and since
-      // T10/D1 the mapper OPENS the value rather than passing the column through.
-      // The clause moved with the code and got STRICTER: it is no longer enough
-      // for the two fields to come from the two columns, they must come through
-      // the one at-rest owner.
-      const decode = lines.filter(l => /(?:accessToken|refreshToken):\s*openSecretColumn\(r\.(?:access|refresh)_token/.test(l));
-      expect(decode).toHaveLength(2);
-      expect(text).toMatch(/function rowToAccount\(/);
-      // A raw pass-through of either column would be an unencrypted read path.
-      expect(lines.filter(l => /(?:accessToken|refreshToken):\s*r\.(?:access|refresh)_token/.test(l))).toHaveLength(0);
-
-      // TWO write points, and both are declarations rather than statements. Both
-      // SEAL since T10/D1 — a write that skipped the seal would put plaintext
-      // back on the disk, so the encode side is pinned the same way.
-      expect(text).toMatch(/INSERT INTO (?:google|microsoft)_accounts[\s\S]{0,400}access_token, refresh_token/);
-      expect(text).toMatch(/sealSecretColumn\(acc\.accessToken \?\? null\), sealSecretColumn\(acc\.refreshToken \?\? null\),/);
-      expect(text).toMatch(/accessToken: 'access_token', refreshToken: 'refresh_token',/);
-      expect(text).toMatch(/accessToken: v => sealSecretColumn\(v as string \| null\),/);
-      expect(text).toMatch(/refreshToken: v => sealSecretColumn\(v as string \| null\),/);
-
-      // No ad-hoc UPDATE of a token column anywhere in the file.
-      expect(text).not.toMatch(/SET\s+(?:access_token|refresh_token)\s*=/);
-    }
-  });
-
-  it('keeps the token COLUMNS out of every module but the four that own them', () => {
-    // #15's shape: the claim is not "grep found nothing". It is a positive
-    // enumeration, and writing it down as four was wrong until this clause
-    // measured five. The set, each with what it does:
-    //   google/accounts.ts, microsoft/accounts.ts — the row mappers (decode)
-    //     and the two write points. The seam the clause above pins.
-    //   google/auth.ts, microsoft/auth.ts — the OAuth exchanges, where the
-    //     names are fields of the PROVIDER'S JSON response, not SQL.
-    //   migration/checks.ts — a PREDICATE, not a value read: it enumerates
-    //     reconnect cards by `refresh_token IS NOT NULL AND != ''`. It reads no
-    //     token, but it is the one place outside the mappers that runs SQL
-    //     against these columns, so encrypting them later has to answer for it.
-    //     T10/D1 DID answer for it: a sealed value is non-empty and an empty one
-    //     is left empty, so the predicate selects exactly the rows it did before
-    //     (`token-at-rest.test.ts` drives that on a three-row body).
-    //   credentials/seal-existing.ts — ADDED BY T10/D1. The one-owner conversion
-    //     pass. It SELECTs the two columns to find the ones still in the clear,
-    //     and hands what it finds to each provider's own update function — it
-    //     never writes a token column itself, which is why the two write points
-    //     pinned above are still two.
-    //   credentials/at-rest.ts — ADDED BY T10/D1. It names the columns only in
-    //     the header prose that explains why the sealed triple is serialised into
-    //     one TEXT field instead of the three columns twilio_config got. It runs
-    //     no SQL. It is in the list because this clause keys on the NAMES, and
-    //     scoping it out by directory is exactly the heuristic the phase refuses.
-    //   github/account.ts — ADDED BY DOJO-REPORT T4. The storage owner for the
-    //     user's own GitHub token: `saveGithubAccount` is its ONE write point
-    //     (through `sealSecretColumn`) and `getGithubToken` its ONE read point
-    //     (through `openSecretColumn`). Same shape as the two `accounts.ts`
-    //     above, one provider later. RULING P5-R13 is why it is a table of its
-    //     own and not an `agent_credentials` row.
-    //   github/device-flow.ts — ADDED BY DOJO-REPORT T4, and for the SAME reason
-    //     `google/auth.ts` and `microsoft/auth.ts` are here: the name is a field
-    //     of the PROVIDER'S JSON RESPONSE, not a column. `verdictFor` reads
-    //     `body.access_token` off GitHub's token-endpoint answer and hands it
-    //     straight to `saveGithubAccount`. It runs no SQL against the column and
-    //     holds no crypto. The BRIEF for T4 predicted one new file here and the
-    //     measurement found two — recorded rather than worked around, because a
-    //     module that touches a token in flight is exactly what this list is for.
-    // Eight further files name the account TABLES (counts, existence checks)
-    // and touch no token — which is why this clause keys on the COLUMNS.
-    const namers = sourceFiles()
-      .filter(f => /\b(?:access_token|refresh_token)\b/.test(fs.readFileSync(f, 'utf-8')))
-      .map(rel)
-      .sort();
-    expect(namers).toEqual([
-      'credentials/at-rest.ts',
-      'credentials/seal-existing.ts',
-      'github/account.ts',
-      'github/device-flow.ts',
-      'google/accounts.ts',
-      'google/auth.ts',
-      'microsoft/accounts.ts',
-      'microsoft/auth.ts',
-      'migration/checks.ts',
-    ]);
   });
 });

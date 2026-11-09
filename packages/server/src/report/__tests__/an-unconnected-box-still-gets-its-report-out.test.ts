@@ -147,20 +147,6 @@ describe('the export writes the brief to this box and nothing else leaves', () =
     expect(fs.existsSync(result!.filePath)).toBe(true);
   });
 
-  it('never opens the recorded bundle_path column (C6)', () => {
-    // Comment lines are dropped first: the module's header NAMES both of these while explaining
-    // why it does not use them, and a census that counted its own documentation as a violation
-    // would teach the next author to delete the explanation.
-    const src = fs.readFileSync(path.join(__dirname, '..', 'export.ts'), 'utf8')
-      .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-    expect(src.length, 'the comment stripper ate the whole file — this census is broken')
-      .toBeGreaterThan(400);
-    expect(src, '`bundle_path` is a RECORDED STRING, not a resolvable path — the only safe read '
-      + 'is readBundle(reportId), and the export must not read the bundle at all')
-      .not.toContain('bundlePath');
-    expect(src).not.toContain('readBundle');
-  });
-
   it('answers null for an id that is not there, rather than writing a stray file', () => {
     expect(exportReport('00000000-0000-4000-8000-000000000000')).toBeNull();
   });

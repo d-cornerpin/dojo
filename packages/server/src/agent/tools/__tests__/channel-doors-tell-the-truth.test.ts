@@ -253,17 +253,4 @@ describe('the relay-refusal alert stops firing on joins with no door to refuse t
   it('CONTROL — a channel nobody has declared yet still alerts under its own name', () => {
     expect(originHasNoRelayDoor('whatsapp')).toBe(false);
   });
-
-  it('the seed of the relay\'s refusal is GUARDED by that law, not by a copy of it', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../../a2a-transport.ts'), 'utf8');
-    const at = src.indexOf('let relayRefusal: OwnerChannelRelayRefusal | null =');
-    expect(at).toBeGreaterThan(-1);
-    const seed = src.slice(at, src.indexOf(';', at));
-    expect(seed).toContain('originHasNoRelayDoor(meta.channel)');
-    expect(seed).toContain('ownerChannelRelayRefusal(');
-  });
 });

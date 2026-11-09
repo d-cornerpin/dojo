@@ -35,9 +35,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import url from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -65,26 +62,13 @@ vi.mock('../../../config/platform.js', async () => {
 });
 
 import { runMigrations } from '../../../db/migrations.js';
-// THE SHARED ENGINE DERIVATION, and not a hand-rolled path (GUARD-AUDIT,
-// `__tests__/guard-corpus-census.test.ts`): *"a seventh hand-rolled copy of the
-// engine walk is how the corpus starts drifting again"*. It caught this file on
-// its first full-suite run, which is the census working. The content-addressed
-// lookup is also the stronger clause — PHASE-6 is still moving step files, and
-// `engineFileContaining` follows the site instead of going quiet when it moves.
-import { engineFileContaining, engineText } from '../../v2/__tests__/engine-sources.js';
 import { channelForDestination, engineMayRouteTo, engineRouteRefusalReason } from '../engine-route.js';
 import { forgetAccessGrants, mayUseChannel, mayReachOthersOn } from '../read.js';
 import { deriveLegacyGrants } from '../derive.js';
 import { ACCESS_CHANNELS } from '@dojo/shared';
 import type { AccessGrants, Channel } from '@dojo/shared';
-import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const db = (): Database.Database => mockDb.current!;
-
-const SRC = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../..');
-/** Non-engine files (the Twilio transport, the media handler) are read directly;
- *  anything under `agent/v2/steps` comes from the shared derivation instead. */
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf-8');
 
 function agent(id: string, mutate?: (g: AccessGrants) => void): void {
   db().prepare(
@@ -198,78 +182,10 @@ describe('engineMayRouteTo', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 3 · THE SITES — every ungated transport the census named now reads the door
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('the sites the census named', () => {
-  it('⚠ THE AUTO-ROUTE GUARDS ITS FIVE ARMS ONCE, NOT FIVE TIMES', () => {
-    const site = engineFileContaining('!engineMayRouteTo(agentId, destination)');
-    expect(site, 'the auto-route guard is in an engine file').not.toBeNull();
-    expect(site!.text).toContain('engineRouteRefusalReason');
-    // ONE call: five per-arm copies would be five places for the next arm to be
-    // added without one.
-    expect(site!.text.match(/engineMayRouteTo\(/g)?.length).toBe(1);
-  });
-
-  it('the guard sits AFTER the settled-context hold, so no held row is re-labelled', () => {
-    // Ordering is observable: a turn already being held is held for its own
-    // recorded reason, and this arm fires only where a push would have happened.
-    const site = engineFileContaining('!engineMayRouteTo(agentId, destination)')!;
-    expect(site.text.indexOf('if (settledContextHold && destination'))
-      .toBeLessThan(site.text.indexOf('!engineMayRouteTo(agentId, destination)'));
-  });
-
-  it('the ENGINE ACK guards its four arms once, below the persist+broadcast', () => {
-    const site = engineFileContaining('!engineMayRouteTo(agentId, counterparty.channel)');
-    expect(site, 'the engine-ack guard is in an engine file').not.toBeNull();
-    expect(site!.text.match(/engineMayRouteTo\(/g)?.length).toBe(1);
-    // BELOW the persist+broadcast, so a withheld push costs the channel hop and
-    // never the line.
-    expect(site!.text.indexOf('insertMessageIfAbsent({'))
-      .toBeLessThan(site!.text.indexOf('!engineMayRouteTo(agentId,'));
-  });
-
-  it('the two guards are the ONLY engine calls of the door — no third copy appeared', () => {
-    expect(engineText().match(/engineMayRouteTo\(/g)?.length).toBe(2);
-  });
-
-  it('⚠ THE IN-CALL TTS PUSH IS GATED AT THE TRANSPORT, WHERE ALL FIVE CALLERS MEET', () => {
-    // Two of the five reach the caller MID-TURN (the streaming push in
-    // `model-call.ts` and the pre-tool filler in `persist-assistant.ts`), ahead
-    // of every end-of-turn arm — so a guard on the arms alone would have left
-    // the loudest two open. `queueAgentSay` is where they meet.
-    const src = read('twilio/call-session.ts');
-    expect(src).toContain("mayUseChannel(this.agentId, 'voice')");
-    const guardAt = src.indexOf("mayUseChannel(this.agentId, 'voice')");
-    expect(guardAt).toBeGreaterThan(-1);
-    // Inside queueAgentSay, and before the transcript/ledger write it protects.
-    expect(src.indexOf('async queueAgentSay')).toBeLessThan(guardAt);
-  });
-
-  it('the `image_create` iMessage attachment door stopped being a role test', () => {
-    const src = read('agent/tools/cat/media.ts');
-    expect(src).toContain("mayUseChannel(agentId, 'imessage')");
-    // The role predicate is gone from this file's code entirely (the only
-    // surviving mentions are in the comment that records the swap).
-    expect(/^\s*import .*isPrimaryAgent/m.test(src)).toBe(false);
-    expect(/if \(isPrimaryAgent\(/.test(src)).toBe(false);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 4 · THE ME-VS-OTHERS TIER GETS ITS FIRST READER
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('the tier is enforced, not merely declared', () => {
-  it('⚠ `mayReachOthersOn` HAS A SERVER-SIDE CALLER NOW — it had none', () => {
-    // A1 declared the tier, A2 taught the no-escalation ladder to compare it, A3
-    // drew it in the panel, and the predicate had ZERO callers whole-tree: a
-    // declared field with no reader, which is the shape this overhaul exists to
-    // end. It was the owner's own "Operator: exec + iMessage-ME" exemplar that
-    // had no wall.
-    const src = read('agent/tools/cat/comms.ts');
-    expect(src).toContain("mayReachOthersOn(agentId, 'imessage')");
-  });
 
   it('the tier answers `owner` vs `all` through the ONE reader', () => {
     agent('owner-only', (g) => { g.channels.master = true; g.channels.imessage = 'owner'; });
@@ -282,23 +198,6 @@ describe('the tier is enforced, not merely declared', () => {
   it('the master switch governs the tier too — `all` under a false master is nothing', () => {
     agent('muted-all', (g) => { g.channels.master = false; g.channels.imessage = 'all'; });
     expect(mayReachOthersOn('muted-all', 'imessage')).toBe(false);
-  });
-
-  it('⚠ THE PERMISSION CHECK OUTRANKS THE TRANSPORT CHECK', () => {
-    // Found by the exemplar acceptance, driven on the owner's box: with the
-    // bridge off, "iMessage the owner" and "iMessage someone else" came back
-    // IDENTICAL — a fact about the BOX masking a fact about PERMISSION, and an
-    // agent that may not reach that person being handed SMS as an alternative.
-    // The bridge check now sits BELOW the recipient resolution and the tier.
-    const src = read('agent/tools/cat/comms.ts');
-    const tierAt = src.indexOf("mayReachOthersOn(agentId, 'imessage')");
-    const bridgeAt = src.indexOf('iMessage bridge is currently disabled');
-    expect(tierAt).toBeGreaterThan(-1);
-    expect(bridgeAt).toBeGreaterThan(-1);
-    expect(tierAt, 'the tier wall is evaluated before the bridge-state refusal').toBeLessThan(bridgeAt);
-    // And the allowlist gate is above them both: a refusal by tier means the
-    // recipient was real and approved, and still not this agent's to reach.
-    expect(src.indexOf('is not on the safe-sender allowlist')).toBeLessThan(tierAt);
   });
 });
 

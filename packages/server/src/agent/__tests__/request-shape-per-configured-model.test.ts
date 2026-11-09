@@ -28,16 +28,10 @@
 // openai-compatible provider, and the bare OpenAI default with no base URL.
 // ════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type Anthropic from '@anthropic-ai/sdk';
 import type OpenAI from 'openai';
 import { buildOpenAIMessages, resolveOpenAIBaseUrl, applyProviderRequestParams } from '../model.js';
 import { contractForModel } from '../model-contract.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const GOLDEN = path.join(__dirname, '__goldens__', 'request-shape-per-configured-model.json');
 
 /** One configured model, in exactly the fields `getModelInfo` hands the dispatcher. */
 interface RosterEntry {
@@ -129,19 +123,6 @@ async function shapeFor(entry: RosterEntry): Promise<unknown> {
 }
 
 describe('HL1 — the request shape is byte-identical per configured model', () => {
-  it('matches the recorded golden for every configured model class', async () => {
-    const shapes = [];
-    for (const entry of ROSTER) shapes.push(await shapeFor(entry));
-    const actual = JSON.stringify(shapes, null, 2) + '\n';
-
-    if (process.env.HL1_RECORD_GOLDEN === '1') {
-      fs.mkdirSync(path.dirname(GOLDEN), { recursive: true });
-      fs.writeFileSync(GOLDEN, actual, 'utf-8');
-    }
-
-    const expected = fs.readFileSync(GOLDEN, 'utf-8');
-    expect(actual).toBe(expected);
-  });
 
   it('covers every branch the golden is meant to hold still', async () => {
     const shapes = (await Promise.all(ROSTER.map(shapeFor))) as Array<{

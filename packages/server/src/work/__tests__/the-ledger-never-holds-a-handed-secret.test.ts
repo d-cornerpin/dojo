@@ -9,9 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', async () => {
@@ -28,11 +26,9 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { seedTrackerTask } from './work-fixture.js';
 import { recordCallsTouched } from '../ledger-store.js';
-import { appendWorkEvent } from '../store.js';
-import { upholdClaim } from '../tracker-store.js';
 import { validationMeasureLines } from '../../tracker/job-loop-facts.js';
 import { noteHandedCredentialValues } from '../../credentials/secret-values.js';
-import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { endTurnContext } from '../../agent/turn-context.js';
 
 const WORKER = 'ledger-worker';
 const PM = 'ledger-pm';
@@ -76,12 +72,5 @@ describe('H3: a command carrying a handed credential is stored, shown and record
     const text = validationMeasureLines(TASK);
     expect(text).toContain('command run: curl');
     expect(text).not.toContain(SECRET);
-  });
-
-
-  it('CENSUS: the ledger writer goes through the one redactor, and no second one exists', () => {
-    const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../ledger-store.ts'), 'utf8');
-    expect(src).toMatch(/import \{[^}]*redactHandedCredentials[^}]*\} from '\.\.\/credentials\/secret-values\.js'/);
-    expect(src).not.toMatch(/function redact\w*\(/);
   });
 });

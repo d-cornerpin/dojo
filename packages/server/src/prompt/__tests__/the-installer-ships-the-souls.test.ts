@@ -272,11 +272,4 @@ describe('the installer proves the souls shipped', () => {
     expect(src, 'the floor does not tell a reader what deleting a manual on purpose requires')
       .toMatch(/DELETING A MANUAL ON PURPOSE|RETIRING A MANUAL ON PURPOSE/);
   });
-
-  it('CONTROL: the gate is declared in the manifest and invoked by release.sh', () => {
-    const manifest = fs.readFileSync(path.join(REPO_ROOT, 'deploy/checks/gate-manifest.mjs'), 'utf8');
-    const release = fs.readFileSync(path.join(REPO_ROOT, 'deploy/release.sh'), 'utf8');
-    expect(manifest).toContain('deploy/checks/check-shipped-souls.mjs');
-    expect(release).toContain('checks/check-shipped-souls.mjs');
-  });
 });

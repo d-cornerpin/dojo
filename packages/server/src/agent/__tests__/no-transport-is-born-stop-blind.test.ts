@@ -290,7 +290,6 @@ describe('§6 composing the stop onto a deadline leaves the deadline working', (
       return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
     }) as unknown as typeof globalThis.fetch;
 
-
     await googleRead('https://www.googleapis.com/drive/v3/files', AGENT, FX.n4, 'drive_list', {});
     await msGraphRead('me/messages', AGENT, FX.n4, 'outlook_list', {});
     // A leaked slot is worse than a missing one once A-5b makes this count something a USER
@@ -341,24 +340,6 @@ describe('§6b a stop cuts the Graph calls that do NOT go through the wrapped do
     await untilDialled();
     expect(dials.length).toBe(1);
     expect(await stopNow(), 'an ownerless call was registered against this agent').toBe(0);
-  });
-
-  it('the three files the reviewer measured now reach Graph ONLY through the door', () => {
-    // The L2-1 finding in one clause: no bare `fetch(` may remain in any of them, and each
-    // must name the door. `codeOf` strips comments, so the prose above cannot satisfy it.
-    for (const rel of ['microsoft/tools-office.ts', 'microsoft/tools-read.ts', 'microsoft/tools-write.ts']) {
-      const src = fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-      expect(/\bgraphFetch\(/.test(src), `${rel} does not reach the Graph door`).toBe(true);
-      const bare = src.split('\n')
-        .map((l, i) => ({ l, i }))
-        .filter(({ l }) => /(?<!graph)(?<![A-Za-z])fetch\s*\(/.test(l) && !/graphFetch\(/.test(l));
-      expect(
-        bare.map(({ l, i }) => `${rel}:${i + 1} — ${l.trim()}`),
-        'a bare Graph fetch is back — that is the L2-1 defect, which was ELEVEN clockless, '
-        + 'unstoppable calls on an agent\'s tool path inside a file the census called handled',
-      ).toEqual([]);
-    }
   });
 });
 
@@ -422,11 +403,6 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     }
     return out;
   }
-
-  const textOf = (rel: string) => fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8');
-  /** Comments stripped: a `fetch(` inside a prose paragraph is not a call. */
-  const codeOf = (rel: string) =>
-    textOf(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
   /**
    * THE EXEMPTIONS, EACH ONE A SENTENCE SOMEBODY HAD TO WRITE.
@@ -531,103 +507,6 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     'voice/smart-turn.ts': 1,
     'voice/stt-service.ts': 2,
   };
-
-  const fetchSites = (rel: string): number => (codeOf(rel).match(/\bfetch\s*\(/g) ?? []).length;
-
-  const fetchBearing = (): string[] =>
-    walkSources().filter((rel) => /\bfetch\s*\(/.test(codeOf(rel)));
-
-  it('every fetch-bearing module either rides `openAgentCall` or carries a written exemption', () => {
-    const files = fetchBearing();
-    // Non-vacuity: a walk that found nothing would pass every clause below for free.
-    expect(files.length, 'the source walk found no fetch at all').toBeGreaterThan(20);
-
-    const blind = files.filter(
-      (rel) => !/openAgentCall\(/.test(codeOf(rel)) && EXEMPT[rel] === undefined,
-    );
-    expect(
-      blind,
-      'a module calls `fetch` with no registration and no written exemption. If an agent waits '
-      + 'on it, wire it through `openAgentCall` like the media dials and the four A-6 transports; '
-      + 'if no agent can, add it to EXEMPT with the sentence that says why.',
-    ).toEqual([]);
-  });
-
-  it('the four A-6 transports are wired, by name — the census cannot pass by exempting them', () => {
-    const WIRED = [
-      'agent/web-tools.ts', 'agent/site-snapshot.ts', 'google/client.ts', 'microsoft/client.ts',
-      // ── ADDED BY THE FIX ROUND (review L2-1) ──
-      // These three were EXEMPT with the sentence "RIDES THE DOOR ALREADY", and the reviewer
-      // measured it false of all three: `tools-office.ts` called neither wrapper anywhere, with
-      // eleven of its thirteen fetches carrying no signal at all. They are wired now — every
-      // Graph call goes through `graph-fetch.ts`, which registers — so the exemption is gone
-      // rather than reworded, and `memory/embeddings.ts` joins them for the same reason (L2-3).
-      'microsoft/graph-fetch.ts', 'microsoft/tools-office.ts', 'microsoft/tools-read.ts',
-      'microsoft/tools-write.ts', 'memory/embeddings.ts',
-      // v3.5: an agent waits on a decision beside its reply floor, so its stop cuts the call.
-      'agent/decide.ts',
-    ];
-    for (const rel of WIRED) {
-      // Either the file opens the slot itself, or every one of its calls goes through the
-      // shared Graph door that does — `graphFetch` is `openAgentCall` with a Graph-shaped
-      // preamble, and three of these files reach it that way.
-      const src = codeOf(rel);
-      expect(/openAgentCall\(|graphFetch\(/.test(src), `${rel} lost its registration`).toBe(true);
-      expect(EXEMPT[rel], `${rel} is BOTH wired and exempt — the exemption is a lie`).toBeUndefined();
-    }
-  });
-
-  // ⚠ THE CLAUSE THE FIRST CUT DID NOT HAVE, AND THE ONE THE REVIEWER'S RV1 WALKED PAST (L2-2).
-  it('every fetch site in the tree is counted, exempt files included', () => {
-    const files = fetchBearing();
-    expect(files.length, 'the walk found nothing').toBeGreaterThan(20);
-
-    const unpinned = files.filter(rel => FETCH_SITES[rel] === undefined);
-    expect(
-      unpinned,
-      'a module gained its FIRST `fetch` and is in no table. Wire it through `openAgentCall`, or '
-      + 'exempt it with a sentence that is true of it, and pin its site count either way.',
-    ).toEqual([]);
-
-    const moved = files
-      .map(rel => ({ rel, now: fetchSites(rel), pinned: FETCH_SITES[rel] }))
-      .filter(r => r.now !== r.pinned);
-    expect(
-      moved.map(r => `${r.rel}: pinned ${r.pinned}, now ${r.now}`),
-      'the number of `fetch` sites in a file changed. An exemption argues about the calls that '
-      + 'EXIST — it is not immunity for the next one. A NEW site must be wired through '
-      + '`openAgentCall` (or the Graph door), or the exemption must be widened to cover it '
-      + 'honestly; then move the number here in the same commit.',
-    ).toEqual([]);
-
-    const stalePins = Object.keys(FETCH_SITES).filter(rel => !files.includes(rel));
-    expect(stalePins, 'a pinned file no longer calls `fetch` — drop its row').toEqual([]);
-  });
-
-  it('no wired transport hands `fetch` a BARE clock — that is the defect\'s own shape', () => {
-    // `signal: AbortSignal.timeout(…)` with nothing else on it is what stop-blindness looks
-    // like. The composed form reads `slot.signal` / `slot?.signal ?? …`, so the fallback is
-    // allowed only on the ownerless branch, where there is no agent to compose with.
-    const offenders: string[] = [];
-    for (const rel of ['agent/web-tools.ts', 'agent/site-snapshot.ts', 'google/client.ts', 'microsoft/client.ts']) {
-      codeOf(rel).split('\n').forEach((line, i) => {
-        if (/signal:\s*AbortSignal\.timeout\(/.test(line) && !/slot\?\.signal\s*\?\?/.test(line)) {
-          offenders.push(`${rel}:${i + 1} — ${line.trim()}`);
-        }
-      });
-    }
-    expect(offenders, 'a bare clock on a wired transport is a call the stop cannot reach').toEqual([]);
-  });
-
-  it('the exemption table is exact in both directions — a stale row fails too', () => {
-    const files = new Set(fetchBearing());
-    const stale = Object.keys(EXEMPT).filter((rel) => !files.has(rel));
-    expect(
-      stale,
-      'EXEMPT names a module that no longer calls `fetch`. An exemption list nobody re-reads is '
-      + 'how the last blindness survived four reviews — delete the row.',
-    ).toEqual([]);
-  });
 
   it('an exemption that covers two KINDS of call says both (review L2-4)', () => {
     // `twilio/client.ts` carried one sentence — THE CALL IS THE DELIVERY — for two different

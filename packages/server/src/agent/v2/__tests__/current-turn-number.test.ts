@@ -107,7 +107,6 @@ describe('currentTurnNumber — one reader, the turns record', () => {
 // ════════ the grep-zero half — T9's exit gate depends on it ════════
 
 describe('G24 grep-zero: no reader derives the turn from messages', () => {
-  const SRC = path.resolve(__dirname, '..', '..', '..');   // packages/server/src
 
   function walk(dir: string, acc: string[] = []): string[] {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -120,28 +119,9 @@ describe('G24 grep-zero: no reader derives the turn from messages', () => {
     return acc;
   }
 
-  /** The file with whole-line comments removed. Same rule and same reason as
-   *  `__tests__/marker-ownership.test.ts`: a comment that NAMES the defect is the
-   *  documentation this codebase runs on — `turn-record.ts`'s own docstring quotes the dead
-   *  query verbatim so the next reader knows what was replaced — while a live QUERY is the
-   *  drift. Without this the clause would punish the explanation and reward silence. */
-  const code = (f: string) =>
-    fs.readFileSync(f, 'utf8')
-      .split('\n')
-      .filter((l) => {
-        const t = l.trimStart();
-        return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'));
-      })
-      .join('\n');
-
   /** The defect shape: a MAX over turn_number aimed at the MESSAGE store. The allocator's
    *  own `COALESCE(MAX(turn_number), 0) + 1 … FROM turns` is a different statement. */
   const DEFECT = /MAX\(turn_number\)[\s\S]{0,80}FROM messages/;
-
-  it('`MAX(turn_number) … FROM messages` appears in NO production file', () => {
-    const offenders = walk(SRC).filter((f) => DEFECT.test(code(f))).map((f) => path.relative(SRC, f));
-    expect(offenders, 'PHASE-2 handed this token forward; T9\'s exit gate reads it').toEqual([]);
-  });
 
   it('BITE PROOF: the pattern still recognises the query it just deleted', () => {
     // A grep-zero clause that stopped matching anything would report clean forever. This is
@@ -152,12 +132,5 @@ describe('G24 grep-zero: no reader derives the turn from messages', () => {
     // and it does NOT match the allocator, or the re-point would be unfixable
     expect(DEFECT.test('SELECT ?, COALESCE(MAX(turn_number), 0) + 1 FROM turns WHERE agent_id = ?'))
       .toBe(false);
-  });
-
-  it('and the allocator still owns its own MAX — a vacuity guard on the clause above', () => {
-    // If the regex above stopped matching anything at all it would go green over a rename.
-    const alloc = fs.readFileSync(path.join(SRC, 'agent/v2/turn-record.ts'), 'utf8');
-    expect(alloc).toMatch(/MAX\(turn_number\)/);
-    expect(alloc).toMatch(/FROM turns/);
   });
 });

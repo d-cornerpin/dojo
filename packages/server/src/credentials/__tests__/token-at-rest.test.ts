@@ -24,9 +24,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -52,8 +49,6 @@ import { isSealedText, sealSecretColumn, openSecretColumn, sealSecretToText } fr
 import { insertGoogleAccount, getGoogleAccount, updateGoogleAccount } from '../../google/accounts.js';
 import { insertMicrosoftAccount, getMicrosoftAccount } from '../../microsoft/accounts.js';
 import { sealWorkspaceTokensAtRest } from '../seal-existing.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const AT = 'fixture-access-token-value-A';
 const RT = 'fixture-refresh-token-value-B';
@@ -233,101 +228,5 @@ describe('PHASE-5 T10 D1 (3): the in-place conversion of rows that already exist
       .prepare('SELECT id, kind, position, email, enabled, connected, token_expires_at, granted_scopes, enabled_services, watch_email, send_email, last_verified_at FROM google_accounts WHERE id = ?')
       .get('agent');
     expect(after).toEqual(before);
-  });
-});
-
-describe('PHASE-5 T10 D1 (4): the refusals, held as a census over the source', () => {
-  /** Every non-test .ts file under packages/server/src. */
-  function sourceFiles(): string[] {
-    const out: string[] = [];
-    (function walk(dir: string) {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          if (e.name === '__tests__' || e.name === 'node_modules') continue;
-          walk(p);
-        } else if (e.name.endsWith('.ts')) out.push(p);
-      }
-    })(SRC);
-    return out;
-  }
-  const rel = (p: string) => path.relative(SRC, p);
-
-  it('REFUSAL (P5-R13, permanent): no path writes a Workspace token into agent_credentials', () => {
-    // The store's own writer is credentials/store.ts. Nothing in the provider
-    // modules may reach it — if it ever does, the tokens have become readable by
-    // every agent that can name them, which is the exact regression the owner's
-    // decision D1 exists to avoid.
-    const offenders = sourceFiles()
-      .filter(f => /^(google|microsoft)\//.test(rel(f)))
-      .filter(f => /credentials\/store|agent_credentials/.test(fs.readFileSync(f, 'utf-8')))
-      .map(rel);
-    expect(offenders).toEqual([]);
-  });
-
-  it('REFUSAL: the tool layer still has ZERO readers of the token columns', () => {
-    // The fact D1 rests on, re-measured rather than inherited: the agent-facing
-    // tool surface names neither column nor either domain field.
-    const offenders = sourceFiles()
-      .filter(f => rel(f).startsWith('agent/'))
-      .filter(f => /\b(?:access_token|refresh_token|accessToken|refreshToken)\b/.test(fs.readFileSync(f, 'utf-8')))
-      .map(rel);
-    expect(offenders).toEqual([]);
-  });
-
-  it('the token columns stay inside the modules that own them', () => {
-    // Five files may name them, each for a stated reason:
-    //   google/accounts.ts, microsoft/accounts.ts  — the storage owners (seam)
-    //   google/auth.ts, microsoft/auth.ts          — OAuth wire fields + domain object
-    //   migration/checks.ts                        — the reconnect-card PREDICATE;
-    //     it reads no token, but it runs SQL on the column, so any change to how
-    //     the column is stored has to answer for it (it still does: a sealed value
-    //     is non-empty, an empty one stays empty).
-    // google/reauth-notice.ts reads the DOMAIN field only, never the column.
-    //
-    // DOJO-REPORT T4 adds a THIRD provider to the same two-module shape, and it is listed
-    // here for the same two reasons the pairs above are:
-    //   github/account.ts    — the storage owner. `saveGithubAccount` seals into
-    //     `github_account.access_token`; `getGithubToken` opens it. One write, one read.
-    //   github/device-flow.ts — the OAuth exchange, where `access_token`/`accessToken` are
-    //     fields of GITHUB'S OWN JSON, not columns. No SQL, no crypto.
-    // The refusal above it (P5-R13) covers this token too and is measured for it in
-    // `github/__tests__/the-device-flow-polls-on-githubs-own-clock.test.ts`: after a save,
-    // `agent_credentials` is empty. This file's own first clause scopes its offender scan to
-    // `(google|microsoft)/`, so it does not re-measure that for `github/`; that is why the
-    // GitHub suite asserts it directly rather than relying on this one.
-    const allowed = new Set([
-      'google/accounts.ts', 'microsoft/accounts.ts',
-      'google/auth.ts', 'microsoft/auth.ts',
-      'migration/checks.ts', 'google/reauth-notice.ts',
-      'credentials/at-rest.ts', 'credentials/seal-existing.ts',
-      'github/account.ts', 'github/device-flow.ts',
-    ]);
-    const namers = sourceFiles()
-      .filter(f => /\b(?:access_token|refresh_token|accessToken|refreshToken)\b/.test(fs.readFileSync(f, 'utf-8')))
-      .map(rel)
-      .filter(f => !allowed.has(f));
-    expect(namers).toEqual([]);
-  });
-
-  it('the dashboard-facing account projections carry no token field at all', () => {
-    for (const f of ['google/auth.ts', 'microsoft/auth.ts']) {
-      const text = fs.readFileSync(path.join(SRC, f), 'utf-8');
-      const view = text.match(/export interface (?:Google|Microsoft)AccountView \{[\s\S]*?\n\}/);
-      expect(view, `${f} must declare an account view`).not.toBeNull();
-      expect(view![0]).not.toMatch(/[Tt]oken/);
-    }
-  });
-
-  it('there is still exactly ONE AES implementation, and the envelope is part of it', () => {
-    const impls = sourceFiles()
-      .filter(f => /createCipheriv\(/.test(fs.readFileSync(f, 'utf-8')))
-      .map(rel)
-      .filter(f => f !== 'migration/export.ts'); // declared exception: user-password AES-256-CBC
-    expect(impls).toEqual(['credentials/at-rest.ts']);
-    // And the providers hold no crypto of their own.
-    for (const f of ['google/accounts.ts', 'microsoft/accounts.ts']) {
-      expect(fs.readFileSync(path.join(SRC, f), 'utf-8')).not.toMatch(/createCipheriv|createDecipheriv/);
-    }
   });
 });

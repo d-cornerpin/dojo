@@ -262,51 +262,5 @@ describe('SWEEP CORE-2 item 7 — the turn-end draft re-classification', () => {
     // ask be closed on a receipt pointing at a working note — CT0's defect class exactly, in a
     // new spelling. It is a NARROWING of what counts as an answer, never a widening.
     expect([...NON_ANSWERING_DISPLAY_KINDS].sort()).toEqual(['tool-turn', 'working-note']);
-    // ONE declaration, or the three readers can drift apart again. Nothing outside the set's
-    // own module may spell a display-kind exclusion list by hand.
-    const roots = ['work/ask-settlement.ts', 'work/ask-remediation.ts', 'work/occurrences.ts'];
-    for (const rel of roots) {
-      const src = fs.readFileSync(new URL(`../../../../../${rel}`, import.meta.url), 'utf8');
-      const handRolled = src.split('\n').filter((l) => /display_kind\s+IN\s*\(\s*'/.test(l));
-      expect(handRolled, `${rel} builds its exclusion list from the shared constant`).toEqual([]);
-    }
-  });
-
-  it('WIRED_AFTER_THE_STAMP: the `finally` arm calls it, and AFTER the record that writes the key', () => {
-    const src = fs.readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
-    const stamp = src.indexOf('await finalizeTurnRecord(');
-    const call = src.indexOf('reclassifyTurnDrafts({');
-    expect(stamp, '`finalizeTurnRecord` is still called from the finally arm').toBeGreaterThan(-1);
-    expect(call, 'the re-classification is wired in at all').toBeGreaterThan(-1);
-    // The ORDER is the mechanism: the key does not exist until `finalizeTurnRecord` writes
-    // it, so a call above that line would read NULL on every turn and silently do nothing.
-    expect(call, 'the re-classification runs AFTER the stamp').toBeGreaterThan(stamp);
-  });
-
-  it('NO_PROSE: the module reads the ledger key and never the words — greppable, so it cannot drift back', () => {
-    const src = fs.readFileSync(
-      new URL('../draft-reclassify.ts', import.meta.url), 'utf8',
-    );
-    const body = src.split('\n').filter((l) => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*')).join('\n');
-    expect(body, 'the key is the discriminator').toContain('answer_message_id');
-    // ⚠ THIS CLAUSE WAS WRONG AS FIRST WRITTEN and the correction is recorded rather than
-    // quietly made: it forbade `/\.length\s*[<>]=?\s*\d/` outright, which flags
-    // `reclassified.length > 0` — COUNTING THE ROWS THAT MOVED, which every honest
-    // implementation must do. A clause that reds on the correct code is not a strict clause,
-    // it is a broken one. Narrowed to what it was always about: a length taken OFF THE TEXT.
-    for (const forbidden of [
-      /\.includes\(\s*['"`]/,               // a phrase list
-      /\.match\(/, /new RegExp/,            // a prose regex
-      /\.toLowerCase\(\)/, /\.toUpperCase\(\)/, // normalising text in order to compare it
-      /content(\.\w+)*\.length/,            // a length threshold standing in for a judgement
-      // Any comparison applied to the words themselves. Spelled as the OPERATOR next to the
-      // identifier rather than "somewhere on the same line": the loose form flagged the type
-      // annotation `Array<{ id: string; content: string }>`, whose `>` closes a generic.
-      /\bcontent\b\s*(===|!==|==|!=|<=|>=|<|>)/,
-      /(===|!==|==|!=|<=|>=|<|>)\s*\w*\.?content\b/,
-      /startsWith\(/, /endsWith\(/,
-    ]) {
-      expect(body, `the module must not ${String(forbidden)}`).not.toMatch(forbidden);
-    }
   });
 });

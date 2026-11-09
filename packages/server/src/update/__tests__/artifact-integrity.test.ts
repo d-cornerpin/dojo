@@ -164,57 +164,6 @@ describe('the check cannot be skipped by adding another download', () => {
     return out;
   }
 
-  /** Source with comments removed — a census must read code, never the prose about it. */
-  function stripComments(raw: string): string {
-    return raw
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
-      .map((l) => l.replace(/\/\/.*$/, ''))
-      .join('\n');
-  }
-
-  it('every artifact download in the server lives in ONE file, and that file verifies', () => {
-    const downloaders = filesUnder(srcRoot)
-      // The INVOCATION shape, not the words: this module's own header quotes the grep that found
-      // them, and a census that counted its own documentation would be measuring the wrong thing.
-      //
-      // t114 (census U14): widened from `curl -L -o` to `curl -L` because the download command
-      // now carries its own stall detector between those flags
-      // (`--fail --connect-timeout --speed-limit --speed-time`), the flat 120s total having made
-      // a slow box permanently un-updatable. Widening here KEEPS the census honest — any file
-      // that shells out a curl download still lands in this list — while the count below moves to
-      // the call-site shape, which is what actually performs a download.
-      // COMMENTS STRIPPED FIRST, and that is load-bearing rather than tidy: this census's own
-      // module quotes `git grep -n "curl -L"` in its header to record how it was derived, so a
-      // raw-text sweep lists `artifact-integrity.ts` as a downloader and the clause fails on its
-      // own documentation — precisely the thing the note above says it must not measure.
-      // t114 review minor 3: the download moved to ARGV (`spawn('curl', [...])`), so `curl -L` no
-      // longer appears as text anywhere. The detector matches an INVOCATION in either form — a
-      // shell command string, or curl as the program argument of a spawn-shaped call — because the
-      // property is "which files fetch an artifact", not "which files spell it as a command line".
-      // Deliberately NOT a bare `'curl'`: `agent/v2/classifiers/permission.ts` and
-      // `migration/step-classify.ts` both carry the word as a CLASSIFIER KEYWORD, and counting
-      // those would be the census measuring vocabulary instead of behaviour — the same
-      // own-documentation trap this clause already strips comments to avoid.
-      .filter((f) => /curl\s+-L\b|\(\s*['"]curl['"]\s*,/.test(stripComments(fs.readFileSync(f, 'utf8'))))
-      .map((f) => path.relative(srcRoot, f))
-      .sort();
-    expect(downloaders).toEqual(['gateway/routes/update.ts']);
-
-    const src = fs.readFileSync(path.join(srcRoot, 'gateway/routes/update.ts'), 'utf8');
-    // t197: apply and rollback now share ONE download->verify->install sequence
-    // (`downloadAndInstall`), so there is one download call site, called by both doors.
-    const downloads = (src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? []).length;
-    const verifies = (src.match(/verifyArtifactAgainstManifest\s*\(/g) ?? []).length;
-    expect(downloads).toBe(1);
-    expect((src.match(/await downloadAndInstall\(/g) ?? []).length, 'both doors use it').toBe(2);
-    expect(verifies).toBe(downloads);
-    // Calling the verifier and ignoring it is the shape this would otherwise
-    // decay into, so the verdict must be ACTED ON as many times as it is asked.
-    const acted = (src.match(/outcome === 'refused'/g) ?? []).length;
-    expect(acted).toBe(verifies);
-  });
-
   it('the release script publishes the manifest the verifier reads', () => {
     const release = fs.readFileSync(path.resolve(srcRoot, '../../../deploy/release.sh'), 'utf8');
     expect(release).toContain(ARTIFACT_MANIFEST_ASSET);

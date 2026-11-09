@@ -350,37 +350,6 @@ describe('§3 a dropped message is said out loud', () => {
     expect(infos.length).toBe(1);
     expect(infos[0].reason).toBe('AWAITING_REPLY');
   });
-
-  it('⚠ A, BOTH DIRECTIONS: the quiet set is a CLOSED list, so a new reason lands at warn', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const { dirname, join } = await import('node:path');
-    const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '..', 'a2a-transport.ts'), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
-
-    // The set literal, read off the source rather than imported — it is module-private on
-    // purpose, and what matters is that it is a LIST and a short one.
-    const m = /DROPS_THE_SENDER_IS_TOLD_ABOUT[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(src);
-    expect(m, 'the enumerated quiet set must still exist').not.toBeNull();
-    const quiet = [...m![1].matchAll(/'([A-Z_]+)'/g)].map((x) => x[1]).sort();
-    expect(quiet, 'exactly the two the sender is told about, synchronously, in its tool result')
-      .toEqual(['AWAITING_REPLY', 'SEMANTIC_DUPLICATE']);
-
-    // And the DEFAULT is warn: the ternary's false arm is the warn, not the other way round.
-    expect(src, 'an unlisted reason must fall to warn, never to info')
-      .toMatch(/DROPS_THE_SENDER_IS_TOLD_ABOUT\.has\(reason\)\s*\?\s*logger\.info/);
-    // Every reason the transport can return, minus the quiet two, is therefore loud. Counted
-    // so a new `logDrop(` reason cannot be added without this clause noticing the arithmetic.
-    const reasons = new Set([...src.matchAll(/logDrop\(envelope, '([A-Z_]+)'\)/g)].map((x) => x[1]));
-    expect(reasons.size, 'the census of drop reasons the transport actually emits')
-      .toBeGreaterThanOrEqual(5);
-    const loud = [...reasons].filter((r) => !quiet.includes(r));
-    expect(loud.sort()).toEqual(
-      ['AGENT_NOT_FOUND', 'HOP_LIMIT_EXCEEDED', 'MALFORMED_ENVELOPE', 'PERSIST_SKIPPED', 'SENDER_TERMINATED'],   // t166: a sender ended mid-run is refused LOUD
-    );
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════

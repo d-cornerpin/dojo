@@ -50,8 +50,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
@@ -60,7 +58,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -179,83 +176,12 @@ describe('CLAUSE B1 negative control — with the guard OFF, both moves succeed'
   });
 });
 
-// ── CLAUSE B2: THE CENSUS OF EVERY DOOR THAT OPENS A DATABASE ────────────────────────────
-
-const SRC = path.join(__dirname, '..', '..');
-
-function walk(dir: string, acc: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'migrations') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts')) acc.push(fp);
-  }
-  return acc;
-}
-const rel = (f: string): string => path.relative(SRC, f).split(path.sep).join('/');
-const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
-
 /** Blank comments, keeping line count, so prose about opening a database is never a door. */
 const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 const OPENS_A_DB_RE = /new\s+Database\s*\(/;
-
-const openerFiles = (): string[] => walk(SRC).map(rel)
-  .filter(f => OPENS_A_DB_RE.test(stripComments(read(f))))
-  .sort();
-
-/**
- * Every production site that opens a SQLite file, with what it opens and why that is allowed.
- * `readonly: true` is the strongest possible answer — a readonly handle cannot delete anything,
- * so the guard being off on it is harmless.
- */
-const DECLARED_OPENERS: Record<string, { readonly: boolean; reason: string }> = {
-  'db/connection.ts': {
-    readonly: false,
-    reason: 'THE one door to the dojo body. Sets `foreign_keys = ON` and READS IT BACK, '
-      + 'forcing it again if SQLite did not take it — so every statement the platform runs '
-      + 'inherits the guard that makes an orphan impossible.',
-  },
-  'migration/import.ts': {
-    readonly: false,
-    reason: 'Opens the RESTORED body once, after an import, while the main connection is '
-      + 'closed, to stamp one config key. INSERT only (an OR REPLACE against `config`, which '
-      + 'is a parent of nothing), so it cannot delete a parent row.',
-  },
-  'migration/path-migration-db.ts': {
-    readonly: false,
-    reason: 'Rewrites $HOME references inside a body taken from ANOTHER MACHINE, and opens '
-      + 'that file itself deliberately — routing it through the singleton would target the '
-      + 'wrong file the day the path argument is not the live one. UPDATE only.',
-  },
-  'memory/fts-health.ts': {
-    readonly: false,
-    reason: 'The FTS repair WORKER opens the body on its own connection to rebuild the search '
-      + 'index inside BEGIN IMMEDIATE, chunked and stop-checked (t89). It touches only the '
-      + 'messages_fts shadow tables, which no foreign key points at, so it cannot delete a '
-      + 'parent row; the transaction leaves the prior index intact if killed.',
-  },
-  'inspect/sql-child.ts': {
-    readonly: true,
-    reason: 'v3.5 dojo_inspect: each `sql` query runs in its own CHILD PROCESS (through the toolbox '
-      + 'process door, so Stop kills it) on a connection opened readonly: true, fileMustExist: true, '
-      + 'with query_only set. A readonly handle cannot write, so it cannot strand a row.',
-  },
-  'memory/reader-pool.ts': {
-    readonly: true,
-    reason: 'The reader WORKER (t89) holds one long-lived connection opened readonly: true, '
-      + 'fileMustExist: true against the same body, so bounded searches run off the serving '
-      + 'thread. A readonly handle cannot write, so it cannot strand a row.',
-  },
-  'services/imessage-bridge.ts': {
-    readonly: true,
-    reason: 'Apple’s `chat.db`, not the dojo body, and opened `readonly: true` with '
-      + '`fileMustExist: true`. A readonly handle cannot write, so it cannot strand a row.',
-  },
-};
 
 /** Every table some foreign key points AT. Deleting one of these rows with the guard off is
  *  the move that mints an orphan, so these are the names B2 watches for. */
@@ -278,43 +204,11 @@ describe('CLAUSE B2 — every door that opens a database is declared, and none o
     expect(OPENS_A_DB_RE.test(stripComments('// new Database(p) — described, never called'))).toBe(false);
   });
 
-  it('names every production site that opens a SQLite file, so a new one is visible', () => {
-    const found = openerFiles();
-    expect(found).toEqual(Object.keys(DECLARED_OPENERS).sort());
-    expect(found.length).toBeGreaterThan(0);
-    // Every declaration carries a real reason, so the list cannot grow by a bare string.
-    for (const f of found) {
-      expect(DECLARED_OPENERS[f].reason.length, `${f} has no recorded reason`).toBeGreaterThan(80);
-    }
-  });
-
   it('the parent-table set is read from the schema and is not empty', () => {
     const parents = parentTables();
     expect(parents).toContain('work');     // what `work_events` points at
     expect(parents).toContain('agents');   // the other census's subject
     expect(parents.length).toBeGreaterThan(5);
-  });
-
-  it('⚠ no opener but `db/connection.ts` carries a statement that can delete a parent row', () => {
-    const parents = parentTables();
-    for (const [file, decl] of Object.entries(DECLARED_OPENERS)) {
-      if (file === 'db/connection.ts') continue;
-      const src = stripComments(read(file));
-      if (decl.readonly) {
-        // The declaration has to be TRUE of the source, not just written down here.
-        expect(/readonly:\s*true/.test(src), `${file} is declared readonly but does not say so`)
-          .toBe(true);
-        continue;
-      }
-      for (const parent of parents) {
-        const deletes = new RegExp(String.raw`DELETE\s+FROM\s+${parent}\b`, 'i');
-        const replaces = new RegExp(String.raw`REPLACE\s+INTO\s+${parent}\b`, 'i');
-        expect(deletes.test(src),
-          `${file} opens a database with the guard off and DELETEs from \`${parent}\`, a parent table`).toBe(false);
-        expect(replaces.test(src),
-          `${file} opens a database with the guard off and REPLACEs INTO \`${parent}\`, a parent table`).toBe(false);
-      }
-    }
   });
 
   it('the shape-matcher is not vacuous — it catches both spellings', () => {

@@ -30,7 +30,6 @@ const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), `dojo-b
 vi.mock('../home.js', () => ({
   homeDir: (): string => HOME,
   dojoDir: (...segs: string[]): string => path.join(HOME, '.dojo', ...segs),
-  isTestRun: (): boolean => true,
 }));
 vi.mock('../logger.js', () => {
   const noop = (): void => {};

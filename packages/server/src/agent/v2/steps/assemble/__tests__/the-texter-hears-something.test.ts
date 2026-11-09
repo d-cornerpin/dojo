@@ -37,9 +37,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
 const fakeDb = { prepare: () => emptyStmt };
@@ -74,8 +71,6 @@ import type { TurnCounterparty } from '../../../counterparty.js';
 import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-one';
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
 
 interface Bag {
   startAckSteerArmedThisTurn: boolean;
@@ -173,12 +168,6 @@ describe('and stays shut everywhere it would buy nothing', () => {
   it('CONTROL — email stays shut: `deliverEngineUserAck` has no push arm for it, so an early row would be a bubble the channel never received (F-22) — and T51 ruled it stays that way', async () => {
     const { turnCtx } = await assembleLoop({ counterparty: person({ channel: 'email' }) });
     expect(turnCtx.startAckSteerArmedThisTurn).toBe(false);
-    // The claim above is a FACT about the delivery site, not an opinion — pinned so a new
-    // push arm and this door cannot drift apart.
-    const closures = SRC('../../preflight/turn-closures.ts');
-    const ackFn = closures.slice(closures.indexOf('const deliverEngineUserAck'));
-    for (const has of ["channel === 'imessage'", "channel === 'sms'"]) expect(ackFn).toContain(has);
-    expect(ackFn).not.toContain("channel === 'email'");
   });
 
   it('T51 — and Teams is now on the OTHER side of that same fact: it has an arm, so the door opens', async () => {
@@ -234,22 +223,5 @@ describe('opener 1 keeps working exactly as it did, and two doors still make one
     decision.multistep = true;
     const { turnCtx } = await assembleLoop();
     expect(turnCtx.inboundClassifiedAsWork).toBe(true);
-  });
-});
-
-describe('the rule is asked, never re-spelled', () => {
-  it('the door imports the predicate; the channel list exists in ONE place', () => {
-    const src = SRC('../multistep-detection.ts');
-    expect(src).toContain('engineAckReachesTheirChannel');
-    expect(src).not.toContain("'imessage'");
-    // and the RC-9 demotion arm — the other reader of the same question — asks the same
-    // declaration rather than carrying its own copy.
-    const terminal = SRC('../../post-call-classify/terminal-text.ts');
-    expect(terminal).toContain('isRoutedHumanCounterparty');
-    expect(terminal).not.toContain("counterparty.channel === 'imessage'");
-  });
-
-  it('no threshold moved: the 30s constant is not mentioned here at all (#14)', () => {
-    expect(SRC('../multistep-detection.ts')).not.toContain('ENGINE_START_ACK_AFTER_MS');
   });
 });

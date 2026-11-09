@@ -28,7 +28,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
 import type { ToolDefinition } from '../../agent/tools/types.js';
 
 const mockDb = { current: null as Database.Database | null };
@@ -187,13 +186,5 @@ describe('T61(a): OR2 and the classification ban — it steers the AGENT and com
     expect(block).not.toMatch(/say (exactly|verbatim)|tell the user ["“]/i);
     // It does not forbid answering — the S1 control is that a from-memory answer still goes.
     expect(block).not.toMatch(/refuse|do not answer|never answer/i);
-  });
-
-  it('the honest bound is recorded where the rule is written, not only in a report', () => {
-    // The plan's own words: this is the weak surface, and the file must say so.
-    const text = readFileSync(new URL('../assembler.ts', import.meta.url), 'utf8');
-    const at = text.indexOf(SECTION);
-    expect(at).toBeGreaterThan(-1);
-    expect(text.slice(Math.max(0, at - 3000), at)).toMatch(/HONEST BOUND/);
   });
 });

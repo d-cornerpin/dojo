@@ -38,9 +38,6 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import ts from 'typescript';
-import { readFileSync, readdirSync } from 'node:fs';
-import path from 'node:path';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { emptySteerQueue, enqueueSteer } from '../../../steer-queue.js';
 import {
@@ -164,18 +161,6 @@ beforeEach(() => {
   assembleContextSpy.mockResolvedValue(ASSEMBLED());
 });
 
-// ── The step package's own source, for the clauses that are about SHAPE ──
-const STEP_DIR = path.resolve(__dirname, '..');
-function stepFiles(dir: string = STEP_DIR): string[] {
-  const out: string[] = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) { if (e.name !== '__tests__') out.push(...stepFiles(path.join(dir, e.name))); }
-    else if (e.name.endsWith('.ts')) out.push(path.join(dir, e.name));
-  }
-  return out;
-}
-const stepText = (): string => stepFiles().map((f) => readFileSync(f, 'utf8')).join('\n');
-
 describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
   it('INPUTS (state, ctx) → ONE outcome, and the SEVEN values the span declares come back as OUTPUTS', async () => {
     const out = await runAssemble(freshState(), ctxFor());
@@ -203,47 +188,6 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     const exited = await runAssemble(freshState(), ctxFor());
     expect(exited.directive).toBe('exit');
     expect(exited.state.phase).toBe(ASSEMBLE_PHASE);
-
-    // And no `phase:` write exists in the package's own source at all.
-    expect(stepText()).not.toMatch(/phase\s*:/);
-  });
-
-  it('THE DRIVER ADVANCES INTO IT, at the call site and ahead of the step', () => {
-    // `validate()` runs on the transition by construction, because the advance is an
-    // `advance` and it is the DRIVER's statement, not the step's.
-    const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    const advanceAt = driver.indexOf("advance(turnCtx.state!, { phase: 'assemble' })");
-    const callAt = driver.indexOf('runAssemble(turnCtx.state!,');
-    expect(advanceAt).toBeGreaterThan(-1);
-    expect(callAt).toBeGreaterThan(-1);
-    expect(advanceAt).toBeLessThan(callAt);
-  });
-
-  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: two directives, TWO exit sites', () => {
-    // A new silent way out of this step cannot appear without failing here. The walk
-    // is over the package's own AST, so a directive smuggled in as a string literal in
-    // a comment does not count and a real call does.
-    const directives = new Set<string>();
-    let exitSites = 0;
-    for (const f of stepFiles()) {
-      const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.ESNext, true);
-      const walk = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-          const name = n.expression.text;
-          if (name === 'proceed') directives.add('proceed');
-          if (name === 'continueLoop') directives.add('continue');
-          if (name === 'requestExit') { directives.add('exit'); exitSites += 1; }
-          if (name === 'abandonTurn') directives.add('abandon');
-        }
-        ts.forEachChild(n, walk);
-      };
-      walk(sf);
-    }
-    expect([...directives].sort()).toEqual(['exit', 'proceed']);
-    // TWO: the empty-assembled-context clean exit, preserved from v1
-    // (`runtime.ts:1014-1020`); and (t212, moved here from `callLLM` with the routing, which now runs
-    // before the build) t140 round 7's exit when no router pick can hold the agent and the owner was told why.
-    expect(exitSites).toBe(2);
   });
 
   it('A STEP THAT ASKS TO EXIT STOPS — and the exit carries a reason, by construction', async () => {

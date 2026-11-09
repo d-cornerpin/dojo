@@ -34,7 +34,6 @@ vi.mock('../../../../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -70,7 +69,6 @@ import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabula
 vi.setConfig({ testTimeout: 30_000 });
 
 const FAKE_HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-phone-buffer-idle');
-const FAKE_DOJO = path.join(FAKE_HOME, '.dojo');
 
 const HALF = 'The first half of the answer';
 const REST = ', and the second half.';
@@ -101,8 +99,6 @@ const oaChunk = (delta: Record<string, unknown>, finish: string | null = null): 
     id: 'chatcmpl-t65b', object: 'chat.completion.chunk', created: 0, model: 'local-ds4',
     choices: [{ index: 0, delta, finish_reason: finish }],
   });
-const anthEvent = (type: string, data: unknown): string =>
-  `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 const serveOpenAI = (res: http.ServerResponse, mode: Behaviour): void => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });

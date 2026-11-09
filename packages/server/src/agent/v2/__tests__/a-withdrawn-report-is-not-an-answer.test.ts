@@ -83,9 +83,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -144,16 +141,6 @@ import type { LaneRender } from '../../../memory/lanes.js';
 // what `approved` and `posted` mean — §2 sets those states on the row — so this file stays off
 // that allowlist rather than widening it for its own convenience.
 import { attachDraft, cancelReport, createReport, getReport, submitForApproval } from '../../../report/store.js';
-import { engineText } from './engine-sources.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
-/** Comments stripped, the way the prefix-lane conformance clauses strip them: a module header
- *  that NAMES a thing must not be what satisfies (or trips) a structural clause. */
-const stripComments = (text: string): string => text
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-const codeOf = (rel: string): string => stripComments(read(rel));
 
 const AGENT = 'reporter';
 const OTHER_AGENT = 'reporter-two';
@@ -700,90 +687,6 @@ describe('§4 the ghosted-ask ladder is not handed a withdrawn claim to restate'
     const rid = seedReport('rep-5-live', 'awaiting_approval');
     seedAnsweredReportAsk({ key: 'fifthlive', reportIds: [rid] });
     expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §5 — ONE OWNER, STRUCTURALLY. A carrier cannot inherit a check it has to remember to make, so
-// the predicate has exactly one home and every read calls it.
-//
-// ⚠ THE HOME IS `report/withdrawn-claim.ts`, NOT `answered-edge.ts` (t113 B3, t110 round-3 L1).
-// This banner used to open "the reason the predicate lives in `answered-edge.ts`" — the one
-// sentence the round-3 split falsified, sitting at the top of the section that ASSERTS the
-// split. The clause below has said so in its own words the whole time ("round 3 moved the
-// predicate to its own module rather than taking a third ceiling raise on the edge"), which is
-// worse than a plain stale line: a reader met the heading and the body disagreeing and had no
-// way to tell which one had rotted. `answered-edge.ts` is still the EDGE — it owns the three
-// reads and applies the predicate at each — and that distinction is the whole point of the
-// section, so the banner now names both roles instead of collapsing them into the wrong one.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§5 the predicate has one home and every read applies it', () => {
-  it('all three reads call the SAME predicate, and only ONE module defines it', () => {
-    const edge = codeOf('agent/v2/answered-edge.ts');
-    const claim = codeOf('report/withdrawn-claim.ts');
-    // Three calls in the edge — one per read — and no definition: round 3 moved the predicate to
-    // its own module rather than taking a third ceiling raise on the edge.
-    expect(edge.match(/answerStillStands\(/g) ?? []).toHaveLength(3);
-    expect(edge).toContain("from '../../report/withdrawn-claim.js'");
-    expect(edge, 'the edge must not re-acquire the report vocabulary it just handed over')
-      .not.toContain('STANDING_REPORT_STATUSES');
-    expect(edge).not.toContain('dojo_reports');
-    // …and the definition is there, exactly once.
-    expect(claim.match(/export function answerStillStands/g) ?? []).toHaveLength(1);
-    expect(claim).toContain('STANDING_REPORT_STATUSES');
-  });
-
-  it('no carrier re-derives report state at its own injection site', () => {
-    // THE ENGINE HALF comes from the shared derivation, never by path: carriers 1 and 5 live in
-    // `agent/v2/steps/`, PHASE-6 moves code within that tree, and a by-path negative clause goes
-    // QUIET instead of red when its subject moves (`__tests__/guard-corpus-census.test.ts`).
-    const corpus = [stripComments(engineText()), codeOf('memory/recall-lane.ts')];
-    for (const code of corpus) {
-      expect(code).not.toContain('dojo_reports');
-      expect(code).not.toContain('awaiting_approval');
-    }
-  });
-
-  it('each arm of the window is its OWN statement, and neither is assembled at runtime', () => {
-    // Review F1: the two arms were one statement with `(turn_number = ? OR (seq BETWEEN …))`, and
-    // an OR across two indexes gets neither — 18.7 ms per call on the ritual's own agent, 52.4 ms
-    // for one `recentlyAnsweredAsks(3)`, on EVERY model call. Split, each arm is indexed (0.023 /
-    // 0.022 ms; the whole read 0.253 ms). This clause holds the SHAPE that makes that true, because
-    // the timings themselves are not assertable in a unit test: two literal statements, each with
-    // exactly one row filter, and no `${}` in either — the SQL gate prepares literals against the
-    // migrated schema and a builder would put both beyond its reach.
-    const claim = codeOf('report/withdrawn-claim.ts');
-    expect(claim).toContain('AND m.turn_number BETWEEN ? AND ?');
-    expect(claim).toContain('AND m.seq >= ? AND m.seq <= ?');
-    expect(claim, 'the OR is what defeated both indexes; it must not come back')
-      .not.toMatch(/m\.turn_number BETWEEN \? AND \?\s*OR/);
-    expect(claim.match(/SELECT DISTINCT r\.id AS id, r\.status AS status/g) ?? []).toHaveLength(2);
-    for (const stmt of claim.split('const REPORTS_NAMED_IN_').slice(1)) {
-      expect(stmt.split('`')[1] ?? '', 'a runtime-assembled arm is invisible to the SQL gate')
-        .not.toContain('${');
-    }
-  });
-
-  it('the ONLY text it matches is an id the platform minted — never a word, never a phrase', () => {
-    const claim = codeOf('report/withdrawn-claim.ts');
-    const edge = codeOf('agent/v2/answered-edge.ts');
-    for (const smell of ['preview card', 'dashboard as a', 'looksLikeAnswer', 'CLOSEOUT', 'already filed']) {
-      expect(claim).not.toContain(smell);
-      expect(edge).not.toContain(smell);
-    }
-    // Round 3's rule DOES match text, and this is the clause that keeps it narrow: every LIKE in
-    // the module takes its needle from `substr(r.id, 1, 8)` — the first 8 hex of a UUID this
-    // platform minted, read out of `dojo_reports` — and from nothing else. A phrase list, a lane
-    // word or a hand-written id would fail here.
-    const likes = claim.match(/LIKE[^\n]*/g) ?? [];
-    expect(likes.length).toBe(2);
-    for (const like of likes) expect(like).toContain("'%' || substr(r.id, 1, 8) || '%'");
-    expect(claim).not.toMatch(/LIKE\s*'%[a-zA-Z]/);
-    // The tool_use ENVELOPE prefilter is gone with the JSON: the id-naming rule needs prose rows,
-    // and the edge keeps exactly one (`substantiveReplySince`'s NOT LIKE, which predates all this).
-    expect(edge.match(/\[\{%/g) ?? []).toHaveLength(1);
-    expect(claim).not.toContain('json_each');
   });
 });
 

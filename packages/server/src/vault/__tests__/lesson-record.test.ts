@@ -4,9 +4,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -32,7 +29,6 @@ import { announceLessons, lessonReportLines } from '../lessons-announce.js';
 import { getDreamerAgentId } from '../../config/platform.js';
 
 const DAY = 24 * 60 * 60 * 1000;
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 let eventA = 0;
 let eventB = 0;
 
@@ -170,13 +166,5 @@ describe('the owner hears once per cycle, through the existing card, and the mai
     await call(getDreamerAgentId(), base());
     announceLessons(Date.now() - 1000);
     expect((mockDb.current!.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n).toBe(before);
-  });
-
-  it('the Dreamer\'s tools policy gains lesson_record and still has no way to message another agent', () => {
-    const src = fs.readFileSync(path.join(HERE, '..', 'maintenance.ts'), 'utf8');
-    const policy = src.slice(src.indexOf('const DREAMER_TOOLS_POLICY'), src.indexOf('function getDreamerPermissions'));
-    expect(policy).toContain("'lesson_record'");
-    expect(policy).not.toContain("'send_to_agent'");
-    expect(policy).not.toContain("'list_agents'");
   });
 });

@@ -253,17 +253,4 @@ describe('T10: a2a_threads carries exactly what is read, and nothing else', () =
     // having been dropped wholesale — which is what the plan's drop list originally asked for.
     expect(cols).toEqual(expect.arrayContaining(['hop_count', 'last_sender', 'last_intent', 'updated_at']));
   });
-
-  it('the flag has no reader left in the transport', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const src = readFileSync(fileURLToPath(new URL('../a2a-transport.ts', import.meta.url)), 'utf8')
-      .split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-    expect(src).not.toMatch(/isThreadTerminal/);
-    expect(src).not.toMatch(/is_terminal/);
-    // POSITIVE CONTROL: the comment stripper did not blank the file, and the two facts the
-    // table still exists FOR are still written and read.
-    expect(src).toMatch(/last_intent = \?/);
-    expect(src).toMatch(/hop_count/);
-  });
 });

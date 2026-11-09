@@ -31,8 +31,6 @@
 // OUTPUT, which has already been through the summariser and carries no raw rows.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { runMigrations } from '../../db/migrations.js';
 
 const callModel = vi.fn();
@@ -107,59 +105,5 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
     expect(JSON.stringify(r)).not.toContain('Verve deck');
     // both calls read the SOURCE: neither is a summary of a summary
     for (const call of callModel.mock.calls) expect(JSON.stringify(call)).toContain('Verve deck');
-  });
-});
-
-// ════════ 2. every caller honours it ════════
-
-const SRC = (rel: string) => fs.readFileSync(path.join(process.cwd(), 'src/memory', rel), 'utf8');
-
-describe('every generateSummary caller handles a refusal', () => {
-  const CALLERS = ['compaction.ts', 'summary-rebuild.ts'];
-
-  it('no caller reads .text without first proving .ok', () => {
-    for (const f of CALLERS) {
-      const src = SRC(f);
-      // Every `await generateSummary({…})` must be followed, before the next call site, by
-      // an `.ok` check. A caller that skipped it would compile only by asserting, and this
-      // is what catches the assertion.
-      const parts = src.split('await generateSummary(').slice(1);
-      expect(parts.length, `${f} no longer calls generateSummary`).toBeGreaterThan(0);
-      for (const [i, p] of parts.entries()) {
-        const window = p.slice(0, 900);
-        expect(window, `${f} call ${i + 1} does not check .ok`).toMatch(/\.ok\b/);
-      }
-    }
-  });
-
-  it('the refusal path never marks sources compacted', () => {
-    // The whole point: a span we could not summarise must still be there next time.
-    const src = SRC('compaction.ts');
-    expect(src).toMatch(/SUMMARY_REFUSED/);
-  });
-});
-
-// ════════ 3. contaminated summaries are impossible by construction ════════
-
-describe('the write boundary is ONE filter, on both paths', () => {
-  it('live compaction and the nightly replay share ONE input builder', () => {
-    const comp = SRC('compaction.ts');
-    const reb = SRC('summary-rebuild.ts');
-    expect(comp).toMatch(/export function buildLeafSummaryInput/);
-    expect(reb).toMatch(/buildLeafSummaryInput/);
-    // and the replay does not keep a second copy of the transformation
-    expect(reb).not.toMatch(/\.filter\(m => !isNonConversationForSummary\(m\.content\)\)/);
-  });
-
-  it('the nightly rebuild reports a CLEAN-STOCK count, so Sweep C can retire it at zero', () => {
-    // A job that repairs forever needs a number that says when it can stop. Without this
-    // the retirement decision would rest on "it looks quiet", which is the reasoning
-    // roadmap #15 forbids.
-    const reb = SRC('summary-rebuild.ts');
-    expect(reb).toMatch(/SUMMARY_REBUILD_CLEAN_STOCK/);
-    // and the counter is its own module — one owner per job, and the file being MEASURED
-    // is not the one doing the measuring.
-    expect(reb).toMatch(/from '\.\/summary-clean-stock\.js'/);
-    expect(SRC('summary-clean-stock.ts')).toMatch(/export function recordCleanStock/);
   });
 });

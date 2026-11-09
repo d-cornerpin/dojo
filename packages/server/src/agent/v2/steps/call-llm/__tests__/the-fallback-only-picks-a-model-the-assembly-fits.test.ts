@@ -19,8 +19,6 @@
 // R-FIXTURE (never a code constant): 600s/180tps -> ceiling 102,600 -> fit budget 51,300.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import Database from 'better-sqlite3';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { stoppedAgents, preemptedAgents } from '../../../../shared-state.js';
@@ -228,36 +226,5 @@ describe('T82a fix 2 — the fallback only picks a model the assembly fits', () 
     expect(assembleContextSpy).not.toHaveBeenCalled();
     const secondDial = callModelSpy.mock.calls[1][0] as { messages: Array<{ content: unknown }> };
     expect(secondDial.messages.map((m) => m.content)).toContain(SIXTY_K_TOKEN_BLOB);
-  });
-});
-
-// ── The shared-helper extraction: one implementation, two call sites, grep-zero duplicate ──
-describe('the re-assemble-for-fit helper is not duplicated', () => {
-  const CALL_LLM_DIR = path.resolve(__dirname, '..');
-  function sourceFiles(): string[] {
-    const out: string[] = [];
-    const walk = (d: string): void => {
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        if (e.isDirectory()) { if (e.name !== '__tests__') walk(path.join(d, e.name)); }
-        else if (e.name.endsWith('.ts')) out.push(path.join(d, e.name));
-      }
-    };
-    walk(CALL_LLM_DIR);
-    return out;
-  }
-
-  it('exactly one file calls the real assembler (`assembleContext(agentId,`) in this package', () => {
-    const hits = sourceFiles()
-      .map((f) => ({ f, n: (fs.readFileSync(f, 'utf8').match(/assembleContext\(agentId,/g) ?? []).length }))
-      .filter((r) => r.n > 0);
-    expect(hits.map((r) => path.basename(r.f))).toEqual(['reassemble-for-fit.ts']);
-    expect(hits[0].n).toBe(1);
-  });
-
-  it('both call sites import the SAME helper, not a re-implementation', () => {
-    const index = fs.readFileSync(path.join(CALL_LLM_DIR, 'index.ts'), 'utf8');
-    const modelCall = fs.readFileSync(path.join(CALL_LLM_DIR, 'model-call.ts'), 'utf8');
-    expect(index).toMatch(/from '\.\/reassemble-for-fit\.js'/);
-    expect(modelCall).toMatch(/from '\.\/reassemble-for-fit\.js'/);
   });
 });

@@ -40,7 +40,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: () => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: () => true,
   };
 });
 

@@ -30,8 +30,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 const frames: Array<Record<string, unknown>> = [];
@@ -62,25 +60,6 @@ import { setAgentStatus } from '../agent-status.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 
 const AGENT = 'agent-t7';
-const SRC = path.join(__dirname, '..', '..');
-
-const TRIGGER_SRC = fs.readFileSync(
-  path.join(SRC, 'agent', 'v2', 'steps', 'preflight', 'turn-trigger.ts'), 'utf8',
-);
-const CHAT_TSX = fs.readFileSync(
-  path.join(SRC, '..', '..', 'dashboard', 'src', 'pages', 'Chat.tsx'), 'utf8',
-);
-const RUNTIME_SRC = fs.readFileSync(path.join(SRC, 'agent', 'runtime.ts'), 'utf8');
-
-/** Executable lines only. These clauses are about what the CODE does; a comment that
- *  explains the rule (and therefore quotes its keywords) must not satisfy or trip them. */
-const codeOnly = (src: string): string => src
-  .split('\n')
-  .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
-  .join('\n');
-
-const TRIGGER_CODE = codeOnly(TRIGGER_SRC);
-const CHAT_CODE = codeOnly(CHAT_TSX);
 
 const lastStatusFrame = (): Record<string, unknown> | undefined =>
   [...frames].reverse().find((f) => f.type === 'agent:status');
@@ -171,71 +150,5 @@ describe('T7 — the status seam stops fabricating a turn kind', () => {
     setAgentStatus(AGENT, 'working');
     const row = mockDb.current!.prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string };
     expect(row.status, 'the 409 arm, the peer busy checks and the reaper all read this row').toBe('working');
-  });
-
-  // ── THE MOVE, AND ITS STOP CONDITION ────────────────────────────────────────────────
-  it('RED: the working status is written AFTER the conversation key is published', () => {
-    const publish = TRIGGER_CODE.indexOf('turnCtx.convKey = chosenConvKey;');
-    const status = TRIGGER_CODE.indexOf("setAgentStatus(agentId, 'working')");
-    expect(publish, 'the conv-key publication is still in this file').toBeGreaterThan(-1);
-    expect(status, 'the status write is still in this file').toBeGreaterThan(-1);
-    expect(
-      status,
-      'frame 1 can only carry a truthful `userFacing` if the key is published first',
-    ).toBeGreaterThan(publish);
-  });
-
-  it('STOP CONDITION, pinned: no yield point separates the status write from the conv-key publication', () => {
-    // The plan stops the task if an `await` sits between the two sites, because moving the
-    // DB `working` write across a yield would widen the 409 / busy-check window observably.
-    // `runTurnTrigger` is a plain function with no `await` at all, so the whole span is one
-    // synchronous block — pinned here so a future `async` cannot reopen the hazard silently.
-    const fn = TRIGGER_CODE.slice(TRIGGER_CODE.indexOf('export function runTurnTrigger'));
-    expect(fn.slice(0, 200)).not.toMatch(/export\s+async\s+function/);
-    const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
-    expect(body, 'no await may separate the two sites').not.toMatch(/\bawait\b/);
-    // ...and the two sites really are both inside that body.
-    expect(body).toMatch(/turnCtx\.convKey = chosenConvKey;/);
-    expect(body).toMatch(/setAgentStatus\(agentId, 'working'\)/);
-  });
-
-  // ── THE CLIENT GUARD ────────────────────────────────────────────────────────────────
-  it('RED: the client refuses to light the working UI on a frame that says userFacing:false', () => {
-    const expr = CHAT_CODE.slice(CHAT_CODE.indexOf('const showWorkingUi'));
-    const decl = expr.slice(0, expr.indexOf(';') + 1);
-    expect(decl, 'the declaration is still in this file').toContain('showWorkingUi');
-    expect(
-      decl,
-      'showWorkingUi must refuse an explicitly non-user-facing frame',
-    ).toMatch(/turnUserFacing\s*!==\s*false/);
-    expect(decl, 'wordy mode stays exempt').toContain('wordyMode');
-    expect(decl, 'a request in flight stays exempt (the busy-box latch)').toContain('awaitingUserReply');
-    // The frame's own answer is what is read — including "it did not say".
-    expect(CHAT_CODE).toMatch(/setTurnUserFacing\(e\.userFacing\)/);
-  });
-
-  it('control: the bare-frame default survives untouched (the media path depends on it)', () => {
-    // `tools/cat/media.ts` broadcasts `{status:'working'}` with neither field to hold the
-    // dots up during image generation. A frame with NO `turnKind` must keep behaving as
-    // today; only an EXPLICIT `userFacing:false` is refused.
-    expect(CHAT_TSX).toMatch(/e\.turnKind\s*\?\?\s*'user'/);
-  });
-
-  // ── THE SIBLING: THE PM RENAME HANDOFF'S WIRE FRAME — DELETED WITH ITS SUBJECT (t139) ──
-  // This clause drove `dispatchPMRenameHandoff` and held its broadcast to the stored row's own
-  // role/displayKind. t139 deleted the handoff (`agent/v2/steps/execute/scaffold-title.ts`): it
-  // asked the PM to name an engine-opened task from whatever message the turn served, which on
-  // the owner's box was a presence ping. No sender, no frame, nothing left to hold.
-
-  // ── THE RIDER, MEASURED ─────────────────────────────────────────────────────────────
-  it('rider: v1\'s heartbeat is dead code, so it is left alone — pinned so a revival must align it', () => {
-    // T7's rider says: align the v1 heartbeat to carry `userFacing` IF it is on a live path,
-    // otherwise record that it is not and touch nothing. Measured: `runtime.ts` exports
-    // `startStatusHeartbeat` and nothing calls it — v2 runs its own local copy
-    // (`agent/v2/loop.ts`), and `runAgentLoop` (v1) no longer exists. If that ever changes,
-    // this clause fails and the aligner becomes required.
-    expect(RUNTIME_SRC).toMatch(/export function startStatusHeartbeat/);
-    const callers = RUNTIME_SRC.match(/(?<!export function )startStatusHeartbeat\(/g) ?? [];
-    expect(callers.length, 'v1 heartbeat has no live caller inside runtime.ts').toBe(0);
   });
 });

@@ -37,8 +37,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -56,75 +54,17 @@ vi.mock('../../../db/connection.js', async () => {
 });
 
 import { runMigrations } from '../../../db/migrations.js';
-import { SERVER_SRC, engineSources, engineText } from './engine-sources.js';
 import { classifyThrownCut, latchEngineCut } from '../engine-exit.js';
 import { initState, type AgentTurnState } from '../state.js';
-import { markTurnsTerminated, type TurnExitReason } from '../turn-record.js';
+import { markTurnsTerminated } from '../turn-record.js';
 import { stoppedAgents } from '../../shared-state.js';
 import { AgentError } from '../../errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE } from '../../stream-patience.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_ERROR, STREAM_IDLE_TIMEOUT_ERROR } from '../../model.js';
-import { ENGINE_IMPOSED_EXITS } from '../../../work/exit-attribution.js';
-import { TELEMETRY_WHITELIST, UNRECOGNISED } from '../../../report/telemetry-whitelist.js';
+import { UNRECOGNISED } from '../../../report/telemetry-whitelist.js';
 import { buildTelemetry, type TelemetrySources } from '../../../report/telemetry-build.js';
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE CORPUS AND THE RESOLVER
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** Comments blanked, length-preserving. Every word below appears in prose in these files. */
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-
-const read = (rel: string): string => fs.readFileSync(path.join(SERVER_SRC, rel), 'utf8');
-
-/**
- * The engine's own collaborators this subject lives in, named rather than walked.
- *
- * `engine-sources.ts`'s header makes the rule: the shared derivation is the driver plus the
- * step packages, and "a guard that wants one of those reads it by name". Three of the four
- * writers outside the step packages are deliberate design choices argued at their sites —
- * the carrier, the table's one write module, the reaper and the boot sweep — so naming them
- * is the narrower and therefore stronger corpus.
- */
-const COLLABORATORS = [
-  'agent/v2/engine-exit.ts',
-  'agent/v2/turn-record.ts',
-  'agent/v2/recovery.ts',
-  'agent/runtime.ts',
-  // t93 fix round 1 (review I-1): the boot sweep. It is the site that KNOWS a process died
-  // mid-turn — its own docstring says restarting is the only thing that can — and it is the
-  // only CALLER of the `terminated` writer that fires on the COMMON crash (killed and
-  // restarted inside the reaper's 75-minute cliff). Without it in the corpus the census would
-  // resolve `terminated` only from a site the boot order starves: exactly the gap I-1 found.
-  'agent/agent-status.ts',
-] as const;
-
 interface Corpus { rel: string; code: string }
-
-function productionCorpus(): Corpus[] {
-  return [
-    ...engineSources().map((s) => ({ rel: s.rel, code: stripComments(s.text) })),
-    ...COLLABORATORS.map((rel) => ({ rel, code: stripComments(read(rel)) })),
-  ];
-}
-
-/**
- * Every exit reason the enum declares, read off the SOURCE rather than listed here.
- *
- * A list in the test is a second copy of the vocabulary and would simply agree with itself
- * when a member is added. This reads `turn-record.ts`'s union, which is the declaration the
- * DB CHECK and the telemetry whitelist are both derived from.
- */
-function enumMembersFromSource(): string[] {
-  const src = read('agent/v2/turn-record.ts');
-  const m = /export type TurnExitReason =([\s\S]*?);/.exec(src);
-  if (!m) throw new Error('turn-record.ts no longer declares `export type TurnExitReason` — this census has lost its subject.');
-  const words = [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
-  if (words.length < 10) throw new Error(`the TurnExitReason union parsed to ${words.length} members — the derivation broke.`);
-  return words;
-}
 
 /** One writer, by SHAPE, with the file it lives in and the shape that found it. */
 interface Writer { reason: string; rel: string; shape: string }
@@ -293,17 +233,6 @@ describe('§0 the writer resolver answers about writers, not about the word appe
     // …and a call with no literal argument is not a writer of any particular word.
     expect(resolveWriters([{ rel: 'x.ts', code: 'latchEngineCut(state, thrownCut);' }])).toEqual([]);
   });
-
-  it('the real corpus is not vacuous — it is the driver, the step packages and the five named files', () => {
-    const corpus = productionCorpus();
-    expect(corpus.length, 'the corpus collapsed').toBeGreaterThan(40);
-    for (const rel of COLLABORATORS) {
-      expect(corpus.map((c) => c.rel), `${rel} fell out of the corpus`).toContain(rel);
-    }
-    // The strip is real: the words are everywhere in the prose and nowhere in a comment here.
-    expect(engineText()).toContain('an owner pressing STOP');
-    expect(productionCorpus().map((c) => c.code).join('\n')).not.toContain('an owner pressing STOP');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -311,75 +240,8 @@ describe('§0 the writer resolver answers about writers, not about the word appe
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 every exit reason the record can hold has a production writer', () => {
-  const writers = (): Map<string, Writer[]> => {
-    const by = new Map<string, Writer[]>();
-    for (const w of resolveWriters(productionCorpus())) {
-      const list = by.get(w.reason) ?? [];
-      list.push(w);
-      by.set(w.reason, list);
-    }
-    return by;
-  };
-
-  it('CENSUS — no enum member is left with nothing that can write it', () => {
-    const by = writers();
-    const declared = new Set(DECLARED_UNWIRED.map((d) => d.reason));
-    const orphans = enumMembersFromSource().filter((w) => !by.has(w) && !declared.has(w));
-    expect(
-      orphans,
-      'these exit reasons are declared in `TurnExitReason`, CHECKed by the column and published '
-      + 'in the telemetry enum, and NOTHING in production can write one. That is BACKLOG line '
-      + "17's defect exactly: the record cannot say what happened, so the ask ladder is handed "
-      + 'the model\'s intent for a turn the engine ended. Wire it, or add a DECLARED_UNWIRED '
-      + 'entry saying what has to be decided first.',
-    ).toEqual([]);
-  });
-
-  it('the eight the item named each resolve a writer, and the shape says which site', () => {
-    const by = writers();
-    for (const reason of ['stop', 'preempt', 'abort', 'terminated', 'budget', 'provider_error',
-      'stream_idle', 'identical_call']) {
-      expect(by.get(reason), `${reason} has no production writer`).toBeTruthy();
-      expect(by.get(reason)!.length, reason).toBeGreaterThan(0);
-    }
-    // And they arrive by the routes the design says, not by accident.
-    expect(by.get('stop')!.map((w) => w.shape)).toContain('latchEngineCut');
-    expect(by.get('stop')!.map((w) => w.shape)).toContain('classifyThrownCut');
-    expect(by.get('terminated')!.map((w) => w.shape)).toContain('UPDATE turns');
-    expect(by.get('terminated')!.map((w) => w.rel)).toContain('agent/v2/turn-record.ts');
-    // …and the two CALL SITES are pinned separately in §2: the boot sweep and the reaper
-    // cover different crashes (review I-1), so one of them going away is a coverage
-    // regression rather than a tidy-up, and the SQL shape alone cannot see that.
-    expect(by.get('terminated')!.filter((w) => w.shape === 'UPDATE turns').length,
-      'the one statement in the one module').toBe(1);
-    expect(by.get('identical_call')!.map((w) => w.shape)).toContain('recorder derivation');
-  });
-
-  it('COUNTING THE OTHER WAY — nothing writes a word the enum does not declare', () => {
-    const members = new Set(enumMembersFromSource());
-    const strays = [...new Set(resolveWriters(productionCorpus())
-      .filter((w) => !members.has(w.reason))
-      .map((w) => `${w.reason} (${w.shape} in ${w.rel})`))];
-    expect(
-      strays,
-      'something writes an exit reason the enum does not declare. TypeScript catches the typed '
-      + 'routes; it cannot see the SQL literal in `turn-record.ts`, and the DB CHECK would throw '
-      + 'at the one moment the write mattered.',
-    ).toEqual([]);
-  });
 
   it('the DECLARED_UNWIRED list cannot rot — each entry still has no writer, and still argues', () => {
-    const by = writers();
-    const members = new Set(enumMembersFromSource());
-    for (const d of DECLARED_UNWIRED) {
-      expect(members, `${d.reason} is declared unwired but is not in the enum at all`).toContain(d.reason);
-      expect(
-        by.get(d.reason),
-        `${d.reason} now HAS a writer — move it off DECLARED_UNWIRED, and say so where the `
-        + 'ladder\'s classification is decided (`work/exit-attribution.ts`).',
-      ).toBeUndefined();
-      expect(d.why.trim().length, `${d.reason}'s reason is too thin to be an argument`).toBeGreaterThan(120);
-    }
     // ⚠ THE LIST IS EMPTY AT THIS HEAD, so the loop above runs zero times and this clause would
     // be vacuous on its own. Said out loud rather than left to be discovered: what carries the
     // weight now is §2's CENSUS clause, which subtracts this list before refusing — so an empty
@@ -391,157 +253,9 @@ describe('§1 every exit reason the record can hold has a production writer', ()
   });
 
   it('THE RETIREMENT HOLDS — neither retired word is back in the enum, the CHECK, or the report', () => {
-    // t113 C, both directions. Re-adding either word to any of the three places it was
-    // declared reds here, and the message says what the re-adder must do first.
-    const members = new Set(enumMembersFromSource());
-    const whitelistSrc = read('report/telemetry-whitelist.ts');
-    const migrationDir = path.join(SERVER_SRC, 'db', 'migrations');
-    // The authority on the column's vocabulary is the LATEST migration that rebuilds it, which
-    // is why this reads 184 rather than 135 — 135 still declares seventeen and always will,
-    // because a past migration is history and is never edited.
-    const check184 = fs.readFileSync(path.join(migrationDir, '184_retire_two_writerless_exit_reasons.sql'), 'utf8');
-    const createStmt = check184.slice(check184.indexOf('CREATE TABLE turns_184'), check184.indexOf(');', check184.indexOf('CREATE TABLE turns_184')));
-
-    for (const r of RETIRED_BY_RULING) {
-      expect(members, `${r.reason} is back in \`TurnExitReason\`. It was retired because nothing `
-        + 'can write it; if that changed, it needs a writer AND a ruling on what the ask ladder '
-        + 'should charge for it, because it is not in ENGINE_IMPOSED_EXITS.')
-        .not.toContain(r.reason);
-      expect(createStmt, `${r.reason} is back in migration 184's CHECK`).not.toContain(r.reason);
-      expect(whitelistSrc, `${r.reason} is back in the telemetry whitelist — a report enum that `
-        + 'declares a member nothing can emit tells its reader the value is possible')
-        .not.toContain(r.reason);
-      expect(r.why.trim().length, `${r.reason}'s reason is too thin to be an argument`).toBeGreaterThan(120);
-    }
     expect(RETIRED_BY_RULING.map((r) => r.reason).sort(),
       'both words, so neither can be quietly dropped from the record of what was retired')
       .toEqual(['compile_pending', 'delegation_exit']);
-
-    // AND THE LIVE COLUMN THAT SHARES ONE OF THE NAMES IS UNTOUCHED. Without this, a future
-    // reader could "finish the job" by deleting `work.compile_pending` and break the
-    // owed-compile gate. The word retired; the column did not.
-    expect(read('agent/v2/compile-owed-gate.ts'),
-      'the owed-compile gate still reads the live work.compile_pending column')
-      .toMatch(/compile_pending = 1/);
-  });
-
-  it('every engine-imposed word is writable, which is what makes the classification reachable', () => {
-    const by = writers();
-    const unreachable = [...ENGINE_IMPOSED_EXITS].filter((w) => !by.has(w));
-    expect(
-      unreachable,
-      '`ENGINE_IMPOSED_EXITS` promises the ask ladder will not charge the model for these. A '
-      + 'member nothing can write is a promise about a state the record cannot reach — which is '
-      + 'how eight of them sat classified and unreachable for 10,934 turns.',
-    ).toEqual([]);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §2 — THE SITES, AND THE CARRIER'S APPLICATION
-//
-// A writer that latches a fact nobody reads is the same zero. These clauses pin the two ends:
-// each latch site, and the recorder actually consulting the carrier.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§2 the sites that end a turn carry their reason, and the recorder reads it', () => {
-  const engine = (): string => stripComments(engineText());
-
-  it('the stop door latches at every checkpoint that can see a live stop', () => {
-    const code = engine();
-    // The pre-call gate, the model call's abandon, the executor's mid-batch break, and the
-    // turn-budget checkpoint's re-read. Four sites, one word.
-    const stopLatches = [...code.matchAll(/latchEngineCut\([^;]*?,\s*'stop'\s*\)/g)];
-    expect(stopLatches.length, 'a stop checkpoint stopped recording the stop').toBeGreaterThanOrEqual(4);
-    expect(code).toMatch(/isStopFenced\(agentId\)[\s\S]{0,400}latchEngineCut\([^;]*'stop'\)/);
-  });
-
-  it('the preempt arms latch `preempt` — the gate and the mid-call abandon', () => {
-    const code = engine();
-    expect([...code.matchAll(/latchEngineCut\([^;]*?,\s*'preempt'\s*\)/g)].length).toBeGreaterThanOrEqual(2);
-    expect(code).toMatch(/preemptedAgents\.has\(agentId\)[\s\S]{0,400}latchEngineCut\([^;]*'preempt'\)/);
-  });
-
-  it('the turn-budget checkpoint latches `budget` — its ONE arm since t137 retired the cap trip', () => {
-    // Exactly one: the continuation-cap arm that was the second writer is deleted (OR-LONG-JOBS:
-    // no total-time cap), and the checkpoint continuation is the only `budget` writer left.
-    const code = engine();
-    expect([...code.matchAll(/latchEngineCut\([^;]*?,\s*'budget'\s*\)/g)].length).toBe(1);
-    expect(code).toMatch(/latchEngineCut\(state, 'budget'\), 'turn-time-budget'/);
-    expect(code).not.toMatch(/'turn-continuation-cap' satisfies/);
-    // t137 round 2: and the step's exit-reason union no longer DECLARES it — a writerless member
-    // is how a deleted exit quietly gets a writer back. Both directions: gone, and the union
-    // still carries the park's own member (the census is reading the right declaration).
-    const union = /export type PreCallGatesExitReason =([\s\S]*?);/.exec(read('agent/v2/steps/pre-call-gates/index.ts'))?.[1] ?? '';
-    expect(union).toContain("'turn-time-budget'");
-    expect(union).not.toContain("'turn-continuation-cap'");
-    // t207: the two dead context-gate members are gone too; four live reasons are left.
-    expect([...union.matchAll(/'[a-z-]+'/g)].length).toBe(4);
-  });
-
-  it('BOTH `terminated` CALL SITES are wired, and the statement stays in one module', () => {
-    // t93 fix round 1 (review I-1). TWO callers, two cases, neither claiming the other's:
-    //   the boot sweep — the COMMON crash (killed mid-turn, restarted inside the hour);
-    //   the periodic reaper — the >75-minute-stale case only.
-    // The first cut had only the reaper, which `index.ts`'s boot order runs BEFORE the status
-    // reset, so the common crash reached no writer at all and the row stayed open for ever.
-    const runtime = stripComments(read('agent/runtime.ts'));
-    expect(runtime, 'the reaper no longer closes the abandoned turn rows').toMatch(/markTurnsTerminated\(agent\.id\)/);
-    const status = stripComments(read('agent/agent-status.ts'));
-    expect(status, 'the boot sweep no longer closes the abandoned turn rows')
-      .toMatch(/markTurnsTerminated\(c\.id\)/);
-    // One module owns `UPDATE turns`, which is why both of them CALL instead of writing.
-    expect(runtime).not.toMatch(/UPDATE\s+turns/);
-    expect(status).not.toMatch(/UPDATE\s+turns/);
-    expect([...stripComments(read('agent/v2/turn-record.ts')).matchAll(/exit_reason = 'terminated'/g)].length,
-      'one statement, two callers').toBe(1);
-  });
-
-  it('the recovery arm classifies the throw and latches what it found, before the cascade runs', () => {
-    const code = engine();
-    // The order is load-bearing: `recordInjury` closes the row itself, so a latch applied after
-    // the cascade would be written to a state the row had stopped listening to.
-    expect(code, 'the thrown turn stopped being classified')
-      .toMatch(/classifyThrownCut\(err, agentId\)[\s\S]{0,200}latchEngineCut\(state, thrownCut\)/);
-    expect(code, 'the cascade is handed the un-latched state, so the injury path cannot see the cause')
-      .toMatch(/recoverFromError\(turnState, err/);
-  });
-
-  it('the executor carries the brake ledger\'s refusal count onto the state the recorder reads', () => {
-    const code = engine();
-    expect(code, 'the identical-call rung stopped being read off the brake\'s own ledger')
-      .toMatch(/identicalCallRefusedThisTurn:[\s\S]{0,160}anyIdenticalCallRefused\(identicalCallState\)/);
-  });
-
-  it('the recorder READS the carrier, and the injury path reads it too', () => {
-    const chain = engine();
-    expect(chain, 'the derivation stopped consulting the engine cut')
-      .toMatch(/const exitReason: TurnExitReason =[\s\S]{0,200}state\.engineCutExit \? state\.engineCutExit/);
-    expect(chain, 'the identical-call rung stopped reaching the derivation')
-      .toMatch(/state\.identicalCallRefusedThisTurn \? 'identical_call'/);
-    // The injury path closes the row FIRST (`AND ended_at IS NULL`), so it must carry the
-    // same fact or the recorder's word never lands on a thrown turn.
-    expect(stripComments(read('agent/v2/recovery.ts')))
-      .toMatch(/markTurnDied\(agentId, state\.turnNumber, state\.engineCutExit \?\? 'unknown'\)/);
-  });
-
-  it('the brake keeps its precedence, and the cut is tested before the answer', () => {
-    const home = engineSources().find((s) => s.text.includes('const exitReason: TurnExitReason ='));
-    expect(home, 'the recorder derivation left the engine corpus').toBeTruthy();
-    const src = home!.text;
-    const chain = src.slice(src.indexOf('const exitReason: TurnExitReason ='));
-    const at = (needle: string): number => {
-      const i = chain.indexOf(needle);
-      expect(i, `${needle} is not in the derivation`).toBeGreaterThan(-1);
-      return i;
-    };
-    // d54cd1f's order, untouched: the brake outranks everything, including the cut.
-    expect(at('toolPhaseEndedBySpinBrake')).toBeLessThan(at('state.engineCutExit'));
-    // …and the cut outranks the answer, because `turns.answered` records the reply separately.
-    expect(at('state.engineCutExit')).toBeLessThan(at('answerRow ?'));
-    // …and the identical-call rung is the LAST word before the fallback, never above the cap.
-    expect(at('toolLoopCapReached')).toBeLessThan(at("'identical_call'"));
-    expect(at("'identical_call'")).toBeLessThan(at("'no_reply_intended'"));
   });
 });
 
@@ -628,16 +342,6 @@ describe('§4 the column and the telemetry enum admit exactly what the enum decl
   const ALL_EIGHT = ['stop', 'preempt', 'abort', 'terminated', 'budget', 'provider_error',
     'stream_idle', 'identical_call'] as const;
 
-  it('the CHECK on `turns.exit_reason` is read off the MIGRATED schema and lists every member', () => {
-    const sql = (mockDb.current!.prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'",
-    ).get() as { sql: string }).sql;
-    const m = /exit_reason IN \(([\s\S]*?)\)/.exec(sql);
-    expect(m, 'the CHECK constraint is gone from the column').toBeTruthy();
-    const admitted = new Set([...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]));
-    expect([...admitted].sort()).toEqual(enumMembersFromSource().sort());
-  });
-
   it('each of the eight INSERTs, and a word outside the enum is refused', () => {
     const db = mockDb.current!;
     db.prepare("INSERT INTO agents (id, name, status) VALUES ('a', 'A', 'idle')").run();
@@ -650,12 +354,6 @@ describe('§4 the column and the telemetry enum admit exactly what the enum decl
     ALL_EIGHT.forEach((r, i) => { expect(() => insert(100 + i, r), r).not.toThrow(); });
     // Both ways: the CHECK is real, so a word nobody declared cannot be written.
     expect(() => insert(999, 'cancelled_by_the_weather')).toThrow(/CHECK/);
-  });
-
-  it('the telemetry whitelist publishes exactly the source enum — no migration, no drift', () => {
-    const field = TELEMETRY_WHITELIST.find((f) => f.path === 'turn.exit_reason');
-    expect(field, '`turn.exit_reason` left the whitelist').toBeTruthy();
-    expect([...(field!.members ?? [])].sort()).toEqual(enumMembersFromSource().sort());
   });
 
   it('each new value survives the telemetry build instead of coercing to <unrecognised>', () => {

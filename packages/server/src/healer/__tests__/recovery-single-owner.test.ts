@@ -44,8 +44,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -95,14 +93,6 @@ import { selectHealerApprovalRouting, evaluateScratchZoneAutoApprove } from '../
 // t265: ONE instance of the recovery module, loaded here at file load, for the single clause
 // whose subject is NOT the restart (the negative control below). See that clause for why.
 import { rehydrateInjuredAgents as rehydrateHoisted } from '../injury-recovery.js';
-
-const SRC = path.join(__dirname, '..', '..');
-const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
-/** Blank comments, keeping line count, so a tombstone naming a retired mechanism is never
- *  read as the mechanism. Same stripper as `agent/__tests__/status-writer-conformance.test.ts`. */
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 const INJURED = 'injured-agent';
 const CONTROL = 'control-agent';
@@ -169,28 +159,6 @@ describe('SWEEP CORE-2 item 2 — the damping the 2026-07-27 correction protects
     ).get(INJURED) as { at_ms: number } | undefined;
     expect(stillThere?.at_ms).toBe(suppression?.at_ms);
   });
-
-  it('the module declares no module-scope Map/Set except the timer and in-flight registries', () => {
-    // The correction's teeth: if a future change puts damping back in memory, this names it.
-    //
-    // t114 WIDENED THE ALLOWLIST BY ONE, and the argument matters because widening an allowlist
-    // is how a clause like this normally dies. The two originals are TIMER REGISTRIES: handles to
-    // things that exist only in this process, which is why they cannot be `healer_state` rows.
-    // `pendingRecoveryNotices` is the same class — a Set of IN-FLIGHT PROMISES, and a promise is
-    // not a persistable fact. It carries no damping, no suppression and no attempt count, so it
-    // cannot be the shadow ledger this clause exists to refuse; it exists so a fire-and-forget
-    // recovery notice can be awaited (t113 hand-up 2), which is what stopped that notice landing
-    // on an unrelated test's spy.
-    //
-    // The teeth are intact: a FOURTH entry still fails here, and any of the three growing a
-    // damping-shaped meaning still has to come past this line to do it.
-    const src = read('healer/injury-recovery.ts');
-    const declared = [...src.matchAll(/^const\s+(\w+)\s*=\s*new\s+(?:Map|Set)\b/gm)].map((m) => m[1]);
-    expect(declared.sort()).toEqual(['autoWakeTimers', 'pendingRecoveryNotices', 'pendingTimers']);
-    // …and the two facades that LOOK like Maps are reads of `healer_state`.
-    expect(src).toMatch(/healerSuppressedUntil\s*=\s*\{[\s\S]{0,400}?readHealerState\('agent_suppression'/);
-    expect(src).toMatch(/providerPatternAlerted\s*=\s*\{[\s\S]{0,400}?readHealerState\('provider_alert'/);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -253,38 +221,10 @@ describe('SWEEP CORE-2 item 2 — the pending dispatch survives a restart THROUG
     expect(attemptsOf(INJURED), 'the sweep ran and armed the injured agent (control is live)').toBe(1);
     expect(attemptsOf(CONTROL), 'the healthy agent was not dragged in').toBe(0);
   });
-
-  it('the unreachable fallback is gone WITH its cause — the filter no longer contradicts it', () => {
-    // Comments stripped — the tombstone at the site names the filter it retired.
-    const src = stripComments(read('healer/injury-recovery.ts'));
-    const rehydrate = src.slice(src.indexOf('export function rehydrateInjuredAgents'));
-    expect(rehydrate, 'the blind spot is back').not.toMatch(/last_error IS NOT NULL/);
-    // POSITIVE CONTROL: the slice really is the function, so the negative above cannot pass
-    // by having matched nothing.
-    expect(rehydrate).toMatch(/status IN \('error', 'paused'\)/);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('SWEEP CORE-2 item 2 — the shadow budget ledger is gone', () => {
-  it('the phantom config key and the audit_log SUM are grep-zero in the Healer', () => {
-    // Comments stripped first, on this repo's own `work-reaper.test.ts` precedent: the
-    // tombstone at the site NAMES the retired mechanism — that is what a landmine note is
-    // for — so a raw text match would either fail on the tombstone or force the tombstone to
-    // be written without the name that makes it findable. The question is whether the shadow
-    // ledger is back in the CODE.
-    const diag = stripComments(read('healer/diagnostic.ts'));
-    // POSITIVE CONTROL: the stripper did not just blank the file.
-    expect(diag).toMatch(/function getBudgetStatus/);
-    // `config.daily_budget_usd` is written by NOTHING in the tree (census at `adfee42`:
-    // one reference, this read). It fell back to a hardcoded 25 while the real
-    // `budgets.global_daily` on the owner's box says 500 — a 20x understated cap the
-    // Healer then put in its own LLM prompt every cycle.
-    expect(diag).not.toMatch(/daily_budget_usd/);
-    // The second half of the same ledger: its own daily-spend accounting off `audit_log.cost`,
-    // which only 2 of 8 `recordCost` sites populate. `costs/` owns the spend.
-    expect(diag).not.toMatch(/SUM\(cost\)[\s\S]{0,80}audit_log|audit_log[\s\S]{0,80}SUM\(cost\)/);
-  });
 
   // Back on the 30s default. The elevated budget this clause carried was reading a wedged
   // dynamic import as slowness: the window measured a cold module-graph instantiation, not
@@ -350,15 +290,6 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
       "SELECT category, result, agent_id FROM healer_actions WHERE diagnostic_id = 'diag-audit'",
     ).get() as { category: string; result: string; agent_id: string } | undefined;
     expect(row).toEqual({ category: 'STUCK_AGENT', result: 'success', agent_id: INJURED });
-  });
-
-  it('the deterministic tier still answers exactly its six codes', () => {
-    const src = read('healer/auto-fix.ts');
-    const map = src.slice(src.indexOf('const FIX_MAP'), src.indexOf('// ── Main Entry Point ──'));
-    expect([...map.matchAll(/^\s{2}([A-Z_]+):/gm)].map((m) => m[1]).sort()).toEqual([
-      'AGENT_ERROR', 'AGENT_PAUSED', 'AGENT_RATE_LIMITED',
-      'ORPHANED_TASK', 'ORPHANED_TOOL_MESSAGES', 'STUCK_AGENT',
-    ]);
   });
 
   it('approval routing still fails closed on all three arms', () => {

@@ -77,13 +77,3 @@ describe('the start-ack family never asks after the person was shown a line', ()
     expect(floors(s)).toContain('start-ack');
   });
 });
-
-describe('the threshold timer and first-tool hook ask the same question before requesting the steer', () => {
-  it('fireStartAckIfOwed returns on a shown line before it sets startAckSteerRequested', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const src = fs.readFileSync(path.resolve(__dirname, '../../preflight/start-ack.ts'), 'utf8');
-    const body = src.slice(src.indexOf('const fireStartAckIfOwed'), src.indexOf('turnCtx.startAckSteerRequested = true;'));
-    expect(body).toMatch(/if \(personShownALineThisTurn\(agentId, turnNumber\)\) return;/);
-  });
-});

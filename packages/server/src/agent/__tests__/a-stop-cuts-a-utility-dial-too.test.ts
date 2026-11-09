@@ -45,7 +45,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...s: string[]): string => p.join(dir, '.dojo', ...s),
-    isTestRun: (): boolean => true,
   };
 });
 const mockDb: { current: Database.Database | null } = { current: null };

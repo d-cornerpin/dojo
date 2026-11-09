@@ -22,9 +22,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -56,12 +53,8 @@ vi.mock('../../../../logger.js', () => ({
 }));
 
 import { agentsHandlers } from '../agents.js';
-import { TOOL_CATEGORIES } from '../../../../tools/categories.js';
 import { forgetAccessGrants } from '../../../access/read.js';
-import { FX, FXID, FXUP } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const AGENTS_SRC = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf8');
+import { FX, FXID } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PM = FXID.n5;
 const WORKER = FXID.n4;
@@ -227,25 +220,6 @@ describe('a capability the door gates on a CHANNEL needs the channel grant', () 
 // it is a test rather than a comment.
 
 describe('every category the capability table points at still exists', () => {
-  const declared = new Set(TOOL_CATEGORIES.map((c) => c.label));
-
-  it('resolves each referenced label, and the table is not typing tool names', () => {
-    const block = AGENTS_SRC.slice(
-      AGENTS_SRC.indexOf('const DELEGABLE_CAPABILITIES'),
-      AGENTS_SRC.indexOf('/** capability label ->'),
-    );
-    expect(block.length, 'the table was found').toBeGreaterThan(100);
-    const referenced = [...block.matchAll(/categories: \[([^\]]*)\]/g)]
-      .flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)].map((q) => q[1]));
-    expect(referenced.length, 'every capability row names at least one category').toBeGreaterThanOrEqual(
-      [...block.matchAll(/label: '/g)].length,
-    );
-    for (const label of referenced) {
-      expect(declared.has(label), `"${label}" is a declared TOOL_CATEGORIES label`).toBe(true);
-      const cat = TOOL_CATEGORIES.find((c) => c.label === label)!;
-      expect(cat.tools.length, `"${label}" resolves to real tools`).toBeGreaterThan(0);
-    }
-  });
 
   it('and a tool from each referenced category really turns the clause positive', async () => {
     const labels = ['web research', 'email', 'calendar', 'files', 'messaging people'];

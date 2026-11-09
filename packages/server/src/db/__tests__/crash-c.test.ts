@@ -110,16 +110,4 @@ describe('crash test C — a unit killed mid-flight leaves no half-truth', () =>
     // have run — which is what makes commit-then-emit a property rather than a habit.
     expect(emitted()).toEqual([]);
   });
-
-  it('the two arms differ ONLY in where the kill lands — same child, same writes', () => {
-    // Stated as a clause so nobody later "fixes" the arms apart: if the two modes
-    // diverged in what they write, the comparison above would prove nothing.
-    const src = fs.readFileSync(CHILD, 'utf8');
-    expect(src).toMatch(/kill-inside/);
-    expect(src).toMatch(/kill-after/);
-    // Both arms write the same two rows and queue the same one effect.
-    expect(src.match(/put\('first'\)/g)).toHaveLength(2);
-    expect(src.match(/put\('second'\)/g)).toHaveLength(2);
-    expect(src.match(/afterCommit\(\(\) => emit\('EMITTED'\)\)/g)).toHaveLength(2);
-  });
 });

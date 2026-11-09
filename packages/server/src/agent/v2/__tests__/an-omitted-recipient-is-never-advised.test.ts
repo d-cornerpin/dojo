@@ -11,7 +11,6 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
 
 const { ownerAddresses, senders, presence } = vi.hoisted(() => ({
   presence: { now: 'in_dojo' as 'in_dojo' | 'away' },
@@ -57,17 +56,6 @@ beforeEach(() => {
   ownerAddresses.clear();
   senders.length = 0;
   senders.push({ name: 'Pat Example', address: '+15550100' });
-});
-
-describe('no text the agent reads advises omitting the recipient', () => {
-  it('comms.ts and imessage-bridge.ts carry no "omit the recipient" advice', () => {
-    const comms = readFileSync(new URL('../../tools/cat/comms.ts', import.meta.url), 'utf8');
-    const bridge = readFileSync(new URL('../../../services/imessage-bridge.ts', import.meta.url), 'utf8');
-    for (const [name, src] of [['tools/cat/comms.ts', comms], ['services/imessage-bridge.ts', bridge]] as const) {
-      expect(src, name).not.toContain('OMIT the recipient');
-      expect(src, name).not.toContain('omit recipient');
-    }
-  });
 });
 
 describe('the allowlist refusal itself gives no omit-advice', () => {

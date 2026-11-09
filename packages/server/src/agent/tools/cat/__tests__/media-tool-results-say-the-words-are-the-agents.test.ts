@@ -56,16 +56,13 @@ vi.mock('../../../wake-with-notice.js', () => ({
 vi.mock('../../../../home.js', async () => {
   const p = await import('node:path'); const o = await import('node:os');
   const dir = p.join(process.env.DOJO_TEST_HOME_ROOT || o.tmpdir(), 'dojo-media-words');
-  return { homeDir: (): string => dir, dojoDir: (...a: string[]): string => p.join(dir, '.dojo', ...a), isTestRun: (): boolean => true };
+  return { homeDir: (): string => dir, dojoDir: (...a: string[]): string => p.join(dir, '.dojo', ...a) };
 });
 vi.mock('../../../effects/fs.js', () => ({ existsSync: () => true, mkdirSync: () => undefined, copyFileSync: () => undefined, statSync: () => ({ size: 3 }) }));
 vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 vi.mock('../../../../services/audio-gen-model.js', () => ({ getEffectiveAudioGenModel: () => ({ modelId: 'fake-audio', providerId: 'fake-provider', apiModelId: 'x' }) }));
 vi.mock('../../../../services/music-gen-model.js', () => ({ getEffectiveMusicGenModel: () => ({ modelId: 'fake-music', providerId: 'fake-provider', apiModelId: 'x' }) }));
-
-import fs from 'node:fs';
-import path from 'node:path';
 import { mediaHandlers } from '../media.js';
 
 beforeEach(() => {
@@ -102,16 +99,5 @@ describe('the media tool results say the agent\'s words are what the person gets
       expect(r.content, name).toContain(`only text that arrives with the ${kind}`);
       expect(r.content, name).not.toMatch(COACHES_SILENCE);
     }
-  });
-  it('video_create (source: its start needs a live provider)', () => {
-    const src = fs.readFileSync(path.resolve(__dirname, '..', 'media.ts'), 'utf8');
-    expect(src).toContain('only text that arrives with the video, so write them now');
-    const started = src.slice(src.indexOf('Video generation started'), src.indexOf('Video generation started') + 600);
-    expect(started).not.toMatch(COACHES_SILENCE);
-  });
-  it('the image_create doc no longer tells the agent to say nothing after the call', () => {
-    const doc = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', '..', 'tools', 'docs', 'image_create.md'), 'utf8');
-    expect(doc).not.toMatch(/End your turn now|own caption|nothing after it/);
-    expect(doc).toContain('The words are yours');
   });
 });

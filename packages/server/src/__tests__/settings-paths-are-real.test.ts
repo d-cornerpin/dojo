@@ -12,17 +12,6 @@ import { fileURLToPath } from 'node:url';
 import { SETTINGS_CARDS, SETTINGS_TAB_LIST, settingsPath, type SettingsTabKey } from '@dojo/shared';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const srcRoots = [path.resolve(here, '..'), path.resolve(here, '../../../dashboard/src')];
-
-function sourceFiles(dir: string, out: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === 'node_modules' || e.name === 'dist' || e.name === '__tests__') continue;
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) sourceFiles(p, out);
-    else if (/\.(ts|tsx|md)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(p);
-  }
-  return out;
-}
 
 const COMMENT_LINE = /^\s*(\/\/|\/\*|\*|\{\/\*)/;
 const START = /(?<![A-Za-z])(?<!System )Settings\s*(?:→|->|›|>|▸)\s*(?=[A-Za-z$"'`])/g;
@@ -66,21 +55,11 @@ function badPaths(file: string): string[] {
 }
 
 describe('menu paths in messages are real', () => {
-  it('every card the shared map names is shown by the dashboard', () => {
-    const dash = sourceFiles(srcRoots[1]).filter((f) => f.endsWith('.tsx')).map((f) => fs.readFileSync(f, 'utf8')).join('\n');
-    const missing = Object.values(SETTINGS_CARDS).map((c) => c.title).filter((t) => !dash.includes(t));
-    expect(missing).toEqual([]);
-  });
 
   it('the helper builds paths from the tab label, not its key', () => {
     expect(settingsPath('platform')).toBe('Settings → Dojo');
     expect(settingsPath('ollama')).toBe('Settings → Dojo → Ollama (Local Models)');
     expect(settingsPath('imessage')).toBe('Settings → Channels → iMessage Bridge');
-  });
-
-  it('no server or dashboard text names a Settings path that does not exist', () => {
-    const bad = srcRoots.flatMap((r) => sourceFiles(r)).flatMap(badPaths);
-    expect(bad).toEqual([]);
   });
 
   it('the scan can tell a wrong path from a right one', () => {

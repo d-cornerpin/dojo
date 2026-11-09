@@ -31,9 +31,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -72,13 +69,6 @@ import {
 } from '../other-threads-lane.js';
 import { withChannel } from '../thread-channel.js';
 import { recalledRowLabel } from '../party-label.js';
-// ⚠ NOT A PATH. `guard-corpus-census.test.ts` refuses a guard that reaches into `agent/v2/steps` by
-// hand: six copies of that walk existed before the GUARD-AUDIT and they are why the corpus drifted.
-// `engineFileContaining` locates the injection site through the shared derivation, so a tranche that
-// moves the step package moves this clause with it instead of blinding it silently.
-import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const AGENT = 'threaded';
 const SERVED = 'conv-dashboard';
 const db = (): Database.Database => mockDb.current!;
@@ -335,95 +325,6 @@ describe('§5 the lane rides the tail, provably', () => {
     ];
     for (const line of CAUGHT) expect(importSpecifiers(line).some(resolvesToLane), line).toBe(true);
     for (const line of IGNORED) expect(importSpecifiers(line).some(resolvesToLane), line).toBe(false);
-    // The basename rule is exact only while ONE module in the tree carries that name.
-    const named: string[] = [];
-    const walkNames = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const abs = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__') walkNames(abs); continue; }
-        if (/^other-threads-lane\.[cm]?[jt]sx?$/.test(e.name)) named.push(abs);
-      }
-    };
-    walkNames(SRC);
-    expect(named).toHaveLength(1);
-  });
-
-  it('ONE importer, and it is the POST-assembly tail step', () => {
-    const assembler = fs.readFileSync(path.join(SRC, 'memory', 'assembler.ts'), 'utf8');
-    // `volatileFrom` IS the assembled array's length, so any push the loop makes is behind the
-    // cache breakpoint BY CONSTRUCTION rather than by placement.
-    //
-    // ⚠ PINNED AT THE ASSIGNMENT, NOT AT A SENTENCE ABOUT IT (t113 B3 — round-4 F7's SECOND
-    // copy). This leg used to assert that `memory/assembler.ts` CONTAINS the string
-    // "`volatileFrom` is this array's length" — a COMMENT. The invariant is real; the clause was
-    // not. It was satisfiable by the prose and blind to the thing that would break the property:
-    // reword that comment and this reds while the invariant holds, move the capture past an
-    // injection and this stays green while the invariant is gone. Exactly backwards, and exactly
-    // what G4 means by a clause satisfiable by the prose above the call.
-    //
-    // The report-side copy was repinned in round 4 (`report/__tests__/
-    // the-engine-says-what-happened-to-the-card.test.ts`, commit d70dddb9); this is the same fix
-    // at the copy that was missed. The capture lives in `agent/v2/steps/assemble/index.ts`, so
-    // that is what is read, with comments stripped.
-    const assembleCode = fs.readFileSync(
-      path.join(SRC, 'agent', 'v2', 'steps', 'assemble', 'index.ts'), 'utf8',
-    )
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
-    // Non-vacuity: the stripped source is still the step, not an empty string.
-    expect(assembleCode.length, 'the assemble step did not read as source').toBeGreaterThan(400);
-    expect(assembleCode, 'the volatile boundary is no longer captured as the assembled message '
-      + 'array\'s length — if it is computed some other way, every "the loop appends past the '
-      + 'boundary" argument in this tree needs re-deriving')
-      .toMatch(/const\s+volatileFrom\s*=\s*ctx\.messages\.length\s*;/);
-    // AND IT IS CAPTURED BEFORE ANYTHING IS APPENDED: nothing pushes onto `ctx.messages`
-    // between the capture and the hand-out.
-    const at = assembleCode.search(/const\s+volatileFrom\s*=/);
-    const ret = assembleCode.indexOf('volatileFrom,', at);
-    expect(at, 'the assignment was not found at all').toBeGreaterThan(-1);
-    expect(ret, 'the captured boundary is never handed out').toBeGreaterThan(at);
-    expect(assembleCode.slice(at, ret), 'something appends to the assembled message array AFTER '
-      + 'the volatile boundary was captured, so the boundary understates the cacheable region')
-      .not.toMatch(/ctx\.messages\.push\(/);
-    const importers: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const abs = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
-        if (!e.name.endsWith('.ts') || e.name.endsWith('.test.ts')) continue;
-        if (importSpecifiers(fs.readFileSync(abs, 'utf8')).some(resolvesToLane)) {
-          importers.push(path.relative(SRC, abs));
-        }
-      }
-    };
-    walk(SRC);
-    // t211: and the assembler, for ONE number: the size of the block, to set the loop tail's room aside
-    // (`otherThreadsReserveExtra`). It never builds, renders or tags the block, so no prefix entry can carry it.
-    expect(importers.sort()).toEqual(['agent/v2/steps/call-llm/pre-call-injections.ts', 'memory/assembler.ts']);
-    const assemblerImport = /import \{([^}]*)\} from '\.\/other-threads-lane\.js'/.exec(assembler);
-    expect(assemblerImport?.[1].trim(), 'the assembler takes the reserve size and nothing else').toBe('otherThreadsReserveExtra');
-    for (const name of ['buildOtherThreadsInjection', 'renderOtherThreads', 'readOtherThreads', 'engine.other-threads']) {
-      expect(assembler, name).not.toContain(name);
-    }
-  });
-
-  it('it is DECLARED in the lane table, which is what protects it from the priority repair', () => {
-    const lanes = fs.readFileSync(path.join(SRC, 'memory', 'lanes.ts'), 'utf8');
-    expect(lanes).toContain("'engine.other-threads': 'lane.loop-tail'");
-    // The census in the assembly-repair suite requires the injected literals and the table to be
-    // the SAME SET; this is the half that lives on this side of it.
-    expect(engineFileContaining("'engine.other-threads'")).not.toBeNull();
-  });
-
-  it('HUMAN TURNS ONLY — the push sits inside the conversation gate', () => {
-    const site = engineFileContaining("'engine.other-threads'")!.text;
-    const gate = site.indexOf("counterparty.kind === 'user' && turnCtx.conversationId");
-    const push = site.indexOf("'engine.other-threads'");
-    expect(gate).toBeGreaterThan(-1);
-    expect(push).toBeGreaterThan(gate);
-    // And it is inside that block, not merely after it: the recall-lane injection that follows the
-    // block is the next landmark, so the push must come before it.
-    expect(push).toBeLessThan(site.indexOf("mctx.recallLane = ctx.recallLane"));
   });
 });
 

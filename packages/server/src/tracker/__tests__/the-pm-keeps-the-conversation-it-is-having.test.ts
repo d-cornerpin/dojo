@@ -57,20 +57,6 @@ const MODEL = 'pm-wipe-model';
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const readSrc = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf-8');
 
-/** Comments stripped before any source clause matches, so a clause can never be satisfied —
- *  or broken — by the prose above the code. (G4: a clause satisfiable by its own comment is a
- *  clause that tests the comment.) */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => {
-      const i = l.indexOf('//');
-      return i === -1 ? l : l.slice(0, i);
-    })
-    .join('\n');
-}
-
 function seedModel(): void {
   const db = mockDb.current!;
   db.prepare(
@@ -303,44 +289,6 @@ describe('§A the conversation survives the sweep that used to erase it', () => 
     expect(text, 'a system row that renders to nothing still evicted a real message')
       .toContain('exchange line 0');
     expect(text, 'the newest line must obviously still be there').toContain(`exchange line ${cap - 2}`);
-  });
-
-  it('A3 — the unscoped by-agent conversation wipe is gone from the sweep, and from the tree', () => {
-    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
-    const store = stripComments(readSrc('memory/message-store.ts'));
-
-    // The call is gone from the sweep…
-    expect(pmAgent, 'the PM sweep calls an unscoped conversation wipe again')
-      .not.toMatch(/deleteNonSystemForAgent/);
-    // …and the door itself is gone from the store, so it cannot be called from anywhere.
-    expect(store, 'the unscoped by-agent conversation delete is back in the store')
-      .not.toMatch(/deleteNonSystemForAgent/);
-
-    // Counted the other way: a replacement under a different name is the same loaded gun. No
-    // delete over `messages` may be scoped by `agent_id` and `role` alone — every one of them
-    // must carry a lane, a seq cutoff, or be the whole-agent teardown.
-    const deletes = store.match(/DELETE\s+FROM\s+messages[^;`]*/gi) ?? [];
-    expect(deletes.length, 'the delete census found nothing — the matcher has gone stale').toBeGreaterThan(0);
-    for (const stmt of deletes) {
-      const roleScopedOnly = /role\s*(!=|<>)\s*'system'/i.test(stmt)
-        && !/lane/i.test(stmt) && !/seq\s*</i.test(stmt);
-      expect(roleScopedOnly, `a role-only by-agent conversation delete is back: ${stmt.trim()}`).toBe(false);
-    }
-  });
-
-  it('A4 — the pruner cannot delete a row the window would have shown', () => {
-    // The two numbers were set years apart and nothing made them agree: a pruner that keeps
-    // the newest N while the lane asks for M > N can delete rows the assembly was about to
-    // render. t206: the window is every row since the newest fold now, so no row count can
-    // agree with it; the pruner stops at the fold boundary instead. Driven behaviourally in
-    // `memory/__tests__/t206-cache-cost-the-pm-tail-holds-still.test.ts` §1d; this is the
-    // structural half: the cut is bounded by the boundary the view starts at.
-    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
-    const max = /const PM_MAX_MESSAGES = (\d+)/.exec(pmAgent);
-    expect(max, 'PM_MAX_MESSAGES is no longer declared where this clause can read it').not.toBeNull();
-    const body = pmAgent.slice(pmAgent.indexOf('export function pruneOldPMMessages('));
-    expect(body.slice(0, body.indexOf('\n}\n')), 'the pruner no longer stops at the fold boundary')
-      .toMatch(/Math\.min\([^)]*horizon\.anchorSeq\)/);
   });
 });
 

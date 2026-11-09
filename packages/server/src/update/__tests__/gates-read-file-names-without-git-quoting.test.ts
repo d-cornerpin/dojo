@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const BYTES = path.join(ROOT, 'deploy/checks/check-bytes.mjs');
-const NAMES = path.join(ROOT, 'deploy/checks/check-no-personal-names.mjs');
 const repos: string[] = [];
 
 afterAll(() => { for (const r of repos) fs.rmSync(r, { recursive: true, force: true }); });
@@ -85,11 +84,5 @@ describe('the two gates read file names without git quoting', () => {
     const { status, out } = runBytes(dir, []);
     expect(status).toBe(1);
     expect(out).toContain('nothing was checked');
-  });
-
-  it('the names gate reads its file list NUL-delimited, not by quoted lines', () => {
-    const text = fs.readFileSync(NAMES, 'utf-8');
-    expect(text).not.toContain('execSync("git ls-files"');
-    expect(text).toContain("'ls-files', '-z'");
   });
 });

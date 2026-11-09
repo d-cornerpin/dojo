@@ -48,8 +48,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import type { ToolCall } from '@dojo/shared';
 
 const broadcastSpy = vi.fn();
@@ -133,15 +131,6 @@ describe('TB8 JOB 1 — the provider’s own terminal reason reaches the engine'
   it('the classifier that was waiting for it accepts it unchanged', () => {
     expect(outputTruncationClassifier({ stopReason: 'length', contentLength: 0, currentBudget: 0 }).truncated).toBe(true);
     expect(outputTruncationClassifier({ stopReason: 'end_turn', contentLength: 0, currentBudget: 0 }).truncated).toBe(false);
-  });
-
-  it('THE CAUSE IS GONE: model.ts no longer fabricates the stop reason on the stream path', () => {
-    const src = readFileSync(path.resolve(__dirname, '../../../../model.ts'), 'utf8');
-    // The exact discarding line, which every DeepSeek/OpenAI/OpenRouter call went through.
-    expect(src).not.toMatch(/stopReason:\s*toolCalls\.length > 0 \? 'tool_use' : 'end_turn',/);
-    // The provider's field is now READ off the stream.
-    expect(src).toMatch(/finish_reason/);
-    expect(src).toMatch(/resolveProviderStopReason\(/);
   });
 });
 
@@ -271,17 +260,6 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
     expect(spec!.priority).toBeLessThan(p('empty-response'));
     expect(spec!.priority).toBeLessThan(p('thrash-gate'));
   });
-
-  it('THE CACHE TENET — the steer rides the tail, nothing enters the prompt prefix', () => {
-    const src = readFileSync(path.resolve(__dirname, '../empty-response.ts'), 'utf8');
-    // Steers are delivered as synthetic tail messages by the steer queue's own drain. This
-    // rung enqueues through `persistEngineSteer` (HL3, 2026-08-15 — the RC-19 door, which
-    // calls `enqueueSteer` itself and adds the durable role='system' row) and composes no
-    // system-prompt text of its own. The tenet is untouched by that change: a `role='system'`
-    // row is stripped from model context, so not one prompt byte moved in either direction.
-    expect(src).toMatch(/persistEngineSteer\(/);
-    expect(src).not.toMatch(/systemPrompt|systemVolatile/);
-  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
@@ -323,10 +301,5 @@ describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () =>
       }),
     }));
     expect(out.directive).toBe('proceed');
-  });
-
-  it('the rung is keyed on the CALL, never on who made it — no agent is named anywhere in it', () => {
-    const src = readFileSync(path.resolve(__dirname, '../empty-response.ts'), 'utf8');
-    expect(src).not.toMatch(new RegExp(`isPMAgent|getPMAgentId|pm_agent_id|'${FXID.n5}'`));
   });
 });

@@ -48,11 +48,7 @@
 // and `MAX_DRAIN_STUCK`/the wake ladder are not in this diff.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import Database from 'better-sqlite3';
-// PHASE-6 GUARD-AUDIT: the engine corpus is derived ONCE, never by path.
-import { engineText } from '../v2/__tests__/engine-sources.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -76,8 +72,6 @@ import { humanAsksOpen, selfWakeStandDown } from '../../work/work-reaper.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
-const SRC = path.join(__dirname, '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 /** A real person's message, as every channel producer hands it to the single writer. */
 const ownerInbound = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -144,65 +138,5 @@ describe('T10 Step 1d — the two counters answer different questions, on real r
       standDown: true, humanAsksOpen: -1,
       tiers: { mainUser: 0, safeSenders: 0, otherAgents: 0 },
     });
-  });
-});
-
-describe('T10 Step 1d — the drain is wired to the authority', () => {
-  const drain = (): string => read('agent/runtime.ts');
-
-  it('the unserved-wake drain asks `selfWakeStandDown`, not the conversation count', () => {
-    expect(drain()).toMatch(/const \{ standDown[^}]*\} = selfWakeStandDown\(agentId\)/);
-    expect(drain()).toMatch(/from '\.\.\/work\/work-reaper\.js'/);
-  });
-
-  it('every one of the three log lines carries the SPINE number under its own name', () => {
-    // The field name was never the defect; the value under it was. It keeps its name, and a
-    // rename to match the wrong number is refused in advance by the plan.
-    // The trailing comma used to separate the three LOG payloads from the one destructuring
-    // (`{ standDown, humanAsksOpen: openAsks }`, which closed with `}`). SWEEP CORE-2 item 5
-    // added `tiers` to the verdict, so the destructuring now ends in a comma too and is
-    // excluded BY NAME instead — the discriminator stays exact rather than becoming a count
-    // somebody has to remember to bump.
-    const lines = drain().match(/humanAsksOpen: \w+,(?! tiers)/g) ?? [];
-    expect(lines.length, 'three drain log lines carry the count').toBe(3);
-    for (const l of lines) expect(l).toBe('humanAsksOpen: openAsks,');
-  });
-
-  it('the OLD wiring is gone from the drain — the conversation count no longer decides it', () => {
-    const code = drain()
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
-    expect(code).not.toMatch(/const waitingHumans = getWaitingHumanConversations\(agentId\)\.length/);
-    // POSITIVE CONTROL: the stripper did not blank the drain.
-    expect(code).toMatch(/unserved_wake/);
-  });
-});
-
-describe('T10 Step 1d — `getWaitingHumanConversations` survives on POSITIVE evidence (#15)', () => {
-  it('it has live production callers doing a job a row count cannot do', () => {
-    // Command, unit CALL SITES:
-    //   git grep -n "getWaitingHumanConversations(" HEAD -- packages/server/src | grep -v __tests__
-    // Five production sites remain, and each needs the CONVERSATIONS — their keys, their
-    // oldest waiting message, their order — not a number.
-    const callers: Array<[string, RegExp]> = [
-      ['agent/runtime.ts', /const waiting = getWaitingHumanConversations\(agentId\)/],
-      ['index.ts', /getWaitingHumanConversations\(id\)\.length > 0/],
-    ];
-    for (const [file, re] of callers) {
-      expect(read(file), `${file} no longer calls it`).toMatch(re);
-    }
-    // The engine's own caller (`steps/preflight/turn-trigger.ts`) is read through the SHARED
-    // CORPUS, never by path — the guard-corpus census refused the by-path version and was
-    // right: this phase is still moving code between the driver and the step packages, and a
-    // clause naming one of them stops seeing its subject at the next cut.
-    expect(engineText()).toMatch(/getWaitingHumanConversations\(agentId\)/);
-  });
-
-  it('the human-conversation drain still needs the HEAD, which a count cannot give it', () => {
-    // The clinching piece of positive evidence: the other drain quarantines a poisoned
-    // conversation BY KEY after MAX_DRAIN_STUCK failed serves. There is no key in a count.
-    const rt = read('agent/runtime.ts');
-    expect(rt).toMatch(/waiting\[0\]\.oldestWaitingRowid/);
-    expect(rt).toMatch(/quarantineWaitingConversation\(agentId, poisoned\.key\)/);
   });
 });

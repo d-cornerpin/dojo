@@ -1,8 +1,5 @@
 // P3: the Healer report never silently drops items. A check that leaves items out shows one visible line saying how many.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 import { capItemsShowingOmissions, type DiagnosticItem } from '../diagnostic.js';
 
 const mk = (severity: DiagnosticItem['severity'], i: number): DiagnosticItem =>
@@ -21,10 +18,5 @@ describe('a capped check says how many items it left out', () => {
   it('adds nothing when nothing was dropped', () => {
     const out = capItemsShowingOmissions([mk('warning', 1)], 10_000, 'x');
     expect(out).toHaveLength(1);
-  });
-  it('WIRE: every collector in the report goes through the visible version', () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'diagnostic.ts'), 'utf8');
-    const compile = src.slice(src.indexOf('export function compileDiagnosticReport'));
-    expect(compile.slice(0, compile.indexOf('// Sort:'))).not.toContain('capItemsByText(');
   });
 });

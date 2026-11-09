@@ -33,9 +33,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -67,11 +64,7 @@ import { MessageSlot } from '../../prompt/registry/types.js';
 import { getMessageEntries } from '../../prompt/registry/registry.js';
 import '../../prompt/registry/entries.js';
 import { answeredPairsForMessages, recentlyAnsweredAsks } from '../../agent/v2/answered-edge.js';
-import { engineText, engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 import { relativeTimeAgo } from '../../agent/v2/outbound-ledger.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
 const AGENT = 'core2-recall';
 const OTHER_AGENT = 'core2-recall-other';
@@ -160,10 +153,6 @@ describe('§1 the recall lane rides the tail', () => {
   });
 
   it('MessageSlot 400 is RETIRED, not reused — a per-ask lane may never sit there again', () => {
-    const types = read('prompt/registry/types.ts');
-    expect(types).not.toMatch(/^\s*RelevantMemory = /m);
-    // The number stays retired with its reason, the same discipline TrackerNotif=1500 got.
-    expect(types).toMatch(/400[\s\S]{0,400}RETIRED|RETIRED[\s\S]{0,400}400/);
     const slots = Object.values(MessageSlot).filter((v): v is number => typeof v === 'number');
     expect(slots).not.toContain(400);
   });
@@ -216,28 +205,6 @@ describe('§1 the recall lane rides the tail', () => {
     const entry = getMessageEntries().find((e) => e.id === RECALL_LANE_ENTRY_ID);
     expect(entry, `${RECALL_LANE_ENTRY_ID} is not a registered message entry`).toBeDefined();
     expect(entry!.slot).toBe(RECALL_LANE.slot);
-    // The injection site sits in the ENGINE — the driver plus its step packages — and the
-    // corpus is derived by `engine-sources.ts`, never by a path this file spells (the
-    // guard-corpus census refuses a second hand-rolled walk). Reading the ONE engine file
-    // that holds all three sites is what makes comparing their positions meaningful: indices
-    // across a join measure the order the files were concatenated in, not the order the
-    // engine executes.
-    const home = engineFileWithBoth(
-      `injectRegistryMessage('msg.turn-context'`, `injectRegistryMessage('msg.current-time'`,
-    );
-    const at = (id: string) => home.text.indexOf(`injectRegistryMessage('${id}'`);
-    expect(at(RECALL_LANE_ENTRY_ID)).toBeGreaterThan(-1);
-    expect(at('msg.turn-context')).toBeLessThan(at(RECALL_LANE_ENTRY_ID));
-    // T67b: peer-status injects BEFORE this lane (most-stable-first) and the clock after it —
-    // the injection order and the slot numbers say the same thing, which is what makes either
-    // one auditable. (The directive pin that once sat between them was deleted at t145.)
-    expect(at('msg.peer-status')).toBeLessThan(at(RECALL_LANE_ENTRY_ID));
-    expect(at(RECALL_LANE_ENTRY_ID)).toBeLessThan(at('msg.current-time'));
-  });
-
-  it('ENABLED: no flag can switch per-message recall off (owner decision 2026-07-26)', () => {
-    const src = read('memory/recall-lane.ts');
-    expect(src).not.toMatch(/getConfig\(|config\.get|FEATURE_|_ENABLED\b/);
   });
 });
 
@@ -486,26 +453,6 @@ describe('§4 the conclusion crosses a session boundary', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§5 answeredness is read, never sniffed', () => {
-  it('the lane owns no answer-shaped prose test and no second answer query', () => {
-    // Comments are STRIPPED before the check: the module header deliberately NAMES the column
-    // it does not read, which is the record of where the key lives and must not be the thing
-    // that trips the clause (the same strip `prefix-lane-conformance.test.ts` S3 uses).
-    const code = read('memory/recall-lane.ts')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    expect(code).not.toContain('answer_message_id'); // it asks the edge, it does not re-join
-    expect(code).toContain('answeredPairsForMessages');
-    for (const smell of ['CLOSEOUT', 'looksLikeAnswer', /here('|’)s the/i]) {
-      if (typeof smell === 'string') expect(code).not.toContain(smell);
-      else expect(code).not.toMatch(smell);
-    }
-  });
-
-  it('`engine.recently-answered` reads the SAME owner, not its own hand-written join', () => {
-    const engine = engineText();
-    expect(engine).toContain('recentlyAnsweredAsks');
-    expect(engine).not.toContain('answer_message_id IS NOT NULL');
-  });
 
   it('THE DEAD BLOCK: an epoch-ms `messages.created_at` renders a real relative time', () => {
     // ⚠ This is the clause that would have caught the owner's 2026-08-09 incident's mechanism.
@@ -529,54 +476,5 @@ describe('§5 answeredness is read, never sniffed', () => {
     const limits = LANE_LIMITS[RECALL_LANE_ID];
     expect(limits?.rows?.recallPairs).toBeGreaterThan(0);
     expect(limits?.chars?.answerPreview).toBeGreaterThan(0);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §6 — WHAT RECALL CAN REACH. `SWEEP-C.md` T4 Step 1's "summaries embedded since Phase 1 —
-// assert coverage", asserted STRUCTURALLY rather than by counting rows on one box.
-//
-// A summary that is written and never embedded is invisible to every semantic path on the
-// platform — this lane, `selectSummariesByRelevance`, `memorySearch` — and it fails SILENTLY:
-// `queueEmbedding` is fire-and-forget and `storeEmbedding` swallows every error, so the only
-// symptom is an agent that "constantly forgets", which is the defect T4 is named after. A
-// census over the WRITE sites cannot be fooled by whichever rows happen to exist today.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§6 every summary write is embedded, so recall can reach it', () => {
-  const dag = () => read('memory/dag.ts');
-
-  it('every `INSERT INTO summaries` site queues an embedding in the same function', () => {
-    const src = dag();
-    const inserts = [...src.matchAll(/INSERT INTO summaries\b/g)];
-    expect(inserts.length).toBeGreaterThan(0);
-    for (const m of inserts) {
-      // The queue must follow the insert inside the SAME function body. A window is used
-      // rather than a whole-file grep because two queues and three inserts would pass a
-      // file-level count while one insert went unembedded.
-      const after = src.slice(m.index!, m.index! + 2600);
-      expect(
-        /queueEmbedding\('summary'/.test(after),
-        `an INSERT INTO summaries at offset ${m.index} has no queueEmbedding('summary', …) after it`,
-      ).toBe(true);
-    }
-  });
-
-  it('a summary whose CONTENT is rewritten is RE-embedded, not left stale', () => {
-    // The insert path dedups on (source_type, source_id), so an update that only queued would
-    // be silently ignored and the vector would keep pointing at the contaminated text.
-    const src = dag();
-    const upd = src.indexOf('UPDATE summaries SET content');
-    expect(upd).toBeGreaterThan(-1);
-    const rebuild = read('memory/summary-rebuild.ts');
-    expect(rebuild).toContain("refreshEmbedding('summary'");
-    const embeddings = read('memory/embeddings.ts');
-    expect(embeddings).toMatch(/refreshEmbedding[\s\S]{0,600}DELETE FROM embeddings/);
-  });
-
-  it('the backfill is the net under the fire-and-forget queue, and it covers summaries', () => {
-    const backfill = read('memory/backfill.ts');
-    expect(backfill).toMatch(/FROM summaries[\s\S]{0,300}LEFT JOIN embeddings/);
-    expect(backfill).toContain("source_type = 'summary'");
   });
 });

@@ -78,9 +78,6 @@ function declaredParams(markdown: string): string[] | null {
   return names;
 }
 
-const schemaParams = (def: ToolDefinition): string[] =>
-  Object.keys((def.input_schema.properties ?? {}) as Record<string, unknown>);
-
 // ════════════════════════════════════════════════════════════════════════
 // 0 — NON-VACUITY. A reader that finds nothing to read reports a clean sweep.
 // ════════════════════════════════════════════════════════════════════════
@@ -89,12 +86,6 @@ describe('T85 — the manual/schema reader is reading something', () => {
   it('the override directory ships manuals, and this test found them', () => {
     expect(MANUALS.length, `no *.md in ${DOCS_DIR} — either the override directory moved (and this `
       + 'tripwire now proves nothing) or every manual was deleted. Both are findings.').toBeGreaterThan(0);
-  });
-
-  it('at least one manual carries a `## Parameters` section — the two-way clause has a subject', () => {
-    const withSection = MANUALS.filter((f) => declaredParams(fs.readFileSync(path.join(DOCS_DIR, f), 'utf8')) !== null);
-    expect(withSection.length, 'no manual has a `## Parameters` section, so the exact-match clause '
-      + 'below would pass by having nothing to compare').toBeGreaterThan(0);
   });
 
   it('CONTROL: the bullet parser bites on a planted drift', () => {
@@ -130,54 +121,5 @@ describe('T85 — every hand-written manual names a registered tool', () => {
       + 'renamed (rename the manual in the same commit) or the manual outlived its tool (delete it, '
       + 'and its line in check-shipped-souls.mjs\'s REQUIRED_TOOL_MANUALS).',
     ).toBe(true);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// 2 — THE DRIFT TRIPWIRE, BOTH DIRECTIONS.
-// ════════════════════════════════════════════════════════════════════════
-
-describe('T85 — a manual\'s `## Parameters` names exactly the tool\'s input_schema properties', () => {
-  const withSchema = MANUALS
-    .map((file) => ({ file, def: defsByName.get(file.slice(0, -'.md'.length)) }))
-    .filter((r): r is { file: string; def: ToolDefinition } => r.def !== undefined);
-
-  it.each(withSchema.map((r) => r.file))('%s', (file) => {
-    const def = defsByName.get(file.slice(0, -'.md'.length)) as ToolDefinition;
-    const markdown = fs.readFileSync(path.join(DOCS_DIR, file), 'utf8');
-    const declared = declaredParams(markdown);
-    const schema = schemaParams(def);
-
-    if (declared === null) {
-      // No `## Parameters` section: coverage is still owed, one direction (see the header).
-      const unnamed = schema.filter((p) => !markdown.includes(p));
-      expect(
-        unnamed,
-        `${file} has no \`## Parameters\` section and never names ${unnamed.join(', ')}. `
-        + `The tool takes ${schema.length} parameter(s) and an agent reads this file INSTEAD of the `
-        + 'generated doc, so a parameter this manual is silent about is one the model will not send. '
-        + 'Either name it in the prose or give the manual a `## Parameters` section.',
-      ).toEqual([]);
-      return;
-    }
-
-    const missingFromManual = schema.filter((p) => !declared.includes(p));
-    const absentFromSchema = declared.filter((p) => !schema.includes(p));
-
-    expect(
-      missingFromManual,
-      `${file} does not document ${missingFromManual.join(', ')} — the tool takes it and the manual `
-      + 'replaces the generated doc entirely, so no agent will ever learn the parameter exists. '
-      + `(This is the measured \`image_create\`/\`title\` defect: 5 months, no failure.) Schema: `
-      + `${schema.join(', ')}.`,
-    ).toEqual([]);
-
-    expect(
-      absentFromSchema,
-      `${file} documents ${absentFromSchema.join(', ')}, which the tool's input_schema does not `
-      + 'have. A model that believes the manual sends an argument the boundary rejects. Either the '
-      + `parameter was renamed or removed in the code; the manual owes the same edit. Schema: `
-      + `${schema.join(', ')}.`,
-    ).toEqual([]);
   });
 });

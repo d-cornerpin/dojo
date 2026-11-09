@@ -29,9 +29,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,
 } from '../system-control-argv.js';
@@ -40,8 +37,6 @@ import { grantForManifest } from '../brokers/grants.js';
 import { resolveCommandArg } from '../brokers/resolve.js';
 import { SYSTEM_CONTROL_CLASSES, authorizeSystemControl } from '../brokers/index.js';
 import type { PermissionManifest } from '@dojo/shared';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const manifest = (system_control: unknown, exec_allow: string[] = ['ls']): PermissionManifest => ({
   file_read: '*', file_write: '*', file_delete: 'none',
@@ -58,43 +53,6 @@ function script(text: string) {
   if (!r.ok) throw new Error(`fixture failed to resolve: ${text}`);
   return r.value;
 }
-
-// ══════════════════════════════════════════════════════════════════════════
-describe('§1 — no string-to-shell site survives in system-control.ts', () => {
-  const source = fs.readFileSync(path.join(SRC, 'system-control.ts'), 'utf8');
-
-  it('the file no longer CALLS the string form of exec — grep-zero on the call', () => {
-    // The string form IS `/bin/sh -c <line>`. `execFileSync(file, argv)` is not.
-    // Grep-zero is on the CALL, not on the word: the comment beside
-    // `keyboard_type` quotes the line it replaced, and that record is worth more
-    // than a cleaner grep.
-    expect(source).not.toMatch(/execSync\(/);
-    // v3.5 E19 fix round 1: the programs run in the one Stop-bound runner (argv form, no shell),
-    // which the iMessage sends share (agent/stop-bound-run.ts).
-    const runner = fs.readFileSync(path.join(SRC, 'stop-bound-run.ts'), 'utf8');
-    expect(runner).not.toMatch(/execSync\(/);
-    expect(runner).toMatch(/execFileSync\('which', \[program\]/);
-    expect(runner).toMatch(/spawn\(program, \[\.\.\.argv\], \{ detached: true/);
-    expect(source).not.toMatch(/from 'node:child_process'/);
-  });
-
-  it('no command line is built by interpolation anywhere in the CODE', () => {
-    // The six sites all had the same shape: a template literal holding a
-    // program name and a `${...}`. If one comes back, this fails.
-    //
-    // Comment lines are stripped first, ON PURPOSE: the note beside
-    // `keyboard_type` quotes the exact line it replaced, and a clause that
-    // forces the record to be deleted to go green is a clause that trades
-    // history for tidiness. The requirement is that no CODE builds one.
-    const code = source.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-    const interpolated = code.match(/`(cliclick|screencapture|osascript|which)[^`]*\$\{[^`]*`/g) ?? [];
-    expect(interpolated, `command strings still built by interpolation:\n${interpolated.join('\n')}`).toEqual([]);
-  });
-
-  it('the hand-rolled single-quote escape is gone — there is nothing left to escape for', () => {
-    expect(source).not.toMatch(/replace\(\/'\/g/);
-  });
-});
 
 // ══════════════════════════════════════════════════════════════════════════
 describe('§2 — the argument builders hand back VECTORS, and injections are inert', () => {

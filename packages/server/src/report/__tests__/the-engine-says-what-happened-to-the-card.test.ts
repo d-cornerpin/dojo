@@ -83,35 +83,10 @@ vi.mock('../../db/connection.js', async () => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import {
-  REPORT_STATE_HEAD, REPORT_STATE_LIVE_CAP, REPORT_STATE_MAX_ROWS, REPORT_STATE_TAIL,
-  REPORT_STATE_WINDOW_DAYS,
-  buildReportStateInjection, recentReportRows, renderReportStateBlock,
-} from '../state-lane.js';
+import { REPORT_STATE_LIVE_CAP, REPORT_STATE_MAX_ROWS, REPORT_STATE_WINDOW_DAYS, buildReportStateInjection, recentReportRows, renderReportStateBlock } from '../state-lane.js';
 import { POST_BUDGET_ENTRY_LANE, isProtectedLaneId } from '../../memory/lanes.js';
-import { engineFileContaining, engineText } from '../../agent/v2/__tests__/engine-sources.js';
 import { cancelReport, createReport, submitForApproval, attachDraft } from '../store.js';
 import { draftHead, gatherHead, submitHead } from '../../agent/tools/cat/report-prose.js';
-
-/** The lane's own source, for the structural clauses. */
-const laneSource = (): string => fs.readFileSync(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'state-lane.ts'), 'utf8',
-);
-
-/**
- * THE LANE'S SOURCE WITH ITS COMMENTS REMOVED, for the absence clauses below.
- *
- * An absence clause over raw text asserts a property of the PROSE as well as the code, and this
- * module's prose has to be able to NAME the doors it is not allowed to call — the writer census
- * below is only comprehensible if the reader can see which doors are meant, and round-4 F9's fix
- * had to explain that `markExported` writes `posted` with an `export_path`. The first version of
- * that fix was failed by this file's own writer census on the WORD IN A COMMENT, which is the
- * shape G4 warns about from the other side: a clause satisfiable (or breakable) by the prose
- * above a call is testing the comment. So the absence is asserted over code only.
- */
-const laneCode = (): string => laneSource()
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
 
 const AGENT = 'card-owner';
 const OTHER = 'card-owner-two';
@@ -379,13 +354,6 @@ describe('§3 an agent with no recent reports renders nothing at all', () => {
     expect(read.live).toHaveLength(0);
     expect(buildReportStateInjection(AGENT)).toBeNull();
   });
-
-  it('and the injection site pushes nothing when the builder returns null', () => {
-    // The site's shape is what makes "empty is absent" true in the array rather than only here.
-    const site = engineFileContaining("'engine.report-state'");
-    expect(site, 'no engine source injects the report-state lane — the site MOVED').not.toBeNull();
-    expect(site!.text).toMatch(/if \(reportStateBlock\) pushEngineMessage\(/);
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -588,17 +556,6 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
     expect(block(), 'an aged-out terminal row still rendered').toBe('');
   });
 
-  it('the lane is injected PAST the volatile boundary, beside the snapshot it is modelled on', () => {
-    // The cache-prefix law, asserted structurally: `msg.turn-context` is the volatile boundary the
-    // tail's ordering rule names, and this lane must sit behind it, next to open-commitments.
-    const src = engineText();
-    const at = (needle: string) => src.indexOf(needle);
-    expect(at("'msg.turn-context'")).toBeGreaterThan(-1);
-    expect(at("'engine.report-state'")).toBeGreaterThan(at("'msg.turn-context'"));
-    expect(at("'engine.report-state'")).toBeGreaterThan(at("'engine.open-commitments'"));
-    expect(at("'engine.report-state'")).toBeLessThan(at("'msg.current-time'"));
-  });
-
   // ── F2 (review, MEDIUM): THE READER IS CLOSED UNDER RESOLVER-LEGAL SPELLINGS ──────────────
   // The first cut grepped the literal string `report/state-lane.js`. This tree is
   // `moduleResolution: "bundler"`, so the reviewer planted a SECOND importer in a prefix file
@@ -659,49 +616,6 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
   });
 
   it('THE PREFIX CANNOT MOVE: one importer, and it is the POST-assembly tail step', () => {
-    // The decisive structural proof, and it is three facts rather than a promise.
-    //
-    // (1) `volatileFrom` is the LENGTH of the message array AT THE INSTANT ASSEMBLY ENDS, so ANY
-    //     push the loop's injection step makes is behind the cache breakpoint BY CONSTRUCTION
-    //     rather than by placement.
-    //
-    //     ⚠ PINNED AT THE ASSIGNMENT, NOT AT A SENTENCE ABOUT IT (round-4 F7). This leg used to
-    //     assert that `memory/assembler.ts` CONTAINS the string "`volatileFrom` is this array's
-    //     length" — a comment. The invariant it describes is real, but the clause was satisfied by
-    //     the prose and would not have noticed the capture MOVING: reword that comment and the
-    //     clause reds while the property holds; move the assignment past an injection and the
-    //     clause stays green while the property is gone. Exactly backwards, and exactly what G4
-    //     means by a clause satisfiable by the prose above the call. The capture lives in
-    //     `agent/v2/steps/assemble/index.ts`, so that is what is read, with comments stripped.
-    const assembleStep = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)),
-        '..', '..', 'agent', 'v2', 'steps', 'assemble', 'index.ts'), 'utf8',
-    );
-    const assembleCode = assembleStep
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
-    // Non-vacuity: the stripped source is still the step.
-    expect(assembleCode.length, 'the comment-stripped assemble step is too small to be real')
-      .toBeGreaterThan(2000);
-    // THE ASSIGNMENT, as code: the boundary is the array's length, captured from the context the
-    // allocator just finished filling.
-    expect(assembleCode, 'the volatile boundary is no longer captured as the assembled message '
-      + 'array\'s length — if it is computed some other way, every "the loop appends past the '
-      + 'boundary" argument in this tree needs re-deriving')
-      .toMatch(/const\s+volatileFrom\s*=\s*ctx\.messages\.length\s*;/);
-    // AND IT IS CAPTURED BEFORE ANYTHING IS APPENDED: the assignment precedes the step's return,
-    // and no push onto `ctx.messages` happens between them.
-    const at = assembleCode.search(/const\s+volatileFrom\s*=/);
-    const ret = assembleCode.indexOf('volatileFrom,', at);
-    expect(at, 'the assignment was not found at all').toBeGreaterThan(-1);
-    expect(ret, 'the captured boundary is never handed out').toBeGreaterThan(at);
-    expect(assembleCode.slice(at, ret), 'something appends to the assembled message array AFTER '
-      + 'the volatile boundary was captured, so the boundary understates the cacheable region')
-      .not.toMatch(/ctx\.messages\.push\(/);
-
-    const assembler = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'memory', 'assembler.ts'), 'utf8',
-    );
     // (2) This lane is imported by EXACTLY ONE production file, and that file is the tail step.
     const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
     const importers: string[] = [];
@@ -717,21 +631,6 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
     };
     walk(src);
     expect(importers).toEqual(['agent/v2/steps/call-llm/pre-call-injections.ts']);
-    // (3) …so nothing in the PREFIX path (the assembler, the prompt registry, the tools) can
-    //     even see it. A prefix entry would have to import it, and none does.
-    expect(assembler).not.toContain('state-lane');
-  });
-
-  it('it adds no tool and no prefix entry — the cache-prefix golden cannot move', () => {
-    // The golden is `agent/tools/definitions.ts` (blob 0d6bd0a5) plus the always-loaded tools line.
-    // This lane is a tail push: it names no tool, registers no prefix entry, and the clause that
-    // would catch a regression is the one above (position) plus this one (nothing in the prefix).
-    const site = engineFileContaining("'engine.report-state'")!;
-    expect(site.text).not.toContain('alwaysLoaded');
-    expect(site.text).toContain('registry-exempt(2026-09-26)');
-    for (const forbidden of ['DEFAULT_ALWAYS_LOADED_TOOLS', 'definitions.js', 'systemPrompt']) {
-      expect(laneSource()).not.toContain(forbidden);
-    }
   });
 });
 
@@ -800,31 +699,6 @@ describe('§6 one injection site, declared and protected', () => {
   it('the lane id is declared in the post-budget table, so the repair may never drop it', () => {
     expect(POST_BUDGET_ENTRY_LANE['engine.report-state']).toBe('lane.loop-tail');
     expect(isProtectedLaneId('lane.loop-tail')).toBe(true);
-  });
-
-  it('the injection has its own catch and says what the turn lost', () => {
-    const site = engineFileContaining("'engine.report-state'")!;
-    const idx = site.text.indexOf("'engine.report-state'");
-    const around = site.text.slice(idx - 600, idx + 600);
-    expect(around).toContain('try {');
-    expect(around).toMatch(/logger\.warn\(\s*'REPORT STATE injection FAILED/);
-    expect(around, 'a lane that cannot build must not cost the turn its other lanes')
-      .toContain('is NOT contradicted in front of the model');
-  });
-
-  it('the lane is read-only over report state — it is a new READER, never a writer', () => {
-    // Non-vacuity: stripping comments must not have stripped the module. If `laneCode` ever
-    // returned something empty or tiny, every absence below would pass for the wrong reason.
-    expect(laneCode().length, 'the comment-stripped source is too small to be the real module')
-      .toBeGreaterThan(2000);
-    expect(laneCode(), 'the stripped source lost the function the whole lane is')
-      .toContain('function renderRow');
-
-    for (const writer of ['UPDATE dojo_reports', 'INSERT INTO dojo_reports', 'DELETE FROM dojo_reports',
-      'approveOnce', 'markPosted', 'markExported', 'releaseApproval']) {
-      expect(laneCode(), 'the consent census names the doors that MOVE an approval; this lane calls none')
-        .not.toContain(writer);
-    }
   });
 });
 

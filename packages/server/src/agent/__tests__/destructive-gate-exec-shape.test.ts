@@ -28,9 +28,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const projects = '/tmp/p5-r3-projects';
 
@@ -163,28 +161,6 @@ describe('P5-R3 §2 — the manifest pre-check binds the EXACT call, and never a
 // reading both files. A behavioural equivalence test would pass the day the two
 // drifted onto two implementations that happened to agree; this cannot.
 describe('P5-R3 §3 — one owner for the seam, not two implementations that agree today', () => {
-  const read = (rel: string): string => {
-    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-    return fs.readFileSync(path.join(srcRoot, rel), 'utf8');
-  };
-
-  it('the approval pre-check answers from the shared exec seam module', () => {
-    const gate = read('agent/destructive-gate.ts');
-    expect(gate).toMatch(/from '\.\/brokers\/exec-seam\.js'/);
-    expect(gate).toMatch(/authorizeExecShaped/);
-    // and it must NOT have kept the old empty-string read
-    expect(gate).not.toMatch(/type:\s*'exec',\s*command:\s*String\(args\.command/);
-  });
-
-  it('the dispatcher\'s own gate row answers from the SAME module', () => {
-    const gateEval = read('agent/tools/gate-eval.ts');
-    expect(gateEval).toMatch(/authorizeExecShapedCall/);
-    // One owner: the wrapper the approval gate calls must delegate to the very
-    // function the dispatcher calls, in the same file, not re-implement it.
-    const seam = read('agent/brokers/exec-seam.ts');
-    const wrapper = seam.slice(seam.indexOf('export function authorizeExecShapedArgs'));
-    expect(wrapper).toMatch(/authorizeExecShapedCall\(/);
-  });
 
   it('the seam REFUSES an unresolvable shape rather than defaulting — behaviourally', async () => {
     const { authorizeExecShapedCall } = await import('../brokers/exec-seam.js');

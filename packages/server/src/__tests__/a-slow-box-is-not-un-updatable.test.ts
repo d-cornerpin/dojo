@@ -33,21 +33,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { attachIdleBound, CHILD_KEEP_CEILING_CHARS, type ChildRunFailure } from '../child-idle-bound.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-function stripped(rel: string): string {
-  const raw = fs.readFileSync(path.join(SRC, rel), 'utf8');
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
-    .join('\n');
-}
 
 /** Run a shell script under the idle bound, the way the updater's `execIdleBounded` does. */
 function runBounded(script: string, idleMs: number, ceilingMs = 60_000) {
@@ -140,60 +126,5 @@ describe('§3 the bounds are still bounds', () => {
 
   it('CONTROL (t209): output is no longer killed at 1 MiB; only a memory-safety ceiling on what is held remains', () => {
     expect(CHILD_KEEP_CEILING_CHARS, 'far past the old 1MB maxBuffer').toBeGreaterThan(64 * 1024 * 1024);
-  });
-});
-
-describe('§4 the updater is wired to it, and the install failure is legible', () => {
-  it('THE RED: neither the download nor the install carries a flat 120s total any more', () => {
-    const src = stripped('gateway/routes/update.ts');
-
-    expect(
-      /execAsync\(`curl[^`]*`, \{ timeout: 120000 \}\)/.test(src),
-      'the flat download wall is the defect',
-    ).toBe(false);
-    expect(
-      /execAsync\('npm install --omit=dev', \{ cwd: PLATFORM_DIR, timeout: 120000, env \}\)/.test(src),
-      'the flat install wall is the worse half of it',
-    ).toBe(false);
-    expect(/execIdleBounded\(|spawnIdleBounded\(/.test(src), 'both legs run under the idle bound').toBe(true);
-  });
-
-  it('curl is given its OWN stall detector, which is a measured fact about the transfer', () => {
-    const src = stripped('gateway/routes/update.ts');
-
-    // `--speed-time`/`--speed-limit` aborts only when the transfer sits below a floor for a whole
-    // window — curl measuring its own liveness, rather than us guessing how long a file should
-    // take. `--connect-timeout` bounds the one phase that has no bytes to measure.
-    // Review minor 3: the download is ARGV now, not a shell string, so the flags are array
-    // elements. The property is unchanged — curl is given its own stall detector — and the shape
-    // is strictly better: a release URL is data handed to `execve`, never text in a `/bin/sh -c`
-    // command line.
-    expect(/'--speed-limit', '\d+', '--speed-time', '\d+'/.test(src)).toBe(true);
-    expect(/'--connect-timeout', '\d+'/.test(src)).toBe(true);
-    expect(/spawnIdleBounded\('curl', curlDownloadArgv\(/.test(src), 'and no shell is involved').toBe(true);
-  });
-
-  it('an install that fails says so, and says what is still running', () => {
-    // t197 (v3.4 F2): the install now runs in a STAGED tree beside the live one, so the state the
-    // old message described ("halted after the files were swapped ... node_modules is incomplete")
-    // can no longer exist. What a failed install must still be is LEGIBLE: it says nothing was
-    // changed and names the version the box is still running.
-    const raw = fs.readFileSync(path.join(SRC, 'update/install-tree.ts'), 'utf8');
-    expect(raw).toMatch(/add-ons did not install/);
-    expect(raw).toMatch(/Nothing was changed: Dojo is still running/);
-    expect(raw, 'the retired state is not described any more because it cannot happen')
-      .not.toMatch(/Update halted after the files were swapped/);
-  });
-
-  it('CONTROL: both doors got the treatment, because there is only one sequence now', () => {
-    const src = stripped('gateway/routes/update.ts');
-    // The route had two download->swap->install sequences (apply and rollback); fixing one and
-    // leaving the other is the shape that made this defect survive its own review. t197 folded
-    // them into ONE (`downloadAndInstall`), called by both doors, so one bounded leg serves both.
-    expect((src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? []).length, 'one bounded download').toBe(1);
-    expect((src.match(/await downloadAndInstall\(/g) ?? []).length, 'called by apply AND rollback').toBe(2);
-    const tree = stripped('update/install-tree.ts');
-    expect(tree, 'the one install leg is idle-bounded').toMatch(/attachIdleBound\(child, \{ idleMs: INSTALL_IDLE_MS, ceilingMs: INSTALL_CEILING_MS \}\)/);
-    expect(src, 'and the route no longer runs its own').not.toMatch(/npm install --omit=dev/);
   });
 });

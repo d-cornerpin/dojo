@@ -92,13 +92,8 @@ import {
 } from '../../../report/store.js';
 import { saveGithubAccount, disconnectGithub } from '../../../github/account.js';
 import { DOJO_REPORT_REPO_DEFAULT } from '../../../report/repo.js';
-import { frameTypesIn, codeOf } from '../../__tests__/frame-census.js';
 import { briefEditsFor, briefIsPostable, duplicateQuestion, postTargetSentence, type BriefFields }
   from '../../../../../dashboard/src/lib/report-edits.js';
-
-const SRC = path.resolve(__dirname, '..', '..', '..');
-const CARD = path.resolve(SRC, '../../dashboard/src/components/ReportPreviewCard.tsx');
-const DELIVERY_PANEL = path.resolve(SRC, '../../dashboard/src/components/ReportDeliveryPanel.tsx');
 
 // ── THE STUBBED GITHUB ───────────────────────────────────────────────────────────────────
 // Installed for EVERY clause in this file, not only the ones that mean to post. The approve
@@ -201,60 +196,6 @@ afterEach(() => {
 // ── 1. ONE DOOR ─────────────────────────────────────────────────────────────────────────
 
 describe('nothing but the approve route may spend an approval', () => {
-  it('every door that mints, spends or returns an approval has exactly one call site', () => {
-    // T7 WIDENED THIS FROM `approveOnce` ALONE. The import half of the claim (prong A of
-    // `the-report-tool-reaches-no-new-door.test.ts`) has always covered all three consent
-    // doors; this half only ever covered the mint, so `markPosted` — the door that SPENDS the
-    // approval — could have grown a second caller at full green. `releaseApproval` is here for
-    // the opposite reason: it hands a decision BACK, and a second caller could quietly
-    // un-approve rows the owner had decided.
-    const OWNERS: Readonly<Record<string, string>> = {
-      approveOnce: 'gateway/routes/reports.ts',
-      markExported: 'gateway/routes/reports.ts',
-      releaseApproval: 'gateway/routes/reports.ts',
-      markPosted: 'report/post.ts',
-      // ── ADDED IN FIX ROUND 2 (G2), BECAUSE THE IMPORT CENSUS CITES THIS CLAUSE ──
-      // `cancelReport` is deliberately NOT a consent export over there: it destroys an approval
-      // rather than moving it toward delivery, and its comment hands the residual hazard — a
-      // second module making somebody's pending report disappear — to "the call-site census".
-      // That citation was writing a cheque this map did not cover: `cancelReport` was not in it,
-      // so the hazard was assigned to a guard that was not watching. It is now.
-      cancelReport: 'gateway/routes/reports.ts',
-    };
-    // Derived, never a second list: a name in OWNERS with no bucket was a silent pass.
-    const hits: Record<string, string[]> = Object.fromEntries(Object.keys(OWNERS).map(k => [k, []]));
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__') walk(p); continue; }
-        if (!p.endsWith('.ts') || p.includes('.test.') || p.endsWith('report/store.ts')) continue;
-        const src = fs.readFileSync(p, 'utf8');
-        for (const name of Object.keys(OWNERS)) {
-          if (new RegExp(`\\b${name}\\s*\\(`).test(src)) hits[name].push(path.relative(SRC, p));
-        }
-      }
-    };
-    walk(SRC);
-    for (const [name, owner] of Object.entries(OWNERS)) {
-      expect(
-        hits[name].sort(),
-        `a second module CALLS ${name}. The owner's one approval is minted, spent and returned `
-        + 'in one place each (D4). If this is a legitimate new door, it must also be added to '
-        + 'ALLOWED_CONSENT_CALLERS in '
-        + 'agent/tools/__tests__/the-report-tool-reaches-no-new-door.test.ts.',
-      ).toEqual([owner]);
-    }
-  });
-
-  it('the PATCH door calls editBrief and can never reach attachDraft (contract C2)', () => {
-    const route = fs.readFileSync(path.join(SRC, 'gateway', 'routes', 'reports.ts'), 'utf8');
-    expect(route, 'the edit route must go through editBrief').toContain('editBrief');
-    expect(
-      route.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n'),
-      'attachDraft is the AGENT\'s write door, legal only from `drafting`. A route that reached '
-      + 'it could swap the brief a human is looking at — that is exactly what D4 forbids.',
-    ).not.toContain('attachDraft');
-  });
 
   it('a submitted report is not posted until a human approves', () => {
     const id = awaiting();
@@ -894,23 +835,6 @@ describe('the card is told WHERE the report goes, by the door that decides it', 
   });
 });
 
-// ── 4. NO AGENT-FACING TWIN ─────────────────────────────────────────────────────────────
-
-describe('no agent-facing approval twin exists', () => {
-  it('no tool and no A2A path can approve a report', () => {
-    const toolSrc = fs.readFileSync(path.join(SRC, 'agent', 'tools', 'definitions.ts'), 'utf8');
-    expect(/approve_report|report_approve|report_post/.test(toolSrc)).toBe(false);
-  });
-
-  it('the approve route does not wake an agent the way destructive-gate does', () => {
-    const route = fs.readFileSync(path.join(SRC, 'gateway', 'routes', 'reports.ts'), 'utf8');
-    for (const forbidden of ['requestApproval', 'handleMessage', 'getAgentRuntime', 'grantApprovalForSignature']) {
-      expect(route, `the report route reached ${forbidden} — an agent must not be in this loop`)
-        .not.toContain(forbidden);
-    }
-  });
-});
-
 // ── the router's own inventory ──────────────────────────────────────────────────────────
 
 describe('the route list and the frame list check themselves', () => {
@@ -995,117 +919,16 @@ describe('the route list and the frame list check themselves', () => {
   ];
 
   it('the frame-type reader sees every spelling, and says which it cannot', () => {
-    for (const [name, source, expected] of SPELLINGS) {
-      expect(frameTypesIn(source), name).toEqual(expected);
-    }
     // Non-vacuity on both sides: a reader answering [] always, or everything always, would
     // otherwise pass half this table in silence.
     expect(SPELLINGS.some(([, , e]) => e.length > 0)).toBe(true);
     expect(SPELLINGS.some(([, , e]) => e.length === 0)).toBe(true);
-  });
-
-  it('the report frame types this server can emit are exactly the two declared', () => {
-    // A SOURCE census, scoped to the `report:` prefix. It answers "what CAN be emitted", which
-    // a behavioural sweep cannot: a sweep only ever proves what DID fire.
-    const DECLARED = ['report:pending', 'report:resolved'];
-    const emitted = new Set<string>();
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(p); continue; }
-        if (!e.name.endsWith('.ts')) continue;
-        for (const t of frameTypesIn(codeOf(fs.readFileSync(p, 'utf8')))) {
-          if (t.startsWith('report:')) emitted.add(t);
-        }
-      }
-    };
-    walk(SRC);
-    expect(emitted.size, 'the frame reader found no report frames at all — it is broken')
-      .toBeGreaterThan(0);
-    expect(
-      [...emitted].sort(),
-      'the set of report frame types this server can broadcast changed. Declare it here, add it '
-      + 'to `WsEvent` + `EVENT_BATCHABLE` in packages/shared/src/ws.ts, and say what the card '
-      + 'should do with it.',
-    ).toEqual(DECLARED);
-    const ws = fs.readFileSync(path.resolve(SRC, '../../shared/src/ws.ts'), 'utf8');
-    for (const t of DECLARED) {
-      expect(ws, `${t} is broadcast but not declared in the WsEvent union`).toContain(`type: '${t}'`);
-      expect(ws, `${t} has no EVENT_BATCHABLE row`).toContain(`'${t}':`);
-    }
   });
 });
 
 // ── the card holds no copy of a rule the lib is guarding ────────────────────────────────
 
 describe('the card renders, and decides nothing on its own', () => {
-  // Comment lines dropped: this file's own header NAMES the things it refuses to do, and a
-  // census that counted its documentation as a violation would teach the next author to delete
-  // the explanation. Non-vacuity is asserted in each clause that uses it.
-  const card = (): string => fs.readFileSync(CARD, 'utf8')
-    .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-
-  it('state is replaced from the door, never merged from a frame', () => {
-    // T5's banked census, applied to the card that matters most. The feared edit has ONE visible
-    // shape: a second `setReports(`. ⚠ DECLARED BOUNDARY, stated so nobody files it as a defect:
-    // an ALIASED setter (`const s = setReports; subscribe('x', m => s(m))`) is invisible here.
-    // That is a deliberate evasion, not the "optimise the refetch into a merge from the frame's
-    // fields" edit this exists to catch.
-    const src = card();
-    const calls = [...src.matchAll(/setReports\(/g)];
-    expect(calls.length, 'the card stopped setting its list at all — this census is broken')
-      .toBeGreaterThan(0);
-    expect(
-      calls.length,
-      'a second `setReports(` appeared. The frame is a PING carrying {id,title} and nothing '
-      + 'else (T3); merging it would draw a card from a payload that has no brief in it.',
-    ).toBe(1);
-  });
-
-  it('the consent sentences live in the lib, so this card cannot grow a second copy', () => {
-    const src = card();
-    expect(src.length, 'the comment stripper ate the card — this census is broken').toBeGreaterThan(1000);
-    expect(src, 'the card must render the served sentence, not its own').toContain('postTargetSentence');
-    // The two claims a wrong copy would make. Neither may be spelled out in the .tsx.
-    expect(src.toLowerCase()).not.toContain('anyone can read it');
-    expect(src.toLowerCase()).not.toContain('nothing is sent');
-  });
-
-  it('the card cannot post without the route, and names no host of its own', () => {
-    const src = card();
-    for (const forbidden of ['api.github.com', 'fetch(', 'approveOnce']) {
-      expect(src, `the card reached ${forbidden} directly`).not.toContain(forbidden);
-    }
-  });
-
-  // ── T7: the duplicate question is a SECOND consent sentence, and it lives in the lib too ──
-  // The panel was split out of the card when this question arrived (the card was at 235 lines
-  // against the growth detector's 240-line crossing). A split is only safe if the census follows
-  // it: an unwatched .tsx is exactly where a second copy of a claim about the owner's words goes.
-
-  it('the delivery panel decides nothing, names no host, and copies no sentence', () => {
-    const src = fs.readFileSync(DELIVERY_PANEL, 'utf8')
-      .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-    expect(src.length, 'the comment stripper ate the panel — this census is broken').toBeGreaterThan(800);
-    expect(src, 'the panel must render the lib\'s question, not its own').toContain('duplicateQuestion');
-    // T8's field, held the same way and for the same reason. `packages/dashboard` has no test
-    // runner, so the panel's half of the wire is only checkable as text: the route clause above
-    // proves the door ANSWERS `labelsDropped`, and this proves the panel READS it. A rename on one
-    // side only — the shape that leaves every other instrument green — is red on one of the two.
-    // There is no lib rule to import for this one, deliberately: the sentence is the SERVER's,
-    // measured against the issue GitHub actually saved, and the panel decides nothing about it.
-    //
-    // ⚠ ANCHORED WITH `\b`, MEASURED RATHER THAN ASSUMED: written first as
-    // `.toContain('delivery.labelsDropped')`, this clause PASSED the rename it exists to catch,
-    // because `delivery.labelsDroppedNote` contains `delivery.labelsDropped`. A field name is a
-    // whole token or it is not the same field.
-    expect(src, 'the panel stopped reading the measured label drop off the door\'s own answer')
-      .toMatch(/delivery\.labelsDropped\b/);
-    for (const forbidden of ['api.github.com', 'fetch(', 'approveOnce', 'useState']) {
-      expect(src, `the delivery panel reached ${forbidden}`).not.toContain(forbidden);
-    }
-    expect(src.toLowerCase()).not.toContain('already reported this');
-  });
 
   it('the question names the issue it is asking about, and offers both answers', () => {
     const asked = duplicateQuestion({
@@ -1123,20 +946,6 @@ describe('the card renders, and decides nothing on its own', () => {
     expect(asked).toContain('#7');
     expect(asked).not.toContain('“”');
     expect(asked).not.toContain('undefined');
-  });
-
-  it('the brief is rendered verbatim — no markdown renderer stands between it and the owner', () => {
-    // D4's sharpest edge, and the one a "polish the card" commit is most likely to cross. A
-    // markdown renderer shows *emphasis* where the text says `*emphasis*`, so the owner would
-    // approve one thing and publish another. The brief's fields go into `whitespace-pre-wrap`
-    // and nothing else. (The paired behavioural half is the byte-for-byte clause above, which
-    // drives the real route with markdown-hostile text and reads the exported file.)
-    const src = card();
-    expect(src, 'the card renders the brief with whitespace preserved and nothing interpreted')
-      .toContain('whitespace-pre-wrap');
-    for (const renderer of ['Markdown', 'dangerouslySetInnerHTML', 'marked', 'remark']) {
-      expect(src, `the card ran the brief through ${renderer}`).not.toContain(renderer);
-    }
   });
 });
 

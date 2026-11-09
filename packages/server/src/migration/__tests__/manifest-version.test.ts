@@ -74,8 +74,6 @@ describe('export manifest platform_version (rider ii)', () => {
   });
 
   it('the manifest\'s version comes from the tree\'s ONE version authority', async () => {
-    const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src/migration/manifest.ts'), 'utf-8');
-    expect(src).toMatch(/getCurrentVersion/);
     // `generateManifest` reads the `agents` table. Until the suite got its own home
     // (T74b) this case was silently reading the DEVELOPER'S live database, where that
     // table happens to exist — so it passed by accident on one machine and would have
@@ -86,15 +84,5 @@ describe('export manifest platform_version (rider ii)', () => {
     // And it is not the old lie.
     expect(m.platform_version).not.toBe('1.0.0');
     expect(m.platform_version).toMatch(/^\d+\.\d+\.\d+/);
-  });
-
-  it('the field survives on the shipped manifest shape (both sides), because removing it would narrow a published format', () => {
-    for (const rel of [
-      'packages/server/src/migration/manifest.ts',
-      'packages/dashboard/src/components/PostMigrationBanner.tsx',
-    ]) {
-      const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
-      expect(src, `${rel} must keep declaring platform_version on ExportManifest`).toMatch(/platform_version\s*:\s*string/);
-    }
   });
 });

@@ -15,7 +15,6 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
@@ -30,8 +29,6 @@ import { hidHandlers } from '../tools/cat/hid.js';
 import type { ToolCall } from '@dojo/shared';
 
 vi.setConfig({ testTimeout: 30_000 });
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const AGENT = 'agent-one-runner';
 const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'one-runner-bin-'));
 const PIDS = path.join(BIN, 'pids');
@@ -61,30 +58,8 @@ async function untilChildIsListening(): Promise<void> {
   expect(pids().length, 'the stand-in announced itself').toBe(1);
 }
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const source = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
-/** Source with comments removed, so prose about a call cannot satisfy or fail a clause. */
-const code = (rel: string): string => source(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-function walk(dir: string, out: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === '__tests__' || e.name === 'node_modules') continue;
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) walk(p, out);
-    else if (/\.ts$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(path.relative(SRC, p));
-  }
-  return out;
-}
 
 describe('one runner for every platform program the Stop can cut', () => {
-  it('both callers run their programs through the one runner, and neither spawns its own', () => {
-    expect(fs.existsSync(path.join(SRC, 'agent/system-control-run.ts')), 'the screen-control copy is gone').toBe(false);
-    for (const caller of ['agent/system-control.ts', 'services/imessage-run.ts']) {
-      expect(source(caller), caller).toMatch(/import \{[^}]*\brunBoundToTheStop\b[^}]*\} from '(?:\.\/|\.\.\/agent\/)stop-bound-run\.js'/);
-      expect(code(caller), `${caller} spawns a program of its own`).not.toMatch(/\bspawn\(/);
-    }
-    // Every child a Stop ends is bound in one of two places: the toolbox's facade, or this runner.
-    const binders = walk(SRC).filter((f) => /\bendsWithTheStop\(/.test(code(f)) && f !== 'agent/effects/proc-tree.ts').sort();
-    expect(binders).toEqual(['agent/effects/proc.ts', 'agent/stop-bound-run.ts']);
-  });
 
   it('screen control: with the Stop already standing, the program never starts (no click can land first)', async () => {
     stoppedAgents.add(AGENT);

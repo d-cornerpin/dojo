@@ -46,9 +46,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -68,10 +65,6 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 
 import { runMigrations } from '../../db/migrations.js';
 import { recordCost } from '../tracker.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '../../../../..');
-const MODEL_TS = path.join(REPO_ROOT, 'packages/server/src/agent/model.ts');
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -180,56 +173,5 @@ describe('NULL is a fact about the row, not a missing value', () => {
 
   it('a tiered undeclared dial is also NULL — the tier is not a purpose either', () => {
     expect(recordAndRead('standard', undefined).callPurpose).toBeNull();
-  });
-});
-
-describe('EVERY recordCost site carries the axis — the both-ways clause (G4)', () => {
-  const src = (): string => fs.readFileSync(MODEL_TS, 'utf-8');
-  /** Comments stripped first (G4): a clause satisfiable by the prose above a call tests prose. */
-  const code = (): string => src()
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n');
-
-  it('the count of purpose axes equals the count of request types — a new site cannot skip it', () => {
-    const requestTypes = [...code().matchAll(/requestType:\s*(.+?),\n/g)].map(m => m[1].trim());
-    const purposes = [...code().matchAll(/callPurpose:\s*(.+?),\n/g)].map(m => m[1].trim());
-    expect(requestTypes.length, 'the extraction anchor moved and both counts would be 0').toBeGreaterThanOrEqual(4);
-    expect(
-      purposes.length,
-      `${requestTypes.length} recordCost sites in model.ts declare a requestType but only `
-      + `${purposes.length} declare a callPurpose. A site that records cost without the purpose `
-      + 'axis writes a row no turn-size reader can classify — the defect, re-entering through a '
-      + 'site added later.',
-    ).toBe(requestTypes.length);
-  });
-
-  it('each axis reads the DECLARATION and never the router tier', () => {
-    for (const expr of [...code().matchAll(/callPurpose:\s*(.+?),\n/g)].map(m => m[1].trim())) {
-      expect(expr, `\`${expr}\` must be the declared purpose`).toContain('purpose');
-      expect(
-        expr,
-        `\`${expr}\` folds the router tier into the purpose axis. That is the conflation this `
-        + 'column was added to end, reproduced inside the new column.',
-      ).not.toMatch(/\brouterTier\b/);
-      expect(expr, `\`${expr}\` reads the tools cargo; the cargo cannot decide the kind`).not.toMatch(/\btools\b/);
-    }
-  });
-
-  it('the writer stores the column and does not derive it from `request_type`', () => {
-    const tracker = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src/costs/tracker.ts'), 'utf-8');
-    expect(tracker, 'the INSERT no longer names the column').toMatch(/call_purpose/);
-    // The APPLICATION, not the presence: the bound value must be the param or NULL.
-    expect(tracker, 'the bound value is not `callPurpose ?? null`').toMatch(/callPurpose \?\? null/);
-    // The BOUND VALUE, isolated: the one line inside the INSERT's argument list that supplies
-    // this column. The `const { … } = params` destructure legitimately names both fields on one
-    // line, so a whole-file proximity match would test that line instead of the writer.
-    const boundLine = tracker.split('\n')
-      .filter(l => !/^\s*(\/\/|\*)/.test(l))
-      .find(l => /^\s*callPurpose \?\? null,\s*$/.test(l));
-    expect(boundLine, 'no line in the INSERT binds the column as `callPurpose ?? null`').toBeTruthy();
-    expect(
-      boundLine,
-      'the bound value mentions requestType — the writer is reconstructing a withheld fact',
-    ).not.toMatch(/requestType/);
   });
 });

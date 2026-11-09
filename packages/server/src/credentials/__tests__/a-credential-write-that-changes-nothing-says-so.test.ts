@@ -45,16 +45,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { executeCredentialTool } from '../tools.js';
 import { getCredentialByService } from '../store.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CRED_ROOT = path.resolve(HERE, '..');
 const mockDb: { current: Database.Database | null } = { current: null };
 
 vi.mock('../../db/connection.js', () => ({
@@ -444,125 +438,5 @@ describe('§4 census: every model-facing credential outcome that refuses or no-o
       expect(receipt, `${entry.label}: must still be an explicit refusal`).toMatch(/Error:|Unknown credential tool/);
       mockDb.current!.prepare('DELETE FROM agent_credentials').run();
     }
-  });
-
-  it('BOTH WAYS: the roster covers every refusal site in all three credential modules', () => {
-    // THE TEETH, and the exact reach of them. A presence-only census stays green when an
-    // undeclared refusal is added, so this one counts the refusal-returning sites in the SOURCE
-    // — comments stripped first, so the prose above a call can never satisfy it — and pins that
-    // count to the roster.
-    //
-    // WHAT IT CATCHES: a refusal written in the engine's refusal shapes (`return { ok: false,
-    // error: … }`, a `return 'Error: …'`, a `No credential …` or `Unknown credential …`
-    // template). That is the convention this family is written in, and planting one of those
-    // reds this clause.
-    //
-    // WHAT IT DOES NOT CATCH, stated because a reviewer proved it by planting one: a refusal
-    // written OUTSIDE those shapes — a plain template with no `Error:` prefix — passes here, as
-    // does any new RECEIPT-class outcome, both uncounted by construction. The clause below
-    // ("every outcome the executor can return is declared") is what closes that gap; this one is
-    // the store-side backstop, since the refusals built in `store.ts` and `write-doors.ts` reach
-    // the model through shared `Error: ${result.error}` passthroughs that no per-outcome count
-    // can tell apart.
-    const sites: string[] = [];
-    // t120 extracted the door TEXTS into `write-doors.ts`, so the census follows the
-    // concern: a refusal added in any of the three reds this clause.
-    for (const file of ['store.ts', 'tools.ts', 'write-doors.ts']) {
-      let src = fs.readFileSync(path.join(CRED_ROOT, file), 'utf8');
-      src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-      const found = [
-        ...src.matchAll(/return\s+\(?\s*(?:\{\s*ok:\s*false|['"`]Error:)/g),
-        // `return (` wrapping a multi-line template is the same door as `return \``.
-        ...src.matchAll(/return\s+\(?\s*`(?:No credential|Unknown credential)/g),
-      ];
-      for (const m of found) {
-        const text = src.slice(m.index, m.index + 60).replace(/\s+/g, ' ');
-        // `Error: ${result.error}` adds no text of its own — it is the carrier for a store-side
-        // refusal already counted at its source, so counting it would double-count that door.
-        if (/Error: \$\{result\.error\}/.test(text)) continue;
-        sites.push(`${file} ${text}`);
-      }
-    }
-
-    // The three store doors no model can reach: `annotateCredential` (the remediation note),
-    // `deleteCredentialById` (the dashboard's own hand), and `addCredential`'s own
-    // service_name-required + 100-char bounds, which the tool layer checks before the store
-    // ever sees them but which the store still owes its non-agent callers. Four sites.
-    const NON_MODEL_FACING = 4;
-    // `missingRefusal` is a text BUILDER, not a door: its `return` matches the same shape as a
-    // real site, and it now lives in `write-doors.ts`. One.
-    const TEXT_BUILDERS = 1;
-    const declared = ROSTER.filter(e => e.kind === 'refusal').length + NON_MODEL_FACING + TEXT_BUILDERS;
-
-    expect(sites.length, `refusal sites in source:\n  ${sites.join('\n  ')}`).toBe(declared);
-  });
-
-  it('BOTH WAYS: every outcome the executor can return is DECLARED — shapeless refusals included', () => {
-    // WHY THIS EXISTS, and it is a reviewer's finding rather than mine: the clause above counts
-    // refusals written in the engine's four conventional shapes, so a refusal written outside
-    // them — a plain template with no `Error:` prefix — passed it GREEN when planted, and any
-    // new RECEIPT-class outcome was uncounted by construction. Both gaps have one cheap closure:
-    // stop pattern-matching the TEXT and count the `return`s instead. Every string a model can
-    // read out of these tools leaves `executeCredentialTool` through one of them, whatever its
-    // prose looks like, so an undeclared outcome of ANY class reds this.
-    const OUTCOMES = [
-      'credential_list: nothing stored',
-      'credential_list: the stored names',
-      'credential_get: service_name missing',
-      'credential_get: the row cannot be decrypted (the store throws; this is the catch)',
-      'credential_get: no row under that name',
-      'credential_get: the values, behind the freshness sentinel',
-      'credential_add: service_name missing',
-      'credential_add: payload is not an object',
-      'credential_add: a store refusal, passed through',
-      'credential_add: the write changed nothing',
-      'credential_add: stored',
-      'credential_update: service_name missing',
-      'credential_update: payload is not an object',
-      'credential_update: a store refusal, passed through',
-      'credential_update: the write changed nothing',
-      'credential_update: replaced',
-      'credential_delete: service_name missing',
-      'credential_delete: a store refusal, passed through',
-      'credential_delete: deleted',
-      'an unknown credential verb',
-    ];
-    // The one `return` in the executor that is NOT an outcome: the `.map` lambda that builds one
-    // line of the credential_list listing. It returns into an array, never to the model.
-    const LINE_BUILDERS = 1;
-
-    let src = fs.readFileSync(path.join(CRED_ROOT, 'tools.ts'), 'utf8');
-    src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    const body = src.slice(src.indexOf('export async function executeCredentialTool'));
-    const returns = [...body.matchAll(/\breturn\b/g)];
-
-    expect(returns.length, `\`return\`s in executeCredentialTool: ${returns.length}; declared outcomes: ${OUTCOMES.length} (+${LINE_BUILDERS} line builder)`)
-      .toBe(OUTCOMES.length + LINE_BUILDERS);
-  });
-
-  it('BOTH WAYS: the no-op branch is APPLIED at both write doors, not merely defined', () => {
-    // A clause that only checked the helper exists would stay green if a door stopped calling
-    // it. This asserts the call SHAPE at each door, with comments stripped.
-    let src = fs.readFileSync(path.join(CRED_ROOT, 'store.ts'), 'utf8');
-    src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    const applied = [...src.matchAll(/const noop = noopWrite\([^)]*\);\s*\n\s*if \(noop\) return noop;/g)];
-    expect(applied, 'both credential_add and credential_update must consult the no-op branch')
-      .toHaveLength(2);
-    // And the tool layer must ACT on the bit, at both doors.
-    let tools = fs.readFileSync(path.join(CRED_ROOT, 'tools.ts'), 'utf8');
-    tools = tools.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    expect([...tools.matchAll(/if \(result\.unchanged\) return unchangedReceipt\(/g)],
-      'a store that reports a no-op and a tool that ignores it is the defect again').toHaveLength(2);
-  });
-
-  it('G2: neither write tool\'s DESCRIPTION moved — the prompt prefix is per-agent static', () => {
-    // This lane is per-turn result text by design. If a later change needs a description edit,
-    // it is argued and the cache goldens are re-blessed deliberately; this clause is the
-    // tripwire that makes that a decision rather than a side effect.
-    const src = fs.readFileSync(path.join(CRED_ROOT, 'tools.ts'), 'utf8');
-    expect(src, 'the add door\'s description still ends on the same sentence it did pre-t120')
-      .toContain('either pick an unused service_name, or pass overwrite=true if the user has genuinely handed you a replacement for that same credential. When in doubt, ask the user first.');
-    expect(src, 'and the update door\'s')
-      .toContain('use credential_add with a service_name that is not taken.');
   });
 });

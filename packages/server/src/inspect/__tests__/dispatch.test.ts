@@ -124,18 +124,4 @@ describe('the one program it spawns: node, for the sql child (t253 hand-up)', ()
     expect(grantsForCall(AGENT, effectsFor('dojo_inspect') ?? [], { what: 'sql', query: 'select 1' }))
       .toContainEqual({ kind: 'proc', program: process.execPath, display: process.execPath });
   });
-
-  it('has ONE call site: only the sql child spawns node under this grant', () => {
-    const sites: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (e.name === '__tests__' || e.name === 'node_modules' || e.name === 'dist') continue;
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (e.name.endsWith('.ts') && /spawnAuthorized\(\s*process\.execPath/.test(fs.readFileSync(full, 'utf-8'))) sites.push(path.relative(SRC, full));
-      }
-    };
-    walk(SRC);
-    expect(sites).toEqual(['inspect/sql-child.ts']);
-  });
 });

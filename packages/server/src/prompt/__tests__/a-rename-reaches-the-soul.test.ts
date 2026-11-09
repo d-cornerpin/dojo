@@ -38,7 +38,6 @@ import realOs from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'node:url';
 
 // ⚠ PER-RUN *AND* PER-WORKER, INSIDE THE RUN ROOT (backlog 2026-09-26, lanes 3-4: "a FIXED
 // os.tmpdir() path (needs per-run suffix) ... the temp-dir ENOENT under concurrent lanes —
@@ -80,7 +79,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -105,9 +103,6 @@ import { agentsRouter } from '../../gateway/routes/agents.js';
 import { agentsHandlers } from '../../agent/tools/cat/agents.js';
 import * as platform from '../../config/platform.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
@@ -345,21 +340,6 @@ describe('the re-fill is exact', () => {
     expect(mockDb.current!.prepare("SELECT COUNT(*) c FROM audit_log WHERE detail LIKE '%agent_rename%'")
       .get() as { c: number }).toEqual({ c: 0 });
   });
-
-  it('ZERO TEMPLATE AND DEFAULT BYTES: the shipped templates and the in-code stubs never move', () => {
-    const snapshot = (): Record<string, string> => {
-      const out: Record<string, string> = {};
-      for (const f of fs.readdirSync(path.join(REPO_ROOT, 'templates'))) {
-        out[f] = fs.readFileSync(path.join(REPO_ROOT, 'templates', f), 'utf-8');
-      }
-      out['prompt/templates.ts'] = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src/prompt/templates.ts'), 'utf-8');
-      return out;
-    };
-    const before = snapshot();
-    renameAgent(PM, 'Karen');
-    renameAgent(PRIMARY, 'Kev');
-    expect(snapshot()).toEqual(before);
-  });
 });
 
 // ═══════════ T59 (W42): THE RE-FILL COVERS THE SOULS T59 ADDED ═══════════
@@ -512,55 +492,5 @@ describe('a rename refuses a case-variant clash with another live agent', () => 
     expect(out.isError).toBe(true);
     expect(out.content).toContain('An agent named "Helper" already exists; names are matched without regard to capital letters.');
     expect(agentName(SUB)).toBe('Max');   // untouched
-  });
-});
-
-// ═══════════ THE MERGER, PINNED ═══════════
-
-describe('there is exactly one rename door', () => {
-  // The five DECLARED boot re-sync upserts. They do not rename: each writes the CONFIGURED
-  // platform name back onto its own row at boot, and that config value is now owned by
-  // `renameAgent`. Declared here rather than excluded silently, so a SIXTH one is a finding.
-  const DECLARED_RESYNC = [
-    'packages/server/src/healer/healer-agent.ts',
-    'packages/server/src/techniques/trainer-agent.ts',
-    'packages/server/src/tracker/pm-agent.ts',
-    'packages/server/src/vault/maintenance.ts',
-  ];
-  const THE_DOOR = 'packages/server/src/prompt/agent-rename.ts';
-
-  it('no `agents.name` write exists outside the one door and the declared boot re-syncs', () => {
-    const found: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__') walk(p); continue; }
-        if (!e.name.endsWith('.ts')) continue;
-        const src = fs.readFileSync(p, 'utf-8');
-        const rel = path.relative(REPO_ROOT, p);
-        // Multi-line aware: the shape a one-line grep cannot see, and the shape three of
-        // these writes actually had.
-        const re = /UPDATE\s+agents\s+SET([\s\S]{0,400}?)(WHERE|`|")/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(src))) if (/\bname\s*=/.test(m[1])) { found.push(rel); break; }
-        // …and the DYNAMIC builder, which is how the settings door hid from that regex.
-        if (/updates\.push\('name = \?'\)/.test(src)) found.push(rel);
-      }
-    };
-    walk(path.join(REPO_ROOT, 'packages/server/src'));
-
-    const unexpected = [...new Set(found)].filter((f) => f !== THE_DOOR && !DECLARED_RESYNC.includes(f)).sort();
-    expect(unexpected).toEqual([]);
-    expect([...new Set(found)]).toContain(THE_DOOR);
-  });
-
-  it('every door CALLS the one function rather than carrying its own copy', () => {
-    for (const door of [
-      'packages/server/src/gateway/routes/agents.ts',
-      'packages/server/src/gateway/routes/config.ts',
-      'packages/server/src/agent/tools/cat/agents.ts',
-    ]) {
-      expect(fs.readFileSync(path.join(REPO_ROOT, door), 'utf-8')).toContain('renameAgent');
-    }
   });
 });

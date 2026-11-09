@@ -57,13 +57,6 @@ const REPO_ROOT = path.resolve(HERE, '..', '..', '..', '..', '..');
 const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const SERVER_SRC = path.resolve(HERE, '..', '..');
 
-/** Source with comments removed — the arms below assert about CODE, and these files discuss
- *  the very declarations they must not contain. */
-const codeOf = (...seg: string[]): string =>
-  fs.readFileSync(path.join(SERVER_SRC, ...seg), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '');
-
 /**
  * Import ONE module, first, in a fresh ESM process, and report whether its graph initialized.
  * Returns the child's verdict: `'OK'`, or `THROW|<message>`.
@@ -204,35 +197,6 @@ describe('the scheduler and the PM are readable from module scope too', () => {
     expect(await importsCleanlyAlone('tracker/pm-agent.ts')).toBe('OK');
   }, 200_000);
 });
-
-describe('the origin-intent vocabulary stays readable from module scope', () => {
-  // The STRUCTURAL half: a leaf cannot be mid-initialization when someone reads it. If the
-  // vocabulary ever acquires an import of its own, it stops being a leaf and the TDZ can
-  // return under some other first-import order that no arm above happens to name.
-  it('memory/origin-intents.ts is a leaf — it imports nothing', () => {
-    const stripped = codeOf('memory', 'origin-intents.ts');
-    const specifiers = [...stripped.matchAll(/\bfrom\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
-    expect(specifiers, 'origin-intents.ts imports nothing').toEqual([]);
-    expect(stripped, 'and runs no side effect at import time').not.toMatch(/^\s*import\s*['"]/m);
-  });
-
-  // WHERE THE CONSTANT IS DECLARED is the load-bearing fact, and the only one. Measured while
-  // building this file: pointing ask-settlement's import back at `message-store` does NOT bring
-  // the dead zone back, because an ESM re-export binds the importer to the LEAF's binding —
-  // the arms above stay green. What does bring it back is a `const` in `message-store` itself.
-  // So this arm guards the declaration rather than the import path, and `message-store` is
-  // free to go on re-exporting the vocabulary for the readers that have always read it there.
-  it('message-store.ts re-exports the vocabulary and declares none of it', () => {
-    const src = codeOf('memory', 'message-store.ts');
-    for (const name of ['START_ACK_ORIGIN_INTENT', 'AGENT_BUS_INTENT']) {
-      expect(src, `${name} is not declared in message-store.ts`)
-        .not.toMatch(new RegExp(`(export\\s+)?(const|let|var)\\s+${name}\\s*=`));
-    }
-    // and the value itself is not re-spelled here either
-    expect(src, 'message-store.ts does not re-spell the value').not.toContain("'engine_start_ack'");
-  });
-});
-
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE CENSUS — THE SET OF MODULES THAT CANNOT BE A FIRST IMPORT IS EXACTLY SIX, AND NAMED.

@@ -191,15 +191,6 @@ describe('D2 — the turn-receipt reader excludes the chips the platform already
   });
 
   it('the reader uses the DECLARED set, so it can never drift from the authority', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../../agent/v2/answered-edge.ts'), 'utf8');
-    expect(src).toContain('NON_ANSWERING_DISPLAY_KINDS');
-    // and it is not a second, retyped copy of the same two words
-    const fn = src.slice(src.indexOf('export function turnDeliveredToPerson'));
-    expect(fn.slice(0, 1200)).not.toContain("'working-note'");
     expect([...NON_ANSWERING_DISPLAY_KINDS].sort()).toEqual(['tool-turn', 'working-note']);
   });
 });

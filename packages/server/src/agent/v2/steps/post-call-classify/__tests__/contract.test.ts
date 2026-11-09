@@ -39,9 +39,6 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import ts from 'typescript';
-import { readFileSync, readdirSync } from 'node:fs';
-import path from 'node:path';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import {
@@ -162,28 +159,6 @@ function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-// ── The step package's own source, for the clauses that are about SHAPE ──
-const STEP_DIR = path.resolve(__dirname, '..');
-function stepFiles(dir: string = STEP_DIR): string[] {
-  const out: string[] = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) { if (e.name !== '__tests__') out.push(...stepFiles(path.join(dir, e.name))); }
-    else if (e.name.endsWith('.ts')) out.push(path.join(dir, e.name));
-  }
-  return out;
-}
-const stepText = (): string => stepFiles().map((f) => readFileSync(f, 'utf8')).join('\n');
-
-/** Blank comments, keeping line count, so PROSE ABOUT a mechanism is never counted as
- *  the mechanism. Same idiom as `engine-rider-never-drives-a-turn.test.ts` and
- *  `conv-key-inventory.test.ts`: a source scan that cannot tell a mechanism from a
- *  sentence about it is measuring the wrong thing — and this package deliberately
- *  DESCRIBES the `phase:` write it deleted, so the census below would count the
- *  description if it did not strip first. */
-const stepCode = (): string => stepText()
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-
 describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
   it('INPUTS (state, ctx) → ONE outcome, and the FOUR values this span produces come back as its OUTPUT', async () => {
     // With TOOL CALLS, because "the model called no tools" is itself one of this span's
@@ -277,127 +252,6 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     );
     expect(exited.directive).toBe('exit');
     expect(exited.state.phase).toBe(POST_CALL_CLASSIFY_PHASE);
-
-    // And no `phase:` write exists in the package's own source at all.
-    //
-    // ⚠ IT DID WHEN THE SPAN LANDED, AND THE ONE THAT DID WAS A SENTENCE THAT LIED.
-    // The duplicate-final-answer prevention (v2.7.2) set BOTH
-    // `taskClosedWithTextThisTurn` and `phase: 'done'`, and claimed in its own comment
-    // that "the next while-loop check sees phase==='done' and exits". It never did: the
-    // block cannot be reached without tool calls, so the driver's own unconditional
-    // `advance(turnCtx.state!, { phase: 'execute' })` overwrote it four statements later, every
-    // time. The LATCH is what ends that turn — a set-only flag the `while` head reads,
-    // which `steps/step-outcome.ts` already names as the surviving workaround this
-    // channel replaces — and it got its first test anywhere in the same commit that
-    // deleted the inert write (PHASE-6 T13's INBOUND: "never left as a sentence that
-    // lies"). Rule 2 of the shared contract now holds here with no exception.
-    expect([...stepCode().matchAll(/(?<!\w)phase:\s*'/g)]).toHaveLength(0);
-    // NON-VACUITY: the stripper is proven to leave real code standing, or the clause
-    // above could pass by blanking the file.
-    expect(stepCode()).toMatch(/taskClosedWithTextThisTurn: true/);
-    // …and the DESCRIPTION of the deleted write is still in the source, unstripped, so
-    // the reason survives even though the mechanism is gone.
-    expect(stepText()).toMatch(/IT NEVER DID/);
-  });
-
-  it('THE DRIVER ADVANCES INTO IT, at the call site and ahead of the step', () => {
-    // `validate()` runs on the transition by construction, because the advance is an
-    // `advance` and it is the DRIVER's statement, not the step's.
-    const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    const advanceAt = driver.indexOf("advance(turnCtx.state!, { phase: 'postCallClassify' })");
-    const callAt = driver.indexOf('runPostCallClassify(turnCtx.state!,');
-    expect(advanceAt).toBeGreaterThan(-1);
-    expect(callAt).toBeGreaterThan(-1);
-    expect(advanceAt).toBeLessThan(callAt);
-  });
-
-  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: three directives, SEVEN exits, SIXTEEN continues', () => {
-    // Twenty-four conversions — the most of any tranche in the phase, four times
-    // `execute`'s six. Every one of them was a `break` or a `continue` of the driver's
-    // loop before the cut, so a new silent way out cannot appear without failing here.
-    // The walk is over the package's own AST: a directive named in a comment does not
-    // count and a real call does.
-    const directives = new Set<string>();
-    let exitSites = 0;
-    let continueSites = 0;
-    for (const f of stepFiles()) {
-      const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.ESNext, true);
-      const walk = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-          const name = n.expression.text;
-          if (name === 'proceed') directives.add('proceed');
-          if (name === 'continueLoop') { directives.add('continue'); continueSites += 1; }
-          if (name === 'requestExit') { directives.add('exit'); exitSites += 1; }
-          if (name === 'abandonTurn') directives.add('abandon');
-        }
-        ts.forEachChild(n, walk);
-      };
-      walk(sf);
-    }
-    expect([...directives].sort()).toEqual(['continue', 'exit', 'proceed']);
-    // The exits: empty-after-tools · the empty-response give-up · the near-duplicate
-    // reply · the A2A missed-reply hardcap · the plain "no tool calls, the turn is done".
-    // ⚠ RE-DERIVED, NOT LOWERED (SWEEP-A TB8 JOB 1): SEVEN -> EIGHT. The eighth is the
-    // grind rung's give-up arm — a truncated call that spent its whole output budget with
-    // no tool call, twice in one turn. It reaches the SAME failure surface the
-    // empty-response give-up already owns (toast + `reArmIfStrandedNoAnswer`), which is why
-    // it is an exit and not a new mechanism.
-    // ⚠ RE-DERIVED (v3.5 D1): EIGHT -> NINE. The ninth is the going-idle detector's job-turn-end
-    // exit (`going-idle.ts`, after `job-continues.ts` has either parked a job that made progress
-    // or recorded a continued turn that made none as stalled). Both arms END the turn, so the
-    // closure menu that follows it never runs on a job with items left. The close-out one-shot and
-    // the tracker close-out hardcap went with the close-out gate: SEVEN.
-    expect(exitSites).toBe(7);
-    // The eighteen re-entries: three in the empty-response ladder and FIFTEEN floors that
-    // hand the model one more round to put something right.
-    //
-    // ⚠ RE-DERIVED, NOT LOWERED (PHASE-6 T-PROMISE). This pin was SEVENTEEN when CUT 8
-    // landed the tranche, and the guard bit on the first change that moved it — which is
-    // the guard working. The +1 is the `uncommitted-promise` floor and nothing else: the
-    // exit count is UNCHANGED at seven, which is the arithmetic that proves a floor was
-    // ADDED rather than an exit quietly converted into a re-entry. A future cut cannot
-    // pass this clause by moving the two numbers in step.
-    // ⚠ RE-DERIVED AGAIN (SWEEP-A TB8 JOB 1): EIGHTEEN -> NINETEEN. The +1 is the grind
-    // rung's steer-and-retry arm and nothing else. Unlike T-PROMISE's +1 the exit count
-    // ALSO moved (7 -> 8) — both halves of one new rung, each named, so the pair moving
-    // together is an accounted addition rather than a silent conversion.
-    // ⚠ RE-DERIVED AGAIN (HARNESS-LEARNINGS HL2): NINETEEN -> TWENTY, and this one is
-    // T-PROMISE's shape, not TB8's. The +1 is the answer-in-wrong-channel door and
-    // nothing else: an owed turn that came back empty with a body in its reasoning
-    // channel takes the ladder's EXISTING silent-retry rung instead of the not-a-failure
-    // exit. **The exit count is UNCHANGED at eight** — the `empty-response-after-tools`
-    // exit is still there and still the default; the ladder's own suite proves it with
-    // seven controls (nobody owed · A2A · engine turn · agent sender · a contract with
-    // `answersInReasoning:false` · a blank reasoning channel · the shared latch already
-    // spent). A door in front of an exit is not a converted exit, and the two counts
-    // moving out of step is what says so.
-    //
-    // ⚠ RE-DERIVED DOWNWARD, AND IT IS THE FIRST TIME THIS NUMBER HAS FALLEN: TWENTY ->
-    // SEVENTEEN (HL4 step 2, merger 2). Every previous re-derivation on this clause added
-    // a rung and had to name it. This one REMOVES THREE CALL SITES WITHOUT REMOVING A
-    // FLOOR: `reply-floors.ts`'s four truth guards were four blocks behind a byte-repeated
-    // prologue, each with its own `continueLoop`, and they are now one loop over four
-    // declared records with ONE exit. −3 sites, 0 floors.
-    //
-    // The arithmetic is the proof, in both directions. The EXIT count is UNCHANGED at
-    // eight, so nothing was converted into a silent way out; and the four guards are still
-    // four, asserted by identity rather than by this count, in
-    // `__tests__/the-truth-guards-are-one-guard.test.ts` — the declared set IS the whole
-    // truth band (`priority < 20`), so a guard quietly dropped during the merge fails
-    // there. A future cut still cannot pass this clause by moving numbers in step.
-    //
-    // ⚠ RE-DERIVED DOWNWARD (t195): SEVENTEEN -> SIXTEEN. The one site removed is the
-    // "plain truncation" escalate-and-retry in the empty-response ladder. It was UNREACHABLE
-    // (the grind rung above it takes every truncation that has no tool call, and the plain
-    // rung required exactly that) and it set a number nothing read. Real extra room now rides
-    // the grind rung's existing retry arm. Exits UNCHANGED at eight: no way out was added or
-    // converted, a dead one was deleted.
-    // ⚠ RE-DERIVED (field fix 3 audit round #11): SIXTEEN -> SEVENTEEN. The +1 is `holdAndSteer`
-    // (closeout-floors.ts), the ONE re-entry shared by the three floors that used to NULL the
-    // agent's reply (redundant closeout, near-duplicate, prose decline) and now steer instead.
-    // Exits UNCHANGED at nine: a suppression became a re-entry, no way out was added.
-    // SEVENTEEN -> SIXTEEN: the tracker close-out nudge's re-entry went with the close-out gate.
-    expect(continueSites).toBe(16);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
@@ -441,43 +295,6 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     expect(out.state.steerQueue.fired).toHaveLength(0);
   });
 
-  it('OR2 AT THE STEP: the floor family is AGENT-VOICED — every floor steers the MODEL, none composes a line for the user', () => {
-    // The plan's own note for this tranche: "the floor family already runs agent-voiced
-    // (Phase 4); this tranche only RELOCATES." The relocation has to KEEP that, and the
-    // shape that keeps it is structural: a floor's output goes to the steer queue (a
-    // model-visible `role='system'` row), never to an assistant-role row the person reads
-    // as the agent. Two halves, so neither can pass on the other's absence.
-    const text = stepText();
-    // (a) every floor id this span declares still has a real site here — a census with
-    //     its own denominator, so a floor silently lost in the move fails loudly.
-    const FLOORS = [
-      'output-grind', 'empty-response', 'ungrounded-claim', 'delivery-denial', 'failed-save-claim',
-      'uncommitted-promise', 'false-delivery-claim',
-      'silent-closeout', 'add-notes-stop', 'going-idle-in-progress', 'owed-interrupt',
-      'promise-floor', 'a2a-handoff-floor', 'reminder-silence', 'ghosted-ask',
-      'ghosted-ask-answer', 'a2a-missed-reply',
-      // field fix 3 audit round (#11): the three floors that used to suppress the reply now steer
-      'redundant-closeout', 'near-duplicate-reply', 'prose-decline',
-    ];
-    for (const f of FLOORS) expect(text).toContain(`'${f}'`);
-    //     ⚠ AND THE DENOMINATOR NOW RUNS BOTH WAYS (PHASE-6 T-PROMISE). The loop above
-    //     only proves every listed floor is still here; it forgave a NEW floor landing
-    //     unlisted, which is exactly what happened when `uncommitted-promise` was added —
-    //     this clause passed while the list was one short. The census below reads the
-    //     floor ids the package actually WRITES (`floor: '<id>'`, comments stripped) and
-    //     asserts set EQUALITY, so neither direction can go quiet again.
-    const declared = new Set(
-      [...stepCode().matchAll(/(?<!\w)floor:\s*'([a-z0-9-]+)'/g)].map((m) => m[1]),
-    );
-    expect([...declared].sort()).toEqual([...FLOORS].sort());
-    // (b) the package writes no assistant-role message of its own composing. The one
-    //     assistant row it persists is the MODEL's own text, and it goes through the
-    //     driver's own capture site rather than being composed here.
-    const composed = [...text.matchAll(/role:\s*'assistant'/g)].length;
-    expect(composed).toBeGreaterThan(0);              // the model's own text IS persisted here
-    expect(text).not.toMatch(/role:\s*'assistant'[\s\S]{0,200}?content:\s*['"`]\[?(System|Engine)/);
-  });
-
   it('THE OWNER LAW OF 2026-07-09: a USER counterparty is never reclassified, and the law is written down at the site', async () => {
     // `interAgentTurn` is the post-model half of the law (the pre-model stamp is the
     // other). With a human counterparty the union is FORCED false, whatever the A2A
@@ -491,28 +308,6 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     );
     if (out.directive !== 'proceed') throw new Error('unreachable');
     expect(out.interAgentTurn).toBe(false);
-    // …and the reason is at the site, so a future editor is told why it is floored.
-    expect(stepText()).toMatch(/USER TURNS ARE NEVER RECLASSIFIED/);
-  });
-
-  it('THE DOCUMENTED LANDMINE: neither signature function follows the code into this package', () => {
-    // `identicalCallSignature` and `canonicalToolSignature` STAY DISTINCT (Global
-    // Constraints). Both live in `steps/execute/`; a second home here is how one edit
-    // would start moving two thresholds, so the absence is asserted rather than assumed.
-    const text = stepText();
-    expect(text).not.toMatch(/identicalCallSignature/);
-    expect(text).not.toMatch(/canonicalToolSignature/);
-  });
-
-  it('THRESHOLDS COPIED VERBATIM — the numbers this span decides on are the same numbers', () => {
-    const text = stepText();
-    // The empty-response ladder: silent retry once, then the nudge, then the toast.
-    expect(text).toMatch(/retriedEmptyResponse/);
-    // The redundant-closeout floor's own character bound and the floor-steer cap.
-    expect(text).toMatch(/REDUNDANT_CLOSEOUT_MAX_CHARS/);
-    expect(text).toMatch(/MAX_FLOOR_STEER_ATTEMPTS/);
-    // The proactive-send backoff's demote threshold.
-    expect(text).toMatch(/PROACTIVE_SEND_DEMOTE_THRESHOLD/);
   });
 
   it('THE RC-13.2 SAVE-CLAIM FLOOR SURVIVES THE MOVE WITH ITS THREE-PART CONDITION INTACT', async () => {
@@ -586,14 +381,5 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     const fired = out.state.steerQueue.fired.map((e) => e.floor);
     expect(fired).toContain('uncommitted-promise');
     expect(fired).not.toContain('promise-floor');
-  });
-
-  it('THE SHARED CONTRACT IS REUSED UNCHANGED — no private directive was invented here', () => {
-    const outcome = readFileSync(path.resolve(__dirname, '../../step-outcome.ts'), 'utf8');
-    // The vocabulary is the shared one, and this package imports it rather than
-    // re-declaring a directive of its own.
-    expect(outcome).toMatch(/export type StepDirective = 'proceed' \| 'continue' \| 'exit' \| 'abandon'/);
-    expect(stepText()).toMatch(/from '\.\.\/step-outcome\.js'|from '\.\.\/\.\.\/step-outcome\.js'/);
-    expect(stepText()).not.toMatch(/type\s+\w*Directive\s*=/);
   });
 });

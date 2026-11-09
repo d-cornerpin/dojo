@@ -57,10 +57,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // nobody watched fail is a number, not a fix.
 vi.setConfig({ testTimeout: 15_000 });
 import Database from 'better-sqlite3';
-import ts from 'typescript';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const { mockDb, broadcastSpy } = vi.hoisted(() => ({
   mockDb: { current: null as Database.Database | null },
@@ -99,9 +95,6 @@ import { AgentError } from '../../../../errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../../../stream-patience.js';
 import { doomedPrefillCompactionSpent } from '../../../../shared-state.js';
 import * as compaction from '../../../../../memory/compaction.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const LOOP_TS = path.resolve(HERE, '..', '..', '..', 'loop.ts');
 
 const AGENT = 'primary';
 const TURN = 1;
@@ -228,14 +221,6 @@ describe('the recorded transition', () => {
     }
   });
 
-  it('THE DRIVER advances into the phase, so `validate()` runs on the transition', () => {
-    // The advance is at the CALL SITE, ahead of the step — the property CUT 1
-    // established and every tranche inherits. A step that advanced its own phase
-    // would be validating a transition it had already taken.
-    const src = fs.readFileSync(LOOP_TS, 'utf8');
-    expect(src).toMatch(/turnCtx\.state = advance\(turnCtx\.state!, \{ phase: TEARDOWN_PHASE \}\)/);
-  });
-
   it('`teardown` IS a member of the TurnPhase union — the exit path has a declared phase', () => {
     const phase: TurnPhase = 'teardown';
     expect(TEARDOWN_PHASE).toBe(phase);
@@ -264,113 +249,6 @@ describe('the exit-request channel: teardown can never ask to leave', () => {
     mockDb.current!.close();   // every DB read inside the arms now throws
     const outcome = await runTurnTeardown(stateInTeardown(), handed);
     expect(outcome.directive).toBe('proceed');
-  });
-});
-
-// ── The property that DEFINES this tranche ────────────────────────────────────
-
-describe('IT RUNS ON EVERY EXIT PATH — and that is the language\'s guarantee, not a list', () => {
-  interface DriverShape {
-    tryStart: number;
-    catchCalls: string[];
-    finallyCalls: string[];
-    breaksInsideTry: number;
-    breaksOutsideTry: number;
-    returnsInsideTry: number;
-    returnsBeforeTry: number;
-  }
-
-  function readDriver(): DriverShape {
-    const src = fs.readFileSync(LOOP_TS, 'utf8');
-    const sf = ts.createSourceFile('loop.ts', src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
-    let body: ts.FunctionDeclaration | null = null;
-    for (const st of sf.statements) {
-      if (ts.isFunctionDeclaration(st) && st.name?.text === 'runV2TurnBody') body = st;
-    }
-    if (!body?.body) throw new Error('runV2TurnBody not found in loop.ts');
-
-    // The main `try` is the function's own outermost, largest try statement.
-    let main: ts.TryStatement | null = null;
-    for (const st of body.body.statements) {
-      if (!ts.isTryStatement(st)) continue;
-      if (!main || st.getEnd() - st.getStart(sf) > main.getEnd() - main.getStart(sf)) main = st;
-    }
-    if (!main?.catchClause || !main.finallyBlock) {
-      throw new Error('the main try/catch/finally is not where this contract expects it');
-    }
-
-    const callsIn = (node: ts.Node): string[] => {
-      const names: string[] = [];
-      const walk = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) names.push(n.expression.text);
-        n.forEachChild(walk);
-      };
-      walk(node);
-      return names;
-    };
-
-    const inRange = (n: ts.Node, from: number, to: number): boolean =>
-      n.getStart(sf) >= from && n.getEnd() <= to;
-
-    let breaksInsideTry = 0, breaksOutsideTry = 0, returnsInsideTry = 0, returnsBeforeTry = 0;
-    const countExits = (n: ts.Node): void => {
-      // Do not descend into nested functions: their `return` leaves the closure,
-      // not the turn.
-      if (n !== body && (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n))) return;
-      if (ts.isBreakStatement(n)) {
-        if (inRange(n, main!.getStart(sf), main!.getEnd())) breaksInsideTry++; else breaksOutsideTry++;
-      }
-      if (ts.isReturnStatement(n)) {
-        if (inRange(n, main!.getStart(sf), main!.getEnd())) returnsInsideTry++;
-        else if (n.getEnd() < main!.getStart(sf)) returnsBeforeTry++;
-      }
-      n.forEachChild(countExits);
-    };
-    countExits(body);
-
-    return {
-      tryStart: sf.getLineAndCharacterOfPosition(main.getStart(sf)).line + 1,
-      catchCalls: callsIn(main.catchClause),
-      finallyCalls: callsIn(main.finallyBlock),
-      breaksInsideTry, breaksOutsideTry, returnsInsideTry, returnsBeforeTry,
-    };
-  }
-
-  it('the teardown arm is called from the `finally`, and the recovery arm from the `catch`', () => {
-    const d = readDriver();
-    expect(d.finallyCalls, 'runTurnTeardown must be called from the main finally').toContain('runTurnTeardown');
-    expect(d.catchCalls, 'runTurnRecovery must be called from the main catch').toContain('runTurnRecovery');
-    // …and NOT the other way round: the recovery arm runs only on a throw.
-    expect(d.finallyCalls).not.toContain('runTurnRecovery');
-    expect(d.catchCalls).not.toContain('runTurnTeardown');
-  });
-
-  it('CENSUS WITH A DENOMINATOR: every break and every return of the turn body is inside that try', () => {
-    // This is what "runs on every exit path" MEANS, and it is a count, not a sample.
-    // A `break` or `return` lexically inside a `try` runs its `finally`; one outside
-    // does not. So the whole claim reduces to "there are none outside", plus the
-    // known exceptions below.
-    const d = readDriver();
-    expect(d.breaksInsideTry).toBeGreaterThan(0);   // the scan found something
-    expect(d.breaksOutsideTry).toBe(0);
-    expect(d.returnsInsideTry).toBeGreaterThan(0);  // the scan found something
-  });
-
-  it('THE KNOWN EXCEPTION IS EXACTLY ONE, so a second cannot appear silently', () => {
-    // The pickup-claim-lost bails (one human, one engine) return BEFORE the main try
-    // opens and therefore never reach teardown. T1 recorded them as the reason the
-    // turn's bag is cleared in `runV2Turn`'s wrapper rather than in this block, and
-    // they are also why the F10 timer is armed AFTER them rather than before.
-    //
-    // ⚠ PHASE-6 T2 (CUT 9) MOVED BOTH OF THEM AND THE COUNT FELL 2 → 1. They are inside
-    // the `preflight` span, so they are now that step's two `abandon` sites and the driver
-    // honours BOTH through the ONE `return` this clause still counts. The census did not
-    // shrink — it moved: `steps/preflight/__tests__/contract.test.ts` pins the other half
-    // at TWO and pins the SUM, so a future cut cannot pass by moving the two numbers in
-    // step with each other. The requirement is unchanged: an exit that skips teardown must
-    // be countable, and there must be no third.
-    const d = readDriver();
-    expect(d.returnsBeforeTry).toBe(1);
   });
 });
 

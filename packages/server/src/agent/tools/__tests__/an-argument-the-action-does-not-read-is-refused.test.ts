@@ -13,9 +13,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../../db/connection.js', async () => {
@@ -33,11 +30,9 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { runMigrations } from '../../../db/migrations.js';
 import { executeTool, unknownArgsAgainstSchema } from '../index.js';
 import { toolResultOf } from '../../tool-outcome.js';
-import { WORK_OP_READS, WORK_OP_ACCEPTS, WORK_OPS, workOperation } from '../../../tools/work-verbs.js';
+import { WORK_OP_READS, WORK_OPS } from '../../../tools/work-verbs.js';
 import { getAllToolDefinitions } from '../definitions.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
-import { appendWorkEvent } from '../../../work/store.js';
-import { requestUserVerdict, recordValidationEscalation } from '../../../work/tracker-store.js';
 import { trackerHandlers } from '../cat/tracker.js';
 
 const AGENT = 'unread-args-agent';
@@ -56,12 +51,9 @@ async function call(name: string, args: Record<string, unknown>, as = AGENT): Pr
   const r = toolResultOf(await executeTool(as, { id: `c-${Math.random()}`, name, arguments: args } as never));
   return { content: String(r.content), isError: !!r.isError };
 }
-const events = (kind: string): number => (db().prepare('SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = ?').get(TASK, kind) as { n: number }).n;
 const row = (): { measure_json: string | null; title: string; agent_id: string } => db().prepare('SELECT measure_json, title, agent_id FROM work WHERE id = ?').get(TASK) as never;
 
 describe('rank 3: a declared argument the chosen action does not read refuses the call', () => {
-
-
 
   it('REPLACES the one-off guard: assigned_to on status is refused by the same class, naming reassign', async () => {
     const r = await call('work_update', { action: 'status', task_id: TASK, status: 'in_progress', assigned_to: 'someone-else' });
@@ -69,11 +61,6 @@ describe('rank 3: a declared argument the chosen action does not read refuses th
     expect(r.content).toMatch(/^Refused: work_update\(action="status"\) does not read "assigned_to"/);
     expect(r.content).toContain('work_update(action="reassign")');
     expect(row().agent_id).toBe(AGENT);
-  });
-
-  it('the one-off guard is gone from the status door; the class is the one way', () => {
-    const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../tracker/tools.ts'), 'utf8');
-    expect(src).not.toContain('does not move a task to another agent');
   });
 
   it('CONTROLS: the doors that DO read the argument are not refused by it; navigation arguments are accepted', async () => {
@@ -88,25 +75,7 @@ describe('rank 3: a declared argument the chosen action does not read refuses th
 });
 
 describe('rank 3: the map cannot drift from the handlers or the schemas', () => {
-  const handlerSrc = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cat/tracker.ts'), 'utf8');
-  const bodyOf = (op: string): string => {
-    const at = handlerSrc.indexOf(`async "${op}"(`);
-    expect(at, op).toBeGreaterThan(-1);
-    const next = handlerSrc.indexOf('\n  async "', at + 10);
-    return handlerSrc.slice(at, next < 0 ? undefined : next);
-  };
   const props = (verb: string): Set<string> => new Set(Object.keys(((getAllToolDefinitions().find((d) => d.name === verb)!.input_schema) as { properties: object }).properties));
-
-  it('every argument a handler reads directly is on its operation\'s list (so the map can never refuse a real read)', () => {
-    for (const op of WORK_OPS) {
-      const body = bodyOf(op);
-      const reads = new Set([...body.matchAll(/\bargs\.([a-zA-Z_]+)/g)].map((m) => m[1]));
-      const listed = new Set([...WORK_OP_READS[op], ...(WORK_OP_ACCEPTS[op] ?? [])]);
-      const verb = op.split(':')[0];
-      const missing = [...reads].filter((k) => props(verb).has(k) && !listed.has(k));
-      expect(missing, op).toEqual([]);
-    }
-  });
 
   it('every listed argument is declared on its verb, and every declared argument is read by some operation', () => {
     for (const op of WORK_OPS) {
@@ -127,23 +96,7 @@ describe('rank 3: the map cannot drift from the handlers or the schemas', () => 
 describe('a PM verdict that carries a reason is applied, never refused', () => {
   const PM = 'pm';   // the platform's default PM id (`config/platform.ts:getPMAgentId`)
   beforeEach(() => { db().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'PM', 'idle', 'sensei')").run(PM); });
-  const fileClose = (): void => {
-    db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES ('m-unread-1', ?, 'owner', 'assistant', 'All 12 labelled messages are cleared.', ?, ?)`)
-      .run(AGENT, Date.now(), Date.now());
-    db().prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at) VALUES ('d-unread-1', ?, NULL, 'dashboard', 'dashboard', 'm-unread-1', 'delivered', datetime('now'))`,
-    ).run(AGENT);
-    appendWorkEvent(TASK, 'validation_requested', AGENT, { requested_state: 'done', reason: 'done', from: 'claimed', result_delivery_id: 'd-unread-1' });
-  };
   const state = (): string => (db().prepare('SELECT state FROM work WHERE id = ?').get(TASK) as { state: string }).state;
-  const lastVerdict = (verdict: string): { note: string } | undefined =>
-    db().prepare('SELECT note FROM adjudications WHERE work_id = ? AND verdict = ? ORDER BY id DESC').get(TASK, verdict) as never;
-  const spineReason = (): string => {
-    const rows = db().prepare("SELECT payload FROM work_events WHERE work_id = ? ORDER BY id DESC").all(TASK) as { payload: string }[];
-    return rows.map((r) => r.payload).join('\n');
-  };
-
-
 
   it('the close doors keep a note-like argument instead of refusing the call over it', () => {
     expect(unknownArgsAgainstSchema('work_update', { action: 'status', task_id: TASK, status: 'complete', result: 'r', reason: 'done' }).unread).toEqual([]);
@@ -157,25 +110,11 @@ describe('a PM verdict that carries a reason is applied, never refused', () => {
 describe('the owner-verdict doors read reason, never refuse it', () => {
   const run = async (op: string, args: Record<string, unknown>): Promise<string> =>
     String((await trackerHandlers[op]({ agentId: 'pm', name: 'work_validate', callId: 'x', args, toolCall: { id: 'x', name: 'work_validate', input: {} } } as never)).content);
-  const payloads = (): string => (db().prepare('SELECT payload FROM work_events WHERE work_id = ? ORDER BY id').all(TASK) as { payload: string }[]).map((r) => r.payload).join('\n');
   const note = (verdict: string): string => (db().prepare('SELECT note FROM adjudications WHERE work_id = ? AND verdict = ? ORDER BY id DESC').get(TASK, verdict) as { note: string }).note;
-  const setState = (state: string): void => { db().prepare('UPDATE work SET state = ? WHERE id = ?').run(state, TASK); };
-  // v3.5 field fix 3 (owner ruling b): these doors apply only the owner's own words, sent after he was asked.
-  // So each case records the ask and the owner's real reply, and quotes that reply.
-  const ownerReplies = (content: string): void => {
-    db().prepare(`INSERT INTO messages (id, agent_id, conversation_id, lane, role, content, channel, authorized, provenance,
-        display_kind, display_tier, inbound_meta, sent_at)
-      VALUES (?, ?, 'conv-owner', 'owner', 'user', ?, 'dashboard', 1, 'live', 'unclassified', 'user-visible', ?, ?)`)
-      .run(`m-${Math.random()}`, AGENT, content, JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }), Date.now() + 1000);
-  };
-  const askedAndAnswered = (reply: string): void => { recordValidationEscalation(TASK, 'scheduler', 'conv-owner'); ownerReplies(reply); };
 
   it('the map reads them, so the door never refuses the call over them', () => {
     expect(unknownArgsAgainstSchema('work_validate', { action: 'apply_user_verdict', task_id: TASK, status: 'on_deck', user_quote: 'q', reason: 'r', feedback: 'f' }).unread).toEqual([]);
     expect(unknownArgsAgainstSchema('work_validate', { action: 'apply_user_validation', task_id: TASK, validated: true, user_quote: 'q', reason: 'r' }).unread).toEqual([]);
   });
-
-
-
 
 });

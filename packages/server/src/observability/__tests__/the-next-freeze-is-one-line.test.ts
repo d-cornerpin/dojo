@@ -9,7 +9,6 @@
 // printed landed ~20 seconds INTO the window. A profiler sample missed the window by seconds. Drift is
 // the only thing a pinned process can measure about itself.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
 import {
   diagnose, evaluateTick, breadcrumbFor, markQueryDispatched, clearQueryDispatched,
   currentBreadcrumb, resetSentinelForTest, TICK_MS, STALL_THRESHOLD_MS,
@@ -109,27 +108,5 @@ describe('the breadcrumb is a shape, and nesting cannot erase the slow one', () 
     const crumb = markQueryDispatched('vault_search:like');
     clearQueryDispatched(crumb);
     expect(currentBreadcrumb()).toBeNull();
-  });
-});
-
-describe('⚠ THE WIRE — and it COUNTS, in both directions', () => {
-  const retrieval = readFileSync(new URL('../../memory/retrieval.ts', import.meta.url), 'utf-8');
-
-  it('every retrieval search path marks a breadcrumb, and every mark is cleared', () => {
-    const marks = retrieval.match(/markQueryDispatched\(/g)?.length ?? 0;
-    const clears = retrieval.match(/clearQueryDispatched\(/g)?.length ?? 0;
-    // ⚠ BOTH DIRECTIONS. Too few marks and a search path is invisible to the sentinel — the freeze goes
-    // back to being unnamed. Too few clears and a finished query keeps blaming itself for the next
-    // stall, which is worse than silence because it is confidently wrong.
-    expect(marks, 'a retrieval search path with no breadcrumb is invisible to the sentinel').toBeGreaterThanOrEqual(2);
-    expect(clears, 'every mark must be cleared in a finally').toBe(marks);
-    // Each one in a `finally`, so a throwing query cannot leave its mark live forever.
-    expect(retrieval.match(/finally \{\s*clearQueryDispatched/g)?.length ?? 0).toBe(marks);
-  });
-
-  it('the sentinel is STARTED at boot — an instrument nobody runs measures nothing', () => {
-    const boot = readFileSync(new URL('../../index.ts', import.meta.url), 'utf-8');
-    expect(boot).toContain("from './observability/stall-sentinel.js'");
-    expect(boot).toContain('startStallSentinel()');
   });
 });

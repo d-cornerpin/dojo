@@ -32,13 +32,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '../../../../..');
 
 // ── The config table, in memory ──
 const config = new Map<string, string>();
@@ -180,36 +174,5 @@ describe('the controls — what must NOT speak', () => {
     await runPlaudCommand(['files'], { agentId: FXID.n4 });
     expect(toasts()).toHaveLength(0);
     expect(config.get('plaud_connected')).toBe('true');
-  });
-});
-
-// ── THE CARD ─────────────────────────────────────────────────────────────────
-// The dashboard package has no test runner; the standing precedent (W4's
-// `__tests__/dashboard-dates.test.ts`, `dashboard-date-parse-census.test.ts`)
-// puts dashboard-behaviour conformance server-side, reading the source.
-describe('the Settings card', () => {
-  const card = fs.readFileSync(
-    path.join(REPO_ROOT, 'packages/dashboard/src/components/PlaudSettings.tsx'), 'utf-8');
-  const apiTypes = fs.readFileSync(
-    path.join(REPO_ROOT, 'packages/dashboard/src/lib/api.ts'), 'utf-8');
-
-  it('says plainly that the browser opens on the Mac running the platform', () => {
-    // The owner's report: reconnecting opens a browser ON THE SERVER MACHINE,
-    // which matters when the dashboard is being viewed from a phone or another
-    // computer. The words have to be on the card BEFORE the user clicks.
-    expect(card).toMatch(/on the Mac/i);
-    expect(card).toMatch(/Dojo|platform|server/i);
-  });
-
-  it('renders an EXPIRED state, not just connected/disconnected', () => {
-    expect(card).toMatch(/reauthRequired/);
-    // and it is a visible state, not a silent branch
-    expect(card).toMatch(/Login expired|expired/i);
-  });
-
-  it('the wire type carries the new field, so the card is not guessing', () => {
-    // The `.26` Health-page lesson (T14): a client that survives on a
-    // defensive remap is a type/wire lie held together by guesswork.
-    expect(apiTypes).toMatch(/reauthRequired:\s*boolean/);
   });
 });

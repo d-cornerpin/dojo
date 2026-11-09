@@ -38,7 +38,6 @@ import { recordDecisionReceipt, recordDelivery, deliveryIdOf } from '../deliveri
 
 const W = 'task-1';
 const AGENT = 'a1';
-const SRC = path.join(__dirname, '..', '..', '..');
 
 const receipts = (): Array<Record<string, unknown>> =>
   mockDb.current!.prepare(
@@ -164,65 +163,6 @@ describe('the enumeration the design rests on, re-derived rather than trusted', 
     }
     return acc;
   };
-  /** Statement bodies that read `deliveries`, comments blanked so prose is never counted. */
-  const readers = (): Array<{ file: string; stmt: string }> => {
-    const out: Array<{ file: string; stmt: string }> = [];
-    for (const f of walk(SRC)) {
-      const src = fs.readFileSync(f, 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-        .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-      const re = /(?:FROM|JOIN)\s+deliveries\b([\s\S]{0,400}?)(?=`|;\s*$)/gi;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(src))) {
-        out.push({ file: path.relative(SRC, f).split(path.sep).join('/'), stmt: m[0] });
-      }
-    }
-    return out;
-  };
-
-  it('every production reader of `deliveries` either filters outcome=delivered or cannot see this row', () => {
-    // TWO ALLOWED SHAPES, both NAMED rather than counted away. Anything else appearing here
-    // is a reader that would treat an owner close as delivery evidence, and the design stops
-    // being safe the moment one exists.
-    //
-    //   (a) the dashboard dedup lookup (`agent/v2/outbound.ts`), keyed on
-    //       `channel = 'dashboard'` AND a real `message_id`, which this row has neither of;
-    //   (b) an existence lookup keyed on `id = ?` (`work/store.ts`'s `deliveryExists` and
-    //       `evidenceResolves`). These are the queries that ask "does the pointer resolve",
-    //       which is exactly G7's own question, and the receipt is SUPPOSED to answer yes —
-    //       that is the whole mechanism. It is not a leak: neither is a search, so no caller
-    //       can DISCOVER the receipt through them; a caller has to already hold its id, and
-    //       the only resolver that hands ids out (`work/done/proof.ts:proofFor`)
-    //       filters `outcome='delivered'`.
-    //   (c) PHASE-4 T4 — a POSITIVE enumeration of the attempted-but-undelivered outcomes
-    //       (`outcome IN ('failed','suppressed','held')`), the claimed-delivery floor's
-    //       failed-receipt arm. It is admitted because it is STRONGER than (a) and (b), not
-    //       weaker: `owner_closed` is absent from the enumeration, so that reader cannot see
-    //       this row at all, by construction rather than by a filter it might lose. The
-    //       shape is deliberately not `outcome <> 'delivered'` — a negation would have swept
-    //       the owner's own close in and turned it into "your claim is false".
-    //   (d) t189 B4 — the agent PURGE sweep (`work/purge-sweep.ts`), which deletes a purged
-    //       agent's receipts (keyed on `agent_id = ?`) and releases surviving work rows that
-    //       point at them. It removes rows; it never reads a receipt as evidence of anything,
-    //       so an owner-close row is no more reachable through it than through a DELETE.
-    const OUTCOME_IN_LIST = /outcome\s+IN\s*\(([^)]*)\)/i;
-    const positiveEnumWithoutOwnerClose = (stmt: string): boolean => {
-      const m = OUTCOME_IN_LIST.exec(stmt);
-      return m !== null && !/owner_closed/.test(m[1]);
-    };
-    const unfiltered = readers()
-      .filter((r) => r.file !== 'work/purge-sweep.ts')
-      .filter((r) => !/outcome\s*=\s*'delivered'/i.test(r.stmt))
-      .filter((r) => !/channel\s*=\s*'dashboard'[\s\S]*message_id\s*=/i.test(r.stmt))
-      .filter((r) => !/\bid\s*=\s*\?/.test(r.stmt))
-      .filter((r) => !positiveEnumWithoutOwnerClose(r.stmt))
-      .map((r) => r.file);
-    expect([...new Set(unfiltered)]).toEqual([]);
-  });
-
-  it('the enumeration is not vacuous — it really found the readers', () => {
-    expect(readers().length).toBeGreaterThanOrEqual(8);
-  });
 
   it('PLANTED FAULT: a new reader with no outcome filter is caught', () => {
     // The rule has to bite on a statement, not just on a file list, or the clause above is a

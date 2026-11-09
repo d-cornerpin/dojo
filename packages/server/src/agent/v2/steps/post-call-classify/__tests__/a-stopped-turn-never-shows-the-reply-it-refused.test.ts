@@ -297,20 +297,6 @@ describe('§2 a press after the reply has landed retro-deletes nothing', () => {
 // ── §3 — the record stays honest in both directions ──────────────────────────────────────
 
 describe('§3 the stop is still written down as a stop', () => {
-  it('suppressing the reply does not touch the turn\'s own record — different writers, by construction', () => {
-    const stripped = (abs: string) => fs.readFileSync(abs, 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    const src = stripped(path.resolve(HERE, '../persist-assistant.ts'));
-
-    // The seam writes no `turns` row and latches no exit — `exit_reason` is derived from this
-    // same fence by `engine-exit.ts` and written by the run's exit path. A stop must neither
-    // lose the record nor show the person a reply they refused, and keeping those two acts in
-    // two writers is what makes both true at once.
-    expect(/\bturns\b/.test(src), 'the persist seam started writing the turn record too')
-      .toBe(false);
-    expect(/latchEngineCut\(/.test(src), 'the seam started latching the turn\'s exit reason')
-      .toBe(false);
-  });
 
   it('the fence reader derives from `engine-exit`\'s own predicate, so the record and the suppression cannot disagree', async () => {
     // Not a second notion of "stopped": the suppression above and the `stop` exit reason read

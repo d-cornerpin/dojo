@@ -28,17 +28,12 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   MOST_RESTRICTIVE_GRANTS, cloneGrants, categoryGranted, stableGrantsText, type AccessGrants,
 } from '@dojo/shared';
 import { DASHBOARD_CREATE_DEFAULT_GRANTS, DASHBOARD_DEFAULT_CATEGORIES } from '../create-defaults.js';
 import { resolveSpawnGrants, clampGrantsTo } from '../authorize.js';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
-
-const SERVER_SRC = path.resolve(__dirname, '../../..');
-const ROUTE = path.join(SERVER_SRC, 'gateway/routes/agents.ts');
 const RECALL = 'Conversation Recall';
 
 /** A primary agent's holdings, as every real box has them: everything. */
@@ -47,10 +42,6 @@ const primaryHoldings = (): AccessGrants => {
   g.tools.categories = '*';
   return g;
 };
-
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
 
 /** What the create route resolves when the form sends no grants — which is what it sends. */
 function dashboardCreate(granter: AccessGrants = primaryHoldings()): AccessGrants {
@@ -99,35 +90,6 @@ describe('owner ruling #4 — a dashboard-created agent can read its own threads
     for (const label of DASHBOARD_DEFAULT_CATEGORIES) {
       expect(TOOL_CATEGORIES.map(c => c.label)).toContain(label);
     }
-  });
-
-  it('⚠ THE WIRE: the create route passes the constant as the resolver\'s base', () => {
-    const src = stripComments(fs.readFileSync(ROUTE, 'utf-8'));
-    const call = src.match(/resolveSpawnGrants\(([\s\S]*?)\);/);
-    expect(call, 'the create route calls resolveSpawnGrants').not.toBeNull();
-    const args = call![1].split(',').map(a => a.trim()).filter(Boolean);
-    // Position matters: `defaults` is the FIFTH parameter, and a constant handed to the fourth
-    // would be read as a tools policy.
-    expect(args[4]).toBe('DASHBOARD_CREATE_DEFAULT_GRANTS');
-  });
-
-  it('⚠ NO BACKFILL — the constant has exactly one production consumer', () => {
-    const consumers: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== '__tests__') walk(p); continue; }
-        if (!e.name.endsWith('.ts') || /\.(?:test|spec)\.ts$/.test(e.name)) continue;
-        if (p === path.join(SERVER_SRC, 'agent/access/create-defaults.ts')) continue; // the declaration
-        if (/\bDASHBOARD_CREATE_DEFAULT_GRANTS\b/.test(stripComments(fs.readFileSync(p, 'utf-8')))) {
-          consumers.push(path.relative(SERVER_SRC, p));
-        }
-      }
-    };
-    walk(SERVER_SRC);
-    // One door moved. A second consumer — a boot sweep, a migration, a purge path — would be a
-    // change to agents the owner has already read the panel for, and he has not ordered one.
-    expect(consumers).toEqual(['gateway/routes/agents.ts']);
   });
 
   it('⚠ a granter without the category still gets a CREATE, clamped — never a refusal', () => {

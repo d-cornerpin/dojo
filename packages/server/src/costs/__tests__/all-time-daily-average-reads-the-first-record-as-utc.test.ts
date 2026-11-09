@@ -9,10 +9,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import os from 'node:os';
-import path from 'node:path';
-
-const HOME = path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'dojo-costs-utc');
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
@@ -21,7 +17,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 

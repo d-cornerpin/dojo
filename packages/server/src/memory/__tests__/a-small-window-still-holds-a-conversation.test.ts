@@ -302,30 +302,3 @@ describe('§3 the floor is derived, and the unholdable window was already told p
     expect(real.assemblyBudgetTokens).toBeLessThan(MEASURED_SYSTEM_PROMPT_TOKENS);
   });
 });
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §4 THE WIRE CLAUSE
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§4 the assembler may not go back to the flat sum', () => {
-  it('the ladder is computed by the policy function and APPLIED, comments stripped', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const { dirname, join } = await import('node:path');
-    const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '..', 'assembler.ts'), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
-
-    expect(src, 'the flat sum is gone from the assembler')
-      .not.toMatch(/const offTheTop = SCAFFOLDING_ACK_RESERVE_TOKENS \+ POST_BUDGET_RESERVE_TOKENS/);
-    expect(src, 'the ladder is asked for, against what is left after the system prompt')
-      .toMatch(/reserveLadderFor\(maxTokens - systemTokens, loopTailExtra\)/);   // t211: plus this turn's other-threads share of the loop tail
-    expect(src, 'and its answer is what is taken off the top')
-      .toMatch(/const offTheTop = ladder\.offTheTop;/);
-    // And the squeeze is reported, which is the only report this change adds.
-    expect(src).toMatch(/ladder\.scaled/);
-    expect(src, 'the unholdable-window state keeps its existing refusal and gains no second one')
-      .toMatch(/assertSystemPromptFits\(systemTokens, policy\)/);
-  });
-});

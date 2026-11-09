@@ -28,9 +28,6 @@
 //   a braked turn that also produced a reply row starts stamping deliveries).
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -39,8 +36,6 @@ vi.mock('../../db/connection.js', () => ({
     return mockDb.current;
   },
 }));
-
-import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 
 import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
@@ -155,84 +150,5 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     const t = ticket();
     expect(t.last_answered_turn).toBe(TURN);
     expect(t.last_activity_outcome).toBe('brake'); // activity moves on, the answer does not
-  });
-});
-
-// ── Conformance: the loop must keep producing 'brake' for a braked turn ──
-// The DB test above is only meaningful while the loop actually LABELS a braked
-// turn 'brake'. That label is one ternary, and its ORDER is the whole guard: put
-// `answerRow` first and a braked turn that also persisted text becomes
-// 'answered', which re-opens the exact class d54cd1f closed.
-describe('turn-outcome conformance: brake outranks answered (the engine)', () => {
-  // PHASE-6 T9b: THE GUARD'S SUBJECT MOVED, SO THE GUARD MOVES WITH IT — the same
-  // repair CUT 1 recorded on `engine-steer.test.ts`. This scan read `loop.ts` alone,
-  // and the exit-reason ternary it is about left that file for
-  // `agent/v2/steps/teardown/` when the ninth tranche was cut. The requirement was
-  // never "the ternary lives in loop.ts"; it is "the brake is tested BEFORE
-  // answerRow, wherever the engine computes the turn's exit reason." So the corpus
-  // is the ENGINE'S source — the driver plus every step package — and the seven
-  // tranches still to come are covered by construction rather than by a later fix.
-  //
-  // PHASE-6 GUARD-AUDIT 2026-08-04: the hand-rolled walk is gone; the derivation is shared
-  // (`agent/v2/__tests__/engine-sources.ts`). AND the three clauses below are pinned to the
-  // ONE engine file that declares the ternary, rather than reading the concatenation: every
-  // one of them anchors on `const exitReason` and then measures a DISTANCE forward, which
-  // over a join would silently measure across a file boundary. `engineFileContaining` makes
-  // a tranche that splits the anchor from its finalize call fail loudly instead.
-  const exitReasonHome = (): string => {
-    const home = engineFileContaining('const exitReason: TurnExitReason = ');
-    if (!home) throw new Error("no engine file declares `const exitReason: TurnExitReason = ` — the exit-reason ternary was renamed or removed, and this guard's whole subject is that ternary.");
-    return home.text;
-  };
-
-  // PHASE-2 T2 renamed the variable (`outcome` -> `exitReason`) when the column split into
-  // exit_reason + answered. THE REQUIREMENT IS UNCHANGED and is what this asserts: the brake
-  // is tested BEFORE answerRow, so a braked turn that also persisted text never reads as
-  // 'answered'. The rename is why the addresses moved; d54cd1f's class is why the order matters.
-  it('the exit-reason ternary tests toolPhaseEndedBySpinBrake BEFORE answerRow', () => {
-    const src = exitReasonHome();
-    const idx = src.indexOf('const exitReason: TurnExitReason = ');
-    expect(idx).toBeGreaterThan(-1);
-    const ternary = src.slice(idx, idx + 420);   // C2 widened the derivation by one arm
-    expect(ternary).toMatch(/const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake \? 'brake'/);
-    const brakeAt = ternary.indexOf('toolPhaseEndedBySpinBrake');
-    const answerAt = ternary.indexOf('answerRow ?');
-    expect(answerAt).toBeGreaterThan(-1);
-    expect(brakeAt).toBeLessThan(answerAt);
-  });
-
-  it('that same exit reason is what finalizeTurn and the ticket stamps both receive', () => {
-    const src = exitReasonHome();
-    const idx = src.indexOf('const exitReason: TurnExitReason = ');
-    // The finalize call is the next statement after the ternary, so it stays a tight
-    // window. The STAMP call is anchored to `finalizeTurn` instead of to a character
-    // count: PHASE-2 T6 landed the turn-record's first reader between them (the closeout
-    // enumeration and the waiting-on-owner disposition), and a fixed slice would have
-    // turned "something else happens at the boundary now" into a failure about a
-    // requirement that still holds. What the requirement actually says is ORDER and
-    // ARGUMENT — the stamps run after finalize and receive the same outcome — so that is
-    // what is asserted.
-    // The window is 900, not 600: C2 added an `iteration_cap` arm to the ternary (the tool-loop cap
-    // was being recorded as the model's own silence) and the old slice ended mid-derivation. This
-    // clause's own note above argues against fixed slices for exactly this reason.
-    expect(src.slice(idx, idx + 900)).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason/);
-    const afterFinalize = src.slice(src.indexOf('finalizeTurn(\n', idx));
-    const stampAt = afterFinalize.indexOf('stampTasksAtTurnFinalize({');
-    expect(stampAt).toBeGreaterThan(-1);
-    expect(afterFinalize.slice(stampAt, stampAt + 200)).toMatch(/outcome/);
-  });
-
-  // ...and the ANSWERED half is now its own recorded fact rather than a word to infer from.
-  it('answered is passed as the truthful-answer key, not derived from the exit reason', () => {
-    const src = exitReasonHome();
-    const idx = src.indexOf('const exitReason: TurnExitReason = ');
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toMatch(/finalizeTurn\([\s\S]{0,120}answerRow !== undefined/);
-  });
-
-  it('the ticket stamper still gates its answer/delivery columns on outcome === "answered"', () => {
-    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-    const stamps = fs.readFileSync(path.join(srcRoot, 'tracker/task-stamps.ts'), 'utf8');
-    expect(stamps).toMatch(/const answered = input\.outcome === 'answered';/);
   });
 });

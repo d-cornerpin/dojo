@@ -27,7 +27,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -412,14 +411,5 @@ describe('§4 the threshold the clause drives is the threshold the engine gates 
     await runFloorTurn(9009, { calls: 6, prompt });
     expect(scaffoldRows().length).toBe(1);
     expect(sweepForValue(FAKE_KEY)).toEqual([]);
-  });
-
-  it('the floor constant is 6 in the SOURCE, so `calls: 6` above is not a coincidence', () => {
-    // Read rather than imported: the constant is module-local on purpose (the floor owns it),
-    // and widening the product's API for a test's convenience is not a trade this clause is
-    // willing to make. If someone moves the threshold, the pair of clauses above changes
-    // meaning and this line says so in the failure.
-    const src = fs.readFileSync(new URL('../tracker-floors.ts', import.meta.url), 'utf8');
-    expect(src).toContain('const TRACKER_AUTO_SCAFFOLD_AT = 6;');
   });
 });

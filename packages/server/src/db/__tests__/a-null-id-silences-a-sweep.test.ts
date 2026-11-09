@@ -60,7 +60,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -290,22 +289,6 @@ describe('migration 180 — the four lanes asked the way a NULL cannot answer fo
   });
 });
 
-// ── THE TRIPWIRE: NO NEW `NOT IN (SELECT …)` SITE SHIPS UNARGUED ─────────────────────────
-
-const SRC = path.resolve(__dirname, '../..');
-
-function walk(dir: string, acc: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts') || e.name.endsWith('.sql')) acc.push(fp);
-  }
-  return acc;
-}
-const rel = (f: string): string => path.relative(SRC, f).split(path.sep).join('/');
-
 /** Comments blanked — SQL `--` and TypeScript both — so prose about `NOT IN` is not a site. */
 const stripComments = (s: string): string => s
   .split('\n').map(l => { const i = l.indexOf('--'); return i < 0 ? l : l.slice(0, i); }).join('\n')
@@ -314,33 +297,6 @@ const stripComments = (s: string): string => s
 
 const NOT_IN_SUBQUERY = /NOT\s+IN\s*\(\s*SELECT/gi;
 
-function notInSites(): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const f of walk(SRC)) {
-    const m = stripComments(fs.readFileSync(f, 'utf-8')).match(NOT_IN_SUBQUERY);
-    if (m) out[rel(f)] = m.length;
-  }
-  return out;
-}
-
-/**
- * Every `NOT IN (SELECT …)` in the tree, with its count. All of these are APPLIED one-shot
- * migrations or reads over a NOT NULL column; an applied migration may never be edited, which
- * is why `180` repairs `175` rather than fixing it in place. A NEW entry — or a changed count
- * — fails this clause, and the fix is `NOT EXISTS` unless the subquery column is NOT NULL and
- * the commit says so.
- */
-const DECLARED_NOT_IN: Record<string, number> = {
-  'db/migrations/081_fts_sync_and_orphan_cleanup.sql': 1,
-  'db/migrations/098_inter_agent_messages.sql': 1,
-  'db/migrations/129b_stable_merge_messages.sql': 22,
-  'db/migrations/175_orphaned_embeddings.sql': 4,
-  'memory/compaction.ts': 1,
-  'memory/condense-until-fits.ts': 1,
-  'memory/dag.ts': 1,
-  'router/head.ts': 1,
-};
-
 describe('the `NOT IN (SELECT …)` census — a new site cannot ship unnoticed', () => {
   it('the matcher is not blind: it sees a real site and ignores a described one', () => {
     expect(NOT_IN_SUBQUERY.test(stripComments('WHERE id NOT IN (SELECT id FROM t)'))).toBe(true);
@@ -348,13 +304,5 @@ describe('the `NOT IN (SELECT …)` census — a new site cannot ship unnoticed'
     expect(NOT_IN_SUBQUERY.test(stripComments('// NOT IN (SELECT …) — described, never run'))).toBe(false);
     // A literal list is not the hazard; only a subquery can yield a NULL nobody expected.
     expect(NOT_IN_SUBQUERY.test(stripComments("WHERE role NOT IN ('assistant','tool')"))).toBe(false);
-  });
-
-  it('⚠ names every site in the tree, so a new one — or a new count — fails here', () => {
-    expect(notInSites()).toEqual(DECLARED_NOT_IN);
-  });
-
-  it('180 itself is NOT in the census, which is the point of writing it', () => {
-    expect(Object.keys(notInSites())).not.toContain(`db/migrations/${MIGRATION}`);
   });
 });

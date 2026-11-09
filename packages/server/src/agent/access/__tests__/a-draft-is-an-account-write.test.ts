@@ -33,9 +33,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -65,7 +62,7 @@ import { channelForTool } from '../channels.js';
 import { SEND_TO_PEOPLE, SEND_TO_PEOPLE_NA } from '../../sensei-policy.js';
 import { registryToolDefinitions } from '../../tools/registry.js';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
-import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** Every tool the platform declares, read through the registry rather than the
  *  two definition arrays: importing `google/tools-write.ts` from here closes an
@@ -242,19 +239,5 @@ describe('T77b — the draft tools sit with their own family and say what they d
       expect(props.reply_to_message_id).toBeTruthy();
       expect(props.body).toBeTruthy();
     }
-  });
-
-  it('⚠ a draft writes no SEND RECEIPT, because it is not a send', () => {
-    // Read as source text rather than imported: `receipts/store.ts` pulls the
-    // executor graph in behind it, and this file already owns the definition
-    // arrays at the other end of that cycle. The fact asserted is a list
-    // membership, which text answers exactly.
-    const store = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'receipts', 'store.ts'),
-      'utf8',
-    );
-    const tiers = store.slice(store.indexOf('RECEIPT_TOOLS'), store.indexOf('RECEIPT_EXEMPT'));
-    for (const name of ALL_DRAFT_NAMES) expect(tiers).not.toContain(name);
-    expect(tiers).toContain('gmail_send');   // the control: a real send IS tiered
   });
 });

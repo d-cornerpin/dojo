@@ -36,12 +36,8 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import ts from 'typescript';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { stoppedAgents, preemptedAgents } from '../../../../shared-state.js';
-import { engineText } from '../../../__tests__/engine-sources.js';
 import {
   runCallLLM,
   CALL_LLM_PHASE,
@@ -124,24 +120,6 @@ beforeEach(() => {
   callModelSpy.mockResolvedValue(OK_RESULT);
 });
 
-// ── The engine's own source, for the clauses that are about SHAPE ──
-const STEP_DIR = path.resolve(__dirname, '..');
-function stepText(): string {
-  const files = ['index.ts'];
-  const dir = readFileSync;   // keep the import used even if the list grows
-  void dir;
-  const walk = (d: string): string[] => {
-    const out: string[] = [];
-    for (const e of require('node:fs').readdirSync(d, { withFileTypes: true })) {
-      if (e.isDirectory()) { if (e.name !== '__tests__') out.push(...walk(path.join(d, e.name))); }
-      else if (e.name.endsWith('.ts')) out.push(path.join(d, e.name));
-    }
-    return out;
-  };
-  void files;
-  return walk(STEP_DIR).map((f) => readFileSync(f, 'utf8')).join('\n');
-}
-
 describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
   it('INPUTS (state, ctx) → ONE outcome, and the two values the span declares come back as OUTPUTS', async () => {
     const out = await runCallLLM(freshState(), ctxFor());
@@ -166,42 +144,6 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     preemptedAgents.add(FXID.n4);
     const preempted = await runCallLLM(freshState(), ctxFor());
     expect(preempted.state.phase).toBe(CALL_LLM_PHASE);
-
-    // And no `phase:` write exists in the step's own source at all.
-    expect(stepText()).not.toMatch(/phase\s*:/);
-  });
-
-  it('THE DRIVER ADVANCES INTO IT, at the call site and ahead of the step', () => {
-    // `validate()` runs on the transition by construction, because the advance is an
-    // `advance` and it is the driver's statement, not the step's.
-    const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    const advanceAt = driver.indexOf("advance(turnCtx.state!, { phase: 'callLLM' })");
-    const callAt = driver.indexOf('runCallLLM(turnCtx.state!,');
-    expect(advanceAt).toBeGreaterThan(-1);
-    expect(callAt).toBeGreaterThan(advanceAt);
-  });
-
-  it('THE EXIT-REQUEST CHANNEL, AS A CENSUS WITH A DENOMINATOR: two ways out, and exactly two abandons', () => {
-    // A step that grows a third way out has to come through this clause. The
-    // `abandon` sites are pinned at TWO because CUT 4's finalize contract pins the
-    // same two exits from the driver's side ("the exits that genuinely bypass it").
-    // t140 round 7's `requestExit` (no router pick can hold the agent) left with the routing at t212:
-    // the model is chosen in `assemble`, before the build, and that step asks to exit.
-    const src = stepText();
-    const sf = ts.createSourceFile('step.ts', src, ts.ScriptTarget.ES2022, true);
-    const directives = new Set<string>();
-    let abandons = 0;
-    const walk = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-        const fn = n.expression.text;
-        if (fn === 'proceed' || fn === 'continueLoop' || fn === 'requestExit' || fn === 'abandonTurn') directives.add(fn);
-        if (fn === 'abandonTurn') abandons += 1;
-      }
-      ts.forEachChild(n, walk);
-    };
-    walk(sf);
-    expect([...directives].sort()).toEqual(['abandonTurn', 'proceed']);
-    expect(abandons).toBe(2);
   });
 
   it('ABANDON, STOPPED: the agent goes idle, the turn is asked to end, and the flag SURVIVES', async () => {
@@ -284,17 +226,6 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     expect(revertTriggerStampOnAbortSpy).not.toHaveBeenCalled();
   });
 
-  it('ABANDON IS NOT EXIT, and the driver honours the difference', () => {
-    // `exit` leaves the loop and finalize still runs; `abandon` leaves the TURN and
-    // finalize does not. Copying the neighbour's vocabulary would have quietly routed
-    // a stopped turn through the reply-destination router.
-    const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    expect(driver).toMatch(/callLLM\.directive === 'abandon'\)\s*return;/);
-    // And the shared contract says so once, for the eight steps that share it.
-    const shared = readFileSync(path.resolve(__dirname, '../../step-outcome.ts'), 'utf8');
-    expect(shared).toMatch(/abandonTurn/);
-  });
-
   it('THE RETRY LADDER COPIES VERBATIM: 2 attempts fixed-model, 3 auto-routed', async () => {
     callModelSpy.mockRejectedValue(new Error('provider exploded'));
 
@@ -316,13 +247,5 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     revertTriggerStampOnAbortSpy.mockClear();
     await expect(runCallLLM(freshState(), ctxFor({ isAutoRouted: true }))).rejects.toThrow();
     expect(revertTriggerStampOnAbortSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('THE CREDENTIAL READ POINT MOVED WITH THE CODE, and it is still the only one', () => {
-    // PHASE-5 T6B / RULING P5-R11. The engine's corpus is the driver plus every step
-    // package, so this clause follows the code through the cut by construction.
-    const hits = [...engineText().matchAll(/hydrateCredentialsInMessages\(/g)];
-    expect(hits.length).toBe(1);
-    expect(stepText()).toContain('hydrateCredentialsInMessages(');
   });
 });

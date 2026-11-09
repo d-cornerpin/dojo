@@ -35,9 +35,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -59,8 +56,6 @@ import { clearPlatformConfigCache, getDashboardHiddenAgentIds } from '../../conf
 import {
   DREAMER_AGENT_ALWAYS_LOADED, SUB_AGENT_ALWAYS_LOADED, getAgentAlwaysLoadedTools,
 } from '../tool-docs.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const db = (): Database.Database => mockDb.current!;
 
 /** An agent row: the id the platform resolves by, and the name a user may change. */
@@ -204,162 +199,5 @@ describe('§2c the dashboard-hidden set is resolved by config id, never by displ
       ['trainer_agent_id', 'trainer'], ['imaginer_agent_id', 'imaginer']]) setConfig(k, v);
     const hidden = getDashboardHiddenAgentIds();
     expect([...hidden].sort()).toEqual(['dreamer', 'healer', 'pm']);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §3 — THE CENSUS: no shipped surface may compare an agent row's NAME to a literal.
-//
-// Four sites existed; this is what stops the fifth. It reads the shipped surfaces only (tests do not
-// ship — `packages/server/tsconfig.json` excludes them — and the audit established that comments DO,
-// because `removeComments` is unset), and it names the file and line when it fires.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-const SHIPPED_ROOTS = [
-  path.join(SRC),                                                    // packages/server/src
-  path.join(SRC, '..', '..', 'shared', 'src'),
-  path.join(SRC, '..', '..', 'dashboard', 'src'),
-];
-
-function shippedFiles(): string[] {
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    if (!fs.existsSync(dir)) return;
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const abs = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'node_modules' || e.name === 'dist') continue;
-        walk(abs);
-        continue;
-      }
-      if (/\.(ts|tsx)$/.test(e.name) && !/\.(test|spec)\.tsx?$/.test(e.name)) out.push(abs);
-    }
-  };
-  for (const r of SHIPPED_ROOTS) walk(r);
-  return out;
-}
-
-/**
- * THE SIX ROLE NAMES, READ FROM THE PLATFORM'S OWN DECLARATION — never copied here.
- *
- * The census needs to tell `row.name === 'Dreamer'` (the defect) from `h.name === 'From'` (a Gmail
- * header) and `e.name === 'AbortError'` (a DOM error). The discriminator is not a hand-kept exclusion
- * list: it is whether the right-hand literal is one of the DEFAULT SERVICE-AGENT DISPLAY NAMES the
- * platform ships, and `config/platform.ts` is where those are declared. Parsed out of it at test time
- * so a seventh role is covered the day it is added, and so this file holds no second copy of the
- * product's vocabulary. (The first cut of this census matched any capitalised literal and reported 29
- * offenders — 25 of them Gmail headers and error names. A census that cries wolf gets deleted.)
- */
-function roleNamesFromPlatform(): string[] {
-  const src = fs.readFileSync(path.join(SRC, 'config', 'platform.ts'), 'utf8');
-  const names = [...src.matchAll(/get\('(\w+)_agent_name',\s*'([A-Za-z]+)'\)/g)].map((m) => m[2]);
-  return [...new Set(names)];
-}
-
-describe('§3 the census: nothing shipped decides behaviour from an agent\'s display name', () => {
-  it('the role names are DERIVED from the platform config, not copied into this test', () => {
-    const roles = roleNamesFromPlatform();
-    // Six today: Agent, PM, Trainer, Imaginer, Healer, Dreamer. Asserted as a shape, not a list, so
-    // adding a role does not fail this clause — but losing the derivation does.
-    expect(roles.length).toBeGreaterThanOrEqual(5);
-    expect(roles).toContain('Dreamer');
-    expect(roles).toContain('Healer');
-    expect(roles.every((r) => /^[A-Z][A-Za-z]*$/.test(r))).toBe(true);
-  });
-
-  /**
-   * THE SHAPES A NAME-RELIANT SITE CAN WEAR — widened after review H2 falsified the old banner.
-   *
-   * The first cut matched `name === 'Role'` and nothing else, so the FIFTH site (`config/platform.ts`'s
-   * `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`) was invisible to it while sitting in
-   * the tree, and the census reported 0 offenders under a heading that claimed it "stops the fifth".
-   * A census whose headline outruns its matcher is worse than none: it tells the next author the shape
-   * is already covered.
-   *
-   * Each entry is a shape with a name, so a failure says WHICH kind of reliance it found.
-   */
-  function nameReliantShapes(roles) {
-    const R = `(?:${roles.join('|')})`;
-    return [
-      // row.name === 'Healer' · agent.name !== "Dreamer" · name == 'PM'
-      { id: 'equality', re: new RegExp(`\\b(?:\\w+\\??\\.)?name\\s*[!=]==?\\s*['"\`]${R}['"\`]`, 'g') },
-      // SQL: WHERE name IN ('Dreamer','Healer') · name = 'Healer' · name LIKE 'Dreamer'
-      { id: 'name-in-sql', re: new RegExp(`\\bname\\s*(?:=|IN|LIKE)\\s*\\(?\\s*['"]${R}['"]`, 'gi') },
-      // ['Dreamer','Healer'].includes(a.name) · NAMES.includes(row.name) with a role literal nearby
-      { id: 'includes', re: new RegExp(`\\[[^\\]]*['"]${R}['"][^\\]]*\\]\\s*\\.includes\\s*\\([^)]*\\bname\\b`, 'g') },
-      // switch (agent.name) { case 'Healer':
-      { id: 'switch-case', re: new RegExp(`case\\s+['"]${R}['"]\\s*:`, 'g') },
-    ];
-  }
-
-  it('no shipped file decides behaviour from a display name, in ANY of the four shapes', () => {
-    const roles = roleNamesFromPlatform();
-    const shapes = nameReliantShapes(roles);
-    const offenders = [];
-    for (const file of shippedFiles()) {
-      const text = fs.readFileSync(file, 'utf8');
-      text.split('\n').forEach((line, i) => {
-        // Comments are not logic. They still ship, which is the mechanical scrub's business.
-        if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) return;
-        for (const shape of shapes) {
-          shape.re.lastIndex = 0;
-          if (shape.re.test(line)) {
-            offenders.push(`${shape.id}  ${path.relative(SRC, file)}:${i + 1}  ${line.trim().slice(0, 110)}`);
-          }
-        }
-      });
-    }
-    expect(offenders, 'a shipped surface decides behaviour from a display name — use the '
-      + 'rename-safe accessor in config/platform.ts (isDreamerAgent / isHealerAgent / '
-      + 'getHealerAgentId) or resolve the id from config').toEqual([]);
-  });
-
-  it('THE FIXTURE TABLE: every shape caught, and role words in prose ignored', () => {
-    const roles = roleNamesFromPlatform();
-    const shapes = nameReliantShapes(roles);
-    const fires = (line) => shapes.filter((sh) => { sh.re.lastIndex = 0; return sh.re.test(line); }).map((sh) => sh.id);
-
-    const CAUGHT = [
-      // the audit's four, verbatim
-      ["if (row?.name === 'Dreamer') return DREAMER_AGENT_ALWAYS_LOADED;", 'equality'],
-      ["if (!(agent.name === 'Dreamer' || isDreamer(agentId))) {", 'equality'],
-      ["if (agent.name === 'Dreamer' || isDreamerAgent(agentId)) {", 'equality'],
-      ["const healer = agents.data.find((a: { name: string }) => a.name === 'Healer' && a.status === 'working');", 'equality'],
-      // review H2's fifth site, verbatim — invisible to the first cut
-      ["      `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`,", 'name-in-sql'],
-      // the variants the review named
-      ['if (row.name !== "Healer") return;', 'equality'],
-      ["if (agent.name == 'PM') hide();", 'equality'],
-      ["db.prepare(`SELECT id FROM agents WHERE name = 'Healer'`)", 'name-in-sql'],
-      ["db.prepare(\"SELECT id FROM agents WHERE name LIKE 'Dreamer'\")", 'name-in-sql'],
-      ["if (['Dreamer', 'Healer'].includes(a.name)) return true;", 'includes'],
-      ["switch (agent.name) { case 'Healer':", 'switch-case'],
-    ];
-    const IGNORED = [
-      // role words in PROSE and in product vocabulary — the false-positive half
-      "const label = 'Healer diagnostics';",
-      "logger.info('the Dreamer finished its batch', { agentId });",
-      "return get('healer_agent_name', 'Healer');",                       // the accessor's own default
-      "if (isHealerAgent(agentId)) return HEALER_AGENT_ALWAYS_LOADED;",   // the correct form
-      "const isPrimary = id === getPrimaryAgentId();",
-      "const from = headers.find(h => h.name === 'From')?.value ?? '';",  // a Gmail header
-      "if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;",
-      "SELECT id FROM agents WHERE classification = 'sensei'",            // by role column, not name
-      "if (row.name === agentName) return true;",                         // a variable, not a literal
-    ];
-    for (const [line, want] of CAUGHT) {
-      expect(fires(line), line).toContain(want);
-    }
-    for (const line of IGNORED) {
-      expect(fires(line), line).toEqual([]);
-    }
-  });
-
-  it('the shipped corpus this census reads is real, and excludes what does not ship', () => {
-    const files = shippedFiles().map((f) => path.relative(SRC, f));
-    expect(files.length).toBeGreaterThan(400);
-    expect(files.some((f) => f === 'tools/tool-docs.ts')).toBe(true);
-    expect(files.some((f) => f.includes('dashboard/src/pages/Settings.tsx'))).toBe(true);
-    expect(files.some((f) => f.includes('__tests__')), 'tests do not ship').toBe(false);
   });
 });

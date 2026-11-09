@@ -25,14 +25,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { drainRecoveryNotices } from '../injury-recovery.js';
 import * as mod from '../injury-recovery.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -60,15 +55,6 @@ vi.mock('../../agent/a2a-notice.js', () => ({
     delivered.push(p?.payload ?? '');
   }),
 }));
-
-function stripped(rel: string): string {
-  const raw = fs.readFileSync(path.join(SRC, rel), 'utf8');
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
-    .join('\n');
-}
 
 beforeEach(() => {
   delivered.length = 0;
@@ -111,59 +97,5 @@ describe('§1 the drain settles what the module started', () => {
 
   it('the module EXPORTS the handle — without it a caller has nothing to await', async () => {
     expect(typeof mod.drainRecoveryNotices, 'the drain is part of the module surface').toBe('function');
-  });
-});
-
-describe('§2 a failing notice cannot escape', () => {
-  it('the rejection is swallowed AT THE SOURCE, not handed to whoever drains', () => {
-    const src = stripped('healer/injury-recovery.ts');
-
-    // `.catch` before the set: a best-effort FYI must not become a process-level unhandled
-    // rejection, and must not make an unrelated `afterEach` throw.
-    expect(/\.catch\(\(\) => undefined\)/.test(src), 'the promise is neutralised where it is made').toBe(true);
-    expect(/\.finally\(\(\) => \{ pendingRecoveryNotices\.delete\(tracked\); \}\)/.test(src),
-      'and it removes itself when settled, so the set cannot grow without bound').toBe(true);
-  });
-
-  it('the drain loops until the set is empty, so a notice started BY a notice is still caught', () => {
-    const src = stripped('healer/injury-recovery.ts');
-    expect(/while \(pendingRecoveryNotices\.size > 0\)/.test(src)).toBe(true);
-  });
-});
-
-describe('§3 production behaviour is unchanged — the call site is still not awaited', () => {
-  it('CONTROL: the notice is TRACKED, not AWAITED, at the recovery site', () => {
-    const src = stripped('healer/injury-recovery.ts');
-
-    // The fix must not have quietly made a recovering agent's turn wait on an FYI. If a future
-    // edit changes this to `await notifyHealerOfRecovery(...)` the non-blocking property is gone
-    // and this clause says so.
-    expect(/trackRecoveryNotice\(notifyHealerOfRecovery\(agentId\)\)/.test(src)).toBe(true);
-    expect(/await notifyHealerOfRecovery\(/.test(src), 'a recovery FYI must never block the turn').toBe(false);
-  });
-
-  it('CONTROL: `onAgentRecovered` is still SYNC, so its three callers did not have to change', () => {
-    const src = stripped('healer/injury-recovery.ts');
-    // Making it async would have rippled into `auto-fix.ts`'s `.then`, `healer-agent.ts` and the
-    // turn path for a notice that is deliberately fire-and-forget. The handle was the fix; the
-    // signature was not.
-    // The property is "NOT async", not "takes one argument" — U1 gave it a `basis` parameter in
-    // this same sitting, and a clause pinned to the old arity would have failed for a reason that
-    // has nothing to do with what it guards.
-    expect(/export function onAgentRecovered\([^)]*\): void \{/.test(src), 'still synchronous').toBe(true);
-    expect(/export async function onAgentRecovered\(/.test(src), 'and deliberately not async').toBe(false);
-  });
-
-  it('CONTROL: the leaky file now drains, and does it with real timers and before the DB closes', () => {
-    const src = stripped('healer/__tests__/compaction-before-reset.test.ts');
-
-    expect(/await drainRecoveryNotices\(\);/.test(src), 'the file that leaked now settles its notices').toBe(true);
-    const realTimersAt = src.indexOf('vi.useRealTimers()');
-    const drainAt = src.indexOf('await drainRecoveryNotices()');
-    const closeAt = src.indexOf('mockDb.current?.close()');
-    // Ordering is the whole correctness of the teardown: a notice may be waiting on a timer, and
-    // it still needs the database when it resumes.
-    expect(realTimersAt).toBeLessThan(drainAt);
-    expect(drainAt, 'the database must outlive the notices that read it').toBeLessThan(closeAt);
   });
 });

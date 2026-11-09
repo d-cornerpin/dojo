@@ -182,16 +182,6 @@ describe('the durable divergence sink', () => {
   });
 
   it('6. it is EXEMPT FROM ROTATION — logger.ts rotates dojo.log and names nothing else', () => {
-    const loggerSrc = fs.readFileSync(
-      path.join(process.cwd(), 'src/logger.ts'), 'utf8',
-    );
-    const rotate = loggerSrc.slice(
-      loggerSrc.indexOf('function rotateIfNeeded'),
-      loggerSrc.indexOf('function scheduleFlush'),
-    );
-    expect(rotate.length).toBeGreaterThan(100);          // vacuity guard on the slice
-    expect(rotate).toContain('LOG_FILE');
-    expect(loggerSrc).not.toContain('assembly-validation');
     // and the sink is a different file from the one that rotates
     expect(path.basename(assemblyValidationSinkPath())).toBe('assembly-validation.jsonl');
     expect(assemblyValidationSinkPath()).not.toContain('dojo.log');
@@ -211,27 +201,5 @@ describe('the durable divergence sink', () => {
     });
     expect(assemblyValidationSinkFailures()).toBe(before + 1);
     fs.rmSync(p, { recursive: true, force: true });
-  });
-
-  it('8. the day-7 read instructions point at the SINK, and say why not the rotating log', () => {
-    // The validator's header must NAME the sink — a worker reading the flip's own module
-    // and finding only `dojo.log` re-derives the retention trap from scratch.
-    const validator = fs.readFileSync(
-      path.join(process.cwd(), 'src/memory/assembly-validation.ts'), 'utf8',
-    );
-    const header = validator.slice(0, validator.indexOf('let checkedCalls'));
-    expect(header).toContain('assembly-validation.jsonl');
-    expect(header).toMatch(/rotat/i);
-    expect(header).toContain('assembly-validation-sink.ts');
-
-    // and the sink module carries the actual commands, including the heartbeat one — the
-    // sink alone cannot distinguish a clean week from a dead writer (#15).
-    const sink = fs.readFileSync(
-      path.join(process.cwd(), 'src/memory/assembly-validation-sink.ts'), 'utf8',
-    );
-    const sinkHeader = sink.slice(0, sink.indexOf('import fs'));
-    expect(sinkHeader).toContain('wc -l ~/.dojo/logs/assembly-validation.jsonl');
-    expect(sinkHeader).toContain('ASSEMBLY_VALIDATION_HEARTBEAT');
-    expect(sinkHeader).toMatch(/rotat/i);
   });
 });

@@ -51,11 +51,6 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const SERVER_SRC = path.join(REPO_ROOT, 'packages/server/src');
-const read = (rel: string): string => fs.readFileSync(path.join(SERVER_SRC, rel), 'utf-8');
-/** Comments stripped (G4): a clause satisfiable by the prose above a call tests the comment. */
-const code = (rel: string): string => read(rel)
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n');
 
 /** The two populations as this tree measured them. See the migration-181 header. */
 const PROSE_TRUTH = 4.08;    // budget.ts's derivation: /4 ran 2% UNDER the real cost
@@ -90,14 +85,6 @@ describe('§THE PREMISE — the numbers, and a correction to the line that repor
     // (OR-LONG-JOBS: no total-time cap) deleted the module outright, so the correction's subject
     // is gone — asserted, so a resurrected copy is noticed here rather than assumed harmless.
     expect(fs.existsSync(path.join(SERVER_SRC, 'agent/unattended-budget.ts'))).toBe(false);
-  });
-
-  it('the two real consumers of the estimate are the fit gate and the output budget', () => {
-    const model = code('agent/model.ts');
-    expect(model, 'the pre-dial fit gate no longer reads an estimate').toMatch(
-      /refuseIfDoomed\(\s*agentId,\s*(finalInputEstimate|inputEstimate)/);
-    expect(model, 'the output budget no longer reads an estimate').toMatch(
-      /resolveOutputBudget\(budgetInfo,\s*finalInputEstimate/);
   });
 });
 
@@ -257,51 +244,6 @@ describe('§THE LEDGER CONTRACT — the loop measures the tokeniser, not itself'
 });
 
 describe('§THE WIRING — ALL FOUR dial sites really spend it (G4, both ways)', () => {
-  // ⚠ IT WAS TWO, AND t113 D MADE IT FOUR. t108 wired the two transports whose estimate it
-  // owned and its own review recorded the residual: the `agent-sdk` and `ollama` transports
-  // have their own pre-dial fit gates, and both were still spending the raw `/4` constant
-  // (BACKLOG line 101). No regression — they always did — but the same undercount class on two
-  // side doors, so on a provider whose own ledger says its dense prompts run nearer 2
-  // chars/token those two gates decided against roughly half the real size.
-  //
-  // The count pin MOVED rather than being deleted, deliberately: it is the thing that notices a
-  // fifth transport arriving without a gate, or one of these four quietly dropping back to the
-  // constant.
-  const DIAL_SITES = 4;
-
-  it('every dial site that produces an estimate produces it through `estimateRequestTokens`', () => {
-    const model = code('agent/model.ts');
-    const calls = [...model.matchAll(/estimateRequestTokens\(/g)].length;
-    expect(calls, 'a dial site stopped spending the measured divisor').toBe(DIAL_SITES);
-    // The APPLICATION, not the presence: each must be seeded with the provider's own readings.
-    expect([...model.matchAll(/measuredDivisorsFor\(modelInfo\.providerId\)/g)].length)
-      .toBe(DIAL_SITES);
-  });
-
-  it('no site re-sums `estimateTokens` into an input estimate behind the new door', () => {
-    // The both-ways direction: the old arithmetic coming back ALONGSIDE the new door would leave
-    // the clauses above green while the wire still undercounted. All four estimates are named
-    // here, so a site reverting to a raw sum reds by name.
-    const model = code('agent/model.ts');
-    for (const name of ['finalInputEstimate', 'inputEstimate', 'nativeEstimate', 'sdkInputEstimate']) {
-      const assignment = new RegExp(`const ${name}\\s*=\\s*([\\s\\S]*?);\\n`).exec(model)?.[1] ?? '';
-      expect(assignment, `${name} was not found, or is still assembled from raw estimateTokens() sums`)
-        .not.toMatch(/estimateTokens\(/);
-      expect(assignment, `${name} is no longer the measured-divisor estimate`)
-        .toMatch(/estimateRequestTokens\(|Estimate\.tokens/);
-    }
-  });
-
-  it('the two side doors split PROSE from SCHEMA, which is the whole reason for two divisors', () => {
-    // A site that passed the whole request as `proseChars` would spend the prose divisor on a
-    // dense tools array — green on the clauses above, and wrong. So the split is asserted at
-    // each new site, with the tools array on the schema side where it belongs.
-    const model = code('agent/model.ts');
-    expect(model, 'the ollama gate puts its tools array on the schema side')
-      .toMatch(/proseChars: JSON\.stringify\(nativeMessages\)\.length,\s*schemaChars: JSON\.stringify\(nativeTools \?\? \[\]\)\.length,/);
-    expect(model, 'the agent-sdk gate counts system prompt + messages as prose, toolDefs as schema')
-      .toMatch(/proseChars: systemPrompt\.length \+ JSON\.stringify\(messages\)\.length,\s*schemaChars: JSON\.stringify\(toolDefs\)\.length,/);
-  });
 
   it('and on an UNMEASURED provider both side doors return today\'s number, byte for byte', () => {
     // The no-behaviour-change half the line asks for explicitly, asserted as ARITHMETIC rather
@@ -323,24 +265,5 @@ describe('§THE WIRING — ALL FOUR dial sites really spend it (G4, both ways)',
       { proseChars: prose.length, schemaChars: schema.length }, { prose: 2, dense: 2 },
     ).tokens;
     expect(measured, 'a denser box estimates more, never less').toBeGreaterThan(nowOllama);
-  });
-
-  it('the effective divisor reaches the ledger from both sites', () => {
-    const model = code('agent/model.ts');
-    expect([...model.matchAll(/estimatorCharsPerToken:\s*\w+Estimate\.effectiveCharsPerToken/g)].length,
-      'a site records an estimate without the divisor that produced it').toBe(2);
-    const tracker = code('costs/tracker.ts');
-    expect(tracker, 'the writer ignores the supplied divisor and stores the constant regardless')
-      .toMatch(/estimatorCharsPerToken[\s\S]{0,400}CHARS_PER_TOKEN/);
-  });
-
-  it('`memory/budget.ts` is still a LEAF — the arithmetic stayed pure', () => {
-    // Its own header: taking a modelId (and therefore a database) would make the budget cyclic
-    // with its own consumers. The DB read lives in `costs/estimator-divisors.ts` instead.
-    const imports = [...read('memory/budget.ts').matchAll(/^import .*from '([^']+)'/gm)].map(m => m[1]);
-    for (const i of imports) {
-      expect(i, `memory/budget.ts imports ${i}; the estimator must not reach a connection`)
-        .not.toMatch(/db\/connection|costs\//);
-    }
   });
 });

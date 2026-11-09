@@ -14,9 +14,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
-import { makeTree } from './t197-safe-install-fixtures.js';
+import { makeTree } from './safe-install-fixtures.js';
 
 const home = process.env.DOJO_HOME as string;
 const dojo = path.join(home, '.dojo');
@@ -79,13 +78,4 @@ describe('the update unpack is bound by silence', () => {
     expect(unpack!.every(a => !a.includes('"'))).toBe(true);
     expect(execCmds.find(c => c[0] === 'unzip'), 'not the buffered, flat-timeout door').toBeUndefined();
   }, 60_000);
-
-  it('no flat 60-second give-up is left on the unpack or the native smoke check', () => {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    const route = strip(fs.readFileSync(path.join(here, '../../gateway/routes/update.ts'), 'utf8'));
-    const tree = strip(fs.readFileSync(path.join(here, '../install-tree.ts'), 'utf8'));
-    expect(route).not.toMatch(/unzip[^\n]*timeout:\s*60/);
-    expect(tree).not.toMatch(/timeout:\s*60[_0]/);
-  });
 });

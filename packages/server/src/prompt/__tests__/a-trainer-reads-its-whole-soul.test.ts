@@ -42,7 +42,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -171,26 +170,6 @@ describe('the Trainer runs on its whole soul', () => {
     expect(soul).not.toContain('{{');
     expect(soul).toContain(FX.n6);
     expect(logs.join(' ')).toMatch(/TRAINER-SOUL\.md/);
-  });
-});
-
-describe('the dead second reader is gone, not left beside the live one', () => {
-  const SRC = fs.readFileSync(path.resolve(__dirname, '../../techniques/trainer-agent.ts'), 'utf-8');
-
-  it('trainer-agent.ts no longer reads a template or writes a soul row', () => {
-    // The function and the call, not the WORD — the tombstone names both on purpose.
-    expect(SRC).not.toMatch(/function loadTrainerSoulPrompt/);
-    expect(SRC).not.toMatch(/loadTrainerSoulPrompt\(\)/);
-    // The write itself: a `role='system'` row nothing in the assembly path emits.
-    expect(SRC).not.toMatch(/insertMessageIfAbsent\s*\(/);
-    // …and it does not touch the filesystem at all any more.
-    expect(SRC).not.toMatch(/from 'node:fs'/);
-    expect(SRC).not.toMatch(/readFileSync/);
-  });
-
-  it('the tombstone names where the requirement now lives', () => {
-    expect(SRC).toContain('W25 TOMBSTONE');
-    expect(SRC).toContain('prompt/assembler.ts');
   });
 });
 

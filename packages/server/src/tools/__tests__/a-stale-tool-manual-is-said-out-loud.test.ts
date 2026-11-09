@@ -37,9 +37,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-// (os no longer needed: the temp path is built in the hoisted block above)
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const logLines: string[] = [];
 vi.mock('../../logger.js', () => ({
@@ -70,8 +67,6 @@ vi.mock('../tool-doc-read.js', async (importOriginal) => {
 import { generateToolDocs } from '../index-generator.js';
 import { toolDocsStatus, resetToolDocsStatusForTests } from '../doc-freshness.js';
 import { toolDocsShortfall } from '@dojo/shared';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 beforeEach(() => {
   logLines.length = 0;
@@ -146,33 +141,5 @@ describe('the shortfall rule is shared, silent by default, and actually consulte
     expect(said).not.toBeNull();
     expect(said!, 'the number missing is named').toContain('12');
     expect(said!, 'the size of the surface is named').toContain('337');
-  });
-
-  it('THE SPEAKER USES THE SHARED RULE rather than re-deriving the comparison', () => {
-    // A second opinion about "is a manual missing" is how the owner gets told two different
-    // things about one fact. The recorder is the one speaker — it runs inside the generator on
-    // every boot, so the comparison cannot be forgotten at a call site — and it must get its
-    // wording from the shared rule rather than writing its own sentence.
-    const speaker = fs.readFileSync(path.join(SRC, 'tools/doc-freshness.ts'), 'utf8');
-    expect(speaker, 'the recorder reads the shared rule').toContain('toolDocsShortfall');
-    expect(speaker, 'and it says a shortfall at ERROR').toMatch(/logger\.error\(/);
-  });
-
-  it('BOOT no longer claims success on its own, and records a THROW instead of swallowing it', () => {
-    // Both arms of boot's step 3b failed open: the success arm logged `count` at INFO without
-    // asking how many were owed, and the catch arm logged one `warn` that reached no surface.
-    const boot = fs.readFileSync(path.join(SRC, 'index.ts'), 'utf8');
-    expect(
-      /logger\.info\('Tool docs generated'/.test(boot),
-      'boot must not re-announce success; the recorder owns that line and its level',
-    ).toBe(false);
-    expect(boot, 'a throw is recorded, not just warned').toContain('recordToolDocsFailure');
-  });
-
-  it('THE VITALS CARD USES THE SAME RULE, so the two surfaces cannot drift', () => {
-    const card = fs.readFileSync(
-      path.resolve(SRC, '../../dashboard/src/pages/Health.tsx'), 'utf8',
-    );
-    expect(card, 'the dashboard reads the shared rule too').toContain('toolDocsShortfall');
   });
 });

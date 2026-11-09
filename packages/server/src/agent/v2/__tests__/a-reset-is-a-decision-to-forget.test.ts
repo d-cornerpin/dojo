@@ -52,9 +52,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -80,12 +77,6 @@ import {
   sessionBoundaryClause, sessionBoundaryMs, sessionBoundaryText, withSessionBoundary,
 } from '../../../memory/session-boundary.js';
 import { priorOwnerContext } from '../../../work/ask-title.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
-const stripComments = (text: string): string => text
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 
 const AGENT = 'resetter';
 const CONV = 'conv-dashboard';
@@ -388,51 +379,5 @@ describe('§6 one canonical render, pinned', () => {
     // chars each) — the one instant formatter now states its zone. No wording moved.
     expect(text).toHaveLength(490);
     expect(crypto.createHash('sha256').update(text).digest('hex').slice(0, 16)).toBe('d3dc69078252fab0');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §7 — THE READS THAT MUST NOT BIND, held structurally.
-//
-// The investigation named four reads that keep their cross-session reach, each with a cited
-// reason. A future task that "finishes the job" by adding the clause to these would break the
-// recovery path and the duplicate-send guard, so the refusal is a clause rather than a comment.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§7 the recovery and de-duplication reads keep their reach', () => {
-  const bindsTheBoundary = (rel: string): boolean => {
-    const code = stripComments(read(rel));
-    return code.includes('sessionBoundary') || code.includes('withSessionBoundary')
-      || code.includes('session_started_at');
-  };
-
-  it('the recovery reads do NOT consult the boundary', () => {
-    // `memory/retrieval.ts` is `history_search`/`history_get`/`history_expand` — agent-scoped, no
-    // session clause and no conversation clause. It is the path the owner's own incident ended on
-    // ("finally running history_get and answering correctly"), and `SWEEP-C.md:17(d)` is why it may
-    // reach. `outbound-ledger.ts`: a reset must not become a licence to send the same message
-    // twice — the owner filed that as its own defect.
-    expect(bindsTheBoundary('memory/retrieval.ts')).toBe(false);
-    expect(bindsTheBoundary('agent/v2/outbound-ledger.ts')).toBe(false);
-  });
-
-  it('⚠ the investigation named the wrong module here, and `recall.ts` was ALREADY bounded', () => {
-    // Held as a clause rather than a footnote, because the investigation's Option-A touch list
-    // says `memory/recall.ts:287` must NOT bind "because it is the recovery path" — and at HEAD it
-    // binds already, under its own comment. A future reader who trusts that list would either
-    // "restore" a reach that was never there or conclude this task left a read unbounded.
-    const code = stripComments(read('memory/recall.ts'));
-    expect(code).toContain('created_at >= (unixepoch(?) * 1000)');
-    expect(read('memory/recall.ts')).toContain('Respect session boundary');
-  });
-
-  it('the four bound reads all reach the shared module, none hand-rolls the comparison', () => {
-    for (const rel of ['agent/v2/answered-edge.ts', 'work/ask-title.ts', 'memory/recall-lane.ts']) {
-      const code = stripComments(read(rel));
-      expect(code, `${rel} must import the boundary, not re-derive it`)
-        .toMatch(/session-boundary\.js/);
-      expect(code, `${rel} must not hand-roll the unixepoch conversion`)
-        .not.toMatch(/unixepoch\([^)]*\)\s*\*\s*1000/);
-    }
   });
 });

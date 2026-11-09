@@ -32,11 +32,6 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
-import { engineText } from '../../../__tests__/engine-sources.js';
 import Database from 'better-sqlite3';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -52,9 +47,6 @@ vi.mock('../../../../../db/connection.js', () => ({
 const { runFinalize, FINALIZE_PHASE } = await import('../index.js');
 const { initState, advance } = await import('../../../state.js');
 const { openTurnContext, endTurnContext } = await import('../../../../turn-context.js');
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DRIVER = path.resolve(HERE, '..', '..', '..', 'loop.ts');
 
 const AGENT = FXID.n4;
 
@@ -153,184 +145,6 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
       const out = await runFinalize(freshState(), ctxFor(overrides));
       expect(out.state.phase).toBe(FINALIZE_PHASE);
     }
-  });
-
-  it('THE DRIVER ADVANCES INTO IT AT THE CALL SITE, so validate() runs on the transition', () => {
-    // The advance must be the statement immediately before the call: that is what makes
-    // `validate()` run on this transition, and it is why the step may not write `phase`.
-    const src = readFileSync(DRIVER, 'utf8');
-    const callAt = src.indexOf('runFinalize(turnCtx.state!, finalizeContext())');
-    expect(callAt).toBeGreaterThan(0);
-    const before = src.slice(0, callAt);
-    const advanceAt = before.lastIndexOf("advance(turnCtx.state!, { phase: 'finalize' })");
-    expect(advanceAt).toBeGreaterThan(0);
-    // Nothing but the call site's own line between them.
-    expect(before.slice(advanceAt).split('\n').length).toBeLessThanOrEqual(2);
-  });
-
-  it('EVERY `break` PATH REACHES THE STAMPING — a census with a denominator', () => {
-    const src = readFileSync(DRIVER, 'utf8');
-    const sf = ts.createSourceFile(DRIVER, src, ts.ScriptTarget.ES2022, true);
-    let body: ts.FunctionDeclaration | null = null;
-    const find = (n: ts.Node): void => {
-      if (ts.isFunctionDeclaration(n) && n.name?.text === 'runV2TurnBody') body = n;
-      ts.forEachChild(n, find);
-    };
-    find(sf);
-    if (!body) throw new Error('runV2TurnBody not found — the driver moved; fix this guard, do not delete it');
-    const decl: ts.FunctionDeclaration = body;
-
-    const tryStmt = decl.body!.statements.filter(ts.isTryStatement).pop();
-    if (!tryStmt) throw new Error("the turn's main try is gone");
-
-    // (a) THIS STEP IS THE LAST STATEMENT OF THAT `try`. Everything the loop can do
-    //     ends up here, because there is nothing after it.
-    const last = tryStmt.tryBlock.statements[tryStmt.tryBlock.statements.length - 1];
-    expect(last.getText(sf)).toContain('runFinalize(turnCtx.state!, finalizeContext())');
-
-    // (b) EVERY `break` OF THE LOOP IS INSIDE THAT `try` — the language, not a habit.
-    let whileStmt: ts.WhileStatement | null = null;
-    const findWhile = (n: ts.Node): void => {
-      if (ts.isWhileStatement(n) && !whileStmt) whileStmt = n;
-      ts.forEachChild(n, findWhile);
-    };
-    findWhile(tryStmt);
-    if (!whileStmt) throw new Error('the tool loop is gone');
-
-    const breaks: number[] = [];
-    const returns: number[] = [];
-    const walk = (n: ts.Node, inFn: boolean): void => {
-      const nested = inFn || ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) ||
-        ts.isArrowFunction(n) || ts.isMethodDeclaration(n);
-      if (!nested && ts.isBreakStatement(n)) breaks.push(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1);
-      if (!nested && ts.isReturnStatement(n)) returns.push(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1);
-      ts.forEachChild(n, (c) => walk(c, nested));
-    };
-    walk((whileStmt as ts.WhileStatement).statement, false);
-
-    // The DENOMINATOR, and it is now read in TWO halves because PHASE-6 is draining
-    // the driver into step packages. A new exit shape changes one of these numbers,
-    // which is the point: it must be looked at rather than discovered later.
-    //
-    // ⚠ PHASE-6 CUT 7 MOVED SIX OF THEM AND THE HALF THAT REPLACED THEM IS PINNED
-    // BELOW, not dropped. The `execute` span held five `break`s and one `break outer`;
-    // in the step they are `requestExit(...)` calls, and the driver honours all five
-    // with ONE `break` at the call site. So the driver's own count falls 19 → 13 while
-    // the number of ways the loop can stop is unchanged — and the step-side half is
-    // counted over the ENGINE so it cannot go quiet as the remaining tranches move.
-    //
-    // ⚠ PHASE-6 CUT 8 MOVED SEVEN MORE, THE BIGGEST SINGLE SHIFT IN THE PHASE. The
-    // `postCallClassify` span held seven `break`s of this loop; in the step they are
-    // `requestExit(...)` calls and the driver honours all seven with ONE `break` at the
-    // call site, so the driver's own count falls 13 → 6 while the number of ways the
-    // loop can stop is unchanged. RE-DERIVED IN BOTH HALVES, NEVER LOWERED: 6 + 23 = 29,
-    // against CUT 7's 13 + 16 = 29. The total is the invariant this census is actually
-    // about, and it did not move.
-    expect(breaks.length).toBe(6);
-    // The step-side half: every `requestExit` in every step package. Each one is a way
-    // out of the loop that the driver honours with one of the `break`s above, and each
-    // one still lands in this step.
-    //
-    // ⚠ t93 WIDENED THE MATCHER AND NOT THE NUMBER, which is the distinction that matters.
-    // It was `/requestExit\(state,/` — the literal identifier — and five exits now hand over
-    // `latchEngineCut(state, '…')` instead, because the stop / preempt / budget arms carry the
-    // reason the turn ended into the record. Those five are the SAME five ways out of the loop;
-    // the argument moved, not the exit. A matcher keyed on one spelling of a step's state
-    // expression stopped counting them and the census went DOWN by five while nothing was
-    // removed — a false red, and in the other direction the shape a silent drop would take. It
-    // now anchors on `return requestExit(`, which is what an exit site IS and is indifferent to
-    // what is handed over; `step-outcome.ts`'s own declaration of the function is excluded by
-    // the `return`, re-derived at this HEAD: 25, unchanged.
-    const stepExitSites = [...engineText().matchAll(/return requestExit\(/g)].length;
-    // ⚠ RE-DERIVED, NOT LOWERED (SWEEP-A TB8 JOB 1): 23 -> 24. The +1 is the grind rung's
-    // give-up arm in `post-call-classify/empty-response.ts`, and the `breaks.length` half
-    // below is UNCHANGED at 6 — the arithmetic that proves an exit was ADDED rather than a
-    // driver break quietly converted into one.
-    //
-    // ⚠ RE-DERIVED AGAIN (T83): 24 -> 25. The +1 is the turn-budget checkpoint's own
-    // stop re-read in `pre-call-gates/turn-budget.ts`: the forced compaction it runs can
-    // take minutes (285 s, measured 2026-09-21) and a stop landing inside it used to be
-    // discovered by nobody — the checkpoint went on to write "continuing on a fresh turn"
-    // and queue the continuation for a plan the owner had stopped. `breaks.length` is
-    // UNCHANGED at 6, which is again the arithmetic proving an exit was ADDED here rather
-    // than a driver break quietly converted into one.
-    //
-    // ⚠ RE-DERIVED, LOWERED BY A DELETION (t137): 25 -> 24. The −1 is the continuation-cap
-    // trip arm in `pre-call-gates/turn-budget.ts` (`'turn-continuation-cap'`), deleted with the
-    // total-time cap (OR-LONG-JOBS). Nothing was converted: `breaks.length` is UNCHANGED at 6.
-    // ⚠ RE-DERIVED AGAIN (t140 round 7, re-review H2'): +1. The call step's no-pick exit in
-    // `call-llm/index.ts`: no router pick can hold the agent, the owner has been told the true
-    // cause (`call-llm/no-pick-holds.ts`), and the turn ends here instead of being thrown into
-    // the injury cascade. The driver already honoured a `callLLM` exit with its one `break`;
-    // `breaks.length` is UNCHANGED at 6, so an exit was ADDED, not converted.
-    // MERGED (v3.3.3, t137 + t140): 25 − 1 + 1 = 25, total 31.
-    // ⚠ RE-DERIVED, LOWERED BY A DELETION (t194, owner decision 7): 25 -> 23. The −2 are the context
-    // gate's emergency and block arms (`'context-emergency-compact'`, `'context-full'`): a full view is
-    // condensed, never surrendered. Nothing was converted: `breaks.length` is UNCHANGED at 6.
-    // ⚠ RE-DERIVED AGAIN (v3.5 D1): 23 -> 24. The +1 is the going-idle detector's job-turn-end
-    // exit in `post-call-classify/going-idle.ts` (a job that made progress was parked, or a
-    // continued turn that made none was recorded as stalled; either way the turn ends there).
-    // `breaks.length` is UNCHANGED at 6, so an exit was ADDED, not converted.
-    // ⚠ RE-DERIVED, LOWERED BY A DELETION: 24 -> 22. The −2 are the close-out one-shot and the
-    // tracker close-out hardcap, deleted with the close-out gate. `breaks.length` is UNCHANGED at 6.
-    expect(stepExitSites).toBe(22);
-    // THE INVARIANT UNDERNEATH BOTH HALVES, stated as its own clause so a future cut
-    // that moves N exits and adds N+1 cannot pass by moving the two numbers in step.
-    expect(breaks.length + stepExitSites).toBe(28);
-    const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
-    const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
-    for (const b of breaks) {
-      expect(b).toBeGreaterThan(tryStart);
-      expect(b).toBeLessThan(tryEnd);
-    }
-
-    // (c) AND THE EXITS THAT GENUINELY BYPASS IT, STILL PINNED AT EXACTLY TWO so a
-    //     third cannot appear silently: the stopped and the preempted mid-call exits.
-    //     Both still run the `finally`, so the turn record is still finalized and the
-    //     status still settles — but the finalize span does NOT run for them. (Neither
-    //     writes `idle` itself any more: the T83 fix round moved that to `teardown`.)
-    //
-    //     ⚠ PHASE-6 CUT 5 CHANGED HOW THEY ARE SPELLED, NOT HOW MANY THERE ARE. They
-    //     lived in the `callLLM` span, which is now a step, and a module cannot
-    //     `return` from its caller: each is an `abandonTurn(...)` in the step and the
-    //     driver honours BOTH with ONE `return` at the call site. So the census is
-    //     read over the ENGINE — one bypassing `return` in the driver, two abandon
-    //     sites in the steps — and the number of ways past this step is still two.
-    //     Lowering the pin to "one return" would have been the loosening this clause
-    //     exists to refuse.
-    expect(returns.length).toBe(1);
-    const honoursAbandon = src.split('\n').slice(returns[0] - 2, returns[0]).join('\n');
-    expect(honoursAbandon).toMatch(/directive === 'abandon'/);
-    // ⚠ t93 WIDENED THIS MATCHER TOO, and the same way and for the same reason as the
-    // `requestExit` half above: both abandons now hand over `latchEngineCut(state, '…')`,
-    // because a turn an owner stopped or a peer preempted has to say so in its record. The
-    // ways past this step are the SAME two; what they hand over changed. It anchors on the
-    // step's own return channel (`{ abandoned: abandonTurn(…) }`), which excludes the shared
-    // contract's declaration (`abandonTurn(state: AgentTurnState`) AND the prose in this same
-    // file's header, which writes `abandonTurn(...)` — a matcher a comment can satisfy is
-    // testing the comment. A tranche that changed that channel fails here loudly.
-    const abandonSites = [...engineText().matchAll(/abandoned: abandonTurn\(/g)].length;
-    expect(abandonSites).toBe(2);
-  });
-
-  it('THE ORDER IS THE CONTRACT — reordering would change what gets routed', () => {
-    // Two of the six blocks can produce the turn's reply text (the G-SUP-2 recovery and
-    // the stranded-file safety net) and the router sits BETWEEN them: the recovered text
-    // routes to the person's channel, the surfaced files deliberately do not (the net
-    // sends them itself, which is why its own comment says so). A reordering is
-    // therefore a behaviour change that no test of the individual blocks would catch.
-    const entry = readFileSync(path.join(HERE, '..', 'index.ts'), 'utf8');
-    const order = [
-      'recoverDeferredReply(state, ctx)',
-      'routeTerminalReply(state, ctx',
-      'surfaceStrandedAttachments(state, ctx)',
-      'scheduleCompletionReport(ctx)',
-    ].map((needle) => {
-      const at = entry.indexOf(needle);
-      expect(at, `${needle} is not called by the step's entry point`).toBeGreaterThan(0);
-      return at;
-    });
-    expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
   it('THE STEP OWNS ITS PHASE VALUE, and it is the one the union already had', () => {

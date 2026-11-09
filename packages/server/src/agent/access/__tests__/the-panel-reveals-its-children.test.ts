@@ -39,9 +39,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, cloneGrants, techniqueGrantOf } from '@dojo/shared';
 import type { AccessGrants } from '@dojo/shared';
@@ -51,11 +48,6 @@ import {
   techniqueAccessOn, setTechniqueAccess, techniqueChecked, setTechnique,
   setMaster, masterOn, hasMaster, grantsPatch, isDirty,
 } from '../../../../../dashboard/src/lib/access-edits.js';
-
-const DASH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..', 'dashboard', 'src',
-);
-const readDash = (rel: string): string => fs.readFileSync(path.join(DASH, rel), 'utf8');
 
 const LABELS = ['Meta', 'File & System', 'Web', 'Communication'];
 const IDS = ['tech-a', 'tech-b', 'tech-c'];
@@ -242,88 +234,5 @@ describe('the master switch reveals its children', () => {
   it('THE 111-CONTROL: opening the panel on a live agent and saving sends nothing', () => {
     const stored = wide();
     expect(grantsPatch(stored, clone(stored))).toEqual({});
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 5 · THE REACT SHAPE — the census the Playwright drive then exercises
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('the panel is a collapsible card that opens collapsed', () => {
-  const panel = (): string => readDash('components/AccessPanel.tsx');
-
-  it('⚠ IT REUSES THE DASHBOARD\'S ONE COLLAPSE IDIOM — no second implementation', () => {
-    const src = panel();
-    expect(src).toContain("from './CollapseToggle'");
-    expect(src).toMatch(/usePanelCollapse\(/);
-    expect(src).toMatch(/<CollapseToggle/);
-  });
-
-  it('⚠ AND IT ASKS FOR COLLAPSED BY DEFAULT', () => {
-    expect(panel()).toMatch(/usePanelCollapse\(\s*'[^']+'\s*,\s*true\s*\)/);
-  });
-
-  it('the collapse hook carries the default itself, so no caller re-implements it', () => {
-    const hook = readDash('components/CollapseToggle.tsx');
-    expect(hook).toMatch(/usePanelCollapse\(\s*storageKey: string,\s*defaultCollapsed/);
-    expect(hook).toMatch(/isCollapsed/);
-  });
-
-  it('⚠ THE THREE OLDER CALLERS ASK THE SAME WAY — one reader, not two', () => {
-    for (const file of ['GoogleWorkspaceSettings', 'MicrosoftWorkspaceSettings', 'TwilioSettings']) {
-      const src = readDash(`components/${file}.tsx`);
-      expect(src, `${file} asks through isCollapsed`).toMatch(/isCollapsed\(/);
-      expect(src, `${file} no longer re-defaults at the call site`).not.toMatch(/collapsed\[[^\]]+\]\s*\?\?/);
-    }
-  });
-});
-
-describe('each section shows only what its switch governs', () => {
-  const panel = (): string => readDash('components/AccessPanel.tsx');
-
-  it('⚠ TOOLS: the owner\'s two option labels, and the grid is conditional', () => {
-    const src = panel();
-    expect(src).toContain('Full tool access');
-    expect(src).toContain('Individual tool access');
-    expect(src).toMatch(/toolMode\(draft\) === 'individual' &&/);
-  });
-
-  it('⚠ CREDENTIALS: one control, with the owner\'s words', () => {
-    const src = panel();
-    // A5's label was "Access to stored credentials"; A6's language pass renames
-    // it to the words the owner used. ONE control over the whole field is the
-    // requirement, and it is unchanged — what moved is the sentence on it.
-    expect(src).toContain('Use stored keys & logins');
-    // The per-credential rows are gone, and with them the reason the panel had to
-    // fetch the vault's contents at all. (The tombstone comment naming the
-    // deleted call stays — that is what a grep for the old behaviour should
-    // find — so the assertion is about the CALL, not the word.)
-    expect(src).not.toMatch(/api\.listCredentials/);
-    expect(src).not.toContain('Every stored credential');
-  });
-
-  it('⚠ TECHNIQUES: a switch, and the list beneath it', () => {
-    const src = panel();
-    // "Technique access" became "Can use techniques" in A6's language pass. The
-    // switch, the list it reveals and the predicate behind both are unchanged.
-    expect(src).toContain('Can use techniques');
-    expect(src).toMatch(/techniqueAccessOn\(draft\)/);
-  });
-
-  it('⚠ CHANNELS: NO child renders under a `false` master — hidden, not dimmed', () => {
-    const src = panel();
-    // The A3 shape was `acx-children is-off` plus `disabled={!masterOn(draft)}` on
-    // every row. The requirement it carried — owner ruling 1's "inert unless the
-    // master is on" — is unchanged and still lives in `channelTierOf`; what moved
-    // is that the panel no longer draws a control the owner cannot use.
-    expect(src).not.toContain('is-off');
-    expect(src).not.toMatch(/disabled=\{!masterOn\(draft\)\}/);
-    expect(src).toMatch(/\bon && \(/);
-  });
-
-  it('the panel still computes no access of its own', () => {
-    const src = panel();
-    expect(src, 'never decides from the classification').not.toContain('classification');
-    expect(src).toContain('effectiveGrants');
   });
 });

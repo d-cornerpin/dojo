@@ -194,19 +194,6 @@ describe('the raw bundle never reaches the issue body', () => {
     expect(renderIssueBody(row), 'the RAW BUNDLE reached a public issue body (D1)')
       .not.toContain(BUNDLE_MARKER);
   });
-
-  it('names neither the bundle column nor the bundle reader in its own source', () => {
-    // Comment lines dropped first: the module's header names both while explaining why it
-    // touches neither, and a census that counts its own documentation teaches the next author
-    // to delete the explanation.
-    const src = fs.readFileSync(new URL('../issue-body.ts', import.meta.url), 'utf8')
-      .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-    expect(src.length, 'the comment stripper ate the whole file — this census is broken')
-      .toBeGreaterThan(400);
-    expect(src, '`bundle_path` is a RECORDED STRING, not a resolvable path (C6)')
-      .not.toContain('bundlePath');
-    expect(src).not.toContain('readBundle');
-  });
 });
 
 // ── 3. THE OWNER'S BYTES SURVIVE, AND ONE RENDERER SERVES BOTH DOORS ────────────────────

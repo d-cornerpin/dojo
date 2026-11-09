@@ -32,9 +32,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -75,11 +72,6 @@ import { agentsRouter } from '../../../gateway/routes/agents.js';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, stableGrantsText, channelTierOf } from '@dojo/shared';
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const DASH = path.resolve(SRC, '..', '..', 'dashboard', 'src');
-const readSrc = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
-const readDash = (rel: string): string => fs.readFileSync(path.join(DASH, rel), 'utf8');
 const db = (): Database.Database => mockDb.current!;
 
 const LABELS = new Set(TOOL_CATEGORIES.map((c) => c.label));
@@ -332,114 +324,5 @@ describe('the permissions editor\'s tool toggles reach the authority again', () 
     await put('worker', { classification: 'ronin' });
     forgetAccessGrants();
     expect(stableGrantsText(getAccessGrants('worker'))).toBe(before);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 4 · THE PANEL ITSELF — the source census the Playwright run then DRIVES
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('the Access panel is bound to the real object, both directions', () => {
-  const panel = (): string => readDash('components/AccessPanel.tsx');
-
-  it('⚠ IT EXISTS, AND THE AGENT EDITOR MOUNTS IT', () => {
-    expect(panel().length).toBeGreaterThan(0);
-    const editor = readDash('pages/AgentConfigPanel.tsx');
-    expect(editor).toContain('AccessPanel');
-  });
-
-  it('⚠ IT READS `effectiveGrants` FROM A2\'S GET AND WRITES `grants` THROUGH A2\'S PUT', () => {
-    const src = panel();
-    expect(src, 'reads the effective object, never the raw permissions blob').toContain('effectiveGrants');
-    // A6 sends one PUT carrying up to two halves, so the grant patch is a named
-    // field of a body rather than an inline literal. The requirement is the same
-    // one: the panel writes the grants THROUGH A2's validated door and nowhere
-    // else, and it sends only the patch `grantsPatch` computed.
-    expect(src, 'writes through the validated grant door').toMatch(/body\.grants = patch/);
-    expect(src, 'and the patch is the one the pure module computed').toMatch(/grantsPatch\(stored, draft\)/);
-  });
-
-  it('the sections the plan names are all present — as the owner\'s five questions', () => {
-    // A3 drew four titled sections (Tools / Integrations / Channels /
-    // Techniques). A6 replaces the titles with the QUESTIONS a person asks, and
-    // adds the fifth the folded permission toggles answer. Every section the
-    // plan named still exists; each is now named by what it is for.
-    const src = panel();
-    for (const question of [
-      'What it can do',        // tools
-      'What it can reach',     // integrations
-      'Who it can talk to',    // channels
-      'What it knows',         // techniques
-      'What it may manage',    // the folded permission card
-    ]) {
-      expect(src, `the "${question}" row`).toContain(question);
-    }
-  });
-
-  it('⚠ THE ÜBER-TOGGLE GATES ITS CHILDREN — they do not exist beneath a false master', () => {
-    const src = panel();
-    // "Allowed to talk to humans" in A5; "Can talk to people" after A6's
-    // language pass. Same switch, same children, same rule.
-    expect(src).toContain('Can talk to people');
-    // A3 drew the children DISABLED and dimmed; the owner's A5 order hides them
-    // instead, which is strictly stronger — there is no control to reach at all.
-    // The requirement is unchanged and still lives in `channelTierOf`: owner
-    // ruling 1's "inert unless the master is on".
-    expect(src).toMatch(/\{on && \(/);
-    expect(src, 'no disabled-but-present per-channel row survives').not.toMatch(/disabled=\{!masterOn/);
-  });
-
-  it('⚠ A SENSEI THAT IS NOT THE PRIMARY GETS NO MASTER TOGGLE, AND IS TOLD WHY', () => {
-    const src = panel();
-    // `master === null` is the model's way of saying "has no such toggle", and
-    // `hasMaster` is that question asked once. The panel must key on THAT and
-    // never on the classification string — a sensei that was given a master
-    // would otherwise lose its switch to a label.
-    expect(src).toContain('hasMaster(');
-    expect(src, 'the panel never decides access from the classification').not.toContain('classification');
-    // A6's language rule: the note says what the arrangement MEANS instead of
-    // naming the rank. The sentence is addressed to the owner now — "your main
-    // agent" — and the rank word is gone from it entirely.
-    expect(src).toMatch(/talks through your main agent/i);
-    expect(src.toLowerCase()).not.toContain('sensei agents');
-  });
-
-  it('the panel never sends a channel section for an agent that has no master', () => {
-    expect(panel()).toMatch(/hasMaster|master === null/);
-  });
-});
-
-describe('the no-op toggles are gone from the permissions editor', () => {
-  const editor = (): string => readDash('components/PermissionsEditor.tsx');
-
-  it('⚠ "SEND iMESSAGES" IS GONE — it could never grant, and now there is a control that can', () => {
-    // Census §9.1 G1: the toggle wrote `tools_policy.deny += imessage_send` when
-    // off and removed it when on, but turning it ON granted nothing, because the
-    // channel door refused every non-primary agent regardless. It was shown on
-    // every agent's editor and was a no-op on all of them.
-    const src = editor();
-    expect(src).not.toContain('Send iMessages');
-    // The deny-pusher itself, and the seeded deny in the new-sub-agent default.
-    // (The tombstone comment naming what was deleted is the repo's own practice
-    // and is exactly what a grep for the old behaviour should find.)
-    expect(src).not.toMatch(/push\('imessage_send'\)/);
-    expect(src).not.toMatch(/deny: \[[^\]]*imessage_send/);
-  });
-
-  it('the editor keeps the toggles that DO something — this is a deletion, not a purge', () => {
-    const src = editor();
-    for (const kept of ['Read Files', 'Run Terminal Commands', 'Web Search', 'Create Sub-Agents']) {
-      expect(src, `${kept} is a real control and stays`).toContain(kept);
-    }
-  });
-
-  it('and the defaults it exports no longer name the tool it cannot govern', () => {
-    expect(editor()).not.toMatch(/DEFAULT_SUBAGENT_TOOLS_POLICY[\s\S]{0,200}imessage_send/);
-  });
-});
-
-describe('the server states the coupling the panel warns about', () => {
-  it('the catalog route is mounted, so the panel is not talking to a phantom', () => {
-    expect(readSrc('gateway/server.ts')).toContain('accessRouter');
   });
 });

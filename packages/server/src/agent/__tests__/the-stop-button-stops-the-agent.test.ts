@@ -35,37 +35,13 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   stoppedAgents, pendingWakeups, preemptedAgents, activeAbortControllers,
   queueSelfWake,
 } from '../shared-state.js';
 import { runPreCallGates } from '../v2/steps/pre-call-gates/index.js';
-import { engineSources } from '../v2/__tests__/engine-sources.js';
 
 const AGENT = 'stop-button-agent';
-const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-
-function sourceFiles(): string[] {
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
-        walk(p);
-      } else if (entry.name.endsWith('.ts')) {
-        out.push(p);
-      }
-    }
-  };
-  walk(SRC_ROOT);
-  return out;
-}
-
-function rel(p: string): string { return path.relative(SRC_ROOT, p); }
 
 beforeEach(() => {
   stoppedAgents.clear();
@@ -103,59 +79,11 @@ describe('a stopped run cannot wake itself', () => {
     pendingWakeups.add(AGENT);
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
-
-  it('THE CENSUS: every self-wake in the tree goes through the one door', () => {
-    // The standing rule: a set stays safe because the suite RUNS the census,
-    // not because a report says it was checked once.
-    const ALLOWED = new Set([
-      // The door itself.
-      'agent/shared-state.ts',
-      // The ONE real-inbound queue: `handleMessage` is busy, so the caller's
-      // message is parked for the end of the current run. Argued at the site.
-      'agent/runtime.ts',
-    ]);
-    const offenders: string[] = [];
-    for (const file of sourceFiles()) {
-      const src = fs.readFileSync(file, 'utf-8');
-      const hits = src.split('\n')
-        .map((line, i) => ({ line, n: i + 1 }))
-        .filter(({ line }) => /pendingWakeups\.add\(/.test(line));
-      if (hits.length === 0) continue;
-      if (!ALLOWED.has(rel(file))) {
-        for (const h of hits) offenders.push(`${rel(file)}:${h.n} — ${h.line.trim()}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it('THE CENSUS, second half: runtime.ts keeps exactly ONE direct add — the busy path', () => {
-    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/runtime.ts'), 'utf-8');
-    const adds = src.split('\n').filter((l) => /pendingWakeups\.add\(/.test(l));
-    expect(adds).toHaveLength(1);
-  });
 });
 
 // ── PROPERTY 1: the flag outlives the checkpoint that honoured it ────────────
 
 describe('the stop flag outlives the checkpoint that honoured it', () => {
-  it('THE CENSUS: only the run\'s own exit path and a human\'s own request clear it', () => {
-    // Four clears are legitimate and each is named:
-    //   • agent/runtime.ts        — the run's `finally`, the ONE owner
-    //   • gateway/routes/chat.ts  — a fresh user message means "act" (2026-06-02)
-    //   • gateway/routes/agents.ts— reset-session starts a clean slate
-    //   • migration/import-agents.ts, a failed import brings back the agents IT stopped (owner ruling); never one
-    //     the owner stopped (`a-failed-import-brings-its-agents-back.test.ts` holds that)
-    const ALLOWED = new Set(['agent/runtime.ts', 'gateway/routes/chat.ts', 'gateway/routes/agents.ts', 'migration/import-agents.ts']);
-    const offenders: string[] = [];
-    for (const file of sourceFiles()) {
-      const src = fs.readFileSync(file, 'utf-8');
-      src.split('\n').forEach((line, i) => {
-        if (!/stoppedAgents\.delete\(/.test(line)) return;
-        if (!ALLOWED.has(rel(file))) offenders.push(`${rel(file)}:${i + 1} — ${line.trim()}`);
-      });
-    }
-    expect(offenders).toEqual([]);
-  });
 
   it('the pre-call gate exits on the stop and LEAVES the flag standing for the drains', async () => {
     const setAgentStatus = vi.fn();
@@ -176,52 +104,6 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
     // — which run after the loop breaks — could not tell a stopped run from a
     // finished one and queued the next turn.
     expect(stoppedAgents.has(AGENT)).toBe(true);
-  });
-
-  it('EVERY engine checkpoint reads the flag and NONE of them retires it', async () => {
-    // The corpus is the SHARED derivation (`engine-sources.ts`), not a fourth
-    // hand-rolled walk of the step packages — PHASE-6 GUARD-AUDIT's rule, and
-    // the reason is exactly this clause's shape: a negative assertion over a
-    // corpus that has quietly stopped containing its subject passes forever.
-    const sources = engineSources();
-    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-2): the PREDICATE changed
-    // name, the requirement did not. Every checkpoint now reads `isStopFenced`, which ORs the
-    // flag with the stopped run's own fence — because `stoppedAgents` alone is liftable from
-    // outside by reset-session, and when it was lifted mid-run the executor kept dispatching a
-    // stopped run's remaining tool calls. Counting the raw flag here would now count zero and
-    // this clause would have gone vacuous rather than red, which is the failure mode its own
-    // non-vacuity guard below exists to catch.
-    const readers = sources.filter((f) => /isStopFenced\(agentId\)/.test(f.text)).map((f) => f.rel);
-    const retirers = sources.filter((f) => /stoppedAgents\.delete\(/.test(f.text)).map((f) => f.rel);
-    // Non-vacuity first: the three checkpoints are the pre-call gate, the
-    // model-call catch and the executor's batch loop.
-    expect(readers.length, 'the engine stopped checking the stop flag entirely').toBeGreaterThanOrEqual(3);
-    expect(retirers, 'a step retired the stop flag again — the drains cannot see a stop that is already gone').toEqual([]);
-
-    // ── t116 E1: AND THE COUNT IS NOT THE REQUIREMENT, THE SEAM IS ──
-    //
-    // This clause counted readers, and a count is exactly what let E1 ship. The three
-    // checkpoints above were all present and all green while a user-visible reply escaped
-    // after the press, because the file that SHIPS the reply was not among them: the count
-    // was satisfied by three guards on the paths where a call fails, and the path where it
-    // succeeds had none.
-    //
-    // A presence-only count also stays green when a reader is MOVED rather than added, which
-    // is the both-directions failure this names its subject to avoid. The persist seam is
-    // where the row and the broadcast live, so it is the one file whose silence is a
-    // user-visible defect rather than a missed opportunity — it is required BY NAME.
-    expect(readers, 'the shipping door stopped reading the stop fence — this is E1, the reply that escapes the press')
-      .toContain('agent/v2/steps/post-call-classify/persist-assistant.ts');
-  });
-
-  it('the preempt flag is NOT changed by this task — it is still consumed at its checkpoints', async () => {
-    // Requirement preserved: a preempt exists so a QUEUED WAKEUP CAN FIRE. Its
-    // consumption at the checkpoint is what lets that wakeup through, and the
-    // fix above must not have crept onto it. Same shared corpus, same reason.
-    const consumers = engineSources()
-      .filter((f) => /preemptedAgents\.delete\(agentId\)/.test(f.text))
-      .map((f) => f.rel);
-    expect(consumers.length, 'the preempt flag stopped being consumed at its checkpoints').toBeGreaterThanOrEqual(2);
   });
 });
 

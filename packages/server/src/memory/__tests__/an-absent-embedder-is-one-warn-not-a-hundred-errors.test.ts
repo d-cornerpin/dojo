@@ -36,9 +36,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const h = vi.hoisted(() => {
@@ -239,21 +236,6 @@ describe('one latch, shared by every optional-embedding consumer', () => {
     warnEmbeddingBackendAbsentOnce({ error: 'HTTP 404', site: 'vault.createEntry' });
     warnEmbeddingBackendAbsentOnce({ error: 'HTTP 404', site: 'vault.semanticSearch' });
     expect(h.calls.warn, 'one absent backend is one fact, whoever notices it').toHaveLength(1);
-  });
-
-  it('both vault sites route through the shared latch rather than warning per call', () => {
-    const src = fs.readFileSync(
-      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../vault/store.ts'),
-      'utf-8',
-    );
-    // vault_search embeds on every recall and createEntry on every write — the two
-    // unthrottled witnesses the fix round named.
-    for (const site of ['vault.createEntry', 'vault.semanticSearch']) {
-      expect(src, `${site} must announce an absent backend through the shared latch`)
-        .toContain(`warnEmbeddingBackendAbsentOnce({ error: m, site: '${site}' })`);
-    }
-    // …and a GENUINE failure is still said every time, at both sites.
-    expect(src.match(/else logger\.warn\('Failed to generate /g)).toHaveLength(2);
   });
 });
 

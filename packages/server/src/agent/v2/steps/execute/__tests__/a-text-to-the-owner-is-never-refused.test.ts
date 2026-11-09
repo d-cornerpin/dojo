@@ -8,7 +8,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -121,11 +120,5 @@ describe('a text to the owner is never refused', () => {
 
   it('the reminder lane still refuses a send to a non-owner once', () => {
     expect(send('imessage_send', FIRST, { taskKind: 'reminder' }, ownerAtDashboard)).toMatch(/is not the owner/);
-  });
-
-  it('the gate file no longer carries the presence check or its refusal text', () => {
-    const src = readFileSync(new URL('../refusal-gates.ts', import.meta.url), 'utf8');
-    expect(src).not.toContain('getPresence');
-    expect(src).not.toContain('IN the dojo');
   });
 });

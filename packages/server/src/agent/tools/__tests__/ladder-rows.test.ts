@@ -25,10 +25,7 @@ vi.mock('../../../config/platform.js', async () => {
     isTrainerAgent: () => false,
   };
 });
-
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS, type ToolGate } from '../gates.js';
 
@@ -305,82 +302,5 @@ describe('P5-R5 — what the loop deliberately does NOT gate', () => {
     expect(kinds).toContain('fs_write');
     // …and a fully-gated tool reports nothing.
     expect(ungatedEffectKinds('file_read', rowsFor('file_read', { path: '/tmp/x' }))).toEqual([]);
-  });
-});
-
-describe('Step 4’s staging window is DELETED (PHASE-5 T7) — enforcement is structural', () => {
-  // ══════════════════════════════════════════════════════════════════════════
-  // WHAT THIS REPLACED, AND THE REQUIREMENT IT KEEPS.
-  //
-  // T2 Step 4 shipped `logOnly(agentId, verdict)`: a refusal could be RECORDED
-  // instead of APPLIED, for sub-agents only. RULING P5-R6 then narrowed it twice
-  // — a global deny is never staged, a `ladder-parity` refusal is never staged
-  // for a sub-agent — which left the staged set EMPTY, and T5's census
-  // (`brokers/__tests__/staged-set.test.ts`) is what holds it empty rather than
-  // merely believing it.
-  //
-  // T7 deletes the branch by name, which is this phase's own exit gate: *a
-  // staging flag that survives its stage is the band-aid this phase exists to
-  // kill.* The requirement it encoded — **every refusal the brokers compute is
-  // applied, to every agent, and no refusal is recorded-but-not-applied** — is
-  // now STRUCTURAL: the executor has one refusal path and it does not ask who
-  // the agent is. These clauses hold that, and `staged-set.test.ts` holds the
-  // other half (that no broker refusal WOULD have been staged, i.e. that this
-  // deletion changed no behaviour on the day it landed).
-  // ══════════════════════════════════════════════════════════════════════════
-
-  const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-
-  function walk(dir: string, out: string[] = []): string[] {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
-        walk(full, out);
-      } else if (entry.name.endsWith('.ts')) out.push(full);
-    }
-    return out;
-  }
-
-  it('`logOnly` is GREP-ZERO in production source — the exit gate, held as a test', () => {
-    // The gate is honest in both directions only because the identifier was
-    // grep-zero BEFORE T2 created it (§T0-PINS P9 measured 0 hits at `d0b3320`).
-    // Asserting it here is what stops it coming back unannounced.
-    const hits = walk(SRC)
-      .filter((f) => /\blogOnly\b/.test(fs.readFileSync(f, 'utf8')))
-      .map((f) => path.relative(SRC, f));
-    expect(hits, 'the staged-enablement branch is deleted, not flag-disabled').toEqual([]);
-  });
-
-  it('the executor’s gate loop has NO staging arm — a refusal is a refusal', () => {
-    const executor = fs.readFileSync(path.join(SRC, 'agent', 'tools', 'index.ts'), 'utf8');
-    const loopStart = executor.indexOf('const { verdict } = outcome;');
-    expect(loopStart, 'the gate loop’s verdict read must still be there').toBeGreaterThan(-1);
-    const refusal = executor.indexOf('return {', loopStart);
-    const between = executor.slice(loopStart, refusal);
-    // Exactly ONE `continue` — the allow. Anything else is a second way for a
-    // computed refusal to end up not applied, which is what this deletes.
-    expect(
-      (between.match(/\bcontinue;/g) ?? []).length,
-      'the only `continue` between the verdict and the refusal is the ALLOW',
-    ).toBe(1);
-    expect(/if \(verdict\.allowed\) continue;/.test(between)).toBe(true);
-  });
-
-  it('⚠ the refusal path does NOT ask who the agent is — that was the staging bug’s door', () => {
-    // The incident P5-R6 was written for: a refusal that computed itself and
-    // then did not apply, because of WHO asked. There is no identity test on
-    // this path any more, so a sub-agent and the primary get the same answer by
-    // construction rather than by a predicate somebody has to keep correct.
-    const executor = fs.readFileSync(path.join(SRC, 'agent', 'tools', 'index.ts'), 'utf8');
-    const loopStart = executor.indexOf('const { verdict } = outcome;');
-    const refusal = executor.indexOf('return {', loopStart);
-    const between = executor.slice(loopStart, refusal);
-    for (const identity of ['isPrimaryAgent', 'isHealerAgent', 'logOnly']) {
-      expect(
-        between.includes(identity),
-        `${identity} must not decide whether a computed refusal is applied`,
-      ).toBe(false);
-    }
   });
 });

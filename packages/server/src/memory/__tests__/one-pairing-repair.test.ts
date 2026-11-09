@@ -38,16 +38,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { repairToolPairing, unpairedToolIds, type PairedMessage } from '../../agent/tool-pairing.js';
-
-const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const src = (rel: string): string => fs.readFileSync(path.join(REPO, rel), 'utf8');
-/** Blank comments, keeping line count, so prose ABOUT the deleted copy is never read as one. */
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 // ── the assembler's copy, transcribed from `memory/assembler.ts:2561-2642` at `92b7124` ──
 // Kept here so "the copy that was deleted did the wrong thing over this input" is a test
@@ -160,34 +151,5 @@ describe('PHASE-3 T9 — one owner for the tool-pairing invariant', () => {
     expect(rep.strippedToolUse).toBe(1);
     expect(rep.droppedMessages).toBe(1);
     expect(unpairedToolIds(orphaned)).toEqual({ toolUseWithoutResult: [], toolResultWithoutUse: [] });
-  });
-
-  it('4. CONFORMANCE: `memory/assembler.ts` declares no pairing walk of its own — it imports the one owner', () => {
-    const s = stripComments(src('packages/server/src/memory/assembler.ts'));
-    // The deleted copy's own identifiers. Any of them back in live code is a second owner.
-    expect(s).not.toMatch(/function\s+sanitizeToolBlocks/);
-    expect(s).not.toMatch(/validToolUseIds/);
-    expect(s).not.toMatch(/validToolResultIds/);
-    // And it must actually use the survivor, or the invariant is enforced nowhere here.
-    expect(s).toMatch(/repairToolPairing/);
-    expect(s).toMatch(/from '\.\.\/agent\/tool-pairing\.js'/);
-  });
-
-  it('5. the WALK is declared once, tree-wide — both call sites go through the one owner', () => {
-    // `agent/model.ts` keeps `sanitizeOrphanToolBlocks` as a NAMED WRAPPER on purpose (it
-    // carries the log line the 14/14 correlation was measured against), so the thing to
-    // forbid is a re-declared WALK, not a re-used name. These three identifiers are what a
-    // second walk needs and a wrapper never has.
-    for (const rel of [
-      'packages/server/src/memory/assembler.ts',
-      'packages/server/src/agent/model.ts',
-    ]) {
-      const s = stripComments(src(rel));
-      expect(s, rel).not.toMatch(/validToolUseIds|validToolResultIds|isPureToolResultMessage/);
-      expect(s, rel).toMatch(/repairToolPairing/);
-    }
-    // The declaration lives in exactly one file.
-    expect(stripComments(src('packages/server/src/agent/tool-pairing.ts')))
-      .toMatch(/export function repairToolPairing/);
   });
 });

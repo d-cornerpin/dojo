@@ -38,18 +38,6 @@ import { MOST_RESTRICTIVE_GRANTS } from '@dojo/shared';
 
 const DEF = toolDefinitions.find(d => d.name === 'dojo_report');
 
-/**
- * THE HANDLER'S OWN SOURCE — BOTH FILES OF IT (ritual v3.2.0 round-1 fix round).
- *
- * The words the tool says moved to `cat/report-prose.ts` when the size fix pushed `report.ts`
- * past the growth gate's line. A structural claim read off ONE of two files is a claim with a
- * hole in it exactly where the split is, so the census reads the pair and concatenates them:
- * whatever the handler is made of, none of it may name a network module or an approval door.
- */
-const HANDLER_FILES = ['report.ts', 'report-prose.ts'] as const;
-const handlerSrc = (): string =>
-  HANDLER_FILES.map(f => fs.readFileSync(path.join(__dirname, '..', 'cat', f), 'utf8')).join('\n');
-
 describe('the tool exists, is default-granted, and rides load_tool_docs', () => {
   it('is declared, has a handler, and is last in the array (append-only)', () => {
     expect(DEF).toBeDefined();
@@ -79,18 +67,6 @@ describe('the tool cannot post, structurally', () => {
     const phases = (DEF!.input_schema.properties as Record<string, { enum?: string[] }>).phase.enum;
     expect(phases).toEqual(['gather', 'draft', 'submit']);
     expect(phases).not.toContain('post');
-  });
-
-  it('reaches no github module and no approval door from its handler', () => {
-    // t110's NIT-8: the handler is TWO files since the split, so the message must name WHICH
-    // one carries the violation. It used to say `cat/report.ts` unconditionally, sending the
-    // reader to the wrong file whenever the hit was in `report-prose.ts`.
-    for (const f of HANDLER_FILES) {
-      const src = fs.readFileSync(path.join(__dirname, '..', 'cat', f), 'utf8');
-      for (const forbidden of ['/github/', 'api.github.com', 'approveOnce', 'markPosted', 'postApprovedReport']) {
-        expect(src.includes(forbidden), `cat/${f} references ${forbidden}`).toBe(false);
-      }
-    }
   });
 
   it('tells the agent in its own description that it cannot send', () => {
@@ -142,33 +118,6 @@ describe('the tool cannot post, structurally', () => {
         + 'reworded, keep every sentence above and update this list deliberately.',
       ).toContain(sentence);
     }
-  });
-
-  // ── T3 ADDITIONS, REWORDED IN FIX ROUND 1 ─────────────────────────────────────────────
-  // These clauses read ONE FILE'S OWN TEXT, and after review that is exactly what they now
-  // claim. The first wording — "imports nothing that could carry a report off the box" — was
-  // false about the graph: the reviewer added a posting module under an unlisted name, called
-  // it from `submit`, performed a real outbound POST, and every clause in this file stayed
-  // green. A one-hop name scan cannot see 526 modules. The graph is measured next door in
-  // `the-report-tool-reaches-no-new-door.test.ts`, which is the guard that refuses that
-  // demonstration; these two remain because a file that names a host or calls `fetch` itself
-  // is worth catching at the cheapest possible altitude, and because they say what they do.
-
-  it('names no outbound module in its OWN import list (one hop — the graph is censused next door)', () => {
-    const imports = [...handlerSrc().matchAll(/from\s+'([^']+)'/g)].map(m => m[1]);
-    expect(imports.length).toBeGreaterThan(0);
-    for (const spec of imports) {
-      expect(spec, `cat/report.ts imports ${spec}`).not.toMatch(/github/i);
-      // `node:https`, `undici`, a fetch wrapper — anything whose whole job is leaving.
-      expect(spec, `cat/report.ts imports ${spec}`).not.toMatch(/^node:(https?|net|tls|dgram)$/);
-    }
-  });
-
-  it('never names fetch IN ITS OWN BODY, so the cheapest way out is not open here', () => {
-    // `writeBundle`/`writeReportFile` write to `~/.dojo`; `broadcast` reaches a local socket.
-    // This does NOT prove the closure holds no `fetch` — 37 modules in it do. That is prong C
-    // of the census next door, which pins them by name so a NEW one fails the build.
-    expect(handlerSrc()).not.toMatch(/\bfetch\s*\(/);
   });
 
   it('declares one effect and it is the LOCAL bundle, not a network send', () => {

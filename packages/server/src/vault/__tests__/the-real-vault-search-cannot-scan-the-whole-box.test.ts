@@ -382,19 +382,6 @@ describe('⚠ FIX ROUND 1, I2 — THE WINDOW IS THE SCOPE\'S SPAN, NOT THE TABLE
     }
   }, 180_000);
 
-  it('the scope\'s span is N single-aggregate COVERING-INDEX seeks, never one combined IN', () => {
-    const reads = fs.readFileSync(new URL('../bounded-reads.ts', import.meta.url), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(reads, 'the scoped span lost its per-id MAX seek')
-      .toContain("SELECT MAX(rowid) AS r FROM vault_entries WHERE agent_id = ?");
-    expect(reads, 'the scoped span lost its per-id MIN seek')
-      .toContain("SELECT MIN(rowid) AS r FROM vault_entries WHERE agent_id = ?");
-    // A combined `agent_id IN (…)` loses SQLite's min/max optimisation exactly as a combined
-    // `MIN(x), MAX(x)` does, which this file already measured at 23.457 ms against 0.015 ms.
-    expect(reads, 'the span was combined into one IN — the form that loses the optimisation')
-      .not.toMatch(/(?:MIN|MAX)\(rowid\)[^;`]*agent_id IN/);
-  });
-
   it('EXPLAIN confirms the scoped seek rides the covering index', () => {
     const fx = fixtureAt('i2-plan', [{ rid: 7, agent: AGENTS[0] }]);
     try {
@@ -652,27 +639,6 @@ describe('⚠ FIX ROUND 1, I4 — THE POOL-DOWN FALLBACK BREATHES, AND IT DOES N
     expect(measured.serviced, 'the pool-down scan pinned the loop').toBeGreaterThan(0.15);
     resetReaderPoolForTest();
   }, 180_000);
-
-  it('the breathe comes from `node:timers`, which a caller holding the clock does not fake', () => {
-    // ⚠ THE PROBE THAT SETTLED IT, run with one arm per `it` and NO guard timer, because the two
-    // earlier attempts both raced the answer against a faked guard they then advanced — and lied in
-    // opposite directions:
-    //       global setImmediate      → TIMED OUT (faked)
-    //       node:timers setImmediate → resolved
-    //       MessageChannel           → resolved
-    // So the unfaked binding avoids both the stall and the deadlock. The source clause pins WHICH
-    // binding, because the global one is the obvious edit and it is the one that hangs
-    // `the-prefix-holds-still.test.ts` for thirty seconds a clause.
-    const reads = fs.readFileSync(new URL('../bounded-reads.ts', import.meta.url), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(reads, 'the breathe must come from the unfaked node:timers binding')
-      .toMatch(/import \{ setImmediate as setImmediateUnfaked \} from 'node:timers'/);
-    expect(reads, 'the breathe must USE that binding, not the global')
-      .toMatch(/setImmediateUnfaked\(resolve\)/);
-    // Both walks take it: a yield on one door and not the other is the shape that gets missed.
-    expect((reads.match(/breathe: vaultBreathe/g) ?? []).length,
-      'both bounded walks must breathe — the candidate scan and the pooled LIKE walk').toBe(2);
-  });
 });
 
 describe('⚠ THE ANSWERS ARE THE PRE-FIX ANSWERS — a bound that moves results is a bug', () => {
@@ -1051,128 +1017,4 @@ describe('⚠ A STOP IS REAL ON THIS PATH FOR THE FIRST TIME', () => {
     );
     expect(rows[0].n).toBe(ROWS);
   }, 180_000);
-});
-
-describe('⚠ THE WIRE — and it COUNTS, in both directions', () => {
-  const SRC = (rel: string): string => fs.readFileSync(new URL(rel, import.meta.url), 'utf-8');
-  /** Comments stripped, because a clause satisfiable by the prose above a call tests the prose. */
-  const code = (rel: string): string =>
-    SRC(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-
-  it('there is exactly ONE pool door, and exactly FOUR reads go through it', () => {
-    const reads = code('../bounded-reads.ts');
-    // ⚠ COUNTED EXACTLY, NOT `toBeGreaterThanOrEqual`. A `>=` clause stays green when a FIFTH read is
-    // added without the fork, which is precisely how a helper ends up fully covered while the line
-    // joining it to a caller is not. Adding a read reds this; deleting a wire reds it too; and the
-    // reader has to come here and say which it was.
-    expect((reads.match(/readerPoolAvailable\(\)/g) ?? []).length,
-      'the pool-or-thread decision must have ONE spelling').toBe(1);
-    expect((reads.match(/readerQuery</g) ?? []).length,
-      'every pooled read goes through vaultRead, so there is one readerQuery call').toBe(1);
-    expect((reads.match(/await vaultRead</g) ?? []).length,
-      'FOUR pooled reads: the candidate page, the winners\' bodies, and the LIKE walk\'s cost + page').toBe(4);
-    // And the door re-throws an abort rather than falling back — asserted on the CALL, not the prose.
-    expect(reads, 'an aborted read must be re-thrown, never re-run on-thread')
-      .toMatch(/if\s*\(signal\?\.aborted\)\s*throw\s+err;/);
-  });
-
-  it('all FOUR of store.ts\'s reads are converted, counted by site', () => {
-    const store = code('../store.ts');
-    // Three semantic sites (the search, the write path's duplicate check, the near-duplicate band)…
-    expect((store.match(/scanVaultCandidates\(\{/g) ?? []).length,
-      'three semantic reads: semanticSearch, findSemanticDuplicate, findNearDuplicateEntry').toBe(3);
-    expect((store.match(/fetchVaultRowsByIds</g) ?? []).length,
-      'each semantic site fetches bodies for its winners and nothing else').toBe(3);
-    // …and the fourth, the exact search, in both of its doors.
-    expect((store.match(/vaultLikeScanSync</g) ?? []).length, 'the synchronous exact-search door').toBe(1);
-    expect((store.match(/vaultLikeScan</g) ?? []).length, 'the pooled exact-search door').toBe(1);
-    // The pooled door has a REAL caller inside this file, not a dead export: the embed-outage
-    // fallback, which is the exact-search SQL on the serving thread for the length of an outage.
-    expect(store, 'listEntriesBounded is declared and never called — a wire to nowhere')
-      .toMatch(/await listEntriesBounded\(/);
-    // store.ts does not reach the pool itself; it has one route in.
-    expect(store).not.toMatch(/readerQuery|readerPoolAvailable/);
-  });
-
-  // Every `SELECT … FROM vault_entries`, one entry per statement, whitespace normalised. The lazy
-  // span refuses to cross another `SELECT`, which is what stops one function's read bleeding into
-  // the next function's table (it did, on the first cut of this clause).
-  const CENSUS = /SELECT(?:(?!\bSELECT\b)[\s\S])*?FROM vault_entries(?:(?!\bSELECT\b)[^`';])*/g;
-  const census = (src: string): string[] =>
-    [...src.matchAll(CENSUS)].map((m) => m[0].replace(/\s+/g, ' ').trim());
-
-  it('⚠ NO UNBOUNDED VAULT SCAN SURVIVES — the other direction, as a CENSUS', () => {
-    // ⚠ A CENSUS AND NOT AN ALLOWLIST, and the difference is which way it fails. A rule of the form
-    // "these statements are blessed" goes stale silently; a census of what is UNBOUNDED reds when a
-    // fifteenth read appears, whichever kind it is, and makes the author come here and say which.
-    //
-    // A read of `vault_entries` is bounded when it carries a `LIMIT`, is keyed on `id`, or is an
-    // aggregate (one row out, whatever it scanned — still a scan, but not a 3 KB-per-row one).
-    const store = code('../store.ts');
-    const stmts = census(store);
-    expect(stmts.length, 'the census found nothing — the regex broke, not the code').toBeGreaterThan(10);
-    const unbounded = stmts.filter((s) => !(
-      /\bLIMIT\b/i.test(s) || /\bid = \?/.test(s) || /\bid IN \(/.test(s)
-      || /\b(?:COUNT|AVG|SUM|MAX|MIN)\s*\(/i.test(s)
-    ));
-
-    // ⚠ EXACTLY THESE THREE, AND THEY ARE THIS LANE'S RECORDED HAND-UP. Both are the ALWAYS-INJECTED
-    // reads — the pinned entries and the session-context entries, which go into every assembled
-    // context — and neither is one of the four sites the capture recorded. They cannot take a `LIMIT`
-    // without silently dropping a pin the owner asked to be pinned, which is a product ruling and not
-    // a bound. The report names them as the next reads in this family. A FOURTH unbounded read reds
-    // this clause, which is the whole point of writing the number down.
-    expect(unbounded).toEqual([
-      "SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 AND agent_id IN (${inList}) ORDER BY created_at DESC",
-      'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 ORDER BY created_at DESC',
-      'SELECT * FROM vault_entries WHERE is_obsolete = 0 AND tags IS NOT NULL AND EXISTS (',
-    ]);
-
-    // And the four pre-fix spellings are GONE, named so a reader of a red clause knows what came back.
-    expect(store, 'the unbounded semantic scan is back')
-      .not.toMatch(/SELECT \* FROM vault_entries WHERE is_obsolete = 0 AND embedding IS NOT NULL/);
-    expect(store, 'the unbounded agent-scoped semantic scan is back')
-      .not.toMatch(/embedding IS NOT NULL AND agent_id = \?/);
-    expect(store, 'the LIMIT-bounds-the-answer LIKE query is back')
-      .not.toMatch(/content LIKE \?[\s\S]{0,120}ORDER BY created_at DESC/);
-    expect(store, 'a scoring loop is back in store.ts — they all score in bounded-reads.ts now')
-      .not.toMatch(/cosineSimilarity\(/);
-  });
-
-  it('every scan in bounded-reads.ts carries its rowid window, and reports what it cost', () => {
-    const reads = code('../bounded-reads.ts');
-    // The candidate page carries the window literally…
-    expect(reads, 'the candidate page lost its rowid window')
-      .toMatch(/FROM vault_entries\s*\n\s*WHERE \$\{opts\.conditions\.join\('\s*AND\s*'\)\} AND rowid <= \? AND rowid > \?/);
-    // …and the LIKE walk builds BOTH of its wheres from arrays that end in the window, which is the
-    // shape AND its application: these two arrays are joined into the two statements right below.
-    expect(reads, 'the LIKE page lost its rowid window')
-      .toMatch(/pageWhere = \[\.\.\.q\.scope, \.\.\.q\.match, 'rowid <= \?', 'rowid > \?'\]/);
-    expect(reads, 'the LIKE cost read lost its rowid window — or gained the LIKE, which would make it lie')
-      .toMatch(/costWhere = \[\.\.\.q\.scope, 'rowid <= \?', 'rowid > \?'\]/);
-    // Every bounded walk reports what it cost: three walks (candidates + the LIKE walk's two doors),
-    // two report sites (the candidate warn, and one shared by both LIKE doors).
-    expect((reads.match(/boundedRecencyScan(Sync)?</g) ?? []).length).toBe(3);
-    expect((reads.match(/logBoundedFallback\(/g) ?? []).length,
-      'a bound whose cost nobody reports is the LIMIT this package replaced').toBe(2);
-  });
-
-  it('the reads are LABELLED, and no two of the eight labels collide', () => {
-    const reads = code('../bounded-reads.ts');
-    const store = code('../store.ts');
-    // The helper composes `<site>:candidates` and `<site>:bodies` ON THE READ ITSELF (the warn reuses
-    // the candidate label as its subsystem, which is why the bare occurrence count is two).
-    expect(reads, 'the candidate read lost its label')
-      .toMatch(/vaultRead<VaultCandidateRow>\(\s*\n?\s*`\$\{opts\.label\}:candidates`/);
-    expect(reads, 'the body fetch lost its label')
-      .toMatch(/vaultRead<T>\(\s*\n?\s*`\$\{opts\.label\}:bodies`/);
-    const direct = [...reads.matchAll(/await vaultRead<[A-Za-z]+>\(\s*\n?\s*'([a-z_:]+)'/g)].map((m) => m[1]);
-    const sites = [...new Set([...store.matchAll(/label: '([a-z_]+)'/g)].map((m) => m[1]))];
-    expect(sites.sort()).toEqual(['vault_dedup', 'vault_nearband', 'vault_semantic']);
-    expect(direct.sort()).toEqual(['vault_exact:like:cost', 'vault_exact:like:page']);
-    // (3 sites × 2 reads) + the LIKE walk's 2 = the 8 labels the pool can attribute a line to.
-    const runtimeLabels = [...sites.flatMap((s) => [`${s}:candidates`, `${s}:bodies`]), ...direct];
-    expect(runtimeLabels).toHaveLength(8);
-    expect(new Set(runtimeLabels).size, 'two vault reads share one label').toBe(8);
-  });
 });

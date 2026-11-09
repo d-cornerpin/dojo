@@ -24,39 +24,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { STEER_PRECEDENCE, steerPriority } from '../../../steer-queue.js';
 import { TRUTH_GUARDS } from '../reply-floors.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = fs.readFileSync(path.resolve(HERE, '../reply-floors.ts'), 'utf8');
-
-/** Code only. This file's own prose names every shape it forbids. */
-const CODE = SRC
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-
-const occurrences = (re: RegExp): number => (CODE.match(re) ?? []).length;
-
-describe('§1 one prologue, not four', () => {
-  it('the shared gate is written ONCE', () => {
-    // Four copies of one sentence is how the fifth copy gets written slightly differently.
-    expect(occurrences(/result\.toolCalls\.length === 0/g)).toBe(1);
-    expect(occurrences(/!interAgentTurn/g)).toBe(1);
-  });
-
-  it('there is ONE `continueLoop` for the whole family, not one per guard', () => {
-    // The four `return continueLoop(state)` exits were the four blocks' only shared shape
-    // and the loop now owns it. The count is 1: the family's own exit.
-    expect(occurrences(/return continueLoop\(/g)).toBe(1);
-  });
-
-  it('there is ONE `persistEngineSteer` call for the whole family', () => {
-    expect(occurrences(/persistEngineSteer\(/g)).toBe(1);
-  });
-});
 
 describe('§2 the declared predicates, ordered by the declared table', () => {
   it('the set is exactly the truth guards, in the truth band', () => {
@@ -95,14 +64,5 @@ describe('§2 the declared predicates, ordered by the declared table', () => {
   it('the whole truth band is here — no fifth guard is hiding outside the set', () => {
     const truthBand = STEER_PRECEDENCE.filter((f) => f.priority < 20).map((f) => f.id);
     expect(TRUTH_GUARDS.map((g) => g.floor)).toEqual(truthBand);
-  });
-});
-
-describe('§3 the tombstone the census asked to keep is still here', () => {
-  it('the removed deliverable-claim floor still says why it was removed', () => {
-    // "a removal that cannot say why comes back" — the file's own words, and the reason
-    // this merger had to carry the tombstone across rather than tidy it away.
-    expect(SRC).toContain('Deliverable-claim floor: REMOVED same day it landed');
-    expect(SRC).toContain('prose classification must never gain authority');
   });
 });

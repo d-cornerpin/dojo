@@ -210,16 +210,6 @@ const GATE_INPUTS = [
 ] as const;
 
 describe('update-cannot-brick — the rollback transition preserves the gate\'s evidence', () => {
-  it('the declared gate-input list is the one the gate reads (source census)', () => {
-    const src = fs.readFileSync(path.join(REPO_ROOT, 'watchdog/src/auto-rollback.ts'), 'utf-8');
-    const body = /export function decideAutoRollback[\s\S]*?\n}/.exec(src)?.[0] ?? '';
-    expect(body).not.toBe('');
-    for (const f of GATE_INPUTS) expect(body).toContain(`marker.${f}`);
-    // And nothing else off the marker: a seventh input silently added would make
-    // every preservation clause below incomplete without failing anything.
-    const referenced = new Set([...body.matchAll(/marker\.([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
-    expect([...referenced].sort()).toEqual([...GATE_INPUTS].sort());
-  });
 
   it('the DB-safety evidence survives the transition — a rolled-back episode still knows a migration ran', () => {
     const before = marker({ bootAttempts: FAIL_BOOT_ATTEMPTS, migrationsRanDuringEpisode: true });

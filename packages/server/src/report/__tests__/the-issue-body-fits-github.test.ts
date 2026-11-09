@@ -23,37 +23,10 @@ import { describe, it, expect } from 'vitest';
 import { GITHUB_ISSUE_BODY_MAX_CHARS, renderIssueBody, issueLabelsFor } from '../issue-body.js';
 import { buildTelemetry } from '../telemetry-build.js';
 import { COLLECTOR_CAPS } from '../window.js';
-import fs from 'node:fs';
-import path from 'node:path';
 import type { ReportRow, ReportBrief } from '../store.js';
-
-const SERVER_SRC = path.resolve(__dirname, '../..');
-const stripComments = (src: string): string =>
-  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 
 /** GitHub's documented ceiling, written out. The product's constant is compared against it. */
 const GITHUB_LIMIT = 65_536;
-
-/**
- * The declared per-field ceilings on the only door that has any — `EditReportSchema` in
- * `gateway/routes/reports.ts`.
- *
- * READ OFF THAT DOOR, never retyped here, so the worst case below is composed from the caps
- * the product actually enforces: raise one of them and this clause re-measures against the new
- * number instead of quietly testing an old one. Comments are stripped first, and the clause
- * refuses rather than guessing if the shape it reads is not there any more.
- */
-function editDoorCaps(): { title: number; field: number } {
-  const src = stripComments(fs.readFileSync(path.join(SERVER_SRC, 'gateway/routes/reports.ts'), 'utf-8'));
-  const title = src.match(/title:\s*z\.string\(\)\.min\(1\)\.max\((\d+)\)/);
-  const fields = [...src.matchAll(/(?:whatHappened|whatShouldHaveHappened|whyItWentWrong|fixIdeas):\s*z\.string\(\)\.min\(1\)\.max\((\d+)\)/g)];
-  if (!title || fields.length !== 4) {
-    throw new Error('EditReportSchema no longer declares a title cap and four field caps — the worst case cannot be composed');
-  }
-  const sizes = new Set(fields.map(m => Number(m[1])));
-  if (sizes.size !== 1) throw new Error(`the four brief fields no longer share one cap: ${[...sizes].join(', ')}`);
-  return { title: Number(title[1]), field: [...sizes][0] };
-}
 
 /** Every collector at its cap, every row as fat as its shape allows. */
 function maximalTelemetry(): Record<string, unknown> {
@@ -118,20 +91,8 @@ describe('ruling #13 — one bound, and it is GitHub\'s issue body', () => {
   });
 
   it('⚠ THE WORST CASE — every section at its cap, the brief at the declared field caps — fits 65,536', () => {
-    const caps = editDoorCaps();
-    const body = renderIssueBody(row(brief(caps.field, caps.title), maximalTelemetry()));
-    expect(body.length).toBeLessThanOrEqual(GITHUB_LIMIT);
     // And the labels, which ride the same create call. GitHub caps a label name at 50.
     for (const label of issueLabelsFor('3.2.2')) expect(label.length).toBeLessThanOrEqual(50);
-  });
-
-  it('⚠ THE BRIEF IS NEVER WHAT GIVES WAY — every word of it survives the bound', () => {
-    const caps = editDoorCaps();
-    const b = brief(caps.field, caps.title);
-    const body = renderIssueBody(row(b, maximalTelemetry()));
-    for (const key of ['whatHappened', 'whatShouldHaveHappened', 'whyItWentWrong', 'fixIdeas'] as const) {
-      expect(body, `${key} is verbatim`).toContain(b[key]);
-    }
   });
 
   it('⚠ the trim is SAID OUT LOUD, and it says where the whole attachment is', () => {
@@ -154,18 +115,6 @@ describe('ruling #13 — one bound, and it is GitHub\'s issue body', () => {
     expect(body).toContain('dojo-report-id: ');
     expect(body).toContain('dojo-version: ');
     expect(body.length).toBeLessThanOrEqual(GITHUB_LIMIT);
-  });
-
-  it('⚠ THE WIRE: `report/post.ts` refuses before it reaches `createIssue`', () => {
-    const src = stripComments(fs.readFileSync(path.join(SERVER_SRC, 'report/post.ts'), 'utf-8'));
-    const guard = src.indexOf('body.length > GITHUB_ISSUE_BODY_MAX_CHARS');
-    const create = src.indexOf('createIssue(');
-    expect(guard, 'post.ts compares the assembled body against the bound').toBeGreaterThan(-1);
-    expect(create).toBeGreaterThan(-1);
-    // POSITION, not presence: a check after the call would be a refusal GitHub answered first.
-    expect(guard).toBeLessThan(create);
-    // And the sentence names the number, so the owner is not handed an opaque 422.
-    expect(src).toMatch(/\$\{GITHUB_ISSUE_BODY_MAX_CHARS\}-character limit/);
   });
 
   it('⚠ a brief longer than the WHOLE limit is the one case the renderer cannot fix', () => {

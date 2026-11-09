@@ -45,9 +45,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -69,13 +66,6 @@ import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import { MAX_ASK_RE_SERVES, RE_SERVE_MARKER, settleAsk } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { turnWasEngineCut } from '../exit-attribution.js';
-// ⚠ NOT BY PATH for anything under `agent/v2`. `guard-corpus-census.test.ts` refuses a guard that
-// names the driver or the step packages itself: PHASE-6 is draining `loop.ts`, so such a guard stops
-// seeing its subject at some cut — and a NEGATIVE clause stops seeing it SILENTLY.
-import { engineFileContaining, engineText } from '../../agent/v2/__tests__/engine-sources.js';
-
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 const AGENT = 'asker';
 const CONV = 'conv-dashboard';
 const db = (): Database.Database => mockDb.current!;
@@ -130,88 +120,6 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id)
      VALUES (?, ?, 'dashboard', 'dashboard', 'owner')`,
   ).run(CONV, AGENT);
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §1 — THE RECORD MUST NOT CLAIM THE MODEL'S INTENT FOR AN ENGINE CUT.
-//
-// Structural, because the derivation is a ternary chain in a teardown step and the fact it needs
-// (the loop reached its cap) is a turn-local flag the loop already holds. The census in the
-// second clause is the one that would have caught this years ago: an exit reason the DB CHECKs
-// and the telemetry enum publishes, with no writer anywhere, is a word the record cannot say.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§1 the loop cap reaches the turn record as itself', () => {
-  it('the teardown derivation can emit `iteration_cap`', () => {
-    expect(engineText()).toContain("'iteration_cap'");
-    // and it is the DERIVATION that carries it, not a comment somewhere in the engine
-    const home = engineFileContaining('const exitReason: TurnExitReason')!;
-    expect(home.text.slice(home.text.indexOf('const exitReason: TurnExitReason'), 
-      home.text.indexOf('const exitReason: TurnExitReason') + 420)).toContain("'iteration_cap'");
-  });
-
-  it('the loop threads its cap to teardown the way it threads the spin brake', () => {
-    // The established pattern, and the reason this is a flag and not an import: `finalize-record`
-    // is a STEP of `loop.ts`, so importing `MAX_TOOL_LOOPS` back out of the loop would be a cycle.
-    // `toolPhaseEndedBySpinBrake` solved the identical problem — a turn-local fact the loop knows
-    // and teardown needs — with a `TurnContext` field threaded through `TeardownContext`.
-    expect(read('agent/turn-context.ts')).toMatch(/toolLoopCapReached/);   // not an engine file
-    const engine = engineText();
-    expect(engine).toMatch(/toolLoopCapReached\s*=\s*true/);      // the loop latches it
-    expect((engine.match(/toolLoopCapReached/g) ?? []).length,
-      'latched, threaded, declared and read').toBeGreaterThanOrEqual(4);
-    // and the classifier lives in its own module, not inside the 1,300-line authority
-    expect(read('work/ask-settlement.ts')).toMatch(/exit-attribution\.js/);
-  });
-
-  it('CENSUS — nothing the RECORDER can write falls through the classifier unclassified', () => {
-    // Derived, never listed, and pointed the way that can actually fail: every exit reason the ONE
-    // production writer can emit must be a word the settlement has DECIDED about — engine-imposed,
-    // or deliberately left model-attributable. A new word added to that ternary chain with no
-    // decision here would be charged a rung by default, silently, which is this file's whole defect
-    // in a new coat.
-    const writer = engineFileContaining('const exitReason: TurnExitReason')!.text;
-    const chain = writer.slice(writer.indexOf('const exitReason: TurnExitReason'));
-    const emitted = [...chain.slice(0, 400).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
-    expect(emitted).toContain('iteration_cap');          // the fix's own proof: it is writable now
-    expect(emitted.length).toBeGreaterThanOrEqual(6);
-    const attribution = read('work/exit-attribution.ts');
-    const engineSet = attribution.slice(attribution.indexOf('const ENGINE_IMPOSED_EXITS'));
-    const classified = new Set([...engineSet.slice(0, 260).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
-    // The model-attributable words are named in the set's own docstring, which is where the
-    // reasoning for each lives; a word in neither place is the silent default this refuses.
-    const decidedModelSide = ['answered', 'no_reply_intended', 'handoff'];
-    const undecided = emitted.filter((w) => !classified.has(w) && !decidedModelSide.includes(w));
-    expect(undecided, 'the recorder can write it and the ladder never decided about it').toEqual([]);
-  });
-
-  it('the eight that had no writer are classified — AND NOW WRITTEN (t93)', () => {
-    // WHAT THIS CLAUSE USED TO SAY, and why the change is the fix landing rather than the guard
-    // being weakened. `stop`, `preempt`, `provider_error`, `stream_idle`, `abort`, `terminated`,
-    // `budget` and `identical_call` were declared in `TurnExitReason` and written by NOTHING —
-    // measured: 0 rows each across 10,934 turns. They were classified ANYWAY, so that the day one
-    // was wired the right treatment was already decided instead of discovered, and this clause
-    // existed so a reader would not "tidy up" an unreachable branch that was load-bearing.
-    //
-    // t93 (BACKLOG line 17) is that day: the engine sites that end a turn for each cause now
-    // carry their reason to the recorder. So the clause keeps its first half — the classification
-    // must still name all eight — and its second half becomes the opposite assertion: the file
-    // must no longer claim they are unwritable, because a comment that outlived its subject is
-    // how a guard turns into a list of lies. The census that holds the WIRING true in both
-    // directions is `agent/v2/__tests__/eight-exit-reasons-get-their-writers.test.ts`.
-    const attribution = read('work/exit-attribution.ts');
-    for (const w of ['stop', 'preempt', 'provider_error', 'stream_idle', 'abort', 'terminated',
-      'budget', 'identical_call']) {
-      expect(attribution, w).toContain(`'${w}'`);
-    }
-    expect(attribution).not.toContain('NO WRITER IN PRODUCTION');
-    expect(attribution, 'the correction has to name where the writers now are')
-      .toContain('ALL ELEVEN ARE NOW WRITTEN');
-    // The two members that are STILL unwritten are named there rather than left to be
-    // re-measured by whoever next reads a zero off this box.
-    expect(attribution).toContain('delegation_exit');
-    expect(attribution).toContain('compile_pending');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════

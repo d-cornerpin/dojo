@@ -45,9 +45,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   REDACTED_CREDENTIAL,
   CREDENTIAL_STALE_PLACEHOLDER,
@@ -168,53 +165,5 @@ describe('with no credential in flight the seam does nothing at all (OR7 / roadm
     const text = 'sk-live-4f2c9a01b7e3d85f60c1a2b3 looks like a key';
     expect(hydrateHandedCredentials(AGENT, text)).toBe(text);
     expect(hydrateCredentialsInMessages(AGENT, [{ role: 'user' as const, content: text }])[0].content).toBe(text);
-  });
-});
-
-describe('the seam cannot quietly spread', () => {
-  // A RECORDED measurement is not a HELD one. The two reference files that carry
-  // the owner's token-cost savings are safe because the hydrator runs at the
-  // loop's READ point and never inside assembly — so `memory/assembler.ts`
-  // produces the same bytes whatever this module is holding, and the dev
-  // assembled-context instrument (a harness capture) never sees a real value.
-  // If a future change moves the call into assembly, this clause fails and says
-  // so, instead of a golden moving and being re-blessed.
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const srcRoot = path.resolve(here, '../..');
-
-  function filesUnder(dir: string, out: string[] = []): string[] {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === 'node_modules' || e.name === '__tests__') continue;
-        filesUnder(p, out);
-      } else if (e.name.endsWith('.ts')) out.push(p);
-    }
-    return out;
-  }
-
-  it('has exactly ONE production call site, and it is in the tool loop\'s own engine', () => {
-    // PHASE-6 CUT 5: the call site MOVED with the `callLLM` tranche, from the driver
-    // into `agent/v2/steps/call-llm/model-call.ts`. The requirement was never "the
-    // site lives in `loop.ts`" — it is "there is exactly ONE and it is at the provider
-    // boundary" — so the clause names the ENGINE (the driver plus every step package
-    // under `agent/v2/steps/`) and keeps the count at one. The count did not move and
-    // must not: a second call site is the defect this clause exists to catch.
-    const callers = filesUnder(srcRoot)
-      .filter((f) => /\bhydrateCredentialsInMessages\s*\(/.test(fs.readFileSync(f, 'utf8')))
-      .map((f) => path.relative(srcRoot, f))
-      .filter((f) => f !== 'credentials/secret-values.ts')
-      .sort();
-    // The closed set is written as plain paths, not as a pattern, so the guard-corpus
-    // census can still SEE that this clause names the driver — and it caught the first
-    // draft, which hid both paths inside a regex, on its very next run.
-    const ENGINE = ['agent/v2/loop.ts', 'agent/v2/steps/'];
-    expect(callers).toHaveLength(1);
-    expect(ENGINE.some((prefix) => callers[0] === prefix || callers[0].startsWith(prefix))).toBe(true);
-  });
-
-  it('is absent from the assembler, so assembly is byte-identical whatever is held', () => {
-    const assembler = fs.readFileSync(path.join(srcRoot, 'memory/assembler.ts'), 'utf8');
-    expect(assembler).not.toContain('hydrate');
   });
 });

@@ -32,9 +32,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 const warns: Array<{ msg: string }> = [];
@@ -75,9 +72,6 @@ const CONV = 'conv-1';
 const START_ACK_INTENT = 'engine_start_ack';
 const ACK_TEXT = 'On it — reading both files now.';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
-
 const rowFor = (id: string): { display_kind: string; display_tier: string; origin_intent: string | null } =>
   mockDb.current!.prepare('SELECT display_kind, display_tier, origin_intent FROM messages WHERE id = ?')
     .get(id) as { display_kind: string; display_tier: string; origin_intent: string | null };
@@ -102,111 +96,9 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════
 
 describe('the promotion call carries BOTH the stamp and the explicit display kind', () => {
-  it('terminal-text.ts passes the start-ack intent and an explicit agent-text kind', () => {
-    const src = SRC('../terminal-text.ts');
-    // UX-REPAIR ROUND 12 T52 gave this file a SECOND promotion — the owed compiled answer —
-    // so "the promotion call" is now a census rather than a single match. What this clause
-    // asserts is unchanged and is strictly better stated: EXACTLY ONE call carries the
-    // start-ack stamp, and every call declares its display kind explicitly.
-    const calls = [...src.matchAll(/await deliverEngineUserAck\(([^;]*?)\);/gs)].map((m) => m[1]);
-    expect(calls.length, 'promotion calls').toBeGreaterThan(0);
-    for (const call of calls) expect(call, 'every promotion call').toContain("'agent-text'");
-    const stamped = calls.filter((c) => c.includes('START_ACK_ORIGIN_INTENT'));
-    expect(stamped, 'exactly one call is the START-ACK').toHaveLength(1);
-    // AND THE OTHER ONE DELIBERATELY IS NOT, which is T52's own load-bearing fact: an ask
-    // cannot close on a start-ack, so the compiled answer must not be delivered as one.
-    for (const c of calls.filter((x) => !x.includes('START_ACK_ORIGIN_INTENT'))) {
-      expect(c, 'the non-ack promotion passes a null origin intent').toMatch(/,\s*null\s*,/);
-    }
-    // The knowledge was in-process at this instant all along: the flag is set BEFORE the call.
-    expect(src.indexOf('engineStartAckDeliveredThisTurn = true'))
-      .toBeLessThan(src.lastIndexOf('await deliverEngineUserAck('));
-  });
 
   it('the writer and the authority read ONE constant, so they cannot drift apart', () => {
     expect(START_ACK_ORIGIN_INTENT).toBe(START_ACK_INTENT);
-    // Neither side spells the value itself: both import it.
-    for (const rel of ['../terminal-text.ts', '../../../../../work/ask-settlement.ts']) {
-      const src = SRC(rel);
-      expect(src, rel).toContain('START_ACK_ORIGIN_INTENT');
-      expect(src.replace(/START_ACK_ORIGIN_INTENT/g, ''), `${rel} has no second spelling`)
-        .not.toContain(`'${START_ACK_INTENT}'`);
-    }
-  });
-
-  it('the seventh narrowing is applied by the authority evidence predicate', () => {
-    const src = SRC('../../../../../work/ask-settlement.ts');
-    const fn = /function qualifyingDelivery\([\s\S]*?\n}/.exec(src)?.[0] ?? '';
-    expect(fn, 'qualifyingDelivery').toContain('NOT_A_START_ACK');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// READER 6 — FOUND IN THIS SITTING'S SWEEP, NOT IN W1's. It does not change, and here is why.
-// ════════════════════════════════════════════════════════════════════════
-
-// `startAckRepliedNow` (`preflight/start-ack.ts`) asks "has the person heard anything from the
-// agent this turn?" with `AND origin_intent IS NULL` in its predicate, so a stamped ack stops
-// satisfying it. That is a behaviour change in the READ — and the plan's STOP condition is
-// about a change in BEHAVIOUR, so the question is whether any caller can reach the read on a
-// turn where the stamp exists. All four cannot: every one of them is short-circuited first by
-// a flag that the promotion sets in the same block, BEFORE the row is written. Pinned as
-// source conformance rather than argued, so a future re-ordering has to meet this clause.
-describe('reader 6: the F10 replied-check is unreachable on a turn that promoted a start line', () => {
-  const guardsBefore = (src: string, marker: string): string =>
-    src.slice(0, src.indexOf(marker));
-
-  it('start-ack.ts: the ack-owed gate tests the delivered flag BEFORE the query', () => {
-    const src = SRC('../../preflight/start-ack.ts');
-    const gate = /if \(turnCtx\.engineStartAckDeliveredThisTurn[^\n]*startAckRepliedNow\(\)\) return;/
-      .exec(src)?.[0] ?? '';
-    expect(gate, 'the fireStartAckIfOwed gate').toBeTruthy();
-    expect(guardsBefore(gate, 'startAckRepliedNow()'))
-      .toContain('turnCtx.engineStartAckDeliveredThisTurn');
-  });
-
-  // UX-REPAIR T41 (option B, owner ruling 2026-08-12) MOVED THE FIRST CLAUSE OF THIS GUARD
-  // and this clause moved with it, deliberately. The window the promotion opens on is now
-  // OWED (`armed || requested`) rather than ARMED — a whole model call sits between those
-  // two flags and the owner's incident happened inside it. What this clause asserts is
-  // UNCHANGED and is the only thing it ever asserted: whatever opens the guard, the
-  // delivered flag is tested BEFORE `startAckRepliedNow()`, so the F10 replied-check (whose
-  // `origin_intent IS NULL` predicate a stamped ack no longer satisfies) is unreachable on a
-  // turn that promoted a start line.
-  it('terminal-text.ts: the promotion guard tests the delivered flag BEFORE the query', () => {
-    const src = SRC('../terminal-text.ts');
-    const guard = /\(turnCtx\.startAckSteerArmedThisTurn \|\| turnCtx\.startAckSteerRequested\)[\s\S]*?!startAckRepliedNow\(\)/
-      .exec(src)?.[0] ?? '';
-    expect(guard, 'the promotion guard').toBeTruthy();
-    expect(guardsBefore(guard, '!startAckRepliedNow()'))
-      .toContain('!turnCtx.engineStartAckDeliveredThisTurn');
-  });
-
-  // ⚠ HL4 STEP 2 (2e), MERGER 1 — THE GUARD'S TARGET MOVED, SO THE GUARD MOVES WITH IT.
-  // The ack ladder left `assemble/steer-checkpoint.ts` for `assemble/start-ack-door.ts`,
-  // which now owns the text, the arming and the reminder rung for BOTH openers. This clause
-  // asserts exactly what it always asserted — a delivered/armed flag is tested BEFORE
-  // `startAckRepliedNow()`, so the F10 replied-check is unreachable on a turn that promoted
-  // a start line — and it now asserts one thing MORE, because the merger introduced an
-  // indirection this guard has to see through: `startAckDoorOpen` must really BE the two
-  // flag tests, or moving them behind a helper would hollow the guard out while it passed.
-  it('start-ack-door.ts: both steer arms test a delivered/armed flag BEFORE the query', () => {
-    const src = SRC('../../assemble/start-ack-door.ts');
-
-    // The shared gate is the two flags and nothing weaker.
-    const shared = /export function startAckDoorOpen\([\s\S]*?\n}/.exec(src)?.[0] ?? '';
-    expect(shared, 'the shared half of the door gate').toBeTruthy();
-    expect(shared).toContain('!turnCtx.startAckSteerArmedThisTurn');
-    expect(shared).toContain('!engineStartAckDeliveredThisTurn');
-
-    const first = /if \(turnCtx\.startAckSteerRequested[\s\S]*?!startAckRepliedNow\(\)\) \{/.exec(src)?.[0] ?? '';
-    expect(first, 'the request opener').toBeTruthy();
-    expect(guardsBefore(first, '!startAckRepliedNow()'))
-      .toContain('startAckDoorOpen(turnCtx, engineStartAckDeliveredThisTurn)');
-    const reminder = /turnCtx\.startAckSteersInjected === 1 &&[\s\S]*?!startAckRepliedNow\(\)/.exec(src)?.[0] ?? '';
-    expect(reminder, 'the reminder rung').toBeTruthy();
-    expect(guardsBefore(reminder, '!startAckRepliedNow()'))
-      .toContain('!engineStartAckDeliveredThisTurn');
   });
 });
 

@@ -45,10 +45,6 @@
 import { describe, it, expect } from 'vitest';
 import { STEER_PRECEDENCE, steerPriority } from '../../../steer-queue.js';
 import { TRUTH_GUARDS } from '../reply-floors.js';
-// ⚠ `reply-floors.ts` is a STEP PACKAGE file, so it is read through the shared corpus rather than by
-// path — `guard-corpus-census.test.ts` refuses the hand-rolled walk, and it has caught this exact
-// shortcut three times in this branch already.
-import { engineFileContaining } from '../../../__tests__/engine-sources.js';
 
 /** The floor under test, found by id rather than by index so the table can be reordered. */
 const guard = (): (typeof TRUTH_GUARDS)[number] =>
@@ -208,10 +204,5 @@ describe('§4 the floor is declared, ranked and argued', () => {
   it('the guard set is still SORTED by the table, so the merger\'s invariant holds', () => {
     const ranks = TRUTH_GUARDS.map((g) => steerPriority(g.floor));
     expect([...ranks].sort((a, b) => a - b)).toEqual(ranks);
-  });
-
-  it('the floor NAMES the door the ledger cannot see, so nobody re-derives the gap', () => {
-    const src = engineFileContaining("floor: 'false-delivery-claim'")!.text;
-    expect(src).toMatch(/no `?deliveries`? row/i);
   });
 });

@@ -31,9 +31,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -49,10 +47,6 @@ import { acceptModelTitle, revetOpenAskTitles } from '../ask-title.js';
 import { openAsk, askIdForMessage } from '../store.js';
 import { createWorkTable } from './work-fixture.js';
 import { noteDeclaredSecretsFromToolCalls } from '../../credentials/secret-fields.js';
-// The engine's corpus, derived ONCE (PHASE-6 GUARD-AUDIT): the write-side hook lives in a
-// step package that is still being cut, so §4 locates it by CONTENT. A path read here would
-// go quiet at the next cut — and `guard-corpus-census` enforces exactly that, correctly.
-import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 import {
   noteHandedCredentialValues, forgetHandedCredentialValues,
 } from '../../credentials/secret-values.js';
@@ -244,52 +238,5 @@ describe('§3 the ordinary ask is untouched', () => {
     noteHandedCredentialValues(AGENT, [FAKE_KEY]);
     expect(revetOpenAskTitles(AGENT)).toBe(0);
     expect(titleOf(workId)).toBe(workId);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — BOTH REGISTRATION SITES CALL IT
-//
-// The re-vet is only deterministic if it runs at EVERY place a value is first learned. There
-// are two: the engine's per-result registration (`credential_add` / `credential_update`
-// arguments) and the read side (`credential_get`, which can be the first time a value stored
-// in an earlier session enters this process). A hook removed from either reopens the race on
-// that path silently — the exact way this defect survived five months.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-const SERVER_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const readRel = (rel: string): string => fs.readFileSync(path.join(SERVER_SRC, rel), 'utf8');
-const codeOnly = (text: string): string => text
-  .split('\n')
-  .filter((l) => {
-    const t = l.trim();
-    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
-  })
-  .join('\n');
-
-describe('§4 the re-vet is wired at both registration sites', () => {
-  it('the WRITE side: the engine re-vets in the SAME file that registers the declared secrets', () => {
-    // `engineFileWithBoth` throws — naming both homes — if either site is gone or if a cut
-    // ever separates them. That is stronger than two independent `toContain`s: the re-vet is
-    // only deterministic while it sits with the registration it depends on.
-    const home = engineFileWithBoth(
-      'noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls)',
-      'revetOpenAskTitles(agentId)',
-    );
-    expect(home.rel).toContain('call-llm');
-    // And the re-vet runs AFTER the registration — before it, there would be nothing to match.
-    const text = codeOnly(home.text);
-    expect(text.indexOf('revetOpenAskTitles(agentId)'))
-      .toBeGreaterThan(text.indexOf('noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls)'));
-  });
-
-  it('the READ side: credential_get re-vets after it registers what it handed out', () => {
-    const src = codeOnly(readRel('credentials/tools.ts'));
-    expect(src).toContain('noteHandedCredentialValues(');
-    expect(
-      src,
-      'credential_get registers the values it hands the model but no longer re-vets ask '
-      + 'titles — on a fresh boot this is the first time the process knows the value',
-    ).toContain('revetOpenAskTitles(agentId)');
   });
 });

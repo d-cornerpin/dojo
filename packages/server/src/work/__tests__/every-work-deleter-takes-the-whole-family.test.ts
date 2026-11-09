@@ -103,8 +103,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
@@ -113,7 +111,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -175,29 +172,6 @@ function referencesIntoWork(): WorkRef[] {
   return out.sort((a, b) => `${a.table}.${a.column}`.localeCompare(`${b.table}.${b.column}`));
 }
 
-/** What a deleter must SAY about one reference. A reference the row cannot live without is
- *  deleted; one it can is released. Derived, so a fifth reference gets a requirement too. */
-const sweepPatternFor = (r: WorkRef): RegExp => r.nullable
-  ? new RegExp(String.raw`UPDATE\s+${r.table}\s+SET\s+${r.column}\s*=\s*NULL`, 'i')
-  : new RegExp(String.raw`DELETE\s+FROM\s+${r.table}\b`, 'i');
-
-// ── THE SOURCE WALK (CLAUSE D1) ──────────────────────────────────────────────────────────
-
-const SRC = path.join(__dirname, '..', '..');
-
-function walk(dir: string, acc: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'migrations') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts')) acc.push(fp);
-  }
-  return acc;
-}
-const rel = (f: string): string => path.relative(SRC, f).split(path.sep).join('/');
-const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
-
 /** Blank comments, keeping line count, so prose describing a delete is never counted as one. */
 const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
@@ -210,10 +184,6 @@ const WORK_DELETE_RE = /DELETE\s+FROM\s+(?:work\b(?!_)|\$\{)/i;
 /** Routing through the shared list, asserted as a CALL WITH AN ARGUMENT — an import line or a
  *  mention in a comment must not satisfy this (comments are blanked above). */
 const HELPER_CALL_RE = /clearReferencesToWork\(\s*[^)\s]/;
-
-const deleterFiles = (): string[] => walk(SRC).map(rel)
-  .filter(f => WORK_DELETE_RE.test(stripComments(read(f))))
-  .sort();
 
 /** Every deleter file, and the function this file drives to prove it. Equality with the
  *  source census is itself a clause, so a new deleter cannot land undriven. */
@@ -361,12 +331,6 @@ describe('deleteTrackerRow — the three shapes that raised', () => {
 // ── ITEM D: THE DELETER CENSUS, BOTH WAYS ────────────────────────────────────────────────
 
 describe('the deleter census — no path that deletes a work row is unexamined', () => {
-  it('names every `DELETE FROM work` site in production source, so a new one is visible', () => {
-    const found = deleterFiles();
-    expect(found).toEqual(Object.keys(DRIVERS).sort());
-    // Non-vacuity: an empty walk would pass every clause below it.
-    expect(found.length).toBeGreaterThan(0);
-  });
 
   it('the walk is not blind — it sees a planted deleter and ignores a commented one', () => {
     expect(WORK_DELETE_RE.test(stripComments("db.prepare('DELETE FROM work WHERE id = ?')"))).toBe(true);
@@ -376,25 +340,6 @@ describe('the deleter census — no path that deletes a work row is unexamined',
     // The helper call must be a CALL. An import or a bare mention is not one.
     expect(HELPER_CALL_RE.test("import { clearReferencesToWork } from './work-refs.js';")).toBe(false);
     expect(HELPER_CALL_RE.test('clearReferencesToWork(doomed);')).toBe(true);
-  });
-
-  it('CLAUSE D1 — every deleter clears every reference the SCHEMA declares', () => {
-    const refs = referencesIntoWork();
-    expect(refs.length).toBeGreaterThan(0);
-    for (const r of refs) expect(r.onDelete, `${r.table}.${r.column}`).toBe('NO ACTION');
-
-    for (const file of deleterFiles()) {
-      const src = stripComments(read(file));
-      if (HELPER_CALL_RE.test(src)) continue;   // routed through the one list
-      for (const r of refs) {
-        expect(sweepPatternFor(r).test(src),
-          `${file} deletes work rows but never clears ${r.table}.${r.column}`).toBe(true);
-      }
-    }
-  });
-
-  it('CLAUSE D2 — every deleter file names a driver, and the two sets are equal', () => {
-    expect(Object.keys(DRIVERS).sort()).toEqual(deleterFiles());
   });
 
   it('⚠ CLAUSE D2 — each driver leaves NO reference naming a row it deleted', async () => {

@@ -9,7 +9,7 @@ vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
   const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t268-window-tag');
-  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs), isTestRun: (): boolean => true };
+  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs) };
 });
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../../db/connection.js', () => ({

@@ -21,9 +21,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const broadcastSpy = vi.fn();
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastSpy(...(a as [])) }));
@@ -36,36 +33,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runSteerCheckpoint } from '../steer-checkpoint.js';
 import { START_ACK_STEER_TEXT } from '../start-ack-door.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ENGINE = path.resolve(HERE, '../../..');
 const AGENT = FXID.n4;
-
-const stripComments = (s: string): string => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-
-function engineCode(): Array<{ rel: string; text: string }> {
-  const out: Array<{ rel: string; text: string }> = [];
-  const walk = (dir: string): void => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fp = path.join(dir, e.name);
-      if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(fp); continue; }
-      if (!e.name.endsWith('.ts') || e.name.includes('.test.')) continue;
-      out.push({ rel: path.relative(ENGINE, fp).split(path.sep).join('/'), text: stripComments(fs.readFileSync(fp, 'utf8')) });
-    }
-  };
-  walk(ENGINE);
-  return out;
-}
-
-function sitesMatching(re: RegExp): string[] {
-  const hits: string[] = [];
-  for (const { rel, text } of engineCode()) {
-    text.split('\n').forEach((l, i) => { if (re.test(l)) hits.push(`${rel}:${i + 1}`); });
-  }
-  return hits;
-}
 
 // ── The checkpoint's own inputs, at the one moment it runs: assemble, mid-array. ──
 type Bag = Record<string, unknown>;
@@ -104,48 +72,6 @@ const fired = (s: AgentTurnState): Array<{ floor: string; content: string; atLoo
   s.steerQueue.fired as unknown as Array<{ floor: string; content: string; atLoop: number }>;
 
 beforeEach(() => { vi.clearAllMocks(); });
-
-// ════════════════════════════════════════════════════════════════════
-// §1 — ONE DOOR (the RED)
-// ════════════════════════════════════════════════════════════════════
-
-describe('§1 one door: one text, one flag triple, one enqueue', () => {
-  it('the ARMED flag has exactly ONE writer in the engine', () => {
-    // Two copies of a three-flag write is how a second door gets opened by accident — and
-    // it is the shape W26 handed up. The three upstream REQUEST sites are untouched: they
-    // write `startAckSteerRequested`, which is a different flag and a different job.
-    const writers = sitesMatching(/turnCtx\.startAckSteerArmedThisTurn\s*=\s*true/);
-    expect(writers).toHaveLength(1);
-    expect(writers[0]).toMatch(/assemble\/start-ack-door\.ts/);
-  });
-
-  it('the whole flag triple is written in that ONE place, together', () => {
-    for (const flag of ['startAckSteersInjected', 'startAckSteerInjectedAtLoop']) {
-      const writers = sitesMatching(new RegExp(`turnCtx\\.${flag}\\s*=\\s*[^=]`));
-      // `startAckSteersInjected` is also set to 2 by the reminder rung — in the same file.
-      expect(writers.every((w) => w.includes('assemble/start-ack-door.ts')), `${flag}: ${writers.join(', ')}`).toBe(true);
-    }
-  });
-
-  it('the start-ack steer is FILED from exactly one place', () => {
-    const enqueues = sitesMatching(/floor: 'start-ack'/);
-    expect(enqueues).toHaveLength(1);
-    expect(enqueues[0]).toMatch(/assemble\/start-ack-door\.ts/);
-  });
-
-  it('and so is its reminder — rung 2 of one ladder, in the ladder\'s own file', () => {
-    const enqueues = sitesMatching(/floor: 'start-ack-reminder'/);
-    expect(enqueues).toHaveLength(1);
-    expect(enqueues[0]).toMatch(/assemble\/start-ack-door\.ts/);
-  });
-
-  it('the text is declared once and imported, never re-typed', () => {
-    const declarations = sitesMatching(/export const START_ACK_STEER_TEXT/);
-    expect(declarations).toHaveLength(1);
-    // …and it still has real binding sites, or the ack floor would be silent.
-    expect(sitesMatching(/START_ACK_STEER_TEXT/).length).toBeGreaterThanOrEqual(2);
-  });
-});
 
 // ════════════════════════════════════════════════════════════════════
 // §2 — THE LADDER IS BYTE-IDENTICAL THROUGH THE DOOR

@@ -15,7 +15,7 @@ vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
   const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t268-density');
-  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs), isTestRun: (): boolean => true };
+  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs) };
 });
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -85,8 +85,6 @@ const summarize = (chars: number, modelId = 'm-std-writer'): Promise<unknown> =>
   agentId: 'a-fixture', modelId, systemPrompt: '',
   messages: [{ role: 'user', content: 'r'.repeat(chars) }], tools: false, purpose: 'memory_summarize', utilityTargetTokens: 5_000,
 });
-const providerReadings = (): unknown =>
-  mockDb.current!.prepare("SELECT measured_chars_per_token_prose AS prose, measured_chars_per_token AS dense FROM providers WHERE id = 'local-ollama'").get();
 
 describe('a long low-density input reaches the writer whole', () => {
   it('the Dojo\'s writer\'s window is sized at its measured density, and nothing is cut', async () => {

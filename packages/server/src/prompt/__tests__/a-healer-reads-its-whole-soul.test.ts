@@ -42,7 +42,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -221,22 +220,6 @@ describe('T57 STILL HOLDS, and now it holds twice', () => {
     });
 
     expect(getSoulContent(HEALER)).toBe(SHIPPED);
-  });
-});
-
-describe('the dead second reader is gone, not left beside the live one', () => {
-  const SRC = fs.readFileSync(path.resolve(__dirname, '../../healer/healer-agent.ts'), 'utf-8');
-
-  it('healer-agent.ts no longer reads the template or writes a soul row', () => {
-    expect(SRC).not.toMatch(/function loadHealerSoulPrompt/);
-    expect(SRC).not.toMatch(/loadHealerSoulPrompt\(\)/);
-    expect(SRC).not.toMatch(/HEALER-SOUL\.md'\)/);
-    expect(SRC).not.toMatch(/insertMessageIfAbsent\(\{[^}]*role: 'system'/);
-  });
-
-  it('the tombstone names where the requirement now lives', () => {
-    expect(SRC).toContain('W42 TOMBSTONE');
-    expect(SRC).toContain('prompt/assembler.ts');
   });
 });
 

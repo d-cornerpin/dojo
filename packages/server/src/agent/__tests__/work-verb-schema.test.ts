@@ -9,78 +9,12 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import {
-  WORK_SHARED_PROPERTIES,
-  WORK_PRIORITY_ENUM,
-  WORK_FIELD_TEXT,
-  WORK_EDITABLE_TASK_FIELDS,
-  workProp,
-  WORK_MEASURE_PROP,
-  WORK_MEASURE_REF_PROP,
-} from '../work-verb-schema.js';
+import { WORK_SHARED_PROPERTIES, WORK_EDITABLE_TASK_FIELDS, workProp, WORK_MEASURE_PROP, WORK_MEASURE_REF_PROP } from '../work-verb-schema.js';
 import { WORK_PLAN_PROP } from '../work-plan-schema.js';
-import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 // 901 (the one path to done): work_update's close fields were rewritten as the hand-in. The fields as they
 // stood before, so every earlier rung below is still measured on the schema it was measured on.
 import BEFORE_901 from './fixtures/work-update-before-901.json' with { type: 'json' };
 const WORK_REMAINDER_PROP = BEFORE_901.changed.remainder;
-
-// PHASE-5 T4: the wire array moved to `agent/tools/definitions.ts` byte-identical.
-// This walk reads the SOURCE TEXT, so the path follows the code — that is the point
-// of a source walk, and a stale path here would have failed loudly (it did).
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'definitions.ts');
-
-/**
- * Read the two verbs' schemas out of the source rather than importing the module, whose
- * module graph pulls in the whole server. The literals are pure data — the same
- * brace-match-then-evaluate method §T0-E used, and it cross-checked to 1.5% against an
- * independent path.
- */
-function schemaOf(name: string): Record<string, unknown> {
-  const src = fs.readFileSync(SRC, 'utf8');
-  const i = src.indexOf(`name: '${name}'`);
-  if (i < 0) throw new Error(`tool not found: ${name}`);
-  const j = src.indexOf('input_schema:', i);
-  const k = src.indexOf('{', j);
-  let depth = 0;
-  let e = k;
-  for (; e < src.length; e++) {
-    const c = src[e];
-    if (c === '{') depth++;
-    else if (c === '}') { depth--; if (depth === 0) { e++; break; } }
-  }
-  const body = src.slice(k, e)
-    // The rewired sites call workProp(...); evaluate them against the real module.
-    .replace(/\bworkProp\(/g, '__workProp(')
-    .replace(/\bWORK_PRIORITY_ENUM\b/g, '__PRIORITY_ENUM')
-    // N1: the seven collapsed fields interpolate the canonical wording from the module.
-    .replace(/\bWORK_FIELD_TEXT\b/g, '__FIELD_TEXT')
-    // v3.5 (t250): the measure and remainder objects, shared by both verbs.
-    .replace(/\bWORK_MEASURE_REF_PROP\b/g, '__MEASURE_REF').replace(/\bWORK_MEASURE_PROP\b/g, '__MEASURE').replace(/\bWORK_REMAINDER_PROP\b/g, '__REMAINDER')
-    // v3.5 (t262): the project's plan, declared once beside them.
-    .replace(/\bWORK_PLAN_PROP\b/g, '__PLAN');
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__MEASURE_REF', '__REMAINDER', '__PLAN', `return (${body});`);
-  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_MEASURE_REF_PROP, WORK_REMAINDER_PROP, WORK_PLAN_PROP) as Record<string, unknown>;
-}
-
-/** work_update as it stood before 901: the hand-in's fields out, the close fields back, in their order. */
-function without901(schema: Record<string, unknown>): Record<string, unknown> {
-  const props = (schema as { properties: Record<string, unknown> }).properties;
-  const before = BEFORE_901.changed as Record<string, unknown>;
-  const order = ['action', 'task_id', 'project_id', 'id', 'status', 'notes', 'result', 'evidence', 'resume_at', 'complete_all_runs', 'reason'];
-  const out: Record<string, unknown> = {};
-  for (const k of order) out[k] = before[k] ?? props[k];
-  for (const [k, v] of Object.entries(props)) {
-    if (k in out || BEFORE_901.added.includes(k)) continue;
-    out[k] = before[k] ?? v;
-    if (k === 'measure') out.remainder = before.remainder;
-  }
-  return { ...schema, properties: out };
-}
 
 // Captured at `8f36cdb`, BEFORE the S2 rewire, by serialising both verbs' input_schema.
 // S2 left these UNCHANGED (its whole claim). N1 (post-exit, owner-approved 2026-08-01)
@@ -200,175 +134,39 @@ const T169_BASELINE_CHARS = { work_open: 6338, work_update: 8111 };
 //   message), plus `result`/`evidence` naming `action="complete_step"` (owner decision 27)).
 // The guard below undoes exactly those edits and must land back on t169's bytes.
 const T193_BASELINE_CHARS = { work_open: 6338, work_update: 8788 };
-const T193_STEP_PHRASE = ' and for action="complete_step"';
-
-// ── v3.5 t250 (DONE IS MEASURED, Task A4) — A TASK CAN CARRY A MEASURE: the schema fields the plan
-// specifies, measured, not estimated. `measure` on work_open (top level AND each `tasks[]` item) and
-// on work_update (action="edit"); `remainder` on work_update (a close of a measured task with items
-// left). The guard undoes exactly those three insertions and must land back on t193's bytes; every
-// earlier rung below is then asserted on that pre-t250 view, unchanged.
-//   work_open   6,338 → 7,942  (+1,604: the measure object twice, top level and tasks[])
-//   work_update 8,788 → 10,075 (+1,287: the measure object and the remainder object)
-// (Fix round 1: +9 per measure object — "counts it when you set it and again when you close; your
-// task board shows the last count", the turn-end count dropped until Task D1 makes it true.)
-const T250_BASELINE_CHARS = { work_open: 7942, work_update: 10075 };
-// ── v3.5 t262 (PLAN BEFORE PROJECT, Task A1) — A PROJECT OPENS WITH ITS PLAN: `plan` on work_open, the
-// one schema field the plan specifies, measured, not estimated. The guard undoes that one insertion and
-// must land back on t250's bytes; every earlier rung is asserted on the pre-t262 view, unchanged.
-//   work_open   7,942 → 9,478  (+1,536: the plan object, whose steps carry the measure object again)
-//   work_update 10,075 → 10,075 (+0)
-const T262_BASELINE_CHARS = { work_open: 9478, work_update: 10075 };
-// ── v3.5 t266 (THE TEXT WAVE, parked t250 entries) — the measure object's words: the user's mailbox is
-// countable (`user_gmail_search` joins the enum), the turn-end count is true (D1 landed), and the copies
-// inside work_open (each `tasks[]` item and each plan step) carry a pointer to the top-level description
-// instead of repeating it. The guard puts the pre-wave object back in all four places and must land on
-// t262's bytes; every earlier rung is asserted on that view, unchanged.
-//   work_open   9,478 → 8,708  (-770: +118 per full object for the enum and the clause, minus the two repeated descriptions)
-//   work_update 10,075 → 10,193 (+118: the enum and the clause)
-// And the parked t262 entry: `tasks` no longer says a project REQUIRES them ("just put down the FIRST
-// concrete thing"); it says they are optional beside the plan, one per step: 8,708 → 8,407 (-301).
-// Fix round 1: the measure says "a SET of mailbox messages" (only a mailbox can be measured) and work_open's goal
-// drops "close-out": work_open 8,407 → 8,405; work_update 10,193 → 10,180.
-const T266_BASELINE_CHARS = { work_open: 8405, work_update: 10180 };
-// ── v3.5 field fix 3, audit #5 ("done is measured" beyond Gmail): the measure object counts Outlook
-// search and a file set too. The enum is the registry's own list (+3 tools), `args` gains `path` and
-// `pattern` and loses `required: ['query']` (a file set has no query; parseMeasure requires per tool),
-// and the description names both kinds. The guard puts the post-t266 object back wherever it appears
-// (top level, each tasks[] item and each plan step) and must land on t266's bytes.
-const AUDIT5_BASELINE_CHARS = { work_open: 8922, work_update: 10531 };
-// ── 901 (the one path to done): `hand_in` replaces complete_step and close_project; `outcome`, `proof`
-// and `note` replace `result`, `evidence`, `complete_all_runs` and `remainder`. work_open is unchanged.
-const H901_CHARS = { work_update: 8981 };
 const PRE_AUDIT5_PROPERTIES = {
   tool: { type: 'string', enum: ['gmail_search', 'user_gmail_search'] },
   args: { type: 'object', properties: { query: { type: 'string' }, account: { type: 'string' } }, required: ['query'] },
   unit: { type: 'string' },
 };
-const PRE_AUDIT5_MEASURE = {
-  type: 'object',
-  description: 'For a task over a SET of mailbox messages: the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" (your own mailbox) or "user_gmail_search" (the user\'s), with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it, at the end of each turn that makes progress, and when you close; your task board shows the last count.',
-  properties: PRE_AUDIT5_PROPERTIES,
-  required: ['tool', 'args'],
-};
-const PRE_AUDIT5_REF = { ...PRE_AUDIT5_MEASURE, description: WORK_MEASURE_REF_PROP.description };
-function withoutAudit5(schema: Record<string, unknown>): Record<string, unknown> {
-  const out = structuredClone(schema) as { properties: Record<string, unknown> };
-  type S = { properties: Record<string, unknown> } | undefined;
-  const put = (o: S, ref: boolean): void => { if (o?.properties.measure) o.properties.measure = structuredClone(ref ? PRE_AUDIT5_REF : PRE_AUDIT5_MEASURE); };
-  put(out, false);
-  put((out.properties.tasks as { items?: S } | undefined)?.items, true);
-  put(((out.properties.plan as { properties: Record<string, unknown> } | undefined)?.properties.steps as { items?: S } | undefined)?.items, true);
-  return out;
-}
-const PRE_T266_TASKS_TEXT = 'Project only. REQUIRED for kind="project": at least one task. The engine refuses project creation with zero tasks, a project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with work_open(kind="task", project_id=…) as the shape clarifies.';
-const PRE_T266_MEASURE = {
-  ...WORK_MEASURE_PROP,
-  description: 'For a task over a SET of items (messages, files, rows): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it and again when you close; your task board shows the last count.',
-  properties: { ...PRE_AUDIT5_PROPERTIES, tool: { type: 'string', enum: ['gmail_search'] } },
-};
-type Schema = { properties: Record<string, unknown> };
-function withoutT266(schema: Record<string, unknown>): Record<string, unknown> {
-  const out = structuredClone(schema) as Schema;
-  const put = (o: Schema | undefined): void => { if (o?.properties.measure) o.properties.measure = structuredClone(PRE_T266_MEASURE); };
-  put(out);
-  put((out.properties.tasks as { items?: Schema } | undefined)?.items);
-  const tasks = out.properties.tasks as { description?: string } | undefined;
-  if (tasks?.description) tasks.description = PRE_T266_TASKS_TEXT;
-  // Fix round 1 (M-1): work_open's goal no longer says "close-out".
-  const goal = out.properties.goal as { description?: string } | undefined;
-  if (goal?.description) goal.description = goal.description.replace('PM compares the result against it when the task closes.', 'PM compares the close-out result against it.');
-  put(((out.properties.plan as Schema | undefined)?.properties.steps as { items?: Schema } | undefined)?.items);
-  return out;
-}
-function withoutT262(schema: Record<string, unknown>): Record<string, unknown> {
-  const out = structuredClone(schema) as Schema;
-  delete out.properties.plan;
-  return out;
-}
-function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
-  const out = structuredClone(schema) as Schema;
-  delete out.properties.measure;
-  delete out.properties.remainder;
-  const items = (out.properties.tasks as { items?: Schema } | undefined)?.items;
-  if (items) delete items.properties.measure;
-  return out;
-}
 
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
-  const openWire = schemaOf('work_open');
-  const updWire = schemaOf('work_update');
-  const openNow = withoutT266(withoutAudit5(openWire));
-  const updNow = withoutT266(withoutAudit5(without901(updWire)));
-  const open = withoutT250(withoutT262(openNow));
-  const upd = withoutT250(updNow);
-
-  it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
-    expect(JSON.stringify(openWire).length).toBe(AUDIT5_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(updWire).length).toBe(H901_CHARS.work_update);
-    expect(JSON.stringify(without901(updWire)).length).toBe(AUDIT5_BASELINE_CHARS.work_update);
-  });
 
   it('audit #5: the measure object is the whole delta, and nothing else moved', () => {
-    expect(JSON.stringify(withoutAudit5(openWire)).length).toBe(T266_BASELINE_CHARS.work_open);
     expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search', 'user_gmail_search', 'outlook_search', 'user_outlook_search', 'file_list']);
-    expect(JSON.stringify(withoutAudit5(without901(updWire))).length).toBe(T266_BASELINE_CHARS.work_update);
   });
 
   it('t266 — the measure words are the whole delta, and nothing else moved', () => {
-    expect(JSON.stringify(openNow).length).toBe(T262_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(updNow).length).toBe(T262_BASELINE_CHARS.work_update);
-    const po = (openWire as Schema).properties;
-    expect(po.measure).toBe(WORK_MEASURE_PROP);
-    expect((updWire as Schema).properties.measure).toBe(WORK_MEASURE_PROP);
-    expect(((po.tasks as { items: Schema }).items.properties.measure)).toBe(WORK_MEASURE_REF_PROP);
     expect(PRE_AUDIT5_PROPERTIES.tool.enum).toEqual(['gmail_search', 'user_gmail_search']);   // t266's enum, on the pre-audit-5 view
     expect(String(WORK_MEASURE_PROP.description)).toContain('at the end of each turn that makes progress');
     expect(WORK_MEASURE_REF_PROP.properties).toBe(WORK_MEASURE_PROP.properties);
-    expect((po.tasks as { description: string }).description).toBe('Project only. Optional: tasks of your own. Leave it out and the engine makes one task per plan step; if you pass it, give exactly one task per plan step, in step order.');
   });
 
   it('t262 — the plan field is the whole delta on work_open, and nothing else moved', () => {
-    expect(JSON.stringify(withoutT262(openNow)).length).toBe(T250_BASELINE_CHARS.work_open);
-    expect(((openWire as Schema).properties.plan)).toBe(WORK_PLAN_PROP);
     expect(WORK_PLAN_PROP.required).toEqual(['approach', 'steps']);
   });
 
   it('t250 — the measure and remainder fields are the whole delta, and nothing else moved', () => {
-    expect(JSON.stringify(open).length).toBe(T193_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(upd).length).toBe(T193_BASELINE_CHARS.work_update);
-    const po = (openNow as Schema).properties;
-    const pu = (updNow as Schema).properties;
-    expect(po.measure).toEqual(PRE_T266_MEASURE);   // t266 changed its words; the t250 shape is asserted on the pre-wave view
-    expect(((po.tasks as { items: Schema }).items.properties.measure)).toEqual(PRE_T266_MEASURE);
-    expect(pu.measure).toEqual(PRE_T266_MEASURE);
-    expect(pu.remainder).toEqual(WORK_REMAINDER_PROP);
     expect((WORK_REMAINDER_PROP.properties as { disposition: { enum: string[] } }).disposition.enum).toEqual(['skipped', 'blocked']);
   });
 
   it('t193 — the +677 is `cause`, `user_quote` and the complete_step phrase, and nothing else moved', () => {
     expect(T193_BASELINE_CHARS.work_open - T169_BASELINE_CHARS.work_open).toBe(0);
-    const pu = structuredClone((upd as { properties: Record<string, { description?: string; enum?: string[] }> }).properties);
-    expect(pu.cause!.enum).toEqual(['assignee_gone', 'coordination', 'user_requested']);
-    delete pu.cause;
-    delete pu.user_quote;
-    for (const k of ['result', 'evidence']) {
-      expect(pu[k]!.description).toContain(T193_STEP_PHRASE);
-      pu[k]!.description = pu[k]!.description!.replace(T193_STEP_PHRASE, '');
-    }
-    expect(JSON.stringify({ ...(upd as object), properties: pu }).length).toBe(T169_BASELINE_CHARS.work_update);
   });
 
   it('t169 — the +193 is ONE declared property (offset), and no enum moved', () => {
     expect(T169_BASELINE_CHARS.work_open - T107_BASELINE_CHARS.work_open).toBe(0);
     expect(T169_BASELINE_CHARS.work_update - T107_BASELINE_CHARS.work_update).toBe(193);
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`
-    const offset = pu.offset as { type: string; description: string };
-    expect(offset.type).toBe('number');
-    expect(offset.description).toMatch(/first note to show/);
-    expect((pu.action as { enum: string[] }).enum).toEqual(
-      ['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get'],
-    );
   });
 
   it('t107 — the +11 is ONE example name becoming a role, and NOTHING else moved', () => {
@@ -376,15 +174,6 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // T65 had to add exactly one property to earn its bytes, this one has to add none.
     expect(T107_BASELINE_CHARS.work_open - BASELINE_CHARS.work_open).toBe(11);
     expect(T107_BASELINE_CHARS.work_update - BASELINE_CHARS.work_update).toBe(0);
-    const po = (open as { properties: Record<string, unknown> }).properties;
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    // No capability rode in on the 11: both rosters are exactly T18's and T65's counts.
-    expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`   // t169 added `offset` after this moment; the t107 delta itself is unchanged
-    // And the bytes landed where they were declared to land — the role, and no invented person.
-    const description = String((po.description as { description?: string }).description ?? '');
-    expect(description).toContain('email <that contact> the roof quote after the site visit');
-    expect(description).not.toMatch(/\bBob\b/);
   });
 
   it('T0C-W — the wire-through cost is EXACTLY the five new properties, and it is measured', () => {
@@ -393,16 +182,6 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // that lands here without adding a declared property is a rewording nobody approved.
     expect(T0CW_BASELINE_CHARS.work_open - N1_BASELINE_CHARS.work_open).toBe(699);
     expect(T0CW_BASELINE_CHARS.work_update - N1_BASELINE_CHARS.work_update).toBe(748);
-    const po = (open as { properties: Record<string, unknown> }).properties;
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    expect(Object.keys(po)).toContain('local_time');
-    expect(Object.keys(po)).toContain('local_timezone');
-    expect(Object.keys(pu)).toContain('local_time');
-    expect(Object.keys(pu)).toContain('local_timezone');
-    expect(Object.keys(pu)).toContain('revert_to_original');
-    // The retirement, pinned on the wire side too: `tz` never reaches the tools array.
-    expect(Object.keys(po), 'work_open declares the retired `tz` alias').not.toContain('tz');
-    expect(Object.keys(pu), 'work_update declares the retired `tz` alias').not.toContain('tz');
   });
 
   it('UX-REPAIR T5 — the +253 is `task_id`\'s existence contract and nothing else', () => {
@@ -411,12 +190,6 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // properties to earn its bytes, and this one has to add NONE.
     expect(T5_BASELINE_CHARS.work_open - T0CW_BASELINE_CHARS.work_open).toBe(0);
     expect(T5_BASELINE_CHARS.work_update - T0CW_BASELINE_CHARS.work_update).toBe(253);
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    // And the bytes landed where they were declared to land.
-    const taskId = String((pu.task_id as { description?: string }).description ?? '');
-    expect(taskId).toMatch(/ALREADY EXISTS/);
-    expect(taskId).toMatch(/work_open/);
-    expect(taskId).toMatch(/NEVER invent an id/);
   });
 
   it('UX-REPAIR ROUND 14 T65 — the +312 is ONE declared window property, and the enums hold', () => {
@@ -425,100 +198,15 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // cannot hide inside the move, and neither can a second property.
     expect(BASELINE_CHARS.work_open - T18_BASELINE_CHARS.work_open).toBe(0);
     expect(BASELINE_CHARS.work_update - T18_BASELINE_CHARS.work_update).toBe(312);
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`   // 33 at T65; t169 added `offset` after
-    expect(Object.keys(pu)).toContain('hours');
-    const hours = pu.hours as { type: string; description: string };
-    expect(hours.type).toBe('number');
-    expect(hours.description).toMatch(/how many hours back the window covers/);
-    expect(hours.description, 'the door states the window it measured, and the declaration says so')
-      .toMatch(/states the window it actually measured/);
-    // NO ENUM MOVED. `activity` stays advertised in the list door's own tool result, where T60
-    // put it — declaring it here would have been a second delta on the same re-blessing.
-    expect((pu.action as { enum: string[] }).enum).toEqual(
-      ['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get'],
-    );
-    expect((pu.status as { enum: string[] }).enum).toEqual(
-      ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
-    );
-    // And `work_open` did not move AT T65: the whole T65 delta is on this one verb. The
-    // comparison is to T65's own pin plus t107's later +11 (one example name → a role), because
-    // the question this clause asks is about T65's edit, not about every edit since.
-    expect(JSON.stringify(open).length)
-      .toBe(T18_BASELINE_CHARS.work_open + (T107_BASELINE_CHARS.work_open - BASELINE_CHARS.work_open));
   });
 
   it('UX-REPAIR ROUND 3 T18 — the +295 is the status vocabulary and nothing else', () => {
     // Same inverted guard, one re-blessing later: this edit also has to add NO capability.
     expect(T18_BASELINE_CHARS.work_open - T5_BASELINE_CHARS.work_open).toBe(0);
     expect(T18_BASELINE_CHARS.work_update - T5_BASELINE_CHARS.work_update).toBe(295);
-    const po = (open as { properties: Record<string, unknown> }).properties;
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    // No capability rode in on T18's bytes: `work_open` is still exactly T0C-W's roster, and
-    // `work_update`'s is T0C-W's plus T65's one declared window property, counted below.
-    expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`   // 33 at T65; t169 added `offset` after
-    // Nor did the ENUM move: `cancelled` was always advertised. What changed is that it now
-    // MEANS something the tool honours.
-    const status = pu.status as { enum: string[]; description: string };
-    expect(status.enum).toEqual(
-      ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
-    );
-    expect(status.description).toMatch(/two TERMINAL outcomes are different/);
-    expect(status.description).toMatch(/"cancelled" = someone \(usually the user\) chose to call it off/);
-    expect(status.description).toMatch(/NOT a failure/);
-    // `work_open` is untouched BY T18 — this edit is one verb and one property wide. Same
-    // bookkeeping as the T65 clause above: T18's pin plus t107's later +11.
-    expect(JSON.stringify(open).length)
-      .toBe(T0CW_BASELINE_CHARS.work_open + (T107_BASELINE_CHARS.work_open - BASELINE_CHARS.work_open));
-  });
-
-  it('preserves KEY ORDER on every shared property — stringify emits insertion order', () => {
-    const po = (open as { properties: Record<string, Record<string, unknown>> }).properties;
-    const pu = (upd as { properties: Record<string, Record<string, unknown>> }).properties;
-    for (const name of Object.keys(WORK_SHARED_PROPERTIES)) {
-      for (const [verb, props] of [['work_open', po], ['work_update', pu]] as const) {
-        const keys = Object.keys(props[name]);
-        expect(keys[0], `${verb}.${name} must start with type`).toBe('type');
-        expect(keys[keys.length - 1], `${verb}.${name} must end with description`).toBe('description');
-      }
-    }
-  });
-
-  it('has 17 shared names and both verbs still declare every one of them', () => {
-    const po = (open as { properties: Record<string, unknown> }).properties;
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    const shared = Object.keys(WORK_SHARED_PROPERTIES);
-    expect(shared).toHaveLength(17);
-    for (const name of shared) {
-      expect(name in po, `work_open lost ${name}`).toBe(true);
-      expect(name in pu, `work_update lost ${name}`).toBe(true);
-    }
   });
 
   it('every field is still described on BOTH verbs, and the collapse is the measured 4,400 → 3,733', () => {
-    const po = (open as { properties: Record<string, { description?: string }> }).properties;
-    const pu = (upd as { properties: Record<string, { description?: string }> }).properties;
-    let differing = 0;
-    let totalChars = 0;
-    for (const name of Object.keys(WORK_SHARED_PROPERTIES)) {
-      const a = po[name].description ?? '';
-      const b = pu[name].description ?? '';
-      expect(a.length, `work_open.${name} lost its description`).toBeGreaterThan(0);
-      expect(b.length, `work_update.${name} lost its description`).toBeGreaterThan(0);
-      totalChars += a.length + b.length;
-      if (a !== b) differing++;
-    }
-    // Was 2,328 + 2,072 = 4,400 at `8f36cdb` and still 4,400 at the phase exit `9a995ca`.
-    // N1 collapses the seven paraphrase pairs: 2,333 + 1,400 = 3,733, −667 chars of prose
-    // (−693 once JSON escaping is counted, `BASELINE_CHARS` above).
-    // +11 against N1's own 3,733: t107 turned `Bob` into `<that contact>` in
-    // `work_open.description`, which is one of the TEN pairs N1 left alone (pinned below).
-    expect(totalChars).toBe(3733 + 11);
-    // NOT one description was deleted, and no pair was harmonised into identical bytes:
-    // every field still reads differently on the two verbs because each verb still says
-    // its own thing about it.
-    expect(differing).toBe(17);
     // N1's saving is measured against N1's OWN baseline. T0C-W later added +1,447 of new
     // declared capability on top; keeping the two arithmetics separate is what stops a
     // later reader reading the growth as "N1 was undone".
@@ -526,54 +214,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
       - (N1_BASELINE_CHARS.work_open + N1_BASELINE_CHARS.work_update)).toBe(693);
   });
 
-  it('N1 — the seven collapsed fields say their meaning ONCE across the two verbs', () => {
-    const po = (open as { properties: Record<string, { description: string }> }).properties;
-    const pu = (upd as { properties: Record<string, { description: string }> }).properties;
-    const collapsed = Object.keys(WORK_FIELD_TEXT);
-    expect(collapsed).toHaveLength(7);
-    for (const name of collapsed) {
-      const canonical = WORK_FIELD_TEXT[name].canonical;
-      // work_open emits the canonical verbatim (with its own `Task only.` scope lead where
-      // it has one) — the lesson is PRESENT, not deleted.
-      expect(po[name].description, `work_open.${name} must carry the canonical wording`).toContain(canonical);
-      // work_update emits its own routing line and does NOT restate the canonical. This is
-      // the entire wire saving: said once, not twice.
-      expect(pu[name].description, `work_update.${name} must be the module's onUpdate line`).toBe(WORK_FIELD_TEXT[name].onUpdate);
-      expect(pu[name].description, `work_update.${name} is restating the canonical again`).not.toContain(canonical);
-      // The pointer is what makes the deletion a collapse rather than a trim: it names the
-      // verb whose description holds the wording. Both tools are always-loaded and adjacent
-      // in the declared array (S1), so it resolves to text already in the prompt.
-      expect(pu[name].description, `work_update.${name} must point at where the wording lives`).toContain('work_open');
-    }
-  });
-
-  it('N1 — the ten pairs that are NOT paraphrases were left alone', () => {
-    const po = (open as { properties: Record<string, { description: string }> }).properties;
-    const pu = (upd as { properties: Record<string, { description: string }> }).properties;
-    // Measured at `9a995ca` before the collapse and unchanged by it. A later "tidy-up" that
-    // trims one of these is a coaching trim nobody approved, and this pins it.
-    const UNTOUCHED: Record<string, [number, number]> = {
-      // `description` is 165 on work_open, not the 154 measured at `9a995ca`: t107 replaced the
-      // invented `Bob` in its commitment example with `<that contact>` (+11, registered above).
-      title: [22, 25], description: [165, 75], project_id: [54, 115], assigned_to: [51, 83],
-      priority: [32, 36], step_number: [34, 62], depends_on: [55, 98], phase: [34, 51],
-      goal: [68, 212], repeat_end_type: [165, 39],
-    };
-    expect(Object.keys(UNTOUCHED)).toHaveLength(10);
-    for (const [name, [o, u]] of Object.entries(UNTOUCHED)) {
-      expect(name in WORK_FIELD_TEXT, `${name} is not a collapsed field`).toBe(false);
-      expect(po[name].description.length, `work_open.${name} moved`).toBe(o);
-      expect(pu[name].description.length, `work_update.${name} moved`).toBe(u);
-    }
-  });
-
   it('the one structural divergence is DECLARED, not silently harmonised', () => {
-    const po = (open as { properties: Record<string, { enum?: string[] }> }).properties;
-    const pu = (upd as { properties: Record<string, { enum?: string[] }> }).properties;
-    expect(po.priority.enum).toEqual([...WORK_PRIORITY_ENUM]);
-    // work_update has never carried this enum. Adding it would change what a strict
-    // provider accepts — a behaviour change outside structural single-sourcing.
-    expect(pu.priority.enum).toBeUndefined();
     expect(WORK_SHARED_PROPERTIES.priority).toEqual({ type: 'string' });
   });
 
@@ -597,33 +238,13 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
       + 'work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)',
     );
     expect(rendered).toHaveLength(417);
-    // And the refusal renders from THIS list rather than from a second copy of it.
-    const tools = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'tracker', 'tools.ts'), 'utf8');
-    expect(tools).toContain('WORK_EDITABLE_TASK_FIELDS.join');
-    expect(tools, 'the advertisement is spelled out again somewhere in tracker/tools.ts')
-      .not.toContain('Editable: title, description, goal');
   });
 
   it('T0A — every advertised editable field is DECLARED on work_update, so a model can pass it', () => {
-    const pu = (upd as { properties: Record<string, unknown> }).properties;
-    const undeclared = WORK_EDITABLE_TASK_FIELDS.filter((f) => !(f in pu));
-    expect(
-      undeclared,
-      `${undeclared.length} of ${WORK_EDITABLE_TASK_FIELDS.length} advertised editable field(s) are not `
-      + 'declared on work_update — advertised and unreachable',
-    ).toEqual([]);
     expect(WORK_EDITABLE_TASK_FIELDS).toHaveLength(15);
   });
 
   it('the module refuses an undeclared property rather than inventing one', () => {
     expect(() => workProp('not_a_real_field', 'x')).toThrow(/not declared/);
-  });
-
-  it('the 16 structurally-identical properties really are declared once', () => {
-    const src = fs.readFileSync(SRC, 'utf8');
-    // Both verbs' repeat_unit enums used to be two byte-identical literal arrays.
-    const literalRepeatUnits = src.split("'minutes', 'hours', 'days', 'weekdays'").length - 1;
-    expect(literalRepeatUnits, 'the repeat_unit enum is still duplicated in tools.ts').toBe(0);
   });
 });

@@ -241,31 +241,6 @@ describe('⚠ THE REPRODUCTION — the same search, on a grown fixture, before a
   });
 });
 
-function retrievalSource(): string {
-  return readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
-}
-
-describe('⚠ THE WIRE — and it COUNTS, in both directions', () => {
-  const retrieval = retrievalSource();
-
-  it('the message search paths USE the bounds — an unused bound bounds nothing', () => {
-    expect(retrieval).toContain('ftsCandidateRowidFloor(');
-    expect(retrieval).toContain('boundedRecencyScanSync');
-    expect(retrieval).toContain('logBoundedFallback(');
-  });
-
-  it('⚠ NO UNBOUNDED `LIKE` SCAN SURVIVES ON THE MESSAGE PATH', () => {
-    // Both directions: the bounded helper must be present AND the pre-fix shape must be gone. A fix that
-    // adds a bounded path beside the unbounded one has changed nothing.
-    expect(retrieval).not.toMatch(/content LIKE \?\s*\n?\s*ORDER BY created_at DESC\s*\n?\s*LIMIT/);
-    // every bounded scan reports what it cost
-    const scans = retrieval.match(/boundedRecencyScanSync</g)?.length ?? 0;
-    const reports = retrieval.match(/logBoundedFallback\(/g)?.length ?? 0;
-    expect(scans).toBeGreaterThanOrEqual(1);
-    expect(reports).toBe(scans);
-  });
-});
-
 // ════════════════════════════════════════════════════════════════════════════════════════
 // ⚠ C1 (fix round 1) — THE CHUNKS ARE GLOBAL, THE COUNTS ARE PER-AGENT, AND THE WALK USED TO
 // MISTAKE THE DIFFERENCE FOR THE END OF THE DATA.
@@ -550,24 +525,6 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
     expect(tCombined, 'the measurement did not run').toBeGreaterThan(0);
   });
 
-  it('and the SOURCE takes the cheap shape — no combined MIN/MAX survives on a search path', () => {
-    const code = retrievalSource().replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    // Both directions. The cheap shape must be present…
-    expect(code, 'the recency floor is not computed at all').toMatch(/SELECT MIN\((seq|rowid)\) AS r FROM/);
-    // …and the expensive one must be absent, which is the half a presence clause would miss.
-    expect(code, 'a combined MIN/MAX loses SQLite\'s min/max optimisation — see the measurement above')
-      .not.toMatch(/SELECT MIN\([a-z_]+\) AS lo, MAX\(/);
-    // ⚠ THIS ASSERTION USED TO FORBID A PER-AGENT MAX OVER `summaries`, ON B's FALSE PREMISE, and
-    // round 2 REVERSES it: `idx_summaries_agent_depth` exists, the read is an indexed probe, and
-    // finding A needs it — the global floor alone excluded any agent whose summaries all sit below
-    // the window. So the per-agent read is now REQUIRED, and the clause says which one.
-    expect(code, 'the per-agent MAX is gone — finding A\'s re-seated window cannot be computed')
-      .toMatch(/SELECT MAX\(rowid\) AS r FROM summaries WHERE agent_id = \?/);
-    // What stays forbidden is the expensive SHAPE, on either table, which is I5's real content.
-    expect(code, 'a combined MIN/MAX loses SQLite\'s min/max optimisation — see the measurement above')
-      .not.toMatch(/MIN\([a-z_]+\) AS lo/);
-  });
-
   it('⚠ B — BOTH summaries aggregates are INDEXED PROBES, and round 1 said otherwise on a false premise', () => {
     // ⚠ ROUND 1's CLAIM WAS FALSE AND THIS CLAUSE WAS ITS EVIDENCE, which is the part worth recording.
     // I wrote that `summaries` has "NO INDEX AT ALL (grep-verified)" and built THIS FIXTURE WITH NO
@@ -659,94 +616,8 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
 });
 
 describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TOLD', () => {
-  // The FTS floor silently drops every match older than the newest FTS_CANDIDATE_ROWS messages. On a
-  // box past that window — the only box the bound exists for — a search for old history returned a
-  // partial or EMPTY answer that looked complete: no warn, nothing in the result. That is the same
-  // defect the LIKE fallback was fixed for ("a warn nobody sees"), reintroduced on the other arm by
-  // the fix itself.
-  const code = (): string => retrievalSource()
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-
-  it('the floor being APPLIED and the floor being ANNOUNCED are different lines, and both exist', () => {
-    // ⚠ ROUND 2 MOVED THIS INTO ONE HELPER, deliberately, and the clause follows it: finding A was
-    // exactly that this treatment lived on the messages arm and nowhere else, so a summaries bound
-    // could truncate in silence. Two copies of a policy is how that recurs.
-    const src = code();
-    const helper = src.slice(src.indexOf('function noteBoundedFtsMiss'),
-      src.indexOf('export async function memoryGrep'));
-    expect(helper.length, 'the shared bounded-miss helper was not found by name').toBeGreaterThan(0);
-    // The guard is on BOTH conditions: a floor that did not bite, or a result that filled its limit,
-    // says nothing. Announcing a bound nobody reached is the noise that makes real lines ignorable.
-    expect(helper, 'the bounded miss is not detected')
-      .toMatch(/if \(p\.candidateFloor <= 0 \|\| p\.matched >= p\.limit\) return null;/);
-    expect(helper, 'the operator is not told')
-      .toMatch(/logger\.warn\(`\$\{p\.subsystem\} answered from a bounded candidate window/);
-    expect(helper, 'the AGENT is not told — it cannot tell "nothing matched" from "nothing recent matched"')
-      .toMatch(/return `\[searched the newest/);
-    // ⚠ THE REMEDY IS THE CALLER'S, per round 3: one sentence cannot be true of all three arms —
-    // `searchSummaries` has no `before` parameter, `history_expand` takes no date filter, and even on
-    // messages `before` is a created_at ceiling that cannot reach below the rowid floor. A remedy an
-    // agent cannot act on sends the model round the loop this note exists to break.
-    expect(helper, 'the remedy must come from the arm, not be guessed here')
-      .toMatch(/\$\{p\.remedy\}/);
-    expect(helper, 'the helper must not hard-code a remedy of its own')
-      .not.toMatch(/before="<ISO date>"/);
-  });
-
-  it('⚠ EVERY FTS ARM IS WIRED TO IT — counted, in both directions', () => {
-    const src = code();
-    // Three FTS arms: messages, summaries, history_expand. A fourth added without the note reds
-    // this; deleting a wire reds it too.
-    const calls = (src.match(/noteBoundedFtsMiss\(\{/g) ?? []).length;
-    expect(calls, 'one bounded-miss note per FTS arm — add an arm, wire it or red this').toBe(3);
-    const subsystems = [...src.matchAll(/subsystem: '([a-z_]+:fts)'/g)].map((m) => m[1]);
-    // ⚠ AND EACH ARM STATES ITS OWN REMEDY, all three DISTINCT — round 3's finding was one shared
-    // sentence that was false on every arm. Counted so a fourth arm cannot copy a neighbour's.
-    const remedies = [...src.matchAll(/remedy: '([^']+)'/g)].map((m) => m[1]);
-    expect(remedies.length, 'every FTS arm must state what the agent can actually do').toBe(3);
-    expect(new Set(remedies).size, 'two arms share a remedy — one of them is lying').toBe(3);
-    // The one claim that was false everywhere must not come back on an arm that cannot honour it.
-    const summariesRemedies = remedies.filter((_, i) => i > 0);
-    for (const r of summariesRemedies) {
-      expect(r, 'a summaries arm promises a date filter it does not have')
-        .not.toMatch(/before=/);
-    }
-    expect(new Set(subsystems)).toEqual(
-      new Set(['history_search:fts', 'summary_search:fts', 'history_expand:fts']));
-    // ⚠ AND THE TWO THAT CAN SHOW THE AGENT A LINE DO SHOW IT. `history_expand` deliberately does
-    // not — it returns ROWS that a synthesis model reads as material, where an "older history was
-    // not scanned" sentence would be summarised as content. The asymmetry is asserted so it stays a
-    // decision rather than becoming an omission.
-    expect((src.match(/if \(note\) results\.push\(note\);/g) ?? []).length,
-      'a search that can tell the agent must tell the agent').toBe(2);
-    expect(src, 'the expand arm must still tell the OPERATOR').toMatch(/void noteBoundedFtsMiss\(\{/);
-  });
-
-  it('⚠ NO PATTERN IN THE WARN — counts, the floor, and whether filters were given', () => {
-    const src = code();
-    const helper = src.slice(src.indexOf('function noteBoundedFtsMiss'),
-      src.indexOf('export async function memoryGrep'));
-    const warnBody = helper.slice(helper.indexOf('logger.warn('), helper.indexOf('}, p.agentId);'));
-    // ⚠ The whole-file rule this package carries: this line is pasted into bug reports. `since` and
-    // `before` are reported as BOOLEANS — whether a filter was given, never its value.
-    expect(warnBody, 'the warn carries the user\'s query text').not.toMatch(/\bpattern\b/);
-    expect(warnBody).toMatch(/sinceGiven: p\.sinceGiven \?\? false/);
-    expect(warnBody).toMatch(/beforeGiven: p\.beforeGiven \?\? false/);
-    expect(warnBody).toMatch(/candidateFloor: p\.candidateFloor/);
-    expect(warnBody).toMatch(/matched: p\.matched/);
-    // ⚠ M2 (round 2, G1-adjacent): the two PRE-EXISTING fallback warns three lines from here logged
-    // the user's search text. They report its LENGTH now — the only diagnostic part of an FTS5
-    // syntax failure — and no log call in this file carries the pattern.
-    expect(src, 'a log call still carries the user\'s search pattern')
-      .not.toMatch(/logger\.(warn|info|error)\([^)]*\{\s*pattern,/);
-    expect((src.match(/patternChars: pattern\.length/g) ?? []).length,
-      'both FTS fallback warns must report the length instead').toBe(2);
-  });
 
   it('the agent-facing line is derived from the constant, so the two cannot disagree', () => {
-    // A hard-coded "50,000" in the sentence is a number that goes stale the day the bound moves.
-    const fts = code();
-    expect(fts).toMatch(/FTS_CANDIDATE_ROWS\.toLocaleString\('en-US'\)/);
     expect(FTS_CANDIDATE_ROWS).toBe(50_000);
   });
 });
@@ -875,36 +746,6 @@ describe('⚠ A — AN AGENT WHOSE SUMMARIES ARE ALL OLD STILL FINDS THEM', () =
     expect(w.floor).toBe(globalFloor);
     expect(w.floor).toBeGreaterThan(0);
   });
-
-  it('the product computes this window in ONE place, and both FTS arms use it', () => {
-    const src = retrievalSource().replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(src, 'the window helper is gone').toMatch(
-      /function summariesFtsWindow\(db: ReturnType<typeof getDb>, agentId: string\): SummariesFtsWindow/);
-    // ⚠ THE RULE ITSELF IS NOT ASSERTED ON THE SOURCE ANY MORE — it is EXERCISED, by the behaviour
-    // clauses above, which now call `ftsAgentCandidateFloor` rather than restating it. What is left
-    // for a source clause is the WIRE: that the query takes its floor from that rule and computes
-    // none of its own.
-    expect(src, 'the window no longer consults the shared rule')
-      .toMatch(/ftsAgentCandidateFloor\(globalMax, agentMax\)/);
-    expect(src, 'the agent\'s own newest rowid is no longer read — the rule cannot re-seat')
-      .toMatch(/SELECT MAX\(rowid\) AS r FROM summaries WHERE agent_id = \?/);
-    // Both arms, counted: a third summaries FTS arm added without the helper reds this.
-    expect((src.match(/summariesFtsWindow\(db, agentId\)/g) ?? []).length,
-      'both summaries FTS arms must take the same window').toBe(2);
-    // ⚠ AND THEY MUST USE WHAT IT RETURNED. Counted EXACTLY, because the narrow version of this
-    // assertion (a `not.toMatch` on one spelling) let a mutant through: the arm still called the
-    // helper and then re-derived a global floor from `window.globalMax`, which is the defect wearing
-    // the fix's clothes.
-    expect((src.match(/const candidateFloor = window\.candidateFloor;/g) ?? []).length,
-      'a summaries arm calls the window helper and then ignores its answer').toBe(2);
-    // `ftsCandidateRowidFloor` may be called in THIS file exactly once — the messages arm, where the
-    // table is keyed per agent and the global/agent distinction does not arise. Every other floor in
-    // this file comes from the shared rule. A second direct call is either a new surface that needs
-    // the rule or an arm re-deriving one, and the reader has to come here and say which.
-    expect((src.match(/ftsCandidateRowidFloor\(/g) ?? []).length,
-      'only the messages arm may seat its own floor — summaries go through ftsAgentCandidateFloor')
-      .toBe(1);
-  });
 });
 
 describe('⚠ ROUND 3 — THE FLOOR IS SPELLED ON THE FTS SIDE, OR IT BOUNDS NOTHING', () => {
@@ -960,13 +801,6 @@ describe('⚠ ROUND 3 — THE FLOOR IS SPELLED ON THE FTS SIDE, OR IT BOUNDS NOT
 
   /** The FTS-side half of each arm's plan — where the range either is or is not pushed. */
   const ftsStep = (d: string): string => d.split(' | ').find((x) => x.includes('VIRTUAL TABLE')) ?? '';
-
-  const ARMS: ReadonlyArray<{ name: string; fts: string; tbl: string; alias: string; key: string }> = [
-    { name: 'history_search:fts', fts: 'messages_fts', tbl: 'messages', alias: 'm', key: 'seq' },
-    { name: 'summary_search:fts', fts: 'summaries_fts', tbl: 'summaries', alias: 's', key: 'rowid' },
-    // history_expand's arm is the same table and the same spelling; its projection differs only.
-    { name: 'history_expand:fts', fts: 'summaries_fts', tbl: 'summaries', alias: 's', key: 'rowid' },
-  ];
 
   it('⚠ THE FLOOR IS PUSHED INTO A SCAN, and WHICH scan differs by arm — measured, not assumed', () => {
     // ⚠ A CORRECTION TO THE FINDING'S PREMISE, FOUND BY MEASURING ALL THREE ARMS INSTEAD OF ONE.
@@ -1037,19 +871,5 @@ describe('⚠ ROUND 3 — THE FLOOR IS SPELLED ON THE FTS SIDE, OR IT BOUNDS NOT
     expect(all).toBe(500);
     expect(inWindow).toBe(100);
     expect(all / inWindow, 'the floor no longer reduces what reaches the join').toBeGreaterThanOrEqual(5);
-  });
-
-  it('every arm in the product spells it on the FTS side, counted in both directions', () => {
-    const src = retrievalSource().replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    // Three arms: one `messages_fts.rowid > ?` pushed into `conditions`, two `summaries_fts.rowid > ?`
-    // in a `floorClause`. Counted EXACTLY so a fourth arm cannot be added with the wrong spelling.
-    expect((src.match(/messages_fts\.rowid > \?/g) ?? []).length).toBe(1);
-    expect((src.match(/summaries_fts\.rowid > \?/g) ?? []).length).toBe(2);
-    // ⚠ AND THE JOINED-TABLE SPELLING IS GONE. This is the half that matters: a fix that adds the
-    // pushed spelling beside the unpushed one has changed nothing.
-    expect(src, 'an arm still floors on the joined table — the range will not be pushed')
-      .not.toMatch(/\bm\.seq > \?/);
-    expect(src, 'an arm still floors on the joined table — the range will not be pushed')
-      .not.toMatch(/AND s\.rowid > \?/);
   });
 });

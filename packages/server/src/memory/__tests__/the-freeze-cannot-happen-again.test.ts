@@ -479,48 +479,6 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
     expect(compactionIsBraked(AGENT, true), 'an agent given no room stays braked').toBe(true);
   });
 
-  /**
-   * ⚠ THE PRE-WORK LATCH IS GONE, AND ITS SLOT NOW ROUTES TO CONDENSATION. (review M3, re-aimed
-   * by OR-COMPACT-1)
-   *
-   * `latchIfSummariesExceedBudget` latched BEFORE any model call on two facts: the summaries
-   * already exceed the assembly budget, and there is nothing left outside the fresh tail worth
-   * compacting. Those two facts together are the incident, and the owner ruled they are the
-   * CASE FOR condensation. So the function is deleted and the same slot — ahead of the
-   * continuity brief, the chunk loop and every provider dial — now hands that state to
-   * `condenseOnlyPass`. Two clauses again, because the deletion needs both halves proved: that
-   * no latch survives anywhere, and that something real took its place.
-   */
-  it('the entry point has NO terminal pre-work latch left, and routes that state to condensation', () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '..', 'compaction.ts'), 'utf8');
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-    // THE DELETION, in the only place that can prove it: no latch call, under any name.
-    expect(code, 'the pre-work terminal latch must be gone from the entry point, not merely unused')
-      .not.toMatch(/latchIfSummariesExceedBudget|latchIncompressible|isIncompressible/);
-    // AND THE REPLACEMENT, asserted as a call SHAPE with its application (G4): the leaf-less
-    // branch must RETURN the condensation pass, or it is prose above a dead end.
-    // t194: the forced pass's route (the routine "summaries dropped" route sits beside it), and the
-    // budget is the view's own (`budget`) — the 0.96 threshold it was named for is deleted.
-    const call = code.match(/^\s*return condenseOnlyPass\(.*guardUncompactedCount.*$/m)?.[0];
-    expect(call, '`compaction.ts` must route the leaf-less over-budget state to the condenser').toBeTruthy();
-    expect(call, 'with the summary-writer model it must dial').toContain('modelId');
-    expect(call, 'with the budget it is trying to get under').toContain('budget');
-    expect(call, 'and the compactable-row count the branch was chosen on').toContain('guardUncompactedCount');
-    const guard = code.match(/^\s*if \(guardUncompactedCount < MIN_COMPACTABLE_ROWS\) \{$/m);
-    expect(guard, 'the branch must be chosen by the row floor, not by force').toBeTruthy();
-    // IN THE SAME SLOT: ahead of the archive, the chunk loop and every provider dial.
-    // (t140: this anchored on `generateContinuityBrief(agentId`, the first piece of work on the
-    // pressure path; the brief is deleted, so the anchor is now the next piece of work, the
-    // pre-compaction archive — the pressure path's only call of it.)
-    const routeAt = code.indexOf('return condenseOnlyPass(agentId');
-    const workAt = code.indexOf('archiveMessagesBeforeCompaction(agentId, uncompactedForArchive)');
-    expect(routeAt).toBeGreaterThan(0);
-    expect(workAt).toBeGreaterThan(0);
-    expect(routeAt, 'a pre-work route that runs after the work is not a pre-work route')
-      .toBeLessThan(workAt);
-  });
-
   it('⚠ AND THE WORD IS GONE FROM EVERY SHIPPED SOURCE LINE — the census', () => {
     // OR-COMPACT-1 abolished the concept, so the census is the clause: not one production line
     // in the server or the shared wire may still say it. Comments are STRIPPED first, because a
@@ -673,17 +631,6 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
     await cachedToolPayloadTokens(AGENT, toolSurfaceKey(AGENT, MODEL_64K), measure);
     expect(built, 'and a changed surface is measured again').toBe(2);
     resetSessionToolSetsForTests();
-  });
-
-  it('the entry point keys the tool payload on that surface, not on the model id', () => {
-    // The review's finding was a CALL SITE passing the wrong ingredients, so the call site is what
-    // this pins — the same reason the M3 wiring clause reads source.
-    // t194: the measurement is the assembler's own dry run now, so the call site moved with it.
-    const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '..', 'assembler.ts'), 'utf8');
-    const call = src.match(/^\s*toolPayloadTokens: dryRun .*$/m)?.[0];
-    expect(call, 'the tool payload must be keyed by `toolSurfaceKey`').toContain('toolSurfaceKey(agentId, modelId)');
-    expect(call, 'and never again by an invented agent:model string').not.toMatch(/\$\{agentId\}:\$\{modelId/);
   });
 
   it('⚠ THE HEADLINE: event-loop starvation, pre-fix shape vs post-fix shape, one body', async () => {

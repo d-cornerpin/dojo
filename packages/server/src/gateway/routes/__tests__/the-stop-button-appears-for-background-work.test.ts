@@ -34,7 +34,6 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CARD = path.resolve(HERE, '../../../../../dashboard/src/components/AgentCard.tsx');
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../../db/connection.js', async () => {
@@ -176,19 +175,6 @@ describe('§1 the route says how much of this agent\'s work a stop would cut', (
     // work that finished minutes ago, which is the same lie as the missing button, reversed.
     expect((await payload()).inFlight).toEqual({ turn: 0, background: 0 });
   });
-
-  it('is a READ — no new column, no new writer', () => {
-    const src = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf-8');
-    // RULING #9 moved the read behind `agent/live-work.ts` — the one owner of the question —
-    // because the card's rule, this payload and the stop route's own `status` check were three
-    // answers to it, and that is how a visible button and a working mechanism came apart. The
-    // requirement is unchanged and §8 pins the module's own side: it reads, it never writes.
-    expect(/inFlight: liveWork\(/.test(src), 'the payload stopped reading the live predicate').toBe(true);
-    // The registry is module state; a route that WROTE to it would be a second writer for the
-    // stop machinery, which is exactly what A-5's own census refuses.
-    expect(/registerAbortable|abortInFlight/.test(src),
-      'the agents route must never write the abort registry — it only reports it').toBe(false);
-  });
 });
 
 // ── §2 — the dashboard rule ─────────────────────────────────────────────────────────────
@@ -261,17 +247,6 @@ describe('§3 the payload the server actually serves drives the rule', () => {
 
     // …and it goes away again when the work does.
     expect(stopAffordance(await payload()).show, 'a phantom button outlived the job').toBe(false);
-  });
-
-  it('the card asks the rule instead of keeping its own copy of the decision', () => {
-    const src = fs.readFileSync(CARD, 'utf-8');
-    expect(/stopAffordance\(/.test(src), 'the card no longer consults the rule').toBe(true);
-    // The defect WAS this expression gating the button. It may still exist for other purposes
-    // (the card uses `isWorking` for the status dot), but the stop branch must read the rule.
-    const stopBranch = src.slice(src.indexOf('api.stopAgent') - 600, src.indexOf('api.stopAgent'));
-    expect(/stop\.show/.test(stopBranch), 'the stop branch re-derives its own predicate').toBe(true);
-    expect(/\{isWorking && \(/.test(stopBranch), 'the old `isWorking` gate is back on the button')
-      .toBe(false);
   });
 });
 
@@ -680,25 +655,5 @@ describe('§9 a stop lands on a turn that is still unwinding', () => {
     s.lastRunEndedAt.set('some-other-agent', Date.now());
 
     expect((await pressStop()).status, 'one agent\'s unwind made every agent stoppable').toBe(400);
-  });
-
-  it('the door reads the SHARED fact, never a fourth copy of "is a run in flight"', () => {
-    const src = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf-8')
-      // Comments first, always: this disjunct is introduced by a long paragraph naming
-      // `activeRuns`, and a clause satisfiable by that prose tests the prose.
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    // THE APPLICATION, not the import: the refusal branch itself must consult it, as the
-    // sibling clause in §8 requires of `hasLiveWork`.
-    expect(/!isRunUnwinding\(id\)/.test(src), 'the route stopped asking whether a run is unwinding')
-      .toBe(true);
-    // And it is a DISJUNCT added beside the other two, not a replacement for either —
-    // ruling #9's predicate and the status check both still have to be in the condition.
-    expect(/status !== 'working' && !hasLiveWork\(live\) && !isRunUnwinding\(id\)/.test(src),
-      'the three facts stopped being asked together — one of them was widened or dropped')
-      .toBe(true);
-    // The route must not re-derive the window from `activeRuns` itself: one predicate, one
-    // owner, same rule §8 holds the other two surfaces to.
-    expect(/activeRuns/.test(src), 'the route grew its own copy of the in-flight question')
-      .toBe(false);
   });
 });

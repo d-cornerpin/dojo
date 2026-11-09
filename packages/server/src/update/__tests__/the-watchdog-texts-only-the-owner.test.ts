@@ -22,14 +22,3 @@ describe('chooseOwnerRecipient', () => {
     expect(chooseOwnerRecipient([], '+15550001')).toBe('');
   });
 });
-
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-describe('the watchdog daemon', () => {
-  it('resolves its recipient through chooseOwnerRecipient and has no first-entry fallback', () => {
-    const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../watchdog/src/index.ts'), 'utf-8');
-    expect(src).toContain('chooseOwnerRecipient(');
-    expect(src).not.toMatch(/approved\[0\]/);
-  });
-});

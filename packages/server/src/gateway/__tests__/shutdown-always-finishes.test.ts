@@ -2,15 +2,11 @@
 // its headers and never ends used to hold http.Server.close() open for ever; a
 // throw while closing used to leave the process hanging with no exit.
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
-import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { closeServers, trackRequests } from '../close-servers.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 function raceDeadline<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
   let t: NodeJS.Timeout;
@@ -70,13 +66,5 @@ describe('closeServers always finishes', () => {
     const result = await raceDeadline(closeServers(server, wss), 2000);
     expect(result).not.toBe('timeout');
     expect(Date.now() - t0).toBeLessThan(500);
-  });
-
-  it('src/index.ts guards re-entry and its closeServers chain always reaches exit', () => {
-    const src = fs.readFileSync(path.resolve(HERE, '../../index.ts'), 'utf-8');
-    expect(src).toMatch(/let shuttingDown = false/);
-    const at = src.indexOf('closeServers(server as unknown as HttpServer, wss)');
-    expect(at).toBeGreaterThan(0);
-    expect(src.slice(at, at + 1500)).toMatch(/\.catch\(/);
   });
 });

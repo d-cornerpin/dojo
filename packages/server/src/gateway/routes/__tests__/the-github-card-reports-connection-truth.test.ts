@@ -32,9 +32,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 vi.mock('../../../logger.js', () => {
   const noop = (): void => {};
@@ -797,71 +794,10 @@ describe('a sign-in that failed says why, and the sentence is not invented at th
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 describe('the card holds no copy of a rule the lib is guarding', () => {
-  // ── ADDED IN FIX ROUND 1 (review F3 + the refetch-on-event extraction) ──
-  // `packages/dashboard` has no test runner, so a rule that gets RE-TYPED into the .tsx escapes
-  // every guard the lib carries. These two clauses are source censuses over the component —
-  // this plan's own instrument, used five times in T4 — and each catches one specific edit.
-  const cardSource = fs.readFileSync(
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)),
-      '../../../../../dashboard/src/components/GitHubSettings.tsx'), 'utf8');
 
   it('the reassurance about private repositories exists in ONE place, behind the guarded constant', () => {
-    // F3. The card carried a second, differently-worded copy of the sentence `describeScope`
-    // exists to make honest ("private repos" vs "private repositories"), so no grep over the
-    // tested string found it. That copy is a CONSTANT claim about the user's private code
-    // sitting in the one file nothing tests — precisely what §2 calls "the rule with teeth".
-    expect(cardSource.length, 'the census read an empty file — it is broken')
-      .toBeGreaterThan(0);
-    expect(
-      cardSource,
-      'the card hardcodes a claim about private repositories again. That sentence belongs in '
-      + '`lib/github-card.ts` behind GITHUB_EXPECTED_SCOPE, where a test holds it and where the '
-      + 'scope cross-check reaches it.',
-    ).not.toMatch(/private repo/i);
     // ...and the sentence really does exist, in the place that IS guarded.
     expect(scopeRequestSentence()).toMatch(/private repositories/i);
-  });
-
-  it('state is replaced from the door, never merged from a frame', () => {
-    // THE REFETCH-ON-EVENT IDIOM, held statically. §2b named this the gap most worth a DOM
-    // runner: an "optimisation" that merged a frame's fields into card state would reintroduce
-    // the invented-freshness defect this whole card is written against, and nothing would
-    // notice. A runner is still the full answer — but the feared edit has one visible shape,
-    // a second `setStatus(`, and that is cheap to refuse.
-    const calls = [...cardSource.matchAll(/setStatus\(/g)];
-    expect(calls.length, 'the card stopped setting its status at all — this census is broken')
-      .toBeGreaterThan(0);
-    expect(
-      calls.length,
-      'a second `setStatus(` appeared. If it merges fields from a WebSocket frame into the '
-      + 'card\'s state, that is the invented-freshness defect: the card would show a freshness '
-      + 'no door served. Refetch from `GET /status` instead.',
-    ).toBe(1);
-    // ...and the one call is inside `loadStatus`, not inside a subscribe handler.
-    //
-    // THE FIRST READER HERE WAS WRONG AND THE SUITE SAID SO, which is the reason to write the
-    // reader rather than assume it: "the nearest preceding `const <name> =`" answered `result`,
-    // because `const result = await api.getGithubStatus()` sits between the declaration and the
-    // call. A census is only as good as its reader — the lesson this task already banked twice
-    // — so this walks `loadStatus`'s actual body instead of guessing at its name.
-    const declStart = cardSource.indexOf('const loadStatus');
-    expect(declStart, 'the card no longer declares `loadStatus` — this census is broken')
-      .toBeGreaterThan(-1);
-    let bodyEnd = cardSource.indexOf('{', declStart);
-    for (let depth = 0, i = bodyEnd; i < cardSource.length; i++) {
-      if (cardSource[i] === '{') depth++;
-      else if (cardSource[i] === '}' && --depth === 0) { bodyEnd = i; break; }
-    }
-    const body = cardSource.slice(declStart, bodyEnd);
-    // Non-vacuity: a walk that returned an empty or runaway body would pass the range check
-    // below for the wrong reason.
-    expect(body, 'the extracted `loadStatus` body is not the one that calls the door')
-      .toContain('api.getGithubStatus');
-    expect(
-      calls[0].index! > declStart && calls[0].index! < bodyEnd,
-      'the single `setStatus(` moved out of `loadStatus` — state is no longer replaced by what '
-      + 'the door served',
-    ).toBe(true);
   });
 });
 

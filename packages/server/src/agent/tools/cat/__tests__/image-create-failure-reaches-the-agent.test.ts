@@ -56,7 +56,7 @@ vi.mock('../../../wake-with-notice.js', () => ({
 vi.mock('../../../../home.js', async () => {
   const p = await import('node:path'); const o = await import('node:os');
   const dir = p.join(process.env.DOJO_TEST_HOME_ROOT || o.tmpdir(), 'dojo-image-no-caption');
-  return { homeDir: (): string => dir, dojoDir: (...a: string[]): string => p.join(dir, '.dojo', ...a), isTestRun: (): boolean => true };
+  return { homeDir: (): string => dir, dojoDir: (...a: string[]): string => p.join(dir, '.dojo', ...a) };
 });
 vi.mock('../../../effects/fs.js', () => ({ existsSync: () => true, mkdirSync: () => undefined, copyFileSync: () => undefined, statSync: () => ({ size: 3 }) }));
 vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));

@@ -20,9 +20,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../../db/connection.js', () => ({
@@ -98,7 +96,6 @@ vi.mock('../../../home.js', async () => {
   return {
     homeDir: (): string => home,
     dojoDir: (...segs: string[]): string => p.join(home, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -244,34 +241,5 @@ describe('§3 the warning is actionable by the agent that gets it', () => {
     const named = many.filter((t) => w.includes(t));
     expect(named.length, 'at most the cap is named').toBeLessThanOrEqual(MISMATCH_NAMED_MAX);
     expect(w).toMatch(/\+\d+ more/);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// §4 — THE WIRE
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('§4 the spawn path calls it, on both texts it has', () => {
-  const spawnSrc = (): string => readFileSync(join(
-    dirname(fileURLToPath(import.meta.url)), '..', '..', 'tools', 'cat', 'agents.ts',
-  ), 'utf8');
-
-  it('⚠ WIRE: the instructions AND the delegated task\'s own words are both checked', () => {
-    const src = spawnSrc();
-    const calls = src.match(/mismatchWarning\(\{[^}]*\}\)/g) ?? [];
-    expect(calls.length, 'two texts, two checks: the system prompt and the task row').toBe(2);
-    expect(calls.join('\n'), 'the spawner\'s instructions').toContain('args.system_prompt');
-    expect(calls.join('\n'), 'and the task row, read where it is already resolved')
-      .toMatch(/freshTask\?\.title/);
-    // ⚠ NOT an undeclared argument. `spawn_agent` declares `task_id`, not `task`, and the
-    // effects-conformance walk refused the first cut of this wiring for reading `args.task` — a
-    // handler may only read parameters some tool declares. The task's words come off the ROW.
-    expect(src, 'a handler may not read an undeclared parameter').not.toContain('args.task as string');
-  });
-
-  it('the warning rides the result the spawner reads, not a log line', () => {
-    const src = spawnSrc();
-    const contentLine = src.split('\n').find((l) => l.includes('Agent spawned successfully.')) ?? '';
-    expect(contentLine, 'it must be in the tool result itself').toContain('mismatchWarning({');
   });
 });

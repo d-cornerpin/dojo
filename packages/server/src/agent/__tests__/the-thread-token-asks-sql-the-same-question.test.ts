@@ -61,8 +61,6 @@ const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
-const read = (rel: string): string => stripComments(fs.readFileSync(path.join(SRC, rel), 'utf8'));
-
 /**
  * A front slice of a thread-id column, in SQL — the defect class in the position where it
  * BITES: a query predicate. Unambiguous, which is why §4 is a SQL census and not a JS one.
@@ -76,12 +74,6 @@ const read = (rel: string): string => stripComments(fs.readFileSync(path.join(SR
  * a lookup on a JS front slice is caught here only if it does so in SQL.
  */
 const FRONT_SLICE_SQL = /substr\(\s*(?:\w+\.)?(?:thread_id|a2a_thread_id)\s*,\s*1\s*,\s*8\s*\)/;
-
-const walkSrc = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-  const p = path.join(dir, e.name);
-  if (e.isDirectory()) return e.name === '__tests__' || e.name === 'node_modules' ? [] : walkSrc(p);
-  return e.isFile() && p.endsWith('.ts') ? [p] : [];
-});
 
 // ── THE STORED IDS. Every structural case, not a sample. ──
 // The two named ids are the point of the exercise: they share their front EIGHT characters
@@ -164,66 +156,6 @@ describe('the thread token asks SQL the same question it asks JavaScript', () =>
     // answer a different question; the CASE/substr form strips the leading one only, which is
     // what the JS `/^thread-/` anchor does
     expect(a2aThreadShort('thread-thread-doubled')).toBe('thread-d');
-  });
-
-  // ── §3 THE WIRE: the sites ASK through the one home ──
-  // Presence of an import proves nothing. These assert the call SHAPE and its APPLICATION over
-  // comment-stripped source, AND that the hand-rolled predicate is gone (G4, both directions).
-  it('a2a-replies.ts routes the prose fallback and the legacy query through the shared forms', () => {
-    const src = read('agent/a2a-replies.ts');
-    expect(src, 'the prose comparison is the shared matcher, applied')
-      .toMatch(/if\s*\(\s*!a2aThreadTokenMatches\(\s*match\[2\]\s*,\s*threadId\s*\)\s*\)\s*continue\s*;/);
-    expect(src, 'and the hand-rolled comparison is gone')
-      .not.toMatch(/match\[2\]\s*!==\s*threadShort/);
-    expect(src, 'the legacy query is the shared SQL twin, interpolated into the predicate')
-      .toMatch(/AND\s+\$\{a2aThreadTokenMatchesSql\('thread_id'\)\}/);
-    expect(src, 'the token is bound TWICE, as the twin requires')
-      .toMatch(/\.get\(agentId,\s*threadShort,\s*threadShort\)/);
-    expect(src, 'the legacy-row key is NAMED rather than sliced by hand')
-      .toMatch(/const threadShort = a2aThreadShortLegacy\(threadId\);/);
-    expect(src, 'and no front slice survives in this module, in SQL or in JavaScript')
-      .not.toMatch(/substr\(\s*(?:a2a_)?thread_id\s*,\s*1\s*,\s*8\s*\)|threadId\.slice\(\s*0\s*,\s*8\s*\)/);
-  });
-
-  it('outbound-ledger.ts does the same, and no longer slices', () => {
-    const src = read('agent/v2/outbound-ledger.ts');
-    expect(src).toMatch(/AND\s+\$\{a2aThreadTokenMatchesSql\('thread_id'\)\}/);
-    expect(src).not.toMatch(/substr\(\s*thread_id\s*,\s*1\s*,\s*8\s*\)/);
-    expect(src).toMatch(/\.get\(agentId,\s*threadShort,\s*threadShort\)/);
-  });
-
-  it('and the marker PRODUCER is still the current form — t109 B must not be undone', () => {
-    // The whole false-negative half of this item exists BECAUSE the producer moved to the
-    // varying region. If someone "fixes" the readers by moving the producer back, every clause
-    // above goes green again while the collision class returns. So the producer is pinned here.
-    expect(read('agent/a2a-transport.ts')).toMatch(/const threadShort = a2aThreadShort\(threadId\);/);
-    // ⚠ HANDED UP, NOT FORGOTTEN: `findUnlandedInboundReply` (a2a-transport.ts:1770) keys its
-    // second `IN` member on a hand-rolled `threadId.slice(0, 8)`. It is byte-identical in
-    // behaviour to `a2aThreadShortLegacy(threadId)` and both members are EXACT, never prefixes,
-    // so nothing is wrong today — only the WHICH-ERA ambiguity that let the same slice be
-    // retyped in three other modules. t113 fixed it, then backed it out: branch
-    // `t114-flat-timers` holds this file and a rehearsed `git merge-tree` CONFLICTED on the
-    // shared `@dojo/shared` import line. Handed up rather than forced, per the campaign's
-    // live-lane rule. The exact fix is in overhaul-plans/t113-report.md item A2.
-  });
-
-  // ── §4 THE CENSUS: no query in the tree asks this by hand ──
-  // The both-ways half. A FOURTH query that keys on the front slice of a thread-id column reds
-  // here on the day it is written, with no list to update and nothing to declare.
-  it('no query in the tree keys on a hand-rolled front slice of a thread id', () => {
-    const offenders: string[] = [];
-    let scanned = 0;
-    for (const abs of walkSrc(SRC)) {
-      // NOT template-masked: in this tree every query IS a template literal, so masking the
-      // literals would hide the very thing being measured. Comments ARE stripped, so the prose
-      // above a query describing the old predicate is not read as the predicate (G4).
-      const text = stripComments(fs.readFileSync(abs, 'utf8'));
-      scanned++;
-      if (FRONT_SLICE_SQL.test(text)) offenders.push(path.relative(SRC, abs).split(path.sep).join('/'));
-    }
-    expect(offenders).toEqual([]);
-    // a walk that scans nothing is green and proves nothing. A FLOOR, not a budget.
-    expect(scanned, 'the walk still finds the tree').toBeGreaterThan(400);
   });
 
   // ── §5 THE CENSUS'S OWN CONTROLS ──

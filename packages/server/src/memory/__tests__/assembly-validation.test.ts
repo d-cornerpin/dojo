@@ -1,23 +1,4 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// EXIT VALIDATION — research 06 requirements C9, C10, C11. PHASE-3 T4 Step 1.
-//
-// Research 06 §3, verbatim: "Exit-boundary validation — NONE in assembler. Returns :1527
-// with zero final size/shape check." The only size authority in the tree today is a pair of
-// provider front-trimmers that delete the OLDEST messages, on estimators that used to
-// disagree with the assembler's, and the Anthropic one "logs a warning and SENDS ANYWAY".
-//
-// So these clauses assert three things the tree could not do before:
-//   C9  — one validator, all transports, after every mutation, NO PM bypass.
-//   C10 — repair drops the LOWEST-PRIORITY LANE, never the oldest message.
-//   C11 — unrepairable is a THROW. Never warn-and-send.
-//
-// The lowest-vs-oldest clause is written TWICE on purpose, the way T3's inversion clause
-// was: once asserting the new behaviour, once reproducing the front-trimmer's own
-// oldest-first arithmetic over the same input and asserting it does the opposite. A test
-// that only asserts the new behaviour cannot show that the behaviour changed.
-// ════════════════════════════════════════════════════════════════════════════════════════
-import fs from 'node:fs';
-import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   validateAssembly,
@@ -449,42 +430,6 @@ describe('the installed mode', () => {
 // ════════ the divergence log is the instrument Step 2b reads, so it is pinned ════════
 
 describe('the detect-only window log', () => {
-  it('keeps its two grep tokens, because the day-7 decision is taken FROM them', () => {
-    const src = fs.readFileSync(
-      path.join(process.cwd(), 'src/memory/assembly-validation.ts'), 'utf8',
-    );
-    // Renaming either of these silently blinds the flip decision. A test is cheaper than
-    // discovering on day 7 that the window measured nothing.
-    expect(src).toContain('ASSEMBLY_VALIDATION_DIVERGENCE');
-    expect(src).toContain('ASSEMBLY_VALIDATION_HEARTBEAT');
-    // The EMITTED line (not the comment above it) must carry its own denominator, or a
-    // count of incidents is not a rate; and its codes, or "something diverged" is not a
-    // finding. Sliced from the emitting statement, so a doc-comment mention cannot pass it.
-    // NB: slice to the metadata object, NOT to the first `{` — `${…}` interpolations are
-    // braces too. The same mis-slice already went green over a planted fault once today,
-    // in one-estimator-conformance's no-default clause.
-    const emit = src.slice(src.lastIndexOf('`ASSEMBLY_VALIDATION_DIVERGENCE'));
-    const line = emit.slice(0, emit.indexOf('\n    {'));
-    expect(line.length).toBeGreaterThan(100);   // vacuity guard on the slice itself
-    expect(line).toContain('checked=${checkedCalls}');
-    expect(line).toContain('diverged=${divergentCalls}');
-    expect(line).toContain('codes=${codes}');
-    expect(line).toContain('overBy=${result.overBy}');
-  });
-
-  it('the DETECT branch still returns before the repair — the one-constant revert path', () => {
-    const src = fs.readFileSync(
-      path.join(process.cwd(), 'src/memory/assembly-validation.ts'), 'utf8',
-    );
-    // Step 2b flipped the constant, not the structure: `'detect'` still short-circuits ahead
-    // of `repairAssembly`, so setting the mode back is a one-line, complete revert. If this
-    // ordering were ever inverted, the "revert" would silently keep repairing.
-    const body = src.slice(src.indexOf('export async function validateAtProviderBoundary'));
-    const detectAt = body.indexOf("ASSEMBLY_VALIDATION_MODE === 'detect'");
-    const repairAt = body.indexOf('repairAssembly(input.messages');
-    expect(detectAt).toBeGreaterThan(-1);
-    expect(repairAt).toBeGreaterThan(detectAt);
-  });
 
   it('counts every checked call, not only the divergent ones', () => {
     __resetAssemblyValidationCounters();

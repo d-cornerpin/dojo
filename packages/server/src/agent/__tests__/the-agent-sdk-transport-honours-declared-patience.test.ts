@@ -118,7 +118,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -327,6 +326,7 @@ const callAgentSdk = (message: string): Promise<ModelCallResult> => callModel({
 
 beforeEach(() => {
   fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.mkdirSync(path.join(FAKE_DOJO, 'logs'), { recursive: true });   // the logger, loaded once, keeps writing here
   clearSecretsCache();
   clearClientCache();
   const db = new Database(':memory:');

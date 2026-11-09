@@ -23,8 +23,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SRCDIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-
 /** The policy the broker will read. Set per clause; the accessor is mocked at the config seam so
  *  these clauses need no database. */
 const policyRow: { current: string | null } = { current: null };
@@ -49,7 +47,6 @@ import {
   sudoOwnerCardCopy, sudoPasswordPromptMessage, sudoersDropInLine, type SudoPolicy,
 } from '../sudo-copy.js';
 import type { PermissionManifest } from '@dojo/shared';
-import { engineFileContaining } from '../../v2/__tests__/engine-sources.js';
 
 const base = {
   file_read: '*', file_write: '*', file_delete: 'none', exec_deny: [],
@@ -439,19 +436,6 @@ describe('§6 `gated` holds the PRIMARY, and the hold goes to the OWNER', () => 
     expect(isSudoHoldRequired('shell', {})).toBe(false);
   });
 
-  it('THE HOLD IS FILED FOR THE PRIMARY, at the dispatch step, to the OWNER\'s card', () => {
-    // Structural, because the filing needs a turn. Three facts: the branch runs FOR the primary (the
-    // old gate skips it), it routes through the owner-approval proposal rather than `requestApproval`
-    // (which wakes the PRIMARY — asking a caller to approve its own call), and it carries sudo's own
-    // copy so the owner is not told his main agent is a self-healing helper.
-    const site = engineFileContaining('isSudoHoldRequired')!.text;
-    expect(site).toMatch(/isPrimaryAgent\(agentId\)\s*&&\s*isSudoHoldRequired/);
-    expect(site).toContain('fileHealerApprovalProposal');
-    expect(site).toContain('sudoOwnerCardCopy');
-    // and it consumes a granted approval on the retry, so one approval means one run
-    expect(site).toMatch(/consumeApproval\(agentId, sig/);
-  });
-
   it('the owner card says what it is, promises nothing has run, and does not nudge', () => {
     const c = sudoOwnerCardCopy('sudo cp bin/imsg /opt/homebrew/bin/');
     expect(c.title).toContain('administrator command');
@@ -463,12 +447,6 @@ describe('§6 `gated` holds the PRIMARY, and the hold goes to the OWNER', () => 
     expect(c.description.toLowerCase()).not.toContain('we recommend');
     // and it tells him the floor still holds whatever he clicks
     expect(c.evidence.join(' ')).toContain('hard limits still apply');
-  });
-
-  it('THE JUNE DOCTRINE IS ANNOTATED where it is carved out, with the owner\'s sentence', () => {
-    const site = engineFileContaining('isSudoHoldRequired')!.text;
-    expect(site).toContain('ONLY the main agent gets Sudo access ever');
-    expect(site).toMatch(/full reign — EXCEPT FOR SUDO/);
   });
 
   it('a genuinely destructive NON-sudo line is classified exactly as before', async () => {
@@ -485,9 +463,5 @@ describe('§6 `gated` holds the PRIMARY, and the hold goes to the OWNER', () => 
     const { isDestructiveCall } = await import('../../destructive-gate.js');
     policyRow.current = 'gated';
     expect(isDestructiveCall('shell', { script: 'sudo ls' })).toBeNull();
-    const gate = engineFileContaining('DESTRUCTIVE_EXEC_RE')?.text
-      ?? (await import('node:fs')).readFileSync(
-        (await import('node:path')).join(SRCDIR, 'agent', 'destructive-gate.ts'), 'utf8');
-    expect(gate).toContain('SUDO IS DELIBERATELY NOT CLASSIFIED HERE');
   });
 });

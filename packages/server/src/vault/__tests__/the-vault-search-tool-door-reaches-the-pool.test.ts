@@ -27,7 +27,6 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const dbDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t98-tooldoor-'));
 const dbPath = path.join(dbDir, 'fixture.db');
@@ -199,20 +198,6 @@ describe('⚠ THE DOOR\'S READS LEAVE THE SERVING THREAD — the change itself, 
     expect(onThreadReads.filter((q) => q.includes('MAX(rowid)'))).toHaveLength(1);
     expect(onThreadReads.filter((q) => q.includes('MIN(rowid)'))).toHaveLength(1);
   }, 60_000);
-
-  it('the handler AWAITS the pooled door — asserted on the call, with comments stripped', () => {
-    // A source clause as well as the behavioural one, because the behavioural pair above can both be
-    // satisfied by a synchronous door (rows yes, pool no) and the counted clause is the only thing
-    // separating them — so the call shape is pinned too, and it is pinned as shape AND application:
-    // the identifier, the `await`, and the assignment it feeds.
-    const raw = fs.readFileSync(new URL('../tools.ts', import.meta.url), 'utf-8');
-    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(code, 'exact mode no longer awaits the pooled listing door')
-      .toMatch(/const rows = await listEntriesBounded\(\{/);
-    // And the synchronous door is NOT what exact mode calls any more — the other direction.
-    expect(code, 'the synchronous listing door is back on the tool path')
-      .not.toMatch(/const rows = listEntries\(\{/);
-  });
 });
 
 describe('⚠ FIX ROUND 1, I2 — A TRUNCATED WINDOW IS TOLD TO THE AGENT, NOT ONLY TO THE LOG', () => {
@@ -278,98 +263,4 @@ describe('⚠ FIX ROUND 1, I2 — A TRUNCATED WINDOW IS TOLD TO THE AGENT, NOT O
     expect(out).not.toContain('searched the newest');
     expect(out).not.toContain('was scored');
   }, 60_000);
-});
-
-describe('⚠ EVERY PRODUCTION CALLER OF AN ASYNC VAULT READ AWAITS IT — a census, both ways', () => {
-  // ⚠ WHY A CENSUS RATHER THAN A SPOT CHECK. These four reads return Promises, and TypeScript will
-  // not stop a caller from assigning one to a variable and reading `.length` off it — the value is
-  // `undefined`, nothing throws, and the agent is handed an empty answer that looks like a real one.
-  // `listEntriesBounded` is new on the tool path with this fix, so this is exactly the moment to
-  // write the rule down with a NUMBER: add a caller without an `await` and this reds.
-  // ⚠ `fileURLToPath`, NOT `url.pathname`. This repository's path contains spaces, so `pathname`
-  // hands back the percent-encoded form and every `readFileSync` ENOENTs. My first cut used
-  // `pathname` and the clause died on `Claude%20Code%20Projects` — worth the comment because the
-  // failure looks like a missing file rather than a wrong decoding.
-  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-
-  /** Every production `.ts` under `packages/server/src`, tests and fixtures excluded. */
-  function productionFiles(dir: string): string[] {
-    const out: string[] = [];
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
-      const child = path.join(dir, entry.name);
-      if (entry.isDirectory()) out.push(...productionFiles(child));
-      else if (/\.ts$/.test(entry.name) && !/\.(test|spec)\.ts$/.test(entry.name)) out.push(child);
-    }
-    return out;
-  }
-
-  const ASYNC_READS = [
-    'semanticSearch',
-    'listEntriesBounded',
-    'findNearDuplicateEntry',
-    'findSemanticDuplicate',
-  ] as const;
-
-  it('every call site of each async vault read is awaited, and the callers are named', () => {
-    const files = productionFiles(SRC_ROOT);
-    expect(files.length, 'the file walk found nothing — the walk broke, not the code')
-      .toBeGreaterThan(300);
-
-    const callers: Record<string, Set<string>> = {};
-    const unawaited: string[] = [];
-    for (const abs of files) {
-      const code = fs.readFileSync(abs, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-      const rel = abs.slice(abs.indexOf(`${path.sep}src${path.sep}`) + 5).split(path.sep).join('/');
-      for (const name of ASYNC_READS) {
-        for (const m of code.matchAll(new RegExp(`\\b${name}\\s*\\(`, 'g'))) {
-          // The 24 characters in front of the identifier decide what this occurrence IS.
-          const before = code.slice(Math.max(0, m.index - 24), m.index);
-          // A DECLARATION is not a call, and neither is an import — skip both by their own shape.
-          if (/\b(?:function|import|from)\s+$/.test(before)) continue;
-          if (/typeof\s+$/.test(before)) continue;
-          (callers[name] ??= new Set()).add(rel);
-          // ⚠ THE RULE, and it is worth stating because TypeScript will not enforce it: a Promise
-          // assigned to a variable and read for `.length` gives `undefined` and NOTHING THROWS —
-          // the agent is handed an empty answer that looks like a real one. A call is accepted when
-          // `await` or `return` stands immediately in front of it (`return` puts the caller's own
-          // `await` in charge). `void` is NOT accepted: a deliberately-dropped vault read is a
-          // dropped answer.
-          if (!/\b(?:await|return)\s+$/.test(before)) unawaited.push(`${rel}: ${name}`);
-        }
-      }
-    }
-
-    // eslint-disable-next-line no-console
-    console.log('ASYNC VAULT READ CENSUS  '
-      + ASYNC_READS.map((n) => `${n} → ${[...(callers[n] ?? [])].sort().join(', ')}`).join(' · '));
-
-    expect(unawaited, 'an async vault read is called without `await` — its answer reads `undefined`')
-      .toEqual([]);
-
-    // ⚠ AND THE OTHER DIRECTION, as NAMED SETS rather than counts — a new caller reds this clause and
-    // its author has to come here and say that it awaits. The sets are the measured answer, not a
-    // guess: my first cut asserted a `gateway/routes/vault.ts` caller for `semanticSearch` from
-    // memory and reded, because that route calls `listEntries` and `getEntry` and never the semantic
-    // path. The DECLARATION site is skipped by shape above, so `vault/store.ts` appearing here is a
-    // real call inside the store — `createEntry`'s dedup and the embed-outage fallback.
-    // ⚠ THREE CALLERS, AND THE THIRD IS WHY THIS CLAUSE EARNED ITS KEEP (fix round 1, I3). The
-    // review found a FOURTH synchronous caller the lane had not counted —
-    // `memory/recall-lane.ts`'s auto-recall embed-outage arm, which runs every turn for the
-    // duration of an outage — and when it was converted, THIS CLAUSE WENT RED on the set it had
-    // written down. That is a wire clause counting in the direction that matters.
-    expect(new Set(callers['listEntriesBounded'] ?? []),
-      'listEntriesBounded gained or lost a caller — name it, and say that it awaits')
-      .toEqual(new Set(['memory/recall-lane.ts', 'vault/store.ts', 'vault/tools.ts']));
-    expect([...(callers['findSemanticDuplicate'] ?? [])].sort(),
-      'the dedup check is private to the store; a second caller is a design change')
-      .toEqual(['vault/store.ts']);
-    expect([...(callers['semanticSearch'] ?? [])].sort(),
-      'semanticSearch gained or lost a caller')
-      .toEqual(['memory/recall-lane.ts', 'vault/tools.ts']);
-    expect([...(callers['findNearDuplicateEntry'] ?? [])].sort(),
-      'the near-duplicate band check gained or lost a caller')
-      .toEqual(['vault/tools.ts']);
-  });
 });

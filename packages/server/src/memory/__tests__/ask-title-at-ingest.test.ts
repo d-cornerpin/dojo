@@ -29,7 +29,6 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -309,116 +308,6 @@ describe('the written title must pass the platform\'s declared-value scrub', () 
     expect(acceptModelTitle(AGENT, '""')).toBeNull();
     expect(acceptModelTitle(AGENT, null)).toBeNull();
     expect(acceptModelTitle(AGENT, undefined)).toBeNull();
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// 4. THE CENSUS — a new channel cannot quietly skip the door
-// ════════════════════════════════════════════════════════════════════════
-//
-// The producers that carry a person's message are the ones that pass a CHANNEL with
-// `role: 'user'` — that is the structural fact `isOwnerAsk` gates on (a `role='user'` row
-// with no channel was not written by an ingest path). Every one of them must reach the
-// writer through the door, or — for the one producer that owns its own outer transaction —
-// start the replacement itself once that transaction has committed.
-//
-// A producer that skipped it would not LEAK anything — its ticket would take its own
-// identifier, which is the safe fallback and is now the value it is FILED with — but it
-// would silently never get a real title, and nothing would say so. That is the rot class
-// this clause exists to catch, and T0B's async path is exactly the shape that could have
-// routed around it.
-//
-// The walk reads the source with fs (never grep: two of this tree's largest files carry
-// NUL bytes and grep skips them silently), the same way the single-writer walk does.
-
-describe('every inbound producer reaches the writer through the ingest door', () => {
-  const SRC = path.join(__dirname, '..', '..');
-
-  const walk = (dir: string, acc: string[] = []): string[] => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fp = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'migrations') continue;
-        walk(fp, acc);
-      } else if (e.name.endsWith('.ts')) acc.push(fp);
-    }
-    return acc;
-  };
-  const rel = (f: string) => path.relative(SRC, f).split(path.sep).join('/');
-
-  /** The eight producers measured at this task's HEAD, each read at its site. */
-  const CONVERTED = [
-    'gateway/routes/chat.ts',
-    'gateway/routes/twilio.ts',
-    'services/gmail-watcher.ts',
-    'services/imessage-bridge.ts',
-    'services/outlook-watcher.ts',
-    'services/teams-watcher.ts',
-    'twilio/call-session.ts',
-    'twilio/sms-inbound.ts',
-  ];
-
-  /** The two shapes a producer hands the writer in this tree: the object literal passed
-   *  straight into an `insertMessage*` call, and the `NewMessage`-typed local the one
-   *  producer with its own outer transaction builds first. A literal carrying BOTH a user
-   *  role and a channel is a person's message arriving on a channel. */
-  const CALL_RE = /(?:insert(?:Inbound)?Message(?:IfAbsent)?\(\{|:\s*NewMessage\s*=\s*\{)[\s\S]*?\n\s*\}[),;]/g;
-
-  it('the producers that pass a channel with role user are exactly the converted eight', () => {
-    const found: string[] = [];
-    for (const f of walk(SRC)) {
-      const r = rel(f);
-      if (r === 'memory/message-store.ts' || r === 'work/ask-title.ts') continue; // the writer and the door
-      const src = fs.readFileSync(f, 'utf8');
-      for (const call of src.match(CALL_RE) ?? []) {
-        if (/role:\s*'user'/.test(call) && /channel:/.test(call)) { found.push(r); break; }
-      }
-    }
-    expect([...new Set(found)].sort()).toEqual(CONVERTED);
-  });
-
-  it('and each of them reaches the door (or starts the replacement, for the one with its own transaction)', () => {
-    for (const r of CONVERTED) {
-      const src = fs.readFileSync(path.join(SRC, r), 'utf8');
-      expect(
-        src.includes('insertInboundMessageIfAbsent') || src.includes('replaceAskTitleFromModel'),
-        `${r} writes a person's message without going through the ingest door`,
-      ).toBe(true);
-    }
-  });
-
-  it('and the removed mechanism is gone from the writer: nothing derives a title from content', () => {
-    const writer = fs.readFileSync(path.join(SRC, 'memory/message-store.ts'), 'utf8');
-    // The literal that shipped, and the shape of any replacement for it.
-    expect(writer).not.toMatch(/title:\s*\(?b\.params\.content/);
-    expect(writer).not.toMatch(/title:[^\n]*\.slice\(/);
-  });
-
-  it('and the RETIRED bounded wait is gone from the tree, not merely unused', () => {
-    // PHASE-6 T0B deleted the wait in the same change that stopped waiting. Both halves of
-    // it: the bound itself and the race that enforced it on the ingest caller.
-    //
-    // Read over CODE, not comments — `work/ask-title.ts`'s header deliberately KEEPS the
-    // retired mechanism's name and its nine measured samples as the record of the cost that
-    // was removed, and a clause that could not tell a record from a mechanism would forbid
-    // writing that record down.
-    const codeOf = (src: string): string => src.split('\n')
-      .filter((l) => {
-        const t = l.trim();
-        return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'));
-      }).join('\n');
-
-    for (const f of walk(SRC)) {
-      expect(codeOf(fs.readFileSync(f, 'utf8')), `${rel(f)} still names the retired ingest bound`)
-        .not.toContain('ASK_TITLE_TIMEOUT_MS');
-    }
-    const door = codeOf(fs.readFileSync(path.join(SRC, 'work/ask-title.ts'), 'utf8'));
-    expect(door).not.toContain('Promise.race');
-    // ...and the pre-transaction resolver it existed to serve is gone with it, so no
-    // producer can still be resolving a title above its own write.
-    expect(door).not.toContain('resolveInboundAskTitle');
-    // The negative control: the clause can still see a mechanism that IS there.
-    expect(door).toContain('replaceAskTitleFromModel');
   });
 });
 

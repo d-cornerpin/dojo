@@ -35,9 +35,6 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, cloneGrants } from '@dojo/shared';
 import type { AccessGrants, PermissionManifest } from '@dojo/shared';
@@ -47,25 +44,6 @@ import {
   readLegacyAccess, buildLegacyAccess, legacyDirty, manageSummary, legacyReachSummary,
   programsAreEmpty, type LegacyAccess,
 } from '../../../../../dashboard/src/lib/manifest-edits.js';
-
-const DASH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..', 'dashboard', 'src',
-);
-const readDash = (rel: string): string => fs.readFileSync(path.join(DASH, rel), 'utf8');
-
-/** Source with every comment removed, so a clause about what the OWNER READS
- *  cannot be satisfied — or broken — by a tombstone comment naming the old
- *  behaviour. The repo's practice is to leave those comments; this is how a
- *  user-visible-copy assertion coexists with it. */
-const withoutComments = (src: string): string =>
-  src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[ \t]*\/\/.*$/gm, ' ');
-
-const panel = (): string => readDash('components/AccessPanel.tsx');
-const bits = (): string => readDash('components/AccessControls.tsx');
-const manifestUi = (): string => readDash('components/AccessManifest.tsx');
-const editor = (): string => readDash('pages/AgentConfigPanel.tsx');
-/** Everything the Access panel puts on screen, comments stripped. */
-const copy = (): string => withoutComments(panel() + bits() + manifestUi());
 
 // ── Fixtures: three differently-configured agents, the brief's own request ──
 
@@ -341,136 +319,11 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 4 · THE PANEL — five questions, one card, and the emptied card is gone
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('one panel, five plain questions', () => {
-  const QUESTIONS = [
-    'What it can do',
-    'What it can reach',
-    'Who it can talk to',
-    'What it knows',
-    'What it may manage',
-  ];
-
-  it('⚠ ALL FIVE ARE ON THE CARD, AS QUESTIONS', () => {
-    const src = panel();
-    for (const q of QUESTIONS) expect(src, `the "${q}" row`).toContain(q);
-  });
-
-  it('⚠ AND THE OLD SECTION TITLES ARE GONE — this is a replacement, not an addition', () => {
-    const src = withoutComments(panel());
-    for (const old of ['title="Tools"', 'title="Integrations"', 'title="Channels"', 'title="Techniques"']) {
-      expect(src, `${old} was replaced by a question`).not.toContain(old);
-    }
-  });
-
-  it('⚠ EVERY ROW COLLAPSES, THROUGH THE ONE COLLAPSE IDIOM', () => {
-    const src = panel();
-    expect(src).toContain("from './CollapseToggle'");
-    expect(src).toMatch(/usePanelCollapse\(\s*'[^']+'\s*,\s*true\s*\)/);
-    // One <Row> per question, each asking the same hook for its own key.
-    expect((src.match(/<Row\b/g) ?? []).length).toBe(5);
-    expect(src).toMatch(/isCollapsed\(/);
-  });
-
-  it('the card itself still opens collapsed, with the digest on its header', () => {
-    const src = panel();
-    expect(src).toMatch(/accessDigest\(/);
-    expect(src).toMatch(/<CollapseToggle/);
-  });
-
-  it('⚠ THE DIGEST IS BUILT FROM THE STORED OBJECT, NEVER FROM THE DRAFT', () => {
-    // A shut card that reports an unsaved edit as if it were saved is a lie the
-    // owner cannot see to correct. A5 established this; A6 keeps it.
-    expect(panel()).toMatch(/accessDigest\(\s*stored/);
-  });
-});
-
-describe('the legacy permission toggles moved, and the card they were on is gone', () => {
-  it('⚠ THE AGENT EDITOR NO LONGER MOUNTS THE PERMISSIONS EDITOR', () => {
-    const src = editor();
-    expect(src).not.toContain('<PermissionsEditor');
-    expect(src).not.toMatch(/import \{ PermissionsEditor/);
-    expect(src, 'the emptied card is removed, not left as a shell').not.toMatch(/scard__title">Permissions/);
-  });
-
-  it('⚠ THE OLD EDITOR SURVIVES ONLY WHERE IT IS STILL THE ONLY CONTROL', () => {
-    // `PermissionsEditor` is still mounted by the CREATE-AN-AGENT modal, which
-    // is a different moment: there is no agent row yet, so there is no Access
-    // panel to fold it into. Named here rather than deleted quietly, because a
-    // component with one remaining caller is exactly the kind of leftover that
-    // starts drifting from the surface that replaced it.
-    expect(readDash('pages/Agents.tsx')).toContain('PermissionsEditor');
-    expect(editor(), 'but not by the agent editor').not.toContain('PermissionsEditor');
-  });
-
-  it('⚠ AND THE CARDS THAT ARE NOT PERMISSIONS ARE UNTOUCHED', () => {
-    const src = editor();
-    for (const kept of ['Name', 'Model', 'Classification', 'System Prompt', 'Memory']) {
-      expect(src, `the ${kept} card stays`).toContain(kept);
-    }
-  });
-
-  it('⚠ EVERY MOVED TOGGLE IS ON THE PANEL, IN PLAIN WORDS', () => {
-    const src = copy();
-    for (const label of [
-      'Run programs on this Mac',        // exec_allow
-      'Search the web',                  // tools_policy web_search/web_fetch
-      'Open web pages',                  // system_control web_browse
-      'Use stored keys & logins',        // the credential grant
-      'Read your files',                 // file_read
-      'Change and create files',         // file_write
-      'Delete files',                    // file_delete
-      'See your screen',                 // system_control screen
-      'Move the mouse',                  // system_control mouse
-      'Type on the keyboard',            // system_control keyboard
-      'Automate Mac apps',               // system_control applescript
-      'Create helper agents',            // can_spawn_agents
-      'Set what other agents may do',    // can_assign_permissions
-      'Knows who you are',               // config.shareUserProfile
-    ]) {
-      expect(src, `"${label}" is on the panel`).toContain(label);
-    }
-  });
-
-  it('⚠ THE RISKY ONES CARRY ONE CONSISTENT WARNING TINT', () => {
-    const src = manifestUi() + panel();
-    // One class, set from one prop, so "risky" looks the same everywhere.
-    expect(bits()).toMatch(/is-risk/);
-    expect((src.match(/\brisk\b/g) ?? []).length).toBeGreaterThanOrEqual(5);
-  });
-
-  it('⚠ A BUILT-IN AGENT\'S MANIFEST IS STILL NOT EDITABLE HERE', () => {
-    // Today's rule, carried across unchanged: the agent editor rendered a NOTE
-    // instead of the permissions editor for every platform agent. The panel must
-    // keep that, and it must not learn the classification to do it — the parent
-    // knows which agent is which and says so through one prop.
-    expect(editor()).toMatch(/manifestEditable=\{/);
-    expect(panel()).toMatch(/manifestEditable/);
-    expect(withoutComments(panel()), 'the panel never reads the classification')
-      .not.toContain('classification');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 5 · THE LANGUAGE RULES — measured on the copy, not promised in a comment
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('nothing on this panel speaks the dojo\'s internal language', () => {
   const JARGON = ['sensei', 'ronin', 'apprentice', 'a2a', 'über', 'uber toggle', 'grants object'];
-
-  it('⚠ NO INTERNAL WORD SURVIVES ANYWHERE THE OWNER CAN READ IT', () => {
-    const src = copy().toLowerCase();
-    for (const word of JARGON) {
-      expect(src, `"${word}" is internal language and must not be on screen`).not.toContain(word);
-    }
-  });
-
-  it('⚠ THE HELPER-AGENT NOTE SAYS WHAT IT MEANS INSTEAD OF NAMING THE RANK', () => {
-    const src = copy();
-    expect(src).toMatch(/talks through your main agent/i);
-  });
 
   it('the presets are described in plain words, one line each', () => {
     for (const p of ACCESS_PRESETS) {

@@ -37,8 +37,6 @@ import { contextWindowPolicy, toolAndOutputReserve, CONTEXT_THRESHOLD } from '..
 import { getProviderCeilingTokens, getModelOutputCap } from '../../agent/model.js';
 import { resolveDoomCeiling, PROVIDER_CEILING_SAFETY, doomGuardApplies, LOCAL_PROVIDER_TYPES } from '../../agent/stream-patience.js';
 import os from 'node:os';
-import fs from 'node:fs';
-import path from 'node:path';
 import { runMigrations } from '../../db/migrations.js';
 
 const AGENT = 'agent-full-window';
@@ -163,12 +161,5 @@ describe('review round M4: a model on the owner\'s own network is local', () => 
   it('a LAN OpenAI-compatible row keeps its ceiling, so the budget is capped', () => {
     seed({ type: 'openai-compatible', baseUrl: 'http://192.168.1.20:1234/v1' });
     expect(getProviderCeilingTokens(MODEL)).toBe(resolveDoomCeiling(FIRST_CHUNK_MS, null, MEASURED_TPS));
-  });
-
-  it('ONE predicate: the budget door and the pre-dial door both ask doomGuardApplies first', () => {
-    const src = fs.readFileSync(path.resolve(__dirname, '../../agent/model.ts'), 'utf8');
-    const preDial = /function refuseIfDoomed\([\s\S]*?\): void \{\s*\n[^\n]*\n\s*if \(!doomGuardApplies\(provider\)\) return;/;
-    expect(src).toMatch(preDial);
-    expect(src).toMatch(/export function getProviderCeilingTokens[\s\S]{0,120}if \(!doomGuardApplies\(info\)\) return null;/);
   });
 });

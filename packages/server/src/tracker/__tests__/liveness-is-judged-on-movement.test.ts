@@ -1,0 +1,440 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t143 (v3.3.3, OR-LONG-JOBS) — LIVENESS IS JUDGED ON MOVEMENT, TASK BY TASK.
+//
+// The owner's ruling: "if there is progress of any kind, maybe we just let them work … a true
+// connection issue or no movement (no tokens going in or out) for a couple hours, we notify the
+// user." Movement is what the Dojo can see: tokens in or out (a model call's cost row), a request
+// open on a live connection (the abort registry), a tool started or finished (the agent's own
+// rows). The 30-second status heartbeat (`runtime.ts` `startStatusHeartbeat`) is a timer, not
+// progress, and is never read as evidence.
+//
+// Every clause drives the real doors: the platform clock's liveness sweep, the engine's real checkpoint writer and turn-finalize stamper (the two records a 15-minute park
+// leaves on the tracker), the real agents route (the per-agent setting), the real owner-notice
+// door down to the `deliveries` ledger. Only the phone (`child_process`), the socket, the A2A
+// transport and the engine runtime are replaced.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+// RED-FIRST at 4cb9ed61: clauses marked `it.fails` are the witness; the fix commit flips them.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const HOME = path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'dojo-t143-liveness');
+
+vi.mock('../../home.js', async () => {
+  const p = await import('node:path');
+  const o = await import('node:os');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t143-liveness');
+  return {
+    homeDir: (): string => dir,
+    dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
+  };
+});
+
+const mockDb: { current: Database.Database | null } = { current: null };
+vi.mock('../../db/connection.js', async () => {
+  const p = await import('node:path');
+  const o = await import('node:os');
+  return {
+    getDb: () => {
+      if (!mockDb.current) throw new Error('test DB not initialized');
+      return mockDb.current;
+    },
+    closeDb: vi.fn(),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t143-liveness', 'dojo.db'),
+  };
+});
+
+const { broadcasts, transport, a2a } = vi.hoisted(() => ({
+  broadcasts: [] as Array<Record<string, unknown>>,
+  transport: [] as string[],
+  a2a: [] as Array<{ toAgent?: string; payload?: string; threadId?: string }>,
+}));
+vi.mock('../../gateway/ws.js', () => ({
+  broadcast: (e: Record<string, unknown>) => { broadcasts.push(e); },
+  stampPersistedRow: (e: unknown) => e,
+}));
+vi.mock('../../agent/runtime.js', () => ({
+  getAgentRuntime: () => ({
+    notifyPrimaryOfInjury: vi.fn(async () => undefined),
+    handleMessage: vi.fn(async () => undefined),
+    getAgentUptime: () => 0,
+  }),
+  stopAgent: vi.fn(),
+}));
+vi.mock('../../agent/a2a-transport.js', () => ({
+  deliverA2AMessage: vi.fn(async (env: { toAgent?: string; payload?: string; threadId?: string }) => {
+    a2a.push(env);
+    return { delivered: true, threadId: env.threadId ?? 't' };
+  }),
+  makeThreadId: (seed: string) => `thread-${seed}`,
+}));
+const { verdict } = vi.hoisted(() => ({ verdict: { reply: '' } }));
+vi.mock('../../agent/model.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent/model.js')>()),
+  callModel: vi.fn(async () => ({ content: verdict.reply })),
+}));
+vi.mock('node:child_process', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('node:child_process')>();
+  const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
+  return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
+});
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../../services/imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
+
+import { runMigrations } from '../../db/migrations.js';
+
+// Each clause boots the real module graph and runs the full migration chain; an import cost, not
+// a timing assertion. Nothing here measures time.
+vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
+import { registerAbortable, releaseAbortable } from '../../agent/shared-state.js';
+import { configRouter } from '../../gateway/routes/config.js';
+import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
+import { endJobCarry, beginJobRun, endJobRun, registerTimerWake } from '../../work/task-freshness.js';
+import { stampTasksAtTurnFinalize } from '../task-stamps.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
+import { agentsRouter } from '../../gateway/routes/agents.js';
+import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+
+const OWNER = 'owner@example.test';
+const MIN = 60_000;
+const db = (): Database.Database => mockDb.current!;
+const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+
+beforeEach(() => {
+  endJobCarry('helper');   // the job carry is process memory: no test inherits another's
+  fs.rmSync(HOME, { recursive: true, force: true });
+  fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
+  const d = new Database(':memory:');
+  d.pragma('foreign_keys = ON');
+  mockDb.current = d;
+  runMigrations();
+  transport.length = 0;
+  broadcasts.length = 0;
+  a2a.length = 0;
+  d.prepare(`INSERT INTO config (key, value) VALUES ('imessage_approved_senders', ?)`)
+    .run(JSON.stringify([{ address: OWNER, name: 'Owner', is_primary: true }]));
+  d.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('prov-a', 'Cloud Provider', 'openai-compatible', 'api_key')`).run();
+  d.prepare(`INSERT INTO models (id, provider_id, name, api_model_id) VALUES ('m-a', 'prov-a', 'Model A', 'model-a')`).run();
+  d.prepare(`INSERT INTO agents (id, name, status, model_id, classification) VALUES
+    ('helper', 'Helper', 'idle', 'm-a', 'apprentice'), ('pm', 'PM', 'idle', 'm-a', 'sensei')`).run();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  mockDb.current?.close();
+  mockDb.current = null;
+});
+
+const ownerTexts = (): number => (db().prepare(
+  "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
+).get(OWNER) as { n: number }).n;
+/** The phone sends (the bridge's own `--help` probe and path lookups are not sends). */
+const sent = (): string[] => transport.filter((t) => t.includes('"send"'));
+
+/** A claimed task on the helper, opened (and last written) at `atMs`. */
+function claimedTask(id: string, title: string, atMs: number, convKey: string): void {
+  seedTrackerTask(db(), {
+    id, agentId: 'helper', status: 'in_progress', title,
+    opened_at: atMs, updated_at: atMs, origin_conv_key: convKey, priority: 'normal',
+  } as never);
+}
+
+/** A model call that finished at `atMs`: the cost row is the record of tokens in and out. */
+function modelCallFinished(atMs: number, agentId = 'helper'): void {
+  db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd, created_at)
+                VALUES (?, ?, 'm-a', 'prov-a', 12000, 300, 0.01, ?)`).run(`cr-${agentId}-${atMs}`, agentId, sqlTime(atMs));
+}
+
+/** The model asked for a tool at `atMs` (the assistant's own row, carrying the tool_use block). */
+function toolStarted(atMs: number, tool: string, turn: number): void {
+  db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+                VALUES (?, 'helper', 'assistant', ?, ?, ?)`)
+    .run(`asst-${atMs}`, JSON.stringify([{ type: 'tool_use', id: `tu-${atMs}`, name: tool, input: {} }]), turn, atMs);
+}
+
+/** A turn is open (the agent is mid-turn), started at `atMs`. */
+function turnOpen(turn: number, atMs: number): void {
+  db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, answered) VALUES ('helper', ?, ?, 0)`)
+    .run(turn, sqlTime(atMs));
+}
+
+/** A wedged tool call: the model's call finished and asked for a tool `quietMs` ago; the tool
+ *  never returned; nothing is open on the abort registry; the agent still reads `working`. */
+function wedgedToolCall(quietMs: number, now = Date.now()): void {
+  claimedTask('task-wedged', 'the quarterly numbers', now - quietMs - 5 * MIN, 'c-1');
+  turnOpen(7, now - quietMs - MIN);
+  modelCallFinished(now - quietMs);
+  toolStarted(now - quietMs, 'exec', 7);
+  db().prepare("UPDATE agents SET status = 'working' WHERE id = 'helper'").run();
+}
+
+/** The long job's own task: opened by the owner's ask `msg-ask` (its `source_message_id`). */
+function jobTask(atMs: number): void {
+  seedTrackerTask(db(), {
+    id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
+    opened_at: atMs, updated_at: atMs, origin_conv_key: 'c-job', source_message_id: 'msg-ask', priority: 'normal',
+  } as never);
+}
+
+/** One 15-minute park of the long job, as the engine leaves it: inside the turn's own context
+ *  (the first turn's trigger is the owner's ask; a continuation's is the engine's self-wake),
+ *  the checkpoint, then the turn-finalize stamp. */
+function park(turnNumber: number, at: number, first: boolean): void {
+  vi.setSystemTime(at);
+  const tc = openTurnContext('helper');
+  tc.turnNumber = turnNumber;
+  tc.root = first ? { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' } : null;
+  if (!first) beginJobRun('helper', 'timer');   // the previous park's own wake fires: this run carries the job
+  modelCallFinished(at);
+  noteEngineCheckpoint('helper', 'turn-budget');
+  registerTimerWake('helper');
+  stampTasksAtTurnFinalize({
+    agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
+    rootSourceMessageId: first ? 'msg-ask' : null, convKey: 'c-job', servedTaskId: null,
+  });
+  endTurnContext('helper');
+  endJobRun('helper');
+}
+
+/** The sweep a quiet minute brings: the platform clock's liveness check. */
+async function sweep(): Promise<void> {
+  await runSchedulerTick();
+  await balanceCheckSettled();
+}
+
+describe('SILENT: an agent with no movement at all, past its window, is reported to the owner once', () => {
+  it('a wedged tool call (no stream, no tool finish) for 3 hours: ONE owner notice, naming the agent and its task', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    expect(sent()[0]).toContain('Helper');
+    expect(sent()[0]).toContain('the quarterly numbers');
+    // The same incident on the next sweep: still one.
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+  });
+
+  it('the per-agent window, set to 10 minutes through the real agents route, is the one the sweep uses', async () => {
+    const res = await agentsRouter.request('/helper', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ silentWindowMinutes: 10 }),
+    });
+    expect(res.status).toBe(200);
+    wedgedToolCall(15 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    const detail = (await res.json()) as { data: { silentWindowMinutes?: number | null } };
+    expect(detail.data.silentWindowMinutes).toBe(10);
+  });
+});
+
+const setWindow = async (minutes: number | null): Promise<void> => {
+  const res = await agentsRouter.request('/helper', {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ silentWindowMinutes: minutes }),
+  });
+  expect(res.status).toBe(200);
+};
+const silentNotice = (): string | null =>
+  (db().prepare("SELECT silent_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n;
+const ownerCardWords = async (): Promise<string[]> => {
+  const res = await configRouter.request('/owner-notices');
+  return ((await res.json()) as { data: Array<{ words: string }> }).data.map((c) => c.words);
+};
+const ends = (): string[] => broadcasts
+  .filter((b) => b.type === 'chat:error' && b.agentId === 'platform' && b.severity === 'info').map((b) => String(b.error));
+
+describe('GREEN: exactly once, and never for a working agent', () => {
+  it('the 30-second status heartbeat is not movement: a wedged agent whose row the heartbeat keeps fresh is still told', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    db().prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = 'helper'").run();
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+  });
+
+  it('the notice is a lasting owner card in the same words, until the agent moves again (then it leaves every dashboard)', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    const words = JSON.parse(silentNotice()!).words as string;
+    expect(await ownerCardWords()).toContain(words);
+    // The tool comes back: real movement.
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES ('tool-back', 'helper', 'tool', '[]', 7, ?)`).run(Date.now());
+    await sweep();
+    expect(silentNotice()).toBeNull();
+    expect(ends()).toContain(words);
+    expect(await ownerCardWords()).not.toContain(words);
+    expect(ownerTexts()).toBe(1);
+  });
+
+  it('a slow-prefill request open on a live connection, past the bare window, yields ZERO notices', async () => {
+    await setWindow(10);
+    // A slow local box: the provider's measured prefill speed is 20 tokens/s, so a 30,000-token
+    // prompt takes 25 minutes before its first token. The request opened 25 minutes ago.
+    db().prepare('UPDATE providers SET measured_prefill_tokens_per_sec = 20 WHERE id = ?').run('prov-a');
+    claimedTask('task-slow', 'the long local summary', Date.now() - 40 * MIN, 'c-1');
+    turnOpen(3, Date.now() - 26 * MIN);
+    modelCallFinished(Date.now() - 25 * MIN);
+    db().prepare("UPDATE agents SET status = 'working' WHERE id = 'helper'").run();
+    const open = new AbortController();
+    expect(registerAbortable('helper', open)).toBe(true);
+    try {
+      await sweep();
+      expect(ownerTexts()).toBe(0);
+    } finally {
+      releaseAbortable('helper', open);
+    }
+    // Its first token arrives and the call completes: still nothing to tell.
+    modelCallFinished(Date.now());
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('a working long job (a park every 15 minutes for 3 hours) yields ZERO notices', async () => {
+    const start = Date.now() - 180 * MIN;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    jobTask(start);
+    for (let t = start + 15 * MIN, i = 0; t <= start + 180 * MIN; t += 15 * MIN, i++) {
+      park(20 + i, t, i === 0);
+      await sweep();
+    }
+    expect(ownerTexts()).toBe(0);
+  });
+});
+
+describe('BROKEN ends on healthy work the sweep can see', () => {
+  it('a BROKEN incident ends (its card leaves) once the agent completes a model call again', async () => {
+    const { noteNoticeOnce } = await import('../../agent/agent-owner-cards.js');
+    expect(noteNoticeOnce('helper', 'broken_notice', 'Helper has stopped: the key stopped working.')).toBe(true);
+    await new Promise((r) => setTimeout(r, 5));
+    modelCallFinished(Date.now() + 1000);
+    await sweep();
+    expect((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n).toBeNull();
+    expect(ends()).toContain('Helper has stopped: the key stopped working.');
+  });
+});
+
+describe('BACKWARDS LIFECYCLE', () => {
+  it('the window changed mid-job: raised before the quiet reaches it, nothing; lowered past it, one notice; raised again, no second', async () => {
+    wedgedToolCall(30 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(0); // inside the 2-hour default
+    await setWindow(20);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    await setWindow(600);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    await setWindow(null); // back to the default through the same door
+    expect((db().prepare("SELECT silent_window_minutes AS m FROM agents WHERE id = 'helper'").get() as { m: number | null }).m).toBeNull();
+  });
+
+  it('the setting door refuses what it cannot honour, and changes nothing', async () => {
+    for (const bad of [0, -5, 2.5, '60']) {
+      const res = await agentsRouter.request('/helper', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ silentWindowMinutes: bad }),
+      });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    expect((db().prepare("SELECT silent_window_minutes AS m FROM agents WHERE id = 'helper'").get() as { m: number | null }).m).toBeNull();
+  });
+
+  it('an agent the owner stopped while silent is not reported (his Stop is the answer)', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    // The owner pressed Stop a minute ago: the turn ended on it, the agent is idle, the task still claimed.
+    db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'stop' WHERE agent_id = 'helper' AND turn_number = 7")
+      .run(sqlTime(Date.now() - MIN));
+    db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'helper'").run();
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('with no phone, the SILENT notice stands as an owner card in its exact words', async () => {
+    db().prepare("DELETE FROM config WHERE key = 'imessage_approved_senders'").run();
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    const words = JSON.parse(silentNotice()!).words as string;
+    expect(await ownerCardWords()).toContain(words);
+  });
+
+  it('round 3 (M2): the Stop is remembered even if a late row lands after the stopped turn ended', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'stop' WHERE agent_id = 'helper' AND turn_number = 7")
+      .run(sqlTime(Date.now() - 150 * MIN));
+    toolStarted(Date.now() - 140 * MIN, 'exec', 7);   // a straggling row after the stop (it is 140 minutes quiet)
+    db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'helper'").run();
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('an agent that recovers after the notice is not told about twice for the same incident', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    modelCallFinished(Date.now());
+    await sweep();
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    expect(silentNotice()).toBeNull();
+  });
+
+  it('round 3 (I3): a request that opens and dies without a single row neither ends the incident nor earns a second text', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    const open = new AbortController();
+    expect(registerAbortable('helper', open)).toBe(true);
+    await sweep();
+    expect(silentNotice()).not.toBeNull();   // an open request is not progress: the card stands
+    releaseAbortable('helper', open);        // it dies: no tokens, no tool finish
+    await sweep();
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    expect(silentNotice()).not.toBeNull();
+    modelCallFinished(Date.now());           // real progress (tokens) ends it
+    await sweep();
+    expect(silentNotice()).toBeNull();
+  });
+
+  it('round 3 (I5): an idle agent that finished its turn by asking the owner something, holding its task, is waiting — never SILENT', async () => {
+    const now = Date.now();
+    claimedTask('task-asked', 'the venue shortlist', now - 5 * 60 * MIN, 'c-1');
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+                  VALUES ('helper', 4, ?, ?, 'answered', 1)`).run(sqlTime(now - 200 * MIN), sqlTime(now - 199 * MIN));
+    modelCallFinished(now - 199 * MIN);
+    await sweep();
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+    expect(silentNotice()).toBeNull();
+  });
+
+  it('the project manager agent offline (in error, no model to run): the platform notice still fires from the sweep', async () => {
+    db().prepare("UPDATE agents SET status = 'error', model_id = NULL WHERE id = 'pm'").run();
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+  });
+});
+
+describe('one notice per incident', () => {
+
+  it('a BROKEN-class agent (in error) holding work is not ALSO told SILENT: one notice per incident', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    db().prepare("UPDATE agents SET status = 'error' WHERE id = 'helper'").run();
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+  });
+});

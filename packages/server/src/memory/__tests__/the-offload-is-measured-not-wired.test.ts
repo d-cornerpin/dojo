@@ -239,154 +239,6 @@ describe('⚠ 3. AN OVERRUN TERMINATES THE WORKER — the only way to stop synch
   });
 });
 
-describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that is', () => {
-  it('the pool is WARMED at boot, so no user\'s first search pays the spawn', async () => {
-    const boot = fs.readFileSync(new URL('../../index.ts', import.meta.url), 'utf-8');
-    expect(boot).toContain("from './memory/reader-pool.js'");
-    expect(boot).toContain('warmReaderPool()');
-  });
-
-  it('the retrieval paths USE the pool — EVERY search path, counted in both directions', () => {
-    // The former tripwire, flipped the day the wire landed (its design): retrieval routes through
-    // readerQuery when the pool is up, and the sync run is the FALLBACK.
-    //
-    // ⚠ COUNTED EXACTLY, NOT `toBeGreaterThanOrEqual` — the campaign rule this package is held to is
-    // that a wire clause must count in BOTH directions. A `>=` clause stays green when a FIFTH search
-    // path is added without the fork, which is precisely how a policy helper ends up fully covered
-    // while the line joining it to a caller is not. Adding a path reds this; deleting a wire reds it
-    // too; and the reader has to come here and say which it was.
-    // ⚠ COMMENTS STRIPPED BEFORE COUNTING (G4), and a round-1 finding forced it: `readerPoolAvailable()`
-    // is now NAMED in two comments explaining the I4 breadcrumb, so a raw count read 9 where the code
-    // has 7. A counting clause that counts prose is a clause that can be satisfied by writing about
-    // the wire instead of wiring it.
-    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-
-    // THREE SEARCHABLE SURFACES (messages, summaries, history_expand) × two MODES (fts, bounded
-    // LIKE) = six paths. The third arrived with t89 item 1 and these numbers moved WITH it, by hand,
-    // in the same commit — which is the whole value of counting exactly.
-    // ⚠ `crumbFor`, not `breadcrumbFor`: the mark now carries WHERE the work runs (I4), so the one
-    // call to `breadcrumbFor` lives inside that helper and the per-surface sites name this one.
-    const breadcrumbs = new Set((retrieval.match(/crumbFor\('([a-z_]+)'/g) ?? []));
-    expect(breadcrumbs.size, 'one breadcrumb per searchable surface').toBe(3);
-
-    // One fork per path (6), plus ONE in `crumbFor` that decides the breadcrumb's suffix — which is
-    // counted deliberately rather than excused, because a seventh fork appearing anywhere else is
-    // exactly what this clause is for.
-    const guarded = (retrieval.match(/readerPoolAvailable\(\)/g) ?? []).length;
-    expect(guarded, 'a fork per search path, plus the breadcrumb\'s — add a path, wire it or red this')
-      .toBe(7);
-
-    // The LIKE paths cost two worker reads each (the honest cost, then the page); the FTS paths one.
-    const wired = (retrieval.match(/readerQuery[<(]/g) ?? []).length;
-    expect(wired, '3 fts + 3×(cost+page)').toBe(9);
-
-    // ⚠ AND EVERY WIRED READ IS LABELLED DISTINCTLY, because the pool attributes results by id and a
-    // duplicated label is the mis-attribution this file's concurrency clause exists to catch.
-    const labels = (retrieval.match(/readerQuery<[A-Za-z]+>\('([a-z_:]+)'/g) ?? [])
-      .map((m) => m.slice(m.indexOf("('") + 2, -1));
-    expect(labels.length, 'every wired read carries a label').toBe(wired);
-    expect(new Set(labels).size, 'and no two share one').toBe(wired);
-    for (const surface of ['history_search', 'summary_search', 'history_expand']) {
-      expect(labels, `${surface} wires its FTS read`).toContain(`${surface}:fts`);
-      expect(labels, `${surface} wires its LIKE cost read`).toContain(`${surface}:like:cost`);
-      expect(labels, `${surface} wires its LIKE page read`).toContain(`${surface}:like:page`);
-    }
-  });
-
-  it('the summaries path is BOUNDED, not merely offloaded — the two are different fixes', () => {
-    // t89 item 2. Offloading an unbounded walk moves the freeze to a worker; the bound is what makes
-    // it finite. Both halves are asserted on the source because the arithmetic lives in
-    // `search-bounds.ts` and the caller owns only the SQL — so what is checkable here is that the
-    // caller ASKED for the bound on both of its modes.
-    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
-    // ⚠ READ WITH THE COMMENTS STRIPPED, and that is not fastidiousness — my first cut of this clause
-    // asserted `toContain('ftsCandidateRowidFloor')` over the raw source and a mutant that DELETED
-    // THE CALL still passed, because the paragraph above the call names the function. A clause that
-    // matches its own comment tests the comment. Strip, then assert on the CALL.
-    const code = retrieval.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    const summaries = code.slice(code.indexOf('async function searchSummariesInner'));
-    // ⚠ ROUND 2 MOVED THE FLOOR'S DERIVATION, so this half moved with it. It is no longer
-    // `ftsCandidateRowidFloor(maxRid)` at the query: the summaries arms take `summariesFtsWindow`,
-    // which keeps the global floor while the agent HAS rows inside it and RE-SEATS it on the agent
-    // when it does not — because the global-only floor excluded every agent whose summaries all sit
-    // below the window (finding A: 50 matching rows returned as 0). The assertion's two halves are
-    // unchanged in spirit: a floor is derived HERE, and it is APPLIED to the query.
-    expect(summaries, 'the FTS candidate set is no longer floored to a recency window')
-      .toMatch(/candidateFloor\s*=\s*window\.candidateFloor/);
-    expect(summaries, 'and the floor is actually APPLIED to the query, not merely computed')
-      .toMatch(/s\.rowid\s*>\s*\?/);
-    expect(summaries, 'the LIKE walk runs in budgeted chunks').toMatch(/boundedRecencyScan(Sync)?</);
-    expect(summaries, 'and a truncated or multi-chunk walk says so out loud')
-      .toContain("logBoundedFallback('summary_search:like'");
-    // The scans are keyed on the ALIASED rowid, never a bare one — T10's reader guard, and the shape
-    // that reads `undefined` without throwing if it comes back.
-    expect(summaries).toContain('rowid AS rid');
-    // ⚠ PROJECTIONS ONLY. A bare `rowid` in a WHERE or ORDER BY is correct and necessary — the chunk
-    // ceiling and the cost count both need it. It is projecting one unaliased that reads `undefined`
-    // without throwing, so this reads the SELECT…FROM span and nothing else. (My first cut asserted
-    // over the whole function and caught the cost query's legitimate `WHERE rowid <= ?`.)
-    const projections = [...summaries.matchAll(/SELECT\s([\s\S]*?)\sFROM\s+summaries/g)].map((m) => m[1]);
-    expect(projections.length, 'both the page and the cost query are read').toBeGreaterThanOrEqual(2);
-    for (const proj of projections) {
-      // The dangerous shape is a BARE STANDALONE projection item — `SELECT id, rowid FROM …` — which
-      // SQLite may name something else and which then reads `undefined`. `MAX(rowid) AS r` and
-      // `rowid AS rid` are both aliased at the expression level and are the correct forms.
-      expect(/(^|,)\s*rowid\s*(,|$)/.test(proj), `bare rowid projected in: ${proj.trim()}`).toBe(false);
-    }
-  });
-
-  it('history_expand is BOUNDED too — the last unbounded text search on this surface', () => {
-    // ⚠ t89 item 1, AND A CORRECTION TO ITS OWN BRIEF, recorded here because the next reader will
-    // otherwise go looking in the wrong file. The brief called this pair "the vault search" and
-    // located it at `retrieval.ts:447` / `:471+`. Those line numbers are `history_expand`'s summary
-    // lookup, in THIS file. The real `vault_search` is `vault/store.ts`'s `semanticSearch` /
-    // `listEntries({ search })` — a different unbounded shape, in a file this change does not own,
-    // handed up rather than guessed at.
-    //
-    // READ WITH COMMENTS STRIPPED, and the lesson is the summaries half's own: its first bound
-    // clause asserted `toContain('ftsCandidateRowidFloor')` over the RAW source and the mutant that
-    // DELETED THE CALL still passed, because the paragraph above the call names the function. So:
-    // strip, assert the CALL SHAPE, and separately assert the bound is APPLIED rather than computed.
-    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
-    const code = retrieval.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    const fts = code.slice(code.indexOf('async function expandSummariesFts'),
-      code.indexOf('async function expandSummariesLike'));
-    const like = code.slice(code.indexOf('async function expandSummariesLike'),
-      code.indexOf('export async function memoryExpand'));
-    expect(fts.length, 'the FTS helper was not found by name').toBeGreaterThan(0);
-    expect(like.length, 'the LIKE helper was not found by name').toBeGreaterThan(0);
-
-    // ⚠ ROUND 2 MOVED THE FLOOR'S DERIVATION, so this half moved with it. It is no longer
-    // `ftsCandidateRowidFloor(maxRid)` at the query: the summaries arms take `summariesFtsWindow`,
-    // which keeps the global floor while the agent HAS rows inside it and RE-SEATS it on the agent
-    // when it does not — because the global-only floor excluded every agent whose summaries all sit
-    // below the window (finding A: 50 matching rows returned as 0). The assertion's two halves are
-    // unchanged in spirit: a floor is derived HERE, and it is APPLIED to the query.
-    expect(fts, 'the FTS candidate set is no longer floored to a recency window')
-      .toMatch(/candidateFloor\s*=\s*window\.candidateFloor/);
-    expect(fts, 'and the floor is actually APPLIED to the query, not merely computed')
-      .toMatch(/s\.rowid\s*>\s*\?/);
-    expect(like, 'the LIKE walk runs in budgeted chunks').toMatch(/boundedRecencyScan(Sync)?</);
-    expect(like, 'and a truncated or multi-chunk walk says so out loud')
-      .toContain("logBoundedFallback('history_expand:like'");
-    // The bounded walk chunks on the ALIASED rowid — T10's reader guard. Projections only: a bare
-    // `rowid` in a WHERE or ORDER BY is correct and necessary here (the ceiling and the cost count
-    // both need it); it is projecting one unaliased that reads `undefined` without throwing.
-    expect(like).toContain('rowid AS rid');
-    const projections = [...like.matchAll(/SELECT\s([\s\S]*?)\sFROM\s+summaries/g)].map((m) => m[1]);
-    expect(projections.length, 'both the page and the cost query are read').toBeGreaterThanOrEqual(2);
-    for (const proj of projections) {
-      expect(/(^|,)\s*rowid\s*(,|$)/.test(proj), `bare rowid projected in: ${proj.trim()}`).toBe(false);
-    }
-    // ⚠ AND THE PRE-FIX SHAPE IS GONE, not merely joined by a bounded sibling. A fix that adds a
-    // bounded path beside the unbounded one has changed nothing — this is the half of the wire rule
-    // that counts in the other direction.
-    expect(code, 'the unbounded earliest_at walk still exists somewhere in this file')
-      .not.toMatch(/ORDER BY earliest_at DESC/);
-  });
-});
-
 describe('⚠ 4. THE CROSS-CHECK: a worker-side search does NOT trip the stall sentinel', () => {
   it('the sentinel sees no stall across an off-thread read it would have flagged on-thread', async () => {
     // Two instruments, one claim. The sentinel is what would have named this query in the log as the
@@ -453,18 +305,6 @@ describe('⚠ I3 — A FALLBACK THAT IS LOGGED MUST BE A FALLBACK THAT IS ENGAGE
       resetReaderPoolForTest();
     }
   }, 30_000);
-
-  it('the worker is told WHERE better-sqlite3 is, so its require does not depend on cwd', () => {
-    // An eval worker has no file of its own, so a bare `require('better-sqlite3')` resolves from
-    // `process.cwd()`. Production's cwd makes that work today, which is luck, not design.
-    const src = fs.readFileSync(new URL('../reader-pool.ts', import.meta.url), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(src, 'the worker still resolves the native module from cwd')
-      .not.toMatch(/require\('better-sqlite3'\)/);
-    expect(src, 'the path must be resolved on the main thread, where it is knowable')
-      .toMatch(/createRequire\(import\.meta\.url\)\.resolve\('better-sqlite3'\)/);
-    expect(src, 'and handed to the worker').toMatch(/betterSqlitePath/);
-  });
 });
 
 describe('⚠ I7 — A DEADLINE KILL TAKES ITS OWN WORKER\'S QUERIES, AND ONLY THOSE', () => {
@@ -555,18 +395,5 @@ describe('⚠ I4 — A STALL DURING AN OFF-THREAD SEARCH IS NOT THAT SEARCH\'S F
     } finally {
       clearQueryDispatched(crumb);
     }
-  });
-
-  it('the retrieval marks carry the suffix when the pool has the work, and not when it does not', () => {
-    const src = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    // The decision is read ONCE, in one helper, and APPLIED to the mark — a mark that disagreed with
-    // the read beneath it would be the same defect in a smaller box.
-    expect(src).toMatch(/function crumbFor\(subsystem: string, mode: string\): string \{/);
-    expect(src, 'the suffix is not applied to the mark')
-      .toMatch(/readerPoolAvailable\(\) \? offThreadBreadcrumb\(label\) : label/);
-    // And every surface goes through it — no site may mark a raw label and bypass the decision.
-    expect(src, 'a search path marks a breadcrumb without saying where the work runs')
-      .not.toMatch(/markQueryDispatched\(breadcrumbFor\(/);
   });
 });

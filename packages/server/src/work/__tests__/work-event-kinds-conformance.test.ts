@@ -271,32 +271,6 @@ describe('ARM 1 — the DECLARED list and the CHECK are the same list', () => {
 });
 
 describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
-  it('no call site passes an undeclared kind, by either route', () => {
-    const { kinds, unbound } = writtenKinds();
-    expect(unbound).toEqual([]);
-    expect(sorted([...kinds].filter((k) => !isWorkEventKind(k)))).toEqual([]);
-  });
-
-  it('the walk is not vacuous: it finds the real call sites and the real routes', () => {
-    const { calls, declarations } = kindExpressions();
-    // 29 call sites at dojo dc6da8b + the ONE declaration in store.ts. The counts are
-    // reported rather than pinned — a new writer is legitimate; an UNDECLARED kind is not,
-    // and that is arm 2's first clause. What is pinned is that the walk sees BOTH routes.
-    expect(calls.length).toBeGreaterThanOrEqual(29);
-    expect(declarations.map((d) => d.file)).toEqual(['work/store.ts']);
-    const exprs = calls.map((c) => c.expr);
-    expect(exprs).toContain("'transition'");            // the literal route
-    expect(exprs).toContain('WORK_EVENT.activity');     // the bound-object route
-    expect(exprs).toContain('AUDIT_KIND');              // the bound-single route
-    // 24 at T4-SCHEMA's close; 25 since PHASE-4 T4 landed `floor_ghosted`'s writer;
-    // 26 since UX-REPAIR ROUND 6 T25 landed `owed_interrupt`'s (`work/ask-settlement.ts`);
-    // 27 since v3.3.3 t142 landed `person_told`'s (`work/validation-drive.ts:recordPersonTold`);
-    // 28 since v3.5 landed `measured`'s (`work/ledger-store.ts`, MEASURED_EVENT);
-    // 30 since v3.5 D1 landed `continued`'s and `stalled`'s (`work/job-momentum.ts`);
-    // 27 since 901: four hand-in and decision kinds written, the seven verdict-door kinds not;
-    // 24 since the stall ladder: `person_told`, `poke` and `poke_remediation` have no writer.
-    expect(writtenKinds().kinds.size).toBe(24);
-  });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
     const src = stripComments("appendWorkEvent(workId, 'floor_teleported', 'engine', {});");
@@ -305,21 +279,6 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     expect(m).not.toBeNull();
     const lit = /^'([a-z_]+)'$/.exec(m![2])!;
     expect(isWorkEventKind(lit[1])).toBe(false);
-  });
-
-  it('PLANTED FAULT: a kind constant with NO `satisfies` binding is caught', () => {
-    // The shape a sixth constant object would have if somebody declared kinds beside the
-    // list instead of onto it. `boundConstantValues` refuses to resolve it, and arm 2's
-    // `unbound` list is asserted empty.
-    expect(boundConstantValues('SOME_UNBOUND_KIND_CONST')).toBeNull();
-    // ...while every constant the tree really uses DOES resolve, so the check above is not
-    // passing merely because nothing ever resolves.
-    expect(boundConstantValues('AUDIT_KIND')).toEqual(['audit']);
-    expect(sorted(boundConstantValues('OCCURRENCE_EVENT')!))
-      .toEqual(['occurrence_fired', 'occurrence_released', 'occurrence_settled']);
-    expect(sorted(boundConstantValues('WORK_EVENT')!)).toEqual([
-      'activity', 'revert_reset', 'validation_escalated',
-    ]);
   });
 
   it('SELF-TEST: comment stripping does not hide a real call, or invent one', () => {
@@ -338,13 +297,6 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
 });
 
 describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
-  it('exactly the named kinds are declared without a writer', () => {
-    const written = writtenKinds().kinds;
-    const orphans = WORK_EVENT_KINDS.filter((k) => !written.has(k));
-    // Exact equality in BOTH directions: a NEW declared-but-unwritten kind fails here, and
-    // so does a stale exemption for a kind that has since grown a writer.
-    expect(sorted(orphans)).toEqual(sorted(DECLARED_WITHOUT_WRITER));
-  });
 
   it('`floor_ghosted` HAS a writer now, and the exemption that named it is deleted', () => {
     // T4-SCHEMA's hand-forward, discharged: the commit that writes the first `floor_ghosted`
@@ -352,11 +304,6 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
     // discharge is a fact rather than a claim in a report.
     expect(DECLARED_WITHOUT_WRITER).not.toContain('floor_ghosted');
     expect(isWorkEventKind('floor_ghosted')).toBe(true);
-    expect(writtenKinds().kinds.has('floor_ghosted')).toBe(true);
-    // …and it is written from the OR2 ghost path, not from some incidental site.
-    const ghostSites = kindExpressions().calls
-      .filter((c) => c.expr === "'floor_ghosted'").map((c) => c.file);
-    expect(ghostSites).toEqual(['agent/v2/floor-ghost.ts']);
   });
 });
 

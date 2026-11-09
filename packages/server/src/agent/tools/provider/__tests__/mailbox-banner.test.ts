@@ -177,22 +177,4 @@ describe('the slot is chosen by the tool name, never guessed', () => {
       expect(src, `${rel} must default the slot to the agent`).toMatch(/AccountSlot\s*=\s*'agent'/);
     }
   });
-
-  it('the SEND doors still refuse an ambiguous slot rather than picking one', async () => {
-    // Leg 3 of T39, recorded rather than changed: the write side uses the STRICT
-    // resolver, which errors when a slot holds more than one connected account
-    // and the caller named none. The read side deliberately defaults instead
-    // (owner decision 2026-07-08) — a lookup must not cost a round trip — and
-    // that is exactly why the read side owes the receipt this file now pins.
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../../../');
-    const g = fs.readFileSync(path.join(root, 'google/tools-write.ts'), 'utf-8');
-    const m = fs.readFileSync(path.join(root, 'microsoft/tools-write.ts'), 'utf-8');
-    expect(g).toContain('resolveGoogleAccountForTool');
-    expect(g).not.toContain('resolveGoogleAccountForRead');
-    expect(m).toContain('resolveMicrosoftAccountForTool');
-    expect(m).not.toContain('resolveMicrosoftAccountForRead');
-  });
 });

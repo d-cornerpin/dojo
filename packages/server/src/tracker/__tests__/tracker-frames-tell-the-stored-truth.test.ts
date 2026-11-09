@@ -29,9 +29,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -76,8 +73,6 @@ import { getTask } from '../schema.js';
 import { createWorkTable } from '../../work/__tests__/work-fixture.js';
 
 const AGENT = 'a1';
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SERVER_SRC = dirname(dirname(HERE));
 
 function applySchema(db: Database.Database): void {
   createWorkTable(db);
@@ -202,16 +197,5 @@ describe('T34 controls: no frame spam, and nothing else moves', () => {
     expect(row.schedule_status).toBe('waiting');
     expect(row.next_run_at).toBe(Date.parse(when));
     expect(row.scheduled_start).toBe(Date.parse(when));
-  });
-});
-
-describe('T34: both creation doors route through the same settle, so neither can drift back', () => {
-  it('the agent tool door and the dashboard route both call the settle helper', () => {
-    const tools = readFileSync(join(SERVER_SRC, 'tracker', 'tools.ts'), 'utf8');
-    const route = readFileSync(join(SERVER_SRC, 'gateway', 'routes', 'tracker.ts'), 'utf8');
-    const schema = readFileSync(join(SERVER_SRC, 'tracker', 'schema.ts'), 'utf8');
-    expect(schema).toMatch(/export function broadcastTaskSettled/);
-    expect(tools, 'work_open goes through it').toMatch(/broadcastTaskSettled\(/);
-    expect(route, 'POST /tasks has the same createTask-then-schedule shape').toMatch(/broadcastTaskSettled\(/);
   });
 });

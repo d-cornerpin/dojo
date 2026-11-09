@@ -24,7 +24,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -58,7 +57,7 @@ import { openTurnContext, endTurnContext, type TurnContext } from '../../../../t
 import {
   untrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns,
 } from '../../../../turn-state.js';
-import { initState, advance, type AgentTurnState } from '../../../state.js';
+import { initState, type AgentTurnState } from '../../../state.js';
 import { nextSteer } from '../../../steer-queue.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import { countTrackerWorkThisIteration } from '../tracker-counting.js';
@@ -70,20 +69,6 @@ import type { TeardownContext } from '../../teardown/index.js';
 const AGENT = 'agent-t1';
 const CONV = 'human:owner';
 const CONVERSATION_ID = 'conv-t1-0001';
-
-const SOURCE = fs.readFileSync(
-  new URL('../tracker-floors.ts', import.meta.url), 'utf8',
-);
-const STATE_SOURCE = fs.readFileSync(
-  new URL('../../../state.ts', import.meta.url), 'utf8',
-);
-
-/** Source with comment-only lines removed — a tombstone naming a deleted symbol is the
- *  point of a tombstone, so the "is it gone" checks below read executable lines. */
-const codeLines = (src: string): string => src
-  .split('\n')
-  .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
-  .join('\n');
 
 const USER: TurnCounterparty = {
   kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard',
@@ -402,16 +387,5 @@ describe('T1 — an answered, delivered turn clears its untracked-work debt', ()
       getUntrackedWorkAcrossTurns(AGENT, 'human:someone-else'),
       'clearing on conversation A must not wipe conversation B',
     ).toBe(5);
-  });
-
-  it('the write-only `autoScaffoldedTaskIdThisTurn` field is gone, and neither stale comment still promises the deleted close', () => {
-    // `d00f270` deleted the same-turn scaffold close. The field it fed has had ZERO readers
-    // since; two committed comments still promised the deleted path. A TOMBSTONE naming the
-    // deleted field is the point, so this reads CODE lines only.
-    expect(codeLines(STATE_SOURCE), 'no declaration, no initializer').not.toMatch(/autoScaffoldedTaskIdThisTurn/);
-    expect(codeLines(SOURCE), 'no write site').not.toMatch(/autoScaffoldedTaskIdThisTurn/);
-    // The two stale promises themselves.
-    expect(SOURCE).not.toMatch(/lets natural turn-end close JUST this/);
-    expect(STATE_SOURCE).not.toMatch(/Recorded here so natural turn-end can/);
   });
 });

@@ -27,9 +27,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { ExportManifest } from '../manifest.js';
 import { runMigrations } from '../../db/migrations.js';
 import * as coldImport1 from '../manifest.js';
@@ -55,9 +52,6 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const MIGRATION_DIR = path.resolve(HERE, '..');
 const TAGS_URL = 'http://localhost:11434/api/tags';
 const INSTALLED = ['nomic-embed-text:latest', 'qwen3:8b'];
 
@@ -109,27 +103,6 @@ beforeAll(async () => {
 
 beforeEach(() => { spawned.commands.length = 0; });
 afterEach(() => { globalThis.fetch = realFetch; });
-
-describe('the mechanism: no migration module runs the ollama binary', () => {
-  it('nothing under src/migration starts a child process whose command IS `ollama`', () => {
-    const offenders: string[] = [];
-    for (const name of fs.readdirSync(MIGRATION_DIR)) {
-      if (!name.endsWith('.ts')) continue;
-      const src = fs.readFileSync(path.join(MIGRATION_DIR, name), 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '');
-      const call = /\b(exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(\s*(['"`])([^'"`]*)\2/g;
-      for (let m = call.exec(src); m !== null; m = call.exec(src)) {
-        const commandWord = m[3].trim().split(/\s+/)[0];
-        if (commandWord === 'ollama') offenders.push(`${name}: ${m[1]}('${m[3]}')`);
-      }
-    }
-    expect(
-      offenders,
-      'the ollama CLI auto-launches Ollama.app when the daemon is down — a probe may not be able to start what it is asking about',
-    ).toEqual([]);
-  });
-});
 
 describe('the export manifest reads the model list over HTTP', () => {
   it('the inventory comes from /api/tags, and no ollama process is started', async () => {

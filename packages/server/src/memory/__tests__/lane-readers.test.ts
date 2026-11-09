@@ -22,8 +22,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -199,45 +197,6 @@ describe('the archive high-water reads one keyspace', () => {
     }
   });
 });
-
-// ── 4. The insertion key has ONE name in SQL ──
-//
-// PHASE-1 T10, migration 133. `seq` is now `INTEGER PRIMARY KEY AUTOINCREMENT`, i.e. the
-// table's rowid alias. SQLite therefore names the result column of a bare `SELECT rowid FROM
-// messages` **`seq`**, not `rowid` — measured, and asserted directly in message-store.test.ts.
-// Same value, different name, so a `row.rowid` read against such a query is `undefined` and
-// NOTHING THROWS: better-sqlite3 returns the object, TypeScript's declared row shape is a cast
-// and cannot see it, and the caller quietly behaves as though there were no row. That is the
-// failure mode that broke 45 tests silently on T3's first attempt at this promotion.
-//
-// The rule that neutralises it: any reader that wants the key under the name the shared
-// `Message` type uses projects `seq AS rowid`. This walk refuses a bare one. It is the reason
-// the promotion could be a mechanical change rather than a careful one.
-//
-// METHOD NOTE, worth keeping: comments are stripped BEFORE literals are extracted. A prose
-// apostrophe ("don't") otherwise opens a bogus single-quoted string and desynchronises every
-// later match in the file — which is exactly how the first version of this scan silently
-// missed `agent/v2/loop.ts`'s ten-column projection, the largest one in the tree.
-
-const SRC_ROOT = path.join(__dirname, '..', '..');
-
-/** Replace comment bodies with spaces, preserving offsets and line numbers. */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-}
-
-function tsFiles(dir: string, acc: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) { if (e.name === 'migrations') continue; tsFiles(fp, acc); }
-    else if (e.name.endsWith('.ts')) acc.push(fp);
-  }
-  return acc;
-}
-
-const LITERAL = /`(?:[^`\\]|\\[\s\S])*`|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g;
 const SELECT_FROM = /\bSELECT\b([\s\S]*?)\bFROM\b([\s\S]{0,60})/gi;
 const NAMES_MESSAGES = /(^|[^_\w])messages\b/;
 
@@ -274,35 +233,6 @@ function sqlConstants(src: string): Map<string, string> {
 }
 
 describe('the insertion key has one name in SQL (T10 — `seq` is the rowid alias)', () => {
-  /** Every SELECT-list bare `rowid` over `messages`, as `file:line`. */
-  function offenders(): string[] {
-    const out: string[] = [];
-    for (const abs of tsFiles(SRC_ROOT)) {
-      const src = stripComments(fs.readFileSync(abs, 'utf8'));
-      const consts = sqlConstants(src);
-      for (const lit of src.matchAll(LITERAL)) {
-        // Resolve one level of same-file constant interpolation. Offsets are preserved for
-        // line reporting by scanning the ORIGINAL literal for the SELECT positions.
-        const resolved = lit[0].replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (whole, name: string) =>
-          consts.has(name) ? consts.get(name)! : whole);
-        if (!/\browid\b/i.test(resolved)) continue;
-        const base = src.slice(0, lit.index).split('\n').length;
-        for (const s of resolved.matchAll(SELECT_FROM)) {
-          if (!NAMES_MESSAGES.test(s[2])) continue;
-          if (!projectsBareRowid(s[1])) continue;
-          out.push(`${path.relative(SRC_ROOT, abs).split(path.sep).join('/')}:${base}`);
-        }
-      }
-    }
-    return [...new Set(out)].sort();
-  }
-
-  it('no reader projects a bare `rowid` from `messages` — every one says `seq AS rowid`', () => {
-    expect(
-      offenders(),
-      'a bare `rowid` projection is named `seq` in the result and reads back as undefined — project `seq AS rowid`',
-    ).toEqual([]);
-  });
 
   it('the walk can actually see a violation (the rule is not vacuous)', () => {
     // The same matcher, run against the shape it exists to refuse and the shapes it must

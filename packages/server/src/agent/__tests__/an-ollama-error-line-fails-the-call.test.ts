@@ -37,7 +37,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -60,7 +59,6 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, type ModelCallResult } from '../model.js';
-import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -72,9 +70,7 @@ const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir())
 // against a patience comfortably above `TRANSPORT_MARGIN_MS` produces a small, human-sized
 // ceiling with no timer ever armed for the refusal case.
 const SCALED_PATIENCE_MS = 40_000;
-const SCALED_THROUGHPUT_TOK_PER_SEC = 10;
 const SHORT_MESSAGE = 'Is it done?'; // well under the ceiling
-const LONG_MESSAGE = 'x'.repeat(2_000); // well over the ceiling
 
 let server: http.Server;
 let stubUrl = '';

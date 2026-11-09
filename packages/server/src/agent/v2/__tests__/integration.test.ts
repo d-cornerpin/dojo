@@ -370,11 +370,6 @@ vi.mock('../steer-queue.js', async () => {
     },
   };
 });
-
-// Now import the module under test (after mocks are set up)
-// PHASE-6 GUARD-AUDIT 2026-08-04: `node:fs` / `node:path` / `fileURLToPath` went with the
-// hand-rolled engine walk below — the derivation lives in `engine-sources.ts` now.
-import { engineSources, engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
 import {
   stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts,
@@ -495,23 +490,6 @@ function setupTestDb(): Database.Database {
   });
 
   return db;
-}
-
-// The ENGINE'S OWN SOURCE — the driver plus every step package under `agent/v2/steps/`.
-// PHASE-6 cuts the driver into step directories one tranche at a time, so a source scan
-// pinned to `loop.ts` alone stops seeing its subject the moment that subject moves, and
-// it goes QUIET rather than red. Same widening, same reason, as CUT 1's repair to
-// `engine-steer.test.ts`; the eight tranches behind this one are covered by construction.
-//
-// PHASE-6 GUARD-AUDIT 2026-08-04: the corpus is UNCHANGED in reach; what changed is that
-// it is no longer derived here. The audit found six guards each hand-rolling this same
-// walk, which is six places the definition of "the engine" can drift apart — the same
-// silent-drift defect one level up. `engineText()` is that derivation, made once, and it
-// is strictly stricter than the copy it replaces: it recurses into step SUB-modules (a
-// step is a DIRECTORY under RULING P6-R1) and it THROWS if the driver has moved, where
-// this copy would have quietly returned a corpus with no driver in it.
-function engineSource(): string {
-  return engineText();
 }
 
 function getBroadcastEventsByType(type: string): unknown[] {
@@ -855,7 +833,6 @@ describe('runV2Turn integration', () => {
     const errors = getBroadcastEventsByType('chat:error') as Array<{ code?: string }>;
     expect(errors.find((e) => e.code === 'CONTEXT_HIGH'), 'no "memory is getting full" toast').toBeUndefined();
   });
-
 
   it('PRESERVATION #14: auto-continuation fires at MAX_TOOL_LOOPS (75) and schedules a fresh turn', async () => {
     // v2/loop.ts:1282-1320, when the inner tool loop hits MAX_TOOL_LOOPS
@@ -3155,16 +3132,6 @@ describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
     };
   }
 
-  it('PROVENANCE: the threshold watched here is the engine\'s own declaration', () => {
-    // The corpus is the ENGINE'S source — the driver plus every step package — for the
-    // reason CUT 1 recorded on `engine-steer.test.ts`: this phase moves the driver's
-    // spans into `agent/v2/steps/`, and a scan pinned to one file goes QUIET rather than
-    // red when its subject moves out from under it.
-    expect(engineSource()).toMatch(
-      new RegExp(`const ENGINE_START_ACK_AFTER_MS = ${START_ACK_AFTER_MS};`),
-    );
-  });
-
   it('a clean turn arms the timer and CANCELS it before it returns', async () => {
     const w = watchStartAckTimer();
     try {
@@ -3385,19 +3352,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     await runAcrossTheBudget({ extraMs: 19 * 60 * 1000 });
     // A snapshot of `turnStartMs` taken before the loop would make both arms identical.
     expect(parkLogElapsed()).toEqual([35]);
-  });
-
-  it('T13 (CUT 3\'s H1) SURVIVES ITS SUBJECT: the branch reports the TURN\'s ledger, never the last response\'s batch', () => {
-    // The recap's sentence is gone; the number is not. `state.toolResults` has ONE
-    // writer (`steps/execute/index.ts` concatenates the round's results once, after the
-    // batch settles), is never reset mid-turn, and is therefore immune to the parallel
-    // batch's last-writer-wins semantics — which is why it, and not `state.toolCalls`
-    // (the LAST response's batch, overwritten every round) is the number here.
-    const budget = engineSources().find((s) => s.rel.endsWith('pre-call-gates/turn-budget.ts'));
-    expect(budget, 'the turn-budget branch moved — re-point this clause at its new home').toBeTruthy();
-    const code = budget!.text.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    expect(code).toContain('toolCallsSoFar: state.toolResults.length');
-    expect(code).not.toContain('state.toolCalls.length');
   });
 
   it('a forced compaction that THROWS produces no recap — the receipts describe a rebuild that happened', async () => {

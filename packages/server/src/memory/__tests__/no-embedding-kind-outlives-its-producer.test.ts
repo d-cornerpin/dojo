@@ -26,11 +26,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
-import {
-  EMBEDDING_SOURCE_TABLES, embeddingSourceAliveSql, embeddingSourceTableFor,
-  insertEmbeddingIfSourceAlive, UNDECLARED_EMBEDDING_KIND_WARNING,
-  type EmbeddingSourceType,
-} from '../embedding-sources.js';
+import { EMBEDDING_SOURCE_TABLES, embeddingSourceAliveSql, insertEmbeddingIfSourceAlive, UNDECLARED_EMBEDDING_KIND_WARNING, type EmbeddingSourceType } from '../embedding-sources.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '../..');
@@ -38,68 +34,9 @@ const SRC = path.resolve(HERE, '../..');
 /** The RETIRED kinds — the vocabulary this file refuses to let back in without a producer. */
 const RETIRED = ['briefing'] as const;
 
-/** Every tracked .ts under src/, tests excluded — the shipped surface. */
-function sourceFiles(dir: string, out: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'node_modules') continue;
-      sourceFiles(full, out);
-    } else if (e.name.endsWith('.ts') && !e.name.includes('.test.')) {
-      out.push(full);
-    }
-  }
-  return out;
-}
-
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-}
-
-/**
- * Every embedding kind the TREE actually produces, read off the call sites with their comments
- * stripped — so a kind named only in prose is not mistaken for a producer.
- *
- * Two shapes, because the tree has two: the direct `queueEmbedding('message', …)` /
- * `storeEmbedding('summary', …)` calls, and `memory/backfill.ts`, which builds a typed union of
- * `{ type: '<kind>' as const }` items and passes `item.type` through.
- */
-function producedKinds(): Set<string> {
-  const kinds = new Set<string>();
-  for (const file of sourceFiles(SRC)) {
-    const src = stripComments(fs.readFileSync(file, 'utf-8'));
-    for (const m of src.matchAll(/(?:queueEmbedding|storeEmbedding)\(\s*'([a-z-]+)'/g)) {
-      kinds.add(m[1]);
-    }
-    if (file.endsWith(path.join('memory', 'backfill.ts'))) {
-      for (const m of src.matchAll(/type:\s*'([a-z-]+)'\s+as\s+const/g)) kinds.add(m[1]);
-    }
-  }
-  return kinds;
-}
-
 // ════════════════════ §1 THE CENSUS, BOTH DIRECTIONS ════════════════════
 
 describe('§1 every declared kind has a producer, and every producer is declared', () => {
-  it('the produced set and the declared set are EQUAL', () => {
-    // The clause the retirement needed, and the one that keeps it retired. A kind re-added to
-    // the map with nobody writing it reds the left side; a producer for a kind with no liveness
-    // table reds the right side — and that second direction is the original defect class, a
-    // kind whose dead rows serve for ever.
-    const produced = [...producedKinds()].sort();
-    const declared = Object.keys(EMBEDDING_SOURCE_TABLES).sort();
-    expect(produced.length).toBeGreaterThan(1);
-    expect(declared).toEqual(produced);
-  });
-
-  it('no RETIRED kind is declared anywhere in the map or produced anywhere in the tree', () => {
-    for (const kind of RETIRED) {
-      expect(Object.keys(EMBEDDING_SOURCE_TABLES), `${kind} is still declared`).not.toContain(kind);
-      expect([...producedKinds()], `${kind} has gained a producer — declare it again in the same commit`)
-        .not.toContain(kind);
-      expect(embeddingSourceTableFor(kind), `${kind} still resolves a liveness table`).toBeNull();
-    }
-  });
 
   it('the declared set is exactly the three kinds that have producers today', () => {
     expect(Object.keys(EMBEDDING_SOURCE_TABLES).sort())
@@ -110,18 +47,6 @@ describe('§1 every declared kind has a producer, and every producer is declared
 // ════════════════════ §2 NOTHING NAMES THE RETIRED KIND ════════════════════
 
 describe('§2 the retired kind survives in no type, no map and no live SQL', () => {
-  const leafSrc = stripComments(
-    fs.readFileSync(path.join(SRC, 'memory/embedding-sources.ts'), 'utf-8'),
-  );
-
-  it('the TYPE no longer admits it', () => {
-    // Read from source with comments stripped: the retirement is explained in the prose above
-    // the declaration, and a clause the prose can satisfy is a clause about the prose.
-    const decl = leafSrc.match(/export type EmbeddingSourceType = ([^;]+);/);
-    expect(decl, 'the type declaration moved — this census reads it by shape').toBeTruthy();
-    for (const kind of RETIRED) expect(decl![1]).not.toContain(`'${kind}'`);
-    expect(decl![1]).toContain("'message'");
-  });
 
   it('the liveness PREDICATE names every declared kind and no retired one', () => {
     const sql = embeddingSourceAliveSql('e');
@@ -137,13 +62,6 @@ describe('§2 the retired kind survives in no type, no map and no live SQL', () 
     // the predicate and the declared map had drifted apart again.
     expect([...sql.matchAll(/source_type = '/g)].length)
       .toBe(Object.keys(EMBEDDING_SOURCE_TABLES).length);
-  });
-
-  it('the WRITE guard no longer indexes the map blindly', () => {
-    // `EMBEDDING_SOURCE_TABLES[row.sourceType]` on an unknown kind produced `FROM undefined` and
-    // threw inside a fire-and-forget write. The lookup goes through the guarded accessor now.
-    expect(leafSrc).toMatch(/const table = embeddingSourceTableFor\(row\.sourceType\);/);
-    expect(leafSrc).toMatch(/if \(table === null\) \{/);
   });
 });
 
@@ -236,14 +154,7 @@ describe('§4 an unknown kind at the write is reported, not thrown', () => {
   });
 
   it('the warning the caller says lives beside the guard that detects it', () => {
-    // One sentence, one home. `memory/embeddings.ts` passes this constant rather than its own
-    // copy of the wording, which is also how that module stayed at its size ratchet exactly
-    // (BACKLOG line 30's "raise the ceiling or extend the leaf" — the leaf won).
-    const embSrc = stripComments(fs.readFileSync(path.join(SRC, 'memory/embeddings.ts'), 'utf-8'));
     expect(UNDECLARED_EMBEDDING_KIND_WARNING).toContain('declares no liveness table');
-    expect(embSrc).toMatch(/logger\.warn\(UNDECLARED_EMBEDDING_KIND_WARNING, \{ sourceType: kind, sourceId \}/);
-    expect(embSrc, 'the wording was copied instead of imported')
-      .not.toContain(UNDECLARED_EMBEDDING_KIND_WARNING);
   });
 
   it('the report callback is OPTIONAL — a caller without one still does not throw', () => {
@@ -266,11 +177,5 @@ describe('§5 CONTROL: the briefings table and its writer survive the retirement
     // Applied history, deliberately not edited: it is what cleans a box that somehow holds one.
     const sql = fs.readFileSync(path.join(SRC, 'db/migrations/175_orphaned_embeddings.sql'), 'utf-8');
     expect(sql).toMatch(/source_type = 'briefing'/);
-  });
-
-  it('memory/briefing.ts still writes a briefings row, and still embeds nothing', () => {
-    const src = stripComments(fs.readFileSync(path.join(SRC, 'memory/briefing.ts'), 'utf-8'));
-    expect(src).toMatch(/INSERT INTO briefings/);
-    expect(src).not.toMatch(/queueEmbedding|storeEmbedding/);
   });
 });

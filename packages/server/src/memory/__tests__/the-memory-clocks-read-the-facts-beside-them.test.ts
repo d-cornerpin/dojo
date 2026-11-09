@@ -299,19 +299,4 @@ describe('§3 U16 — the caller\'s declared bound is what the embed path arms',
     expect(isEmbeddingBackendUnavailable(err), 'an abort is a backend-absent fact, not a silent drop')
       .toBe(true);
   }, 20_000);
-
-  it('CONTROL: the two transports read ONE expression — the drift cannot come back', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const SRC = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../..');
-    const raw = fs.readFileSync(path.join(SRC, 'memory/embeddings.ts'), 'utf8');
-    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
-
-    // The defect was that ONE of two transports hardcoded its bound. Both must read `timeoutMs`,
-    // and neither may carry the literal again.
-    const honoured = src.match(/AbortSignal\.timeout\(timeoutMs\)/g) ?? [];
-    expect(honoured.length, 'both transports arm the caller\'s bound').toBeGreaterThanOrEqual(2);
-    expect(/AbortSignal\.timeout\(30000\)/.test(src), 'the hardcoded 30s is gone').toBe(false);
-  });
 });

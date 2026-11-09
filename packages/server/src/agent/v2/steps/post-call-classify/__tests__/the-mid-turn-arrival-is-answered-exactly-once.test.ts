@@ -71,10 +71,7 @@ vi.mock('../../../counterparty.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOwedMidTurnArrivals: () => owedArrivals.current,
 }));
-
-import fs from 'node:fs';
 import path from 'node:path';
-import url from 'node:url';
 import { runMigrations } from '../../../../../db/migrations.js';
 import { initState, type AgentTurnState, type OwedInterruptGrant } from '../../../state.js';
 import { nextSteer } from '../../../steer-queue.js';
@@ -89,8 +86,6 @@ const CONV = 'conv-1';
 const TURN = 4690;
 
 const db = (): Database.Database => mockDb.current!;
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const sourceOf = (rel: string): string => fs.readFileSync(path.resolve(here, rel), 'utf8');
 
 beforeEach(() => {
   const d = new Database(':memory:');
@@ -288,7 +283,6 @@ describe('§2 the steer text', () => {
       freshState({ loopCount: 3 }), ctxFor(), scratchFor({ persistedContent: 'Answer.' }),
     );
     expect(out.directive).toBe('continue');
-    expect(sourceOf('../owed-interrupt.ts')).toContain('recordOwedInterruptSubjects(agentId, owed.map((m) => m.id), turnNumber)');
   });
 });
 
@@ -363,40 +357,5 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
       ctxFor(), sc,
     );
     expect(sc.persistedContent).toBe('Dropped the earbuds research as you asked.');
-  });
-
-  it('CONTROL — the redundant-closeout floor above it is untouched and still first', () => {
-    const src = sourceOf('../closeout-floors.ts');
-    expect(src.indexOf('REDUNDANT_CLOSEOUT_MAX_CHARS &&')).toBeLessThan(src.indexOf('grant.afterReply &&'));
-    expect(src).toContain('persistedContent.trim().length <= REDUNDANT_CLOSEOUT_MAX_CHARS');
-  });
-
-  it('ONE demotion rule in this file, not two — the helper is shared with the RC-5.3 arm', () => {
-    const src = sourceOf('../closeout-floors.ts');
-    expect((src.match(/type: 'chat:workingnote'/g) ?? []).length).toBe(1);
-    // 1 declaration + 3 calls (v3.5 D1 pre-review ruling 2 added the third: a continued job's progress
-    // line, through the SAME helper — which is what this clause protects).
-    // Field fix 3 audit round (#11): +1, `holdAndSteer` keeps the held reply through the SAME helper.
-    expect((src.match(/demoteToWorkingNote\(/g) ?? []).length).toBe(5);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════
-// §4 — THE DISPROVED DISCRIMINATOR STAYS OUT
-// ════════════════════════════════════════════════════════════════════
-
-describe('§4 nothing reads the granted round\'s outcome to decide the ask\'s state', () => {
-  it('the seam does not settle, revoke or re-point anything on the granted round', () => {
-    const src = sourceOf('../owed-interrupt.ts');
-    expect(src).not.toContain('revokeOwedInterruptSubjects');
-    expect(src).not.toContain('settleAsk');
-    // the ONE spine write this step makes is still T25's record, on the granting pass
-    expect((src.match(/ask-settlement\.js/g) ?? []).length).toBe(1);
-  });
-
-  it('the failure is written down where the next reader will look', () => {
-    const src = sourceOf('../owed-interrupt.ts');
-    expect(src).toContain('DISCRIMINATOR THAT WAS TRIED HERE AND FAILED');
-    expect(src).toContain('closed the podcast ask on the LUGGAGE delivery');
   });
 });

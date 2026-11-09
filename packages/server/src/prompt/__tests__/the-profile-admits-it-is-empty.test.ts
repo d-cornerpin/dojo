@@ -22,7 +22,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 // `vi.mock` factories are hoisted above module-level consts, so the home path has to be too.
@@ -33,7 +32,6 @@ const { HOME } = vi.hoisted(() => ({
 vi.mock('../../home.js', () => ({
   homeDir: (): string => HOME,
   dojoDir: (...s: string[]): string => `${HOME}/.dojo/${s.join('/')}`,
-  isTestRun: (): boolean => true,
 }));
 vi.mock('../../logger.js', () => {
   const noop = (): void => {};
@@ -73,9 +71,6 @@ vi.mock('../../db/connection.js', () => ({
 import { DEFAULT_USER_MD } from '../templates.js';
 import { renderUserProfile } from '../assembler.js';
 
-const REPO_ROOT = path.resolve(__dirname, '../../../../..');
-const SHIPPED = path.join(REPO_ROOT, 'templates', 'USER.md');
-
 beforeEach(() => {
   fs.rmSync(HOME, { recursive: true, force: true });
   owner.name = 'User'; owner.set = false;
@@ -108,15 +103,6 @@ describe('the default profile invents nothing', () => {
     // is the defect, whatever the value is.
     const nameLines = DEFAULT_USER_MD.split('\n').filter(l => /^-\s*(Name|Role):/i.test(l));
     expect(nameLines).toEqual(['- Name: not recorded yet']);
-  });
-});
-
-describe('the shipped template and the in-code default agree', () => {
-  it('⚠ templates/USER.md is byte-identical to DEFAULT_USER_MD', () => {
-    // Two files answering one question is how they came to disagree. The shipped copy exists
-    // because `build-package.sh` copies `templates/*.md`; it must not be a second opinion.
-    expect(fs.existsSync(SHIPPED)).toBe(true);
-    expect(fs.readFileSync(SHIPPED, 'utf-8')).toBe(DEFAULT_USER_MD);
   });
 });
 

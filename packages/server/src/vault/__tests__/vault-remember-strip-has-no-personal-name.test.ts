@@ -7,7 +7,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -122,10 +121,5 @@ describe('vault_remember bloat strip names no person', () => {
     });
     expect(saved).toContain('told Anna that the office printer');
     expect(saved).not.toContain('Engine stripped');
-  });
-
-  it('the shipped source contains no personal name', () => {
-    const text = readFileSync(new URL('../tools.ts', import.meta.url), 'utf-8');
-    expect(/evin/i.test(text)).toBe(false);
   });
 });

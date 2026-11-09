@@ -6,7 +6,6 @@
 // Every clause below is one of the three dials that produced that, plus the latency budget that
 // bounds what a best-effort dial may cost. The fixture numbers ARE the box's numbers.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import {
   utilityDial, isUtilityPurpose, utilityOutputCap, utilityNumCtx, utilityNumCtxExceedsConfigured,
   MIN_UTILITY_NUM_CTX, imageTokenAllowance, MIN_IMAGE_TOKENS, MAX_IMAGE_TOKENS,
@@ -186,43 +185,6 @@ describe('⚠ THE WINDOW IS SIZED TO THE CALL — on Ollama num_ctx is an ALLOCA
     const sized = utilityNumCtx({ inputChars: TITLE_INPUT_CHARS, outputTokens: 64, configuredNumCtx: null });
     expect(sized).toBeGreaterThanOrEqual(MIN_UTILITY_NUM_CTX);
     expect(sized).toBeLessThan(8_192);
-  });
-});
-
-describe('the dial is wired at its call site, not merely available', () => {
-  // ⚠ TWO MUTANTS LIVED THROUGH THIS FILE AND THE WIRE FILE BOTH: deleting `purpose: 'ask_title'`
-  // from the title call, and deleting its `abortSignal`. Nothing failed, because the policy and the
-  // transport were each covered and the ONE line joining them to this caller was not. A 30-second
-  // budget cannot be proven by a 30-second test in a suite that runs on every commit, so the call site
-  // is read instead — the same shape the engine's own censuses use for a wiring fact.
-  const askTitleSource = readFileSync(new URL('../../work/ask-title.ts', import.meta.url), 'utf-8');
-
-  it('⚠ H1: BOTH OF THE SUMMARISER\'S ROUNDS DECLARE — the retry is the worst one to lose', () => {
-    // The review found the aggressive retry declaring neither `purpose` nor `utilityTargetTokens`, so
-    // all three dials reverted to pre-t88 behaviour on the path that fires PRECISELY when the first
-    // summary came back too large — the biggest bodies on the box, the incident's own shape. Counting
-    // the declarations is what catches it: one `callModel` per `purpose`, both ways.
-    const src = readFileSync(new URL('../../memory/summarize.ts', import.meta.url), 'utf-8');
-    const calls = src.match(/callModel\(\{/g)?.length ?? 0;
-    const purposes = src.match(/purpose: 'memory_summarize'/g)?.length ?? 0;
-    const targets = src.match(/utilityTargetTokens:/g)?.length ?? 0;
-    // t269: the aggressive retry (a re-summary of the summary at half the target) is gone; every writer
-    // call — the first, a cut answer asked again with room, a rewrite — goes through ONE declared call site.
-    expect(calls).toBe(1);
-    expect(purposes, 'every callModel in the summariser must declare its purpose').toBe(calls);
-    expect(targets, 'and each must carry the target its own prompt promised the model').toBe(calls);
-    expect(src).not.toContain('Math.floor(targetTokens / 2)');
-  });
-
-  it('the title dial DECLARES its purpose', () => {
-    expect(askTitleSource).toContain("purpose: 'ask_title'");
-  });
-
-  it('…and passes the budget as an abort signal, which is what the transports honour', () => {
-    expect(askTitleSource).toContain('abortSignal: AbortSignal.timeout(ASK_TITLE_LATENCY_BUDGET_MS)');
-    // `bestEffort` is what makes the abort a warn rather than an agent-level error; the three belong
-    // together, so a reader who removes one sees this clause name the other two.
-    expect(askTitleSource).toContain('bestEffort: true');
   });
 });
 

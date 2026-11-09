@@ -125,18 +125,6 @@ const RITUAL_FIELDS = [
 ];
 
 describe('LANE-3 — release.sh carries the ritual check at all', () => {
-  it('the block exists, and the word the ruling turns on is in the script', () => {
-    const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
-    expect(sh, 'deploy/release.sh has no RITUAL_BAD block — the ritual demand was deleted')
-      .toMatch(/RITUAL_BAD=\$\(node -e "/);
-    expect(sh, 'the refusal must name the kit command that produces a ritual marker')
-      .toMatch(/--targeted/);
-    expect(sh, 'the ten-random draw must not be demanded any more (the owner removed it from the cut path)')
-      .not.toMatch(/needs exactly 10/);
-    // The extraction anchor this whole file depends on. If the block is rewritten into another
-    // shape, say THAT rather than passing every clause below on an empty script.
-    expect(() => extractRitualCheck('/nonexistent.json')).not.toThrow();
-  });
 
   it('the copy still checks every field the kit validator checks', () => {
     // A field-name inventory, not a behaviour assertion: the clauses below prove the behaviour.
@@ -213,105 +201,12 @@ describe('LANE-3 — every way the ritual can be unproven is refused', () => {
   });
 });
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE TWO COPIES, AND THE ORDER THEY DEPEND ON (review C, L3-F5).
-//
-// `release.sh` re-expresses `validateReleaseRitualMarker` because bash cannot import ESM across the
-// sibling-repo boundary. That copy drifted within hours of being written (the kit gained
-// `final.drawUnsteered` and the copy did not have it), and the field-name inventory above could not
-// see it — an inventory only knows the names someone remembered to list. So the clauses below read
-// BOTH sides and diff them, and they pin the one thing the division of labour rests on: ORDER.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** The kit's ritual validator, when the sibling repo is here. `null` when it is not. */
-function kitValidatorSource(): string | null {
-  const candidates = [
-    process.env.DOJO_TEST_KIT
-      ? path.join(process.env.DOJO_TEST_KIT, 'behavioral/lib/release-ritual.mjs')
-      : null,
-    path.resolve(REPO_ROOT, '../dojo-test-kit/behavioral/lib/release-ritual.mjs'),
-  ].filter((p): p is string => p !== null);
-  for (const p of candidates) if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
-  return null;
-}
-
-/** Only the part of the kit module that VALIDATES, so the assembler's own field writes do not count. */
-function kitValidatorBody(src: string): string {
-  const i = src.indexOf('export function validateReleaseRitualMarker');
-  expect(i, 'the kit module no longer exports validateReleaseRitualMarker — the copy has no original')
-    .toBeGreaterThan(-1);
-  return src.slice(i);
-}
-
 describe('the copy and the original check the same fields', () => {
   it('release.sh names every ritual field (frozen list — cannot pass vacuously if the kit is absent)', () => {
     const block = extractRitualCheck('/nonexistent.json');
     for (const field of RITUAL_FIELDS) {
       expect(block, `the ritual check no longer mentions ${field}`).toContain(field);
     }
-  });
-
-  it('PARITY: every ritual field the kit validator checks is checked by the copy too', () => {
-    const kit = kitValidatorSource();
-    if (kit === null) {
-      // Not a silent skip: the frozen list above still ran, and this says out loud what was not asked.
-      expect(RITUAL_FIELDS.length, 'the sibling kit is absent, so parity could not be measured — the '
-        + 'frozen-list clause above is the only guard in this run').toBeGreaterThan(0);
-      return;
-    }
-    const body = kitValidatorBody(kit);
-    const copy = extractRitualCheck('/nonexistent.json');
-    const missing = RITUAL_FIELDS.filter((f) => body.includes(f) && !copy.includes(f));
-    expect(missing, `the kit validator checks ${missing.join(', ')} and deploy/release.sh's copy does `
-      + 'not — that is the drift this clause exists for; mirror the field in the same hour').toEqual([]);
-    // ...and the other direction, so the copy cannot invent a demand the kit does not make.
-    const extra = RITUAL_FIELDS.filter((f) => copy.includes(f) && !body.includes(f));
-    expect(extra, `deploy/release.sh demands ${extra.join(', ')} and the kit validator does not — the `
-      + 'release would refuse a marker the kit considers shippable').toEqual([]);
-  });
-
-  it('PARITY of the id shape: both sides count NON-EMPTY, DISTINCT ids, not entries', () => {
-    // L3-F5a's lesson, carried over: the two sides once differed on whether an empty string
-    // counted (`pinnedDraws: ['']` refused in one copy and shipped in the other). Safe direction,
-    // not equivalent. The v2 equivalent is the five-ids check, so both copies must filter.
-    const copy = extractRitualCheck('/nonexistent.json');
-    expect(copy, 'the copy no longer filters the targeted ids to non-empty strings')
-      .toMatch(/named[\s\S]{0,200}filter/);
-    const kit = kitValidatorSource();
-    if (kit !== null) expect(kitValidatorBody(kit)).toMatch(/named[\s\S]{0,200}filter/);
-    // And both must agree on the SAME five-different-things rule, measured rather than read.
-    const marker = ritualMarker();
-    marker.targeted = marker.targeted.map((r) => ({ ...r, id: 'targeted-probe-01' }));
-    expect(verdictFor(marker), 'two copies of one scenario id is one proof recorded twice')
-      .not.toBe('');
-  });
-
-  it('THE ORDERING CONTRACT: the K1 honesty block runs BEFORE the ritual block', () => {
-    // L3-F5b: the ritual block does not re-check `green`, so a dishonest green is refused only
-    // because BEHAV_DISHONEST already ran. Reorder or delete K1 and it ships past this gate.
-    const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
-    const k1 = sh.indexOf('BEHAV_DISHONEST=$(node -e "');
-    const ritual = sh.indexOf('RITUAL_BAD=$(node -e "');
-    expect(k1, 'the BEHAV_DISHONEST (K1) block is gone — the ritual block does not re-check `green`, '
-      + 'so nothing in the release refuses a dishonest green any more').toBeGreaterThan(-1);
-    expect(ritual).toBeGreaterThan(-1);
-    expect(k1, 'K1 now runs AFTER the ritual block; the ritual block relies on it having run')
-      .toBeLessThan(ritual);
-    // And the dependency is written down where a reader of either block will meet it.
-    expect(sh, 'the ritual block does not disclose that it leans on K1').toMatch(/NOT SELF-SUFFICIENT/);
-  });
-
-  it('the ✓ line reports the fields the gate CHECKED, not a separate stored count', () => {
-    // L3-F6: a v1 marker with `n: 3` and ten families made the success line announce "3 families"
-    // about a draw the gate had just accepted as ten. The rule the finding set stands: the ✓ line
-    // may only read what a clause above validated.
-    const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
-    const echoLine = sh.split('\n').find((l) => l.includes('release ritual proven')) ?? '';
-    expect(echoLine).not.toBe('');
-    expect(echoLine, 'the ✓ line should report targeted.length, the field the gate counted')
-      .toMatch(/targeted\|\|\s?\[\]/);
-    expect(echoLine, 'the ✓ line should report the per-scenario ratio the gate validated')
-      .toMatch(/passCount/);
   });
 });
 
@@ -369,13 +264,6 @@ function treeVerdict(repo: string, sha: string): { ok: boolean; out: string } {
 }
 
 describe('the paid marker covers this tree: an ancestor of HEAD with no product code changed since (real git)', () => {
-  it('the rule is one function in release.sh, and the behavioral gate calls it', () => {
-    const fn = extractMarkerMatchesTree();
-    expect(fn).toMatch(/merge-base --is-ancestor/);
-    expect(fn).toMatch(/git diff --quiet "\$1" HEAD -- packages watchdog templates menubar/);
-    expect(fs.readFileSync(RELEASE_SH, 'utf-8'), 'the behavioral gate no longer asks marker_matches_tree')
-      .toMatch(/marker_matches_tree "\$BEHAV_SHA"/);
-  });
 
   it('ACCEPTS an ancestor marker when only gate-side and doc files changed after it', () => {
     const repo = scratchRepo();

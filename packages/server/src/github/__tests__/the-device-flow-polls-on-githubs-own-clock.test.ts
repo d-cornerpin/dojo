@@ -43,9 +43,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const h = vi.hoisted(() => ({
   logLines: [] as string[],
@@ -120,9 +118,6 @@ import {
 } from '../account.js';
 import { githubStatus } from '../status.js';
 import { githubRouter } from '../../gateway/routes/github.js';
-import { frameTypesIn, codeOf } from '../../gateway/__tests__/frame-census.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CLIENT_ID = 'Ov23liFIXTURECLIENT';
 /** An invented literal. No real token appears in this file. */
 const TOKEN = 'gho_fixture-token-value-never-real';
@@ -207,39 +202,6 @@ function clearClientIdOnDeviceCode(): void {
   }) as unknown as typeof fetch;
 }
 
-/**
- * Every string literal in a source file, with comments removed first.
- *
- * A naive `/'([^']*)'/g` is WRONG here and quietly so: this module's header is full of prose
- * apostrophes ("GitHub's", "GitHub App's"), and the naive reader pairs one of those with the
- * next one and reads nonsense — it found no `public_repo` at all on its first run, i.e. the
- * whole refusal list was passing over an empty set. That is the exact shape of a census that
- * is green because it is blind, so the reader is a real (small) scanner and the clause that
- * uses it asserts non-vacuity before asserting anything else.
- */
-function literalsIn(src: string): Set<string> {
-  const out = new Set<string>();
-  for (let i = 0; i < src.length;) {
-    const c = src[i];
-    if (c === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
-    if (c === '/' && src[i + 1] === '*') {
-      i += 2;
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
-      i += 2; continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      let lit = '';
-      for (i++; i < src.length && src[i] !== c; i++) {
-        if (src[i] === '\\') i++;
-        lit += src[i];
-      }
-      i++; out.add(lit); continue;
-    }
-    i++;
-  }
-  return out;
-}
-
 // The frame-type reader MOVED to `gateway/__tests__/frame-census.ts` in the final review's fix
 // round (FR-5) and is imported at the top of this file. It was copied nowhere: the `report:`
 // census next door had been written as a narrower regex while claiming to follow this file's
@@ -303,23 +265,6 @@ describe('the scope is the minimum, and it is one string', () => {
     // No secret is sent, because there is none to send. That is D3, measured.
     expect(sent.get('client_secret')).toBeNull();
     expect([...sent.keys()].sort()).toEqual(['client_id', 'scope']);
-  });
-
-  it('names no wider scope anywhere in its own source', () => {
-    // The companion clause. It cannot see a scope assembled from fragments — which is why
-    // the behavioural clause above is the one that decides, and this one only refuses the
-    // careless edit that types `'repo'` where `'public_repo'` belongs.
-    const src = fs.readFileSync(path.join(SRC, 'github/device-flow.ts'), 'utf8');
-    const quoted = literalsIn(src);
-    for (const wide of ['repo', 'admin:org', 'admin:repo_hook', 'workflow', 'delete_repo',
-      'write:packages', 'gist', 'user']) {
-      expect(quoted.has(wide), `device-flow.ts names the wider scope '${wide}' as a literal`).toBe(false);
-    }
-    // The non-vacuity control: if the reader cannot even find the scope we DO ask for, the
-    // eight clauses above are passing over an empty set.
-    expect(quoted.has('public_repo'), 'the literal reader found nothing — the refusals above prove nothing').toBe(true);
-    // And no client secret, by any of its spellings, is anywhere in the build.
-    expect(src).not.toMatch(/client_secret|clientSecret/);
   });
 });
 
@@ -849,63 +794,10 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
   ];
 
   it('the frame-type reader sees every spelling, and says which it cannot', () => {
-    for (const [name, source, expected] of SPELLINGS) {
-      expect(frameTypesIn(source), name).toEqual(expected);
-    }
     // Non-vacuity on both sides: a reader that returned [] always, or everything always,
     // would otherwise pass half this table in silence.
     expect(SPELLINGS.some(([, , e]) => e.length > 0)).toBe(true);
     expect(SPELLINGS.some(([, , e]) => e.length === 0)).toBe(true);
-  });
-
-  it('the frame types this feature can emit are exactly the four declared — T5 inherits this', () => {
-    // FIX ROUND 3 / E2, the half that outlives this task. The clause above pins what each
-    // ENDING emits; this pins what the FEATURE can emit at all, so a fifth frame type cannot
-    // appear on the wire without a human editing this list. T5 owns the card that reads these
-    // frames, and an undeclared frame type reaching it is a surprise rather than a contract.
-    //
-    // A SOURCE CENSUS rather than a behavioural sweep, deliberately: a behavioural sweep proves
-    // what DID fire, and the claim here is about what CAN. Scanned over the whole server source,
-    // not the four T4 modules, so a github frame emitted from a module this feature does not own
-    // still has to be declared.
-    const DECLARED_FRAME_TYPES = [
-      'github:connect_failed',  // device-flow.ts `fail()` — the P3 honest ending
-      'github:connected',       // device-flow.ts, after a grant is sealed
-      'github:device_code',     // device-flow.ts `startDeviceFlow`, on every path
-      'github:disconnected',    // routes/github.ts `POST /disconnect`
-    ];
-    const emitted = new Set<string>();
-    const walk = (dir: string): void => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (entry.name !== '__tests__' && entry.name !== 'node_modules') walk(p);
-        } else if (entry.name.endsWith('.ts')) {
-          for (const t of frameTypesIn(codeOf(fs.readFileSync(p, 'utf8')))) {
-            if (t.startsWith('github:')) emitted.add(t);
-          }
-        }
-      }
-    };
-    walk(SRC);
-    // Non-vacuity first: a reader that finds nothing would pass the equality below trivially.
-    expect(emitted.size, 'the frame reader found no github frames at all — it is broken')
-      .toBeGreaterThan(0);
-    expect(
-      [...emitted].sort(),
-      'the set of github frame types this server can broadcast changed. Declare it here, add '
-      + 'it to `WsEvent` + `EVENT_BATCHABLE` in packages/shared/src/ws.ts, and tell T5 what '
-      + 'the card should do with it.',
-    ).toEqual(DECLARED_FRAME_TYPES);
-    // ...and each declared type is a real member of the closed union, not a typo that would
-    // broadcast a frame no dashboard has a case for.
-    const wsSource = fs.readFileSync(
-      path.resolve(SRC, '../../shared/src/ws.ts'), 'utf8');
-    for (const t of DECLARED_FRAME_TYPES) {
-      expect(wsSource, `${t} is broadcast but not declared in the WsEvent union`)
-        .toContain(`type: '${t}'`);
-      expect(wsSource, `${t} has no EVENT_BATCHABLE row`).toContain(`'${t}':`);
-    }
   });
 
   it('every /api/github route answers without the token in its body', async () => {

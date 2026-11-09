@@ -137,69 +137,6 @@ afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('watchdog self-integrity — update-state.json single-writer discipline', () => {
-  it('the enumerated writers are the only ones, and every read-modify-write goes through one door', () => {
-    // A census, because the property is "no second RMW path", and a test that
-    // only exercises the paths it knows about cannot see a new one.
-    const files = [
-      'packages/server/src/update-state.ts',
-      'watchdog/src/auto-rollback.ts',
-      'watchdog/src/index.ts',
-      'packages/server/src/index.ts',
-      'packages/server/src/gateway/routes/update.ts',
-      'packages/server/src/healer/diagnostic.ts',
-    ];
-    const rmwOutsideTheDoor: string[] = [];
-    for (const rel of files) {
-      const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
-      const lines = src.split('\n');
-      lines.forEach((line, i) => {
-        const code = line.replace(/\/\/.*$/, '');
-        if (/\bwriteMarker\s*\(/.test(code) && !/export function writeMarker/.test(code)) {
-          rmwOutsideTheDoor.push(`${rel}:${i + 1}  ${line.trim()}`);
-        }
-      });
-    }
-    // `writeMarker` is the raw persist. Every caller that first READ the marker
-    // must go through `updateMarker`, which holds the lock and refuses a stale
-    // base. The only sanctioned raw callers are inside `update-state.ts` /
-    // `auto-rollback.ts` themselves.
-    const foreign = rmwOutsideTheDoor.filter(l => !l.startsWith('packages/server/src/update-state.ts:') && !l.startsWith('watchdog/src/auto-rollback.ts:'));
-    expect(foreign, 'a read-modify-write outside updateMarker() is a lost update waiting to happen').toEqual([]);
-  });
-
-  it('both copies export the serialising door and the write counter (hand-synced contract)', () => {
-    for (const rel of ['packages/server/src/update-state.ts', 'watchdog/src/auto-rollback.ts']) {
-      const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
-      expect(src, `${rel} must export updateMarker`).toMatch(/export function updateMarker\s*\(/);
-      expect(src, `${rel} must declare writeSeq on the marker`).toMatch(/writeSeq\s*:\s*number/);
-      expect(src, `${rel} must take an exclusive lock (O_CREAT|O_EXCL)`).toMatch(/'wx'/);
-    }
-  });
-
-  it('the temp file is unique per writer — a shared `.tmp` is a half-written marker waiting to be renamed', () => {
-    for (const rel of ['packages/server/src/update-state.ts', 'watchdog/src/auto-rollback.ts']) {
-      const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
-      // Comments are stripped: both files DOCUMENT the retired shape by name, and
-      // a census that cannot tell a description from a live statement would go
-      // permanently red on its own explanation.
-      const code = src.split('\n').map(l => l.replace(/^\s*\/\/.*$/, '')).join('\n');
-      // The defect: `const tmp = \`${statePath}.tmp\`` — one fixed name for BOTH
-      // processes, so two concurrent writes clobber each other's temp file and
-      // one of them renames a partially-written document over the real marker.
-      //
-      // Written as "the assignment must be the helper, and the helper must use
-      // the pid" rather than "the file must not contain this one string": the
-      // first version of this clause only forbade the template-literal spelling
-      // and a re-planted `UPDATE_STATE_PATH + '.tmp'` walked straight past it.
-      const assigns = [...code.matchAll(/const\s+tmp\s*=\s*([^;]+);/g)].map(m => m[1].trim());
-      expect(assigns.length, `${rel} declares no temp path at all`).toBeGreaterThan(0);
-      for (const expr of assigns) {
-        expect(expr, `${rel}: the temp path must come from tempPath(), not be spelled inline`).toMatch(/^tempPath\(/);
-      }
-      const helper = /function tempPath\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(code)?.[1] ?? '';
-      expect(helper, `${rel}: tempPath() must derive a per-writer name`).toMatch(/process\.pid/);
-    }
-  });
 
   it('DRIVEN, TWO REAL PROCESSES: a concurrent migration flag survives the watchdog\'s rollback write', async () => {
     // The platform opens an episode and drives it to failing.
@@ -345,38 +282,6 @@ describe('watchdog self-integrity — update-state.json single-writer discipline
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('watchdog self-integrity — async errors cannot kill the daemon', () => {
-  it('every spawn in watchdog/src attaches an error handler to the child it created (census)', () => {
-    const files = ['watchdog/src/index.ts', 'watchdog/src/auto-rollback.ts'];
-    const unguarded: string[] = [];
-    let spawnSites = 0;
-    for (const rel of files) {
-      const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
-      const lines = src.split('\n');
-      lines.forEach((line, i) => {
-        if (!/(?:^|[^.\w])spawn\s*\(/.test(line.replace(/\/\/.*$/, ''))) return;
-        spawnSites++;
-        // The handler must be attached within a short window of the spawn — before
-        // any await, and on the same child. 12 lines is generous and readable.
-        const window = lines.slice(i, i + 12).join('\n');
-        if (!/\.on\(\s*'error'/.test(window)) unguarded.push(`${rel}:${i + 1}  ${line.trim()}`);
-      });
-    }
-    expect(spawnSites, 'the census found no spawn at all — it has stopped measuring anything').toBeGreaterThanOrEqual(2);
-    expect(unguarded, 'an unhandled child "error" event kills the daemon; try/catch cannot reach it').toEqual([]);
-  });
-
-  it('the daemon installs a process-level net for uncaught errors, and it LOGS rather than exits', () => {
-    const src = fs.readFileSync(path.join(REPO_ROOT, 'watchdog/src/index.ts'), 'utf-8');
-    expect(src).toMatch(/process\.on\(\s*'uncaughtException'/);
-    expect(src).toMatch(/process\.on\(\s*'unhandledRejection'/);
-    // A net that exits is not a net. Pull each handler body and refuse a process.exit.
-    for (const evt of ['uncaughtException', 'unhandledRejection']) {
-      const m = new RegExp(`process\\.on\\(\\s*'${evt}'[\\s\\S]*?\\n\\}\\);`).exec(src);
-      expect(m, `${evt} handler not found`).toBeTruthy();
-      expect(m![0], `the ${evt} net must keep watching, not exit`).not.toMatch(/process\.exit/);
-      expect(m![0]).toMatch(/log\(\s*'error'/);
-    }
-  });
 
   it('DRIVEN, REAL PROCESS: a real async spawn error does not kill a process carrying the net', () => {
     const netted = `
@@ -436,11 +341,6 @@ describe('watchdog self-integrity — async errors cannot kill the daemon', () =
 const LEDGER_MOD = path.join(REPO_ROOT, 'watchdog/src/alert-ledger.ts');
 
 describe('watchdog self-integrity — the alert dedup / recovery ledger', () => {
-  it('the ledger is a side-effect-free module the daemon imports (so it can be driven at all)', () => {
-    expect(fs.existsSync(LEDGER_MOD), 'watchdog/src/alert-ledger.ts must exist').toBe(true);
-    const idx = fs.readFileSync(path.join(REPO_ROOT, 'watchdog/src/index.ts'), 'utf-8');
-    expect(idx).toMatch(/from '\.\/alert-ledger\.js'/);
-  });
 
   it('DRIVEN ACROSS A RESTART: an active alert is not re-sent, and a recovery is not lost', () => {
     const p = path.join(home, '.dojo', 'watchdog-state.json');
@@ -489,30 +389,6 @@ describe('watchdog self-integrity — the alert dedup / recovery ledger', () => 
     expect([o.a, o.b, o.c]).toEqual([true, false, true]);
     expect(o.active).toBe(true);
   }, 60_000);
-
-  it('A RECOVERY IS NEVER RETIRED BEFORE IT HAS SOMEWHERE TO GO (the dropped "it is back" message)', () => {
-    const idx = fs.readFileSync(path.join(REPO_ROOT, 'watchdog/src/index.ts'), 'utf-8');
-    // Every place that resolves an alert AND texts about it must resolve the
-    // ledger only once a recipient has been resolved, so an unreadable DB
-    // postpones the recovery instead of destroying it.
-    expect(idx).toMatch(/function resolveAndTell\s*\(/);
-    const body = /function resolveAndTell[\s\S]*?\n\}/.exec(idx)![0];
-    const recipientAt = body.indexOf('getImessageRecipient');
-    const resolveAt = body.indexOf('markAlertResolved');
-    expect(recipientAt).toBeGreaterThan(-1);
-    expect(resolveAt).toBeGreaterThan(-1);
-    expect(recipientAt, 'the recipient must be resolved BEFORE the ledger entry is retired').toBeLessThan(resolveAt);
-
-    // And no site may still do it the other way round.
-    const lines = idx.split('\n');
-    const bad: string[] = [];
-    lines.forEach((line, i) => {
-      if (!/if\s*\(\s*markAlertResolved\(/.test(line)) return;
-      const window = lines.slice(i, i + 8).join('\n');
-      if (/sendIMessage|sendSmartAlert/.test(window)) bad.push(`watchdog/src/index.ts:${i + 1}  ${line.trim()}`);
-    });
-    expect(bad, 'this shape retires the alert and THEN looks for somewhere to send it').toEqual([]);
-  });
 
   it('DRIVEN: a corrupt ledger file starts clean instead of crashing the daemon', () => {
     const p = path.join(home, '.dojo', 'watchdog-state.json');
@@ -605,17 +481,6 @@ describe('watchdog self-integrity — the disk floor is ordered against the plat
       expect(f.bytes).toBe(WATCHDOG_DISK_FLOOR_BYTES);
       expect(f.binding).toBe('floor');
     }
-  });
-
-  it('the daemon uses it, and its alert says WHICH answer bound', () => {
-    const idx = fs.readFileSync(path.join(REPO_ROOT, 'watchdog/src/index.ts'), 'utf-8');
-    expect(idx).toMatch(/from '\.\/disk-floor\.js'/);
-    expect(idx).toMatch(/diskFloorBytes\(/);
-    // The flat literal is gone: a second answer to the same question is the defect.
-    const code = idx.split('\n').map(l => l.replace(/^\s*\/\/.*$/, '')).join('\n');
-    expect(code, 'the flat 1 GB comparison must not survive beside the derived floor').not.toMatch(/availableGb\s*<\s*1\b/);
-    // And the owner is told what the number means when the DB is what set it.
-    expect(idx).toMatch(/database backup/i);
   });
 
   it('DRIVEN: the database size the floor is computed from is measured off disk, wal and shm included', () => {

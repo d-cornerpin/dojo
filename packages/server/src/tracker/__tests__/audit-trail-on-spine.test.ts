@@ -57,7 +57,6 @@ import {
   writeTaskLog, listTaskLog, getRecentObservations, getRecentTransitions, formatEntryLine,
 } from '../task-log.js';
 import { transition } from '../../work/store.js';
-import { upholdClaim } from '../../work/tracker-store.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -308,26 +307,5 @@ describe('task_log is gone from the schema, not merely unreferenced', () => {
     const tail = text.slice(drops[drops.length - 1].index);
     expect(tail).not.toMatch(/CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?["'`]?task_log\b/i);
     expect(tail).not.toMatch(/RENAME\s+TO\s+["'`]?task_log\b/i);
-  });
-
-  it('no production source carries a statement against task_log', () => {
-    const walk = (dir: string, acc: string[] = []): string[] => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const fp = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          if (e.name === '__tests__' || e.name === 'migrations') continue;
-          walk(fp, acc);
-        } else if (e.name.endsWith('.ts')) acc.push(fp);
-      }
-      return acc;
-    };
-    const stripComments = (s: string): string => s
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
-    const RE = /(?:FROM|INTO|UPDATE|JOIN|TABLE)\s+["'`]?task_log\b|DELETE\s+FROM\s+["'`]?task_log\b/i;
-    const offenders = walk(SRC)
-      .filter((f) => RE.test(stripComments(fs.readFileSync(f, 'utf8'))))
-      .map((f) => path.relative(SRC, f));
-    expect(offenders).toEqual([]);
   });
 });

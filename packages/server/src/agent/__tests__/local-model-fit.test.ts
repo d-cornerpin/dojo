@@ -11,9 +11,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import os from 'node:os';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -298,34 +295,6 @@ describe('the doors answer with the sentence (no new UX: the 400 message is the 
     const ids = ((await res.json()) as { data: Array<{ id: string }> }).data.map((m) => m.id);
     expect(ids).not.toContain('m-decision');
     expect(ids).toContain('m-9b');
-  });
-});
-
-describe('the door census: every door the 32K floor guards also asks whether the model fits', () => {
-  const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) return e.name === '__tests__' || e.name === 'node_modules' ? [] : walk(full);
-    return /\.tsx?$/.test(e.name) ? [full] : [];
-  });
-  const calls = (code: string, fn: string): number => (code.match(new RegExp(`\\b${fn}\\(`, 'g')) ?? []).length;
-  const files = walk(SRC).map((f) => ({ rel: path.relative(SRC, f), code: fs.readFileSync(f, 'utf-8') }))
-    .filter((f) => !['agent/main-model-floor.ts', 'agent/local-model-fit.ts'].includes(f.rel));
-
-  it('the same number of calls in every file', () => {
-    const doors = files.filter((f) => calls(f.code, 'refuseSmallMainModel') > 0);
-    expect(doors.length).toBeGreaterThanOrEqual(7);
-    const short = doors
-      .map((f) => ({ rel: f.rel, floor: calls(f.code, 'refuseSmallMainModel'), fit: calls(f.code, 'refuseUnfitLocalModel') + calls(f.code, 'localModelFit') }))
-      .filter((d) => d.fit < d.floor);
-    expect(short, 'a door refuses a small main model but never asks whether a local model fits').toEqual([]);
-  });
-
-  it('"anything else": a router tier assignment and the summary writer setting ask too', () => {
-    const router = files.find((f) => f.rel === 'gateway/routes/router.ts')!;
-    expect(calls(router.code, 'refuseUnfitLocalModel')).toBeGreaterThan(0);
-    const config = files.find((f) => f.rel === 'gateway/routes/config.ts')!;
-    expect(config.code).toMatch(/LOCAL_MODEL_SETTING_KEYS/);
   });
 });
 

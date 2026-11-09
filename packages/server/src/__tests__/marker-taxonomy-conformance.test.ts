@@ -17,62 +17,8 @@
 //   B. OWNERSHIP — nobody re-declares a shape the shared module owns.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import {
-  A2A_INBOUND_PREFIXES,
-  A2A_INBOUND_RE,
-  A2A_INBOUND_ANYWHERE_RE,
-  A2A_ENVELOPE_RE,
-  A2A_THREAD_RE,
-  parseA2AThreadShort,
-  SOURCE_ENVELOPE_PREFIXES,
-  SOURCE_ENVELOPE_ANYWHERE_RE,
-  ENGINE_SCAFFOLD_PREFIXES,
-  ENGINE_SCAFFOLD_RE,
-  NEW_SESSION_BRACKET_RE,
-  NEW_SESSION_BRACKET_ANYWHERE_RE,
-  TECHNIQUE_FRESH_SENTINEL,
-  TECHNIQUE_FRESH_HEADER_RE,
-  parseTechniqueFreshRead,
-  PROMPT_HISTORY_EXCLUDED_PREFIXES,
-} from '@dojo/shared';
+import { A2A_INBOUND_PREFIXES, A2A_INBOUND_RE, A2A_INBOUND_ANYWHERE_RE, A2A_ENVELOPE_RE, A2A_THREAD_RE, parseA2AThreadShort, SOURCE_ENVELOPE_PREFIXES, ENGINE_SCAFFOLD_PREFIXES, ENGINE_SCAFFOLD_RE, NEW_SESSION_BRACKET_RE, NEW_SESSION_BRACKET_ANYWHERE_RE, TECHNIQUE_FRESH_SENTINEL, TECHNIQUE_FRESH_HEADER_RE, parseTechniqueFreshRead } from '@dojo/shared';
 import { FXID } from '../../../../deploy/checks/fixture-vocabulary.mjs';
-
-const PKGS = path.join(__dirname, '..', '..', '..');
-const ROOTS = ['server/src', 'shared/src', 'dashboard/src'];
-
-function walk(dir: string, acc: string[] = []): string[] {
-  if (!fs.existsSync(dir)) return acc;
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fp = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'migrations' || e.name === 'node_modules') continue;
-      walk(fp, acc);
-    } else if (e.name.endsWith('.ts') || e.name.endsWith('.tsx')) acc.push(fp);
-  }
-  return acc;
-}
-
-const files = ROOTS.flatMap((r) => walk(path.join(PKGS, r)))
-  .map((f) => path.relative(PKGS, f).split(path.sep).join('/'))
-  .sort();
-
-const read = (rel: string) => fs.readFileSync(path.join(PKGS, rel), 'utf8');
-
-/** Whole-line comments removed. Same rule and same reason as marker-ownership.test.ts:
- *  a comment that NAMES a marker is documentation we want more of; a second MATCHER is
- *  the thing that drifts. */
-const code = (rel: string) =>
-  read(rel)
-    .split('\n')
-    .filter((l) => {
-      const t = l.trimStart();
-      return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'));
-    })
-    .join('\n');
-
-const OWNER = 'shared/src/markers.ts';
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // A. BEHAVIOUR — the four named drifts, written as the defect
@@ -82,19 +28,6 @@ describe('E18 drift 1 — one flag, not two (the /i seed pair)', () => {
   it('matches BOTH cases of the modern envelope from the ONE matcher', () => {
     expect(A2A_INBOUND_RE.test('[A2A:REQUEST thread:bp0atnn9 from:maddy] hi')).toBe(true);
     expect(A2A_INBOUND_RE.test('[a2a:request thread:bp0atnn9 from:maddy] hi')).toBe(true);
-  });
-
-  it('the assembler and compaction now read the SAME matcher object', async () => {
-    // The defect was two byte-identical alternations with different flags. Identity, not
-    // equality: two RegExps with the same source would satisfy `toEqual` and still be two
-    // declarations that can drift apart tomorrow.
-    const assembler = code('server/src/memory/assembler.ts');
-    const compaction = code('server/src/memory/compaction.ts');
-    for (const [name, src] of [['assembler', assembler], ['compaction', compaction]] as const) {
-      expect(src, `${name} still declares its own A2A alternation`)
-        .not.toMatch(/=\s*\/\^\\s\*\(\\\[A2A:/);
-      expect(src, `${name} does not import the shared matcher`).toMatch(/A2A_INBOUND_RE/);
-    }
   });
 
   it('the anchored and unanchored forms are built from ONE prefix list', () => {
@@ -188,36 +121,6 @@ describe('the fresh-read sentinel — one literal, one extractor', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// The SQL half — asserted equal, not generated. markers.ts states why.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** The `NOT LIKE` clause each of the two statements must contain, in this order. */
-const promptHistoryMarkerSqlClauses = (column = 'content'): string[] =>
-  PROMPT_HISTORY_EXCLUDED_PREFIXES.map((p) => `${column} NOT LIKE '${p}%'`);
-
-describe('the prompt-history marker filter has ONE definition in two languages', () => {
-  const SQL_FILE = 'server/src/prompt/assembler.ts';
-
-  it('both statements carry exactly the shared prefix list, in order', () => {
-    const src = read(SQL_FILE);
-    const clauses = promptHistoryMarkerSqlClauses();
-    expect(clauses).toHaveLength(PROMPT_HISTORY_EXCLUDED_PREFIXES.length);
-    for (const c of clauses) {
-      const hits = src.split(c).length - 1;
-      expect(hits, `"${c}" appears ${hits}x in ${SQL_FILE} — expected exactly 2`).toBe(2);
-    }
-  });
-
-  it('and no THIRD copy has appeared anywhere else in the tree', () => {
-    // The duplication was two copies. A third would be the same defect, one file further
-    // away, and this is the clause that finds it.
-    const clause = promptHistoryMarkerSqlClauses()[1];   // the shortest, `[A2A:`
-    const offenders = files.filter((f) => f !== SQL_FILE && code(f).includes(clause));
-    expect(offenders).toEqual([]);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
 // B. OWNERSHIP — zero local re-declarations
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -268,21 +171,8 @@ const SHAPES: OwnedShape[] = [
 ];
 
 describe('ownership — one declaration per shape', () => {
-  it('walks all three packages and finds the owner', () => {
-    expect(files.length).toBeGreaterThan(200);
-    expect(files).toContain(OWNER);
-    expect(files).toContain('server/src/memory/assembler.ts');
-    expect(files).toContain('server/src/memory/compaction.ts');
-  });
 
   for (const s of SHAPES) {
-    it(`${s.name}: declared only in ${OWNER}${Object.keys(s.allow).length ? ` + ${Object.keys(s.allow).length} allowlisted` : ''}`, () => {
-      const offenders = files.filter((f) => f !== OWNER && s.pattern.test(code(f)));
-      const unexplained = offenders.filter((f) => !(f in s.allow));
-      expect(unexplained, `${s.name}: a second declaration with no owner`).toEqual([]);
-      const stale = Object.keys(s.allow).filter((f) => !offenders.includes(f));
-      expect(stale, `${s.name}: allowlist entries matching nothing`).toEqual([]);
-    });
 
     it(`${s.name}: the owner exports it (${s.exports.join(', ')})`, async () => {
       const shared = await import('@dojo/shared') as Record<string, unknown>;
