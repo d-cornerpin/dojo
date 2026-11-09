@@ -47,7 +47,7 @@ export function agentSendRecipientsOf(args: Record<string, unknown>, effects: re
 }
 
 /**
- * Audit #5: the recipient(s) a successful SEND names, from the tool's declared `send` effect, or null
+ * The recipient(s) a successful SEND names, from the tool's declared `send` effect, or null
  * when the declaration derives the recipient (a reply goes to the message's sender). `undefined` when
  * the call is not a send to a person: no `send` effect, or one addressed to another agent or an agent
  * group (`args.agent` / `args.group_id`): that one is read by `agentSendRecipientsOf`, and reaches the
@@ -207,7 +207,7 @@ export function recordCallsTouched(
           recordTouched(workId, tc.name, commands, Date.now(), safe(exitStatusOf(r?.keptWhole ?? r?.content ?? '')));
         }
       }
-      // Audit #5: a successful send to a person is one delivery on the ledger, keyed by its call,
+      // A successful send to a person is one delivery on the ledger, keyed by its call,
       // with the recipient(s) its arguments name (redacted like every other entry).
       const to = sendRecipientsOf(tc.arguments ?? {}, effectsOf(tc.name) ?? []);
       if (to !== undefined) recordTouched(workId, tc.name, [`${SEND_KEY}${tc.id}`], Date.now(), to ? safe(to.join(', ')) : null);
@@ -359,7 +359,7 @@ export function ledgerWorkEntries(workId: string): LedgerWorkEntry[] {
 }
 
 
-/** The task's file, send and command entries in the order a review SHOWS them (review M1): the commands
+/** The task's file, send and command entries in the order a review SHOWS them: the commands
  *  that failed first, then the sends, then the files the work wrote, then the commands that
  *  exited 0, each newest first. The ledger keeps everything; a reader lays this out in its own room. */
 export function ledgerListing(workId: string): LedgerWorkEntry[] {

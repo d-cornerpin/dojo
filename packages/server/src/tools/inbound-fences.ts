@@ -1,11 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════
-// WHAT THE MODEL READS OF EACH INBOUND CHANNEL (v3.5 K33 fix round 1) — one builder per producer.
-//
-// Each inbound producer calls its builder here, so the fenced bytes the model receives are one
-// function per channel that a test can feed and read back (`every-inbound-fence-renders.test.ts`).
-// The owner's own words are never fenced; anyone else's are, through the one fence
-// (`@dojo/shared` `fenceExternal`), in the addressed form when they were sent TO the agent.
-// ════════════════════════════════════════════════════════════════════════════
+// Every place outside text is fenced for the model: one builder per inbound channel, a contact's
+// attachment blocks, and the registry of tools whose result is someone else's text. The owner's words are never fenced.
 
 import { createHmac, randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -187,7 +181,7 @@ export function bracketed(fence: AttachmentFence | null, block: Anthropic.Conten
   return [{ type: 'text', text: head }, block, { type: 'text', text: end }];
 }
 
-// v2.3.19 gap: the persisted pointer text says an attachment exists, so an empty hole makes the
+// The persisted pointer text says an attachment exists, so an empty hole makes the
 // model hallucinate contents or deny the attachment was sent. The skip itself stays (a broken file
 // must never kill the turn); this note is what makes the skip honest. A contact's file name is
 // theirs, so it goes inside a fence below the engine's note.
@@ -261,7 +255,7 @@ const OUTSIDE_READS: Readonly<Record<string, OutsideRead>> = {
   transcribe_audio: { kind: 'transcript', from: named('an audio recording') },
 };
 
-/** The mailbox reads: fenced by their banner, with the guard outside the fence (see header). */
+/** The mailbox reads: their banner (`provider/mailbox-banner.ts`) fences the outside span and keeps the owner's injection guard outside it. */
 export const BANNER_FENCED_READS: ReadonlySet<string> = new Set([...USER_MAILBOX_READ_TOOLS, ...AGENT_MAILBOX_READ_TOOLS]);
 
 /**

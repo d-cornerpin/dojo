@@ -149,7 +149,7 @@ export function checkDependencies(completedTaskId: string): void {
     if (allDepsComplete) {
       // A dependency validating makes the task ELIGIBLE; it does not start it ahead of its own schedule.
       // A task with a start still in the future waits on deck and the scheduler fires it then (it was only
-      // skipping it for the unmet dependency). v2.8.x rule for the rest: tasks without a future schedule
+      // skipping it for the unmet dependency). Tasks without a future schedule
       // land in 'in_progress' so they stay visible; 'on_deck' is reserved for scheduled-for-later.
       const nowMs = Date.now();
       const startsLater = (row.scheduled_start ?? 0) > nowMs || (row.next_run_at ?? 0) > nowMs;

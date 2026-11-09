@@ -130,16 +130,11 @@ describe('a killed update leaves nothing behind', () => {
 
     // The delete of that one folder is refused for as long as the sweep runs — a failed removal that, before the fix,
     // was never tried again.
-    const realRm = fs.rm.bind(fs);
+    const realRm = fs.promises.rm.bind(fs.promises);
     let refusing = true;
-    vi.spyOn(fs, 'rm').mockImplementation(((target: unknown, opts?: unknown, cb?: unknown) => {
-      if (refusing && String(target) === doomed) {
-        const busy = Object.assign(new Error(`ENOTEMPTY: directory not empty, rm '${String(target)}'`), { code: 'ENOTEMPTY' });
-        if (typeof cb === 'function') { (cb as (e: unknown) => void)(busy); return undefined; }
-        return Promise.reject(busy);
-      }
-      return (realRm as (...a: unknown[]) => unknown)(target, opts, cb);
-    }) as unknown as typeof fs.rm);
+    vi.spyOn(fs.promises, 'rm').mockImplementation((target, opts) => (refusing && String(target) === doomed
+      ? Promise.reject(Object.assign(new Error(`ENOTEMPTY: directory not empty, rm '${String(target)}'`), { code: 'ENOTEMPTY' }))
+      : realRm(target, opts)));
 
     const first = await cleanUpdateLeftovers(dojo);
     expect(fs.existsSync(doomed)).toBe(true);

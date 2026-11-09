@@ -3,7 +3,7 @@
 //
 // The blocks that turn a contact's image or PDF into model content are rebuilt on every model
 // call of a turn, so their fence must carry a code that reads the same on every call — or the
-// message's bytes change and the prompt cache misses from there on. `attachment-fence.ts` draws
+// message's bytes change and the prompt cache misses from there on. `tools/inbound-fences.ts` draws
 // it as an HMAC under a key pulled once per process, keyed to the row and the attachment's place
 // in it, never from the content and never known to the sender. This pins the three properties the
 // code relies on: two rows draw different codes, one row draws the same code on every rebuild, and
@@ -14,7 +14,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
 
-// The key is private to attachment-fence.ts and is used only as the HMAC key in its codeOf, so it
+// The key is private to tools/inbound-fences.ts and is used only as the HMAC key in its codeOf, so it
 // has no export to read. We reach it through the one seam that holds it — the call codeOf makes to
 // node:crypto's createHmac — and we observe the drawn codes through the module's public door
 // (bracketed / droppedAttachmentNote), which put each code in the fence's end line.
@@ -48,7 +48,7 @@ const codeFor = (fence: AttachmentFence): string => {
   return m![1];
 };
 
-describe('a contact\'s attachment fence code (attachment-fence.ts)', () => {
+describe('a contact\'s attachment fence code (tools/inbound-fences.ts)', () => {
   it('two different rows draw different codes', () => {
     expect(codeFor(fenceFor('row-A'))).not.toBe(codeFor(fenceFor('row-B')));
   });

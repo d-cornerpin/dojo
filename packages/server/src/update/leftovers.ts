@@ -26,10 +26,7 @@ export async function cleanUpdateLeftovers(dojoDir: string, now = Date.now()): P
       .map((n) => path.join(dojoDir, n));
   } catch { /* nothing to name */ }
   const leftovers = [...deadInstallWorkDirs(dojoDir).filter((d) => pastOneAttempt(d, now)), ...tmps];
-  const remove = (p: string): Promise<void> => new Promise((resolve, reject) => {
-    fs.rm(p, { recursive: true, force: true }, (err) => (err ? reject(err) : resolve()));
-  });
-  const results = await Promise.allSettled(leftovers.map(remove));
+  const results = await Promise.allSettled(leftovers.map((p) => fs.promises.rm(p, { recursive: true, force: true })));
   const deleted: string[] = [];
   const failed: string[] = [];
   results.forEach((r, i) => {

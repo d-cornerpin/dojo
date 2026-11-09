@@ -277,7 +277,7 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
   }
 }
 
-/** An intent whose scope ended without reaching any transport: nothing was sent, so no row stands (as before intents). */
+/** An intent whose scope ended without reaching any transport: nothing was sent, so no row stands. */
 export function dropPendingDelivery(id: string): void {
   try {
     getDb().prepare("DELETE FROM deliveries WHERE id = ? AND outcome = 'pending'").run(id);

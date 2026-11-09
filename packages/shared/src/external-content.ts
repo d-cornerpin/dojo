@@ -61,7 +61,7 @@ function cleanSource(from: string): string {
  * Fence `body` as outside text of `kind` from `from`, under a fresh code. `addressedToAgent`: the
  * text was sent TO the agent (its own mailbox, a direct message), so it may be answered — but still
  * never obeyed because it says so. `code`: a caller that re-renders the same text on every model call
- * passes a code it keeps stable and unpredictable (agent/attachment-fence.ts), so the prompt cache holds.
+ * passes a code it keeps stable and unpredictable (server tools/inbound-fences.ts), so the prompt cache holds.
  */
 export function fenceExternal(kind: ExternalKind, from: string, body: string, opts: { addressedToAgent?: boolean; code?: string } = {}): string {
   const code = opts.code ?? newFenceCode();

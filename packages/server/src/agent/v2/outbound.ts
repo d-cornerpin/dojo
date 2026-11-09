@@ -106,11 +106,8 @@ interface OutboundScope {
 /**
  * The channel a send TOOL delivers on, or null when the tool reaches nobody.
  *
- * This is what lets the engine open a scope at the single tool-dispatch door instead of at
- * each of the ten send paths PINNED §8 lists as unrecorded (`gmail_reply`, `gmail_forward`,
- * `outlook_reply`, `outlook_forward`, `teams_send_message`, `teams_send_channel_message`,
- * `voice_call`, and the four that were already partly covered), and it is derived from the
- * shared `channelOfSendTool` map rather than being a second hand-maintained list.
+ * The engine opens every send tool's scope at the one tool-dispatch door from this, derived from
+ * the shared `channelOfSendTool` map rather than a second hand-maintained list.
  *
  * `user_` twins run the BASE tool's executor (the same reasoning `RECEIPT_EXEMPT` records),
  * so they resolve to the base name's channel.
@@ -130,7 +127,7 @@ export function outboundChannelForTool(name: string): DeliveryChannel | null {
 }
 
 /** The recipient a send tool named, for the ledger's `recipient_id`. Best-effort: a missing
- *  or reply-shaped argument simply leaves the column null, exactly as it does today. */
+ *  or reply-shaped argument leaves the column null. */
 export function outboundRecipientForTool(
   name: string, args: Record<string, unknown> | undefined,
 ): string | null {

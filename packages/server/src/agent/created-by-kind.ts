@@ -37,12 +37,7 @@ export type CreatedByKind = 'user' | 'agent' | 'harness';
 
 const CREATED_BY_KINDS: readonly CreatedByKind[] = ['user', 'agent', 'harness'];
 
-/**
- * Validate a caller-supplied kind. Returns null for anything not on the enum — the
- * caller then falls back to the kind it would have used anyway, so a typo'd or hostile
- * value can never widen what a sweep will delete, and the database's CHECK is the
- * backstop if this is ever bypassed.
- */
+/** A stored `created_by_kind` as a kind, or null for anything not on the enum. */
 function parseCreatedByKind(value: unknown): CreatedByKind | null {
   return typeof value === 'string' && (CREATED_BY_KINDS as readonly string[]).includes(value)
     ? (value as CreatedByKind)

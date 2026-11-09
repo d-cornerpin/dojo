@@ -122,8 +122,6 @@ const READ_BUT_UNDECLARED_RULED: Readonly<Record<string, string>> = {
   // that can use them, so their entries are gone rather than reworded — the anti-rot
   // clause below would have failed on them, which is exactly how a closed hand-up is
   // supposed to be noticed.
-  // v3.5: `message_ids` / `thread_ids` (read by `tools/item-keys.ts`) were ruled here until t251
-  // declared them on gmail_label; that lane is now underneath, so the rulings are gone.
   tz: 'PHASE-6 T0C-W: the DECLARATION is retired, the READ is kept. `tz` is a pure alias for `local_timezone` with no capability of its own, and a second declared spelling of one field costs cached-prefix bytes on every turn forever while telling the model nothing new. The read (`args.local_timezone ?? args.tz`) stays because HTTP callers already spell it `tz` and deleting it would narrow what works today (#15). Also the name of the zero-reader spine column T0A dispositioned to SWEEP-F',
 };
 
