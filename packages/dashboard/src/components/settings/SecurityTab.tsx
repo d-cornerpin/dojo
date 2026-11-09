@@ -1,8 +1,5 @@
-// ── Settings → The Security tab. `SudoPolicyCard` travels with it because the page renders the two as one
-// section (`<><SudoPolicyCard /><SecurityTab /></>`) — two component names, one tab.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
+// ── Settings → The Security tab. `SudoPolicyCard` travels with it: the page renders the two
+// as one section (`<><SudoPolicyCard /><SecurityTab /></>`), two component names, one tab.
 
 import { useState, useEffect, type FormEvent } from 'react';
 import * as api from '../../lib/api';
@@ -12,15 +9,10 @@ import {
 } from '../../lib/sudo-policy';
 
 
-// ── Security Tab ──
 
-/**
- * The sudo policy (owner ruling 2026-09-26, ships v3.2.2).
- *
- * Every decision — the order, the labels, the hints, what an unknown stored value means, and the
- * floor note that must show under ALL THREE values — lives in `lib/sudo-policy.ts`, so a test can ask
- * about it without mounting this page. This component only renders and saves.
- */
+// The sudo policy: every decision (the order, the labels, the hints, what an unknown stored value
+// means, the floor note that must show under ALL THREE values) lives in `lib/sudo-policy.ts`, so a
+// test can ask about it without mounting this page; this component only renders and saves.
 export const SudoPolicyCard = () => {
   const [policy, setPolicy] = useState<SudoPolicy>(SUDO_POLICY_DEFAULT);
   const [loaded, setLoaded] = useState(false);

@@ -1,5 +1,4 @@
-// Settings > Voice: the sentence for a control whose value the server refused to store. It is shown through
-// the dashboard's existing toast, not a banner of its own.
+// Settings > Voice: a control's save-refusal sentence, shown through the dashboard's existing toast.
 
 const NAMES: Record<string, string> = {
   engine: 'Voice engine', voice: 'Voice', speed: 'Playback speed', cloud_voice: 'Cloud voice',

@@ -1,8 +1,5 @@
 // ── Settings → The iMessage bridge card: safe senders, sharing levels, auto-routing.
-// Its `SHARING_LEVEL_*` tables and `parseSenders` travel with it — every call site is here.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
+// Its `SHARING_LEVEL_*` tables and `parseSenders` travel with it; every call site is here.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
@@ -10,8 +7,6 @@ import * as api from '../../lib/api';
 import { ownerChanged, confirmRemoveOwner } from '../../lib/owner-star';
 import { isEnterNotComposing } from '../../lib/enter-key';
 
-
-// ── iMessage Bridge Settings ──
 
 // Shape matches packages/server/src/services/imessage-bridge.ts SafeSender.
 // Duplicated rather than imported to keep the dashboard build standalone.
@@ -112,12 +107,7 @@ export const IMBridgeSettings = () => {
   const load = useCallback(async () => {
       setLoading(true);
       // `permissions/check` reports which executable does the reading; only the server knows it.
-      // ⚠ NO LEADING `/api` — the door prepends it. This read spent its whole life
-      // asking for `/api/api/setup/permissions/check`, so it 404'd every time and
-      // `serverExecPath` never arrived, which made the Full Disk Access hint below
-      // render its "path unknown" wording PERMANENTLY on this page. The audit's
-      // item-D fix was inert on one of its two surfaces because of five characters.
-      // `the-dashboard-has-one-network-door.test.ts` now refuses the prefix.
+      // No leading `/api`: the door prepends it, so adding it here would 404 the read.
       void api.request<Record<string, string>>('/setup/permissions/check')
         .then(r => { if (r.ok && r.data?.serverExecPath) setServerExecPath(r.data.serverExecPath); });
       const [enabledResult, sendersResult, defaultResult] = await Promise.all([
@@ -139,20 +129,13 @@ export const IMBridgeSettings = () => {
         setEnabled(enabledResult.data.value === 'true');
       }
 
-      // Pre-fix the loader would also fall back to `imessage_recipient`
-      // (a legacy single-address field) and auto-promote it to a sender
-      // entry. On most installs that field holds the AGENT's own iMessage
-      // address (set during installation), which then showed up as the
-      // user's primary sender - confusing and wrong. We now only load
-      // actual saved safe-sender records; if there are none, the list
-      // starts empty so the user explicitly adds the right people.
+      // Only saved safe-sender records load: the legacy `imessage_recipient` field usually
+      // holds the AGENT's own address, and promoting it would label the agent as the owner.
       const loaded: SafeSender[] = sendersResult.ok && sendersResult.data.value
         ? parseSenders(sendersResult.data.value)
         : [];
 
-      // If no record is marked primary, promote the legacy default key's
-      // matching record (best-effort) or the first record. Best-effort
-      // only; if no primary can be inferred, the first record gets the star.
+      // With no starred record, the legacy default key's matching record takes the star, best-effort.
       if (loaded.length > 0 && !loaded.some(s => s.is_primary)) {
         const legacyDefault = defaultResult.ok ? defaultResult.data.value : '';
         const idx = legacyDefault ? loaded.findIndex(s => s.address === legacyDefault) : -1;
@@ -177,18 +160,15 @@ export const IMBridgeSettings = () => {
       return;
     }
 
-    // Ensure exactly one primary on save. If somehow none, mark the first.
     const normalized = senders.map(s => ({ ...s }));
     // (A list with no starred entry is saved with no owner; the star never moves on its own.)
-    // Force every primary record's sharing_level to open_book at save time.
-    // The UI locks the dropdown, but a stale or hand-edited record could
-    // arrive with a throttled level on the primary - normalize defensively.
+    // Force every primary's sharing_level to open_book at save time: the UI locks the
+    // dropdown, but a stale or hand-edited record could arrive with a throttled level.
     for (const s of normalized) {
       if (s.is_primary) s.sharing_level = 'open_book';
     }
-    // Refuse to save a Project-Only sender with no description: the policy
-    // text references the description for project scope, and an empty
-    // description means the agent has nothing to enforce against.
+    // A Project-Only sender needs a description: the policy text uses it as the project
+    // scope, so without one the agent has nothing to enforce against.
     const badProjectOnly = normalized.find(s => !s.is_primary && s.sharing_level === 'project_only' && !s.description);
     if (badProjectOnly) {
       setError(`"${badProjectOnly.name || badProjectOnly.address}" is set to Project Only but has no description. Add a brief description that names the specific project the agent should stay inside of, or change the sharing level.`);
@@ -210,9 +190,8 @@ export const IMBridgeSettings = () => {
     baseList.current = normalized.map(s => ({ ...s }));
     const results = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
-      // Keep legacy fields in sync so older code paths (and any external
-      // tools that read them directly) keep working until everything reads
-      // the new shape via the bridge helpers.
+      // Legacy fields stay in sync until every reader goes through the bridge
+      // helpers, so older code paths and tools that read them directly keep working.
       api.setSetting('imessage_recipient', primary?.address ?? ''),
       api.setSetting('imessage_default_sender', primary?.address ?? ''),
     ]);
@@ -236,9 +215,8 @@ export const IMBridgeSettings = () => {
     const name = newName.trim() || address;
     const description = newDescription.trim() || undefined;
     const isPrimary = senders.length === 0; // first sender is auto-primary
-    // Primary auto-promotes to open_book regardless of dropdown value (no
-    // reason to throttle sharing with yourself). Subsequent senders honor
-    // the selected level from the form.
+    // The first sender is the owner, so it is open_book whatever the dropdown says;
+    // later senders honor the level chosen on the form.
     setSenders([...senders, {
       address,
       name,
@@ -314,7 +292,6 @@ export const IMBridgeSettings = () => {
         </div>
       </div>
 
-      {/* Toggle */}
       <div className="flex items-center justify-between">
         <label className="text-sm text-ui/70">Enable iMessage Bridge</label>
         <button
@@ -325,7 +302,6 @@ export const IMBridgeSettings = () => {
         />
       </div>
 
-      {/* Approved Senders */}
       {enabled && (
         <div>
           <label className="form-label mb-2">
@@ -335,7 +311,6 @@ export const IMBridgeSettings = () => {
             Each safe sender is a person (or another agent) your DOJO will accept iMessages from. Star the primary user; everyone else is a household member, friend, or another agent. The agent sees each sender's name and description in the inbound message and replies to them by default - so it can't mix up who's who.
           </p>
 
-          {/* Sender list */}
           {senders.length > 0 && (
             <div className="space-y-2 mb-3">
               {senders.map((sender, i) => (
@@ -439,7 +414,6 @@ export const IMBridgeSettings = () => {
             <p className="text-xs text-ui/25 italic mb-2">No approved senders configured.</p>
           )}
 
-          {/* Add sender form */}
           {showAddInput ? (
             <div className="glass-nested rounded-xl px-3 py-3 space-y-2">
               <div className="space-y-1">

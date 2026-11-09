@@ -1,8 +1,5 @@
-// ── Settings → The Dojo tab and the eight cards it stacks: server control, feng shui, orb quality,
-// migration, remote access, Ollama, agent limits, search and the Agent SDK setup.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
+// ── Settings → The Dojo tab: the seven cards it stacks: server control, orb quality, migration,
+// remote access, Ollama, agent limits, search. Also exports AgentSdkSetup for the provider form.
 
 import { useGuardedLoad } from '../../lib/load-guard';
 import { useState, useEffect } from 'react';
@@ -21,10 +18,6 @@ import {
 } from '../orb/orbQuality';
 
 
-// ── Providers Tab ──
-
-// ── Platform Tab ──
-
 export const PlatformTab = () => {
   return (
     <div className="scards">
@@ -34,20 +27,15 @@ export const PlatformTab = () => {
       <SearchSettings />
       <MigrationSettings />
       <OrbQualitySettings />
-      {/* Feng Shui (theme) card hidden per request; component kept for easy restore. */}
+      {/* Feng Shui (theme) card is hidden here; the component stays for easy restore. */}
       {/* <FengShuiSettings /> */}
       <ServerControlSettings />
     </div>
   );
 };
 
-// ── Server Control (restart) ──
-//
-// Remote-admin escape valve. In production the DOJO server runs under
-// launchd with KeepAlive=true, so exiting the process triggers a fresh
-// start within seconds. In dev (tsx watch), there's no auto-restart -
-// the confirm dialog warns about that case so the user doesn't end up
-// staring at a dead server.
+// Remote-admin escape valve: in production launchd (KeepAlive=true) restarts the process
+// within seconds; in dev (tsx watch) nothing restarts it, so the confirm dialog says so.
 const ServerControlSettings = () => {
   const [confirming, setConfirming] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -82,9 +70,8 @@ const ServerControlSettings = () => {
         ? 'Restarting server. Reconnecting in a few seconds…'
         : 'Server exiting. Dev mode: re-run `npm run dev` to bring it back.',
     );
-    // Leave the "restarting" overlay up; the WebSocket will drop and the
-    // dashboard's reconnect logic will pick the server back up (in prod).
-    // No setRestarting(false) — the page will reload itself on reconnect.
+    // Leave the "restarting" overlay up; the reconnect logic reloads the page when the
+    // server returns, so there is deliberately no setRestarting(false) here.
   };
 
   const doCleanup = async () => {
@@ -103,9 +90,8 @@ const ServerControlSettings = () => {
     }
     toast.info(`Cleaning up ${data?.targetCount ?? '?'} backup(s) in the background. This can take a few minutes.`);
 
-    // Poll the cleanup status endpoint every 5s until it finishes. The
-    // request itself returns instantly so Cloudflare's 100s ceiling is
-    // never a factor; the actual rm -rf runs server-side independently.
+    // Poll every 5s until the cleanup finishes: each request returns instantly, so
+    // Cloudflare's 100s ceiling is never a factor and the rm -rf runs server-side.
     const start = Date.now();
     const MAX_POLL_MS = 10 * 60 * 1000; // 10-minute ceiling on our patience
     while (Date.now() - start < MAX_POLL_MS) {
@@ -185,7 +171,6 @@ const ServerControlSettings = () => {
         </div>
       )}
 
-      {/* ── Platform backups cleanup ── */}
       <div className="pt-3 border-t border-ui/10 space-y-2">
         <div className="text-sm font-medium text-ui/80">Platform backups</div>
         <p className="text-xs text-ui/40">
@@ -215,8 +200,6 @@ const ServerControlSettings = () => {
     </div>
   );
 };
-
-// ── Feng Shui (Theme Picker) ──
 
 const FengShuiSettings = () => {
   const { themeId, setTheme, themes } = useTheme();
@@ -251,8 +234,6 @@ const FengShuiSettings = () => {
     </div>
   );
 };
-
-// ── Orb (performance) ──
 
 const ORB_QUALITY_OPTIONS: { id: OrbQualityPref; name: string; desc: string }[] = [
   { id: 'full', name: 'Full', desc: 'The standard animated glass orb.' },
@@ -304,8 +285,6 @@ const OrbQualitySettings = () => {
   );
 };
 
-// ── Migration (Export/Import) ──
-
 const MigrationSettings = () => {
   const [showImport, setShowImport] = useState(false);
 
@@ -333,8 +312,6 @@ const MigrationSettings = () => {
     </div>
   );
 };
-
-// ── Ollama Settings ──
 
 export const OllamaSettings = () => {
   const load = useGuardedLoad<string | null>('ollama_max_concurrent_models', async (key) => {
@@ -409,8 +386,6 @@ const OllamaSettingsEditor = ({ initial }: { initial: string | null }) => {
     </div>
   );
 };
-
-// ── Agent Limits Settings ──
 
 const AGENT_LIMIT_KEYS = [
   { key: 'spawn_max_concurrent', label: 'Max Concurrent Agents', description: 'Maximum number of non-terminated agents running at the same time', default: 5, min: 1, max: 50 },
@@ -507,8 +482,6 @@ const AgentLimitsEditor = ({ initial }: { initial: Record<string, string> }) => 
   );
 };
 
-// ── Search Settings ──
-
 export const SearchSettings = () => {
   const load = useGuardedLoad<{ provider?: string | null; hasKey: boolean }>('search-config', () => api.getSearchConfig());
   if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
@@ -561,7 +534,6 @@ const SearchSettingsEditor = ({ initial }: { initial: { provider?: string | null
     setError(null);
     setValidationResult(null);
 
-    // If user typed a new key, validate that; otherwise we can't validate without the key
     if (!keyToValidate) {
       setError('Enter an API key to validate');
       setValidating(false);
@@ -665,8 +637,6 @@ const SearchSettingsEditor = ({ initial }: { initial: { provider?: string | null
   );
 };
 
-// ── Agent SDK Setup (inline in provider form) ──
-
 export const AgentSdkSetup = () => {
   const [status, setStatus] = useState<{ cliInstalled: boolean; version: string | null; packageAvailable: boolean } | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -701,7 +671,6 @@ export const AgentSdkSetup = () => {
       </p>
 
       <div className="space-y-2 text-xs">
-        {/* Step 1: CLI installed */}
         <div className="flex items-center gap-2">
           <span className={status?.cliInstalled ? 'text-cp-teal' : 'text-cp-amber'}>
             {status?.cliInstalled ? '\u2713' : '1.'}
@@ -719,7 +688,6 @@ export const AgentSdkSetup = () => {
           </div>
         )}
 
-        {/* Step 2: Signed in */}
         <div className="flex items-center gap-2">
           <span className={authResult?.authenticated ? 'text-cp-teal' : status?.cliInstalled ? 'text-cp-amber' : 'text-ui/25'}>
             {authResult?.authenticated ? '\u2713' : '2.'}

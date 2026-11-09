@@ -1,7 +1,4 @@
 // ── Settings → The Profile tab: the owner profile and the identity files behind it.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
 
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
@@ -10,8 +7,6 @@ import { useGuardedLoad } from '../../lib/load-guard';
 type OwnerMailboxRow = { address: string; provider: 'google' | 'microsoft'; accountId: string };
 const PROVIDER_LABEL: Record<OwnerMailboxRow['provider'], string> = { google: 'Google', microsoft: 'Microsoft' };
 
-
-// ── Profile Tab ──
 
 export const ProfileTab = () => {
   const [userName, setUserName] = useState('');
@@ -69,9 +64,7 @@ export const ProfileTab = () => {
   );
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      {/* Your Name */}
-      <div className="tile space-y-3">
+    <div className="space-y-6 max-w-4xl">      <div className="tile space-y-3">
         <div className="scard__title">Your Name</div>
         <div className="scard__desc">Used in memory summaries and agent conversations to identify you.</div>
         {loadingName ? (
@@ -97,8 +90,6 @@ export const ProfileTab = () => {
           </>
         )}
       </div>
-
-      {/* Your Mailboxes (owner ruling 2026-10-27): read-only, filled from the owner's connected accounts */}
       <div className="tile space-y-3">
         <div className="scard__title">Your Mailboxes</div>
         <div className="scard__desc">
@@ -122,8 +113,6 @@ export const ProfileTab = () => {
           </ul>
         )}
       </div>
-
-      {/* About You (USER.md) */}
       <div className="tile space-y-3">
         <div className="flex items-center justify-between">
           <div>

@@ -1,7 +1,4 @@
 // ── Settings → The Router tab: tier models, dimensions and the live router test.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
 
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
@@ -11,7 +8,6 @@ import { RouterTest } from '../RouterTest';
 import { RouterWindowSection, type RouterWindowData } from './RouterWindowSection';
 
 
-// ── Router Tab ──
 
 interface RouterConfigData {
   tiers: Array<{
@@ -31,13 +27,12 @@ interface RouterConfigData {
 export const RouterTab = () => {
   const toast = useToast();
   const [config, setConfig] = useState<RouterConfigData | null>(null);
-  const [routerWindow, setRouterWindow] = useState<RouterWindowData | null>(null);   // v3.5 N42
+  const [routerWindow, setRouterWindow] = useState<RouterWindowData | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadConfig = async () => {
     const result = await api.getRouterConfig();
     if (result.ok) {
-      // Map displayName -> name for frontend components
       const data = result.data as Record<string, unknown>;
       const tiers = (data.tiers as Array<Record<string, unknown>>).map((t) => ({
         id: t.id as string,
@@ -66,7 +61,7 @@ export const RouterTab = () => {
     models: Array<{ modelId: string; priority: number }>,
   ) => {
     const res = await api.updateTierModels(tierId, models);
-    if (!res.ok) toast.error(res.error ?? 'The tier could not be saved.');   // e.g. the memory-fit refusal (v3.5)
+    if (!res.ok) toast.error(res.error ?? 'The tier could not be saved.');   // e.g. the memory-fit refusal
     await loadConfig();
   };
 

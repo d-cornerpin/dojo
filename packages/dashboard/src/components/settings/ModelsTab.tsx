@@ -1,7 +1,4 @@
 // ── Settings → The Models tab: the browse/add flows and the per-provider model list.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
 
 import { useState, useEffect, useRef } from 'react';
 import type { Provider, Model } from '@dojo/shared';
@@ -18,8 +15,6 @@ import {
 } from './CapabilityModelCards';
 import { ModalShell } from '../ModalShell';
 
-
-// ── Browse Models (for aggregator providers like OpenRouter) ──
 
 export const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: string; providerName: string; onModelAdded: () => void }) => {
   const [query, setQuery] = useState('');
@@ -125,19 +120,13 @@ export const BrowseModels = ({ providerId, providerName, onModelAdded }: { provi
         />
       )}
 
-      {/* Manual Add — for models not in the catalog */}
       <ManualAddModel providerId={providerId} onModelAdded={onModelAdded} />
     </div>
   );
 };
 
-// ── Add-from-catalog pricing modal ──
-//
-// Opens when the user clicks "Add" on a browse result. If the catalog
-// reported a price we pre-fill it; if not (media-only generators that
-// OpenRouter lists as free), we say so in red and let the user enter one
-// or leave it blank. Every pricing unit is offered so per-song / per-clip
-// models can be priced correctly at add time.
+// Add-from-catalog pricing modal: pre-fills a catalog price, says so in red when the
+// provider lists none; every unit is offered so per-song / per-clip models price correctly.
 
 type AddModalUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
 
@@ -163,9 +152,8 @@ const AddModelPricingModal = ({
 }) => {
   const priceAvailable = model.priceAvailable !== false;
 
-  // Default unit: token when the catalog gave us a price; otherwise guess
-  // from the model's output modality so media generators land on a
-  // sensible unit (video → second, image → megapixel, audio → item).
+  // Default unit: token when the catalog gave a price, else guessed from the output
+  // modality (video → second, image → megapixel, audio → item) so generators land right.
   const guessUnit = (): AddModalUnit => {
     if (priceAvailable) return 'token';
     const mods = model.outputModalities ?? [];
@@ -317,8 +305,6 @@ const AddModelPricingModal = ({
   );
 };
 
-// ── Manual Add Model (for models not in the provider catalog) ──
-
 const MANUAL_ADD_CAPABILITIES = [
   { key: 'tools', label: 'Tools', desc: 'Function/tool calling' },
   { key: 'vision', label: 'Vision', desc: 'Image input' },
@@ -344,9 +330,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Which units are available given the capability checkboxes the
-  // user has ticked. Token is always allowed; the others mirror the
-  // ModelRow rules.
+  // Units follow the ticked capabilities; token is always allowed, the rest mirror the ModelRow rules.
   const supportsImageGen = selectedCaps.has('image_generation');
   const supportsVideoGen = selectedCaps.has('video_generation');
   const supportsAudioGen = selectedCaps.has('audio_generation');
@@ -387,8 +371,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
     });
   };
 
-  // Parse a price input. Empty → null (unknown). "0" → 0 (free).
-  // Anything else → number, or null if not parseable.
+  // Empty means unknown, "0" means free: two different saved states.
   const parsePrice = (s: string): number | null => {
     const trimmed = s.trim();
     if (trimmed === '') return null;
@@ -402,9 +385,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
     setError(null);
     setAdding(true);
 
-    // Defensively snap back to token if the chosen unit no longer
-    // matches a selected capability (e.g. the user toggled MP, then
-    // unchecked image_generation before submitting).
+    // The chosen unit can go stale between toggles; snap to token rather than submit an invalid combo.
     const effectiveUnit: ManualAddPricingUnit =
       availableUnits.includes(pricingUnit) ? pricingUnit : 'token';
 
@@ -575,7 +556,7 @@ export const ModelsTab = () => {
   const [primaryModelId, setPrimaryModelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [settingModel, setSettingModel] = useState(false);
-  const [primaryError, setPrimaryError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
+  const [primaryError, setPrimaryError] = useState<string | null>(null);   // the server's refusal, shown
 
   const [primaryAgentId, setPrimaryAgentId] = useState('primary');
   // False until both look-ups (which agent is primary, and its model) have answered.
@@ -604,7 +585,6 @@ export const ModelsTab = () => {
 
   const toggleModel = async (model: Model) => {
     if (model.isEnabled) {
-      // Check if any agents are using this model before disabling
       const usage = await api.checkModelUsage([model.id]);
       if (!usage.ok) {
         if (!window.confirm(`Could not check which agents use this model (${usage.error}). Turn it off anyway?`)) return;
@@ -649,7 +629,6 @@ export const ModelsTab = () => {
   return (
     <div className="space-y-3 max-w-4xl">
       {!primaryKnown && <div className="note--warn">Could not read the primary agent's model right now.</div>}
-      {/* Warning banner: primary agent has no model */}
       {showWarning && (
         <div className="alert-banner alert-warning flex items-center justify-between gap-4">
           <div>
@@ -683,7 +662,7 @@ export const ModelsTab = () => {
             .filter(m => m.providerId === provider.id)
             .sort((a, b) => (parseUtc(a.createdAt)?.getTime() ?? 0) - (parseUtc(b.createdAt)?.getTime() ?? 0));
           const isAggregator = provider.type === 'openai-compatible' && provider.isValidated;
-          // Skip empty groups EXCEPT aggregators — they need the browse box visible
+          // Skip empty groups EXCEPT aggregators: they need the browse box visible
           if (providerModels.length === 0 && !isAggregator) return null;
           return (
             <ProviderModelGroup
@@ -705,10 +684,8 @@ export const ModelsTab = () => {
         })
       )}
 
-      {/* Platform-level model pickers — placed below the provider
-          catalogs. Masonry of capability cards (matches the prototype's
-          .scards). Receive the live models list as a prop so newly-
-          added models show up in the dropdowns without a page reload. */}
+      {/* Platform-level model pickers, below the provider catalogs. They take the live models
+          list as a prop, so newly added models show in the dropdowns without a page reload. */}
       <div className="scards pt-3">
         <FallbackVisionModelCard models={models} />
         <ImageGenModelCard models={models} />

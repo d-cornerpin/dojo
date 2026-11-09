@@ -1,13 +1,5 @@
-// ── Settings → THE SHARED MODEL-ROW STACK, and the reason this split is not simply one file per tab.
-//
-// `ProviderModelGroup` renders `ModelRow`, and the Models tab renders `ProviderModelGroup`.
-// Split strictly by tab, Providers and Models would have imported each other — a CYCLE, and a
-// worse coupling than the god file had. The rows, their three editors, the capability badges
-// and the Ollama host/RAM row are what both tabs actually share, so they live here and the two
-// tabs both depend on this, not on one another.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
+// ── Settings → The shared model-row stack: the rows, their editors, the badges and the Ollama host/RAM row.
+// Providers and Models tabs would import each other for these, a cycle; both depend on this instead.
 
 import { useEffect, useState } from 'react';
 import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/shared';
@@ -16,8 +8,6 @@ import { useToast } from '../../hooks/useToast';
 import { CollapseChevron } from '../CollapseToggle';
 import { UnsetWindowNote, contextInputId } from './UnsetWindowNote';
 
-
-// ── Models Tab ──
 
 export const ProviderModelGroup = ({
   provider,
@@ -34,8 +24,8 @@ export const ProviderModelGroup = ({
   onPricingChange: () => void;
   browseSection?: React.ReactNode;
 }) => {
-  // Collapsed by default — long catalogs (OpenRouter etc.) make the page
-  // unwieldy when every group expands on load. User clicks to drill in.
+  // Collapsed by default: long catalogs (OpenRouter etc.) make the page unwieldy
+  // when every group expands on load, so the user clicks to drill in.
   const [open, setOpen] = useState(false);
   const enabledCount = models.filter(m => m.isEnabled).length;
 
@@ -73,9 +63,8 @@ export const ProviderModelGroup = ({
   );
 };
 
-// Detects localhost Ollama from the stored base URL. Mirrors the server-side
-// helper in services/num-ctx-calculator.ts so the UI shows the right state
-// (auto-detected vs. editable) before any API call.
+// Detects localhost Ollama from the stored base URL, mirroring the server-side helper in
+// services/num-ctx-calculator.ts so the UI shows auto-detected vs editable before any API call.
 function isLocalOllamaBaseUrlClient(baseUrl: string | null): boolean {
   if (!baseUrl) return true; // default Ollama baseUrl is localhost
   const lower = baseUrl.toLowerCase();
@@ -87,11 +76,8 @@ function isLocalOllamaBaseUrlClient(baseUrl: string | null): boolean {
   );
 }
 
-// Ollama-only: row above the model list showing/editing how much RAM the
-// Ollama host has, so the num_ctx auto-sizer can compute recommendations.
-// For localhost, this is auto-detected from the dojo host; for remote
-// providers, the user types it in and the server recomputes every model's
-// num_ctx recommendation on the spot.
+// Ollama-only row for the host's RAM, which the num_ctx auto-sizer needs: localhost is
+// auto-detected from the dojo host; for remote hosts the user types it and the server re-sizes.
 const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange: () => void }) => {
   const isLocal = isLocalOllamaBaseUrlClient(provider.baseUrl);
   const [ramInput, setRamInput] = useState(
@@ -226,9 +212,8 @@ const CAPABILITY_LABELS: Record<string, { label: string; className: string; titl
   },
 };
 
-// Capability keys the user can manually toggle in the edit UI. Matches
-// the MANUAL_ADD_CAPABILITIES set above, but kept separately so we can
-// independently evolve either without coupling the two flows.
+// Capability keys the user can toggle in the edit UI. Kept separate from the manual-add
+// list (MANUAL_ADD_CAPABILITIES, elsewhere) so either can evolve without coupling the flows.
 const EDITABLE_CAPABILITIES = [
   { key: 'tools', label: 'Tools' },
   { key: 'vision', label: 'Vision' },
@@ -300,10 +285,8 @@ export const ModelRow = ({
   const supportsMusicGen = model.capabilities.includes('music_generation');
   const supportsTranscription = model.capabilities.includes('transcription');
 
-  // Which pricing units make sense for this model's capability set.
-  // Token is always offered. Each other unit appears only when the
-  // matching capability is on the model. 'item' (flat per-song / image /
-  // clip) applies to any generation capability.
+  // Pricing units for this capability set: token always; each other unit only when its
+  // capability is on; 'item' (flat per song / image / clip) for any generation capability.
   const availableUnits: PricingUnitChoice[] = ['token'];
   if (supportsImageGen) availableUnits.push('megapixel');
   if (supportsVideoGen || supportsAudioGen || supportsMusicGen) availableUnits.push('second');
@@ -341,16 +324,13 @@ export const ModelRow = ({
   // flips instantly on click while the PATCH is in flight.
   const [thinkingEnabled, setThinkingEnabled] = useState(model.thinkingEnabled);
   const supportsThinking = model.capabilities.includes('thinking');
-  // t195: the level selector, beside the toggle. Shown only when the server says this model's wire takes
-  // levels (`thinkingLevels` comes from the one model contract); a model with none shows no selector.
+  // The level selector beside the toggle: shown only when the server says this model's wire
+  // takes levels; `thinkingLevels` comes from the model contract, none means no selector.
   const thinkingLevels = model.thinkingLevels ?? [];
   const [thinkingLevel, setThinkingLevel] = useState<string>(model.thinkingLevel ?? 'high');
 
-  // Inline capability editor — opens when the user clicks Edit next to
-  // the capability badges. Lets the user overwrite the probed
-  // capabilities directly. Useful when a provider doesn't advertise a
-  // newly-launched SKU's true output modality (e.g. OpenRouter not
-  // tagging google/lyria-3-clip-preview as audio_generation).
+  // Inline capability editor: the user overwrites probed capabilities directly, for when a
+  // provider doesn't advertise a new SKU's true output modality (e.g. audio_generation).
   const [editingCaps, setEditingCaps] = useState(false);
   const [draftCaps, setDraftCaps] = useState<Set<string>>(new Set(model.capabilities));
   const [savingCaps, setSavingCaps] = useState(false);
@@ -375,9 +355,8 @@ export const ModelRow = ({
     setEditingCaps(false);
   };
 
-  // Ollama-only: per-model num_ctx control. The input box shows
-  // `override ?? recommended`. When the user types, it becomes an
-  // override. Reset button restores to the RAM-aware recommendation.
+  // Ollama-only per-model num_ctx: the box shows `override ?? recommended`; typing sets an
+  // override, the reset button restores the RAM-aware recommendation.
   const isOllama = providerType === 'ollama';
   const effectiveNumCtx =
     model.numCtxOverride ?? model.numCtxRecommended ?? null;
@@ -467,9 +446,8 @@ export const ModelRow = ({
     setCtxError(null);
     const trimmed = numCtxInput.trim();
 
-    // Empty input means "use the recommendation" (clear any override).
-    // Otherwise parse and validate. If the typed value equals the current
-    // recommendation exactly, that's also equivalent to "no override".
+    // Empty input means "use the recommendation" (clears any override); a typed value that
+    // equals the recommendation exactly is the same thing, so it saves as no override too.
     let override: number | null;
     if (trimmed === '') {
       override = null;
@@ -653,10 +631,6 @@ export const ModelRow = ({
         </div>
       </div>
 
-      {/* Pricing fields — segmented control for "priced by" appears
-          only when the model has more than one applicable unit. Token
-          is always one option; capability-specific units appear when
-          the relevant capability is on the model. */}
       {showUnitToggle && (
         <div className="flex items-center gap-2 mb-2">
           <span className="text-[11px] text-ui/40">Priced by</span>
@@ -734,10 +708,8 @@ export const ModelRow = ({
         {saved && <span className="text-xs text-cp-teal">Saved</span>}
       </div>
 
-      {/* Price-unknown hint: this model has no rate on file (NULL, not an
-          explicit 0), so per owner decision D-H its usage is billed at $0 and
-          never counts toward the budget. Surfaced so a genuinely-paid model
-          with a failed price lookup isn't silently hidden at $0. */}
+      {/* Price-unknown hint: no rate on file (NULL, not an explicit 0), so usage bills at $0
+          and never counts toward the budget, keeping a paid model with a failed lookup visible. */}
       {model.priceUnknown && (
         <p className="mt-1.5 text-[11px] text-cp-coral">
           Price unknown, set a rate above. Until then this model is billed at $0 and does not count toward your budget.
@@ -802,22 +774,8 @@ export const ModelRow = ({
   );
 };
 
-// ── Model Limits Editor (T72b/1) ──
-//
-// `max output` and `context` decide what `max_tokens` goes on every request to this model.
-// For a manual provider both are OUR GUESSES — browse-add stores nothing (no local server
-// reports OpenRouter's `top_provider` block), validate stores `context_length ?? 128000` and
-// a cap derived from it, and neither vLLM's `max_model_len` nor LM Studio's
-// `max_context_length` is read. Until this editor existed there was no way to correct either
-// one: every other writer of those columns is a discovery sync, and deleting and re-adding
-// the model writes nothing again.
-//
-// The visible consequence, and the reason this shipped: a guessed window small enough (or a
-// prompt large enough) collapses the derived output budget onto its floor, and for a model
-// with thinking enabled that floor was a guaranteed empty answer — the reasoning spent the
-// budget, the provider returned `finish_reason: length`, and no words were ever written.
-//
-// Blank means "let discovery decide" and is a real, restorable state, not a mistake.
+// Corrects our guessed max-output and context for manual providers; blank means let discovery decide.
+// A guessed window small enough collapses the output budget, and a thinking model then answers empty.
 const ModelLimitsEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
   const [maxOut, setMaxOut] = useState(
     model.maxOutputTokens === null || model.maxOutputTokens === undefined ? '' : String(model.maxOutputTokens),
@@ -909,13 +867,8 @@ const ModelLimitsEditor = ({ model, onSaved }: { model: Model; onSaved: () => vo
   );
 };
 
-// ── Generation Params Editor ──
-// Per-model editor for the canonical generation params the agent must
-// supply (video: duration / aspect_ratio / resolution). Each param maps to
-// the model's accepted values/range plus the provider wire field it
-// translates to. This is the user-confirmed override layer (decision: make
-// the per-model spec editable on the card); blank or no edits leave the
-// family-seeded default in place.
+// Per-model editor for the canonical generation params the agent must supply (video: duration /
+// aspect_ratio / resolution), each mapped to accepted values plus its provider wire field.
 type ParamFieldDraft = {
   accepted: boolean;
   values: string;   // comma-separated, edited as text
@@ -974,9 +927,8 @@ export const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSav
   };
 
   const handleSave = async () => {
-    // Rebuild a GenerationParamSpec from the draft. Numeric values are
-    // coerced when the underlying wireType is number; otherwise kept as
-    // strings (the agent-facing enum is matched by string equality).
+    // Rebuild a GenerationParamSpec from the draft: numbers are coerced when wireType is
+    // number, otherwise kept as strings (the agent-facing enum is matched by string equality).
     const next: GenerationParamSpec = {};
     for (const [name, d] of Object.entries(draft)) {
       const isNumeric = d.wireType === 'number';
@@ -1128,12 +1080,8 @@ export const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSav
   );
 };
 
-// ── Voice Catalog Editor ──
-// Per-model editor for the TTS voice list the agent may pick from (the
-// tts_create tool). Each entry is an id (base timbre), a description (the
-// vibe shown to the agent), and a perceived gender. Seeded from a code
-// family registry; this is the user-confirmed override layer. Reset clears
-// to null and lets the family seed re-apply on the next backfill.
+// Per-model editor for the TTS voice list the agent picks from with tts_create: id (base timbre),
+// description (the vibe), gender. Seeded from a family registry; reset lets the backfill re-seed.
 type VoiceDraft = { id: string; description: string; gender: 'male' | 'female' | 'neutral' };
 
 export const VoiceCatalogEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {

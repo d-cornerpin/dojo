@@ -1,7 +1,4 @@
 // ── Settings → The Update tab. `RollbackSection` travels with it: this tab is its only renderer.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
 
 import { useState, useEffect, useRef } from 'react';
 import * as api from '../../lib/api';
@@ -11,7 +8,6 @@ import { formatDateShort } from '../../lib/dates';
 import { useRestartWait } from '../../lib/use-restart-wait';
 
 
-// ── Update Tab ──
 
 export const UpdateTab = () => {
   const [checking, setChecking] = useState(false);
@@ -52,8 +48,8 @@ export const UpdateTab = () => {
     api.getDbBackupStatus().then(r => { if (r.ok) setDbBackup(r.data.backup); });
   }, []);
 
-  // Switching the channel only changes which release the updater targets — it
-  // never auto-downgrades. The returned check refreshes the panel in one trip.
+  // Switching the channel only changes which release the updater targets; it never
+  // auto-downgrades. The returned check refreshes the panel in one trip.
   const switchChannel = async (next: api.UpdateChannel) => {
     if (next === channel || switchingChannel) return;
     const mine = ++latestCheck.current;
@@ -97,8 +93,6 @@ export const UpdateTab = () => {
             Check for and install updates from the Agent DOJO repository.
           </p>
         </div>
-
-        {/* Channel selector: Stable (everyone) vs Preflight (pre-release test builds) */}
         <div className="flex items-center justify-between py-2">
           <span className="text-sm text-ui/55">Update Channel</span>
           <div className="flex gap-1">
@@ -178,8 +172,7 @@ export const UpdateTab = () => {
           </div>
         )}
 
-        {/* SWEEP CORE-2 item 3: the pre-flight for the update being CONSIDERED, above the
-            record of the last one that HAPPENED. */}
+        {/* Pre-flight checks for the update about to run, above the record of the last one. */}
         <DiskSpaceNotice disk={updateInfo?.disk} />
         <DataBackupNotice backup={dbBackup} />
 
@@ -197,9 +190,8 @@ export const UpdateTab = () => {
             <button
               type="button"
               onClick={handleUpdate}
-              /* The button must not invite a click the platform is about to refuse with a
-                 507. `measured === false` deliberately does NOT disable it — a disk we
-                 cannot read is not a disk we know is full. */
+              /* Never invite a click the platform is about to refuse with a 507. `measured === false`
+                 deliberately does not disable it: a disk we cannot read is not a disk we know is full. */
               disabled={updating || updateInfo?.disk?.ok === false}
               className="btn btn--primary btn--sm"
               title={updateInfo?.disk?.ok === false
@@ -218,14 +210,10 @@ export const UpdateTab = () => {
           </div>
         )}
       </div>
-
-      {/* Previous releases for rollback */}
       <RollbackSection currentVersion={updateInfo?.currentVersion ?? null} />
     </div>
   );
 };
-
-// ── Rollback to Previous Releases ──
 
 const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) => {
   const [releases, setReleases] = useState<api.ReleaseInfo[]>([]);

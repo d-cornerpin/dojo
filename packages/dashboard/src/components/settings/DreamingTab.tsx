@@ -1,8 +1,5 @@
 // ── Settings → The Sensei (dreaming) tab. The Healer card it renders is shared with the Models tab and
 // lives in `CapabilityModelCards.tsx`.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
 
 import { useState, useEffect } from 'react';
 import type { Model } from '@dojo/shared';
@@ -12,8 +9,6 @@ import { HealerCard } from './CapabilityModelCards';
 import { isPickableAgentModel } from '../../lib/role-models';
 import { useGuardedLoad } from '../../lib/load-guard';
 
-
-// ── Dreaming Tab ──
 
 type DreamingConfig = Awaited<ReturnType<typeof api.getDreamingConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
 
@@ -40,7 +35,7 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
   const [dreamMode, setDreamMode] = useState<'full' | 'light'>(initial.dreamMode === 'light' ? 'light' : 'full');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
+  const [saveError, setSaveError] = useState<string | null>(null);   // the server's refusal, shown
   const [lastDream, setLastDream] = useState<api.DreamReport | null>(null);
   const [running, setRunning] = useState(false);
   const [runStatus, setRunStatus] = useState<{ kind: 'ok' | 'err' | 'idle'; message: string }>({ kind: 'idle', message: '' });
@@ -176,7 +171,7 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
         </div>
         {saveError && <div className="alert-banner alert-error">{saveError}</div>}
 
-        {/* Last dream report — lives inside the Dreamer panel, not its own card. */}
+        {/* Last dream report: inside the Dreamer panel, not its own card. */}
         {lastDream && (
           <div className="border-t border-ui/[0.06] pt-3 space-y-2">
             <div className="flabel">Last Dream</div>
@@ -190,8 +185,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
           </div>
         )}
       </div>
-
-      {/* Healer card — self-healing sensei */}
       <HealerCard models={models} />
       </div>
     </div>

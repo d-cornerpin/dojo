@@ -1,11 +1,5 @@
-// ── Settings → The platform-wide capability model cards — the SECOND shared seam.
-//
-// Two renderers: the Models tab lists the platform-wide picks, and the Sensei tab renders the
-// Healer card beside its own controls. They belong to neither tab, so they are imported by
-// both. Their private price formatters travel with them; every call site is here.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
+// ── Settings → The platform-wide capability model cards, shared by the Models and Sensei tabs.
+// They belong to neither tab, so both import them; their private price formatters live here.
 
 import { useGuardedLoad } from '../../lib/load-guard';
 import { useState, useEffect, useRef } from 'react';
@@ -16,32 +10,18 @@ import { engineRoleId, loadEngineRoleIds } from '../../lib/engine-role-ids';
 import { formatDate } from '../../lib/dates';
 
 
-// ── Fallback Vision Model Card ──
-//
-// Single platform-wide choice: which vision-capable model handles
-// vision work when the calling agent's own model can't see. Used by
-// screen_read, web_browse screenshots, and anywhere else the engine
-// needs to route an image through a vision model. Replaces the old
-// per-tool "cheapest vision-ish enabled model" auto-pick.
+// Platform-wide fallback vision pick: which vision-capable model takes over when the calling
+// agent's own model can't see, anywhere the engine routes an image through a vision model.
 
-// Self-contained: loads its own model list since it lives on the Dojo
-// tab, which doesn't otherwise need the model catalog. Keeps this card
-// Small cost display rendered below a model dropdown. Tri-state per
-// unit field:
-//   number > 0 → formatted "$X / <unit>"
-//   exactly 0 → "Free"
-//   null      → unknown (line collapses to a quiet hint when nothing
-//               is known about pricing)
+// Cost text for a per-token rate: > 0 → "$X / M", exactly 0 → "Free", null → null (none known).
 const formatTokenPrice = (n: number | null): string | null => {
   if (n === null || typeof n !== 'number') return null;
   if (n === 0) return 'Free';
   return `$${n}/M`;
 };
 
-// Per-unit formatting for the non-token pricing units. Returns null
-// when the value is null or invalid. Returns the literal "Free" when
-// zero. Character pricing displays per-thousand (rates are tiny,
-// per-character would render as fractions of a cent).
+// Per-unit price text: null or invalid → null, 0 → "Free"; characters are priced per 1k
+// because per-character rates would render as fractions of a cent.
 const formatUnitPrice = (
   n: number | null,
   unit: 'megapixel' | 'second' | 'character' | 'minute' | 'item',
@@ -60,8 +40,8 @@ const formatUnitPrice = (
 const ModelCostLine = ({ model }: { model: Model | null }) => {
   if (!model) return null;
 
-  // Non-token units: read costPerUnit (falls back to costPerMegapixel
-  // during the v2.11.0 compat window for image-gen rows added pre-061).
+  // Non-token units: costPerUnit, with costPerMegapixel as a fallback for
+  // older image-gen rows that only carry the megapixel field.
   if (model.pricingUnit !== 'token') {
     const value = model.costPerUnit ?? model.costPerMegapixel;
     const label = formatUnitPrice(value, model.pricingUnit);
@@ -103,16 +83,8 @@ const ModelCostLine = ({ model }: { model: Model | null }) => {
   );
 };
 
-// Generic platform-capability model picker card. Same shape every
-// picker has: a dropdown over enabled-and-capability-matching models,
-// a Save / Clear button, a configured-but-invalid warning, and a
-// ModelCostLine under the dropdown.
-//
-// `extraOptions` lets a caller inject pseudo entries that aren't in
-// the models table (used by the transcription card to expose
-// `local:whisper` and `local:moonshine`). When one of those is
-// selected, the picker calls `renderExtraCostLine` for the cost
-// display instead of ModelCostLine.
+// Generic platform-capability picker: a dropdown over enabled models matching the capability,
+// Save/Clear, an invalid-saved-pick warning, a cost line; `extraOptions` adds free local entries.
 interface ExtraOption {
   id: string;
   label: string;
@@ -134,8 +106,8 @@ export const CapabilityModelCard = ({
   description: string;
   settingKey: string;
   capability?: string;
-  // When provided, used to pick matching models instead of capability.includes —
-  // lets a card match e.g. "any text-capable model" rather than one tag.
+  // When provided, picks matching models instead of the capability tag, so a card
+  // can match e.g. "any text-capable model" rather than one tag.
   matchFn?: (m: Model) => boolean;
   selectorLabel: string;
   noModelsMessage: string;
@@ -163,7 +135,7 @@ export const CapabilityModelCard = ({
     setSaving(true);
     const res = await api.setSetting(settingKey, selectedId);
     setSaving(false);
-    if (!res.ok) { toast.error(res.error ?? 'The model could not be saved.'); return; }   // e.g. the memory-fit refusal (v3.5)
+    if (!res.ok) { toast.error(res.error ?? 'The model could not be saved.'); return; }   // e.g. the memory-fit refusal
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -263,11 +235,8 @@ export const CapabilityModelCard = ({
   );
 };
 
-// Thin wrappers around CapabilityModelCard. Each gives the generic
-// component its title, description, setting key, and capability flag.
-// The two existing cards (vision + image gen) replace ~120 lines each
-// of nearly identical boilerplate; the three new cards (video, audio
-// gen, transcription) come online for free.
+// Thin wrappers: each pins the generic card's title, description, setting key and capability;
+// one card per capability, so a new one is a call site, not a copy.
 export const FallbackVisionModelCard = ({ models }: { models: Model[] }) => (
   <CapabilityModelCard
     title="Fallback Vision Model"
@@ -333,10 +302,8 @@ export const MusicGenModelCard = ({ models }: { models: Model[] }) => (
   />
 );
 
-// Transcription is special: it exposes two local engines (Whisper,
-// Moonshine) that don't live in the models table. Those surface
-// through the extraOptions prop as `local:whisper` and
-// `local:moonshine` and run on this machine for free.
+// Transcription offers two local engines (Whisper, Moonshine) outside the models
+// table, free on this machine, via `extraOptions`.
 export const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
   <CapabilityModelCard
     title="Transcription Model"
@@ -357,9 +324,8 @@ export const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
 type HealerCfg = Awaited<ReturnType<typeof api.getHealerConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
 
 export const HealerCard = ({ models }: { models: Model[] }) => {
-  // The Healer's settings are read before the card is shown: a failed read must not appear as the
-  // built-in defaults (auto model, 04:00, active), because Save writes what is on screen, and would turn
-  // a Healer set to monitor or off back on.
+  // Read before shown: a failed read must not look like the defaults (auto model, 04:00, active).
+  // Save writes what is on screen, and could switch a Healer set to monitor or off back on.
   const load = useGuardedLoad<HealerCfg>('healer', () => api.getHealerConfig());
   if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
   if (load.status === 'failed') return <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">Could not load the Healer settings, so it can&apos;t be changed right now. Nothing has been changed.{' '}<button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button></div>;
@@ -375,7 +341,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
   const [running, setRunning] = useState(false);
   const [lastDiagnostic, setLastDiagnostic] = useState<api.HealerDiagnostic | null>(null);
   const [sendingReport, setSendingReport] = useState(false);
-  // v2.3.19 — provider-isolation surface from the API (re-read after a save so the banner follows the new pick)
+  // provider-isolation flags, read with the config; the save path re-reads them for the banner.
   const providerSharedWithPrimary = config.providerSharedWithPrimary ?? false;
   const primaryProviderName = config.primaryProviderName ?? null;
   const healerProviderName = config.healerProviderName ?? null;
@@ -399,8 +365,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
     if (result.ok) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // v2.3.19 — reload so the provider-isolation banner reflects the new
-      // model selection without requiring a page refresh.
+      // reload so the provider-isolation banner reflects the new pick without a page refresh.
       await refresh();
     } else toast.error(result.error ?? 'The Healer settings could not be saved.');   // e.g. the 32K floor or the memory fit
     setSaving(false);
@@ -421,7 +386,6 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
           if (agents.ok && !agents.data.some((a: { id: string; status: string }) => a.id === healerAgentId && a.status === 'working')) break;
         }
       }
-      // Refresh diagnostic
       const diagResult = await api.getHealerDiagnostic();
       if (diagResult.ok && diagResult.data) setLastDiagnostic(diagResult.data);
       toast.success('Healing cycle complete');
@@ -473,9 +437,8 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
         <p className="text-[10px] text-ui/25 mt-1">
           Mid-tier model recommended. Needs good reasoning but doesn't need to be frontier.
         </p>
-        {/* v2.3.19 — provider-isolation warning. The Healer's whole point is
-            being on a DIFFERENT provider from the main agent so it can step
-            in when the main provider goes down. Same provider = no backup. */}
+        {/* The Healer's point is being on a different provider than the main agent,
+            so it can still step in when the main provider goes down. */}
         {providerSharedWithPrimary && primaryProviderName && (
           <div className="mt-3 rounded-md border border-cp-amber/40 bg-cp-amber/10 px-3 py-2.5 text-xs text-cp-amber-light/90 leading-relaxed">
             <div className="font-medium mb-1 text-cp-amber-light">Heads up, both agents are using the same service</div>

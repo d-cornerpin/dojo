@@ -1,8 +1,4 @@
-// ── Settings → The Voice tab. Its VAD options, STT labels and `formatBytes` travel with it — every call
-// site is in this tab.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
+// ── Settings → The Voice tab. VAD options, STT labels and `formatBytes` live with it: all call sites here.
 
 import { noteVoiceInstallFailure } from '../../lib/voice-install-failures';
 import { useState, useEffect, useRef } from 'react';
@@ -13,8 +9,6 @@ import { useToast } from '../../hooks/useToast';
 import { voiceSaveRefusal } from './voice-save-error';
 import { VAD_OPTIONS, STT_LABELS, formatBytes } from './voice-options';
 
-
-// ── Voice Tab ──
 
 export const VoiceTab = () => {
   const ws = useWebSocket();
@@ -46,7 +40,7 @@ export const VoiceTab = () => {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
-  // key = `${kind}/${id}` → fraction 0..1 (null means no active download)
+  // Active downloads keyed `${kind}/${id}`: an entry exists only while that download is in flight.
   const [downloads, setDownloads] = useState<Record<string, { downloaded: number; total: number }>>({});
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -70,9 +64,8 @@ export const VoiceTab = () => {
   const [importBusy, setImportBusy] = useState(false);
   const [importMsg, setImportMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
-  // ── Hume cloud TTS (Local | Cloud sub-tabs in the Voice card) ──
-  // Sub-tab selection persisted as voice.tts_engine. Cloud tab is only
-  // usable once a valid Hume key is on file.
+  // ── Hume cloud TTS: the Local | Cloud sub-tabs; the choice persists as voice.tts_engine.
+  // Cloud becomes the saved engine only once a valid Hume key is on file.
   const [ttsTab, setTtsTab] = useState<'local' | 'cloud'>('local');
   const [humeKeySet, setHumeKeySet] = useState(false);
   const [humeKeyInput, setHumeKeyInput] = useState('');
@@ -125,9 +118,8 @@ export const VoiceTab = () => {
       setHumeKeyInput('');
       setHumeKeyMsg({ kind: 'ok', text: 'Loading voices…' });
       await refreshHumeVoices();
-      // Clear the flash message — the static "Key set." label takes
-      // over the "key is configured" indication, so a duplicate flash
-      // just clutters the row.
+      // The static "Key set." label carries the "key is configured" indication;
+      // a duplicate flash would just clutter the row.
       setHumeKeyMsg(null);
     } finally {
       setHumeKeyBusy(false);
@@ -144,8 +136,7 @@ export const VoiceTab = () => {
     setHumeKeySet(false);
     setHumeVoices([]);
     setHumeKeyMsg({ kind: 'ok', text: 'Key cleared.' });
-    // If we were on the Cloud tab, snap back to Local — the engine
-    // dropped out from under us.
+    // If we were on the Cloud tab, snap back to Local: the engine dropped out from under us.
     if (ttsTab === 'cloud') {
       setTtsTab('local');
       void saveSetting('voice.tts_engine', 'local', 'engine');
@@ -235,9 +226,8 @@ export const VoiceTab = () => {
       }
       if (modelsRes.ok) {
         setModels(modelsRes.data);
-        // Prefer the server-reported defaultSttModel ('moonshine-base'). Fall
-        // back to defaultWhisper for older builds that don't expose the new
-        // key, so this code keeps working against an in-place upgrade.
+        // Prefer the server-reported defaultSttModel; fall back to defaultWhisper for
+        // builds that don't expose the new key, so an in-place upgrade still works.
         if (!sttSetting.ok || !sttSetting.data.value) {
           const fallback = (modelsRes.data as { defaultSttModel?: string }).defaultSttModel
             ?? modelsRes.data.defaultWhisper;
@@ -260,7 +250,7 @@ export const VoiceTab = () => {
         setPrimaryAgentName(primaryName.data.value.trim());
       }
       if (bargeIn.ok && bargeIn.data.value === 'true') setBargeInEnabled(true);
-      // sound effects default ON — only flip off when explicitly stored as 'false'
+      // Sound effects default ON: only flip off when explicitly stored as 'false'.
       if (sfx.ok && sfx.data.value === 'false') setSoundEffectsEnabled(false);
       // Hume cloud TTS state
       if (humeStatus.ok) setHumeKeySet(humeStatus.data.keySet);
@@ -288,9 +278,8 @@ export const VoiceTab = () => {
     return () => { mounted = false; };
   }, [loadTry]);
 
-  // Subscribe to download progress broadcasts. Multiple downloads can be
-  // in flight (e.g. user picks a new STT model AND clicks Download on a
-  // different one) — we key by `kind/id` so each row renders independently.
+  // Multiple downloads can be in flight at once, so progress is keyed by
+  // `kind/id` and each row renders its own bar.
   useEffect(() => {
     const unsub = ws.subscribe('voice:model_download', (event) => {
       if (event.type !== 'voice:model_download') return;
@@ -313,10 +302,8 @@ export const VoiceTab = () => {
     return unsub;
   }, [ws]);
 
-  // FA-DB3: a failed download/install broadcasts voice:model_install_error.
-  // Without handling it the progress row stalls at its last fraction forever.
-  // Surface the error, clear the stuck progress row, and drop the installing
-  // state for that model so the Download button comes back.
+  // A failed download/install broadcasts voice:model_install_error; without this the
+  // progress row would stall at its last fraction forever.
   useEffect(() => {
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
@@ -386,9 +373,8 @@ export const VoiceTab = () => {
     await refreshModels();
   };
 
-  // Build a candidate voice id from a display name. Kokoro convention:
-  // first char = language (a=US, b=GB), second char = gender (f/m), then
-  // underscore + slug. Returns '' if name is empty.
+  // Candidate voice id from a display name. Kokoro convention: first char language (a=US, b=GB),
+  // second char gender (f/m), then underscore + slug; '' when the name has nothing to slug.
   const buildVoiceId = (name: string, lang: 'en-us' | 'en-gb', gender: 'Male' | 'Female'): string => {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
     if (!slug) return '';
@@ -467,10 +453,8 @@ export const VoiceTab = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      {/* TTS engine sub-tabs (Local Kokoro | Cloud Hume). The Cloud tab is
-          selectable even without a key — picking it shows the key entry
-          form. The engine setting (voice.tts_engine) only persists as
-          'cloud' once a key is on file. */}
+      {/* The Cloud tab is selectable without a key (picking it shows the key form); the
+          engine setting only persists as 'cloud' once a key is on file. */}
       <div className="flex items-center gap-2 text-sm">
         <span className="text-ui/55">Text-to-speech:</span>
         {(['local', 'cloud'] as const).map((opt) => (
@@ -494,7 +478,6 @@ export const VoiceTab = () => {
           stay full-width below because they hold per-model rows + progress bars. */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       {ttsTab === 'local' && (<>
-      {/* Voice picker */}
       <div className="tile space-y-3">
         <h3 className="scard__title">Voice for {primaryAgentName}</h3>
         <p className="text-xs text-ui/40">
@@ -524,7 +507,6 @@ export const VoiceTab = () => {
         {previewError && <p className="text-xs text-cp-coral">{previewError}</p>}
       </div>
 
-      {/* Playback speed */}
       <div className="tile space-y-3">
         <h3 className="scard__title">Playback speed</h3>
         <p className="text-xs text-ui/40">How fast {primaryAgentName}'s voice plays back. 1.0 is the natural Kokoro rate.</p>
@@ -543,9 +525,8 @@ export const VoiceTab = () => {
         </div>
       </div>
 
-      {/* Custom voice imports — full-width inside the grid so the form has room
-          to breathe. Visible even when no customs exist (the form is the main
-          surface). It sits last in the Kokoro section. */}
+      {/* Full-width inside the grid so the form has room; visible even when no customs
+          exist, since the form is the main surface, and last in the Kokoro section. */}
       <div className="tile space-y-3 md:col-span-2">
         <h3 className="scard__title">Custom voice imports</h3>
         <p className="text-xs text-ui/40">
@@ -621,9 +602,8 @@ export const VoiceTab = () => {
           <div className="md:col-span-2 flex flex-col gap-1 text-xs text-ui/60">
             <span>Voicepack file (.bin)</span>
             <div className="flex items-center gap-2">
-              {/* Hide the native file input — the rest of the dashboard does
-                  the same (Techniques.tsx, ImportWizard.tsx) and triggers
-                  it via a styled button so themes stay consistent. */}
+              {/* The native file input stays hidden: the rest of the dashboard (Techniques.tsx,
+                  ImportWizard.tsx) triggers it via a styled button so themes stay consistent. */}
               <label className="px-3 py-2 glass-btn text-xs rounded-lg cursor-pointer">
                 Choose file
                 <input
@@ -658,7 +638,6 @@ export const VoiceTab = () => {
       </>)}
 
       {ttsTab === 'cloud' && (<>
-      {/* Hume API key */}
       <div className="tile space-y-3 md:col-span-2">
         <h3 className="scard__title">Hume API key</h3>
         <p className="text-xs text-ui/40">
@@ -724,7 +703,6 @@ export const VoiceTab = () => {
         )}
       </div>
 
-      {/* Hume voice picker */}
       <div className="tile space-y-3 md:col-span-2">
         <h3 className="scard__title">Voice for {primaryAgentName}</h3>
         <p className="text-xs text-ui/40">
@@ -778,7 +756,6 @@ export const VoiceTab = () => {
         {previewError && <p className="text-xs text-cp-coral">{previewError}</p>}
       </div>
 
-      {/* Baseline delivery description */}
       <div className="tile space-y-3 md:col-span-2">
         <h3 className="scard__title">Baseline delivery</h3>
         <p className="text-xs text-ui/40">
@@ -801,7 +778,6 @@ export const VoiceTab = () => {
         </div>
       </div>
 
-      {/* Cloud playback speed */}
       <div className="tile space-y-3">
         <h3 className="scard__title">Playback speed</h3>
         <p className="text-xs text-ui/40">Speed multiplier for cloud TTS. 1.0 is natural.</p>
@@ -821,7 +797,6 @@ export const VoiceTab = () => {
       </div>
       </>)}
 
-      {/* Turn-taking patience */}
       <div className="tile space-y-3">
         <h3 className="scard__title">Turn-taking patience</h3>
         <p className="text-xs text-ui/40">
@@ -850,7 +825,6 @@ export const VoiceTab = () => {
         </div>
       </div>
 
-      {/* Voice interruption (barge-in) */}
       <div className="tile space-y-3">
         <div className="flex items-baseline justify-between gap-3">
           <h3 className="scard__title">Voice interruption</h3>
@@ -878,7 +852,6 @@ export const VoiceTab = () => {
         </label>
       </div>
 
-      {/* Sound effects */}
       <div className="tile space-y-3">
         <div className="flex items-baseline justify-between gap-3">
           <h3 className="scard__title">Sound effects</h3>
@@ -906,7 +879,6 @@ export const VoiceTab = () => {
         </label>
       </div>
 
-      {/* Hands-free wake word */}
       <div className="tile space-y-3">
         <div className="flex items-baseline justify-between gap-3">
           <h3 className="scard__title">Hands-free wake word</h3>
@@ -972,7 +944,7 @@ export const VoiceTab = () => {
 
       </div>
 
-      {/* Speech-to-text model (unified — pick active, download, delete, see disk) */}
+      {/* Speech-to-text model: one card to pick the active model, download, delete, and see disk. */}
       <div className="tile space-y-3">
         <div className="flex items-baseline justify-between">
           <h3 className="scard__title">Speech-to-text model</h3>
@@ -1098,7 +1070,6 @@ export const VoiceTab = () => {
               } ${whisperDisabled ? 'opacity-50 pointer-events-none' : ''}`}
             >
               <div className="flex items-center justify-between gap-3">
-                {/* Default radio + label */}
                 <label className="flex items-start gap-3 cursor-pointer flex-1 min-w-0">
                   <input
                     type="radio"
@@ -1121,7 +1092,6 @@ export const VoiceTab = () => {
                   </div>
                 </label>
 
-                {/* Action buttons */}
                 <div className="flex gap-2 shrink-0">
                   {!m.installed && !dl && (
                     <button
@@ -1167,7 +1137,7 @@ export const VoiceTab = () => {
         </p>
       </div>
 
-      {/* Text-to-speech model (Kokoro lives by itself — one model, on/off) */}
+      {/* Text-to-speech model: Kokoro lives by itself, one model, install or not. */}
       {models?.kokoro && (
         <div className="tile space-y-3">
           <div className="flex items-baseline justify-between">

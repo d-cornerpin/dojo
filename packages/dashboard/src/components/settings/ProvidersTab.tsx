@@ -1,7 +1,4 @@
 // ── Settings → The Providers tab: the provider list, the add/edit forms and the patience fields.
-//
-// Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
-// bytes are this header, the imports below and the `export` keyword(s).
 
 import { useState, useEffect, type FormEvent } from 'react';
 import type { Provider, EditProviderRequest } from '@dojo/shared';
@@ -13,8 +10,6 @@ import {
 } from '../../lib/provider-edits';
 import { AgentSdkSetup } from './PlatformTab';
 
-
-// ── Providers Tab ──
 
 export const ProvidersTab = () => {
   const toast = useToast();
@@ -33,12 +28,11 @@ export const ProvidersTab = () => {
   }, []);
 
   const [syncing, setSyncing] = useState<string | null>(null);
-  // T66b — one provider is open for editing at a time. Held here rather than inside the row
-  // so that opening a second edit closes the first, instead of leaving two half-typed forms.
+  // One provider is open for editing at a time. Held here rather than inside the row so
+  // that opening a second edit closes the first, instead of leaving two half-typed forms.
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
-    // Fetch models for this provider to check usage
     const modelsResult = await api.getModels();
     const providerModelIds = modelsResult.ok
       ? (modelsResult.data as Array<{ id: string; providerId: string }>).filter(m => m.providerId === id).map(m => m.id)
@@ -78,7 +72,6 @@ export const ProvidersTab = () => {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      {/* Existing providers */}
       {providers.length === 0 ? (
         <p className="text-ui/40 text-sm">No providers configured.</p>
       ) : (
@@ -86,18 +79,14 @@ export const ProvidersTab = () => {
           {providers.map((provider) => (
             <div key={provider.id} className="tile">
             <div className="flex items-start justify-between gap-3">
-              {/* min-w-0 / shrink-0: the meta line wraps under itself instead of pushing into
-                  the buttons now that the buttons are pills rather than bare text. */}
+              {/* min-w-0 / shrink-0: the meta line wraps instead of pushing into the buttons. */}
               <div className="min-w-0">
                 <h3 className="text-sm font-medium text-ui">{provider.name}</h3>
                 <p className="text-xs text-ui/40 mt-0.5">
-                  {/* T63: 'none' is a real stored auth type (Ollama has always used it, and a
-                      manual local server now does too). It used to render as "API Key",
-                      which was the one thing it is not. */}
+                  {/* 'none' is a real stored auth type (Ollama, local servers): it reads "No key". */}
                   {provider.type} &middot; {provider.authType === 'agent-sdk' ? 'Agent SDK' : provider.authType === 'oauth' ? 'OAuth' : provider.authType === 'none' ? 'No key' : 'API Key'}
                   {provider.behavesLike ? ` · behaves like ${provider.behavesLike}` : ''} {provider.isValidated ? '(validated)' : '(not validated)'}
-                  {/* T66b — patience was only readable by opening its own fold. It stays
-                      readable at a glance now that the fold has moved inside Edit. */}
+                  {/* Patience is still readable at a glance here: its editor lives in Edit now. */}
                   {(provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null) && (
                     <span className="text-cp-teal">
                       {' '}· waits {msToSecInput(provider.firstChunkTimeoutMs) || STANDARD_FIRST_CHUNK_SEC}s for the
@@ -106,12 +95,8 @@ export const ProvidersTab = () => {
                   )}
                 </p>
               </div>
-              {/* T66b — the row's actions are real buttons. They were text: "Sync Models and
-                  Pricing" and "Delete" read as links, and the patience fold below them was
-                  dim grey and read as a caption — the owner reported not realising the
-                  patience editor was clickable at all. `btn btn--sm` is the page's own pill
-                  (cursor, hover lift, focus ring), so nothing new is invented here; the
-                  controls just stop pretending to be prose. */}
+              {/* The row's actions are real buttons: `btn btn--sm` is the page's own pill
+                  (cursor, hover lift, focus ring), so nothing new is invented here. */}
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
@@ -138,8 +123,8 @@ export const ProvidersTab = () => {
                 </button>
               </div>
             </div>
-            {/* T66b — the edit. The owner's box is ALREADY a provider; he is not going to
-                delete and re-add it to change its name, its URL or one timeout. */}
+            {/* The edit exists because this box is already a provider: changing its name, its
+                URL or one timeout should not mean delete and re-add. */}
             {editingId === provider.id && (
               <ProviderEditForm
                 provider={provider}
@@ -152,7 +137,6 @@ export const ProvidersTab = () => {
         </div>
       )}
 
-      {/* Add provider */}
       {showAdd ? (
         <AddProviderForm
           onAdded={() => {
@@ -175,13 +159,8 @@ export const ProvidersTab = () => {
   );
 };
 
-// T63 — the dialects a MANUAL endpoint can declare it behaves like.
-//
-// The values are the capability-contract profile ids (`agent/model-contract.ts`'s
-// `BEHAVES_LIKE_PROFILES`), and the create route validates against that same list, so a
-// label added here can never invent a profile the engine cannot resolve. The choice exists
-// because a URL like `http://localhost:8000/v1` says nothing about the dialect behind it —
-// which is precisely the case the manual option is for.
+// Dialects a MANUAL endpoint can declare it behaves like; the values are the
+// capability-contract profile ids, and the create route validates against the same list.
 const BEHAVES_LIKE_CHOICES = [
   {
     value: 'generic-openai-compatible',
@@ -200,11 +179,8 @@ const BEHAVES_LIKE_CHOICES = [
   },
 ] as const;
 
-// T64b — RESPONSE PATIENCE.
-//
-// The server's own bounds (`agent/stream-patience.ts`), restated here in the unit the field
-// is typed in. The form talks in SECONDS because nobody thinks about a timeout in
-// milliseconds; the column stores milliseconds because everything else in the engine does.
+// Response patience bounds, restated from the server's own (`agent/stream-patience.ts`) in
+// the unit the field is typed in: seconds in the form, milliseconds in the column.
 const PATIENCE_MIN_SEC = 10;
 const PATIENCE_MAX_SEC = 30 * 60;
 const STANDARD_FIRST_CHUNK_SEC = 90;
@@ -227,20 +203,14 @@ const parsePatienceSeconds = (raw: string, label: string): PatienceParse => {
 
 const msToSecInput = (ms: number | null): string => (ms === null ? '' : String(Math.round(ms / 1000)));
 
-/**
- * PREFILL SELF-CALIBRATION (owner ruling 2026-09-22: "never ask the user for a number the
- * platform can observe"). What the engine worked out for itself, shown as INFORMATION rather
- * than as a control: there is no write door for it, and a field that let someone edit a
- * measurement would turn it straight back into the declaration this feature exists to stop
- * asking for. Absent entirely until a provider has served a call big enough to measure from.
- */
+/** What the engine worked out for itself, shown as information with no write door: a field
+ *  that let someone edit a measurement would turn it straight back into a declaration. */
 const MeasuredReadingSpeed = ({ provider }: { provider: Provider }) => {
   const measured = provider.measuredPrefillTokensPerSec;
   if (measured === null) return null;
-  // Fix round 1 (review N4): the reader (`agent/stream-patience.ts`) floors this and then
-  // re-checks it against the same 1-100,000 bounds a declared value must satisfy, so a stored
-  // reading outside them is IGNORED by the engine. Showing it anyway would tell the owner his
-  // box was measured at 500,000 tokens/sec while nothing at all was using that number.
+  // The reader (`agent/stream-patience.ts`) floors this and re-checks it against the same
+  // 1-100,000 bounds a declared value must satisfy, so a reading outside them is IGNORED by
+  // the engine; showing one would advertise a number nothing uses.
   if (Math.floor(measured) < THROUGHPUT_MIN_TOK_PER_SEC || measured > THROUGHPUT_MAX_TOK_PER_SEC) return null;
   return (
     <p className="text-[11px] text-cp-teal/70 mt-1">
@@ -299,31 +269,17 @@ const PatienceFields = ({
   </>
 );
 
-// T66b — THE PER-PROVIDER EDITOR.
-//
-// The owner: "at the very least change the name and the patience settings". Patience had its
-// own editor from T64b; nothing else could be changed at all, and the only door that could
-// change a name — `POST /providers` over the existing id — is a FULL REPLACE, so a form built
-// on it would clear a base URL or a dialect declaration for anyone who did not re-send them.
-// `PATCH /providers/:id` writes only the fields it is given, and this form only gives it the
-// fields the user actually altered.
-//
-// TWO DOORS, ONE SAVE. Patience keeps its own narrow route (T64b) and the identity fields have
-// theirs; each owns its properties so neither can rewrite the other's. The user sees one Save.
-//
-// WHAT IS NOT HERE. `type` cannot be edited — an Anthropic provider that becomes an Ollama one
-// is a different provider, with different models, a different credential and a different
-// dialect. The server refuses it by name; the form says so in plain words rather than
-// offering a control that would be rejected.
+// THE PER-PROVIDER EDITOR. `PATCH /providers/:id` writes only the fields it is given, and this
+// form only gives it the fields the user altered; patience keeps its own narrow door and the
+// identity fields have theirs, so neither rewrites the other and the user still sees one Save.
 const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   provider: Provider; onSaved: () => void; onCancel: () => void;
 }) => {
-  // T64b's rule, unchanged: the pair is offered only where the stream watchdog actually arms.
-  // Ollama bounds its call a different way (a single 5-minute fetch timeout) and the Agent SDK
-  // transport has no watchdog at all, so the fields would be a control that does nothing.
+  // The pair is offered only where the stream watchdog actually arms: Ollama bounds its call
+  // with a single 5-minute fetch timeout and the Agent SDK transport has no watchdog at all.
   const armsTheWatchdog = provider.type !== 'ollama' && provider.authType !== 'agent-sdk';
-  // The dialect is only ambiguous behind an OpenAI-compatible URL — which is the whole reason
-  // T63 made it declarable. Anthropic, OpenAI and Ollama each speak one known dialect.
+  // The dialect is only ambiguous behind an OpenAI-compatible URL, which is the whole reason
+  // it is declarable here. Anthropic, OpenAI and Ollama each speak one known dialect.
   const canDeclareDialect = provider.type === 'openai-compatible';
   // A provider with no base URL of its own (Anthropic direct) has nothing to point elsewhere.
   const hasEndpoint = provider.type !== 'anthropic' || provider.baseUrl !== null;
@@ -333,12 +289,12 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   const [name, setName] = useState(provider.name);
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? '');
   // '' is "declare nothing and go back to reading the URL", which is what the column's NULL
-  // means and what every provider created before T63 holds.
+  // means; a provider with no stored dialect holds that.
   const [behavesLike, setBehavesLike] = useState(provider.behavesLike ?? '');
   // Never pre-filled: the server does not send the stored key to the client and must not.
   // Blank therefore means KEEP, and the help text under the field says exactly that.
   const [credential, setCredential] = useState('');
-  // The fold opens by itself when ANY of the advanced numbers is already set — a value the user
+  // The fold opens by itself when ANY of the advanced numbers is already set: a value the user
   // cannot see is a value they cannot check, and this fold holds three of them.
   const [showPatience, setShowPatience] = useState(
     provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null
@@ -382,12 +338,11 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
     const patienceMoved = armsTheWatchdog && (
       first.ms !== provider.firstChunkTimeoutMs || idle.ms !== provider.streamIdleTimeoutMs
     );
-    // One more narrow door, with its own flag for the same reason the patience pair has one:
-    // the server REFUSES this field by name on the identity door, so it can never ride along in
-    // `edit`, and a field the user did not touch must not be mentioned to its own door either —
-    // sending an untouched value back is how a blank clears a number nobody meant to clear. An
-    // ABSENT key is "do not call this door"; a `null` key is "call it and clear the number".
-    // Those are different requests.
+    // Reading speed has its own narrow door and its own flag, for the patience pair's reason:
+    // the server REFUSES the field by name on the identity door, so it can never ride along in
+    // `edit`, and a number the user did not touch must not be mentioned to its door: sending an
+    // untouched value back is how a blank clears a number nobody meant to clear. An ABSENT key
+    // is "do not call this door"; a `null` key is "call it and clear the number".
     const speedMoved = 'prefillTokensPerSec' in numbers.edits;
 
     if (Object.keys(edit).length === 0 && !patienceMoved && !speedMoved) {
@@ -413,10 +368,9 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
       revalidationRequired = result.revalidationRequired === true;
     }
 
-    // The badge the server just cleared is a claim about a connection nobody has tried yet, so
-    // the same two-step the add form uses after a create: save, then run the EXISTING validate
-    // route. It is a separate call on purpose — a write door that reached out to a local box
-    // would hold the user's Save open for as long as that box takes to time out.
+    // The badge the server cleared is a claim about a connection nobody has tried yet, so save,
+    // then run the EXISTING validate route as a separate call: a write door that reached out to
+    // a local box would hold the user's Save open for as long as that box takes to time out.
     if (!revalidationRequired) { onSaved(); return; }
     setStatus('validating');
     const valResult = await api.validateProvider(provider.id);
@@ -501,10 +455,8 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
         </div>
       )}
 
-      {/* The fold is no longer gated on `armsTheWatchdog`: the two fields added here apply to
-          every provider, and an Ollama box — the one kind the watchdog gate excludes — is
-          precisely the kind whose owner needs to say how long it may work on its own. Only the
-          PATIENCE PAIR keeps that gate, inside, where it still means what it meant. */}
+      {/* The fold is not gated on `armsTheWatchdog`: every provider has a reading speed, and
+          only the PATIENCE PAIR inside keeps that gate, where it still means what it says. */}
       <div>
         <button
           type="button"
@@ -567,26 +519,23 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
 
 const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void; onCreated?: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
-  // The dropdown 'preset' is a UI-only label. Several presets (deepseek,
-  // openrouter, manual) all map to the same backend type 'openai-compatible'
-  // but with different default base URLs and seeded model catalogs. The
-  // mapping happens at submit time below.
+  // The dropdown 'preset' is UI-only: deepseek, openrouter and manual all map to backend type
+  // 'openai-compatible' with different default base URLs and seeded catalogs, at submit time.
   const [preset, setPreset] = useState('anthropic');
   const [authType, setAuthType] = useState<'api_key' | 'oauth' | 'agent-sdk'>('api_key');
   const [credential, setCredential] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
-  // T63: only the manual choice carries one. Every preset sends nothing and is resolved
-  // from its URL exactly as before.
+  // Only the manual choice carries one; every preset sends nothing and resolves it from its URL.
   const [behavesLike, setBehavesLike] = useState<string>('generic-openai-compatible');
-  // T64b — the advanced patience pair, in SECONDS in the UI and milliseconds on the wire.
-  // Empty string means "declare nothing", which is what every provider does today.
+  // The advanced patience pair: SECONDS in the UI, milliseconds on the wire; empty means
+  // "declare nothing", which is what every provider does today.
   const [showPatience, setShowPatience] = useState(false);
   const [firstChunkSec, setFirstChunkSec] = useState('');
   const [idleSec, setIdleSec] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
 
-  // T63 — the manual choice: the owner types the URL, the key is OPTIONAL (a local
+  // The manual choice: the owner types the URL, the key is OPTIONAL (a local
   // ollama / vLLM / LM Studio server usually has none), and the dialect is declared.
   const isManual = preset === 'manual';
 
@@ -603,9 +552,8 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
     }
   })();
 
-  // When the preset changes, autofill the name field if the user hasn't
-  // typed anything custom yet (or if it still matches a previous preset's
-  // suggestion). Saves a click for the common case.
+  // Autofill the name on a preset change only while it is still blank or a previous preset's
+  // suggestion; saves a click for the common case.
   useEffect(() => {
     setName((current) => {
       const isAutoFilled = current === '' ||
@@ -614,8 +562,8 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
     });
   }, [preset, presetConfig.suggestedName]);
 
-  // What the form needs before it will submit. Manual asks for a URL instead of a key,
-  // because that is the field it cannot guess; everything else is unchanged.
+  // What the form needs before it will submit: manual asks for a URL instead of a key, the
+  // field it cannot guess; the other presets ask for a key.
   const canSubmit = Boolean(name.trim()) && (
     isManual
       ? Boolean(baseUrl.trim())
@@ -628,13 +576,12 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
     setStatus('saving');
     setError(null);
 
-    // A manual endpoint with no key typed DECLARES it has no auth ('none'), which is what
-    // lets validation and browsing reach it at all. Type a key and it is stored and sent
-    // through exactly the same path every other provider's key uses.
+    // A manual endpoint with no key typed DECLARES it has no auth ('none'), which is what lets
+    // validation and browsing reach it; a typed key follows the stored-key path like the rest.
     const manualAuthType = credential.trim() ? 'api_key' : 'none';
 
-    // T64b: validated here in the unit the user typed, so the message names seconds rather
-    // than the millisecond bound the server would have reported.
+    // Validated here in the unit the user typed, so the message names seconds rather than
+    // the millisecond bound the server would have reported.
     const first = parsePatienceSeconds(firstChunkSec, 'The wait for the first word');
     const idle = parsePatienceSeconds(idleSec, 'The wait during an answer');
     if (!first.ok || !idle.ok) {
@@ -655,8 +602,7 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
         ? (credential.trim() || undefined)
         : preset === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
       ...(isManual ? { behavesLike } : {}),
-      // Sent only when actually declared, so a preset's create body is byte-identical to
-      // what it has always been.
+      // Sent only when actually declared, so an undeclared pair never enters the create body.
       ...(first.ms === null ? {} : { firstChunkTimeoutMs: first.ms }),
       ...(idle.ms === null ? {} : { streamIdleTimeoutMs: idle.ms }),
     });
@@ -668,10 +614,9 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
     }
 
     // The provider is stored whether or not the check below passes, so the list
-    // learns about it now — a failed check must not leave it invisible.
+    // learns about it now: a failed check must not leave it invisible.
     onCreated?.();
 
-    // Validate the credential
     setStatus('validating');
     const valResult = await api.validateProvider(id);
     if (valResult.ok && valResult.data.valid) {
@@ -714,8 +659,8 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
         </div>
       </div>
 
-      {/* T63 — the manual choice: a URL the owner types, an optional key, and the
-          dialect declared, because none of the three can be guessed from the others. */}
+      {/* The manual choice: a URL the owner types, an optional key, and the dialect declared,
+          because none of the three can be guessed from the others. */}
       {isManual && (
         <>
           <div>
@@ -765,8 +710,8 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
             </p>
           </div>
 
-          {/* T64b — response patience. Folded away because the standard bounds are right for
-              almost everything; opened by the one person whose machine they are wrong for. */}
+          {/* Response patience is folded away: the standard bounds are right for almost
+              everything, and the fold opens for the one person whose machine they are wrong for. */}
           <div>
             <button
               type="button"
