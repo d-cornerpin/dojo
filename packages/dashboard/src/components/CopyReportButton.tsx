@@ -1,12 +1,10 @@
 import { useState } from 'react';
 import { copyTextToClipboard } from '../lib/clipboard';
 
-// The Copy report button (v3.4 E2). It copies the full report text the server just handed back,
-// which is byte-identical to the issue body the poster would send, so the owner approves one
-// text and pastes that same text. It decides nothing and sends nothing.
-//
-// If the browser refuses the clipboard, the text is shown in a box ready to select, so a refused
-// copy never leaves the owner with nothing.
+// The Copy report button copies the full report text the server just handed back, byte-identical
+// to the issue body the poster would send, so the owner approves one text and pastes that same
+// text. It decides nothing and sends nothing; if the browser refuses the clipboard the text is
+// shown in a box ready to select, so a refused copy never leaves the owner with nothing.
 export const CopyReportButton = ({ text }: { text: string }) => {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const copy = async (): Promise<void> => {

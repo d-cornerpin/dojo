@@ -7,31 +7,23 @@ import {
 } from '../lib/credential-placeholder';
 import { copyTextToClipboard } from '../lib/clipboard';
 
-/**
- * Lightweight markdown renderer for chat messages.
- * Supports: fenced code blocks, inline code, bold, italic, links with OG previews.
- * No external dependencies.
- */
+/** Chat markdown: fenced code, inline code, bold, italic, links with OG previews. No deps. */
 export const Markdown = ({ content }: { content: string }) => {
   const elements = parseMarkdown(content);
   return <div className="text-sm leading-relaxed break-words">{elements}</div>;
 };
 
-// URL detection — split into two parts so we can decide what's clickable vs
-// what's also previewable.
-//
-// Clickable: http(s), ftp(s), sftp, smb, ssh, file (scheme://...) AND
-//            mailto:, tel:, sms: (scheme:no-slashes).
-// Previewable: only http and https — other schemes don't have OG metadata
-//              the og-preview endpoint can fetch.
+// URL detection is split so clickable can be told from previewable.
+// Clickable: http(s), ftp(s), sftp, smb, ssh, file (scheme://...) AND mailto:, tel:, sms:.
+// Previewable: only http(s); other schemes have no OG metadata the preview endpoint can fetch.
 const SCHEME_WITH_AUTHORITY = '(?:https?|ftps?|sftp|smb|ssh|file):\\/\\/[^\\s<>"\')\\]]+';
 const SCHEME_NO_AUTHORITY = '(?:mailto|tel|sms):[^\\s<>"\')\\]]+';
 const ANY_URL_RE = new RegExp(`${SCHEME_WITH_AUTHORITY}|${SCHEME_NO_AUTHORITY}`, 'g');
 function isPreviewableUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
-// Cap previews per message — 5 cards is the soft ceiling before the chat
-// becomes more cards than text. Dedupes so the same URL doesn't render twice.
+// Cap previews per message: 5 cards, before chat becomes more cards than text.
+// Deduped so the same URL doesn't render twice.
 const MAX_PREVIEWS_PER_MESSAGE = 5;
 
 // ── Parser ──
@@ -42,15 +34,12 @@ function parseMarkdown(text: string): React.ReactNode[] {
   let i = 0;
   let key = 0;
 
-  // Track which lines are inside fenced code blocks. URLs inside ``` shouldn't
-  // get preview cards even though the fenced block itself isn't being parsed
-  // for URLs (the CodeBlock just renders raw text).
+  // URLs inside fenced blocks are example snippets, not links: only non-code text is scanned.
   const nonCodeText: string[] = [];
 
   while (i < lines.length) {
-    // Fenced block: ```lang\n...\n```. `lang === 'source'` (with an
-    // optional /subtype, e.g. `source/transcript`) routes to the
-    // word-wrapped SourceBlock; everything else is a normal CodeBlock.
+    // Fenced block: ```lang. `lang === 'source'` (optional /subtype, e.g. `source/transcript`)
+    // routes to the word-wrapped SourceBlock; everything else is a normal CodeBlock.
     if (lines[i].startsWith('```')) {
       const lang = lines[i].slice(3).trim();
       const codeLines: string[] = [];
@@ -78,7 +67,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
         );
       }
     } else {
-      // Regular line — collect consecutive non-code lines into a paragraph
+      // Regular line: collect consecutive non-code lines into a paragraph
       const paraLines: string[] = [];
       while (i < lines.length && !lines[i].startsWith('```')) {
         paraLines.push(lines[i]);
@@ -99,20 +88,16 @@ function parseMarkdown(text: string): React.ReactNode[] {
     }
   }
 
-  // Engine-driven preview: every previewable URL anywhere in the message
-  // (inline or standalone) gets a card, deduped, capped. URLs inside fenced
-  // code blocks are intentionally excluded — those are usually example
-  // snippets, not real links the user is meant to follow.
+  // Every previewable URL in non-code text gets a card, deduped and capped; fenced
+  // code is excluded on purpose, those are example snippets, not links to follow.
   const seen = new Set<string>();
   const previewUrls: string[] = [];
   const haystack = nonCodeText.join('\n');
   for (const match of haystack.matchAll(ANY_URL_RE)) {
     const raw = match[0];
-    // Split first if the capture contains a duplicated scheme (e.g.
-    // "https://a.com/xhttps://a.com/x"), so the OG preview fetches the
-    // FIRST URL alone rather than the concatenation (which would 404).
-    // Strip trailing junk (sentence punct, backticks, brackets, quotes)
-    // that agents frequently smear onto URLs.
+    // Split first if the capture holds a duplicated scheme, so the preview fetches the
+    // FIRST URL alone rather than a concatenation that would 404.
+    // Then strip trailing junk (punct, backticks, brackets, quotes) agents smear on.
     const { primary } = splitOnRepeatedScheme(raw);
     const cleaned = primary.replace(HREF_TRAIL_JUNK_RE, '');
     if (!isPreviewableUrl(cleaned)) continue;
@@ -160,15 +145,8 @@ export const CodeBlock = ({ code, language }: { code: string; language: string }
 };
 
 // ── Source Block ──
-//
-// Same shell as CodeBlock (header + copy button) but renders the body
-// in the default sans font with word-wrapping. Use for transcripts,
-// document quotations, long captions — anything that's content (not
-// code) but that the user might want to copy as a single unit.
-//
-// Agents trigger it with ```source ... ``` in their markdown output.
-// Subtype labels are accepted (e.g. ```source/transcript) and surface
-// in the header.
+// CodeBlock's shell (header + copy) with the body in the default sans font, word-wrapped:
+// content to read, not code, copied as one unit. Agents trigger it with ```source ... ```.
 const SourceBlock = ({ body, label }: { body: string; label?: string }) => {
   const [copied, setCopied] = useState(false);
 
@@ -222,7 +200,7 @@ export function InlineMarkdown({ text }: { text: string }): React.ReactNode {
       continue;
     }
 
-    // No more inline code — process the rest
+    // No more inline code: process the rest
     parts.push(processInline(remaining, key++));
     break;
   }
@@ -230,24 +208,14 @@ export function InlineMarkdown({ text }: { text: string }): React.ReactNode {
   return <>{parts}</>;
 }
 
-// Trailing junk that LLMs frequently smear onto the end of a URL but that
-// never belongs on a real link href:
-//   - Sentence punctuation: . , ; : ! ?
-//   - Backtick (`) — agents often try to inline-code-wrap a URL and the
-//     closing tick lands inside the href, browser then encodes it as %60
-//   - Quote marks: " ' ’ ” (smart + dumb)
-//   - Closing brackets that weren't opened: ] } > )
-//   - Backslash: occasionally appears when agents try to escape something
+// Trailing junk LLMs frequently smear onto a URL that never belongs in an href: sentence
+// punctuation; backticks (a closing tick inside the href gets encoded by browsers as %60);
+// quote marks; unopened closers ] } > ); a stray backslash from failed escaping.
 const HREF_TRAIL_JUNK_RE = /[.,;:!?`"'’”\]\}>)\\]+$/;
 
-// Agents sometimes emit the same URL twice in a row with no space between
-// them — `https://x.com/fileAhttps://x.com/fileA`. Our greedy URL regex
-// happily captures the entire concatenation as one href, which then
-// 404s. Detect a second http(s):// occurring later in a captured URL
-// and truncate at that boundary. The remaining text after the truncated
-// URL gets re-processed as part of the surrounding string, so the
-// duplicate URL renders as a second separate link (still wrong, but at
-// least clickable to the right place).
+// Agents sometimes emit the same URL twice with no space between them; the greedy regex
+// would capture the concatenation as one 404 href. Truncate at the second scheme; the
+// remainder re-processes as surrounding text, so the duplicate renders as its own link.
 function splitOnRepeatedScheme(url: string): { primary: string; rest: string } {
   // Look for "http://" or "https://" AFTER position 8 (past the initial scheme).
   const re = /https?:\/\//g;
@@ -258,12 +226,8 @@ function splitOnRepeatedScheme(url: string): { primary: string; rest: string } {
   return { primary: url.slice(0, secondIdx), rest: url.slice(secondIdx) };
 }
 
-// Render a clickable URL anchor. Trailing junk is split off so
-// "see https://x.com." links to https://x.com and renders the period
-// as plain text after. Also defends against agents emitting a URL
-// twice concatenated (no space between them) — we render the first
-// URL as an anchor and dump the rest as plain text, rather than
-// producing one mega-href that 404s.
+// A clickable URL anchor: trailing junk splits off so "see https://x.com." links to the
+// URL and shows the period as text; a doubled URL renders first as anchor, rest as plain text.
 function renderUrl(url: string, key: number): React.ReactNode[] {
   const { primary, rest } = splitOnRepeatedScheme(url);
   let href = primary;
@@ -284,21 +248,11 @@ function renderUrl(url: string, key: number): React.ReactNode[] {
   return out;
 }
 
-// Render an explicit markdown link [text](url) where the visible text and
-// the href can differ. Same trailing-junk rule applied to the href.
-/**
- * A credential the platform is holding, drawn where its value would have been.
- *
- * The engine substitutes a redacted-credential placeholder on the wire and is right to (see
- * `secret-values.ts`); until this chip existed the dashboard drew that token as body text, so the
- * owner read gibberish exactly where a value should be, with nothing to say the value was safe or
- * where it lived. The DECISION of what is a placeholder belongs to `lib/credential-placeholder.ts`
- * — this component only draws.
- *
- * The token's literal text is deliberately absent from this file, including from these comments:
- * its own clause forbids it, so that the pattern cannot be quietly re-implemented here and drift
- * from the engine's.
- */
+// Render a markdown link [text](url) where visible text and href may differ; same junk rule.
+// A credential the platform is holding, drawn where its value would have been. The engine
+// substitutes the placeholder on the wire (see `secret-values.ts`); the DECISION of what is
+// a placeholder lives in `lib/credential-placeholder.ts`, this component only draws. The
+// token's literal text is deliberately absent here so the pattern can't drift from the engine's.
 const CredentialChip = ({ tag }: { tag: string | null }) => (
   <span className="pill pill--draft" title={credentialChipTitle(tag)}>
     <i className="dot" />{CREDENTIAL_CHIP_LABEL}
@@ -317,27 +271,17 @@ function renderMarkdownLink(text: string, url: string, key: number): React.React
   );
 }
 
-// Process emphasis (bold, italic), markdown links, angle-bracket links, and
-// bare URLs within text. URLs win over bold/italic when they overlap, so
-// `**https://x.com**` renders as bold containing a clickable link instead
-// of bold containing plain text. The bold/italic content is recursively
-// processed for URLs to make this work.
-/**
- * A credential placeholder is a SUBSTITUTION, not a formatting token, so it is split out BEFORE
- * the formatting pass rather than competing inside it. Two reasons, and the second is the one that
- * matters: no formatting rule can reinterpret part of the span, and the decision of what IS a
- * placeholder stays in one pure, suite-driven function instead of becoming another regex in this
- * file. Ordinary runs then go through the formatting pass exactly as before.
- */
+// Emphasis, markdown links, angle links, and bare URLs. URLs win ties with bold/italic, and
+// bold/italic content is processed recursively, so `**https://x.com**` stays clickable inside.
+// A credential placeholder is a SUBSTITUTION, not a formatting token, so it splits out BEFORE
+// the formatting pass: no formatting rule can reinterpret part of the span, and the decision
+// of what IS a placeholder stays in one pure, suite-driven function, not another regex here.
 function processInline(text: string, baseKey: number): React.ReactNode {
   const segments = splitCredentialPlaceholders(text);
 
-  // FAST PATH ONLY — and it is written in this direction deliberately. The plain-text case is
-  // the exception here and the segment walk is the DEFAULT, so that a broken or disabled guard
-  // fails toward drawing chips rather than toward leaking the raw token back onto the page. A
-  // mutation run showed the other arrangement ("guard the chip path") let `if (false)` restore
-  // the original bug with every clause still green — and the component runner this package gained
-  // on 2026-09-26 does not cover this path yet, so the arrangement is still the guard.
+  // FAST PATH ONLY, written in this direction deliberately: the segment walk is the DEFAULT,
+  // so a broken or disabled guard fails toward drawing chips rather than toward leaking the
+  // raw token back onto the page.
   if (segments.length === 1 && segments[0].kind === 'text') {
     return processInlineFormatting(text, baseKey);
   }
@@ -360,19 +304,14 @@ function processInlineFormatting(text: string, baseKey: number): React.ReactNode
   const URL_RE = new RegExp(`^(.*?)(${SCHEME_WITH_AUTHORITY}|${SCHEME_NO_AUTHORITY})`);
 
   while (remaining.length > 0) {
-    // Find the next match of each token type. Order in `candidates`
-    // determines precedence on ties (stable sort preserves push order).
-    // URL goes first so a URL at the same index as bold/italic wins —
-    // but we ALSO recursively process bold/italic content for URLs, so
-    // `**https://x.com**` still renders the bold tag *with* a clickable
-    // link inside.
+    // Each token type matches; push order into `candidates` decides precedence on ties
+    // (stable sort), so a URL at bold's index still wins and stays clickable inside the bold.
     const mdLinkMatch = remaining.match(
-      // [text](url) — text is anything but ], url is anything but ).
+      // [text](url): text is anything but ], url is anything but ).
       /^(.*?)\[([^\]]+)\]\((https?:\/\/[^\s)]+|(?:ftps?|sftp|smb|ssh|file):\/\/[^\s)]+|(?:mailto|tel|sms):[^\s)]+)\)/,
     );
     const angleMatch = remaining.match(
-      // <url> — bare URL wrapped in angle brackets, often emitted by LLMs
-      // when they want to "protect" a link from formatting.
+      // <url>: a bare URL in angle brackets, LLMs use these to "protect" a link from formatting.
       new RegExp(`^(.*?)<(${SCHEME_WITH_AUTHORITY}|${SCHEME_NO_AUTHORITY})>`),
     );
     const urlMatch = remaining.match(URL_RE);
@@ -380,8 +319,7 @@ function processInlineFormatting(text: string, baseKey: number): React.ReactNode
     const italicMatch = remaining.match(/^(.*?)\*(.+?)\*/);
 
     const candidates: Array<{ type: string; index: number; match: RegExpMatchArray }> = [];
-    // Order matters for ties: explicit link forms first, then bare URL,
-    // then formatting wrappers.
+    // Ties resolve in push order: explicit link forms, then bare URL, then formatting.
     if (mdLinkMatch) candidates.push({ type: 'mdlink', index: mdLinkMatch[1].length, match: mdLinkMatch });
     if (angleMatch) candidates.push({ type: 'angle', index: angleMatch[1].length, match: angleMatch });
     if (urlMatch) candidates.push({ type: 'url', index: urlMatch[1].length, match: urlMatch });

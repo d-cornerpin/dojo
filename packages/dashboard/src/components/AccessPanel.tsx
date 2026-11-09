@@ -21,41 +21,13 @@ import {
   buildLegacyAccess, legacyDirty, legacyReachSummary, manageSummary, readLegacyAccess, type LegacyAccess,
 } from '../lib/manifest-edits';
 
-// ════════════════════════════════════════════════════════════════════════════
-// THE ACCESS PANEL — the owner's one door onto what an agent may do.
-//
-// A1 built the object and the walls, A2 built the door a MODEL grants through.
-// This is the door the OWNER grants through, and until it existed the whole
-// phase was invisible to the person it is for.
-//
-// ── A6: ONE PANEL, FIVE PLAIN QUESTIONS ──
-// The card opens COLLAPSED with a one-line digest of the agent's setup on its
-// header, derived from the stored object. Inside it are five folded rows, each a
-// question a person would actually ask:
-//
-//   What it can do       the tool-group selector (full, or one group at a time)
-//   What it can reach    Plaud, the connected mail/calendar accounts, the web,
-//                        programs on this Mac, the key store
-//   Who it can talk to   the channels, under the one switch that governs them
-//   What it knows        techniques, and whether it knows who you are
-//   What it may manage   your files, this Mac, and the agents it creates
-//
-// THE LAST TWO ROWS ARE WHERE THE AGENT EDITOR'S "PERMISSIONS" CARD WENT. That
-// card is deleted: two cards answering overlapping questions, neither of which
-// mentioned the other, is the drift this overhaul exists to end. What moved is
-// the CONTROL — the storage is untouched, and `lib/manifest-edits.ts` is held to
-// producing the same document the old card produced.
-//
-// ── THE LANGUAGE RULE ──
-// Nothing on this card speaks the dojo's internal language. There is no rank
-// name on screen: an agent with no switch of its own is described by what that
-// means — it talks through your main agent — because that is the sentence the
-// owner can act on.
-//
-// WHAT IT DOES NOT DO: it does not compute access. Every control is a field of
-// an object a door already reads, it saves through A2's resolver, and the audit
-// row is written by the route. The panel owns no authority of its own.
-// ════════════════════════════════════════════════════════════════════════════
+// The access panel: the owner's one door onto what an agent may do. The card opens COLLAPSED
+// with a one-line digest of the stored setup; inside are five folded rows, each a question a
+// person would actually ask (can do / can reach / can talk to / knows / may manage). Nothing
+// on it speaks the dojo's internal language: an agent with no switch of its own is described
+// by what that means, it talks through your main agent, because that is the sentence the owner
+// can act on. It computes nothing: every control is a field a door already reads, it saves
+// through the validated resolver, and the audit row is written by the route.
 
 const LEVELS: Array<{ value: IntegrationLevel; label: string }> = [
   { value: 'none', label: 'No access' },
@@ -82,8 +54,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   const [draft, setDraft] = useState<AccessGrants | null>(stored ? clone(stored) : null);
   const [saving, setSaving] = useState(false);
 
-  // The legacy half, read once into the same shape the old card kept in twenty
-  // hooks. `storedLegacy` is what arrived; `legacy` is the draft.
+  // The legacy half, read once into one shape: `storedLegacy` arrived, `legacy` is the draft.
   const storedLegacy = useMemo(
     () => readLegacyAccess(
       agent.permissions,
@@ -95,9 +66,9 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   const [legacy, setLegacy] = useState<LegacyAccess>(storedLegacy);
   useContentChange(storedLegacy, setLegacy);
 
-  // The dashboard's one collapse idiom, with the default the owner wants: the
-  // card AND every row inside it open folded. The key is per-panel rather than
-  // per-agent — "I keep this shut" is a fact about the owner.
+  // The dashboard's one collapse idiom, with the default the owner wants: the card AND every
+  // row inside it open folded. The key is per-panel rather than per-agent: "I keep this shut"
+  // is a fact about the owner, not about the agent.
   const { isCollapsed, toggle } = usePanelCollapse('agent.access.collapse', true);
   const collapsed = isCollapsed('access');
   useContentChange(agent.effectiveGrants ?? null, (next) => setDraft(next ? clone(next) : null));
@@ -124,10 +95,10 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   );
   const edit = useCallback((next: AccessGrants) => setDraft(next), []);
 
-  // ONE SAVE, ONE PUT. The grants half rides A2's validated `grants` body; the
-  // folded half rides the same `permissions` / `toolsPolicy` / `config` fields
-  // the deleted card used. Each is sent ONLY if it moved, so a save that touches
-  // one half never rewrites the other and never writes an audit row for it.
+  // ONE SAVE, ONE PUT. The grants half rides the validated `grants` body; the folded half
+  // rides the same `permissions` / `toolsPolicy` / `config` fields its own door reads. Each
+  // is sent ONLY if it moved, so a save that touches one half never rewrites the other and
+  // never writes an audit row for it.
   const save = async () => {
     if (!stored || !draft) return;
     const patch = grantsPatch(stored, draft);
@@ -150,8 +121,8 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
     else { toast.error(result.error || 'Could not save access.'); }
   };
 
-  // ONE header, drawn in every state, with the chevron always reachable — so the
-  // card can be opened while it is still loading and shut again from anywhere.
+  // ONE header, drawn in every state, with the chevron always reachable, so the card can be
+  // opened while it is still loading and shut again from anywhere.
   const dirty = stored && draft ? isDirty(stored, draft) || (manifestEditable && legacyDirty(storedLegacy, legacy)) : false;
   const header = (
     <div className="acx-head">
@@ -376,12 +347,11 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
       </Row>
 
       {/* ── 4 ──
-          The techniques half is two honest halves: the GRANT (may run — the
-          index, the matcher that would otherwise inject a body unasked, and the
-          door), saved with the panel, and the PRE-LOAD (equipping), which saves
-          on change as it always did. The grant list gates the equip list on
-          screen exactly as the renderer gates it on the server, because
-          equipping something ungranted loads nothing. */}
+          The techniques half is two honest halves: the GRANT (may run: the index, the
+          matcher that would otherwise inject a body unasked, and the door), saved with
+          the panel, and the PRE-LOAD (equipping), which saves on change by itself. The
+          grant list gates the equip list on screen exactly as the renderer gates it on
+          the server, because equipping something ungranted loads nothing. */}
       <Row question="What it knows" state={knowsSummary(draft, legacy.shareProfile)} {...row('knows')}>
         <KnowsManifestItem state={legacy} onChange={setLegacy} editable={manifestEditable} note={manifestNote} />
         {techniqueCatalog.length === 0 ? (

@@ -1,15 +1,9 @@
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
 
-/**
- * Whether the last update that changed the database left a way back.
- *
- * This is the one fact about an update that nothing in the product used to say. An
- * update can change the DATA, and going back to the previous version does NOT undo
- * that — only the snapshot taken just before the change does. When that snapshot was
- * written, the person should be able to see where it is; when it was not, they should
- * be told, in the same breath, what that costs them.
- */
+// Whether the last update that changed the database left a way back: an update can change
+// the DATA and reverting the version does NOT undo that, only the snapshot taken just before
+// does. Show where it was written; when it was not, say what that costs.
 export const DataBackupNotice = ({ backup }: { backup: api.MigrationBackupOutcome | null }) => {
   // Nothing to say: this box has never run an update that changed the database.
   if (!backup || backup.status === 'not-applicable') return null;

@@ -6,39 +6,24 @@ import { formatDateShort } from '../lib/dates';
 import { githubCardState, connectLabel, describeScope, connectedAs, scopeRequestSentence,
   problemText, CONNECT_FAILED_FALLBACK, CONNECT_REFUSED_FALLBACK } from '../lib/github-card';
 
-// ── Settings → Integrations → GitHub (DOJO-REPORT T5) ──
-// Connecting GitHub turns a problem report from a file you paste by hand into an issue your
-// agent opens AS YOU. Device flow, so there is no redirect and no callback: the user types a
-// short code at github.com/login/device and the server polls until GitHub answers — which is
-// why this card works through a tunnel while the Google/Microsoft ones on the tab above do not.
-//
-// ── THE DOCTRINE THIS CARD SERVES (`memory/integration-status-lane.ts`, the ".24" rule) ──
-// *"The agent must never have to trust a notebook entry saying a connection is broken. The
-// PLATFORM'S LIVE TRUTH sits in front of it every turn and OUTRANKS memory."* And the
-// discipline that keeps that honest: ledger-backed, NEVER AN INVENTED FRESHNESS. So this card
-// never probes GitHub to look fresher than it is. Every fact on it is one the engine stored or
-// measured: whether a sealed token is here and opens, who it connected as, what GitHub actually
-// granted, and the LAST LIVE OUTCOME of a real call (`lastOkAt` / `lastError`, written by the
-// poster and by nothing else). `GET /api/github/status` makes no outbound request, and a test
-// holds that as behaviour rather than as this paragraph.
-//
-// ── WHY THE DECISIONS ARE NOT IN THIS FILE ──
-// This package has a component runner now (happy-dom, 2026-09-26), and it does not change where
-// these live: every rule where being wrong is a LIE ABOUT A
-// CONNECTION — which of the four states to draw, how to describe the permission GitHub actually
-// granted, how to render a grant with no name — lives in `lib/github-card.ts` and is driven
-// from the server's suite against the real doors. What is left here is JSX, the four
-// subscriptions, and the text of the last failed sign-in, which is on the wire and in no ledger.
-//
-// The title string `GitHub` is load-bearing: `open_settings` deep-links by `?section=<text>`
-// matched against `.scard__title`, so an agent can say "open Settings → Integrations → GitHub".
+// Settings -> Integrations -> GitHub: a problem report stops being a file you paste by hand
+// and becomes an issue your agent opens AS YOU. Device flow (no redirect, no callback: the
+// user types a short code at github.com/login/device and the server polls), which is why
+// this card works through a tunnel while the Google/Microsoft ones above it do not.
+// Doctrine (`memory/integration-status-lane.ts`): NEVER AN INVENTED FRESHNESS. This card never
+// probes GitHub to look fresher than it is; every fact is one the engine stored or measured,
+// and `GET /api/github/status` makes no outbound request (a test holds that). The rules where
+// being wrong would be a LIE ABOUT A CONNECTION live in `lib/github-card.ts`, driven from the
+// server's suite; what is left here is JSX and the text of the last failed sign-in, which is
+// on the wire and in no ledger. The title string `GitHub` is load-bearing: `open_settings`
+// deep-links by `?section=<text>` matched against `.scard__title`.
 
 export const GitHubSettings = () => {
   const [status, setStatus] = useState<api.GithubStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  // The last sign-in that did not finish, from the `github:connect_failed` frame or from a
-  // refused POST /connect. This is the one thing on the card with no ledger behind it — it is
-  // an event, not a state — so it is cleared the moment a new attempt starts.
+  // The last sign-in that did not finish, from the `github:connect_failed` frame or a
+  // refused POST /connect. It is an event, not a state, with no ledger behind it, so it
+  // is cleared the moment a new attempt starts.
   const [problem, setProblem] = useState<string | null>(null);
   const toast = useToast();
   const { subscribe } = useWebSocket();
@@ -86,8 +71,8 @@ export const GitHubSettings = () => {
     setProblem(null);
     const result = await api.connectGithub();
     setBusy(false);
-    // An unconfigured or unreachable box answers 400 with a SENTENCE. Render it — a spinner
-    // that never resolves is the shape this replaces.
+    // An unconfigured or unreachable box answers 400 with a SENTENCE; render it, do not
+    // sit on a spinner that never resolves.
     if (!result.ok) setProblem(problemText(result.error, CONNECT_REFUSED_FALLBACK));
     loadStatus();
   };
@@ -161,8 +146,8 @@ export const GitHubSettings = () => {
             Your agent can file problem reports as issues on the Dojo&apos;s public issue
             tracker, posted as you.
           </p>
-          {/* Derived from GITHUB_EXPECTED_SCOPE, never retyped here — a hardcoded copy is a
-              claim about the user's private code that no component test can judge. */}
+          {/* Derived from GITHUB_EXPECTED_SCOPE, never retyped here: a hardcoded copy would
+              be a claim about the user's private code that no component test could judge. */}
           <p className="text-xs text-ui/40">{scopeRequestSentence()}</p>
           <button className="btn btn--primary btn--sm" onClick={handleConnect} disabled={busy}>
             {connectLabel(status)}

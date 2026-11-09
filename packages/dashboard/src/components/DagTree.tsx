@@ -26,7 +26,7 @@ const getDepthColor = (depth: number): string => {
 
 const formatTimeRange = (earliest: string, latest: string): string => {
   // `summaries.earliest_at`/`latest_at` carry the message store's Z-less UTC text
-  // (`memory/store.ts:createdAtText`), so they must be parsed as UTC (UX-REPAIR T9).
+  // (`memory/store.ts:createdAtText`), so they must be parsed as UTC.
   const e = parseUtc(earliest);
   const l = parseUtc(latest);
   if (!e || !l) return '';

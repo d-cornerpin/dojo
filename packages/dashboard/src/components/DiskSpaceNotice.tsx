@@ -1,16 +1,7 @@
 import * as api from '../lib/api';
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE DISK-SPACE PRE-FLIGHT, ON THE SURFACE THE OWNER ALREADY LOOKS AT.
-//
-// SWEEP CORE-2 item 3, requirement (4) of the owner's 2026-08-06 ask: the notice reaches him
-// where he already looks — the Update tab RESTORE-PATH built. It sits immediately ABOVE
-// `DataBackupNotice`, and the ordering is deliberate: this one is about the update he is
-// considering NOW; that one is a record of the last update that already happened.
-//
-// It is silent unless there is something to say. A warning that renders on every visit is
-// furniture, and furniture is not read.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The disk-space pre-flight sits immediately above `DataBackupNotice`, and the order is
+// deliberate: this one is about the update being considered now, that one a record of the last.
 
 const gb = (n: number | null | undefined): string =>
   n === null || n === undefined ? '?' : `${(n / 1e9).toFixed(2)} GB`;
@@ -19,8 +10,8 @@ export const DiskSpaceNotice = ({ disk }: { disk: api.UpdateDiskNeed | null | un
   // Nothing measured, or nothing to warn about: say nothing.
   if (!disk) return null;
 
-  // The volume could not be read. Reported rather than hidden — the platform not knowing is
-  // a different thing from the platform saying you are fine — but it never blocks.
+  // The volume could not be read. Reported rather than hidden: not knowing is a different
+  // thing from being told you are fine. It never blocks.
   if (!disk.measured) {
     return (
       <div className="alert-banner alert-info text-sm">

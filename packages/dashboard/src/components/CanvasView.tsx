@@ -18,7 +18,7 @@ import { CanvasCode } from './CanvasCode';
  *
  * File-backed canvases auto-refresh: when the agent edits the backing file
  * (file_write / file_patch / file_append) the server emits `canvas:updated`
- * with the path, and we re-fetch — no manual refresh, no re-issued tool call.
+ * with the path, and we re-fetch: no manual refresh, no re-issued tool call.
  */
 
 interface DescribeData {
@@ -88,18 +88,12 @@ function CodeIcon() {
 }
 
 /*
- * SECURITY (2026-07-27, PHASE-0 T12b / P755) — canvas HTML is model-authored,
- * so it renders in an OPAQUE origin, never ours. Both paths used to hand it the
- * dashboard's origin: inline markup carried `allow-same-origin` (self-cancelling
- * next to `allow-scripts` — verified reading a sentinel JWT out of localStorage),
- * and a file on disk was an unsandboxed <iframe src>, served as text/html from
- * the API origin, which in production IS the dashboard origin.
- * Both now go through srcDoc + this sandbox. srcDoc rather than a blob: URL
- * because a blob: is fetched against its CREATOR's origin, which an
- * opaque-origin frame may not do — blob + sandbox is blocked outright.
- * The file case therefore FETCHES its HTML instead of navigating to it; the
- * server hands that body out attachment/octet-stream so the URL is inert in an
- * address bar too (gateway/routes/upload.ts, PHASE-0 T12b / P421).
+ * SECURITY: canvas HTML is model-authored, so it renders in an OPAQUE origin,
+ * never ours: srcDoc + CANVAS_SANDBOX, and no allow-same-origin (it cancels
+ * the sandbox next to allow-scripts). A blob: URL is fetched against its
+ * creator's origin, which an opaque-origin frame may not use, so the file
+ * path FETCHES its HTML instead of navigating; the server serves that body as
+ * octet-stream so the URL is inert in an address bar too.
  */
 const CANVAS_SANDBOX = 'allow-scripts allow-popups allow-forms';
 
@@ -182,7 +176,7 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
   // Fetched, never navigated to: the body comes back with the sibling assets
   // inlined as data URIs, and we hand it to a srcDoc iframe under
   // CANVAS_SANDBOX (see the note above). `htmlSource` above stays the RAW file
-  // for the Code tab — the data-URI-expanded version is for rendering only.
+  // for the Code tab: the data-URI-expanded version is for rendering only.
   const inlineUrl = isHtmlFile ? meta?.inlineUrl ?? null : null;
   const [renderedHtml, setRenderedHtml] = useState<string | null>(null);
   const [renderErr, setRenderErr] = useState<string | null>(null);
@@ -194,7 +188,7 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
     (async () => {
       try {
         // `fetchUrl`: a URL the server handed us on the canvas meta, not an
-        // `/api` path we built — but still through the one door (BACKLOG line 31).
+        // `/api` path we built, but still through the one door.
         const sent = await api.fetchUrl(inlineUrl, { credentials: 'include' });
         if (!sent.ok) throw new Error(sent.error);
         const res = sent.response;
@@ -302,7 +296,7 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
       } else if (isPdf) {
         body = <iframe key={nonce} src={meta.inlineUrl} title={title} className="dojo3-dock__frame" />;
       } else if (meta.renderUrl) {
-        // Word / Excel / CSV — rendered to HTML (a table/document) by the server.
+        // Word / Excel / CSV: rendered to HTML (a table/document) by the server.
         body = <iframe key={nonce} src={meta.renderUrl} title={title} className="dojo3-dock__frame" />;
       } else if (typeof meta.text === 'string') {
         if (MARKDOWN_EXTS.has(ext)) {
@@ -322,7 +316,7 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
           body = <div className="dojo3-canvas__doc"><CanvasCode content={meta.text} ext={ext} /></div>;
         }
       } else {
-        // Binary / unpreviewable type (e.g. .doc, .pptx, a zip) — offer the download.
+        // Binary / unpreviewable type (e.g. .doc, .pptx, a zip): offer the download.
         body = (
           <div className="dojo3-canvas__state">
             Preview isn’t available for {ext || 'this file type'}. Use the download button above to open it.

@@ -1,20 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE ACCESS PANEL'S CONTROLS (UX-ACCESS A6) — the shapes, once.
-//
-// A5 grew four of these inside `AccessPanel.tsx`; A6 adds a collapsible ROW and
-// a consistent ITEM and needs both from two components (the panel and the folded
-// manifest half), so they live here instead of being written twice. Nothing in
-// this file knows what a grant is — it renders and calls back.
-//
-// ── THE OWNER'S TWO STANDING NOTES, BUILT IN ──
-//   1. "Interactive things look interactive." Every control is drawn at rest —
-//      the switch has a track, the checkbox has a box, the row header is a real
-//      <button> with a chevron — never only on hover.
-//   2. "Consistent row heights/spacing." One <Item> is one line of question and
-//      one line of help with its control on the right, at one height, whatever
-//      the control is. Anything a control reveals goes in `children`, indented
-//      under the same left rule the panel already uses for a switch's children.
-// ════════════════════════════════════════════════════════════════════════════
+// The access panel's controls, once each: the panel and the folded manifest half both draw
+// them, and nothing here knows what a grant is, it renders and calls back. Every control is
+// drawn at rest (a switch has a track, a checkbox a box, a row head a real <button> + chevron),
+// never only on hover, and one <Item> is one line of question, help and control at one height.
 
 import { CollapseChevron } from './CollapseToggle';
 
@@ -75,10 +62,8 @@ export const Choice = <T extends string>({ value, options, onChange, label }: {
   </div>
 );
 
-/** One line of the panel: a plain name, one line of help, a control on the
- *  right, and whatever the control reveals beneath it. `risk` is the single
- *  warning tint every consequential grant wears — running programs, the key
- *  store, deleting files, driving Mac apps, handing out permissions. */
+/** One line of the panel: a name, one line of help, a control on the right, and what the
+ *  control reveals beneath it. `risk` is the single warning tint every consequential grant wears. */
 export const Item = ({ name, help, control, risk, children }: {
   name: string; help?: string; control: React.ReactNode; risk?: boolean; children?: React.ReactNode;
 }) => (

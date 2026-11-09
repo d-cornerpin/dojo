@@ -74,12 +74,11 @@ const ColorPicker = ({ current, onPick, onClose }: {
 // Status pill: green "Ready" by default; override colour inline for the rest.
 const statusPresentation: Record<string, { label: string; color?: string }> = {
   idle: { label: 'Ready' },
-  paused: { label: 'Paused', color: '#a4762e' },   // t148: never "Ready" for an agent the platform parked
+  paused: { label: 'Paused', color: '#a4762e' },   // never "Ready" for an agent the platform parked
   working: { label: 'Working', color: '#a4762e' },
   error: { label: 'Error', color: '#9c4434' },
-  // Reachable from PHASE-0 T12 on (migration 126 + the un-swallowed alert).
-  // Without this row the fallback below rendered a rate-limited agent as
-  // "Ready", which is the opposite of what the alert exists to say.
+  // Without this row the fallback below calls a rate-limited agent "Ready",
+  // the opposite of what the rate-limit alert exists to say.
   rate_limited: { label: 'Rate limited', color: '#9c4434' },
   terminated: { label: 'Ended', color: 'var(--dojo3-ink-4)' },
 };
@@ -118,7 +117,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   // One hue for both the avatar box and the orb. Primary is always champagne.
   const hue = isThisPrimary ? CHAMPAGNE_HUE : (localHue ?? resolveAgentHue(agent, false));
   const status = statusPresentation[agent.status] ?? statusPresentation.idle;
-  // t148: a parked agent's true cause (the server's owner-facing words) rides the pill as its tooltip.
+  // A parked agent's true cause (the server's owner-facing words) rides the pill as its tooltip.
   const parkedCause = agent.status === 'paused' ? agent.parkedCause ?? undefined : undefined;
 
   const pickColor = async (h: number) => {
@@ -138,7 +137,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   const isAuto = agent.modelId === 'auto';
 
   const isWorking = agent.status === 'working';
-  // A-5b: the Stop button is offered by the RULE, not by `isWorking` — a background media job
+  // The Stop button is offered by the RULE, not by `isWorking`: a background media job
   // outlives its turn, so an agent reading `idle` can still have work the button would cut.
   const stop = stopAffordance(agent);
   const isTerminated = agent.status === 'terminated';

@@ -39,9 +39,9 @@ interface Dojo3ComposerProps {
   agentId: string;
   onSend: (content: string, attachments?: AttachmentInfo[]) => void;
   isWorking?: boolean;
-  /** A-5b / RULING #9 — something is stoppable though no turn runs. Separate from `isWorking`
-   *  on purpose: this adds a stop BESIDE send instead of taking its seat, because the agent is
-   *  free and must stay messageable. The rule is `lib/stop-affordance.ts`. */
+  /** Something is stoppable though no turn runs. Separate from `isWorking` on
+   *  purpose: this adds a stop BESIDE send instead of taking its seat, because
+   *  the agent is free and must stay messageable. The rule is `lib/stop-affordance.ts`. */
   canStop?: boolean;
   onStop?: () => void;
   placeholder?: string;
@@ -64,7 +64,7 @@ export function Dojo3Composer({
   placeholder,
   refused,
 }: Dojo3ComposerProps) {
-  // Unsent work stays with the agent it was written for (GitHub #14).
+  // Unsent work stays with the agent it was written for.
   const [input, setInput] = useAgentState(agentId, '', true);
   const [focused, setFocused] = useState(false);
   const [pendingFiles, setPendingFiles] = useAgentState<PendingFile[]>(agentId, [], true);
@@ -203,8 +203,7 @@ export function Dojo3Composer({
   /* The orb's state follows the voice session (listening while you speak,
      speaking while the agent talks, thinking while it processes); with no voice
      session it falls back to the agent's working flag. The composer owns this
-     because it's the one place that has both signals (Dojo3Stage's old
-     isWorking->state effect was moved here). */
+     because it's the one place that has both signals. */
   useEffect(() => {
     if (!voice.enabled) {
       dojoOrb.setState(isWorking ? 'thinking' : 'idle');
@@ -249,8 +248,8 @@ export function Dojo3Composer({
 
   /* ---- file handling ---- */
   /* Who gets in is decided BEFORE the updater, not inside it. React may run an
-     updater twice (StrictMode), and this one used to call `URL.createObjectURL`
-     in there: every extra run minted a preview address nothing would revoke.
+     updater twice (StrictMode), so nothing is minted (`createObjectURL`) in
+     there: an extra run would leak a preview address nothing would revoke.
      The files already staged come from `pendingRef` for the same reason. */
   const addFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
@@ -262,7 +261,7 @@ export function Dojo3Composer({
       const file = fileArray[i];
       if (file.size > MAX_FILE_SIZE) { overSize.push(file.name); continue; }
       if (totalSize + file.size > MAX_TOTAL_SIZE) {
-        // This file and everything after it are not attached — the budget is
+        // This file and everything after it are not attached: the budget is
         // full. Name them all instead of letting them vanish.
         overTotal.push(...fileArray.slice(i).map((f) => f.name));
         break;
@@ -276,11 +275,11 @@ export function Dojo3Composer({
       pendingRef.current = [...pendingRef.current, ...accepted]; // a second call before the next render must see these
       setPendingFiles((prev) => [...prev, ...accepted]);
     }
-    // Files are staged — return to the text composer so the user can type a
+    // Files are staged: return to the text composer so the user can type a
     // message; the attachments show as tiny thumbnails next to the input.
     setMode('text');
-    // A refusal nobody hears is a file that vanished (task 970): name what
-    // did not make it and the limit that stopped it.
+    // A refusal nobody hears is a file that vanished: name what did not make
+    // it and the limit that stopped it.
     if (overSize.length > 0) {
       toastWarning(overSize.length === 1
         ? `${overSize[0]} is over the 1 GB limit`
@@ -505,8 +504,8 @@ export function Dojo3Composer({
     }
   };
 
-  // A-5b — ONE ANSWER, from the rule the server suite drives. "Never both buttons at once" is
-  // an invariant; two independent `&&`s in the JSX below are one edit from breaking it.
+  // ONE ANSWER, from the rule the server suite drives. "Never both buttons at
+  // once" is an invariant; two independent `&&`s in the JSX below are one edit from breaking it.
   const stopControl = composerStopControl({
     isWorking: !!isWorking, canStop: !!canStop, hasHandler: !!onStop,
   });
@@ -529,7 +528,7 @@ export function Dojo3Composer({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {/* BODY: the message area — cross-fading text / file (drop-zone) layers */}
+        {/* BODY: the message area, cross-fading text / file (drop-zone) layers */}
         <div className="composer__body">
           <div className="composer__layer composer__layer--text">
             {restored.node}
@@ -638,7 +637,7 @@ export function Dojo3Composer({
         {/* BAR: presence (left) + attach / voice / send-or-stop (right) */}
         <div className="composer__bar">
           {/* Presence (in-dojo / away) only matters when the iMessage bridge is
-              enabled — that's the channel that reaches the user while away. Hide
+              enabled: that's the channel that reaches the user while away. Hide
               it entirely otherwise. */}
           {presence?.imessageConfigured && (
           <button
@@ -655,7 +654,7 @@ export function Dojo3Composer({
           )}
 
           <div className="composer__actions">
-            {/* ATTACH — toggles the in-box drop zone */}
+            {/* ATTACH: toggles the in-box drop zone */}
             <button
               type="button"
               className="composer__btn"
@@ -683,7 +682,7 @@ export function Dojo3Composer({
               <svg className="ic ic--mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6a3 3 0 0 1 6 0v4" /><path d="M15 11.6V12a3 3 0 0 1-5.1 2.1" /><path d="M5 10v1a7 7 0 0 0 11.3 5.5" /><path d="M18.6 13.4c.26-.75.4-1.56.4-2.4v-1" /><path d="M12 18v3" /><path d="M3 3l18 18" /></svg>
             </button>
 
-            {/* A-5b — STOP FOR WORK THAT OUTLIVED THE TURN. Beside send, not instead of it:
+            {/* STOP FOR WORK THAT OUTLIVED THE TURN. Beside send, not instead of it:
                 the agent is idle and messageable, and the render can still be cut. */}
             {showBackgroundStop && (
               <button
@@ -698,7 +697,7 @@ export function Dojo3Composer({
               </button>
             )}
 
-            {/* SEND — becomes STOP while the agent is working */}
+            {/* SEND: becomes STOP while the agent is working */}
             {showStop ? (
               <button
                 type="button"
@@ -727,7 +726,7 @@ export function Dojo3Composer({
         </div>
       </div>
 
-      {/* VOICE CAPSULE — portaled into the stage's main column so it docks
+      {/* VOICE CAPSULE: portaled into the stage's main column so it docks
           under the orb and follows the leftward shift when the dock opens */}
       {stageEl &&
         createPortal(

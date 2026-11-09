@@ -12,32 +12,19 @@ const ACTION_BTN_CLASS: Record<ToastAction['variant'], string> = {
     'px-3 py-1 text-xs rounded bg-ui/[0.08] text-ui/55 hover:text-ui/70 border border-ui/[0.10] hover:border-ui/[0.15] transition-colors disabled:opacity-50',
 };
 
-/*
- * The dojo3 notification surface: tiered glass cards that drop in UNDER the orb
- * and drive the orb's reaction, replacing the off-brand corner toasts inside
- * the stage. Consumes the shared toast queue (useToast), so every existing
- * toast.info/warning/error and chat:error still flows through here.
- *
- * Tiers (the toast system's own three levels):
- *   info / success -> teal  -> orb gives a quick pulse, card auto-fades
- *   warning        -> amber -> orb startles ("!" jolt), card auto-fades
- *   error          -> coral -> orb startles AND holds a red alert tint; the
- *                              card is pinned until dismissed OR the engine
- *                              signals recovery (AGENT_RECOVERED).
- *
- * A toast can also carry a headline + Approve/Decline buttons (a "decision toast",
- * flagged alertOrb): a generic capability any feature may post via useToast. Here
- * we render the buttons and let the alertOrb-based tint hold the orb red until the
- * last one is acted on. (The Healer's consent asks no longer use this lane; they
- * live in the Healer section of Vitals.)
- */
+// The dojo3 notification surface: tiered glass cards under the orb that drive
+// its reaction, fed by the shared toast queue (useToast) like every other
+// toast. Tiers: info/success -> teal + pulse; warning -> amber + startle;
+// error -> coral, tint held and card pinned until dismissed or AGENT_RECOVERED.
+// A decision toast adds Approve/Decline (flagged alertOrb); its tint holds the
+// orb red until the last one is acted on.
 
 export function Dojo3Notifications() {
   const { toasts, removeToast } = useToast();
   const { subscribe } = useWebSocket();
   const dojoOrb = useDojoOrb();
 
-  // Per-toast in-flight guard for decision-toast buttons (D-B step 4): stops a
+  // Per-toast in-flight guard for decision-toast buttons: stops a
   // double-fire and shows a disabled state while the approve/deny request runs.
   const [busy, setBusy] = useState<Record<number, boolean>>({});
   const runAction = useCallback(async (toastId: number, action: ToastAction) => {
@@ -69,18 +56,14 @@ export function Dojo3Notifications() {
     for (const id of [...seen.current]) if (!present.has(id)) seen.current.delete(id);
   }, [toasts, dojoOrb]);
 
-  // Held red alert tint while any blocking (error) toast OR any pending
-  // decision toast (alertOrb) is active. `.some` naturally handles stacking: the
-  // tint stays until none remain, and clears the instant the last one is acted
-  // on or dismissed.
+  // Held red tint while any error or pending decision (alertOrb) is active;
+  // `.some` keeps it until none remain and clears the moment the last clears.
   const needsAlert = toasts.some((t) => t.level === 'error' || t.alertOrb);
   useEffect(() => {
     dojoOrb.setAlert(needsAlert ? 1 : 0);
   }, [needsAlert, dojoOrb]);
 
-  // The orb shows the notification icon INSIDE the glass (like the task glyphs):
-  // exclamation for warnings/errors, a check for info/success, reflecting the
-  // most important active notification.
+  // The orb shows the note glyph inside the glass, from the most important active toast.
   useEffect(() => {
     const glyph = toasts.some((t) => t.level === 'error' || t.level === 'warning')
       ? 'alert'
@@ -93,10 +76,8 @@ export function Dojo3Notifications() {
   // Release the tint + glyph if this surface unmounts (e.g. to a full page).
   useEffect(() => () => { dojoOrb.setAlert(0); dojoOrb.setNoteGlyph(null); }, [dojoOrb]);
 
-  // Engine recovery clears blocking errors automatically (the other half of
-  // "both": dismiss OR recovery). The server emits chat:error with code
-  // AGENT_RECOVERED / info severity when an agent recovers. A sticky card (an
-  // owner alert, a decision) is not an agent's error and waits for its X.
+  // Engine recovery clears non-sticky errors (dismiss OR recovery): the server
+  // emits chat:error AGENT_RECOVERED / info. Sticky cards wait for their X.
   const toastsRef = useRef(toasts);
   toastsRef.current = toasts;
   useEffect(() => {
@@ -122,10 +103,8 @@ export function Dojo3Notifications() {
             key={t.id}
             className={`dojo3-note dojo3-note--${tier}`}
             role={t.level === 'error' ? 'alert' : 'status'}
-            // A decision toast is a multi-line card (headline + body + buttons),
-            // so top-align the dot/x against the content column. The base
-            // .dojo3-note rule wins over a Tailwind items-start on specificity,
-            // so this one dynamic override goes inline.
+            // A decision toast is a multi-line card, so top-align the dot/x.
+            // The base .dojo3-note rule beats Tailwind items-start, so this goes inline.
             style={hasActions ? { alignItems: 'flex-start' } : undefined}
           >
             <span className="dojo3-note__dot" aria-hidden="true" style={hasActions ? { marginTop: '6px' } : undefined} />

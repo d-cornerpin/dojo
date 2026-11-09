@@ -102,11 +102,8 @@ export function Dojo3Stage({
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
     setResizing(true);
-    // Capture the pointer ON THE GRABBER so move/up keep firing even when the
-    // cursor passes over the dock's iframe (an iframe swallows page-level
-    // pointer events, which previously lost the pointerup and left the drag
-    // stuck "following" the mouse after release). Listeners live on the
-    // grabber element, not window, so capture routes every event to them.
+    // Capture the pointer ON THE GRABBER: the dock's iframe swallows page-level
+    // pointer events, so capture keeps move/up routed to the grabber's listeners.
     const el = e.currentTarget as HTMLElement;
     const pointerId = e.pointerId;
     try { el.setPointerCapture(pointerId); } catch { /* not fatal */ }
@@ -161,14 +158,14 @@ export function Dojo3Stage({
   const { isAway } = usePresence();
 
   /* Orb STATE (idle/thinking/listening/speaking) is owned by the composer,
-     which has both the agent's working flag AND the live voice state — so a
+     which has both the agent's working flag AND the live voice state, so a
      voice session can drive listening/speaking without fighting this effect.
      The stage still owns the presence emotion (sleepy when "out"). */
   useEffect(() => {
     dojoOrb.setEmotion(isAway ? 'sleepy' : null);
   }, [isAway, dojoOrb]);
 
-  /* Per-agent hue: the orb takes on the active agent's colour — the same hue as
+  /* Per-agent hue: the orb takes on the active agent's colour, the same hue as
      that agent's avatar box. The primary keeps the dojo's signature champagne
      (null = no shift); a selected sub-agent uses its chosen colour, falling back
      to a stable derived hue if none was picked. */
@@ -191,21 +188,17 @@ export function Dojo3Stage({
     return () => window.removeEventListener('keydown', onKey);
   }, [panel, fanOpen, navigate]);
 
-  /* Click-away closes the front layer (throughout the dojo): an open fan
-     folds back into the orb unless you click a lens or the orb; an open
-     panel closes only when you click OUTSIDE it (the blurred chat showing
-     around its edges) or on the orb/composer/close — a touch anywhere inside
-     the panel keeps it open, so scrolling by pressing on empty space / the gaps
-     between cards never dismisses it. */
+  /* Click-away closes the front layer (throughout the dojo): an open fan folds
+     back into the orb unless you click a lens or the orb; an open panel closes
+     only on a click OUTSIDE it (the blurred chat at its edges) or on the
+     orb/composer/close. A touch inside the panel, gaps included, keeps it open. */
   useEffect(() => {
     if (!fanOpen && !panel) return;
     const onDown = (e: PointerEvent) => {
       const t = e.target as HTMLElement;
-      // A modal / overlay (Recruit Agent, New Contact, confirms, image
-      // lightbox, ...) is the FRONT layer and owns its own dismissal. They
-      // render inside the panel DOM, so without this guard a tap on a modal's
-      // padding / labels / gaps (anything not in KEEP) matched .dojo3-panel and
-      // closed the whole panel back to the chat. Universal across every panel:
+      // A modal / overlay (Recruit Agent, New Contact, confirms, image lightbox)
+      // is the front layer and owns its own dismissal, and it renders inside the
+      // panel DOM, so it must never read as a click outside the panel:
       //   - any glass-modal* present anywhere -> suppress entirely (covers the
       //     modal box AND a tap on its backdrop), and
       //   - a tap landing inside ANY full-screen fixed overlay (`.fixed.inset-0`,
@@ -269,20 +262,15 @@ export function Dojo3Stage({
 
   const orbState = isWorking ? 'thinking' : isAway ? 'sleepy' : 'idle';
 
-  // Wordmark: always the ACTIVE agent's name (the primary's own name by
-  // default; falls back to "DOJO" only until the name loads). On the primary
-  // it toggles presence; while another agent is active, clicking it returns
-  // to the primary (dojo master).
-  // While building/editing a technique the stage is the trainer conversation:
-  // the wordmark shows the trainer and returns to the Dojo (exits the builder)
-  // on click — mirroring the "Back to <primary>" affordance for agents.
+  // Wordmark: the ACTIVE agent's name (the primary's own name by default;
+  // "DOJO" only until the name loads). In a technique session it shows the
+  // trainer; clicking it exits the builder, like "Back to <primary>" for agents.
   const inTechSession = techSession.active;
   const wordmarkText = inTechSession
     ? (techSession.trainerName || 'Trainer')
     : (activeAgent.agentName || 'DOJO');
   const wordmarkIsAgent = inTechSession || !isPrimary;
-  /* The primary wordmark is now just the name (presence moved to the composer);
-     only a sub-agent / trainer wordmark is an action ("Back to the Dojo"). */
+  /* Only a sub-agent / trainer wordmark is an action ("Back to the Dojo"). */
   const wordmarkStateLabel = wordmarkIsAgent
     ? `Back to ${activeAgent.primaryName || 'the Dojo'}`
     : '';

@@ -46,8 +46,7 @@ const fmtBytes = (n: number | null | undefined): string => {
 };
 
 export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onComplete, onClose }: Props) => {
-  // ONE mount; the public /api/setup/migration alias is deleted (PHASE-0 T9) and the
-  // wizard runs authenticated. The leading `/api` belongs to `lib/api`'s door now.
+  // ONE mount, authenticated. The leading `/api` belongs to `lib/api`'s door.
   const apiBase = '/migration';
   const { subscribe } = useWebSocket();
 
@@ -82,7 +81,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const [markedDone, setMarkedDone] = useState<Set<string>>(new Set());
   const [busyCta, setBusyCta] = useState<string | null>(null);
 
-  // Ollama model downloads — mirror OOBE: one at a time, poll byte progress,
+  // Ollama model downloads, mirroring OOBE: one at a time, poll byte progress,
   // surface the real error, retry per model.
   const [pullingModel, setPullingModel] = useState<string | null>(null);
   const [modelProgress, setModelProgress] = useState<{ completed: number; total: number; status: string } | null>(null);
@@ -263,7 +262,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     setModelErr((e) => { const n = { ...e }; delete n[model]; return n; });
     setPullingModel(model);
     setModelProgress({ completed: 0, total: 0, status: 'starting' });
-    // brew install doesn't start the daemon — make sure it's up before the first pull.
+    // brew install doesn't start the daemon: make sure it's up before the first pull.
     if (!daemonStartedRef.current) {
       daemonStartedRef.current = true;
       await request('/setup/deps/install/ollama-start', { method: 'POST' }); // best effort
@@ -281,7 +280,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const pullAllModels = useCallback(async (models: string[]) => {
     for (const m of models) {
       if (modelDone.has(m)) continue;
-      await pullModel(m); // sequential — server tracks one pull at a time
+      await pullModel(m); // sequential: server tracks one pull at a time
     }
   }, [pullModel, modelDone]);
 
@@ -290,7 +289,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     const cta = chk.cta;
     if (!cta) return null;
     if (cta.type === 'link') {
-      // OOBE isn't authed yet, so settings links would bounce to login — show the
+      // OOBE isn't authed yet, so settings links would bounce to login: show the
       // path as guidance instead; in the authed dashboard render a real link.
       return isOobe
         ? <span className="text-xs text-ui/40">After entering the dojo: {cta.label}</span>
@@ -319,13 +318,13 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const scanPass = !!preflight && preflight.integrityOk && preflight.passwordOk && preflight.diskOk
     && (!tunnelAckNeeded || ackTunnel);
   // Email accounts get their own always-visible section (✓ connected / ⚠ reconnect)
-  // so they never hide in the collapsed "migrated automatically" list — pull them
+  // so they never hide in the collapsed "migrated automatically" list: pull them
   // out of every other bucket by id-prefix.
   const isEmailAccount = (id: string) => id.startsWith('google-account-') || id.startsWith('microsoft-account-');
   const emailAccounts = checks.filter((c) => isEmailAccount(c.id));
   const actionCards = checks.filter((c) => c.category === 'action' && c.status !== 'ok' && !markedDone.has(c.id) && !isEmailAccount(c.id));
   const techniqueCards = checks.filter((c) => c.category === 'technique' && !markedDone.has(c.id));
-  // Ollama models get their own section with download progress + retry — pull
+  // Ollama models get their own section with download progress + retry: pull
   // them out of the generic automated list.
   const ollamaModels = checks.filter((c) => c.id.startsWith('ollama-model-'));
   const automated = checks.filter((c) => !c.id.startsWith('ollama-model-') && !isEmailAccount(c.id) && (c.category === 'automated' || (!c.category && c.status === 'ok')));

@@ -12,8 +12,7 @@ export const HealerVitals = () => {
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyNote, setDenyNote] = useState('');
   const [resolving, setResolving] = useState<string | null>(null);
-  // A refusal or offline answer to approve/deny is shown in place — this card
-  // has no toast hook, and silence left the owner guessing why nothing moved.
+  // A refusal or offline answer to approve/deny shows in place: this card has no toast hook.
   const [answerError, setAnswerError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -30,11 +29,8 @@ export const HealerVitals = () => {
     void load();
   }, [load]);
 
-  // FA-DB4: a freshly-filed Healer proposal (or one just marked applied) is
-  // broadcast as healer:proposal, but the card only loaded on mount, so a new
-  // consent decision didn't appear until reload. Re-run the full load() on the
-  // event: it is rare, so an authoritative refetch is cheap and avoids merging
-  // partial payloads (mirrors ActiveJobsIndicator's refetch-on-event idiom).
+  // A filed or just-resolved Healer proposal is broadcast as healer:proposal. Re-run the
+  // full load() on the event: rare, so an authoritative refetch is cheap and merges nothing.
   useEffect(() => {
     const unsub = subscribe('healer:proposal', (event) => {
       if (event.type !== 'healer:proposal') return;
@@ -77,7 +73,7 @@ export const HealerVitals = () => {
   };
 
   const pendingCount = proposals.filter(p => p.status === 'pending').length;
-  // v2.3.19 — show the last 50 actions in a scrollable timeline (was 10).
+  // Show the last 50 actions in a scrollable timeline.
   const recentActions = actions.slice(0, 50);
   const pendingProposals = proposals.filter(p => p.status === 'pending');
   const resolvedProposals = proposals.filter(p => p.status !== 'pending').slice(0, 5);
@@ -123,11 +119,9 @@ export const HealerVitals = () => {
                         <span className="text-sm font-medium text-ui/90">{p.title}</span>
                       </div>
                       <p className="text-xs text-ui/55 mb-1">{p.description}</p>
-                      {/* D-B v2: a destructive-action consent shows plain language
-                          above; the raw command/path is tucked behind a details
-                          expander so a non-technical owner is never shown a raw
-                          path as the question. Other proposals keep the inline
-                          suggested-fix line. */}
+                      {/* A destructive-action consent shows plain language above; the raw
+                          command/path sits behind a details expander so a non-technical
+                          owner is never shown a raw path as the question. */}
                       {p.category === 'destructive_action' ? (
                         <details className="mt-0.5">
                           <summary className="text-[11px] text-ui/40 cursor-pointer hover:text-ui/60 select-none">
@@ -214,12 +208,8 @@ export const HealerVitals = () => {
             </div>
           )}
 
-          {/* Resolved proposals — three states post v2.3.19:
-              approved + applied: Healer carried it out (green, "Applied")
-              approved + not yet applied: user said yes, Healer hasn't done it
-                                          yet (amber, "Approved — waiting")
-              denied: user said no (coral, "Denied")
-          */}
+          {/* Resolved proposals, three states: approved + applied is green "Applied";
+              approved + not yet applied is amber "Approved - waiting"; denied is coral "Denied". */}
           {resolvedProposals.length > 0 && (
             <div className="space-y-1">
               <p className="text-[10px] text-ui/25 uppercase tracking-wider">Previous Suggestions</p>
@@ -256,10 +246,8 @@ export const HealerVitals = () => {
             </div>
           )}
 
-          {/* Recent Healer action timeline (last 50, scrollable).
-              v2.3.19 — promoted from "last 10" to a proper scrollable
-              activity log so the user can see what the Healer's been
-              doing over time, not just the most recent handful. */}
+          {/* Recent Healer action timeline: a scrollable log so the owner can see what the
+              Healer has been doing over time, not just the most recent handful. */}
           {recentActions.length > 0 && (
             <div className="space-y-1">
               <p className="text-[10px] text-ui/25 uppercase tracking-wider">

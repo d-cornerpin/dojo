@@ -1,8 +1,6 @@
 import { useState } from 'react';
 
-/** The bare chevron glyph — points up when expanded (collapsed=false), down
- *  when collapsed. Use this inside an existing clickable header; use
- *  CollapseToggle when you need the standalone button. */
+/** The bare chevron glyph: up when expanded, down when collapsed. Pair it with your own clickable header. */
 export function CollapseChevron({ collapsed, className = '' }: { collapsed: boolean; className?: string }) {
   return (
     <svg
@@ -15,8 +13,7 @@ export function CollapseChevron({ collapsed, className = '' }: { collapsed: bool
   );
 }
 
-/** A small chevron button for collapsing/expanding a settings panel. Points up
- *  when expanded (click to collapse), down when collapsed (click to expand). */
+/** A small chevron button for collapsing or expanding a settings panel. */
 export function CollapseToggle({ collapsed, onClick, label }: { collapsed: boolean; onClick: () => void; label: string }) {
   return (
     <button
@@ -32,18 +29,9 @@ export function CollapseToggle({ collapsed, onClick, label }: { collapsed: boole
   );
 }
 
-/**
- * Per-key collapsed state for a group of panels, persisted to localStorage so a
- * tab stays tidy across reloads.
- *
- * `defaultCollapsed` is what a key answers before anybody has touched it. It
- * lives in the hook rather than at the call site (where the three channel panels
- * each wrote their own `?? true`) because `toggle` has to agree with it: flipping
- * an untouched key has to flip it away from the DEFAULT, and a call site cannot
- * teach that to a `!prev[k]`. `isCollapsed` is therefore the only way to ask.
- *
- * UX-ACCESS A5 added the parameter for the Access panel, which opens collapsed.
- */
+// Per-key collapsed state for a group of panels, persisted to localStorage.
+// `defaultCollapsed` lives here because `toggle` must flip an untouched key
+// away from the DEFAULT, which `!prev[k]` cannot do: ask only via `isCollapsed`.
 export function usePanelCollapse(storageKey: string, defaultCollapsed = false) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
