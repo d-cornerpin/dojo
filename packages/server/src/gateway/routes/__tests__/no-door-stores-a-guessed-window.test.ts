@@ -74,8 +74,7 @@ const outside = {
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
-  fs.mkdirSync(path.join(FAKE_DOJO, 'logs'), { recursive: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;

@@ -287,7 +287,7 @@ const stopOnFirstChunk = (c: AbortController): ((chunk: string) => void) => {
 };
 
 beforeEach(() => {
-  fs.rmSync(FAKE_HOME, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_HOME, '.dojo', 'secrets.yaml'), { force: true });
   clearSecretsCache();
   clearClientCache();
   const db = new Database(':memory:');

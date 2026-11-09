@@ -107,8 +107,11 @@ export function wordsOf(key: string): string {
 
 /** Tell the owner `words` under `key`; true on the first telling (of the key, or of any key under `family`), when a
  *  caller that also texts him texts. The same words change nothing; new words replace the card live and lift a dismissal. */
+/** The owner's standing rule, held where every told sentence is stored: no em-dash reaches him. */
+const noEmDash = (sentence: string): string => sentence.replace(/\s*\u2014\s*/g, ', ');
+
 export function tellOwner(key: string, sentence: string, family?: string): boolean {
-  const words = sentence.replace(/\s*\u2014\s*/g, ', ');   // the owner's standing rule: no em-dash reaches him
+  const words = noEmDash(sentence);
   try {
     const db = getDb();
     const first = !db.prepare(`SELECT 1 FROM healer_state WHERE scope = ? AND (key = ? OR (? IS NOT NULL AND key LIKE ? || '%'))`).get(TOLD, key, family ?? null, family ?? null);
@@ -137,7 +140,7 @@ export function tellLimitReachedWithoutCard(key: string, windowMs: number): void
     ageOut(key, windowMs);
     if (ownerToldOf(key)) return;
     const db = getDb();
-    db.prepare(`INSERT OR IGNORE INTO healer_state (scope, key, at_ms, value) VALUES (?, ?, ?, ?)`).run(TOLD, key, Date.now(), wordsOf(key));
+    db.prepare(`INSERT OR IGNORE INTO healer_state (scope, key, at_ms, value) VALUES (?, ?, ?, ?)`).run(TOLD, key, Date.now(), noEmDash(wordsOf(key)));
     db.prepare('INSERT OR IGNORE INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)').run(DISMISSED, key, Date.now());
   } catch { /* best-effort: the worst case is one more true telling */ }
 }

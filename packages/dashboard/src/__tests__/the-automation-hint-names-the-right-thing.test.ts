@@ -12,14 +12,10 @@
 // (`packages/server/.../full-disk-access-names-the-right-thing.test.ts`.)
 //
 // ── THIS FILE IS THAT CLAUSE, ON THE DASHBOARD SIDE ──
-// Same shape as the FDA one: the words are pinned, the two surfaces are held to ONE copy,
-// and the PREMISES the copy depends on are pinned against the code that creates them — so
-// if the sender or the permission route changes, this reds instead of the copy quietly
-// going stale. The one deliberate difference is the verify clause, which asserts the
-// copy does NOT borrow its FDA sibling's confidence; see below.
+// The words of the shared copy are pinned, including the verify clause, which does NOT borrow its FDA sibling's
+// confidence; see below.
 //
-// It lives in `packages/dashboard` because both surfaces are dashboard surfaces. The files
-// it READS from `packages/server` and `deploy/` are read as evidence, never written.
+// It drives the shared copy module (`lib/automation-permission`) that both surfaces render.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';

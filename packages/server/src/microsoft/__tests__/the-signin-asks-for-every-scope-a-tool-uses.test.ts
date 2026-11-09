@@ -1,5 +1,5 @@
 // The Microsoft sign-in asks for every scope a registered tool's Graph call needs (the Teams incident: the Teams tools
-// shipped calling endpoints whose permissions the sign-in never requested). Every registered read and write tool runs
+// shipped calling endpoints whose permissions the sign-in never requested). Every registered read, write and Office tool runs
 // against a recording fetch; each Graph endpoint it calls maps to its scope through the table below, which cites the
 // permission Microsoft's Graph reference names, and the scopes the sign-in sends must hold them all.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -17,6 +17,7 @@ import { insertMicrosoftAccount } from '../accounts.js';
 import { getValidAccessTokenForAccount } from '../auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../tools-read.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../tools-write.js';
+import { officeToolDefinitions, executeOfficeTool } from '../tools-office.js';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0/';
 type Call = { method: string; shape: string };
@@ -73,10 +74,12 @@ describe('the Microsoft sign-in asks for every scope a tool uses', () => {
     for (const kind of ['agent', 'user'] as const) {
       insertMicrosoftAccount({ kind, email: `${kind}@example.com`, connected: true, accessToken: 'at', refreshToken: 'rt', tokenExpiresAt: Date.now() + 3_600_000, sendEmail: true });
     }
-    for (const [defs, run] of [[microsoftReadToolDefinitions, executeMicrosoftReadTool], [microsoftWriteToolDefinitions, executeMicrosoftWriteTool]] as const) {
+    for (const [defs, run] of [[microsoftReadToolDefinitions, executeMicrosoftReadTool], [microsoftWriteToolDefinitions, executeMicrosoftWriteTool], [officeToolDefinitions, executeOfficeTool]] as const) {
+      const before = calls.length;
       for (const d of defs) {
         try { await run(d.name, argsFor(d.input_schema as Parameters<typeof argsFor>[0]), 'a-1', 'Helper'); } catch { /* a refusal is fine; its calls so far count */ }
       }
+      expect(calls.length, 'every tool table reaches Graph').toBeGreaterThan(before);
     }
     expect(calls.length).toBeGreaterThan(80);
     const unmapped = calls.filter((c) => !RULES.some((r) => r.test(c))).map((c) => `${c.method} ${c.shape}`);

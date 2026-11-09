@@ -152,7 +152,7 @@ const call = (): Promise<ModelCallResult> => callModel({
 });
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   clearClientCache();
   first.seen.length = 0;

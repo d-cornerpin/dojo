@@ -90,7 +90,7 @@ import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs
 const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t66b-edit-door', '.dojo');
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');

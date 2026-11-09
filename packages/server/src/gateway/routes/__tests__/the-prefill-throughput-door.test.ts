@@ -58,7 +58,7 @@ import { PREFILL_THROUGHPUT_MIN_TOK_PER_SEC, PREFILL_THROUGHPUT_MAX_TOK_PER_SEC 
 const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t81b-throughput-door', '.dojo');
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');

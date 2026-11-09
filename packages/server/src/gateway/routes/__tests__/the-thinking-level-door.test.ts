@@ -48,7 +48,7 @@ const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir())
 const db = (): Database.Database => mockDb.current!;
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');

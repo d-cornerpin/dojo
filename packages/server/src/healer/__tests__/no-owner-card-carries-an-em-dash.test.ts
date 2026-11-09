@@ -21,7 +21,8 @@ beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(mock
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('no owner card carries an em-dash', () => {
-  it('a sentence written with one reaches the card and the reload list without it', () => {
+  it('a sentence written with one reaches the card and the reload list without it, and telling it again pushes nothing', () => {
+    tellOwner('healer-broken', `The Healer stopped ${EM_DASH} open its page to look.`);
     tellOwner('healer-broken', `The Healer stopped ${EM_DASH} open its page to look.`);
     expect(frames.map((f) => f.error)).toEqual(['The Healer stopped, open its page to look.']);
     expect(servedOwnerNotices().map((n) => n.words)).toEqual(['The Healer stopped, open its page to look.']);

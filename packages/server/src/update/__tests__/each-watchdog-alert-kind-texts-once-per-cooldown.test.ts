@@ -1,5 +1,5 @@
-// The watchdog texts the owner only for its own set of alert kinds. The set is the `AlertKey` type: a key outside it
-// does not compile at `claimAlert`. This drives each key in the set once through the ledger.
+// Each watchdog alert kind claims one text, then waits out its cooldown. Which kinds exist is the `AlertKey` type's job:
+// a key outside it does not compile at `claimAlert`.
 import { describe, it, expect } from 'vitest';
 import { claimAlert, emptyState, type AlertKey } from '../../../../../watchdog/src/alert-ledger.js';
 
@@ -8,7 +8,7 @@ const KINDS: readonly AlertKey[] = [
   'memory_low', 'disk_low', 'db_integrity',
 ];
 
-describe('the watchdog texts the owner only for its alert kinds', () => {
+describe('each watchdog alert kind texts once per cooldown', () => {
   it('each kind in the set claims one text, then waits out its cooldown', () => {
     const state = emptyState();
     for (const kind of KINDS) {

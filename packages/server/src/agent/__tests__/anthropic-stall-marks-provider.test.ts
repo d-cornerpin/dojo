@@ -108,7 +108,7 @@ const call = (opts: { abortSignal?: AbortSignal } = {}): Promise<unknown> => cal
 }).catch((e: unknown) => e);
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   clearClientCache();
   const db = new Database(':memory:');

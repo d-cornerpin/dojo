@@ -167,7 +167,7 @@ const call = (signal?: AbortSignal, bestEffort = false): Promise<unknown> => cal
 const errorLines = (): LogLine[] => logLines.filter((l) => l.level === 'error');
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   clearClientCache();
   const db = new Database(':memory:');

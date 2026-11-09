@@ -68,7 +68,7 @@ import { STREAM_PATIENCE_MIN_MS, STREAM_PATIENCE_MAX_MS } from '../../../agent/s
 const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t64b-patience-door', '.dojo');
 
 beforeEach(() => {
-  fs.rmSync(FAKE_DOJO, { recursive: true, force: true });
+  fs.rmSync(path.join(FAKE_DOJO, 'secrets.yaml'), { force: true });
   clearSecretsCache();
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
