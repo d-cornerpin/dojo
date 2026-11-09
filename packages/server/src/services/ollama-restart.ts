@@ -8,7 +8,7 @@ import { getOllamaLock, getOllamaMaxConcurrent } from './ollama-lock.js';
 import { createLogger } from '../logger.js';
 import { childFailureText } from '../update/child-failure.js';
 import { type OllamaHost, TICK_MS, WAIT_MS } from './ollama-host.js';
-import { readConfig, readOllamaVersion, setConfig } from './ollama-version.js';
+import { noteUpkeep, readOllamaVersion, upkeepRecord } from './ollama-version.js';
 
 const logger = createLogger('ollama-restart');
 
@@ -57,8 +57,7 @@ export async function waitUntil(host: OllamaHost, done: () => boolean | Promise<
   }
 }
 
-/** How a start ended. Ollama's own CLI patience (`WAIT_MS`) is the POLL, not the verdict: a process still alive when it
- *  ends is a slow start, never a failure, and the next look judges it. Only a start whose process is gone is `dead`. */
+/** How a start ended: still alive after Ollama's own CLI patience is a slow start; only a start whose process is gone is `dead`. */
 export type Start = 'answering' | 'starting' | 'dead';
 export async function waitForStart(host: OllamaHost, baseUrl: string, alive: () => boolean | Promise<boolean>): Promise<Start> {
   if (await waitUntil(host, () => host.answers(baseUrl))) return 'answering';
@@ -66,8 +65,7 @@ export async function waitForStart(host: OllamaHost, baseUrl: string, alive: () 
 }
 const appAlive = (host: OllamaHost) => async (): Promise<boolean> => (await host.appPids()).length > 0;
 
-/** The Ollama app: a TERM to its processes (no AppleScript, so no macOS Automation prompt), then opened the way
- *  Ollama's own CLI opens it. Throws when it did not quit or is gone after its relaunch. */
+/** The Ollama app: a TERM to its processes, then opened the way Ollama's CLI opens it. Throws when it did not quit or is gone. */
 export async function restartApp(host: OllamaHost, baseUrl: string, serverPid?: number): Promise<Start> {
   const pids = [...new Set([...await host.appPids(), ...(serverPid ? [serverPid] : [])])];
   for (const pid of pids) host.terminate(pid);
@@ -99,23 +97,17 @@ export async function restartBrewService(host: OllamaHost, baseUrl: string): Pro
 }
 
 /** A takeover that cannot end in a kind that lasts (an owner's job that starts Ollama again, another user's Ollama, the
- *  fallback serve below) is SETTLED for that listener, so no later look stops it again for the same situation. */
-const SETTLED = 'ollama_takeover_settled';
-export const settleTakeover = (l: { pid: number; path: string }): void => setConfig(SETTLED, JSON.stringify({ pid: l.pid, path: l.path }));
-export function settledListener(): { pid: number; path: string } | null {
-  try { return JSON.parse(readConfig(SETTLED) ?? 'null') as { pid: number; path: string } | null; } catch { return null; }
-}
-export function takeoverSettled(l: { pid: number; path: string }): boolean { const v = settledListener(); return !!v && v.pid === l.pid && v.path === l.path; }
+ *  fallback serve) is settled for that listener, so no later look stops it again. */
+export const settleTakeover = (l: { pid: number; path: string }): void => noteUpkeep({ settled: { pid: l.pid, path: l.path } });
+export function takeoverSettled(l: { pid: number; path: string }): boolean { const v = upkeepRecord().settled; return !!v && v.pid === l.pid && v.path === l.path; }
 
-/** Homebrew's service, or, when it cannot start (a stale plist's "Bootstrap failed", no formula), the program on disk
- *  run as a detached `ollama serve` with the limit in its own environment, recorded as settled. Ollama is never left down while
- *  a program that runs is on disk; the service is tried again at the next start that finds nothing serving. */
+/** Homebrew's service, or, when it cannot start, the program on disk as a detached `ollama serve` with the limit in its
+ *  own environment, recorded as settled: Ollama is never left down while a program that runs is on disk. */
 export async function startLasting(host: OllamaHost, baseUrl: string, residentCount: number, viaService = true): Promise<Start> {
   if (viaService) {
     const service = await restartBrewService(host, baseUrl).catch((): Start => 'dead');
     if (service !== 'dead') return service;
-    // Homebrew's job is unloaded first, so a job launchd did load (though `restart` failed) never crash-loops against the
-    // serve below for the port.
+    // Unloaded, so a job launchd loaded anyway never crash-loops against the serve for the port.
     await host.stopBrewService().catch(() => undefined);
   }
   if (!await host.cliRuns()) return 'dead';
@@ -128,25 +120,22 @@ export async function startLasting(host: OllamaHost, baseUrl: string, residentCo
   return started;
 }
 
-/** Resolves once nothing is in flight on the local Ollama (the lock's slots and its unslotted work), polled at
- *  Ollama's own tick, so a restart never cuts a running call or a download. */
+/** Resolves once nothing is in flight on the local Ollama (the lock's slots and its unslotted work). */
 export async function whenQuiet(providerId: string): Promise<void> {
-  while (getOllamaLock().localBusy(providerId) > 0) await new Promise((r) => setTimeout(r, TICK_MS));
+  for (let waited = 0; getOllamaLock().localBusy(providerId) > 0; waited += TICK_MS) {
+    if (waited === 5 * 60_000) logger.warn('An Ollama restart has waited five minutes for local work to end', { providerId });
+    await new Promise((r) => setTimeout(r, TICK_MS));
+  }
 }
 
-/** The limit restart of a kind that lasts, once nothing is busy: Homebrew's service (or the detached serve when it
- *  cannot start), else the app. Throws when Ollama did not come back. */
-export async function restartWithLimit(host: OllamaHost, local: { id: string; baseUrl: string }, residentCount: number): Promise<void> {
+/** The limit restart of `found`, a kind that lasts, once nothing is busy. Throws when Ollama did not come back. */
+export async function restartWithLimit(host: OllamaHost, local: { id: string; baseUrl: string }, found: { kind: OllamaKind; pid: number }, residentCount: number): Promise<void> {
   await whenQuiet(local.id);
-  const found = await classifyOllama(host, portOf(local.baseUrl));
-  await setLaunchdLimit(host, residentCount);
-  if (found?.kind !== 'brew-service') await restartApp(host, local.baseUrl, found?.kind === 'app' ? found.pid : undefined);
+  if (found.kind !== 'brew-service') await restartApp(host, local.baseUrl, found.pid);
   else if (await startLasting(host, local.baseUrl, residentCount) === 'dead') throw new Error('Ollama did not start again after the limit restart');
 }
 
-/** A serve nothing supervises: a TERM, then confirmed gone from the port. Resolves what holds the port afterwards: null when
- *  it is free, else a process a supervisor started again in its place. Throws when it does not stop: the signal is refused
- *  (another user's process, or the system's) and `alive` reads that as alive. */
+/** A serve nothing supervises: a TERM, confirmed gone; resolves a supervisor's respawn or null. Throws when the signal is refused. */
 export async function stopServe(host: OllamaHost, port: number, pid: number): Promise<{ pid: number; path: string } | null> {
   host.terminate(pid);
   if (!await waitUntil(host, async () => !host.alive(pid) && (await host.listener(port))?.pid !== pid)) {
@@ -155,17 +144,12 @@ export async function stopServe(host: OllamaHost, port: number, pid: number): Pr
   return host.listener(port);
 }
 
-/** The loaded-model limit in launchd's environment (the app and Homebrew's job read it when they start). Returns the
- *  value set, or null when launchd already holds one at least as high (an owner's higher value is never lowered). */
+/** The loaded-model limit in launchd's environment: the value set, or null when launchd already holds one at least as high. */
 export async function setLaunchdLimit(host: OllamaHost, residentCount: number): Promise<string | null> {
   const raised = raisedLoadedLimit(await host.getenv(LIMIT_VAR), desiredLoaded(residentCount));
   if (raised !== null) await host.setenv(LIMIT_VAR, raised);
   return raised;
 }
-
-/** The config rows a restart keeps: a start that has not answered yet, and a limit restart still owed. */
-export const STARTING = 'ollama_start_pending';
-export const LIMIT_OWED = 'ollama_limit_restart_owed';
 
 /** Nothing listens: start what is installed, as a kind that lasts (a plain binary on the PATH as the detached serve). */
 export async function startInstalled(host: OllamaHost, baseUrl: string, residentCount: number): Promise<Start> {
@@ -175,7 +159,7 @@ export async function startInstalled(host: OllamaHost, baseUrl: string, resident
     if (!app && !formula && !await host.cliRuns()) return 'dead';
     await setLaunchdLimit(host, residentCount);
     const started = app ? await startApp(host, baseUrl) : await startLasting(host, baseUrl, residentCount, formula);
-    if (started !== 'dead') setConfig(LIMIT_OWED, null);
+    if (started !== 'dead') noteUpkeep({ limitOwed: undefined });
     logger.info('Nothing served Ollama, so the Dojo started it', { kind: app ? 'app' : formula ? 'brew-service' : 'serve', started });
     return started;
   } catch (err) {
@@ -187,21 +171,20 @@ export async function startInstalled(host: OllamaHost, baseUrl: string, resident
 export const startingNow = async (host: OllamaHost): Promise<'app' | 'service' | 'serve'> =>
   ((await host.appPids()).length > 0 ? 'app' : (await host.brewServicePid()) !== null ? 'service' : 'serve');
 
-/** A start an earlier run left "starting" and still not answering never will (an app behind a prompt nobody sees, a hung
- *  serve): it is ended and Ollama started another way. 'dead' when nothing else would run. */
+/** A start an earlier run left "starting" that still does not answer is ended and Ollama started another way; 'dead' when nothing else would run. */
 export async function endStuckStart(host: OllamaHost, baseUrl: string, residentCount: number): Promise<'dead' | null> {
-  const was = readConfig(STARTING);
+  const was = upkeepRecord().starting;
   if (!was) return null;
-  setConfig(STARTING, null);
+  noteUpkeep({ starting: undefined });
   if (await host.answers(baseUrl)) return null;
   logger.warn('A start the Dojo made is still not answering at the next look; it is ended and Ollama is started another way', { was });
   if (was === 'app') await stopApp(host).catch(() => undefined);
   else if (was === 'service') await host.stopBrewService().catch(() => undefined);
-  else { const l = settledListener(); if (l) host.terminate(l.pid); }
+  else { const l = upkeepRecord().settled; if (l) host.terminate(l.pid); }
   const formula = was !== 'serve' && await host.hasBrew()
     && (await host.brewFormulaInstalled() || await host.brew(['install', 'ollama']).then(() => true, () => false));
   const started: Start = formula ? await startLasting(host, baseUrl, residentCount, was === 'app') : 'dead';
-  if (started === 'starting') setConfig(STARTING, await startingNow(host));
+  if (started === 'starting') noteUpkeep({ starting: await startingNow(host) });
   return started === 'dead' ? 'dead' : null;
 }
 

@@ -35,7 +35,7 @@ import { upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js
 import fs from 'node:fs';
 import path from 'node:path';
 import { overrideOllamaHost } from '../ollama-host.js';
-import { ollamaAtLeast } from '../ollama-version.js';
+import { noteUpkeep, ollamaAtLeast } from '../ollama-version.js';
 import { onTheModel } from '../../agent/decision-policy.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
@@ -224,12 +224,13 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     expect(getDecisionProvider()).toBeNull();
   });
 
-  it('(c) the model appears later: the next health answer enables its row and assigns it, with no install and no card', async () => {
+  it('(c) the model appears later: the next health answer after the retry window enables its row and assigns it, with no install and no card', async () => {
     v35Box(false);
     ollama.failPulls = true;
     await updateFirstBoot();
     expect(decisionRow()?.is_enabled).toBe(0);
     ollama.installed.add(DECISION);   // pulled by hand, or the registry was back
+    noteUpkeep({ triedAt: Date.now() - 11 * 60_000 });   // the health door's retry window has passed
     const pulls = ollama.pulls.length;
     const told = liveCards().length;   // the boot told the one missing-models card: the registry was unreachable
     upkeepWhenIncomplete([...ollama.installed], ollama.serving ? (db().prepare("SELECT base_url FROM providers WHERE id = 'ollama-local'").get() as { base_url: string }).base_url : '');

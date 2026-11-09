@@ -271,10 +271,16 @@ ALTER TABLE summary_checks DROP COLUMN dropped;
 --     have no reader. A dropped wait costs one more try, never a summary.
 DELETE FROM healer_state WHERE scope IN ('summary_writer_not_answering', 'summary_span_waiting', 'summary_unwritable', 'summary_span_refused');
 
--- 12. The Ollama upkeep raises one owner notice ('ollama') and stores one held version; the older notice keys and the
---     once-per-version stamp of the standard models have no reader.
+-- 12. The Ollama upkeep raises one owner notice ('ollama') and keeps one record ('ollama_upkeep'); the older notice keys,
+--     the once-per-version stamp and the three separate upkeep rows fold into it or have no reader.
 DELETE FROM healer_state WHERE scope IN ('owner_told', 'owner_dismissed') AND key IN ('standard-models', 'ollama-too-old', 'ollama-down', 'ollama-limit-failed');
 DELETE FROM config WHERE key = 'standard_models_version';
+INSERT INTO config (key, value) SELECT 'ollama_upkeep', json_patch('{}', json_object(
+  'starting', (SELECT value FROM config WHERE key = 'ollama_start_pending'),
+  'limitOwed', CASE WHEN EXISTS (SELECT 1 FROM config WHERE key = 'ollama_limit_restart_owed') THEN json('true') END,
+  'settled', json((SELECT value FROM config WHERE key = 'ollama_takeover_settled'))))
+WHERE EXISTS (SELECT 1 FROM config WHERE key IN ('ollama_start_pending', 'ollama_limit_restart_owed', 'ollama_takeover_settled'));
+DELETE FROM config WHERE key IN ('ollama_start_pending', 'ollama_limit_restart_owed', 'ollama_takeover_settled');
 
 -- 13. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
 --     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.

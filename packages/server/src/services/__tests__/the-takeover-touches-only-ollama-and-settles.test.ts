@@ -23,6 +23,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_DECISION_MODEL } from '../local-standard.js';
 import { standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
 import { overrideOllamaHost } from '../ollama-host.js';
+import { upkeepRecord } from '../ollama-version.js';
 import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, HEALER_BROKEN_WORDS } from '../../healer/owner-notices.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
@@ -194,7 +195,7 @@ describe('re-review LOW-1 / LOW-3: no contending supervisor, and no start that s
     expect(cards()).toEqual([]);
     await repair();
     expect(cards()).toEqual([OLLAMA_DOWN_WORDS]);
-    expect(db().prepare("SELECT 1 FROM config WHERE key = 'ollama_start_pending'").get()).toBeUndefined();
+    expect(upkeepRecord().starting).toBeUndefined();
   });
 });
 

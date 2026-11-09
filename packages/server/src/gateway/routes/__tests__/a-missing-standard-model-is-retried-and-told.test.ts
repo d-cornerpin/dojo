@@ -15,6 +15,9 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: (f: { type?: string }) => 
 import { runMigrations } from '../../../db/migrations.js';
 import { standardModelRowId } from '../../../services/local-standard.js';
 import { upkeep, upkeepSettled } from '../../../services/ollama-upkeep.js';
+import { noteUpkeep } from '../../../services/ollama-version.js';
+/** The health door's retry window after a failed attempt has passed. */
+const windowPassed = (): void => noteUpkeep({ triedAt: Date.now() - 11 * 60_000 });
 import { checkOllamaHealth } from '../../../services/ollama.js';
 import { healerOwnerCards, STANDARD_MODELS_MISSING_WORDS } from '../../../healer/owner-notices.js';
 // Load the lazily-imported decision window (its chain loads playwright, which writes globalThis.fetch
@@ -55,7 +58,7 @@ describe('a pair that failed to install', () => {
   it('is installed without a reboot once Ollama answers again (the health check is the signal)', async () => {
     await upkeep('boot');
     expect(standardModelRowId('writer')).toBeNull();
-    ollama.registryDown = false;
+    ollama.registryDown = false; windowPassed();
     expect(await checkOllamaHealth('http://localhost:11434')).toBe(true);
     await upkeepSettled();
     expect(standardModelRowId('writer')).toBeTruthy();
@@ -70,7 +73,7 @@ describe('a pair that failed to install', () => {
     // The Dojo keeps trying by itself, so it is an INFORMATIONAL card: a toast that leaves by itself, never re-derived on a reload.
     expect(frames.list.filter((f) => f.error === STANDARD_MODELS_MISSING_WORDS && f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
-    ollama.registryDown = false;
+    ollama.registryDown = false; windowPassed();
     await checkOllamaHealth('http://localhost:11434');
     await upkeepSettled();
     expect(frames.list.some((f) => f.severity === 'info' && (f as { cardKey?: string }).cardKey === 'ollama')).toBe(true);
@@ -104,5 +107,21 @@ describe('a pair that failed to install', () => {
     await checkOllamaHealth('http://localhost:11434');
     await upkeepSettled();
     expect(vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).endsWith('/api/pull')).length).toBe(pullsBefore);
+  });
+});
+
+describe('the health door after a failed attempt', () => {
+  it('tries again at most once per window: health answers inside it pull nothing and rewrite no row', async () => {
+    await upkeep('boot');
+    const pulls = (): number => vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).endsWith('/api/pull')).length;
+    const before = pulls();
+    const tier = mockDb.current!.prepare("SELECT updated_at FROM config WHERE key = 'ollama_upkeep'").get();
+    for (let i = 0; i < 5; i++) await checkOllamaHealth('http://localhost:11434');
+    await upkeepSettled();
+    expect(pulls()).toBe(before);
+    expect(mockDb.current!.prepare("SELECT updated_at FROM config WHERE key = 'ollama_upkeep'").get()).toEqual(tier);
+    windowPassed();
+    await checkOllamaHealth('http://localhost:11434'); await upkeepSettled();
+    expect(pulls()).toBeGreaterThan(before);
   });
 });

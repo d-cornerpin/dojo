@@ -283,7 +283,7 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
   // ── spend alerting: thresholds and their one-shot "already alerted" latches ──
   openrouter_warning_threshold: 'OPTIONAL — absent means no warning threshold is armed for this box',
   decision_model_window: 'WRITTEN — v3.5 t268: the window the derived decision tag was made at (`services/decision-window.ts`, at install); absent means the tag is not made yet, so `decide()` asks the base tag at its built-in 8,192 and the next install tries again',
-  decision_model_id: 'WRITTEN — the Ollama upkeep sets it to the decision model\'s row once that model is really pulled, and removes it when the model is not installed ; absent means "no decision model on this box", which is the correct initial state',
+  decision_model_id: 'WRITTEN — the Ollama upkeep sets it to the decision model\'s row once that model is really pulled, and removes it when the model is not installed; absent means "no decision model on this box", which is the correct initial state',
   shipped_souls_version: 'WRITTEN — the once-per-version soul refresh stamps it at boot; absent means "never refreshed", so the first boot of an updated build refreshes once',
   openrouter_threshold_alerted: 'WRITTEN — the one-shot latch the alert sets so it fires once; absent means not yet alerted',
   deepseek_warning_threshold: 'OPTIONAL — absent means no warning threshold is armed for this box',

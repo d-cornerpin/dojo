@@ -14,9 +14,9 @@ import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { childFailureText } from '../update/child-failure.js';
 import { type OllamaHost, getOllamaHost } from './ollama-host.js';
-import { heldOllamaVersion, holdOllamaVersion, readConfig, setConfig, isUnknownBuild, isVersionRefusal, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
+import { heldOllamaVersion, noteUpkeep, upkeepRecord, isUnknownBuild, isVersionRefusal, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
 import {
-  LIMIT_OWED, STARTING, StepFailed, classifyOllama, endStuckStart, portOf, restartWithLimit, setLaunchdLimit, settleTakeover,
+  StepFailed, classifyOllama, endStuckStart, portOf, restartWithLimit, setLaunchdLimit, settleTakeover,
   startInstalled, startingNow, takeoverSettled, upkeepApp, upkeepServe, type Start,
 } from './ollama-restart.js';
 import {
@@ -35,6 +35,8 @@ import {
 const logger = createLogger('ollama-upkeep');
 const NOTICE = 'ollama';
 const RESIDENT = STANDARD_TAGS.length;
+/** After an attempt that left the pair incomplete, the health door tries again at most this often. */
+const RETRY_MS = 10 * 60_000;
 
 export type UpkeepReason = 'setup' | 'boot' | 'repair' | 'health';
 /** A minimum version; `'newer'` (the registry refused and named none: newer than the one running); null (no need). */
@@ -58,10 +60,10 @@ function tell(words: string): void {
   if (tellOwnerOnce(NOTICE)) ownerCardFrame(words, 'warning', NOTICE, 'informational');
 }
 
-/** Run the upkeep. One run at a time: a caller with no version need joins the run under way; one with a need runs after it. */
+/** Run the upkeep. One run at a time: a caller with no version need joins the run under way; Repair and a caller with a
+ *  need run after it, so each looks afresh. */
 export function upkeep(reason: UpkeepReason, need: Need = null): Promise<UpgradeResult> {
-  if (reason === 'repair') holdOllamaVersion(null);
-  if (running && need === null) return running;
+  if (running && need === null && reason !== 'repair') return running;
   const run = (running ?? Promise.resolve()).then(() => keep(reason, need)).catch((err: unknown): UpgradeResult => {
     logger.warn('The Ollama upkeep failed', { reason, error: childFailureText(err) });
     return { ok: false, transient: true };
@@ -86,9 +88,13 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   const local = reason === 'setup' || reason === 'repair' ? ensureLocalOllamaProvider() : localOllamaProvider();
   if (!local) return { ok: false, transient: true };
   const host = getOllamaHost();
-  const held = heldOllamaVersion();
+  const record = upkeepRecord();
+  const heldRunning = reason === 'health' && record.held !== undefined && (await readOllamaVersion(local.baseUrl)) === record.held;
+  if (reason === 'health' && (heldRunning || record.held === undefined) && record.triedAt !== undefined && Date.now() - record.triedAt < RETRY_MS) {
+    return { ok: false, transient: true };
+  }
   let current: UpgradeResult = { ok: false };
-  if (reason !== 'health' || held === null || (await readOllamaVersion(local.baseUrl)) !== held) {
+  if (!heldRunning) {
     current = await keepCurrent(host, local, need ?? requiredOllamaVersion(Object.values(MODEL)));
     currentLine = current.line ?? null; modelLines = {};
     if (current.ok && host) await keepLimit(host, local);
@@ -118,12 +124,15 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
     await computeAndStoreRecommendedNumCtx(ids[which] as string).catch(() => null);
   }
   assignStandard(ids.writer, ids.decision);
+  let windowMade = false;
   if (ids.decision) {
     const tag = await import('./decision-window.js');   // dynamic: the import graph's order
-    await (listed?.has(STANDARD_DECISION_MODEL.windowTag) ? tag.ensureDecisionWindowTag : tag.repairDecisionWindowTag)(local.baseUrl);
+    windowMade = await (listed?.has(STANDARD_DECISION_MODEL.windowTag) ? tag.ensureDecisionWindowTag : tag.repairDecisionWindowTag)(local.baseUrl) !== null;
   }
-  if (ids.writer && ids.decision && current.ok && readConfig(LIMIT_OWED) === null) ownerConditionCleared(NOTICE);
-  else if (!(ids.writer && ids.decision) && !current.starting && heldOllamaVersion() === null) tell(STANDARD_MODELS_MISSING_WORDS);
+  const complete = !!(ids.writer && ids.decision);
+  noteUpkeep({ triedAt: (complete && windowMade) || !listed ? undefined : Date.now() });
+  if (complete && current.ok && !upkeepRecord().limitOwed) ownerConditionCleared(NOTICE);
+  else if (!complete && !current.starting && heldOllamaVersion() === null) tell(STANDARD_MODELS_MISSING_WORDS);
   return current;
 }
 
@@ -151,14 +160,14 @@ async function keepLimit(host: OllamaHost, local: { id: string; baseUrl: string 
   try {
     const found = await classifyOllama(host, portOf(local.baseUrl));
     if (found?.kind !== 'app' && found?.kind !== 'brew-service') return;
-    if (await setLaunchdLimit(host, RESIDENT) === null && readConfig(LIMIT_OWED) === null) return;
-    setConfig(LIMIT_OWED, '1');   // owed until the restart has really happened
-    await restartWithLimit(host, local, RESIDENT);
-    setConfig(LIMIT_OWED, null);
+    if (await setLaunchdLimit(host, RESIDENT) === null && !upkeepRecord().limitOwed) return;
+    noteUpkeep({ limitOwed: true });   // owed until the restart has really happened
+    await restartWithLimit(host, local, found, RESIDENT);
+    noteUpkeep({ limitOwed: undefined });
     logger.info('Restarted the local Ollama to apply its loaded-model limit', { kind: found.kind });
   } catch (err) {
     logger.warn('Could not raise Ollama\'s loaded-model limit (non-fatal)', { error: childFailureText(err) });
-    setConfig(LIMIT_OWED, '1');   // the next start tries again
+    noteUpkeep({ limitOwed: true });   // the next start tries again
     tell(OLLAMA_LIMIT_FAILED_WORDS);
   }
 }
@@ -181,15 +190,15 @@ async function keepCurrent(host: OllamaHost | null, local: { id: string; baseUrl
   if (host && !here) {
     const started = await startInstalled(host, local.baseUrl, RESIDENT);
     if (started === 'answering') here = await classifyOllama(host, port);
-    if (started === 'starting') setConfig(STARTING, await startingNow(host));
+    if (started === 'starting') noteUpkeep({ starting: await startingNow(host) });
     if (!here) return started === 'starting' ? { ok: false, transient: true, starting: true, line: 'Ollama is starting.' } : { ok: false, transient: true, line: 'Ollama is not running, and the Dojo could not start it at that moment.' };
   }
   const before = await readOllamaVersion(local.baseUrl);
   const meets = (v: string | null): boolean => (need === 'newer' ? v !== null && v !== before : need === null || v === null || isUnknownBuild(v) || ollamaAtLeast(v, need));
   const stale = need === 'newer' || !meets(before);
   const ok = (line?: string): UpgradeResult => {
-    setConfig(STARTING, null);
-    if (heldOllamaVersion() !== null) { holdOllamaVersion(null); heldLine = null; ownerConditionCleared(NOTICE); }
+    if (heldOllamaVersion() !== null) { heldLine = null; ownerConditionCleared(NOTICE); }   // the notice ends where the hold does
+    noteUpkeep({ starting: undefined, held: undefined });
     return { ok: true, line };
   };
   const tooOld = !stale ? '' : `Ollama ${before ?? '(unknown version)'} is older than ${need === 'newer' ? 'the model needs' : `the Dojo's models need (${need})`}. `;
@@ -197,7 +206,7 @@ async function keepCurrent(host: OllamaHost | null, local: { id: string; baseUrl
     logger.warn('The Dojo could not update or take over the local Ollama', { kind: here?.kind, have: before, need, why });
     if (!stale) return ok();   // it serves what the models need; only the limit and lasting past a Dojo restart are missing
     heldLine = `${tooOld}The Dojo could not update it: ${why}`;
-    holdOllamaVersion(before ?? 'unknown');
+    noteUpkeep({ held: before ?? 'unknown' });
     if (tellOwnerOnce(NOTICE)) ownerCardFrame(OLLAMA_TOO_OLD_WORDS, 'warning', NOTICE, 'action');
     return { ok: false, line: heldLine };
   };
@@ -210,7 +219,7 @@ async function keepCurrent(host: OllamaHost | null, local: { id: string; baseUrl
   let started: Start;
   try {
     started = found.kind === 'app' ? await upkeepApp(host, local, found.pid, RESIDENT) : await upkeepServe(host, local, found, stale, meets, RESIDENT);
-    if (started !== 'dead') setConfig(LIMIT_OWED, null);   // the restart carried the limit
+    if (started !== 'dead') noteUpkeep({ limitOwed: undefined });   // the restart carried the limit
   } catch (err) {
     const step = err instanceof StepFailed ? err.step : 'start';
     logger.warn('The Ollama upkeep did not complete', { kind: found.kind, step, error: childFailureText(err) });
@@ -222,7 +231,7 @@ async function keepCurrent(host: OllamaHost | null, local: { id: string; baseUrl
     tell(OLLAMA_DOWN_WORDS);
     return { ok: false, line: `${tooOld}Ollama stopped while the Dojo was updating it and has not come back yet.` };
   }
-  if (started === 'starting') { setConfig(STARTING, await startingNow(host)); return { ok: false, transient: true, starting: true, line: 'Ollama is starting again after the update.' }; }
+  if (started === 'starting') { noteUpkeep({ starting: await startingNow(host) }); return { ok: false, transient: true, starting: true, line: 'Ollama is starting again after the update.' }; }
   const after = await readOllamaVersion(local.baseUrl);
   if (!meets(after)) return cannot(after === before ? 'Homebrew has no newer Ollama to install.' : `it is still on ${after ?? 'an unknown version'}.`);
   const now = await classifyOllama(host, port);

@@ -55,6 +55,7 @@ describe('every door runs the one Ollama upkeep', () => {
     const seen: Record<string, unknown> = {};
     for (const [name, door] of Object.entries(DOORS)) {
       ollama.installed = new Set(['nomic-embed-text:latest']); ollama.pulls = [];
+      mockDb.current!.prepare("DELETE FROM config WHERE key = 'ollama_upkeep'").run();   // each door on a fresh box
       const mac = await through(door);
       seen[name] = { brews: mac.brews, log: mac.log, by: mac.running?.by, version: ollama.serving?.version, pulls: [...ollama.pulls].sort() };
     }

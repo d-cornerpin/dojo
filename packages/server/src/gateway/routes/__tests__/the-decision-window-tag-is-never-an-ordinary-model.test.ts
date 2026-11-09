@@ -22,6 +22,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { configRouter } from '../config.js';
 import { setupDepsRouter } from '../setup-deps.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, withoutDojoInternalTags } from '../../../services/local-standard.js';
+import { noteUpkeep } from '../../../services/ollama-version.js';
 import { standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../../../services/ollama-upkeep.js';
 
 /** The upkeep as Repair runs it, then the Settings state. */
@@ -112,13 +113,14 @@ describe('a missing or failed window tag is made again locally by the retry hook
     expect(decisionTagWindow()).not.toBeNull();
   });
 
-  it('a creation that failed at install is retried by the same hook that retries a missing standard model', async () => {
+  it('a creation that failed at install is retried by the same hook that retries a missing standard model, after its window', async () => {
     ollama.names = ollama.names.filter((n) => n !== WINDOW_TAG);
     ollama.tagWindow = null;
     ollama.createOk = false;
     await install();
     expect(decisionTagWindow()).toBeNull();
     ollama.createOk = true;
+    noteUpkeep({ triedAt: Date.now() - 11 * 60_000 });   // the health door's retry window has passed
     upkeepWhenIncomplete(ollama.names, BASE);
     await upkeepSettled();
     expect(decisionTagWindow()).not.toBeNull();

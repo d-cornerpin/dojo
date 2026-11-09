@@ -1,4 +1,4 @@
-// What Ollama version the Dojo's own models need, what this box runs, and the one version the Dojo could not update.
+// What Ollama version the Dojo's own models need, what this box runs, and the upkeep's one record.
 // A model's minimum is declared next to its tag (`local-standard.ts`, `minOllama`); no other file compares versions.
 
 import { getDb } from '../db/connection.js';
@@ -51,15 +51,19 @@ export const isVersionRefusal = (error: string): boolean => /newer version of ol
 export const plainPullError = (error: string, why?: string | null): string =>
   (isVersionRefusal(error) ? `This model needs a newer Ollama than this Mac runs. ${why ?? 'The Dojo could not update it by itself.'}` : error);
 
-export const readConfig = (key: string): string | null =>
-  (getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null;
-export const setConfig = (key: string, value: string | null): void => {
-  if (value === null) { getDb().prepare('DELETE FROM config WHERE key = ?').run(key); return; }
+/** The upkeep's one record (`ollama-upkeep.ts`), a JSON config row: the version it could not update (`held`), a start that
+ *  has not answered yet, a limit restart still owed, a listener settled for good, and when the last attempt that did not
+ *  finish the pair was made. */
+export interface UpkeepRecord {
+  held?: string; starting?: 'app' | 'service' | 'serve'; limitOwed?: boolean; settled?: { pid: number; path: string }; triedAt?: number;
+}
+const RECORD = 'ollama_upkeep';
+export function upkeepRecord(): UpkeepRecord {
+  try { return JSON.parse((getDb().prepare('SELECT value FROM config WHERE key = ?').get(RECORD) as { value: string } | undefined)?.value ?? '{}') as UpkeepRecord; } catch { return {}; }
+}
+/** Merge `change` into the record; a field set to undefined is removed. */
+export function noteUpkeep(change: Partial<Record<keyof UpkeepRecord, unknown>>): void {
   getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(key, value);
-};
-
-const HELD = 'ollama_held_version';
-/** The running Ollama's version the Dojo could not update (`ollama-upkeep.ts`), or null when nothing is held. */
-export function heldOllamaVersion(): string | null { try { return readConfig(HELD); } catch { return null; } }
-export const holdOllamaVersion = (version: string | null): void => setConfig(HELD, version);
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(RECORD, JSON.stringify({ ...upkeepRecord(), ...change }));
+}
+export const heldOllamaVersion = (): string | null => upkeepRecord().held ?? null;
