@@ -314,7 +314,10 @@ DROP TABLE _cards;
 ALTER TABLE budgets DROP COLUMN alert_words;
 ALTER TABLE budgets DROP COLUMN alert_dismissed_at;
 
--- 14. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
+-- 14. The per-section prompt measurements had no reader.
+DROP TABLE IF EXISTS prompt_sections;
+
+-- 15. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
 --     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.
 CREATE TEMP TABLE _td_assert (name TEXT PRIMARY KEY, ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _td_assert (name, ok) VALUES
@@ -345,7 +348,7 @@ INSERT INTO _td_assert (name, ok) VALUES
    (SELECT COUNT(*) FROM (SELECT class, n FROM _td_before EXCEPT
       SELECT m.class, COUNT(*) FROM _td_map m JOIN work w ON w.id = m.id AND w.state = m.to_state AND w.hold_kind IS m.hold_kind GROUP BY m.class)) = 0);
 
--- 15. The report, read once by the boot log.
+-- 16. The report, read once by the boot log.
 INSERT INTO config (key, value) VALUES ('task_done_upgrade_last', json_object(
   'at', (SELECT ms FROM _td_now),
   'classes', (SELECT json_group_object(class, n) FROM _td_before),

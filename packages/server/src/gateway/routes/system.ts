@@ -7,7 +7,6 @@ import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { broadcast } from '../ws.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
-import { receiptStatus } from '../../agent/v2/receipt.js';
 import { toolDocsStatus } from '../../tools/doc-freshness.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
 import { NEW_SESSION_DIVIDER } from '@dojo/shared';
@@ -44,17 +43,8 @@ systemRouter.get('/health', (c) => {
       used: Math.round(memInfo.heapUsed / 1024 / 1024),
       total: Math.round(os.totalmem() / 1024 / 1024),
     },
-    // T67: is the context-receipt instrument running, and is it working? Asked here because
-    // this is the surface the kit and every worker already curl, and because the answer used
-    // to require a sqlite3 session against `config` — which is how a whole review round came
-    // to run unrecorded. Best-effort: a health read must never fail on its own diagnostics.
-    ...(() => {
-      try { return { receipts: receiptStatus() }; } catch { return {}; }
-    })(),
-    // INSTALLED-BOX AUDIT: whether this box's tool manuals are the ones it shipped with. Same
-    // best-effort shape and same reason as `receipts` above — a health read must never fail on
-    // its own diagnostics. Absent (not zeroed) until boot has measured, because "not asked yet"
-    // and "nothing missing" are different answers and only the second one is good news.
+    // Whether this box's tool manuals are the ones it shipped with; absent until boot has
+    // measured. Best-effort: a health read must never fail on its own diagnostics.
     ...(() => {
       try {
         const d = toolDocsStatus();

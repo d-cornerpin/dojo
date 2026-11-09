@@ -14,7 +14,6 @@ import { agentTurnWindow } from '../router/router-window.js';
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages, getMessagesByIds } from './store.js';
-import { recordPromptSections } from './prompt-sections.js';
 import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
@@ -565,7 +564,6 @@ async function assembleContextViaRegistry(
   // prefix stays byte-stable and cacheable across those changes.
   const systemPrompt = sys.text;
   const built = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
-  recordPromptSections(agentId, systemPrompt, sys.entryIds, built.allocation?.grants);   // K36: always-on, one row per section
   // systemVolatile is empty after P-1 (all per-turn volatile content moved to the
   // msg.turn-context tail); the field is the reserved system-side lane (P-2).
   //

@@ -145,7 +145,7 @@ export function attachmentsWithinRoom(messages: Array<{ role: string; content: u
     const over = (b: StoredBlock): boolean => isMedia(b) && mediaTokens(b) > roomTokens;
     const blocks = m.content as StoredBlock[];
     if (!blocks.some(over)) continue;
-    // v3.5 K33: a contact's attachment is bracketed by its fence (`agent/attachment-fence.ts`). Its note is the
+    // A contact's attachment is bracketed by its fence (`tools/inbound-fences.ts`). Its note is the
     // engine's, so it goes OUTSIDE the fence; the sender's file name stays inside it, and an empty fence goes.
     const { around } = attachmentBrackets(blocks);
     const dropped = new Set(blocks.flatMap((b, i) => (over(b) && around[i] ? [i - 1, i + 1] : [])));

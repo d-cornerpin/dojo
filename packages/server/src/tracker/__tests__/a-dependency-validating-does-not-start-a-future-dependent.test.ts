@@ -50,7 +50,7 @@ vi.mock('../../agent/agent-bus.js', async (importOriginal) => ({
 
 import { runMigrations } from '../../db/migrations.js';
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
-import { checkDependencies } from '../pm-agent.js';
+import { checkDependencies } from '../../work/done/effects.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
 const db = (): Database.Database => mockDb.current!;

@@ -423,7 +423,7 @@ import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
-import { attachmentFenceOf, bracketed, droppedAttachmentNote } from './attachment-fence.js';
+import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
@@ -1443,7 +1443,7 @@ export function injectAttachmentBlocks(
     const pdfAttachments = attachments.filter(a => a.category === 'pdf');
 
     if (imageAttachments.length === 0 && pdfAttachments.length === 0) continue;
-    const fence = attachmentFenceOf(dbMsg.inbound_meta, dbMsg.id);   // v3.5 K33: a contact's file is fenced (attachment-fence.ts)
+    const fence = attachmentFenceOf(dbMsg.inbound_meta, dbMsg.id);   // a contact's file is fenced (tools/inbound-fences.ts)
 
     // Convert to content block array
     const blocks: Anthropic.ContentBlockParam[] = [];

@@ -1,7 +1,6 @@
 // The summary check over a source larger than the decision model's window: the source in parts, never cut.
 
-import { MAX_DECISION_BODY_BYTES, decide, type Answer, type Question } from '../agent/decide.js';
-import { decideCountedBytes, fencedState } from '../agent/decide-sizing.js';
+import { MAX_DECISION_BODY_BYTES, decide, decideCountedBytes, fencedState, type Answer, type Question } from '../agent/decide.js';
 import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
 // A part fits the decision model's window (the number the memory fit sets aside) counted at its measured density

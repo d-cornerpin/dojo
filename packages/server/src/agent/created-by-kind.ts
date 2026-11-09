@@ -35,7 +35,7 @@ import { getDb } from '../db/connection.js';
 /** The three kinds the column's CHECK constraint allows (migration 134). */
 export type CreatedByKind = 'user' | 'agent' | 'harness';
 
-export const CREATED_BY_KINDS: readonly CreatedByKind[] = ['user', 'agent', 'harness'];
+const CREATED_BY_KINDS: readonly CreatedByKind[] = ['user', 'agent', 'harness'];
 
 /**
  * Validate a caller-supplied kind. Returns null for anything not on the enum — the
@@ -43,7 +43,7 @@ export const CREATED_BY_KINDS: readonly CreatedByKind[] = ['user', 'agent', 'har
  * value can never widen what a sweep will delete, and the database's CHECK is the
  * backstop if this is ever bypassed.
  */
-export function parseCreatedByKind(value: unknown): CreatedByKind | null {
+function parseCreatedByKind(value: unknown): CreatedByKind | null {
   return typeof value === 'string' && (CREATED_BY_KINDS as readonly string[]).includes(value)
     ? (value as CreatedByKind)
     : null;

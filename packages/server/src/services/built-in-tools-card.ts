@@ -10,9 +10,11 @@ import { canonicalizeToolsPolicy, parseToolsPolicyText } from '../agent/access/t
 import { getPrimaryAgentId } from '../config/platform.js';
 import { RESULT_READ_TOOL } from '../memory/tool-result-view.js';
 import { dojoVoice } from '../agent/dojo-voice.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
+import { tellOwner } from '../healer/owner-notices.js';
 
-export const GAP_KEY = 'built_in_tools_gap';
-export type GapEntry = { names: string[] };
+const GAP_KEY = 'built_in_tools_gap';
+type GapEntry = { names: string[] };
 type GapRecord = Record<string, GapEntry>;
 
 const nameOf = (id: string): string =>
@@ -47,13 +49,32 @@ export function readGap(): GapRecord {
   } catch { return {}; }
 }
 
-export function writeGap(record: GapRecord): void {
+function writeGap(record: GapRecord): void {
   getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(GAP_KEY, JSON.stringify(record));
 }
 
 /** The card's words. Plain, the Dojo speaking, and exact: nothing was changed, and who can add them. */
-export function gapWords(agentName: string, mainName: string, names: readonly string[]): string {
+function gapWords(agentName: string, mainName: string, names: readonly string[]): string {
   return dojoVoice(`${agentName} doesn't have some tools a new ${agentName} gets: ${names.join(', ')}. Nothing was changed. `
     + `If you removed them on purpose, close this card. If not, ask ${mainName} to add them.`);
+}
+
+/** Raise the card once for an agent that lacks tools of `usual`, and tell the main agent the same words so it can
+ *  add them if the owner asks. An agent already on the record (told or dismissed) is never raised again. */
+export function raiseBuiltInToolsCard(id: string, usual: readonly string[]): boolean {
+  if (readGap()[id]) return false;
+  const names = missingTools(id, usual);
+  if (names.length === 0) return false;
+  const main = getPrimaryAgentId();
+  const words = gapWords(nameOf(id), nameOf(main), names);
+  writeGap({ ...readGap(), [id]: { names } });
+  tellOwner(`built-in-tools:${id}`, words);
+  postAgentNotice({
+    toAgentId: main, fromName: 'Dojo message sent', intent: 'dojo_message_sent', selfIntro: false,
+    brief: `The Dojo itself (not you) showed the owner this card on the owner's dashboard because ${nameOf(id)} (agent id ${id}) lacks tools its build lists: "${words}" `
+      + `If he asks you to add them, call update_agent with agent_id "${id}" and grants {"tools":{"add":[${names.map((n) => `"${n}"`).join(',')}]}}: it only appends; names the agent already holds are left alone. `
+      + `Do not repeat the card or claim it as your own words.`,
+  });
+  return true;
 }

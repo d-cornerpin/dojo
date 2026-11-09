@@ -36,7 +36,7 @@ export type InstallStep = 'deps-cloned' | 'deps-installed' | 'verified' | 'marke
 
 /** t114: npm is bounded by SILENCE, not a flat total, so a slow but moving install finishes. */
 const INSTALL_IDLE_MS = 120_000;
-const INSTALL_CEILING_MS = 30 * 60_000;
+export const INSTALL_CEILING_MS = 30 * 60_000;
 const DEFAULT_ENV = (): NodeJS.ProcessEnv => ({ ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}` });
 
 export async function runNpmInstall(cwd: string, env: NodeJS.ProcessEnv = DEFAULT_ENV()): Promise<void> {

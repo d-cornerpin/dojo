@@ -10,7 +10,7 @@ import { resolveChildScope } from './scope.js';
 import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
 import { inspectGrantRefusal, withoutInheritedInspect } from '../inspect/grant.js';
 import { getAccessGrants } from './access/read.js';
-import { caseVariantClash, caseVariantClashMessage } from './agent-name-lookup.js';
+import { caseVariantClash, caseVariantClashMessage } from './tool-helpers.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';

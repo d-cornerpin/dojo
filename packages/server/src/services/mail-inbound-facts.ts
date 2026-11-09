@@ -5,7 +5,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type { InboundMeta } from '@dojo/shared';
-import { decodeHtmlEntities } from '../agent/html-entities.js';
+import { decodeHtmlEntities } from '../agent/html-text.js';
 
 /** A parsed address-list entry. `address` is trimmed + lower-cased; `display` is
  *  the name with its surrounding quotes removed, or null when the entry had none. */

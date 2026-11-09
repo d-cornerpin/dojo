@@ -32,8 +32,8 @@ vi.mock('node:crypto', async (importOriginal) => {
   };
 });
 
-import * as attachmentFence from '../attachment-fence.js';
-import { bracketed, droppedAttachmentNote, attachmentFenceOf, attachmentFenceTokens, type AttachmentFence } from '../attachment-fence.js';
+import * as attachmentFence from '../../tools/inbound-fences.js';
+import { bracketed, droppedAttachmentNote, attachmentFenceOf, attachmentFenceTokens, type AttachmentFence } from '../../tools/inbound-fences.js';
 
 const BLOCK = { type: 'text', text: 'a body' } as Anthropic.ContentBlockParam;
 const fenceFor = (rowId: string): AttachmentFence => ({ kind: 'text message', from: 'an attachment from a contact', rowId, drawn: 0 });

@@ -45,8 +45,7 @@ vi.mock('../../home.js', async (orig) => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { seedTrackerTask } from './work-fixture.js';
-import { recordCallsTouched } from '../ledger-store.js';
-import { ledgerWorkEntries } from '../ledger-read.js';
+import { recordCallsTouched, ledgerWorkEntries } from '../ledger-store.js';
 import { personFirstFor } from '../../agent/tools/person-first.js';
 import { handBackText } from '../../agent/tools/process-run.js';
 import { runWithToolCallId } from '../../agent/turn-state.js';

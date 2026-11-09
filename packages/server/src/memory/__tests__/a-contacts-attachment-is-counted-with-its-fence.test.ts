@@ -4,7 +4,7 @@
 //
 // D18b counts the turn's injected attachments inside the fit (`turn-attachments.ts` `chargeTurnAttachments`,
 // added to `storedRowCost`) and shows one over the room as its note (`kept-row-view.ts` `attachmentsWithinRoom`).
-// K33 brackets a contact's image or PDF with its fence's head and end (`agent/attachment-fence.ts`). Both hold:
+// The engine brackets a contact's image or PDF with its fence's head and end (`tools/inbound-fences.ts`). Both hold:
 //   · the head and the end are tokens the model reads, so the charge carries them (the fit stays honest);
 //   · an attachment over the room becomes the engine's note OUTSIDE the fence, and the sender's file name stays
 //     INSIDE it (the note would otherwise quote a contact's filename as the engine's own words).

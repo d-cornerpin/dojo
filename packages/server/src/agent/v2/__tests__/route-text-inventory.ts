@@ -281,12 +281,12 @@ export const ALLOW: readonly AllowEntry[] = [
   "reason": "thrash-gate text: the first line is a context phrase and the second tells the agent to write to this turn's own person (the one the turn block names)"
  },
  {
-  "file": "agent/v2/turn-address-words.ts",
+  "file": "agent/v2/turn-address.ts",
   "line": "dashboard: 'the dashboard chat',",
   "reason": "the address renderer itself: channel label table and the engine/notification/agent header variants"
  },
  {
-  "file": "agent/v2/turn-address-words.ts",
+  "file": "agent/v2/turn-address.ts",
   "line": "return cap ? 'The user' : 'the user';",
   "reason": "the address renderer itself: channel label table and the engine/notification/agent header variants"
  },

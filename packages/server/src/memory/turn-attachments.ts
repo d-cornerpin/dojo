@@ -26,7 +26,7 @@ import { estimateTokens, estimateTokensFromChars } from './budget.js';
 import { messageTokens } from './lanes.js';
 import { mediaNoteText } from './kept-row-view.js';
 import { getModelCapabilities } from '../services/capabilities.js';
-import { attachmentFenceOf, attachmentFenceTokens } from '../agent/attachment-fence.js';
+import { attachmentFenceOf, attachmentFenceTokens } from '../tools/inbound-fences.js';
 
 type Attachment = { filename: string; mimeType: string; size: number; category: string };
 

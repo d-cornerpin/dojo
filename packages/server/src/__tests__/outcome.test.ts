@@ -21,8 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   OUTCOME_KINDS,
-  applied, refused, failed, unknownOutcome, quarantineUnknown,
-  isApplied, isNonLiveProvenance,
+  applied, refused, failed,
   type Outcome, type ToolSeamReason, type ToolResult,
 } from '@dojo/shared';
 import { classifyToolResult, toolResultOf, toolWasBlocked } from '../agent/tool-outcome.js';
@@ -35,7 +34,6 @@ describe('Outcome<T>: the five arms', () => {
 
   it('carries the applied PROOF, not merely the fact that something applied', () => {
     const o = applied({ id: 'w1', eventId: 7 });
-    expect(isApplied(o)).toBe(true);
     if (o.kind !== 'applied') throw new Error('unreachable');
     expect(o.value.eventId).toBe(7);
   });
@@ -136,53 +134,5 @@ describe("PHASE-4 T3: the spin brake is `cancelled`'s producer, on ONE arm only"
     expect([perSignature.kind, perSignature.kind === 'failed' && perSignature.reason])
       .toEqual(['failed', 'crashed']);
     expect(toolWasBlocked(perSignature)).toBe(false);
-  });
-});
-
-describe("the `unknown` quarantine — legal ONLY where provenance <> 'live'", () => {
-  it("knows the provenance vocabulary the messages CHECK declares", () => {
-    expect(isNonLiveProvenance('live')).toBe(false);
-    expect(isNonLiveProvenance('migrated')).toBe(true);
-    expect(isNonLiveProvenance('rescued')).toBe(true);
-    expect(isNonLiveProvenance('anything-else')).toBe(false);
-  });
-
-  it('ALLOWS unknown for migrated and rescued data', () => {
-    const m = unknownOutcome('imported', 'the bridge carried it', 'migrated');
-    const r = unknownOutcome('imported', 'recovered from a broken row', 'rescued');
-    expect(m.kind === 'unknown' && m.provenance).toBe('migrated');
-    expect(r.kind === 'unknown' && r.provenance).toBe('rescued');
-  });
-
-  // ── THE REFUSALS. These are the clauses; the two above are the controls. ──
-
-  it("REFUSES unknown for live data at the constructor — the only door to the arm", () => {
-    expect(() => unknownOutcome('who-knows', 'a live send', 'live'))
-      .toThrow(/quarantined to non-live data/i);
-  });
-
-  it('REFUSES a provenance that is not a provenance at all', () => {
-    // The realistic breach: a value read off a row, or a default that drifted.
-    expect(() => unknownOutcome('who-knows', 'x', undefined as unknown as 'migrated'))
-      .toThrow(/quarantined to non-live data/i);
-    expect(() => unknownOutcome('who-knows', 'x', 'LIVE' as unknown as 'migrated'))
-      .toThrow(/quarantined to non-live data/i);
-  });
-
-  it('REFUSES an unknown re-matched against a live subject (the assembled-elsewhere case)', () => {
-    const smuggled = { kind: 'unknown', reason: 'imported', detail: 'x', provenance: 'migrated' } as const;
-    expect(() => quarantineUnknown(smuggled, 'live')).toThrow(/quarantine breach/i);
-  });
-
-  it('lets every OTHER arm through the quarantine gate untouched, on live data', () => {
-    const a = applied(1);
-    const r = refused('illegal-transition', 'no');
-    expect(quarantineUnknown(a, 'live')).toBe(a);
-    expect(quarantineUnknown(r, 'live')).toBe(r);
-  });
-
-  it('passes an unknown whose subject really is non-live', () => {
-    const u = unknownOutcome('imported', 'x', 'migrated');
-    expect(quarantineUnknown(u, 'migrated')).toBe(u);
   });
 });

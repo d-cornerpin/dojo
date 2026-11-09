@@ -22,6 +22,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { googleRead } from '../google/client.js';
+import { GMAIL_BASE } from '../google/gmail-search.js';
 import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.js';
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
@@ -275,7 +276,6 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       query += ` after:${afterEpoch}`;
     }
 
-    const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
     const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${MAX_RESULTS_PER_POLL}`;
     const result = await googleRead(listUrl, 'system', 'Gmail Watcher', 'gmail_inbox_poll', { query, account: accountId }, accountId);
 

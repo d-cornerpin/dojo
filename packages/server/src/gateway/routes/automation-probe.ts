@@ -179,21 +179,6 @@ let inFlight: Promise<AutomationStatus> | null = null;
  */
 let lastCompleted: AutomationStatus | null = null;
 
-let spawnProbe: AutomationProbeSpawn = spawnRealMessagesProbe;
-
-/** Test seam. Nothing in the product calls this. */
-export function setAutomationProbeSpawn(fn: AutomationProbeSpawn): void { spawnProbe = fn; }
-
-/** Test seam: forget the seam and both pieces of state. */
-export function resetAutomationProbeForTests(): void {
-  spawnProbe = spawnRealMessagesProbe;
-  inFlight = null;
-  lastCompleted = null;
-}
-
-/** What a finished probe has most recently decided. For clauses; the route reads the function. */
-export function lastCompletedAutomationStatus(): AutomationStatus | null { return lastCompleted; }
-
 /**
  * Run (or join) the probe and answer within `PROBE_SETTLE_MS`.
  *
@@ -210,7 +195,7 @@ export async function automationPermissionStatus(): Promise<AutomationStatus> {
     return lastCompleted ?? 'unknown';
   }
 
-  const child = spawnProbe();
+  const child = spawnRealMessagesProbe();
 
   const ceiling = setTimeout(() => { child.kill(); }, PROBE_CEILING_MS);
   ceiling.unref?.();

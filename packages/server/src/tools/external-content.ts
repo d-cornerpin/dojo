@@ -9,7 +9,7 @@
 //
 // Who calls it: the inbound channel producers at ingest (iMessage, SMS, calls, Teams, voicemail,
 // the mail watchers, another agent's report to the main agent, the Dreamer's archives), and the
-// ONE tool door for every read whose result carries outside text (`agent/tools/outside-content.ts`,
+// ONE tool door for every read whose result carries outside text (`tools/inbound-fences.ts`,
 // a registry: registering a tool there is what fences it). Censuses:
 // `tools/__tests__/every-external-render-is-fenced.test.ts`.
 // ════════════════════════════════════════════════════════════════════════════

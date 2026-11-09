@@ -83,7 +83,7 @@ import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
 import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
 import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
-import { fenceOutsideSpan } from './outside-content.js';
+import { fenceOutsideSpan } from '../../tools/inbound-fences.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';

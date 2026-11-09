@@ -17,8 +17,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (
 
 import { runMigrations } from '../../db/migrations.js';
 import { checkSummary } from '../summary-check.js';
-import { decide, type FailureClass, type Question } from '../../agent/decide.js';
-import { decideRequestBody } from '../../agent/decide-sizing.js';
+import { decide, decideRequestBody, type FailureClass, type Question } from '../../agent/decide.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-sized-parts';

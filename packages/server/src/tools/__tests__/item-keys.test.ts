@@ -1,6 +1,6 @@
 // v3.5 DONE IS MEASURED, Task A3 — which tool calls touch which items (the ledger's keys).
 import { describe, it, expect } from 'vitest';
-import { itemKeysOf } from '../item-keys.js';
+import { itemKeysOf } from '../../work/ledger-store.js';
 
 describe('itemKeysOf', () => {
   it('gmail_label: one message, one thread, and the batch forms', () => {

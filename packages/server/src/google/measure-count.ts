@@ -6,9 +6,9 @@
 import { googleSilentFetch } from './client.js';
 import { resolveGoogleAccountForRead } from './accounts.js';
 import { logGoogleActivity } from './activity-log.js';
+import { GMAIL_BASE } from './gmail-search.js';
 import type { GoogleAccountKind } from './accounts.js';
 
-const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const PAGE = 500;   // Gmail's documented maximum for messages.list
 
 /** Counts every message the query matches: ids only, every page, no per-message fetch. */

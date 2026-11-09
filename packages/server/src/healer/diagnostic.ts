@@ -20,7 +20,8 @@ import { getBudgets } from '../costs/budget.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
-import { getHarnessSections } from './harness-sections.js';
+import { getLessonItems } from './lessons-section.js';
+import { getRecurringToolErrors } from './recurring-tool-errors.js';
 import { collect } from './collect-guard.js';
 import { capItemsByText, capItemsShowingOmissions, type DiagnosticItem } from './item-cap.js';
 export { capItemsByText, capItemsShowingOmissions };
@@ -889,7 +890,8 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...collect('context health', () => capItemsShowingOmissions(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
     ...collect('tracker health', () => capItemsShowingOmissions(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
     ...collect('tool health', () => capItemsShowingOmissions(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
-    ...getHarnessSections(),   // guarded one section at a time inside
+    ...collect('recurring tool errors', getRecurringToolErrors),   // uncapped: a cap drops a whole section
+    ...collect('lessons', getLessonItems),
     ...collect('dream health', () => capItemsShowingOmissions(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
     ...collect('nudge statistics', () => capItemsShowingOmissions(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
     ...collect('provider outage', () => capItemsShowingOmissions(getProviderOutagePatterns(), 1500, 'provider_outage')),

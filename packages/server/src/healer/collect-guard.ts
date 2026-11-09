@@ -9,7 +9,6 @@ const logger = createLogger('healer-diagnostic');
  * Run one report check inside a guard. If it throws, the report still gets built: the missing
  * items are replaced by ONE warning that names the check (no stack, no row data; the reason is in
  * the server log), so a failed check never reads as "all good". The failure item is never capped.
- * Used by diagnostic.ts and harness-sections.ts.
  */
 export function collect(label: string, fn: () => DiagnosticItem[]): DiagnosticItem[] {
   try {

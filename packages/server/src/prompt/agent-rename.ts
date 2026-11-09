@@ -44,7 +44,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { clearPlatformConfigCache } from '../config/platform.js';
 import { UNSUBSTITUTED } from './assembler.js';
-import { caseVariantClash, caseVariantClashMessage } from '../agent/agent-name-lookup.js';
+import { caseVariantClash, caseVariantClashMessage } from '../agent/tool-helpers.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('agent-rename');

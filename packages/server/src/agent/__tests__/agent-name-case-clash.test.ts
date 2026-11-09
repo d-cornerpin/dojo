@@ -47,7 +47,7 @@ vi.mock('../../home.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { spawnAgent } from '../spawner.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
-import { caseVariantClash, caseVariantClashMessage } from '../agent-name-lookup.js';
+import { caseVariantClash, caseVariantClashMessage } from '../tool-helpers.js';
 
 function addAgent(id: string, name: string, createdAt: string, status = 'idle'): void {
   mockDb.current!.prepare(

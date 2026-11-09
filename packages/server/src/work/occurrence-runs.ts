@@ -13,10 +13,7 @@
 // verdict this project already made once).
 //
 // WHY ITS OWN MODULE, since `occurrences.ts` is the writer that owns these rows. Because it
-// answers a DIFFERENT QUESTION, and this task family already made that call once: T10's
-// `_migrations` checksum audit went into `db/migration-checksums.ts` rather than into
-// `migrations.ts`, on the reasoning that "the chain runner applies files, the audit answers a
-// different question about them". Here: `occurrences.ts` claims and settles ONE occurrence;
+// answers a DIFFERENT QUESTION: `occurrences.ts` claims and settles ONE occurrence;
 // this file reads WHAT HAPPENED across a schedule's runs. The growth detector refused the
 // merged file and it was right.
 //

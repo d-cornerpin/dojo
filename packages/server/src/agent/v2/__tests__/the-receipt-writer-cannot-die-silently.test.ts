@@ -20,8 +20,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const logs: Array<{ level: string; msg: string; data: Record<string, unknown> }> = [];
 const configValue: { current: string | null } = { current: null };
@@ -58,10 +56,7 @@ vi.mock('../../../tools/tool-docs.js', () => ({
   getAgentAlwaysLoadedTools: () => [],
 }));
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
-
-/** A fresh module per test: the announce latch and the counters are module state by design. */
+/** A fresh module per test: the announce latch is module state by design. */
 async function freshReceipt(): Promise<typeof import('../receipt.js')> {
   vi.resetModules();
   return import('../receipt.js');
@@ -134,7 +129,7 @@ describe('T67 — every change of the switch says so, which is the line that did
 // ── CLAUSE 2: A DEATH IS LOUD ───────────────────────────────────────────────────────────
 
 describe('T67 — an ENABLED writer that writes nothing is a warning, not a debug line', () => {
-  it('RED→GREEN: a failed write WARNS, names the file, and is remembered as the last error', async () => {
+  it('RED→GREEN: a failed write WARNS and names the file', async () => {
     const mod = await freshReceipt();
     configValue.current = 'meta';
     vi.spyOn(fs.promises, 'mkdir').mockRejectedValue(new Error('EACCES: permission denied'));
@@ -149,7 +144,6 @@ describe('T67 — an ENABLED writer that writes nothing is a warning, not a debu
     expect(lossLines()[0].level, 'debug is a level nobody reads — that is the whole defect').toBe('warn');
     expect(lossLines()[0].data).toMatchObject({ agentId: 'harnessbot', mode: 'meta' });
     expect(String(lossLines()[0].data.error)).toMatch(/EACCES/);
-    expect(mod.receiptStatus().lastError).toMatch(/EACCES/);
   });
 
   it('CONTROL: the turn is never affected — a failing writer throws nothing into its caller', async () => {
@@ -173,36 +167,5 @@ describe('T67 — an ENABLED writer that writes nothing is a warning, not a debu
     await new Promise((r) => setTimeout(r, 10));
     expect(mkdir).not.toHaveBeenCalled();
     expect(lossLines()).toHaveLength(0);
-    expect(mod.receiptStatus().lastError).toBeNull();
-  });
-});
-
-// ── CLAUSE 3: THE QUESTION IS ASKABLE ───────────────────────────────────────────────────
-
-describe('T67 — "are receipts on?" is answerable without a sqlite3 session', () => {
-  it('RED→GREEN: the status states mode, source, count, last write and last error', async () => {
-    const mod = await freshReceipt();
-    configValue.current = 'meta';
-    expect(mod.receiptStatus()).toMatchObject({
-      mode: 'meta', source: 'config', writtenThisProcess: 0, lastWriteAt: null, lastError: null,
-    });
-    expect(mod.receiptStatus().root).toMatch(/\.dojo[/\\]receipts$/);
-  });
-
-  it('RED→GREEN: `/health` carries it, so the surface the kit already curls answers the question', () => {
-    const system = SRC('../../../gateway/routes/system.ts');
-    expect(system, 'the route must READ the writer\'s own status, never recompute it').toContain('receipts: receiptStatus()');
-    expect(system).toContain("import { receiptStatus } from '../../agent/v2/receipt.js';");
-    const shared = SRC('../../../../../shared/src/types.ts');
-    expect(shared, 'and the wire type must declare what the route sends').toMatch(/receipts\?: \{/);
-  });
-
-  it('NO CARD CLAIMS IT: the owner\'s Health page draws no receipts row, deliberately', () => {
-    // The instrument is off on every shipped box, so a card would draw a permanent "disabled"
-    // row for a debug tool the owner never uses — and `the-health-page-tells-the-truth.test.ts`
-    // refuses rows with nothing behind them. If someone later wants the row, this clause is
-    // where the argument gets re-opened.
-    const page = SRC('../../../../../dashboard/src/pages/Health.tsx');
-    expect(page).not.toMatch(/receipt/i);
   });
 });

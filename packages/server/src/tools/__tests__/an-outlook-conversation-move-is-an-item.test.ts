@@ -1,6 +1,6 @@
 // v3.5 DONE IS MEASURED — moving a WHOLE Outlook conversation is an item on the ledger, not nothing.
 import { describe, it, expect } from 'vitest';
-import { itemKeysOf } from '../item-keys.js';
+import { itemKeysOf } from '../../work/ledger-store.js';
 
 describe('itemKeysOf: an Outlook conversation move is an item', () => {
   it('outlook_move_to_folder: a conversation-only move touches the conversation', () => {

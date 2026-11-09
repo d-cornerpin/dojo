@@ -13,8 +13,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (
 
 import { runMigrations } from '../../db/migrations.js';
 import '../decision-ask.js';
-import { __forgetResidencyForTests } from '../decide.js';
-import { decideTimeoutMs } from '../decide-sizing.js';
+import { __forgetResidencyForTests, decideTimeoutMs } from '../decide.js';
 import { deliverableJudged } from '../v2/classifiers/inbound-routing.js';
 import { installDecisionModel } from './decision-fake.js';
 

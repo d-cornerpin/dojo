@@ -1,16 +1,18 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb } from './connection.js';
 import { ensurePreChainBackup } from './migration-backup.js';
 import { createLogger } from '../logger.js';
-import {
-  migrationChecksum, ensureMigrationChecksumColumn, reportMigrationChecksums,
-} from './migration-checksums.js';
 
 const logger = createLogger('migrations');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
+
+/** What `_migrations.checksum` records: sha256 of the file text with CRLF normalised. */
+const migrationChecksum = (sqlText: string): string =>
+  crypto.createHash('sha256').update(sqlText.replace(/\r\n/g, '\n'), 'utf-8').digest('hex');
 
 /** The chain's files, in the order it applies them. Empty when the directory is absent. */
 export function migrationFileNames(): string[] {
@@ -147,8 +149,7 @@ export function runMigrations(): void {
 // When the column is absent the file is RECORDED AS RUN WITHOUT EXECUTING. Recorded, not
 // re-tried, because the condition is permanent: a dropped column does not come back, and a
 // file retried every boot forever is a crash loop with extra steps. Its checksum is stored
-// like any other, so the boot divergence audit still describes the exact text this database
-// adjudicated. Deliberately ONE form and not a general expression language: the question a
+// like any other. Deliberately ONE form and not a general expression language: the question a
 // repair file needs to ask is "is my subject still here", and a directive that could ask
 // anything would become a place to put logic that belongs in the file.
 const REQUIRES_COLUMN = /^--[ \t]*REQUIRES-COLUMN:[ \t]*([A-Za-z_]\w*)\.([A-Za-z_]\w*)[ \t]*$/m;
@@ -167,12 +168,13 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
       name TEXT PRIMARY KEY,
-      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+      checksum TEXT
     );
   `);
-  // RULING 7 rider (a). Must run BEFORE the chain: the rows this boot writes carry
-  // their checksums, and the audit below reads the column on the same pass.
-  ensureMigrationChecksumColumn(db);
+  if (!(db.prepare('PRAGMA table_info(_migrations)').all() as { name: string }[]).some((c) => c.name === 'checksum')) {
+    db.exec('ALTER TABLE _migrations ADD COLUMN checksum TEXT');
+  }
 
   if (!fs.existsSync(MIGRATIONS_DIR)) return;
   const files = migrationFileNames();
@@ -238,9 +240,7 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     } else {
       db.exec(sqlText);
     }
-    // RULING 7 rider (a): record WHAT ran, not just that something by this name did.
-    // Inside the same transaction as the apply, so the checksum can never describe a
-    // file other than the one whose DDL just committed.
+    // Record WHAT ran, in the same transaction as the apply.
     db.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)')
       .run(fileName, migrationChecksum(sqlText));
   });
@@ -284,12 +284,12 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   // Re-enable FK checks after all migrations
   db.pragma('foreign_keys = ON');
 
-  // RULING 7 rider (a): the boot divergence check. Report tier by construction — see
-  // `migration-checksums.ts` for the refusal-tier argument and the Bridge author's story.
-  reportMigrationChecksums(db, (name) => {
-    try { return readMigrationFile(name); }
-    catch { return null; }
-  });
+  // A released file never changes under a box (the release gate holds that). One that did is said
+  // once per boot and is never re-run: its effect is what this database already holds.
+  const changed = (db.prepare('SELECT name, checksum FROM _migrations WHERE checksum IS NOT NULL').all() as { name: string; checksum: string }[])
+    .filter((r) => { try { return migrationChecksum(readMigrationFile(r.name)) !== r.checksum; } catch { return false; } })
+    .map((r) => r.name);
+  if (changed.length > 0) logger.warn('Migration files differ from the ones this database applied; they are not re-run', { files: changed });
 
   // ── 075 visibility ──
   // When migration 075 was just applied, surface how many role='user' rows are still

@@ -26,7 +26,7 @@ import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-mo
 import { localModelFit } from '../../agent/local-model-fit.js';
 // E21 parked minor: a create/rename name must not mint a second agent the case-insensitive
 // lookup cannot tell apart.
-import { caseVariantClash, caseVariantClashMessage } from '../../agent/agent-name-lookup.js';
+import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
 
 const logger = createLogger('setup-deps');
 

@@ -11,7 +11,7 @@
 // same counterparty to SCOPE the live conversation (fresh tail) down to it.
 // ════════════════════════════════════════
 import type { TurnAddress } from './turn-address.js';
-import { relationWords } from './turn-address-words.js';
+import { relationWords } from './turn-address.js';
 import { deriveOrigin, legacyOriginInputs, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
 import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';

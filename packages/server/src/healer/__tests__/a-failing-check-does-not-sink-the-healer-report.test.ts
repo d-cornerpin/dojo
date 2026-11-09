@@ -17,8 +17,6 @@ vi.mock('../../services/imessage-bridge.js', () => ({ sendAlert: vi.fn() }));
 import { runMigrations } from '../../db/migrations.js';
 import { compileDiagnosticReport } from '../diagnostic.js';
 import { noteToolError } from '../../agent/v2/tool-error-ledger.js';
-import { recordPromptSections } from '../../memory/prompt-sections.js';
-
 
 const DAY = 24 * 60 * 60 * 1000;
 type Item = { code: string; severity: string; title: string; detail: string };
@@ -26,9 +24,7 @@ const compile = (): Item[] => (compileDiagnosticReport() as { items: Item[] }).i
 beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(mockDb.current); });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
-function seedLessonAndPromptCost(): void {
-  mockDb.current!.prepare("INSERT INTO agents (id, name, status, config) VALUES ('a1', 'Worker', 'idle', '{}')").run();
-  recordPromptSections('a1', 'x'.repeat(400), ['sys.a']);
+function seedLesson(): void {
   const at = Date.now() - DAY;
   mockDb.current!.prepare(
     `INSERT INTO lessons (id, agent_id, task_id, cue, lesson, evidence_event_ids, confidence, component, created_at, expires_at)
@@ -43,10 +39,9 @@ describe('a failing check does not sink the Healer report', () => {
 
   it('a missing recurring-errors table gives one warning and the other sections still report', () => {
     mockDb.current!.exec('DROP TABLE tool_error_signatures');
-    seedLessonAndPromptCost();
+    seedLesson();
     const items = compile();
     expect(items.some((i) => i.code === 'LESSONS_FROM_ROUGH_TASKS')).toBe(true);
-    expect(items.some((i) => i.code === 'PROMPT_COST')).toBe(true);
     const failed = items.filter((i) => i.code === 'COLLECTOR_FAILED');
     expect(failed).toHaveLength(1);
     expect(failed[0].severity).toBe('warning');

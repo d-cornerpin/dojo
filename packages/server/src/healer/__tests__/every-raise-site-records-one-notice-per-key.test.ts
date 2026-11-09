@@ -2,7 +2,7 @@
 // key, in the site's words, and the dashboard's reload list is those rows. Covered here: memory low, an expired Google
 // sign-in, a failing watcher, a broken agent, rate-limit retries exhausted, the import card, the budget stop. Covered by
 // their own suites: the stall card (the-owner-hears-by-one-card-a-day), no fit (t148, t149), the budget crossing (t167),
-// paused, balance, the Healer's cases (t138-r2 to r7), built-in tools (built-in-tools-gap), Ollama (the upkeep suites),
+// paused, balance, the Healer's cases, built-in tools (the built-in-tools release step), Ollama (the upkeep suites),
 // the embedding switch and an unchecked fit (their suites).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';

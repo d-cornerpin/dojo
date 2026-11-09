@@ -15,7 +15,7 @@
 // ── THE EXEC SEAM IS MOCKED, DELIBERATELY ──
 // Nothing here drives the real Messages app. The dev box's TCC state is not a fixture: it would
 // make `granted` and `denied` depend on which machine ran the suite, and on a granted box the
-// suite would launch Messages. `setAutomationProbeSpawn` hands in the three outcomes instead,
+// suite would launch Messages. A mocked `spawn` hands in the three outcomes instead,
 // which is also the only way to drive the slow-dialog path at all.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -23,13 +23,37 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
-import {
-  automationPermissionStatus, classifyAutomationProbe,
-  setAutomationProbeSpawn, resetAutomationProbeForTests,
-  lastCompletedAutomationStatus,
-  MESSAGES_READ_ONLY_PROBE, OSASCRIPT_PATH, PROBE_SETTLE_MS, PROBE_CEILING_MS,
-  type AutomationProbeChild,
-} from '../automation-probe.js';
+import { EventEmitter } from 'node:events';
+import type { AutomationProbeChild } from '../automation-probe.js';
+
+type Probe = typeof import('../automation-probe.js');
+const spawned = vi.hoisted(() => ({ next: null as null | (() => AutomationProbeChild) }));
+
+// The exec seam: each spawn of osascript plays the child the clause handed in.
+vi.mock('node:child_process', () => ({
+  spawn: () => {
+    const fake = spawned.next!();
+    const child = Object.assign(new EventEmitter(), {
+      stderr: Object.assign(new EventEmitter(), { setEncoding: () => {} }),
+      kill: () => fake.kill(),
+    });
+    void fake.settled.then(({ code, stderr }) => {
+      if (stderr) child.stderr.emit('data', stderr);
+      child.emit('close', code);
+    });
+    return child;
+  },
+}));
+
+const setAutomationProbeSpawn = (fn: () => AutomationProbeChild): void => { spawned.next = fn; };
+let automationPermissionStatus: Probe['automationPermissionStatus'];
+let classifyAutomationProbe: Probe['classifyAutomationProbe'];
+let MESSAGES_READ_ONLY_PROBE: string, OSASCRIPT_PATH: string, PROBE_SETTLE_MS: number, PROBE_CEILING_MS: number;
+async function resetAutomationProbeForTests(): Promise<void> {
+  vi.resetModules();
+  ({ automationPermissionStatus, classifyAutomationProbe, MESSAGES_READ_ONLY_PROBE, OSASCRIPT_PATH, PROBE_SETTLE_MS, PROBE_CEILING_MS } =
+    await import('../automation-probe.js'));
+}
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../../..');
@@ -48,8 +72,8 @@ const settlesWith = (code: number | null, stderr = ''): AutomationProbeChild => 
   kill: () => { /* already finished */ },
 });
 
-beforeEach(() => { resetAutomationProbeForTests(); });
-afterEach(() => { resetAutomationProbeForTests(); vi.useRealTimers(); });
+beforeEach(async () => { await resetAutomationProbeForTests(); });
+afterEach(() => { vi.useRealTimers(); });
 
 describe('the three outcomes, classified honestly', () => {
   it('⚠ GRANTED — the AppleEvent landed, which is the thing the permission governs', async () => {
@@ -70,7 +94,7 @@ describe('the three outcomes, classified honestly', () => {
       'execution error: Not authorized to send Apple events to Messages.',
     ];
     for (const stderr of forms) {
-      resetAutomationProbeForTests();
+      await resetAutomationProbeForTests();
       setAutomationProbeSpawn(() => settlesWith(1, stderr));
       await expect(automationPermissionStatus(), stderr).resolves.toBe('denied');
     }
@@ -86,7 +110,7 @@ describe('the three outcomes, classified honestly', () => {
       'ENOENT spawn /usr/bin/osascript ENOENT',
     ];
     for (const stderr of absent) {
-      resetAutomationProbeForTests();
+      await resetAutomationProbeForTests();
       setAutomationProbeSpawn(() => settlesWith(1, stderr));
       await expect(automationPermissionStatus(), stderr).resolves.toBe('unknown');
     }
@@ -138,9 +162,6 @@ describe('the bound waits on a human without hanging on one', () => {
     // killed: its answer is the answer.
     settle({ code: 0, stderr: '' });
     await vi.advanceTimersByTimeAsync(1);
-    expect(lastCompletedAutomationStatus(), 'the late answer has to land somewhere')
-      .toBe('granted');
-
     // And a later poll READS it — even one whose own probe has not come back yet, which is the
     // case that matters: the row goes green on the click, not on the next lucky round trip.
     setAutomationProbeSpawn(() => ({ settled: new Promise(() => {}), kill }));

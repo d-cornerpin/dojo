@@ -450,5 +450,3 @@ export function pruneOldPMMessages(pmId: string): void {
   }
 }
 
-// ── Dependency Checker ── (moved to `dependencies.ts`; re-exported so every caller keeps its import)
-export { checkDependencies } from './dependencies.js';

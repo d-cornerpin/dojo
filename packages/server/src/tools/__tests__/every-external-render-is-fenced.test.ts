@@ -4,7 +4,7 @@
 // Fix round 1 (review I-K3) made it structural rather than a hand list of files:
 //   1. TOOL READS. The candidate tools are DERIVED from the definitions: every tool that reads
 //      (its display class is `retrieval`, or its name carries a reading word). Each must be
-//      registered in `agent/tools/outside-content.ts` — door-fenced, or fenced by the mailbox
+//      registered in `tools/inbound-fences.ts`: door-fenced, or fenced by the mailbox
 //      banner — or named in its NOT_OUTSIDE_CONTENT with a reason. A new read tool fails here
 //      until someone decides which it is. Registering IS fencing: the one tool door calls
 //      `fenceToolResult` (checked below, comments stripped).
@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { classifyTool } from '@dojo/shared';
 import { getAllToolDefinitions } from '../../agent/tools/definitions.js';
-import { OUTSIDE_READ_NAMES, BANNER_FENCED_READS, NOT_OUTSIDE_CONTENT } from '../../agent/tools/outside-content.js';
+import { OUTSIDE_READ_NAMES, BANNER_FENCED_READS, NOT_OUTSIDE_CONTENT } from '../inbound-fences.js';
 
 const SRC = path.resolve(__dirname, '../..');
 const PACKAGES = path.resolve(SRC, '../..');
@@ -54,7 +54,7 @@ describe('K33 — tool reads: derived from the definitions, every one decided', 
   });
 
   it('every read-shaped tool is registered as outside content, banner-fenced, or exempt with a reason', () => {
-    expect(candidates.filter((n) => !decided.has(n)), 'read tools with no decision: register them in agent/tools/outside-content.ts').toEqual([]);
+    expect(candidates.filter((n) => !decided.has(n)), 'read tools with no decision: register them in tools/inbound-fences.ts').toEqual([]);
   });
 
   it('no tool is decided twice, and every entry names a tool that exists', () => {

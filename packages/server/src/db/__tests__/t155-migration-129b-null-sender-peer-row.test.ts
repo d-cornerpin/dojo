@@ -19,11 +19,7 @@
 //   5. an engine row ('events' lane), no sender -> not a2a; must STAY NULL
 //   6. a peer 'user' row with a sender   -> carried unchanged
 // It goes through the real runner (`runMigrations`), so the boot is the thing under test.
-//
-// THE LEDGER: 129b is a released, applied migration, so amending it needs a KNOWN_DIVERGENCES
-// entry or every box that already ran it logs MIGRATION DIVERGENCE at ERROR for ever. The
-// clauses below rebuild the pre-amend bytes by reversing the edit, prove their checksum is the
-// ledger's `appliedChecksum`, and read a box that applied them through the real audit.
+
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -66,7 +62,6 @@ vi.mock('../../db/connection.js', async () => {
 });
 
 import { runMigrations } from '../migrations.js';
-import { auditMigrationChecksums, KNOWN_DIVERGENCES, migrationChecksum } from '../migration-checksums.js';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
@@ -173,36 +168,5 @@ describe('the upgrade door: the real runner', () => {
     runMigrations();
     expect(d.prepare("SELECT COUNT(*) AS n FROM messages WHERE source_agent_id = 'unrecorded-peer'").get()).toEqual({ n: 0 });
     expect(d.prepare("SELECT COUNT(*) AS n FROM messages WHERE id LIKE 'fx-ia-%'").get()).toEqual({ n: 4 });
-  });
-});
-
-describe('the ledger: a box that already ran the old 129b reports no loud divergence', () => {
-  it('the ledger entry\'s appliedChecksum is the checksum of the pre-amend bytes, and its fileChecksum is the file now', () => {
-    const entry = KNOWN_DIVERGENCES.find((k) => k.file === FILE);
-    expect(entry, '129b must carry an adjudication').toBeTruthy();
-    expect(migrationChecksum(preAmendText())).toBe(entry!.appliedChecksum);
-    expect(migrationChecksum(fs.readFileSync(path.join(MIGRATIONS_DIR, FILE), 'utf-8'))).toBe(entry!.fileChecksum);
-  });
-
-  it('the real audit reads such a box as adjudicated, not loud', () => {
-    const d = new Database(':memory:');
-    d.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT, checksum TEXT)');
-    d.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)').run(FILE, migrationChecksum(preAmendText()));
-    const audit = auditMigrationChecksums(d, (name) => {
-      try { return fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf-8'); } catch { return null; }
-    });
-    expect(audit.adjudicated).toBe(1);
-    expect(audit.findings.filter((f) => f.kind === 'diverged' && !f.adjudicated)).toEqual([]);
-    d.close();
-  });
-
-  it('the ledger cannot pre-approve a further edit: a different applied hash is still loud', () => {
-    const d = new Database(':memory:');
-    d.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT, checksum TEXT)');
-    d.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)').run(FILE, migrationChecksum('some other version'));
-    const audit = auditMigrationChecksums(d, () => fs.readFileSync(path.join(MIGRATIONS_DIR, FILE), 'utf-8'));
-    expect(audit.adjudicated).toBe(0);
-    expect(audit.findings.filter((f) => f.kind === 'diverged' && !f.adjudicated)).toHaveLength(1);
-    d.close();
   });
 });

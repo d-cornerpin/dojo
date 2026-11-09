@@ -119,19 +119,13 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
     },
   },
   {
-    id: 'built-in-policy-tools',
+    id: 'built-in-tools',
     // Below every 3.5.0 build: a box from 3.4.x or older owes it (their rows were written before these tools joined the lists).
     sinceVersion: '3.5.0-0',
     pays:
-      'the Dreamer and PM keep the tool list they last held (the per-boot rewrite was retired in 3.1.23), so an upgraded '
-      + "box's Dreamer was refused lesson_record and wrote no lessons. Adds only the missing names; owner edits and denials stand.",
-    run: async () => (await import('./built-in-policy-delivery.js')).deliverPolicyTools('built-in-policy-tools'),
-  },
-  {
-    id: 'built-in-tools-gap',
-    sinceVersion: '3.5.0-0',
-    pays: 'a Dreamer or PM row last written before 3.1.22 can lack older listed tools (an old PM lacks vault_get); an owner trim looks the same, so this edits nothing and tells him once, on a card.',
-    run: async () => (await import('./built-in-tools-gap.js')).raiseBuiltInToolsGap(),
+      'the Dreamer and PM keep the tool list they last held, so an upgraded box\'s Dreamer was refused lesson_record and the PM '
+      + 'tool_result_read. Adds only those names; an older listed tool still missing is offered once on a card, never added.',
+    run: async () => (await import('./built-in-tools.js')).deliverBuiltInTools(),
   },
 ];
 

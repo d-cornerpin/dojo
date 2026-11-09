@@ -73,7 +73,7 @@ function describeEffect(e: DeadTurnEffect): string {
 }
 
 /** A send the dead turn had begun on an outside channel and no door ever answered for: the intent row
- *  (`outcome='pending'`, `agent/v2/delivery-intent.ts`). It may have reached the person. */
+ *  (`outcome='pending'`, `agent/v2/deliveries.ts`). It may have reached the person. */
 interface MaybeSent { channel: string; recipient: string | null; text: string | null }
 
 function maybeSentBy(agentId: string, turnNumber: number | null): MaybeSent[] {

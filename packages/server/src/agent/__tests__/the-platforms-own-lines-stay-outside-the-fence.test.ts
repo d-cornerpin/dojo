@@ -32,7 +32,7 @@ import { getDb } from '../../db/connection.js';
 import { homeDir } from '../../home.js';
 import { executeTool } from '../tools/index.js';
 import { toolResultOf } from '../tool-outcome.js';
-import { fenceOutsideSpan } from '../tools/outside-content.js';
+import { fenceOutsideSpan } from '../../tools/inbound-fences.js';
 import { fenceRanges, fenceExternal } from '../../tools/external-content.js';
 import { WEB_RESULT_SOURCE_BOUND } from '../tools/cat/web.js';
 import { executeGoogleReadTool } from '../../google/tools-read.js';
