@@ -356,7 +356,6 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
       'github/device-flow.ts',
       'google/accounts.ts',
       'google/auth.ts',
-      'inspect/credential-shapes.ts', // names the columns only as patterns that BLANK them in the inspect view; reads and writes none
       'microsoft/accounts.ts',
       'microsoft/auth.ts',
       'migration/checks.ts',

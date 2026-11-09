@@ -41,8 +41,8 @@ export function kickMemoryRecheck(): void {
     // t148: an agent parked on a budget's limit is released when the window turned over. First, and in
     // its own guarded step, so a failure ending the cards below never skips it (the lock module catches).
     await (await import('../agent/v2/honest-stop-lock.js')).releaseClearedBudgetStops();
-    // r6: a budget whose window turned over has no live incident; its card leaves now.
-    (await import('../costs/budget-cards.js')).endTurnedOverBudgetCards();
+    // A notice whose condition ended unsaid (a budget window turned over) leaves every open dashboard now.
+    (await import('../healer/owner-notice-kinds.js')).sweepOwnerNotices();
     if (!m.memoryLowStanding()) return;
     const { getResourceInfo } = await import('../services/resource-monitor.js');
     m.noteCriticalMemory(getResourceInfo().memory.free);

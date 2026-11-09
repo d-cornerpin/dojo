@@ -25,12 +25,11 @@ vi.mock('../../db/connection.js', () => ({
 }));
 // The owner-card broadcast is not this suite's subject; what it is TOLD is.
 vi.mock('../agent-owner-cards.js', () => ({ agentPurgedForOwner: () => undefined }));
-vi.mock('../../services/owner-card-frames.js', () => ({
-  ownerCardEnded: (words: string) => { m.endedCards.push(words); },
-}));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { severity?: string; cardKey?: string }) => { if (f.severity === 'info' && f.cardKey) m.endedCards.push(f.cardKey); } }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { purgeAgentRows, PURGE_KEEPS } from '../purge.js';
+import { tellOwner } from '../../healer/owner-notices.js';
 
 const DOOMED = 'agent-doomed';
 const SURVIVOR = 'agent-survivor';
@@ -158,17 +157,16 @@ describe('t189 B4: the purge sweeps every table with an agent_id column', () => 
   });
 
   it('its budget row goes, its live budget card ends, another budget stays', () => {
-    db().prepare(`INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period, alert_words) VALUES
-      (?, 'agent', 5, 'daily', 'doomed agent is at 90% of its budget'),
-      (?, 'agent', 5, 'daily', NULL),
-      ('global_daily', 'global', 50, 'daily', NULL)`).run(`agent_${DOOMED}`, `agent_${SURVIVOR}`);
+    db().prepare(`INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period) VALUES
+      (?, 'agent', 5, 'daily'), (?, 'agent', 5, 'daily'), ('global_daily', 'global', 50, 'daily')`).run(`agent_${DOOMED}`, `agent_${SURVIVOR}`);
+    tellOwner(`budget:agent_${DOOMED}`, 'doomed agent is at 90% of its budget');
     db().pragma('foreign_keys = ON');
 
     purgeAgentRows(DOOMED);
 
     const ids = (db().prepare('SELECT id FROM budgets ORDER BY id').all() as Array<{ id: string }>).map((r) => r.id);
     expect(ids).toEqual(['agent_' + SURVIVOR, 'global_daily'].sort());
-    expect(m.endedCards).toContain('doomed agent is at 90% of its budget');
+    expect(m.endedCards).toContain(`budget:agent_${DOOMED}`);
   });
 
   it('a purge is never blocked by ANOTHER agent\'s work that points at this agent\'s conversation or delivery', () => {

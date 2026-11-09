@@ -27,7 +27,6 @@ import { recordAtDoor, withOutboundAsync, withOutboundAsyncIfAbsent, PLATFORM_SE
 import { runMessagesProgram, wasCutByTheStop, wasNeverStarted, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { inboundIMessageText } from '../tools/inbound-fences.js';
-import { ownerCardFrame, ownerCardEnded } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
 import {
   type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord,
@@ -2077,24 +2076,15 @@ export function getApprovedSenders(): string[] {
 const ownerNoticeLog = createLogger('owner-notice');
 
 /**
- * THE OWNER-NOTICE DOOR — where the PLATFORM, not an agent, speaks to the owner. `critical`
- * (sent with a "[CRITICAL]" prefix) and `notice` (no prefix) go to the phone AND, in the same
- * words, to the dashboard's notification cards until he dismisses them (t138 rounds 2-3);
- * `card: false` (a status line) raises none, and an all-clear's `clears` removes the card it
- * answers. `warning`/`info` reach neither (v2.3.19, owner: "I only want true blockers or true
- * issues ... to go to imessage"). Callers are ruled (10(a) + OR-V333-SET (3)) and pinned by
- * class in t138-every-owner-notice-has-a-class.test.ts; fix a wrong severity at the call site.
- */
-/**
- * OR-AUDIT-ANSWERS (d), owner ruling: the Dojo's own texts to the owner are exactly these. Offline and back online
- * (an update that failed included) and a failed database integrity check are the watchdog's (watchdog/src/index.ts);
- * the server's door carries the rest, and every caller names which one, so a text outside the set does not type-check
- * and is refused here. Re-review 2 S8 (owner): the new remote dashboard address is allowed too.
+ * THE OWNER'S PHONE DOOR, where the PLATFORM, not an agent, texts the owner. `critical` (sent with a "[CRITICAL]" prefix)
+ * and `notice` go to the phone; `warning` and `info` do not. Its dashboard card is the caller's, through the one writer
+ * (`healer/owner-notices.ts tellOwner`). The texts are exactly these kinds (offline, back online and a failed integrity
+ * check are the watchdog's); a text outside the set does not type-check and is refused here.
  */
 export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical', 'remote-address'] as const;
 export type PlatformTextKind = typeof PLATFORM_TEXT_KINDS[number];
 
-export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; card?: false; clears?: string; cardKey?: string; agentId?: string }): Promise<void> {
+export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { kind: PlatformTextKind; agentId?: string }): Promise<void> {
   try {
     if (!(PLATFORM_TEXT_KINDS as readonly string[]).includes(opts.kind)) {
       logger.warn('Alert refused: not one of the owner\'s platform texts', { kind: opts.kind });
@@ -2113,12 +2103,6 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
     const fullMessage = dojoVoice(urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed);   // "Dojo:" first; the card keeps the bare words
     logger.info(`Sending ${urgency} alert to iMessage`, { message: scrubbed.slice(0, 200) });
 
-    // The card is born where the text is (services/owner-card-frames.ts); an all-clear ends one.
-    // A status line and an all-clear raise none BY DESIGN (R-V333-13); the record below says which.
-    const card = opts.clears !== undefined || opts.card === false ? 'none_by_design' : 'raised';
-    if (opts.clears !== undefined) ownerCardEnded(opts.clears);
-    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning', opts.cardKey, 'action');   // by ruling, true blockers only
-
     const recipient = getDefaultSender();
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a
     // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
@@ -2132,7 +2116,7 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
         return tellAgentOwnerAlertSent(opts.agentId, fullMessage, ok);   // the agent is told what went out
       },
     );
-    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up', card });
+    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up' });
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),

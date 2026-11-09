@@ -12,7 +12,6 @@ import crypto from 'node:crypto';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { widestIntegrationLevel } from '../agent/access/read.js';
-import { ownerCardFrame } from '../services/owner-card-frames.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 import {
   countMicrosoftAccounts,
@@ -301,7 +300,7 @@ function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string):
   // OR-AUDIT-ANSWERS (d): a sign-in that expired is no platform text (the owner's set: offline and back online, budget,
   // broken agent, Mac critical). The dashboard card stays; the agent sees the disconnected integration in its prompt and
   // tells him (OR-ENGINE-LABELLED: the agent's job).
-  try { ownerCardFrame(noteMicrosoftSignInExpired(accountId, expiredWords(acc)), 'error', undefined, 'action'); } catch { /* the card is re-derived on the next load */ }
+  noteMicrosoftSignInExpired(accountId, expiredWords(acc));
 }
 
 const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Microsoft cards).`; // the owner's card carries these words (t138 r3-4)

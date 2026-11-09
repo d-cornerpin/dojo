@@ -27,7 +27,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential } from '../config/loader.js';
 import { sendAlert } from '../services/imessage-bridge.js';
-import { ownerCardEnded } from '../services/owner-card-frames.js';
+import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
 const logger = createLogger('provider-balance');
 
@@ -158,32 +158,17 @@ function thresholdOf(raw: string | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** The latch holds what he was told (`{ at, words, dismissedAt? }`): his card (t138 rounds 3-4). */
-function setLatch(latchKey: string, told: { words: string } | null): void {
+/** The latch is the crossing told (its card `balance:<latch>` stands while it does); a top-up or a removed key ends both. */
+function setLatch(latchKey: string, words: string | null): void {
   const db = getDb();
-  if (told) {
-    const value = JSON.stringify({ at: Date.now(), words: told.words });
-    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(latchKey, value);
-  } else {
-    const was = db.prepare('SELECT value FROM config WHERE key = ?').get(latchKey) as { value: string } | undefined;
+  if (words === null) {
     db.prepare('DELETE FROM config WHERE key = ?').run(latchKey);
-    try { const w = (JSON.parse(was?.value ?? '{}') as { words?: string }).words; if (w) ownerCardEnded(w); } catch { /* bare latch */ }
+    ownerConditionCleared(`balance:${latchKey}`);
+    return;
   }
-}
-
-/** The balance owner cards on load: each latched, undismissed crossing (a top-up ends it, live). */
-export function balanceOwnerCards(): Array<{ words: string; severity: 'notice'; dismiss: () => void }> {
-  const keys = readKeys();
-  return WATCHED.flatMap((w) => {
-    let told: { at?: number; words?: string; dismissedAt?: number } = {};
-    try { told = JSON.parse(keys.get(w.latchKey) ?? '{}') as typeof told; } catch { /* a bare legacy latch: no words */ }
-    if (typeof told.words !== 'string' || told.dismissedAt !== undefined) return [];
-    const dismiss = (): void => {
-      getDb().prepare('UPDATE config SET value = ? WHERE key = ?').run(JSON.stringify({ ...told, dismissedAt: Date.now() }), w.latchKey);
-    };
-    return [{ words: told.words, severity: 'notice' as const, dismiss }];
-  });
+  db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(latchKey, JSON.stringify({ at: Date.now() }));
+  tellOwner(`balance:${latchKey}`, words);
 }
 
 async function checkOne(w: Watched): Promise<void> {
@@ -210,7 +195,7 @@ async function checkOne(w: Watched): Promise<void> {
 
   if (!latched && balance <= threshold) {
     const words = `${w.label} balance is $${balance.toFixed(2)}, at or below your ${usd(threshold)} warning threshold. Add credits at ${w.topUpAt}.`;
-    setLatch(latchKey, { words });
+    setLatch(latchKey, words);
     logger.warn(`${w.label} balance at or below its warning threshold`, { balance, threshold });
     void sendAlert(words, 'notice', { kind: 'budget' });
   } else if (latched && balance > threshold) {

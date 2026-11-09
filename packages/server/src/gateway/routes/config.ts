@@ -17,17 +17,9 @@ import { contractForModel } from '../../agent/model-contract.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
-import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance, balanceOwnerCards } from '../../costs/provider-balance-check.js';
-import { budgetOwnerCards } from '../../costs/budget.js';
-import { agentOwnerCards } from '../../agent/agent-owner-cards.js';
-import { healerOwnerCards } from '../../healer/owner-notices.js';
-import { memoryOwnerCards } from '../../services/memory-low-notice.js';
-import { accountOwnerCards } from '../../services/account-owner-cards.js';
-import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
-import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
-import { importOwnerCards } from '../../migration/import-recovery.js';
-import { builtInToolsOwnerCards, markBuiltInToolsCardShown } from '../../services/built-in-tools-card.js';
-import { ownerCardEnded } from '../../services/owner-card-frames.js';
+import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance } from '../../costs/provider-balance-check.js';
+import { dismissOwnerNotice } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
@@ -2891,36 +2883,20 @@ configRouter.post('/agent-sdk/verify', async (c) => {
   }
 });
 
-// ── THE OWNER'S CARDS (t138 round 3, ruling R-V333-13) ──
-//
-// Every text the platform sends the owner also waits on his dashboard until he dismisses it.
-// The dashboard asks here on load and on every reconnect. There is no store of cards: each is
-// RE-DERIVED from the alert state its owner already keeps (budget and balance latches, the
-// error loop's paused row, the Healer's durable state, the memory, account, watcher and
-// rate-limit records), in the words the text carried (as the door scrubs them). Dismissing stamps that incident's own row, so it stays
-// dismissed across reloads and restarts, and a NEW incident is a new card.
-const ownerCards = () => [
-  ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
-  ...accountOwnerCards(), ...watcherOwnerCards(), ...importOwnerCards(), ...builtInToolsOwnerCards(),
-].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey, cardClass: (card as { cardClass?: 'action' | 'informational' }).cardClass }));
+// ── THE OWNER'S CARDS ──
+// The dashboard asks on load and on every reconnect: the standing notices the one writer recorded
+// (`healer/owner-notice-kinds.ts`). Dismissing stamps that notice, so it stays dismissed across reloads
+// and restarts, and a NEW incident is a new card.
 
-// GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
-configRouter.get('/owner-notices', (c) => {
-  const cards = ownerCards();
-  const seen = new Map(cards.map(({ words, severity, cardKey, cardClass }) => [cardKey ?? words, { words, severity, ...(cardKey ? { cardKey } : {}), ...(cardClass ? { cardClass } : {}) }] as const));
-  // Audit #7: a card named once (the built-in tools card) is marked shown as it is served.
-  for (const card of cards) if (card.cardKey) markBuiltInToolsCardShown(card.cardKey);
-  return c.json({ ok: true, data: [...seen.values()] });
-});
+// GET /api/config/owner-notices: the owner cards still standing
+configRouter.get('/owner-notices', (c) => c.json({ ok: true, data: standingOwnerNotices() }));
 
-// POST /api/config/owner-notices/dismiss — { words }: the card's X
+// POST /api/config/owner-notices/dismiss: { cardKey } (or { words }), the card's X
 configRouter.post('/owner-notices/dismiss', async (c) => {
   const body = await c.req.json().catch(() => null) as { words?: unknown; cardKey?: unknown } | null;
-  if (typeof body?.words !== 'string') return c.json({ ok: false, error: 'words is required' }, 400);
-  const key = typeof body.cardKey === 'string' ? body.cardKey : undefined;   // N42 r2: a keyed card is found by its key
-  const hits = ownerCards().filter((card) => (key ? card.cardKey === key : card.words === body.words));
-  for (const card of hits) card.dismiss();
-  if (hits.length > 0) ownerCardEnded(body.words, key); // round 5: every other open tab drops it too
+  if (typeof body?.cardKey !== 'string' && typeof body?.words !== 'string') return c.json({ ok: false, error: 'cardKey or words is required' }, 400);
+  const hits = standingOwnerNotices().filter((card) => (typeof body.cardKey === 'string' ? card.cardKey === body.cardKey : card.words === body.words));
+  for (const card of hits) dismissOwnerNotice(card.cardKey);
   return c.json({ ok: true, data: { dismissed: hits.length } });
 });
 

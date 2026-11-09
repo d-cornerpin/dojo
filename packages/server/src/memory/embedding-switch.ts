@@ -18,8 +18,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { ownerCardFrame } from '../services/owner-card-frames.js';
-import { tellOwnerOnce, ownerConditionCleared, wordsOf, cardKeyOf } from '../healer/owner-notices.js';
+import { tellOwner, ownerConditionCleared, wordsOf } from '../healer/owner-notices.js';
 import { embeddingIsLocal, embeddingModelKey, countMemoriesOnOtherModels } from './embedding-model.js';
 
 const logger = createLogger('embedding-switch');
@@ -77,5 +76,5 @@ export async function handleEmbeddingModelSwitch(previousKey: string): Promise<v
     return;
   }
   // Paid: nothing is spent. A lasting card, told once per switch.
-  if (tellOwnerOnce(EMBEDDING_SWITCH_KEY)) ownerCardFrame(wordsOf(EMBEDDING_SWITCH_KEY), 'warning', cardKeyOf(EMBEDDING_SWITCH_KEY), 'informational');   // an optional choice: nothing billed, no button
+  tellOwner(EMBEDDING_SWITCH_KEY, wordsOf(EMBEDDING_SWITCH_KEY));   // an optional choice: nothing billed, no button
 }

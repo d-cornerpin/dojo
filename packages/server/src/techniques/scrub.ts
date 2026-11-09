@@ -2,10 +2,11 @@
 // Technique Secret Scrubber
 // ════════════════════════════════════════
 //
-// Deterministic pass that replaces recognized secret patterns in technique
-// files with {{NEEDS_FROM_USER:LABEL}} placeholders before the package is
-// shipped to another Dojo. Followed by a Trainer (the Trainer) review pass that
-// catches anything the regexes miss and writes the README.
+// THE ONE LIST OF CREDENTIAL SHAPES. The technique exporter replaces each match with a {{NEEDS_FROM_USER:LABEL}}
+// placeholder before a package is shipped (a Trainer review pass follows), and every dojo_inspect view blanks the same
+// matches (`inspect/redact.ts redactText`). Both apply the whole list in the same order, so a span either use blanked
+// is blanked by both. The LAST capture group (or the whole match when there is none) is the secret; `keep` may veto a
+// match that is code, a number or a placeholder rather than a credential.
 
 export interface Redaction {
   file: string;       // relative path inside the technique dir
@@ -24,18 +25,89 @@ export interface ScrubResult {
 export interface Pattern {
   name: string;
   regex: RegExp;
-  label: (m: RegExpExecArray) => string;
-  hint: string;
-  // When set, only this 1-based capture group holds the secret; the replace
-  // callback swaps just that text so the surrounding syntax (a variable name,
-  // `=`, quotes, the word Bearer) survives the scrub.
-  secretGroup?: number;
+  /** The exporter's placeholder label and README hint (a shape with none is a generic credential). */
+  label?: (m: RegExpExecArray) => string;
+  hint?: string;
+  keep?: (value: string, match: string) => boolean;
 }
 
-// Pattern ordering matters: longer / more specific patterns first so a
-// generic catch-all doesn't swallow something a labelled pattern would
-// have tagged more usefully.
+/** A name whose last segment (`_`, `-`, `.` or camelCase) is a credential word. `tokens`, `tokenizer`,
+ *  `secretary`, `token_count`, `secret_path` do not end in one. */
+const CREDENTIAL_NAME = String.raw`[\w.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|private[_-]?key)`;
+
+/** A value that is not a credential literal: empty, a placeholder or reference, a number, a flag or
+ *  nothing-word, a type name, or a code expression (a call, an index, a member path). */
+const TYPE_WORDS = /^(?:string|number|boolean|any|unknown|object|void|never|bigint|symbol|str|int|bool|bytes)$/i;
+const NOTHING = /^(?:true|false|null|undefined|none|nil|nan)$/i;
+const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+$/;
+export function notACredentialLiteral(v: string): boolean {
+  const t = v.trim().replace(/[`.;,:]+$/, '');
+  if (t === '' || /^\.+$|^[*x…-]{3,}$/.test(t) || /^<.*>$/.test(t) || /^\$\{.*\}$|^\$[A-Za-z_]\w*$|^%\(\w+\)s$|^\{\{.*\}\}$/.test(t)) return true;
+  if (/^[-+]?\d[\d_.,]*$/.test(t) || NOTHING.test(t) || TYPE_WORDS.test(t)) return true;
+  if (/[()[\]]/.test(t) && /^[A-Za-z_$][\w$.?]*[([]/.test(t)) return true;
+  return MEMBER_PATH.test(t) && !/\d/.test(t);
+}
+/** For a key/value pair or a flag: also not a credential when the value is code (a placeholder
+ *  `?`/`$1`, a brace or bracket opening an object, a digit-free identifier, a very short word)
+ *  rather than a quoted string or a generated secret. Real credentials the Dojo handles carry digits. */
+export function notAPairedCredential(v: string, match: string): boolean {
+  if (notACredentialLiteral(v)) return true;
+  const quoted = match.endsWith(`"`) || match.endsWith(`'`);
+  if (quoted) return /^[a-z]+(?:_[a-z]+)+$/.test(v);
+  return /^[?:@]\w*$/.test(v) || /^[$({[`<]|^\/[^/]|^\/\^/.test(v) || (/^[A-Za-z_$][A-Za-z_$]*$/.test(v) && (v.length <= 20 || v.includes('_'))) || v.length < 6;
+}
+
+/** The short password flag `-p <value>` (a sshpass or mysql-style call). `-p` is also a port, a
+ *  "make parents" flag and a path flag, so a value is blanked only when it is not code, not a number,
+ *  not a path or a phrase with spaces, and carries both a letter and a digit the way a generated password does. */
+function notAShortFlagPassword(v: string, match: string): boolean {
+  if (notAPairedCredential(v, match)) return true;
+  if (/[\\/]/.test(v)) return true;
+  return /\s/.test(v) || !(/\d/.test(v) && /[A-Za-z]/.test(v));
+}
+/** A query-parameter value that looks like a key: long, one unbroken run, letters and digits both. */
+const KEY_LIKE = String.raw`(?=[A-Za-z0-9_.~+/=-]*\d)(?=[A-Za-z0-9_.~+/=-]*[A-Za-z])[A-Za-z0-9_.~+/=-]{16,}`;
+
+const PAIR_VALUE = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s,;"'}\])]+))`;
+const GENERIC_HINT = 'A credential. Provide your own.';
+/** A pair's placeholder label is its own name, upper snake case (`db.password` becomes DB_PASSWORD). */
+const namedLabel = (m: RegExpExecArray): string => (/^[\w.-]+/.exec(m[0])?.[0] ?? 'credential').replace(/[.-]/g, '_').toUpperCase();
+
+// The broad shapes first (a whole bearer run, a key/value pair), then the labelled vendor shapes.
 export const PATTERNS: Pattern[] = [
+  // Whole PEM block; a block cut off before its END line is blanked to the end of the text.
+  { name: 'pem-private-key', regex: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g },
+  { name: 'google-access-token', regex: /\bya29\.[A-Za-z0-9_-]{10,}/g },
+  { name: 'google-refresh-token', regex: /(?<![\w/])1\/\/[A-Za-z0-9_-]{20,}/g },
+  { name: 'github-fine-grained', regex: /\bgithub_pat_[A-Za-z0-9_]{20,}/g },
+  // The whole run after `Bearer` (Microsoft tokens carry + / = ! * $ ~), not the exporter's narrower run.
+  { name: 'bearer-run', regex: /\bbearer\s+([^\s"'`,;<>)]{12,})/gi, keep: notACredentialLiteral, label: () => 'BEARER_TOKEN', hint: 'Bearer token used in an Authorization header.' },
+  // `Authorization: Basic <b64>` (any case), and a bare `Basic <b64>` that looks encoded (has a digit, + / or =).
+  { name: 'basic-auth-header', regex: /\bauthorization["']?\s*[:=]\s*["']?basic\s+([A-Za-z0-9+/]{4,}={0,2})/gi },
+  { name: 'basic-auth', regex: /\bBasic\s+((?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2})/g },
+  // A password in a URL of any scheme: scheme://user:password@host.
+  { name: 'url-password-any-scheme', regex: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:([^\s/@]+)@/gi },
+  // The bare tunnel token: long base64 starting eyJ with no dots (a JWT has dots and is the exporter's).
+  { name: 'tunnel-token', regex: /\beyJ[A-Za-z0-9+/_-]{60,}={0,2}(?![A-Za-z0-9.])/g },
+  // A cookie header carries session credentials.
+  { name: 'cookie-header', regex: /\b(?:set-)?cookie\s*:[ \t]*([^\r\n]+)/gi },
+  // A command-line flag naming a credential, value after a space or `=`: --token <v>, --api-key=<v>.
+  { name: 'credential-flag', regex: /(?<![\w-])--?[\w-]*(?:token|password|passwd|secret|api-?key)(?:[ \t]+|=)(?!-)(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"']+))/gi, keep: notAPairedCredential },
+  // Google OAuth client secret, and Google API keys (the shapes of the Google accounts the Dojo stores).
+  { name: 'google-client-secret', regex: /\bGOCSPX-[A-Za-z0-9_-]{10,}/g },
+  { name: 'google-api-key', regex: /\bAIza[0-9A-Za-z_-]{30,}/g, label: () => 'GOOGLE_API_KEY', hint: 'Google API key (starts with AIza). Get one from the Google Cloud Console.' },
+  // The short password flag with its value after a space: -p <value>.
+  { name: 'password-short-flag', regex: /(?<![\w-])-p[ \t]+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"']+))/g, keep: notAShortFlagPassword },
+  // A credential written as an XML element: <password>value</password>, with or without CDATA.
+  { name: 'credential-xml-element', regex: new RegExp(String.raw`<(${CREDENTIAL_NAME})(?:\s[^>]*)?>\s*(?:<!\[CDATA\[([^\]]*)\]\]>|([^<]*?))\s*</\1\s*>`, 'gi'), keep: notAPairedCredential },
+  // A generic key= query parameter (?key=, &access_key=), blanked only when the value looks like a key.
+  { name: 'key-query-parameter', regex: new RegExp(String.raw`(?<=[?&])[\w.-]*key=(${KEY_LIKE})`, 'gi') },
+  // JSON that is itself inside a JSON string: a quoted credential name, then a quoted value, both escaped.
+  { name: 'credential-pair-escaped', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}\\"\s*:\s*\\"((?:[^"\\]|\\(?!"))+)\\"`, 'gi'), keep: notAPairedCredential },
+  // A name that ENDS in a credential word, in JSON, `name=value` or `name: value`, any case.
+  // Key and punctuation stay; `==`, `=>` and `=~` are comparisons, not assignments.
+  { name: 'credential-pair', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}["'\`]?[ \t]*[:=](?![=>~])(?:[ \t]*|[ \t]*\r?\n[ \t]+)${PAIR_VALUE}`, 'gi'), keep: notAPairedCredential, label: namedLabel, hint: 'A credential assigned to a named setting.' },
+
   {
     name: 'anthropic-key',
     regex: /\bsk-ant-[a-zA-Z0-9_-]{20,}/g,
@@ -85,12 +157,6 @@ export const PATTERNS: Pattern[] = [
     hint: 'AWS access key ID (starts with AKIA or ASIA). The matching secret key must also be replaced.',
   },
   {
-    name: 'google-api-key',
-    regex: /\bAIza[a-zA-Z0-9_-]{35}\b/g,
-    label: () => 'GOOGLE_API_KEY',
-    hint: 'Google API key (starts with AIza). Get one from the Google Cloud Console.',
-  },
-  {
     name: 'stripe-key',
     regex: /\b(?:sk|pk|rk)_(?:test|live)_[a-zA-Z0-9]{20,}\b/g,
     label: (m) => /^pk_/.test(m[0]) ? 'STRIPE_PUBLISHABLE_KEY' : 'STRIPE_SECRET_KEY',
@@ -117,7 +183,6 @@ export const PATTERNS: Pattern[] = [
     regex: /\b[Bb]earer\s+([a-zA-Z0-9._-]{20,})\b/g,
     label: () => 'BEARER_TOKEN',
     hint: 'Bearer token used in an Authorization header.',
-    secretGroup: 1,
   },
   {
     name: 'env-secret-assignment',
@@ -128,7 +193,6 @@ export const PATTERNS: Pattern[] = [
     regex: /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|PASSWD|PRIVATE_KEY))\s*[:=]\s*['"]?([^'"\s<>{}]{12,})['"]?/g,
     label: (m) => m[1].replace(/^[A-Z_]+_/, '') ? m[1] : m[1],
     hint: 'An environment variable holding a credential.',
-    secretGroup: 2,
   },
 ];
 
@@ -141,6 +205,14 @@ const BINARY_EXTENSIONS = new Set([
   '.docx', '.xlsx', '.pptx',
   '.sqlite', '.db',
 ]);
+
+/** The secret span of a match: its last non-empty capture group, '' for the whole match, or null when `keep` vetoes it. */
+export function secretOf(p: Pattern, match: string, rest: unknown[]): string | null {
+  const groups = rest.slice(0, -2).filter((g): g is string => typeof g === 'string' && g.length > 0);
+  const value = groups[groups.length - 1];
+  if (p.keep && (!value || p.keep(value, match))) return null;
+  return value ?? '';
+}
 
 export function isBinaryFile(relPath: string): boolean {
   const idx = relPath.lastIndexOf('.');
@@ -180,12 +252,15 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
       // so an earlier replacement doesn't double-count and so the regex's
       // lastIndex state stays consistent.
       content = content.replace(pattern.regex, (match, ...rest) => {
+        const secret = secretOf(pattern, match, rest);
+        if (secret === null) return match;
         // Build a fake exec result so the label() callback can use capture groups.
         const execLike = Object.assign([match, ...rest.slice(0, -2)] as unknown as RegExpExecArray, {
           index: 0,
           input: match,
         });
-        const baseLabel = pattern.label(execLike);
+        const baseLabel = pattern.label?.(execLike) ?? 'CREDENTIAL';
+        const hint = pattern.hint ?? GENERIC_HINT;
         const count = (labelCounts.get(baseLabel) ?? 0) + 1;
         labelCounts.set(baseLabel, count);
         const label = count === 1 ? baseLabel : `${baseLabel}_${count}`;
@@ -194,23 +269,17 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
           file: file.path,
           label,
           matched: match,
-          hint: pattern.hint,
+          hint,
           pattern: pattern.name,
         });
         if (!seenLabels.has(label)) {
           seenLabels.add(label);
-          placeholders.push({ label, hint: pattern.hint });
+          placeholders.push({ label, hint });
         }
         dirty = true;
         const placeholder = `{{NEEDS_FROM_USER:${label}}}`;
-        if (pattern.secretGroup !== undefined) {
-          const secret = rest[pattern.secretGroup - 1];
-          const idx = match.lastIndexOf(secret);
-          if (idx >= 0) {
-            return match.slice(0, idx) + placeholder + match.slice(idx + secret.length);
-          }
-        }
-        return placeholder;
+        const idx = secret === '' ? -1 : match.lastIndexOf(secret);
+        return idx < 0 ? placeholder : match.slice(0, idx) + placeholder + match.slice(idx + secret.length);
       });
     }
 

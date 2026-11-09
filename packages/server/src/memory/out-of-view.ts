@@ -25,7 +25,7 @@ import { annotateSummaryObligations } from './summary-obligations.js';
 import { summaryCheckRefusedSince } from './summary-check.js';
 import { turnPatienceMs } from './turn-patience.js';
 import { agentBusy } from './rebuild-signals.js';
-import { ownerProgressFrame } from '../services/owner-card-frames.js';
+import { ownerProgressFrame } from '../healer/owner-notices.js';
 import {
   abortBlamesWriter, eligibleSummaryWriters, markWaiting, ownModel, pickWriter, spanKeyOf, spanUnwritable, spanWaitsForAWriter,
   summaryWriterCandidates, EVERY_AGENT, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER,

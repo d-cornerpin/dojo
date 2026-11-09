@@ -290,7 +290,7 @@ export function updateMicrosoftAccount(id: string, patch: Partial<Omit<Microsoft
 }
 
 /** t138 r4: the owner is told this account's sign-in expired; keep the words for his card. */
-export const noteMicrosoftSignInExpired = (id: string, words: string): string => noteSignInExpired('microsoft_accounts', id, words);
+export const noteMicrosoftSignInExpired = (id: string, words: string): void => noteSignInExpired('microsoft_accounts', id, words);
 
 export function deleteMicrosoftAccount(id: string): void {
   accountRemoved('microsoft_accounts', id); // r6: the cards it is the subject of end, live

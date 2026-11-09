@@ -25,7 +25,6 @@ import { whoDecides, sendBacks, REVIEW_MISS_ENTRY, SEND_BACKS_BEFORE_ESCALATION 
 import { agentIsLive } from '../../tracker/liveness.js';
 import { patienceBoundMs } from '../../tracker/assignee-patience.js';
 import { stallKey, tellOwnerOncePerWindow, wordsOf } from '../../healer/owner-notices.js';
-import { ownerCardFrame } from '../../services/owner-card-frames.js';
 
 const logger = createLogger('ladder');
 
@@ -129,9 +128,8 @@ export async function hintOnce(workId: string, agentId: string, text: string, ke
 /** Step 4: the owner's card (once a day per task), and the ask on record his own words decide by. */
 function tellOwner(workId: string): void {
   const key = stallKey(workId);
-  if (!tellOwnerOncePerWindow(key, DAY_MS)) return;
+  if (!tellOwnerOncePerWindow(key, wordsOf(key), DAY_MS)) return;
   recordValidationEscalation(workId, 'engine', null);
-  ownerCardFrame(wordsOf(key), 'warning', key, 'action');
 }
 
 async function take(workId: string, due: LadderAction): Promise<void> {

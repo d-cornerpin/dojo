@@ -273,12 +273,12 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
   });
 
   it('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
-    const { bridge } = await boot();
-    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical', { kind: 'broken-agent' });
+    await boot();
+    (await import('../memory-low-notice.js')).noteCriticalMemory(100);
     await sendsSettle();
     expectPaired(1);
-    expect(texts()[0]).toContain('Dojo: [CRITICAL] The box is nearly out of memory.');   // the label stays first
-    expect(cards()[0]).toMatchObject({ error: 'The box is nearly out of memory. Close something.', severity: 'error' });
+    expect(texts()[0]).toContain('Dojo: [CRITICAL] Critical: System memory below 512MB.');   // the label stays first
+    expect(cards()[0]).toMatchObject({ error: 'Critical: System memory below 512MB. Terminate idle sub-agents.', severity: 'error' });
   });
 });
 

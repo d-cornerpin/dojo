@@ -12,7 +12,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { runLadder } from '../ladder.js';
 import { runPMReview } from '../../../tracker/pm-agent.js';
-import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 import { freshBoard, handedIn, eventCount, PM, MAIN, TASK } from './helpers/decision-world.js';
 import { cards, texts, pmCanRun, resetLadderWorld, MIN } from './helpers/ladder-world.js';
 
@@ -40,7 +40,7 @@ describe('the owner hears by one card a day', () => {
 
   it('the card stands on the next dashboard load, and the owner is never texted', async () => {
     await runLadder(Date.now() + 16 * MIN);
-    expect(healerOwnerCards().map((c) => c.cardKey)).toContain(`stall:${TASK}`);
+    expect(standingOwnerNotices().map((c) => c.cardKey)).toContain(`stall:${TASK}`);
     expect(texts).not.toHaveBeenCalled();
   });
 });

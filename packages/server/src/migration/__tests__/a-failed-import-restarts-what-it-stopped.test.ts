@@ -17,15 +17,17 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../checks.js', () => ({ runPostMigrationChecks: vi.fn(), setLastManifest: vi.fn() }));
 const cardFrame = vi.fn();
 const cardEnded = vi.fn();
-vi.mock('../../services/owner-card-frames.js', () => ({
-  ownerCardFrame: (...a: unknown[]) => cardFrame(...a),
-  ownerCardEnded: (...a: unknown[]) => cardEnded(...a),
+vi.mock('../../healer/owner-notices.js', () => ({
+  tellOwner: (...a: unknown[]) => cardFrame(...a),
+  ownerConditionCleared: (...a: unknown[]) => cardEnded(...a),
 }));
 const migratePaths = vi.fn();
 vi.mock('../path-migration.js', () => ({ migratePaths: (...a: unknown[]) => migratePaths(...a) }));
 
 import { performImport } from '../import.js';
-import { importOwnerCards, bindImportCardMarker } from '../import-recovery.js';
+import { importCardStands, bindImportCardMarker, clearImportCard } from '../import-recovery.js';
+/** The words of the card the import raised last, or ''. */
+const raisedWords = (): string => String(cardFrame.mock.calls.at(-1)?.[1] ?? '');
 import { runPostMigrationChecks } from '../checks.js';
 
 const PARENT = homeDir();
@@ -87,7 +89,7 @@ beforeEach(() => {
   migratePaths.mockReset();
   cardFrame.mockReset();
   cardEnded.mockReset();
-  for (const c of importOwnerCards()) c.dismiss();
+  clearImportCard(); cardEnded.mockReset();
 });
 afterEach(() => {
   cleanup();
@@ -177,7 +179,7 @@ describe('a failed import restarts what it stopped', () => {
     expect(restart).toHaveBeenCalledTimes(1);
     expect(resumed, 'the agents it stopped are brought back').toHaveBeenCalledTimes(1);
     expect(fs.readdirSync(PARENT).filter((f) => f.startsWith('.dojo-backup-'))).toEqual([]);
-    expect(importOwnerCards()).toEqual([]);
+    expect(importCardStands()).toBe(false);
   });
 
   it('rename and copy both refused: nothing is restarted, the backup stays put, the error names its exact path', async () => {
@@ -209,7 +211,7 @@ describe('a failed import restarts what it stopped', () => {
       await buildZip(...(await encryptPayloadForTest('pw')));
       migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
       try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => { throw new Error('restart boom'); }); } catch { /* expected */ }
-      return importOwnerCards()[0]?.words ?? '';
+      return raisedWords();
     })();
     for (const words of [backupStuckWords('/tmp/example-backup'), restartWords]) {
       expect(words.length).toBeGreaterThan(0);
@@ -223,8 +225,8 @@ describe('a failed import restarts what it stopped', () => {
     migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
     const restart = vi.fn(async () => { throw new Error('restart boom'); });
     await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow(/migrate boom.*could not start its services again/);
-    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining('could not start its services again'), 'error', 'import-failed-not-running', 'action');
-    expect(importOwnerCards()).toHaveLength(1);
+    expect(cardFrame).toHaveBeenCalledWith('import-failed-not-running', expect.stringContaining('could not start its services again'));
+    expect(importCardStands()).toBe(true);
   });
 
   it('a put-back that fails raises an owner card naming the backup path', async () => {
@@ -238,23 +240,23 @@ describe('a failed import restarts what it stopped', () => {
     const cp = vi.spyOn(fs, 'cpSync').mockImplementation((() => { throw new Error('copy denied'); }) as typeof fs.cpSync);
     try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); cp.mockRestore(); }
     const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
-    expect(cardFrame).toHaveBeenCalledWith(expect.stringContaining(path.join(PARENT, backup)), 'error', 'import-failed-not-running', 'action');
-    expect(importOwnerCards()[0].words).toContain(path.join(PARENT, backup));
+    expect(cardFrame).toHaveBeenCalledWith('import-failed-not-running', expect.stringContaining(path.join(PARENT, backup)));
+    expect(importCardStands()).toBe(true);
   });
 
   it('a later good import ends the card', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
     migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
     await expect(performImport(ZIP_PATH, 'pw', async () => {}, async () => { throw new Error('x'); })).rejects.toThrow();
-    expect(importOwnerCards()).toHaveLength(1);
+    expect(importCardStands()).toBe(true);
     migratePaths.mockReset();
     fs.mkdirSync(LIVE_DIR, { recursive: true });
     await performImport(ZIP_PATH, 'pw', async () => {}, async () => {});
-    expect(importOwnerCards()).toHaveLength(0);
-    expect(cardEnded).toHaveBeenCalled();
+    expect(importCardStands()).toBe(false);
+    expect(cardEnded).toHaveBeenCalledWith('import-failed-not-running');
   });
 
-  it('the stuck-backup card survives a restart (marker beside ~/.dojo) until dismissed', async () => {
+  it('the stuck-backup card survives a restart (marker beside ~/.dojo): binding the marker raises it again', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
     migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
     const real = fs.renameSync;
@@ -266,21 +268,18 @@ describe('a failed import restarts what it stopped', () => {
     try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); cp.mockRestore(); }
     expect(fs.existsSync(MARKER)).toBe(true);
     const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
-    // a restart forgets memory: ask the card source with a cleared memory by dismissing only the live copy
+    // a restart forgets memory: a fresh module, bound to the marker, raises the card again in this database
     vi.resetModules();
     const fresh = await import('../import-recovery.js');
+    cardFrame.mockReset();
     fresh.bindImportCardMarker(fs, MARKER);
-    const cards = fresh.importOwnerCards();
-    expect(cards).toHaveLength(1);
-    expect(cards[0].words).toContain(path.join(PARENT, backup));
-    cards[0].dismiss();
-    expect(fs.existsSync(MARKER)).toBe(false);
-    expect(fresh.importOwnerCards()).toHaveLength(0);
+    expect(cardFrame).toHaveBeenCalledWith('import-failed-not-running', expect.stringContaining(path.join(PARENT, backup)));
+    expect(fresh.importCardStands()).toBe(true);
   });
 
   it('a marker whose backup is gone shows nothing and is removed', () => {
     fs.writeFileSync(MARKER, JSON.stringify({ words: 'x', backupPath: path.join(PARENT, '.dojo-backup-gone') }));
-    expect(importOwnerCards()).toHaveLength(0);
+    expect(importCardStands()).toBe(false);
     expect(fs.existsSync(MARKER)).toBe(false);
   });
 });

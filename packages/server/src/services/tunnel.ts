@@ -496,7 +496,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         // home is on the old link, which is now dead, so the phone is the only place he can learn the new one.
         // 'notice': it reaches the phone without the "[CRITICAL]" prefix; a status line, not a card.
         try {
-          void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { kind: 'remote-address', card: false });
+          void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { kind: 'remote-address' });
         } catch { /* iMessage bridge may not be running yet */ }
       }
     };

@@ -19,6 +19,7 @@ import { DREAMER_TOOLS_POLICY } from '../vault/maintenance.js';
 import { PM_ALLOWED_TOOLS } from '../tracker/pm-agent.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { gapWords, missingTools, readGap, writeGap } from '../services/built-in-tools-card.js';
+import { tellOwner } from '../healer/owner-notices.js';
 import type { ReleaseStepOutcome } from './release-steps.js';
 
 export function raiseBuiltInToolsGap(): ReleaseStepOutcome {
@@ -38,7 +39,8 @@ export function raiseBuiltInToolsGap(): ReleaseStepOutcome {
     if (names.length === 0) continue;
     const main = getPrimaryAgentId();
     const words = gapWords(nameOf(id), nameOf(main), names);
-    writeGap({ ...readGap(), [id]: { names, told: true } });
+    writeGap({ ...readGap(), [id]: { names } });
+    tellOwner(`built-in-tools:${id}`, words);
     out.flagged++;
     postAgentNotice({
       toAgentId: main, fromName: 'Dojo message sent', intent: 'dojo_message_sent', selfIntro: false,

@@ -282,7 +282,13 @@ INSERT INTO config (key, value) SELECT 'ollama_upkeep', json_patch('{}', json_ob
 WHERE EXISTS (SELECT 1 FROM config WHERE key IN ('ollama_start_pending', 'ollama_limit_restart_owed', 'ollama_takeover_settled'));
 DELETE FROM config WHERE key IN ('ollama_start_pending', 'ollama_limit_restart_owed', 'ollama_takeover_settled');
 
--- 13. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
+-- 13. Every owner notice is one row in healer_state ('owner_told', with its sentence); the budget's own copy of its
+--     card's words and dismissal has no reader.
+ALTER TABLE healer_state ADD COLUMN value TEXT;
+ALTER TABLE budgets DROP COLUMN alert_words;
+ALTER TABLE budgets DROP COLUMN alert_dismissed_at;
+
+-- 14. Assertions: any false one aborts the whole file. The board states, closed_at pairing and a done
 --     row's delivery are the CHECKs on work, which refuse a bad row as it is copied.
 CREATE TEMP TABLE _td_assert (name TEXT PRIMARY KEY, ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _td_assert (name, ok) VALUES
@@ -313,7 +319,7 @@ INSERT INTO _td_assert (name, ok) VALUES
    (SELECT COUNT(*) FROM (SELECT class, n FROM _td_before EXCEPT
       SELECT m.class, COUNT(*) FROM _td_map m JOIN work w ON w.id = m.id AND w.state = m.to_state AND w.hold_kind IS m.hold_kind GROUP BY m.class)) = 0);
 
--- 14. The report, read once by the boot log.
+-- 15. The report, read once by the boot log.
 INSERT INTO config (key, value) VALUES ('task_done_upgrade_last', json_object(
   'at', (SELECT ms FROM _td_now),
   'classes', (SELECT json_group_object(class, n) FROM _td_before),

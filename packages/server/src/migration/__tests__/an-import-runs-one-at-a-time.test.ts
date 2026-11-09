@@ -14,7 +14,7 @@ vi.mock('../../config/loader.js', () => ({ clearSecretsCache: vi.fn() }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../checks.js', () => ({ runPostMigrationChecks: vi.fn(), setLastManifest: vi.fn() }));
 vi.mock('../path-migration.js', () => ({ migratePaths: vi.fn() }));
-vi.mock('../../services/owner-card-frames.js', () => ({ ownerCardFrame: vi.fn(), ownerCardEnded: vi.fn() }));
+vi.mock('../../healer/owner-notices.js', () => ({ tellOwner: vi.fn(), ownerConditionCleared: vi.fn() }));
 
 import { performImport } from '../import.js';
 import { acquireImportLock, ImportAlreadyRunningError } from '../import-safety.js';

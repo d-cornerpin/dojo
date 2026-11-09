@@ -1,78 +1,30 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// "CONNECTION EXPIRED": THE OWNER'S CARD FOR A BENCHED GOOGLE OR MICROSOFT ACCOUNT (t138 round 4).
-//
-// When an account's sign-in dies, the platform benches it and texts the owner once. The same
-// words wait on his dashboard until he dismisses them, re-derived on every load from the
-// account's own row (no new store): `owner_notice` (migration 193) holds `{ at, words,
-// dismissedAt? }` while the account stays benched. When the sign-in is restored — by the
-// recovery probe or by the owner reconnecting in Settings, both through the table's one
-// writer — the notice is cleared and the card leaves every open dashboard at once.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// "CONNECTION EXPIRED": THE OWNER'S CARD FOR A BENCHED GOOGLE OR MICROSOFT ACCOUNT. The account's own `owner_notice` holds
+// the incident while it stays benched; its card (`signin:<google|microsoft>:<id>`) stands while it does. A restored
+// sign-in (the recovery probe, or the owner reconnecting) or a deleted account ends both.
 
 import { getDb } from '../db/connection.js';
-import { ownerCardEnded } from './owner-card-frames.js';
+import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
 export type AccountTable = 'google_accounts' | 'microsoft_accounts';
-type Notice = { at: number; words: string; dismissedAt?: number };
 
-/** Each table's statements spelled out in full (no table name is ever interpolated into SQL). */
-const SQL: Record<AccountTable, { set: string; get: string; standing: string }> = {
-  google_accounts: {
-    set: 'UPDATE google_accounts SET owner_notice = ? WHERE id = ?',
-    get: 'SELECT owner_notice FROM google_accounts WHERE id = ?',
-    standing: 'SELECT id, owner_notice FROM google_accounts WHERE owner_notice IS NOT NULL AND connected = 0',
-  },
-  microsoft_accounts: {
-    set: 'UPDATE microsoft_accounts SET owner_notice = ? WHERE id = ?',
-    get: 'SELECT owner_notice FROM microsoft_accounts WHERE id = ?',
-    standing: 'SELECT id, owner_notice FROM microsoft_accounts WHERE owner_notice IS NOT NULL AND connected = 0',
-  },
+/** Each table's statement spelled out in full (no table name is ever interpolated into SQL). */
+const SET: Record<AccountTable, string> = {
+  google_accounts: 'UPDATE google_accounts SET owner_notice = ? WHERE id = ?',
+  microsoft_accounts: 'UPDATE microsoft_accounts SET owner_notice = ? WHERE id = ?',
 };
+const keyOf = (table: AccountTable, id: string): string => `signin:${table === 'google_accounts' ? 'google' : 'microsoft'}:${id}`;
 
-function noticeOf(raw: string | null | undefined): Notice | null {
-  try { return raw ? JSON.parse(raw) as Notice : null; } catch { return null; }
-}
-
-/** The account was benched and the owner is being told: keep the words. Returns them. */
-export function noteSignInExpired(table: AccountTable, id: string, words: string): string {
-  try {
-    getDb().prepare(SQL[table].set).run(JSON.stringify({ at: Date.now(), words }), id);
-  } catch { /* the text still goes; only the lasting card is lost */ }
-  return words;
+/** The account was benched: the incident is recorded and the owner's card raised. */
+export function noteSignInExpired(table: AccountTable, id: string, words: string): void {
+  try { getDb().prepare(SET[table]).run(JSON.stringify({ at: Date.now(), words }), id); } catch { /* the card still goes */ }
+  tellOwner(keyOf(table, id), words);
 }
 
 /** The sign-in is back: the incident is over, and its card leaves. */
 export function signInRestored(table: AccountTable, id: string): void {
-  try {
-    const db = getDb();
-    const row = db.prepare(SQL[table].get).get(id) as { owner_notice: string | null } | undefined;
-    const notice = noticeOf(row?.owner_notice);
-    if (!row?.owner_notice) return;
-    db.prepare(SQL[table].set).run(null, id);
-    if (notice) ownerCardEnded(notice.words);
-  } catch { /* a card left standing is dismissable; a failed reconnect write is not this module's */ }
+  try { getDb().prepare(SET[table]).run(null, id); } catch { /* a failed reconnect write is not this module's */ }
+  ownerConditionCleared(keyOf(table, id));
 }
 
-/** The account is being deleted: its expired-sign-in card ends, live (t138 r6, review M3). */
-export function accountRemoved(table: AccountTable, id: string): void {
-  try {
-    const notice = noticeOf((getDb().prepare(SQL[table].get).get(id) as { owner_notice: string | null } | undefined)?.owner_notice);
-    if (notice && notice.dismissedAt === undefined) ownerCardEnded(notice.words);
-  } catch { /* best-effort */ }
-}
-
-/** The expired-sign-in owner cards a dashboard shows on load: benched, told, not dismissed. */
-export function accountOwnerCards(): Array<{ words: string; severity: 'critical'; dismiss: () => void }> {
-  const db = getDb();
-  return (['google_accounts', 'microsoft_accounts'] as const).flatMap((table) => {
-    const rows = db.prepare(SQL[table].standing).all() as Array<{ id: string; owner_notice: string }>;
-    return rows.flatMap((r) => {
-      const notice = noticeOf(r.owner_notice);
-      if (!notice || notice.dismissedAt !== undefined) return [];
-      const dismiss = (): void => {
-        db.prepare(SQL[table].set).run(JSON.stringify({ ...notice, dismissedAt: Date.now() }), r.id);
-      };
-      return [{ words: notice.words, severity: 'critical' as const, dismiss }];
-    });
-  });
-}
+/** The account is being deleted: its expired-sign-in card ends, live. */
+export const accountRemoved = (table: AccountTable, id: string): void => ownerConditionCleared(keyOf(table, id));

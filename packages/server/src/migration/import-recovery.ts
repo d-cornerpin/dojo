@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { ownerCardFrame, ownerCardEnded } from '../services/owner-card-frames.js';
+import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
 const logger = createLogger('migration-import');
 
@@ -11,11 +11,9 @@ const logger = createLogger('migration-import');
 const CARD_KEY = 'import-failed-not-running';
 let standing: string | null = null;
 
-// The "data could not be put back" card must outlive a restart (a restart does not cure it: Dojo
-// comes up on the imported tree and the owner's real data waits in the backup). The existing
-// owner cards are re-derived from config rows inside the database, but that database lives in the
-// very folder an import swaps, so this one keeps a small marker file BESIDE ~/.dojo instead
-// (next to the import lock). The route module binds the real fs and the path once at load.
+// The "data could not be put back" card must outlive a restart (Dojo comes up on the imported tree and the owner's real
+// data waits in the backup). The database lives in the very folder an import swaps, so the truth of this card is a small
+// marker file BESIDE ~/.dojo (next to the import lock); binding it at load raises the card again in this database.
 interface MarkerFs {
   existsSync(p: string): boolean;
   readFileSync(p: string, enc: 'utf-8'): string;
@@ -23,7 +21,11 @@ interface MarkerFs {
   rmSync(p: string, o: { force: boolean }): void;
 }
 let marker: { fs: MarkerFs; file: string } | null = null;
-export function bindImportCardMarker(fs: MarkerFs, file: string): void { marker = { fs, file }; }
+export function bindImportCardMarker(fs: MarkerFs, file: string): void {
+  marker = { fs, file };
+  const stuck = stuckFromMarker();
+  if (stuck) tellOwner(CARD_KEY, stuck.words);
+}
 const dropMarker = (): void => { try { marker?.fs.rmSync(marker.file, { force: true }); } catch { /* best effort */ } };
 function stuckFromMarker(): { words: string; backupPath: string } | null {
   try {
@@ -36,27 +38,19 @@ function stuckFromMarker(): { words: string; backupPath: string } | null {
 }
 
 function raiseImportCard(words: string): void {
-  standing = words;
-  // Final round: the card states the fact only (owner rule: the Dojo does the work). It stays until a good import or
-  // restart ends it, because the Dojo is not running on his data while it stands.
-  ownerCardFrame(words, 'error', CARD_KEY, 'action');
+  standing = words;   // a fact only; it stands until a good import or restart ends it
+  tellOwner(CARD_KEY, words);
 }
 
 /** An import (or a restart) succeeded: the card leaves every open dashboard. */
 export function clearImportCard(): void {
   dropMarker();
-  if (standing === null) return;
-  const words = standing;
   standing = null;
-  ownerCardEnded(words, CARD_KEY);
+  ownerConditionCleared(CARD_KEY);
 }
 
-/** The cards still standing, for `GET /api/config/owner-notices` (a card outlives a closed browser). */
-export function importOwnerCards(): Array<{ words: string; severity: 'critical'; cardKey: string; dismiss: () => void }> {
-  const stuck = stuckFromMarker();
-  const words = standing ?? stuck?.words ?? null;
-  return words === null ? [] : [{ words, severity: 'critical', cardKey: CARD_KEY, dismiss: () => { standing = null; dropMarker(); } }];
-}
+/** Does the import card still stand: raised in this process, or its marker beside ~/.dojo? */
+export const importCardStands = (): boolean => standing !== null || stuckFromMarker() !== null;
 
 /** The owner-facing sentence when the old data could not be put back (rename and copy both refused). The path is
  *  exact. Final round: a fact, no chore. */

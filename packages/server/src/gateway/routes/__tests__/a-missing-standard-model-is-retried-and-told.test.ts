@@ -19,7 +19,8 @@ import { noteUpkeep } from '../../../services/ollama-version.js';
 /** The health door's retry window after a failed attempt has passed. */
 const windowPassed = (): void => noteUpkeep({ triedAt: Date.now() - 11 * 60_000 });
 import { checkOllamaHealth } from '../../../services/ollama.js';
-import { healerOwnerCards, STANDARD_MODELS_MISSING_WORDS } from '../../../healer/owner-notices.js';
+import { STANDARD_MODELS_MISSING_WORDS } from '../../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 // Load the lazily-imported decision window (its chain loads playwright, which writes globalThis.fetch
 // once at load) at COLLECTION, so that write can never land inside a test's stubbed fetch.
 import '../../../services/decision-window.js';
@@ -72,12 +73,12 @@ describe('a pair that failed to install', () => {
     expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
     // The Dojo keeps trying by itself, so it is an INFORMATIONAL card: a toast that leaves by itself, never re-derived on a reload.
     expect(frames.list.filter((f) => f.error === STANDARD_MODELS_MISSING_WORDS && f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
     ollama.registryDown = false; windowPassed();
     await checkOllamaHealth('http://localhost:11434');
     await upkeepSettled();
     expect(frames.list.some((f) => f.severity === 'info' && (f as { cardKey?: string }).cardKey === 'ollama')).toBe(true);
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
   });
 
   it('A5: an updated box whose Ollama does not answer is told too (the writer never installs otherwise)', async () => {
@@ -97,7 +98,7 @@ describe('a pair that failed to install', () => {
     await checkOllamaHealth('http://localhost:11434');
     await upkeepSettled();
     expect(standardModelRowId('writer')).toBeTruthy();
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
   });
 
   it('a health check of a box with both models installed starts nothing', async () => {

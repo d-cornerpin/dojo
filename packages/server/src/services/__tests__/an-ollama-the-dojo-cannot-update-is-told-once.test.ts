@@ -14,7 +14,8 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 import { runMigrations } from '../../db/migrations.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
-import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS } from '../../healer/owner-notices.js';
+import { OLLAMA_TOO_OLD_WORDS } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe } from './fake-mac.js';
 
 let baseUrl = '';
@@ -44,6 +45,6 @@ describe('an Ollama the Dojo cannot update is told once', () => {
     upkeepWhenIncomplete([...ollama.installed], baseUrl); await upkeepSettled();
     await upkeep('repair');
     expect(cards()).toHaveLength(1);
-    expect(healerOwnerCards().map((c) => c.words)).toEqual([OLLAMA_TOO_OLD_WORDS]);   // it stands on a reload
+    expect(standingOwnerNotices().map((c) => c.words)).toEqual([OLLAMA_TOO_OLD_WORDS]);   // it stands on a reload
   });
 });

@@ -86,10 +86,11 @@ describe('an auto agent the router window cannot hold', () => {
   });
 
   it('fix round 2: the no-fit card is ended by its condition, not its words — switching the agent to a fixed model still ends it on open dashboards', async () => {
-    const { tellOwnerOnce, ownerConditionCleared, healerOwnerCards } = await import('../../healer/owner-notices.js');
+    const { tellOwner, ownerConditionCleared } = await import('../../healer/owner-notices.js');
+    const { standingOwnerNotices } = await import('../../healer/owner-notice-kinds.js');
     db().prepare("UPDATE agents SET status = 'paused', last_error = '[no_model_fits] parked' WHERE id = 'a-auto'").run();
-    expect(tellOwnerOnce('nofit:a-auto')).toBe(true);
-    const shown = healerOwnerCards().find((c) => c.cardKey === 'nofit:a-auto');
+    expect(tellOwner('nofit:a-auto', wordsOf('nofit:a-auto'))).toBe(true);
+    const shown = standingOwnerNotices().find((c) => c.cardKey === 'nofit:a-auto');
     expect(shown?.words, 'the card names the router model while the agent is automatic').toMatch(/Dock Small/);
     db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = 'a-auto'").run();   // now a fixed model: its words differ
     cards.length = 0;

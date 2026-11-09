@@ -42,8 +42,8 @@ const DECLARED: Record<string, Array<[string, string]>> = {
   'services/watcher-status.ts': [["'error'", "'action'"]],                         // reconnect the account
 };
 /** Not this census's: the debug toast route (developer-only, sends whatever severity the request names), and the
- *  platform owner-card door, whose callers declare their class in the t138 owner-card census. */
-const NOT_OWNER: ReadonlySet<string> = new Set(['gateway/routes/system.ts', 'services/owner-card-frames.ts']);
+ *  one owner-notice writer, which takes each card's class from its kind (`healer/owner-notice-kinds.ts`). */
+const NOT_OWNER: ReadonlySet<string> = new Set(['gateway/routes/system.ts', 'healer/owner-notices.ts']);
 
 function sites(): Record<string, Site[]> {
   const out: Record<string, Site[]> = {};

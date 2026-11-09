@@ -9,7 +9,7 @@ import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
 } from './error-loop-state.js';
 import { pausedWords, closePausedCards, endNotice } from './agent-owner-cards.js';
-import { ownerConditionsOnHealthyWork } from '../healer/owner-notices.js';
+import { ownerConditionsOnHealthyWork, tellOwner } from '../healer/owner-notices.js';
 export { pausedWords };
 
 const logger = createLogger('agent-errors');
@@ -103,6 +103,7 @@ export function recordError(agentId: string): boolean {
     // The owner first, then the agent's own chat in the SAME words, so on that chat the two
     // fold into one card (t138 round 3). v2.3.19: plain language, the count stays in logs.
     const words = pausedWords(agentId);
+    tellOwner(`paused:${agentId}`, words);
     void sendAlert(words, 'notice', { kind: 'broken-agent', agentId });
     broadcast({ type: 'chat:error', agentId, error: words, code: 'ERROR_LOOP', severity: 'error', cardClass: 'action', retryable: false });   // paused until he acts
 

@@ -1,10 +1,9 @@
 // ════════════════════════════════════════
-// How the owner hears about a cycle's lessons (K34): once, through the existing owner card
-// (services/owner-card-frames.ts), and as a line in the Dreamer's cycle report. Nothing here
-// writes a message, and nothing here reaches the main agent.
+// How the owner hears about a cycle's lessons: once, as an informational owner card (`lessons`), and as a line in the
+// Dreamer's cycle report. Nothing here writes a message, and nothing here reaches the main agent.
 // ════════════════════════════════════════
 
-import { ownerCardFrame } from '../services/owner-card-frames.js';
+import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 import { lessonsTouchedSince } from './lessons-store.js';
 
 const words = (n: number): string =>
@@ -20,7 +19,7 @@ export function lessonReportLines(cycleStartedAtMs: number): string[] {
 export function announceLessons(cycleStartedAtMs: number): number {
   try {
     const n = lessonsTouchedSince(cycleStartedAtMs).length;
-    if (n > 0) ownerCardFrame(words(n), 'warning', undefined, 'informational');   // a report to read, nothing to do
+    if (n > 0) { ownerConditionCleared('lessons'); tellOwner('lessons', words(n)); }   // each cycle's report is a new telling
     return n;
   } catch {
     return 0;

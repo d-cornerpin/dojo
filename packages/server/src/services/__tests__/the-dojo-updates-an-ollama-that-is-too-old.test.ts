@@ -21,7 +21,8 @@ import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standar
 import { standardProgressLines, standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { parseOllamaVersion, ollamaAtLeast, requiredOllamaVersion, isVersionRefusal } from '../ollama-version.js';
-import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords } from '../../healer/owner-notices.js';
+import { OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, serviceServe, REFUSAL, APP_PROGRAM, LATEST, type Mac } from './fake-mac.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -166,7 +167,7 @@ describe('what the Dojo truly cannot fix: ONE plain card, and no endless pulling
     expect(SLASH_PULLS()).toEqual([]);   // never sent a pull the registry refuses
     expect(state.decision).toBe('missing');
     expect(owner()).toEqual([OLLAMA_TOO_OLD_WORDS]);
-    expect(healerOwnerCards().map((c) => c.words)).toEqual([OLLAMA_TOO_OLD_WORDS]);
+    expect(standingOwnerNotices().map((c) => c.words)).toEqual([OLLAMA_TOO_OLD_WORDS]);
     expect(OLLAMA_TOO_OLD_WORDS).toMatch(/^Dojo: /);
     expect(OLLAMA_TOO_OLD_WORDS).toContain('Settings → Dojo → Ollama (Local Models)');
     const shown = [...standardProgressLines(), state.note, OLLAMA_TOO_OLD_WORDS].join('\n');
@@ -219,7 +220,7 @@ describe('what the Dojo truly cannot fix: ONE plain card, and no endless pulling
     await upkeepSettled();
     expect(SLASH_PULLS()).toEqual([STANDARD_DECISION_MODEL.tag]);
     expect((await standardState()).decision).toBe('installed');
-    expect(healerOwnerCards()).toEqual([]);   // the card ended with the condition
+    expect(standingOwnerNotices()).toEqual([]);   // the card ended with the condition
   });
 
   it('Repair looks again (the hold is released) and says the same thing in plain words once, not a second card', async () => {
@@ -263,7 +264,7 @@ describe('what the Dojo truly cannot fix: ONE plain card, and no endless pulling
     mac.serviceWorks = true;
     await repair();
     expect(ollama.serving?.version).toBe(LATEST);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
   });
 });
 
@@ -329,7 +330,7 @@ describe('round 3: one sequenced Ollama upkeep, and no wrong advice', () => {
     expect(mac.brews).toEqual([['upgrade', 'ollama'], ['upgrade', 'ollama']]);
     expect(state.decision).toBe('installed'); expect(state.writer).toBe('installed');
     expect(owner()).not.toContain(STANDARD_MODELS_MISSING_WORDS);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
   });
 
   it('M4 OVERRULED: a current serve the owner started himself is taken over at the start, so the limit applies and it lasts', async () => {

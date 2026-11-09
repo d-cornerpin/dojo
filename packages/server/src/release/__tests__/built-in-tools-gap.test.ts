@@ -12,14 +12,16 @@ vi.mock('../../db/connection.js', () => ({
     return mockDb.current;
   },
 }));
-vi.mock('../../services/owner-card-frames.js', () => ({ ownerCardEnded: () => undefined }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 const notices: Array<{ toAgentId: string; brief: string }> = [];
 vi.mock('../../agent/agent-notice.js', () => ({
   postAgentNotice: (o: { toAgentId: string; brief: string }) => { notices.push(o); return 'id'; },
 }));
 
 import { raiseBuiltInToolsGap } from '../built-in-tools-gap.js';
-import { builtInToolsOwnerCards, markBuiltInToolsCardShown } from '../../services/built-in-tools-card.js';
+import { missingTools, readGap } from '../../services/built-in-tools-card.js';
+import { dismissOwnerNotice } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { RELEASE_STEPS } from '../release-steps.js';
 import { DREAMER_TOOLS_POLICY } from '../../vault/maintenance.js';
 import { PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
@@ -34,12 +36,18 @@ function addAgent(id: string, name: string, tools_policy: string | null, permiss
   mockDb.current!.prepare('INSERT INTO agents (id, name, tools_policy, permissions) VALUES (?, ?, ?, ?)').run(id, name, tools_policy, permissions);
 }
 const rows = () => mockDb.current!.prepare('SELECT id, tools_policy, permissions, updated_at FROM agents ORDER BY id').all();
-const cards = () => builtInToolsOwnerCards();
+/** The built-in-tools notices the table holds, told and undismissed, while a recorded name is still missing. */
+const cards = (): Array<{ words: string; cardKey: string }> =>
+  (mockDb.current!.prepare(`SELECT key, value FROM healer_state t WHERE scope = 'owner_told' AND key LIKE 'built-in-tools:%'
+    AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = 'owner_dismissed' AND d.key = t.key)`).all() as Array<{ key: string; value: string }>)
+    .filter((r) => missingTools(r.key.slice('built-in-tools:'.length), readGap()[r.key.slice('built-in-tools:'.length)]?.names ?? []).length > 0)
+    .map((r) => ({ words: r.value, cardKey: r.key }));
 
 beforeEach(() => {
   notices.length = 0;
   mockDb.current = new Database(':memory:');
   mockDb.current.exec('CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)');
+  mockDb.current.exec('CREATE TABLE healer_state (scope TEXT, key TEXT, at_ms INTEGER, value TEXT, updated_at TEXT, PRIMARY KEY (scope, key))');
   mockDb.current.exec('CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, status TEXT DEFAULT \'idle\', classification TEXT, tools_policy TEXT, permissions TEXT, updated_at TEXT)');
   addAgent('primary', 'Main', null, null);
 });
@@ -62,15 +70,12 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     expect(card.words).not.toContain('send_to_agent');
   });
 
-  // Rulings audit #7 (release note 278 "names them once"; OR-FIELD3 (c): no persistent card when nothing is asked of
-  // him): an informational card, named once. Once the owner-notices list has served it, it never comes back.
+  // An informational card, named once: the first dashboard load shows it, and it never comes back.
   it('the card is informational and named once: after it is served it is not derived again', () => {
     addAgent('pm', 'Boss', JSON.stringify({ allow: PM_OLD }), JSON.stringify(grantsOf({ allow: PM_OLD, deny: [] })));
     raiseBuiltInToolsGap();
-    const [card] = cards();
-    expect(card).toMatchObject({ cardClass: 'informational', cardKey: 'built-in-tools:pm' });
-    markBuiltInToolsCardShown(card.cardKey);   // what GET /config/owner-notices does as it serves the card
-    expect(cards(), 'the next load (and every reconnect) does not show it again').toEqual([]);
+    expect(standingOwnerNotices()).toEqual([expect.objectContaining({ cardClass: 'informational', cardKey: 'built-in-tools:pm' })]);
+    expect(standingOwnerNotices(), 'the next load (and every reconnect) does not show it again').toEqual([]);
   });
 
   it('the main agent is told exactly what the card says, once', () => {
@@ -91,7 +96,7 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     raiseBuiltInToolsGap();
     expect(rows()).toEqual(before);
     expect(cards()).toHaveLength(1);
-    cards()[0].dismiss();
+    dismissOwnerNotice(cards()[0].cardKey);
     expect(cards()).toHaveLength(0);
     raiseBuiltInToolsGap();                                           // a later boot, a re-upgrade: still dismissed
     expect(cards()).toHaveLength(0);
@@ -144,7 +149,7 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     raiseBuiltInToolsGap();
     expect(cards()).toHaveLength(1);
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify(grantsOf({ allow: PM, deny: [] })), 'pm');
-    expect(cards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);                       // the next load finds nothing missing
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify(grantsOf({ allow: PM_OLD, deny: [] })), 'pm');
     raiseBuiltInToolsGap();                                           // the owner's own trim after the fact: not re-raised
     expect(notices).toHaveLength(1);

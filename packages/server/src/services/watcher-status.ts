@@ -9,7 +9,6 @@
 // ════════════════════════════════════════
 
 import { broadcast } from '../gateway/ws.js';
-import { ownerCardEnded, ownerCardFrame } from './owner-card-frames.js';
 import { recordFailureTold, clearFailure, watcherFailingOnRecord, watchedForMail } from './watcher-owner-cards.js';
 import { settingsPath } from '@dojo/shared';
 export { watcherFailingOnRecord, watchedForMail };
@@ -112,10 +111,7 @@ export function maybeAlertOnFailure(params: {
       retryable: false,
     });
   } catch { /* best effort */ }
-  // OR-AUDIT-ANSWERS (d): a failing watcher is no platform text (the owner's set: offline and back online, budget,
-  // broken agent, Mac critical). His lasting owner card is how he hears it (it was born with the text before).
-  try { ownerCardFrame(message, 'error', undefined, 'action'); } catch { /* re-derived on the next load */ }
-  recordFailureTold(params.name, account, message);
+  recordFailureTold(params.name, account, message);   // no text: his lasting owner card is how he hears it
   return true;
 }
 
@@ -151,8 +147,6 @@ export function maybeAlertOnRecovery(params: {
       retryable: false,
     });
   } catch { /* best effort */ }
-  // The failure card ends here (OR-AUDIT-ANSWERS (d): no text either way).
-  if (told !== null) { try { ownerCardEnded(told.words); } catch { /* re-derived on the next load */ } }
   return false;
 }
 

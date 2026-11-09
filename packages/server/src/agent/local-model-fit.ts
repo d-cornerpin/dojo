@@ -37,8 +37,7 @@ import { kvBytesPerTokenOf } from '../services/kv-bytes.js';
 import { localOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS } from '../services/local-standard.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { MAIN_MODEL_MIN_WINDOW } from './main-model-floor.js';
-import { ownerCardFrame } from '../services/owner-card-frames.js';
-import { tellOwnerOnce, ownerConditionCleared, wordsOf, uncheckedFitWords } from '../healer/owner-notices.js';
+import { tellOwner, ownerConditionCleared, wordsOf, uncheckedFitWords } from '../healer/owner-notices.js';
 
 /** What the model is being picked FOR: an agent's conversations, or one of the engine's own jobs. */
 export type ModelUse = 'agent' | 'job';
@@ -157,8 +156,7 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
 
 // ── CHECKED LATER: an unsized selection is marked, told once, and judged at its first load ──
 // The mark is `healer_state` (scope `local_fit_unchecked`, key `<use>:<model id>`). Fix round 2: the owner's
-// card is the persistent owner-notice card (`fitunchecked:<model id>`, re-derived from the marks on every
-// dashboard load by `healerOwnerCards`), and it ends when the fit is checked.
+// card is the informational owner notice `fitunchecked:<model id>`, and it ends when the fit is checked.
 const UNCHECKED_SCOPE = 'local_fit_unchecked';
 export const fitUncheckedKey = (modelId: string): string => `fitunchecked:${modelId}`;
 
@@ -166,7 +164,7 @@ function markUnchecked(modelId: string, use: ModelUse): void {
   try {
     getDb().prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms`)
       .run(UNCHECKED_SCOPE, `${use}:${modelId}`, Date.now());
-    if (tellOwnerOnce(fitUncheckedKey(modelId))) ownerCardFrame(wordsOf(fitUncheckedKey(modelId)), 'warning', undefined, 'informational');   // checked at first load by itself
+    tellOwner(fitUncheckedKey(modelId), wordsOf(fitUncheckedKey(modelId)));   // checked at first load by itself
   } catch { /* best-effort: the first-load check still runs whenever the mark was written */ }
 }
 

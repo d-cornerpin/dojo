@@ -509,7 +509,7 @@ import { checkBudget } from '../../../costs/budget.js';
 import { contextWindowPolicy, SystemPromptTooLargeError } from '../../../memory/budget.js';
 import { reportStarvedWindow } from '../../../memory/window-starvation-card.js';
 import * as coldImport2 from '../../../memory/window-starvation-card.js';
-import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 import { noteModelsChanged, releaseClearedBudgetStops } from '../honest-stop-lock.js';
 import { costsRouter } from '../../../gateway/routes/costs.js';
 import * as coldImport1 from '../../../costs/tracker.js';
@@ -576,7 +576,7 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     const texts = sendAlertSpy.mock.calls.map((c) => c[0] as string);
     expect(texts, 'one text').toHaveLength(1);
     expect(texts[0]).toMatch(/Dock Desk can't run on automatic model choice.*Router tab/i);   // N42 fix round 1: the router's words
-    expect(healerOwnerCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
+    expect(standingOwnerNotices().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
     expect(ask(), 'the message is kept, still the owner\'s open ask').toBe('open');
   });
 
@@ -606,7 +606,7 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     await noteModelsChanged();
     expect(status()).toBe('idle');
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
-    expect(healerOwnerCards(), 'the card ends with the lock').toEqual([]);
+    expect(standingOwnerNotices(), 'the card ends with the lock').toEqual([]);
   });
 
   it('CONTROL: the same refusal for an auto agent whose router window DOES hold it is not parked (it stays on the error path)', async () => {

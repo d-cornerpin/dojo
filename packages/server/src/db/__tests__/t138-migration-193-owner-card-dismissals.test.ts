@@ -74,11 +74,10 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-/** A box from before 193: the chain applied with 193 un-done and un-recorded, carrying rows. */
+/** A box from before 193: the chain applied with 193 un-done and un-recorded, carrying rows (901 already dropped the
+ *  budget columns 193 adds). */
 function agedBody(target: Database.Database): void {
-  target.exec(`ALTER TABLE budgets DROP COLUMN alert_words;
-               ALTER TABLE budgets DROP COLUMN alert_dismissed_at;
-               ALTER TABLE error_loop_state DROP COLUMN owner_card_closed_at;
+  target.exec(`ALTER TABLE error_loop_state DROP COLUMN owner_card_closed_at;
                ALTER TABLE google_accounts DROP COLUMN owner_notice;
                ALTER TABLE microsoft_accounts DROP COLUMN owner_notice;
                ALTER TABLE agents DROP COLUMN rate_limit_notice;`);

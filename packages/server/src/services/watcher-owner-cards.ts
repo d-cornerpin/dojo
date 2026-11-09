@@ -1,24 +1,14 @@
 import { getDb } from '../db/connection.js';
-import { ownerCardEnded } from './owner-card-frames.js';
+import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
-// ── THE OWNER'S CARD FOR A FAILING WATCHER, AND ITS RECORD (t138 rounds 3-5) ──
-//
-// A failing mail/chat watcher texts the owner once per failure; the words wait on his dashboard
-// until he dismisses them, and the recovery all-clear removes the card. The record is one config
-// row per watcher holding a map by ACCOUNT (`{ [account]: { at, words, dismissedAt? } }`; Teams
-// has one account, keyed by its own name). It is the truth about "already alerted", not the
-// watcher's in-process flag: after a restart a still-failing account neither texts again nor
-// loses its card, and an account that recovered while the server was down clears it on its first
-// good poll (the watchers consult `watcherFailingOnRecord`). One account's success never clears
-// another's failure.
-//
-// Round 6 (review I3): the card's SUBJECT is the watched account. It stands only while that
-// account still exists and is still watched (Teams: the watching Microsoft account still enabled
-// with Teams on); when the subject goes, the entry is removed and its card ends, live — the
-// account tables' writers call `reconcileWatcherCards` after every change.
+// THE OWNER'S CARD FOR A FAILING WATCHER, AND ITS RECORD. One config row per watcher holds a map by ACCOUNT (Teams has one
+// account, keyed by its own name): the truth about "already alerted", so after a restart a still-failing account is not
+// told again and an account that recovered meanwhile clears on its first good poll. Its card (`watcher:<name>:<account>`)
+// stands while the entry does and its subject (the watched account) still exists and is still watched; the account
+// tables' writers call `reconcileWatcherCards` after every change.
 
 type Name = 'gmail' | 'outlook' | 'teams';
-type Entry = { at: number; words: string; dismissedAt?: number };
+type Entry = { at: number; words: string };
 const LATCH_KEY: Record<Name, string> = {
   gmail: 'owner_notice_watcher_gmail', outlook: 'owner_notice_watcher_outlook', teams: 'owner_notice_watcher_teams',
 };
@@ -48,6 +38,7 @@ export function watcherFailingOnRecord(name: Name, account: string = name): bool
 /** The owner is being told this account's watcher is failing. */
 export function recordFailureTold(name: Name, account: string, words: string): void {
   writeRecord(name, { ...readRecord(name), [account]: { at: Date.now(), words } });
+  tellOwner(`watcher:${name}:${account}`, words);
 }
 
 /** This account's watcher recovered: take its failure off the record, returning what was told. */
@@ -57,6 +48,7 @@ export function clearFailure(name: Name, account: string): Entry | null {
   if (told === undefined) return null;
   delete record[account];
   writeRecord(name, record);
+  ownerConditionCleared(`watcher:${name}:${account}`);
   return told;
 }
 
@@ -100,16 +92,13 @@ export function reconcileWatcherCards(): void {
       if (gone.length === 0) continue;
       for (const [account] of gone) delete record[account];
       writeRecord(name, record);
-      for (const [, told] of gone) if (told.dismissedAt === undefined) ownerCardEnded(told.words);
+      for (const [account] of gone) ownerConditionCleared(`watcher:${name}:${account}`);
     }
-  } catch { /* best-effort: the GET still filters by the subject */ }
+  } catch { /* best-effort: the reload list still checks the subject */ }
 }
 
-/** The failing-watcher owner cards a dashboard shows on load (one per account still failing). */
-export function watcherOwnerCards(): Array<{ words: string; severity: 'critical'; dismiss: () => void }> {
-  return (Object.keys(LATCH_KEY) as Name[]).flatMap((name) => Object.entries(readRecord(name)).flatMap(([account, told]) => {
-    if (told.dismissedAt !== undefined || !subjectStands(name, account)) return [];
-    const dismiss = (): void => writeRecord(name, { ...readRecord(name), [account]: { ...told, dismissedAt: Date.now() } });
-    return [{ words: told.words, severity: 'critical' as const, dismiss }];
-  }));
+/** Does the card `watcher:<name>:<account>` still stand: the failure on record, its subject still watched? */
+export function watcherCardStands(id: string): boolean {
+  const [name, account = ''] = id.split(/:(.*)/s) as [Name, string];
+  return name in LATCH_KEY && readRecord(name)[account] !== undefined && subjectStands(name, account);
 }

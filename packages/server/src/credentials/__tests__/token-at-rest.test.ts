@@ -302,7 +302,6 @@ describe('PHASE-5 T10 D1 (4): the refusals, held as a census over the source', (
       'migration/checks.ts', 'google/reauth-notice.ts',
       'credentials/at-rest.ts', 'credentials/seal-existing.ts',
       'github/account.ts', 'github/device-flow.ts',
-      'inspect/credential-shapes.ts', // names the columns only as patterns that BLANK them in the inspect view
     ]);
     const namers = sourceFiles()
       .filter(f => /\b(?:access_token|refresh_token|accessToken|refreshToken)\b/.test(fs.readFileSync(f, 'utf-8')))

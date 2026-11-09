@@ -35,7 +35,7 @@ import { pickDesktopReserve, ENGINE_RESERVE_BYTES } from '../../services/num-ctx
 import { writerJobWindowTokens, writerReservedWindowTokens, decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { MIN_UTILITY_NUM_CTX } from '../utility-dial.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
-import { healerOwnerCards } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 
 const GIB = 1024 ** 3;
@@ -218,14 +218,14 @@ describe('RULING: what Ollama cannot size now is allowed, told, and judged at it
     expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('qwen3.5:9b')]);
     expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.cardClass)).toEqual(['informational']);
     inUse('m-9b');
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
   });
 
   it('not downloaded yet: allowed the same way', async () => {
     expect(await refuseUnfitLocalModel('m-unlisted')).toBeNull();
     inUse('m-unlisted');
     expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('not-pulled:3b')]);
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('not-pulled:3b'));
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(WORDS('not-pulled:3b'));
   });
 
   it('N7: a pick the door then refuses (the 32K floor) is neither marked nor told', async () => {
@@ -242,7 +242,7 @@ describe('RULING: what Ollama cannot size now is allowed, told, and judged at it
     ollama.up = true;
     await expect(refuseUncheckedAtFirstLoad('m-9b')).rejects.toThrow(/^qwen3\.5:9b needs about 11\.3 GB of memory/);
     await expect(refuseUncheckedAtFirstLoad('m-9b')).rejects.toThrow(/needs about/);
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
   });
 
   it('the first load lets it run when it fits, and the mark and its card go', async () => {

@@ -24,7 +24,8 @@ import { STANDARD_DECISION_MODEL } from '../local-standard.js';
 import { standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
 import { overrideOllamaHost } from '../ollama-host.js';
 import { upkeepRecord } from '../ollama-version.js';
-import { healerOwnerCards, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, HEALER_BROKEN_WORDS } from '../../healer/owner-notices.js';
+import { OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, HEALER_BROKEN_WORDS } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, dockerServe, LATEST, type Mac } from './fake-mac.js';
@@ -204,8 +205,8 @@ describe('H4 / M5 / L4: what earlier 3.5 builds left is gone before anything rea
 
   it('the earliest read (the owner-notices list, before any boot hook) never shows a retired card, in the Healer\'s words or any other', () => {
     db().prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-restart-needed', 1), ('owner_told', 'ollama-limit-set', 1), ('owner_told', 'some-card-a-later-build-retires', 1)").run();
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(HEALER_BROKEN_WORDS);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(HEALER_BROKEN_WORDS);
+    expect(standingOwnerNotices()).toEqual([]);
     migrate();   // and the update's migration, which runs before the port is bound, removes the two it knows
     expect(db().prepare("SELECT key FROM healer_state WHERE key IN ('ollama-restart-needed', 'ollama-limit-set')").all()).toEqual([]);
   });

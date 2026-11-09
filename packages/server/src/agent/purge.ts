@@ -107,8 +107,7 @@ export function purgeAgentRows(agentId: string): PurgeCounts {
 
     // 7. Its budget row (keyed `agent_<id>`: no `agent_id` column finds it) and the card it holds.
     const budgetId = `agent_${agentId}`;
-    const held = db.prepare('SELECT alert_words FROM budgets WHERE id = ?').get(budgetId) as { alert_words: string | null } | undefined;
-    if (held?.alert_words) endBudgetCard(budgetId, held.alert_words);
+    endBudgetCard(budgetId);
     ownerConditionCleared(budgetStopKey(budgetId));
     db.prepare('DELETE FROM budgets WHERE id = ?').run(budgetId);
 

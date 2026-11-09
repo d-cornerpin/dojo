@@ -7,7 +7,7 @@
 // never told the agent stopped or why; the chat line the park writes is the agent's own.
 //
 // The rule now: the park tells the owner ONCE through the existing owner-notice door
-// (`tellOwnerOnce`, persisted in `healer_state`) with its card, keyed per BUDGET WINDOW and not
+// (`tellOwner`, persisted in `healer_state`) with its card, keyed per BUDGET WINDOW and not
 // per agent: ten agents stopping in one window send one text. The next window tells again. The
 // no-fit stop is unchanged.
 //
@@ -389,7 +389,9 @@ import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { checkBudget } from '../../../costs/budget.js';
-import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
+/** The standing cards a stop raises (the budget's crossing card is its own). */
+const stopCards = (): ReturnType<typeof standingOwnerNotices> => standingOwnerNotices().filter((c) => !c.cardKey.startsWith('budget:'));
 import { costsRouter } from '../../../gateway/routes/costs.js';
 import { contextWindowPolicy, SystemPromptTooLargeError } from '../../../memory/budget.js';
 import * as coldImport1 from '../../../costs/tracker.js';
@@ -539,8 +541,8 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     expect(stop, 'the window turning over also releases them').toMatch(/turns over/i);
     expect(stop, 'messages are kept').toMatch(/messages? (?:is|are) kept/i);
     expect(stop, 'no agent is named').not.toContain('Dock Desk');
-    expect(healerOwnerCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([stop]);
-    expect(healerOwnerCards()[0].severity).toBe('notice');
+    expect(stopCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([stop]);
+    expect(stopCards()[0].severity).toBe('notice');
   });
 
   it('a SECOND agent stopping in the same window sends nothing and adds no second card', async () => {
@@ -553,7 +555,7 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     await runV2Turn('second');
     expect(statusOf('second'), 'the second agent is parked too').toBe('paused');
     expect(texts().length, 'no second text for the same window').toBe(before);
-    expect(healerOwnerCards(), 'one card').toHaveLength(1);
+    expect(stopCards(), 'one card').toHaveLength(1);
   });
 
   it('the NEXT window tells again: once the told window has turned over, a new stop texts and the card is the new one', async () => {
@@ -567,23 +569,23 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     await runV2Turn('second');
     expect(texts().length, 'told again for the new window').toBe(first + 1);
     expect(texts()[first]).toMatch(/limit.*reached/i);
-    expect(healerOwnerCards(), 'one card, not two').toHaveLength(1);
+    expect(stopCards(), 'one card, not two').toHaveLength(1);
   });
 
   it('the card ends with the last release; changing the limit is a new window, so a later stop tells again', async () => {
     noFreeModel();
     gradual();
     await runV2Turn(AGENT);
-    expect(healerOwnerCards()).toHaveLength(1);
+    expect(stopCards()).toHaveLength(1);
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     expect(status()).toBe('idle');
-    expect(healerOwnerCards(), 'the card ends when the stop is lifted').toEqual([]);
+    expect(stopCards(), 'the card ends when the stop is lifted').toEqual([]);
     const before = texts().length;
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 1 }) });
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
     expect(texts().slice(before).filter((t) => /waiting/i.test(t)), 'told again').toHaveLength(1);
-    expect(healerOwnerCards()).toHaveLength(1);
+    expect(stopCards()).toHaveLength(1);
   });
 
   it('an agent\'s OWN budget reached is its own window: the stop is told (without naming it), as one text and one card', async () => {
@@ -597,7 +599,7 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     const stops = texts().filter((t) => /waiting/i.test(t));
     expect(stops, 'the stop is told').toHaveLength(1);
     expect(stops[0]).not.toContain('Dock Desk');
-    expect(healerOwnerCards().map((c) => c.words)).toEqual(stops);
+    expect(stopCards().map((c) => c.words)).toEqual(stops);
   });
 });
 
@@ -612,7 +614,7 @@ describe('t167 amendment: "the limit is reached" is ONE fact, told once per wind
     expect(statusOf('second')).toBe('paused');
     expect(texts(), 'one text for the whole window, however many agents stop').toHaveLength(1);
     expect(texts()[0]).toMatch(/limit reached.*\$2\.00 of your \$1\.00 daily budget.*\$1\.00 over/i);
-    expect(healerOwnerCards(), 'the crossing alert\'s own card is the card; the stop adds none').toEqual([]);
+    expect(stopCards(), 'the crossing alert\'s own card is the card; the stop adds none').toEqual([]);
   });
 
   it('...and when that window has turned over, a new stop is told again', async () => {
@@ -635,8 +637,8 @@ describe('t167 (iv): the no-fit stop is byte-unchanged', () => {
       throw new SystemPromptTooLargeError(9_000, contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 }));
     });
     await runV2Turn(AGENT);
-    expect(sendAlertSpy.mock.calls).toEqual([[NO_FIT_WORDS, 'notice', { kind: 'broken-agent', cardKey: `nofit:${AGENT}`, agentId: AGENT }]]);   // v3.5 N42 r2: the card is keyed by its condition; the agent it is about is told what was texted
-    expect(healerOwnerCards().map((c) => ({ words: c.words, severity: c.severity }))).toEqual([{ words: NO_FIT_WORDS, severity: 'notice' }]);
+    expect(sendAlertSpy.mock.calls).toEqual([[NO_FIT_WORDS, 'notice', { kind: 'broken-agent', agentId: AGENT }]]);   // the agent it is about is told what was texted
+    expect(stopCards().map((c) => ({ words: c.words, severity: c.severity }))).toEqual([{ words: NO_FIT_WORDS, severity: 'notice' }]);
     const lastError = (db().prepare('SELECT last_error FROM agents WHERE id = ?').get(AGENT) as { last_error: string }).last_error;
     expect(lastError).toBe('[no_model_fits] None of this agent\'s models can hold its instructions and tools, so its turn was not run. '
       + 'Your message is kept. Pick a bigger model for this agent (or give it fewer tools) and it will answer.');

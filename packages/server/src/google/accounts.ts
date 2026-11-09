@@ -319,7 +319,7 @@ export function updateGoogleAccount(id: string, patch: Partial<Omit<GoogleAccoun
 }
 
 /** t138 r4: the owner is told this account's sign-in expired; keep the words for his card. */
-export const noteGoogleSignInExpired = (id: string, words: string): string => noteSignInExpired('google_accounts', id, words);
+export const noteGoogleSignInExpired = (id: string, words: string): void => noteSignInExpired('google_accounts', id, words);
 
 export function deleteGoogleAccount(id: string): void {
   accountRemoved('google_accounts', id); // r6: the cards it is the subject of end, live

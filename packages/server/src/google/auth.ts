@@ -32,7 +32,6 @@ import {
 } from './accounts.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { ownerCardFrame } from '../services/owner-card-frames.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 
 const logger = createLogger('google-auth');
@@ -411,7 +410,7 @@ function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void 
   // OR-AUDIT-ANSWERS (d): a sign-in that expired is no platform text (the owner's set: offline and back online, budget,
   // broken agent, Mac critical). The dashboard card stays; the agent sees the disconnected integration in its prompt and
   // tells him (OR-ENGINE-LABELLED: the agent's job).
-  try { ownerCardFrame(noteGoogleSignInExpired(accountId, expiredWords(acc)), 'error', undefined, 'action'); } catch { /* the card is re-derived on the next load */ }
+  noteGoogleSignInExpired(accountId, expiredWords(acc));
 }
 
 const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Google cards).`; // the owner's card carries these words (t138 r3-4)

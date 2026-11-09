@@ -26,7 +26,8 @@ import { makeRealDeps, overrideOllamaHost, type OllamaHost } from '../ollama-hos
 import { desiredLoaded, raisedLoadedLimit } from '../ollama-restart.js';
 import { upkeep } from '../ollama-upkeep.js';
 import { STANDARD_DECISION_MODEL, STANDARD_TAGS, STANDARD_WRITER_MODEL } from '../local-standard.js';
-import { healerOwnerCards, OLLAMA_LIMIT_FAILED_WORDS } from '../../healer/owner-notices.js';
+import { OLLAMA_LIMIT_FAILED_WORDS } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import type { WatchableChild } from '../../child-idle-bound.js';
 
 const LOCAL = 'ollama-local';
@@ -114,13 +115,13 @@ describe('the Dojo raises Ollama\'s model limit', () => {
     expect(deps.launches).toBe(1);
     expect(deps.log).toEqual(['term', 'term', 'launch']);
     expect(frames.list).toEqual([]);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
   });
 
   it('an upgraded box still holding the "limit raised" card of an earlier 3.5 build: it is never shown, in any card\'s words', async () => {
     mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-set', 1), ('owner_told', 'ollama-restart-needed', 1)").run();
     await boot(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' }));
-    expect(healerOwnerCards()).toEqual([]);   // never read back as another card's words
+    expect(standingOwnerNotices()).toEqual([]);   // never read back as another card's words
   });
 
   it('already right: nothing set, NO restart, nothing told — idempotent', async () => {
@@ -176,7 +177,7 @@ describe('it acts only where it is true', () => {
     expect(deps.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
     expect(deps.launches).toBe(0);
     expect(frames.list).toEqual([]);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
   });
 
   it('the Ollama app is installed but an unsupervised formula serve answers: that serve is replaced by Homebrew\'s service, no card', async () => {
@@ -193,7 +194,7 @@ describe('it acts only where it is true', () => {
     await boot(deps);
     expect(deps.terms).toEqual([]);
     expect(frames.list).toEqual([]);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
   });
 
   it('Homebrew\'s service serves it: the variable goes into launchd, the service is restarted once, and the owner is asked for nothing', async () => {
@@ -297,7 +298,7 @@ describe('no AppleScript; a failed restart is tried again at the next start', ()
     await boot(next);
     expect(next.sets).toEqual([]);   // already set: only the restart was owed
     expect(next.launches).toBe(1);
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
     // …and once it worked, a later start does nothing.
     const after = fakeDeps(env);
     await boot(after);
@@ -311,7 +312,7 @@ describe('a slow or failed relaunch', () => {
     const slow = fakeDeps(env, { neverAnswers: true });
     await boot(slow);
     expect(frames.list.filter((f) => f.error !== undefined)).toEqual([]);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
   });
 
   it('a relaunched app that is GONE is a failed restart: owed kept, the failed card, retried next start', async () => {
@@ -323,7 +324,7 @@ describe('a slow or failed relaunch', () => {
     const next = fakeDeps(env);
     await boot(next);   // still owed
     expect(next.launches).toBe(1);
-    expect(healerOwnerCards().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
+    expect(standingOwnerNotices().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
   });
 
   it('`/usr/bin/open` runs under the platform\'s child-process bound: one that never returns is ended', async () => {
@@ -341,7 +342,7 @@ describe('a slow or failed relaunch', () => {
   it('a retired card\'s record left on a box is never shown, and nothing names the variable', async () => {
     mockDb.current!.prepare("INSERT INTO healer_state (scope, key, at_ms) VALUES ('owner_told', 'ollama-limit-manual:4', 1)").run();
     await boot(fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '8' }));
-    expect(healerOwnerCards()).toEqual([]);
+    expect(standingOwnerNotices()).toEqual([]);
     expect(OLLAMA_LIMIT_FAILED_WORDS).not.toMatch(/OLLAMA_|environment variable/);
   });
 });

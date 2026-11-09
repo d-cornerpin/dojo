@@ -45,7 +45,7 @@ import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
 import { spanWaitsForAWriter, whenAWriterCanRun } from '../../memory/writer.js';
 import { parkJob } from '../../work/job-continuation.js';
 import { whenLockFree } from '../../db/with-lock.js';
-import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
+import { tellOwner, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
 import { sendAlert } from '../../services/imessage-bridge.js';
 
 const logger = createLogger('v2-context-wait');
@@ -98,7 +98,7 @@ export function endFullContextWait(agentId: string): void {
 
 function tellStuckOnce(agentId: string): void {
   const key = `stuck:${agentId}`;
-  if (!tellOwnerOnce(key)) return;
+  if (!tellOwner(key, wordsOf(key))) return;
   told.add(agentId);
   try {
     void sendAlert(wordsOf(key), 'notice', { kind: 'broken-agent', agentId });

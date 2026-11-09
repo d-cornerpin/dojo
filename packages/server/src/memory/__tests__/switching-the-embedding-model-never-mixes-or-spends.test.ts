@@ -26,7 +26,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 const sent = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: Record<string, unknown>) => { sent.push(e); } }));
-import { healerOwnerCards } from '../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 
 import { runMigrations } from '../../db/migrations.js';
 import { setEmbeddingConfig } from '../embeddings.js';
@@ -93,7 +93,7 @@ async function until(cond: () => boolean, ms = 3000): Promise<void> {
   while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
 }
 const notices = (): Array<Record<string, unknown>> => sent.filter((e) => e.cardKey === 'embedding-switch' && e.severity === 'warning');
-const standing = () => healerOwnerCards().filter((c) => c.cardKey === 'embedding-switch');
+const standing = () => standingOwnerNotices().filter((c) => c.cardKey === 'embedding-switch');
 
 describe('search never mixes two models', () => {
   it('after a switch, a same-width vector from the old model is not a hit (conversation and vault)', async () => {

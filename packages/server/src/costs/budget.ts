@@ -8,10 +8,10 @@ import { createLogger } from '../logger.js';
 import { getDailySpend, agentPeriodSpend } from './spend.js';   // t268: the spend readers' leaf
 export { exceededBudget } from './spend.js';
 import { sendAlert } from '../services/imessage-bridge.js';
-import { windowOf, latestToldAt, endBudgetCard, endBudgetCardOnChange } from './budget-cards.js';
+import { windowOf, budgetKey, endBudgetCard, endBudgetCardOnChange, latestToldAt } from './budget-cards.js';
 import { ownerWords } from './budget-words.js';
-import { budgetStopKey, tellLimitReachedWithoutCard } from '../healer/owner-notices.js';
-export { budgetOwnerCards, endTurnedOverBudgetCards, budgetStopToTell } from './budget-cards.js';
+import { budgetStopKey, ownerConditionCleared, tellLimitReachedWithoutCard, tellOwner } from '../healer/owner-notices.js';
+export { budgetStopToTell } from './budget-cards.js';
 
 const logger = createLogger('budget');
 
@@ -58,8 +58,8 @@ const THRESHOLDS: ReadonlyArray<{ pct: number; field: 'alert_50_sent' | 'alert_7
 function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: number): void {
   const db = getDb();
   const row = db.prepare(`
-    SELECT alert_50_sent, alert_75_sent, alert_90_sent, alert_words FROM budgets WHERE id = ?
-  `).get(b.budgetId) as { alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null; alert_words: string | null } | undefined;
+    SELECT alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?
+  `).get(b.budgetId) as { alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null } | undefined;
 
   if (!row) return;
 
@@ -67,12 +67,7 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   const nowS = Math.floor(Date.now() / 1000);
   const windowS = windowOf(b.period).seconds;
   let highestCrossed: number | null = null;
-
-  // THE INCIDENT IS THE LATEST CROSSING, LIVE FOR ITS WINDOW (t138 round 6, review C1). The same
-  // latches decide the text (no second text inside the window) and so the card: it stands while
-  // the latest told-at is inside the window, and the window turning over is the clear. Spend
-  // moving inside the window ends nothing; a stale higher latch from an earlier window is not it.
-  if (row.alert_words && nowS - latestToldAt(row) >= windowS) endBudgetCard(b.budgetId, row.alert_words);
+  if (nowS - latestToldAt(row) >= windowS) endBudgetCard(b.budgetId);   // the window turned over: that incident is over
 
   for (const { pct, field } of THRESHOLDS) {
     // At or over the line, and not told within this window -> record when, then tell. Recorded
@@ -95,14 +90,12 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
     limitUsd,
     percentage: pctLabel,
   });
-  // The text and its dashboard card are one thing (the door makes both; the old `cost:alert`
-  // toast is gone, t138 round 2). The words are kept on the row so the card outlives the page,
-  // and a NEW crossing clears an earlier dismissal (round 3).
+  // The card and the text carry the same words; a new crossing is a new card, whatever was dismissed before.
   const words = ownerWords(b, currentSpend, limitUsd);
-  db.prepare('UPDATE budgets SET alert_words = ?, alert_dismissed_at = NULL WHERE id = ?').run(words, b.budgetId);
-  // "The limit is reached" is ONE fact, told once per budget window, whichever door gets there first
-  // (t167): when THIS text said it, the honest stop that parks an agent in the same window has
-  // nothing to add (agent/v2/honest-stop.ts shares the record; this card is already the card).
+  ownerConditionCleared(budgetKey(b.budgetId));
+  tellOwner(budgetKey(b.budgetId), words);
+  // "The limit is reached" is one fact per budget window, whichever door gets there first: when this text said it, the
+  // honest stop that parks an agent in the same window has nothing to add.
   if (currentSpend >= limitUsd) tellLimitReachedWithoutCard(budgetStopKey(b.budgetId), windowOf(b.period).seconds * 1000);
   void sendAlert(words, 'notice', { kind: 'budget' });
 }

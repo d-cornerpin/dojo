@@ -10,9 +10,9 @@
 //                    renames every column, or a WHERE that probes a value through an index
 //                    cannot carry a credential out under another name.
 //   redactRows       a credential column is blanked, then every string cell is scrubbed.
-//   redactText       for log lines and code: token-shaped strings (the shape list the technique
-//                    exporter already keeps, `techniques/scrub.ts`) and every value the named
-//                    agents have handled (`redactHandedCredentials`, the t118 door).
+//   redactText       for log lines and code: token-shaped strings (the one shape list,
+//                    `techniques/scrub.ts`) and every value the named agents have handled
+//                    (`redactHandedCredentials`).
 //
 // WHY A SHAPE SCRUB HERE when the persist side deliberately keys on declared values only: the
 // persist side must not rewrite bytes the agent still needs, so it may not guess. A read-only
@@ -24,8 +24,7 @@
 
 import type Database from 'better-sqlite3';
 import { isReadStatement, stripExplain } from '../db/read-only-door.js';
-import { PATTERNS } from '../techniques/scrub.js';
-import { INSPECT_PATTERNS } from './credential-shapes.js';
+import { PATTERNS, secretOf } from '../techniques/scrub.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 
 export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries' /* owner's private memory stays behind vault_* tools */];
@@ -183,12 +182,10 @@ function tableRefusal(table: string): string {
 export function redactText(s: string, agentIds: readonly string[] = []): string {
   if (!s) return s;
   let out = s;
-  for (const p of [...INSPECT_PATTERNS, ...PATTERNS]) {
+  for (const p of PATTERNS) {
     out = out.replace(p.regex, (match: string, ...rest: unknown[]) => {
-      const groups = rest.slice(0, -2).filter((g): g is string => typeof g === 'string' && g.length > 0);
-      const value = groups[groups.length - 1];
-      const keep = (p as { keep?: (v: string, m: string) => boolean }).keep;
-      if (keep && (!value || keep(value, match))) return match;
+      const value = secretOf(p, match, rest);
+      if (value === null) return match;
       // A URL with inline credentials keeps its scheme, user and host; only the password goes.
       if (!value) return p.name === 'url-creds' ? match.replace(/^([^:]+:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${REDACTED_CREDENTIAL}@`) : REDACTED_CREDENTIAL;
       const at = match.lastIndexOf(value);

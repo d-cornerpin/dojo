@@ -35,7 +35,7 @@ import { broadcast } from '../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { markTurnDied } from './turn-record.js';
 import { sendAlert } from '../../services/imessage-bridge.js';
-import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
+import { tellOwner, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
 import type { AgentTurnState } from './state.js';
 import { createLogger } from '../../logger.js';
 import { noteWaitingOfParked, noticeIdentityFor } from './honest-stop-notes.js';
@@ -232,9 +232,8 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
 
   noteInChat(agentId, `[System (platform notice): ${stop.words}]`, noticeIdentityFor(agentId, state.lastUserMessageId));   // the notice IS that message's line (its id), so a later message does not re-tell it
   broadcast({ type: 'chat:error', agentId, error: stop.kind === 'no_model_fits' ? noFitOwnerWords(agentId) : stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
-  // A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): ONE text through the
-  // owner-notice door, and its lasting card (healer/owner-notices.ts, `nofit:<agent>`), same words.
-  if (stop.kind === 'no_model_fits' && tellOwnerOnce(`nofit:${agentId}`)) void sendAlert(wordsOf(`nofit:${agentId}`), 'notice', { kind: 'broken-agent', cardKey: `nofit:${agentId}`, agentId });
-  if (stop.kind === 'budget_stop') budgetStopToTell(stop.budget, (words) => void sendAlert(words, 'notice', { kind: 'budget' }));   // t167: once per budget window, however many agents stop
+  // A no-fit agent is a broken agent the owner must act on: one text and its lasting card, in the same words.
+  if (stop.kind === 'no_model_fits' && tellOwner(`nofit:${agentId}`, wordsOf(`nofit:${agentId}`))) void sendAlert(wordsOf(`nofit:${agentId}`), 'notice', { kind: 'broken-agent', agentId });
+  if (stop.kind === 'budget_stop') budgetStopToTell(stop.budget, (words) => void sendAlert(words, 'notice', { kind: 'budget' }));   // once per budget window, however many agents stop
   return true;
 }

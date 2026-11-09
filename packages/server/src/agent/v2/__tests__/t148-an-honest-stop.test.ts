@@ -402,7 +402,9 @@ import { costsRouter } from '../../../gateway/routes/costs.js';
 import { kickMemoryRecheck, backgroundChecksSettled } from '../../../scheduler/background-checks.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { agentsRouter } from '../../../gateway/routes/agents.js';
-import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
+/** The standing cards a stop raises (the budget's crossing card is its own). */
+const stopCards = (): ReturnType<typeof standingOwnerNotices> => standingOwnerNotices().filter((c) => !c.cardKey.startsWith('budget:'));
 import { handleIMCommand } from '../../../services/imessage-commands.js';
 import { releaseClearedBudgetStops } from '../honest-stop-lock.js';
 import { configRouter } from '../../../gateway/routes/config.js';
@@ -677,18 +679,18 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(texts, 'one text').toHaveLength(1);
     expect(texts[0]).toMatch(/Dock Desk.*none of its models can hold/i);
     expect(sendAlertSpy.mock.calls[0][1], 'a broken agent: notice').toBe('notice');
-    expect(healerOwnerCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
+    expect(stopCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
 
     // The lock lifted by something that is not the event, and the same stop again: told once.
     writeAgentStatus(AGENT, 'idle');
     await runV2Turn(AGENT);
     expect(sendAlertSpy.mock.calls.length, 'no second text').toBe(1);
-    expect(healerOwnerCards()).toHaveLength(1);
+    expect(stopCards()).toHaveLength(1);
 
     // The real event releases the agent, and the card ends with it.
     await agentsRouter.request(`/${AGENT}/model`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }) });
     expect(status()).toBe('idle');
-    expect(healerOwnerCards(), 'the card ends when the agent is released').toEqual([]);
+    expect(stopCards(), 'the card ends when the agent is released').toEqual([]);
   });
 
   it('a budget stop adds no text of its own (the crossing alert is the one), and no owner card of its own', async () => {
@@ -696,7 +698,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
     expect(sendAlertSpy.mock.calls.map((c) => c[0] as string).filter((t) => /none of its models/i.test(t))).toEqual([]);
-    expect(healerOwnerCards()).toEqual([]);
+    expect(stopCards()).toEqual([]);
   });
 
   // ══ ROUND 4 (review t148-review.md) ══
@@ -765,11 +767,11 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(handleMessageSpy).not.toHaveBeenCalled();
     expect(sendAlertSpy.mock.calls.length, 'no new text').toBe(texts);
     expect(notices().length, 'no new notice').toBe(said);
-    expect(healerOwnerCards(), 'its card stands').toHaveLength(1);
+    expect(stopCards(), 'its card stands').toHaveLength(1);
     // The agent is pointed at a model that holds it: that IS the event.
     await agentsRouter.request(`/${AGENT}/model`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }) });
     expect(status()).toBe('idle');
-    expect(healerOwnerCards()).toEqual([]);
+    expect(stopCards()).toEqual([]);
   });
 
   // Minor 5 — the live frame and the serializer carry only the owner-facing cause.
