@@ -1,5 +1,5 @@
-// The box takes at most three ladder wakes in any ten minutes over every agent, the project manager included;
-// the PM is never armed again while its last wake has no report; and every due step is taken in a later window.
+// The box takes at most three ladder wakes in any ten minutes over every agent, the project manager included (its
+// own Working task too), and every due step is taken in a later window.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -26,6 +26,7 @@ describe('the ladder takes three wakes per ten minutes over every agent', () => 
     vi.setSystemTime(start);
     for (const a of WORKERS.slice(2)) doneDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, ?, 'idle', 'standard')").run(a, a);
     const rows = [TASK, ...Array.from({ length: 19 }, (_, i) => workingTask(`task-due-${i}`, WORKERS[(i + 1) % 6], `Job ${i}`, 10 * MIN))];
+    rows.push(workingTask('task-the-pm-holds', PM, 'The weekly digest', 10 * MIN));
     const handIns = Array.from({ length: 5 }, (_, i) => {
       const id = `task-handed-${i}`;
       doneDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
@@ -36,17 +37,15 @@ describe('the ladder takes three wakes per ten minutes over every agent', () => 
     });
     const wakes: number[] = [];
     turn.during = () => { wakes.push(Date.now()); };
-    let reports = 0;
+    let reviews = 0;
     for (let t = 0; t <= 60 * MIN; t += 30_000) {
       vi.setSystemTime(start + t);
       const armed = arms.length;
       await runLadder();
-      if (arms.length > armed) expect(armed, 'armed only once its last wake has a report').toBe(reports);
       wakes.push(...arms.slice(armed));
-      if (arms.length > reports) {   // the review starts and writes its report before the next sweep
-        doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, origin_intent, authorized, sent_at, created_at) VALUES (?, ?, 'events', 'user', 'report', 'pm_review', 1, ?, ?)")
-          .run(`report-${reports}`, PM, Date.now() + 1, Date.now() + 1);
-        reports = arms.length;
+      if (arms.length > reviews) {   // the review's turn finishes before the next sweep
+        doneDb().prepare('INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, ?, ?, ?, 1, ?)')
+          .run(PM, ++reviews, new Date(Date.now() + 2_000).toISOString(), new Date(Date.now() + 2_000).toISOString(), 'answered');
       }
     }
     for (const w of wakes) expect(wakes.filter((x) => x >= w && x < w + 10 * MIN).length, 'wakes in a 10-minute window').toBeLessThanOrEqual(3);

@@ -9,7 +9,7 @@
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns, type TrackerStatus, stampColumns, engineScaffoldScope } from '../work/tracker-view.js';
-import { workSettled, noteUnsettled } from '../work/store.js';
+import { workSettled, noteUnsettled, ownerHoldStands, OWNER_HOLD_REFUSAL } from '../work/store.js';
 import { patchWork, setTrackerStatus } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../work/next-run.js';
@@ -997,6 +997,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     }
 
     { const no = taskWriteRefusal(agentId, taskId, 'change the status of'); if (no) return no; }   // t193 (dec 3): only the task's holder, its creator, the PM and the main agent change it.
+    if (status && ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
     // The prior status, for the task_log transition entry below (the row has moved once it is written).
     const db = getDb();
     const taskRow = db.prepare(`SELECT title, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; prior_status: string } | undefined;
@@ -2357,7 +2358,8 @@ export async function trackerRetask(
     return `Error: target_status="${targetStatus}" is not allowed for retask. Use 'in_progress' (default) or 'on_deck'.`;
   }
 
-  // A retask lifts any hold (the PM's verdict that the wait is not real), then moves through `transition()`.
+  // A retask lifts any hold but the owner's (the PM's verdict that the wait is not real), then moves through `transition()`.
+  if (ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
   clearHold(taskId, pmAgentId);
   const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
     by: 'pm', actorId: pmAgentId,

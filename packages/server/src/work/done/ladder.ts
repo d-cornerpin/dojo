@@ -10,8 +10,8 @@
 //      hand-in nor in the first hour after the upgrade, at most once per task per day.
 // Bounds on the wakes: none to an agent a person is waiting on (`selfWakeStandDown`) or in a live turn, one per
 // agent per sweep naming all its due rows, and at most 3 box-wide per 10 minutes; the rest wait for a later sweep.
-// Each wake marks one of its entries; the PM is not armed again while its marked entry is newer than its last report.
-// Left alone: a pause the owner set (its clock restarts when it lifts), a hold already on the row at the upgrade
+// Each wake marks one of its entries; the PM is not armed again until a PM turn finishes after its last arm.
+// Left alone: a hold the owner set (its clock restarts when it lifts), a hold already on the row at the upgrade
 // (until the row moves), a Working row whose worker no longer exists, and a Working row already idle 14 days when
 // this box first ran the ladder. Every other hold, dated or not, is a stall.
 import { DORMANT_MS } from '@dojo/shared';
@@ -22,7 +22,7 @@ import { taskScope, msToUtcText, heldByOwnerSql, holdWordsSql } from '../tracker
 import { taskMovedAtSql, stallSinceSql, LADDER_ANCHOR_SQL, jobCarriedIds } from '../task-freshness.js';
 import { appendAuditEntry, AUDIT_KIND } from '../audit-trail.js';
 import { recordValidationEscalation } from '../tracker-store.js';
-import { heldExpr, WORKING_STATES } from './hold.js';
+import { WORKING_STATES } from './hold.js';
 import { latestHandIn, workerOf } from './record.js';
 import { whoDecides, sendBacks, REVIEW_MISS_ENTRY, SEND_BACKS_BEFORE_ESCALATION } from './who-decides.js';
 import { agentIsLive } from '../../tracker/liveness.js';
@@ -41,7 +41,9 @@ const REFUSALS_BEFORE_PM = 3;
 const WAKES_PER_WINDOW = 3;
 const WAKE_WINDOW_MS = 10 * 60_000;
 const LIVE = [...WORKING_STATES, 'handed_in'];
-const WOKE = 'woke the agent';
+/** The mark one entry of each wake carries (in its evidence field, which the trail does not show). */
+const WAKE = '{"wake":1}';
+const SAID: Record<string, string> = { [LADDER_ENTRY.hint]: 'Reminded the worker.', [LADDER_ENTRY.pm]: 'Told the project manager.', [LADDER_ENTRY.decider]: 'Asked the main agent to decide.' };
 
 /** Every engine hint the ladder sends, in one table. */
 export const LADDER_HINT = {
@@ -122,7 +124,7 @@ function candidates(now: number): string[] {
   return (getDb().prepare(
     `SELECT w.id FROM work w LEFT JOIN agents a ON a.id = COALESCE(w.assignee_agent, w.agent_id)
       WHERE ${taskScope('w')} AND w.state IN (${LIVE.map((st) => `'${st}'`).join(', ')}) AND (w.state = 'handed_in' OR a.status != 'terminated')
-        AND NOT (${heldExpr('w', 'paused')} AND ${heldByOwnerSql('w')})
+        AND NOT ${heldByOwnerSql('w')}
         AND COALESCE(w.hold_at >= ${LADDER_ANCHOR_SQL}, 1)
         AND w.is_paused = 0 AND (w.scheduled_start IS NULL OR w.scheduled_start <= ?)
         AND (w.state = 'handed_in' OR ${taskMovedAtSql('w')} >= ${LADDER_ANCHOR_SQL} - ?)`,
@@ -133,13 +135,13 @@ function candidates(now: number): string[] {
 const wakesSince = (from: number, kinds: string[] = Object.values(LADDER_ENTRY)): number => (getDb().prepare(
   `SELECT COUNT(*) AS n FROM work_events e
     WHERE e.work_id IN (SELECT w.id FROM work w WHERE ${taskScope('w')}) AND e.kind = '${AUDIT_KIND}' AND e.created_at >= ?
-      AND json_extract(e.payload, '$.action_taken') IS NOT NULL AND json_extract(e.payload, '$.entry_kind') IN (${kinds.map(() => '?').join(', ')})`,
+      AND json_extract(e.payload, '$.evidence_json') IS NOT NULL AND json_extract(e.payload, '$.entry_kind') IN (${kinds.map(() => '?').join(', ')})`,
 ).get(from, ...kinds) as { n: number }).n;
 
-/** A PM wake is pending: one marked since its last report, within one bound (an arm that never reported is over). */
+/** A PM wake is pending from its arm until a PM turn finishes after it, or one bound passes (a review that never ran). */
 function pmPending(pmId: string, now: number): boolean {
-  const report = (getDb().prepare("SELECT MAX(created_at) AS at FROM messages WHERE agent_id = ? AND origin_intent = 'pm_review'").get(pmId) as { at: number | null }).at ?? 0;
-  return wakesSince(Math.max(report + 1, now - patienceBoundMs(pmId)), [LADDER_ENTRY.pm]) > 0;
+  const done = (getDb().prepare('SELECT MAX(unixepoch(ended_at)) * 1000 AS at FROM turns WHERE agent_id = ? AND ended_at IS NOT NULL').get(pmId) as { at: number | null }).at ?? 0;
+  return wakesSince(Math.max(done + 1000, now - patienceBoundMs(pmId)), [LADDER_ENTRY.pm]) > 0;
 }
 
 /** One engine hint to `agentId` naming each row, as an events-lane re-drive that owes no reply, recorded on every
@@ -150,7 +152,8 @@ export async function hintOnce(agentId: string, rows: Array<{ workId: string; te
   const mine = (workId: string): boolean => agentId === workerOf(workId);
   const content = `[Engine hint: ${rows.map((r) => `${r.text} [${r.workId}]`).join(' ')}]`;
   const sent = await redriveWithoutReply({ toAgentId: agentId, fromAgentId: null, content, taskId: rows.find((r) => mine(r.workId))?.workId ?? null });
-  if (sent) rows.forEach((r, i) => appendAuditEntry(r.workId, 'engine', { entryKind: mine(r.workId) ? LADDER_ENTRY.hint : LADDER_ENTRY.decider, actionTaken: key ?? (i === 0 ? WOKE : null), reason: content }));
+  const kind = (workId: string): string => (mine(workId) ? LADDER_ENTRY.hint : LADDER_ENTRY.decider);
+  if (sent) rows.forEach((r, i) => appendAuditEntry(r.workId, 'engine', { entryKind: kind(r.workId), actionTaken: key ?? null, reason: SAID[kind(r.workId)], evidenceJson: i === 0 ? WAKE : null }));
   return sent;
 }
 
@@ -177,17 +180,18 @@ function hintText({ id, due }: Due): string {
     : LADDER_HINT.sentBack(title, reasons);
 }
 
-/** One wake of `agentId` for its due steps: the PM's next report, or one hint naming every row. False when not woken. */
-async function wake(agentId: string, steps: Due[], now: number): Promise<boolean> {
-  if (selfWakeStandDown(agentId).standDown) return false;
+/** One wake of `agentId` for its due steps, within `room`: the PM's next report and one hint naming every row. Returns
+ *  how many wakes it made (the PM holding a Working task of its own can make two). */
+async function wake(agentId: string, steps: Due[], now: number, room: number): Promise<number> {
+  if (selfWakeStandDown(agentId).standDown) return 0;
   const due = steps.filter((s) => s.due === 'pm');
   const pm = due.length > 0 && !pmPending(agentId, now) ? due : [];
-  const about = `the project manager's next report names ${pm.map((s) => s.id).join(', ')}`;
-  pm.forEach((s, i) => appendAuditEntry(s.id, 'engine', { entryKind: LADDER_ENTRY.pm, actionTaken: i === 0 ? WOKE : null, reason: about }));
+  pm.forEach((s, i) => appendAuditEntry(s.id, 'engine', { entryKind: LADDER_ENTRY.pm, reason: SAID[LADDER_ENTRY.pm], evidenceJson: i === 0 ? WAKE : null }));
   if (pm.length > 0) (await import('../../tracker/pm-agent.js')).armDebouncedReview(pm[0].id, 'ladder');
+  const armed = pm.length > 0 ? 1 : 0;
   const hints = steps.filter((s) => s.due !== 'pm' && !jobCarriedIds(agentId).includes(s.id));
-  if (hints.length === 0 || agentIsLive(agentId)) return pm.length > 0;
-  return (await hintOnce(agentId, hints.map((s) => ({ workId: s.id, text: hintText(s) })))) || pm.length > 0;
+  if (hints.length === 0 || agentIsLive(agentId) || armed >= room) return armed;
+  return armed + ((await hintOnce(agentId, hints.map((s) => ({ workId: s.id, text: hintText(s) })))) ? 1 : 0);
 }
 
 /** THE SWEEP: per row, at most one step; the wakes are grouped by the agent they wake and bounded (header). */
@@ -209,7 +213,7 @@ export async function runLadder(now = Date.now()): Promise<void> {
   for (const [agentId, steps] of byAgent) {
     if (room <= 0) return;
     try {
-      if (await wake(agentId, steps, now)) room -= 1;
+      room -= await wake(agentId, steps, now, room);
     } catch (err) {
       logger.warn('ladder: one agent could not be woken', { agentId, error: err instanceof Error ? err.message : String(err) });
     }

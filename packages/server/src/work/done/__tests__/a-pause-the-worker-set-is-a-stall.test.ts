@@ -18,7 +18,7 @@ const UNTIL = '2099-01-01 09:00 UTC';
 describe('a pause the worker set is a stall', () => {
   it('hint with the reason and date, then the PM, then the owner\'s card naming what it waits on and until when', async () => {
     freshBoard(); anchorBack(2 * 60 * MIN); resetLadderWorld();
-    expect((await call(WORKER, 'work_update', { action: 'status', task_id: TASK, status: 'paused', notes: REASON, resume_at: '2099-01-01T09:00:00Z' })).isError).toBe(false);
+    expect((await call(WORKER, 'work_update', { action: 'status', task_id: TASK, status: 'paused', notes: `${REASON}.`, resume_at: '2099-01-01T09:00:00Z' })).isError).toBe(false);
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER)).toHaveLength(1);
     expect(hintsTo(WORKER)[0]).toContain(`paused by its worker, waiting on: ${REASON}, until ${UNTIL}`);

@@ -7,7 +7,7 @@ import { getDb } from '../../db/connection.js';
 import { withUnit } from '../../db/unit.js';
 import { appendAuditEntry } from '../audit-trail.js';
 import { patchWork } from '../tracker-store.js';
-import { noteUnsettled } from '../store.js';
+import { noteUnsettled, ownerHoldStands, OWNER_HOLD_REFUSAL } from '../store.js';
 import { taskScope } from '../tracker-view.js';
 import { workingExpr } from '../terminal-states.js';
 
@@ -28,6 +28,8 @@ export const heldExpr = (a: string, kind?: HoldKind): string =>
 
 export { WORKING_STATES, workingExpr } from '../terminal-states.js';
 
+const byOwner = (by: string): boolean => by === 'owner' || by === 'user';
+
 const holdable = (workId: string): boolean => !!getDb().prepare(
   `SELECT 1 FROM work w WHERE w.id = ? AND ${workingExpr('w', true)} AND ${taskScope('w')}`,
 ).get(workId);
@@ -37,6 +39,7 @@ export function setHold(workId: string, kind: HoldKind, reason: string, by: stri
   const line = reason.trim();
   if (!line || /[\r\n]/.test(line)) return { ok: false, why: `a ${kind} hold needs its reason in one line` };
   return withUnit((): HoldResult => {
+    if (ownerHoldStands(workId, byOwner(by))) return { ok: false, why: OWNER_HOLD_REFUSAL };
     if (!holdable(workId)) return { ok: false, why: 'only an Open or Working task can be held' };
     noteUnsettled(patchWork(workId, { hold_kind: kind, hold_reason: line, hold_at: Date.now(), paused_until: kind === 'paused' ? pausedUntilMs : null }), 'hold set', { taskId: workId });
     appendAuditEntry(workId, by, { entryKind: 'hold_set', toStatus: kind, reason: holdOf(workId)?.reason ?? '' });
@@ -48,7 +51,7 @@ export function setHold(workId: string, kind: HoldKind, reason: string, by: stri
 export function clearHold(workId: string, by: string): boolean {
   return withUnit(() => {
     const was = holdOf(workId);
-    if (!was) return false;
+    if (!was || ownerHoldStands(workId, byOwner(by))) return false;
     noteUnsettled(patchWork(workId, { hold_kind: null, hold_reason: null, hold_at: null, paused_until: null }), 'hold cleared', { taskId: workId });
     appendAuditEntry(workId, by, { entryKind: 'hold_cleared', fromStatus: was.kind, reason: was.reason });
     return true;

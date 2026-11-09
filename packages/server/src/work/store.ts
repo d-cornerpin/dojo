@@ -46,6 +46,7 @@ import { retireObligationMemory } from './obligation-memory.js';
 import { notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 import type { TransitionApplied, WorkOutcome } from './outcome.js';
+import { heldByOwnerSql } from './tracker-view.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
 
@@ -82,6 +83,13 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
   failed:    ['open', 'abandoned'],
   abandoned: ['open'],
 };
+
+/** The sentence every refused lift or overwrite of an owner's hold carries. */
+export const OWNER_HOLD_REFUSAL = 'The owner paused this task. Only the owner can resume it.';
+/** True when the owner holds the row and someone else is acting: then the hold is neither lifted nor replaced. */
+export function ownerHoldStands(workId: string, ownerActing: boolean): boolean {
+  return !ownerActing && !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${heldByOwnerSql('w')}`).get(workId);
+}
 
 /** Who may reopen settled work. Anyone else is a confused model acting on a stale id. */
 const REOPENERS: readonly Actor[] = ['owner', 'pm', 'engine'];
@@ -305,6 +313,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   if (row.state === 'handed_in' && (input.to === 'open' || input.to === 'claimed') && !(input.by === 'scheduler' && input.to === 'claimed') && input.claim !== 'decided') {
     return { kind: 'refused', workId, reason: 'needs-decision', detail: 'handed-in work waits for a decision: it is approved or sent back, not moved' };
   }
+  // ── G11: a hold the owner set is lifted only by the owner. ──
+  if (ownerHoldStands(workId, input.by === 'owner')) return { kind: 'refused', workId, reason: 'owner-hold', detail: OWNER_HOLD_REFUSAL };
 
   // ══ EFFECTS — all of them, once, in one transaction with the state change ══
   const from = row.state;

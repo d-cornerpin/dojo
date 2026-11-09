@@ -77,6 +77,7 @@ export type TransitionGate =
   // Board work ends only by a decision on its hand-in (`work/done/decide.ts`).
   | 'needs-decision'
   | 'reopen-requires-authority'
+  | 'owner-hold'
   // PHASE-2 T4: the two refusals the fan-out join owes. Both were caller-side `if`s in the
   // string machine and both are structural here, so no caller can forget them.
   | 'not-a-join-child'
