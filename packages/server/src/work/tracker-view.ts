@@ -178,6 +178,16 @@ export const SERVICE_ROOT_KIND = 'service';
 export const msToText = (col: string): string =>
   `CASE WHEN ${col} IS NULL THEN NULL ELSE strftime('%Y-%m-%d %H:%M:%S', ${col} / 1000, 'unixepoch') END`;
 
+/** SQL: who set the hold on the row under alias `a`: the actor of its newest `hold_set` entry. */
+export const holdSetBySql = (a: string): string => `(SELECT e.actor FROM work_events e WHERE e.work_id = ${a}.id AND e.kind = 'audit'
+  AND json_extract(e.payload, '$.entry_kind') = 'hold_set' ORDER BY e.id DESC LIMIT 1)`;
+/** SQL: the owner set that hold (the dashboard's actor, or the owner's id). */
+export const heldByOwnerSql = (a: string): string => `(${holdSetBySql(a)} IN ('owner', 'user'))`;
+/** SQL: the hold in words for the worker's hint, the PM's report and the owner's card: kind, who, why, until when ('' if none). */
+export const holdWordsSql = (a: string): string => `CASE WHEN ${a}.hold_kind IS NULL THEN '' ELSE ${a}.hold_kind
+  || CASE WHEN ${holdSetBySql(a)} = 'engine' THEN ' by the engine' WHEN ${heldByOwnerSql(a)} THEN ' by the owner' ELSE ' by its worker' END
+  || ', waiting on: ' || COALESCE(${a}.hold_reason, '') || COALESCE(', until ' || strftime('%Y-%m-%d %H:%M', ${a}.paused_until / 1000, 'unixepoch') || ' UTC', '') END`;
+
 /** An instant as the engine's words show it, `YYYY-MM-DD HH:MM UTC`. */
 export const msToUtcText = (ms: number): string => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 

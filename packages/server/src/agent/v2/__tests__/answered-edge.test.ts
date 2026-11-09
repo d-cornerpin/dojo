@@ -536,7 +536,7 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     const log = listTaskLog('t-1');
     expect(log.some((e) => e.entryKind === 'hold_set' && e.toStatus === 'paused')).toBe(true);
     // The reason travels with it: an audit line with no why is the thing the spine replaced.
-    expect(log.find((e) => e.toStatus === 'paused')!.reason).toContain('waits on them');
+    expect(log.find((e) => e.toStatus === 'paused')!.reason).toBe('Waiting for a reply to its last message.');
   });
 });
 

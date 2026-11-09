@@ -2357,7 +2357,8 @@ export async function trackerRetask(
     return `Error: target_status="${targetStatus}" is not allowed for retask. Use 'in_progress' (default) or 'on_deck'.`;
   }
 
-  // Through `transition()`, which lifts any hold with the move.
+  // A retask lifts any hold (the PM's verdict that the wait is not real), then moves through `transition()`.
+  clearHold(taskId, pmAgentId);
   const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
     by: 'pm', actorId: pmAgentId,
     reason: `PM retask: ${directive.slice(0, 200)}`,

@@ -881,7 +881,7 @@ function backdate(taskId: string, msgId: string, days: number): void {
  *  turn that served nothing or wrote to the tracker), so these clauses — which are about what
  *  happens to work that IS waiting — put it there directly. */
 function parkWaitingOnOwner(taskId: string): void {
-  expect(setHold(taskId, 'paused', 'turn 1 answered the person and did nothing else; the work waits on them', 'engine').ok).toBe(true);
+  expect(setHold(taskId, 'paused', 'Waiting for a reply to its last message.', 'engine').ok).toBe(true);
 }
 
 describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {

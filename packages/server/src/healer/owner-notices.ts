@@ -8,7 +8,8 @@ import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { taskMovedAtSql } from '../work/task-freshness.js';
-import { msToUtcText } from '../work/tracker-view.js';
+import { msToUtcText, holdWordsSql } from '../work/tracker-view.js';
+import { workingExpr } from '../work/terminal-states.js';
 import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
 import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS } from './local-model-notice-words.js';
 import { kindOf } from './owner-notice-kinds.js';
@@ -68,14 +69,14 @@ const toldWords = (key: string): string =>
 /** The stall card: what is stuck, since when, and what was tried; '' once the task is no longer waiting. */
 function stallWords(workId: string): string {
   const db = getDb();
-  const w = db.prepare(`SELECT title, state, hold_kind, hold_reason, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), ${taskMovedAtSql('w')}) AS since
-    FROM work w WHERE w.id = ? AND w.state IN ('claimed', 'sent_back', 'handed_in')`).get(workId) as { title: string | null; state: string; hold_kind: string | null; hold_reason: string | null; since: number } | undefined;
+  const w = db.prepare(`SELECT title, state, ${holdWordsSql('w')} AS hold, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), ${taskMovedAtSql('w')}) AS since
+    FROM work w WHERE w.id = ? AND (${workingExpr('w')} OR w.state = 'handed_in')`).get(workId) as { title: string | null; state: string; hold: string; since: number } | undefined;
   if (!w) return '';
   const tried = db.prepare(`SELECT json_extract(payload, '$.entry_kind') AS k, COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND created_at >= ?
     AND json_extract(payload, '$.entry_kind') IN (${Object.keys(STALL_TRIED).map((k) => `'${k}'`).join(', ')}) GROUP BY k`).all(workId, w.since) as Array<{ k: string; n: number }>;
-  const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : w.hold_kind ? `has been ${w.hold_kind}` : 'has not moved';
+  const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : w.hold ? 'has been held' : 'has not moved';
   const triedWords = tried.length > 0 ? tried.map((t) => `${STALL_TRIED[t.k]}${t.n > 1 ? ` (${t.n} times)` : ''}`).join(', ') : 'nothing yet';
-  return `"${w.title ?? workId}" ${what} since ${msToUtcText(w.since)}${w.hold_kind ? `, waiting on: ${w.hold_reason ?? ''}` : ''}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
+  return `"${w.title ?? workId}" ${what} since ${msToUtcText(w.since)}${w.hold ? `: ${w.hold}` : ''}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
 }
 /** "The limit is reached" for one budget window (`global_daily` or `agent_<id>`); the words never name an agent. */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;

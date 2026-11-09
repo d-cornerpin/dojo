@@ -230,7 +230,7 @@ export function scaffoldCardsOfRelay(workId: string, agentId: string): Array<{ i
   return getDb().prepare(
     `SELECT id, state, title FROM work
       WHERE kind = 'task' AND root_kind = 'tracker' AND origin_kind = 'model'
-        AND agent_id = ? AND state IN ('open','claimed','sent_back')
+        AND agent_id = ? AND ${workingExpr('work', true)}
         AND origin_turn IN (${turns.map(() => '?').join(',')})
       ORDER BY opened_at ASC`,
   ).all(agentId, ...turns) as Array<{ id: string; state: string; title: string }>;
@@ -387,6 +387,7 @@ export function joinRedriveIsBlind(workId: string, turnNumber: number | null): b
 export const COMPILE_ORDER_PIECES_MARKER = "Here is each piece's delivered content, verbatim:";
 
 import type { CompileAsker } from './compile-asker.js';
+import { workingExpr } from './terminal-states.js';
 
 export function compileSteerText(p: {
   total: number; pieces: string[]; attempt: number | null; bound: number;

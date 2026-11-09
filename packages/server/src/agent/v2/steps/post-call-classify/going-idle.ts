@@ -20,7 +20,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
-import { STATE_TO_STATUS_SQL, taskScope } from '../../../../work/tracker-view.js';
+import { taskScope } from '../../../../work/tracker-view.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
@@ -72,8 +72,8 @@ export async function runGoingIdle(
         }
       }
       if (nudgedTaskId) {
-        const row = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('state')} AS status, title FROM work WHERE id = ?`).get(nudgedTaskId) as { status?: string; title?: string } | undefined;
-        if (row?.status === 'in_progress') {
+        const row = db.prepare(`SELECT ${workingExpr('w')} AS working, w.title FROM work w WHERE w.id = ?`).get(nudgedTaskId) as { working?: number; title?: string } | undefined;
+        if (row?.working) {
           const titleShort = (row.title ?? '').slice(0, 60);
           const nudgeText = (
             `[System: you just added a note to "${titleShort}" (${nudgedTaskId.slice(0, 8)}) but did not say what comes next. ` +

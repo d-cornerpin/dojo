@@ -1,4 +1,4 @@
-// The ladder leaves alone: an owner-paused or timed pause (its clock restarts when the pause lifts), a Working
+// The ladder leaves alone: a pause the owner set, dated or not (its clock restarts when the pause lifts), a Working
 // row whose worker no longer exists, a Working row already idle 14 days when the box first ran the ladder (and a
 // younger idle row's clock starts at that first run, never at its old date), a worker in a live turn, and
 // a row decided between two sweeps.
@@ -35,11 +35,11 @@ describe('the ladder leaves some work alone', () => {
     expect(hintsTo(WORKER)).toHaveLength(1);
   });
 
-  it('a pause the owner set on the dashboard, or one that ends at a set time, gets no hint', async () => {
+  it('a pause the owner set on the dashboard, dated or not, gets no hint', async () => {
     expect(setHold(TASK, 'paused', 'paused by the owner on the dashboard', 'owner').ok).toBe(true);
     await runLadder(Date.now() + 60 * MIN);
     expect(clearHold(TASK, 'owner')).toBe(true);
-    expect(setHold(TASK, 'paused', 'waiting until the shop opens on Monday', WORKER, Date.now() + DAY).ok).toBe(true);
+    expect(setHold(TASK, 'paused', 'paused by the owner until Monday', 'owner', Date.now() + DAY).ok).toBe(true);
     await runLadder(Date.now() + 60 * MIN);
     expect(hintsTo(WORKER)).toEqual([]);
   });

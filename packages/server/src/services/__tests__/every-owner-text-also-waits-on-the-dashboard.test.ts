@@ -96,6 +96,7 @@ vi.mock('../imessage-run.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
+import { noteCriticalMemory } from '../memory-low-notice.js';
 
 // Each clause boots the real module graph (the iMessage door pulls in the engine) and runs the
 // full migration chain; that is an import cost, not a timing assertion. Nothing here measures time.
@@ -273,7 +274,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
 
   it('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
     await boot();
-    (await import('../memory-low-notice.js')).noteCriticalMemory(100);
+    noteCriticalMemory(100);
     await sendsSettle();
     expectPaired(1);
     expect(texts()[0]).toContain('Dojo: [CRITICAL] Critical: System memory below 512MB.');   // the label stays first

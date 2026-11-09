@@ -13,6 +13,7 @@ import { handIn } from '../../../work/done/hand-in.js';
 import { proofFor } from '../../../work/done/proof.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
+import { WORKING_STATES } from '../../../work/terminal-states.js';
 
 const agentNameOf = (agentId: string): string =>
   (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId;
@@ -91,7 +92,7 @@ export async function completeTaskHandIn(agentId: string, status: 'complete' | '
   const taskId = resolveAgentTaskId(agentId);
   if (!taskId) return null;
   const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(taskId) as { state: string } | undefined;
-  if (!row || !['open', 'claimed', 'sent_back'].includes(row.state)) return null;
+  if (!row || !['open', ...WORKING_STATES].includes(row.state)) return null;
   await remeasureTask(agentId, taskId);
   const r = handIn({
     workId: taskId, by: { kind: 'worker', agentId }, outcome: status === 'complete' ? 'finished' : 'cant_be_done',

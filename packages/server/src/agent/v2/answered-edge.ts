@@ -810,8 +810,7 @@ export function pauseDriveWorkWaitingOnOwner(
       ORDER BY w.updated_at DESC LIMIT 10`,
   ).all(...params) as Array<{ id: string }>;
 
-  const ids = rows.map((t) => t.id).filter((id) => setHold(id, 'paused',
-    `turn ${turnNumber} answered the person and did nothing else; the work waits on them`, 'engine').ok);
+  const ids = rows.map((t) => t.id).filter((id) => setHold(id, 'paused', 'Waiting for a reply to its last message.', 'engine').ok);
   if (ids.length > 0) {
     logger.info('turn-end disposition: drive work held paused (waiting on the owner)', {
       agentId, turnNumber, count: ids.length, ids,

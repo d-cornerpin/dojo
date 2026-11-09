@@ -44,7 +44,7 @@ describe('a stalled task gets one hint', () => {
     expect(setHold(TASK, 'blocked', 'waiting for the vendor to send the price list', WORKER).ok).toBe(true);
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER)).toHaveLength(1);
-    expect(hintsTo(WORKER)[0]).toContain('held blocked since');
+    expect(hintsTo(WORKER)[0]).toContain('blocked by its worker, waiting on:');
     expect(hintsTo(WORKER)[0]).toContain('waiting for the vendor to send the price list');
   });
 });

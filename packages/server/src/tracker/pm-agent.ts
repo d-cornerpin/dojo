@@ -11,7 +11,8 @@ import { readLaterMessages } from '../memory/task-list-words.js';
 import { getDb } from '../db/connection.js';
 // SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
 import { writeAgentStatus } from '../agent/agent-status.js';
-import { taskScope } from '../work/tracker-view.js';
+import { taskScope, holdWordsSql } from '../work/tracker-view.js';
+import { workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
@@ -291,7 +292,7 @@ function waitingForPM(pmId: string): string[] {
 /** Working rows the ladder marked for the PM since its last report. */
 function markedStalls(pmId: string): string[] {
   return (getDb().prepare(
-    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.state IN ('claimed', 'sent_back') AND EXISTS (SELECT 1 FROM work_events e
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND ${workingExpr('w')} AND EXISTS (SELECT 1 FROM work_events e
        WHERE e.work_id = w.id AND e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = ?
          AND e.created_at >= COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = ? AND m.origin_intent = 'pm_review'), 0))
      ORDER BY w.updated_at LIMIT 10`,
@@ -313,13 +314,13 @@ function handInBlock(id: string, n: number, roomTokens: number): string {
 
 /** One stall the ladder marked: the hint did not move it, so the PM may give the worker one directive. */
 function stallBlock(id: string, n: number): string {
-  const w = getDb().prepare('SELECT title, hold_kind, hold_reason FROM work WHERE id = ?').get(id) as { title: string | null; hold_kind: string | null; hold_reason: string | null };
+  const w = getDb().prepare(`SELECT w.title, ${holdWordsSql('w')} AS hold FROM work w WHERE w.id = ?`).get(id) as { title: string | null; hold: string };
   const refused = (getDb().prepare(
     `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'hand_in_refused'
        AND id > COALESCE((SELECT MAX(h.id) FROM work_events h WHERE h.work_id = ? AND h.kind IN ('handed_in', 'decided')), 0) ORDER BY id`,
   ).all(id, id) as Array<{ payload: string }>).map((r) => (JSON.parse(r.payload) as { reasons?: string[] }).reasons?.join(' ') ?? '');
   return `${n}. STALLED: "${w.title ?? id}" [${id}], worked by ${workerOf(id)}, has made no progress past its patience bound since the engine's hint.`
-    + `${w.hold_kind === 'blocked' ? ` It is held blocked: ${w.hold_reason ?? ''}.` : ''}`
+    + `${w.hold ? ` It is held: ${w.hold}.` : ''}`
     + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '');
 }
 

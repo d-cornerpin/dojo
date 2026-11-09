@@ -42,7 +42,7 @@ describe('blocked work reaches the owner', () => {
     backdate(6 * MIN);
     await runLadder();
     expect(stallCards()).toHaveLength(1);
-    expect(stallCards()[0].error).toMatch(/^"Write the report" has been blocked since .+, waiting on: waiting for the landlord to send the signed lease\. Tried: .*a hint to its worker.*the project manager was told/);
+    expect(stallCards()[0].error).toMatch(/^"Write the report" has been held since .+: blocked by its worker, waiting on: waiting for the landlord to send the signed lease\. Tried: .*a hint to its worker.*the project manager was told/);
     backdate(6 * MIN);
     await runLadder();
     expect(stallCards()).toHaveLength(1);

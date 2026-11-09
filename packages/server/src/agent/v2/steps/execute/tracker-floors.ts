@@ -156,9 +156,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       // task. A queued scheduled task coming due is a SCHEDULER concern and
       // must never be cited by this nudge, so it can no longer be picked as
       // staleOpenTask nor count toward the floor.
-      const candidates = listTasks({ assignedTo: agentId }).filter(
-        (t) => t.status === 'in_progress',
-      );
+      const candidates = listTasks({ status: 'in_progress', assignedTo: agentId });   // Working: claimed or sent back
       for (const t of candidates) {
         hasAnyInProgressTask = true;
         const tendedMs = taskLastMovedAt(t.id, new Date(normalizeDbTimestamp(t.updatedAt)).getTime());   // v3.5 D1: REAL movement (ledger included); a park touches nothing

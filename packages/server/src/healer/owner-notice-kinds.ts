@@ -15,6 +15,7 @@ import { watcherCardStands } from '../services/watcher-owner-cards.js';
 import { importCardDismissed, importCardStands } from '../migration/import-recovery.js';
 import { missingTools, readGap } from '../services/built-in-tools-card.js';
 import { DISMISSED, TOLD, dismissOwnerNotice, ownerConditionCleared, wordsOf, type OwnerCardClass } from './owner-notices.js';
+import { workingExpr } from '../work/terminal-states.js';
 
 interface Kind {
   cls: (key: string) => OwnerCardClass;
@@ -40,7 +41,7 @@ const KINDS: Record<string, Kind> = {
   'healer-broken': action(() => true, { critical: true }),
   nofit: action((id) => !!one(`SELECT 1 FROM agents WHERE id = ? AND status = 'paused' AND instr(COALESCE(last_error, ''), '[no_model_fits]') = 1`, id)),
   budgetstop: action(() => !!one(`SELECT 1 FROM agents WHERE status = 'paused' AND instr(COALESCE(last_error, ''), '[budget_stop]') = 1`), { perWindow: true }),
-  stall: action((id) => !!one("SELECT 1 FROM work WHERE id = ? AND state IN ('claimed', 'sent_back', 'handed_in')", id), { perWindow: true }),
+  stall: action((id) => !!one(`SELECT 1 FROM work w WHERE w.id = ? AND (${workingExpr('w')} OR w.state = 'handed_in')`, id), { perWindow: true }),
   budget: action((id) => {
     const r = one<{ period: string; alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null }>('SELECT period, alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?', id);
     return !!r && latestToldAt(r) > 0 && Math.floor(Date.now() / 1000) - latestToldAt(r) < windowOf(r.period).seconds;

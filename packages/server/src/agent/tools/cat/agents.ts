@@ -83,6 +83,7 @@ import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@doj
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../main-model-floor.js';
+import { workingExpr } from '../../../work/terminal-states.js';
 
 // ── P4: mandatory squad resolution for agent spawns ──
 // Every agent-spawned agent lands in a squad so the owner can see which spawned
@@ -1687,7 +1688,7 @@ export const agentsHandlers: ToolHandlerMap = {
         SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
           AND (w.assigned_to_group = ? OR w.agent_id IN (SELECT id FROM agents WHERE group_id = ? AND status = 'terminated'))
-          AND w.state IN ('open', 'claimed', 'sent_back')
+          AND ${workingExpr('w', true)}
       `).all(groupId, groupId) as Array<{ id: string }>;
       const { terminateLiveScheduleOnFallen } = await import('../../../scheduler/runner.js');
       for (const t of orphanedTasks) {
