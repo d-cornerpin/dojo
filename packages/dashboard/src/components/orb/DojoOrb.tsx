@@ -10,21 +10,14 @@ import {
 } from './orbQuality';
 
 interface DojoOrbProps {
-  /* Optional explicit stage element to host the ProgressLine DOM node and
-     supply the orb CSS vars. If omitted, we walk up from the canvas to the
-     nearest .dojo3-stage ancestor. */
+  /* Stage that hosts the ProgressLine node and supplies the orb CSS vars. */
   stageRef?: React.RefObject<HTMLElement | null>;
   className?: string;
-  /* Force a fixed quality and DON'T read the per-user orb_quality setting from
-     the server. Used on the login screen: the orb renders pre-auth, so fetching
-     that authed setting 401s, and the 401 handler bounces to /login — an
-     infinite reload loop. Login passes 'full' (the default/heavy look). */
+  /* Force a fixed quality instead of reading the per-user orb_quality setting. */
   quality?: OrbQualityPref;
 }
 
-/* DojoOrb renders the WebGL canvas, the refraction backdrop <img>, and a
-   pearl fallback for the no-WebGL case. It owns the engine lifecycle and
-   forwards the engine API upward through the ref. */
+/* Renders the WebGL canvas, the refraction backdrop <img> and the pearl fallback. */
 export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoOrb(
   { stageRef, className, quality },
   ref,
@@ -35,13 +28,11 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
   const engineRef = useRef<OrbEngine | null>(null);
   const register = useOrbRegistration();
 
-  /* User power-saver preference. Read synchronously from the localStorage
-     mirror first (so 'off' doesn't briefly spin up WebGL), then reconcile with
-     the server and apply live changes from the Settings toggle. */
+  /* Power-saver pref: localStorage mirror now, server value once it lands. */
   const [pref, setPref] = useState<OrbQualityPref>(() => quality ?? getOrbQualityCached());
   useEffect(() => {
-    // Forced quality (e.g. the login screen) — never read the per-user setting.
-    // Pre-auth that fetch 401s and the handler reloads /login in a loop.
+    // Forced quality (e.g. login) never reads the per-user setting: pre-auth
+    // that fetch 401s and the 401 handler reloads /login in a loop.
     if (quality) return;
     let cancelled = false;
     void refreshOrbQualityFromServer().then((v) => { if (!cancelled) setPref(v); });
@@ -51,16 +42,14 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
 
   useImperativeHandle<OrbEngine | null, OrbEngine | null>(ref, () => engineRef.current, []);
 
-  /* Create the WebGL engine once. All three quality modes (full / lite /
-     static) are real WebGL render modes, so the CSS pearl fallback is reserved
-     for genuine WebGL failure. Quality is applied live below. */
+  /* Create the engine once. All three modes are real WebGL render modes, so
+     the pearl fallback below means genuine WebGL failure, not a power choice. */
   useEffect(() => {
     const canvas = canvasRef.current;
     const bgImg = imgRef.current;
     const wrap = wrapRef.current;
     if (!canvas || !bgImg || !wrap) return;
 
-    /* resolve the stage: explicit prop wins, else nearest .dojo3-stage */
     const stageEl =
       stageRef?.current ??
       (wrap.closest('.dojo3-stage') as HTMLElement | null) ??
@@ -71,11 +60,8 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
       return;
     }
 
-    /* Create the engine directly on the real canvas. If WebGL is genuinely
-       unavailable the engine throws; we catch and show the pearl fallback.
-       We do NOT pre-probe with a throwaway context: that extra context can
-       exhaust the per-page WebGL limit under StrictMode's double mount and
-       wrongly trip the fallback. */
+    /* Create on the real canvas; a throwaway probe context can exhaust the
+       per-page WebGL limit under StrictMode's double mount and trip the pearl. */
     let engine: OrbEngine | null = null;
     try {
       engine = createOrbEngine({ canvas, bgImg, stageEl });
@@ -95,7 +81,7 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
     };
   }, [stageRef, register]);
 
-  /* Apply quality changes (full / lite / static) live — no context recreation. */
+  /* Quality changes apply live; no context recreation. */
   useEffect(() => {
     engineRef.current?.setQuality(engineQuality(pref));
   }, [pref]);

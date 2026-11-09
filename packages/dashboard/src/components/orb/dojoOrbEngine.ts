@@ -1,38 +1,9 @@
-/* ============================================================
-   DOJO ORB engine (ported verbatim from the v3 HTML prototype)
-
-   This is a structural port only: the rendering, shader source,
-   and state tables are copied exactly from the prototype. The
-   single behavioral change is that every former module global now
-   lives inside the createOrbEngine() closure, so multiple orbs can
-   coexist and a single orb can be torn down cleanly (React
-   StrictMode double mount/unmount, route changes, context loss).
-
-   Source ranges in dojo-orb-v3.html:
-     - makeBackdrop IIFE          2786-2831 (adapted to a function)
-     - VERT / FRAG shader source  2852-3460 (verbatim)
-     - WebGL setup / compile/init 3462-3672 (adapted to closure)
-     - layout                     3674-3703 (adapted: stage vars)
-     - STATES / EMOTIONS / SYSTEM 3710-4000 (verbatim)
-     - state machine + API        4002-4047 (adapted: no window)
-     - envelope                   4049-4060 (verbatim)
-     - pointer listeners          4062-4080 (adapted: tracked)
-     - main loop scaffolding      4082-4091 (adapted)
-     - Task / ProgressLine        4099-4222 (adapted: stageEl)
-     - frame()                    4224-4410 (verbatim math)
-   ============================================================ */
+/* Structural port of the standalone prototype: shader source and state tables
+   copied exactly; globals live in the closure so orbs coexist and tear down. */
 
 export type OrbStateName = 'idle' | 'listening' | 'thinking' | 'speaking';
-/** Render quality.
- *  'full'   — the default look (the old "heavy" outer-atmosphere effects were
- *             retired everywhere as imperceptible-for-cost; this is what used to
- *             be 'lite'). Native 1.0x DPR, 20fps idle.
- *  'lite'   — same look at 0.7x DPR (~half the pixels) and a lower idle frame
- *             rate. A bigger GPU win for weak / integrated chips; softer orb.
- *  'static' — the full look, but frozen: time and all ambient motion are
- *             suppressed and the loop idles at ~1fps, so it looks like the live
- *             orb while costing almost nothing. Task/notification indicators
- *             still animate; brief state changes settle, then re-freeze. */
+/** Render quality: 'full' is the default look; 'lite' is the same at fewer
+ *  pixels and a lower idle rate for weak chips; 'static' is 'full' held still. */
 export type OrbQuality = 'full' | 'lite' | 'static';
 export type OrbEmotionName =
   | 'startled'
@@ -84,7 +55,7 @@ export type OrbEngine = {
   /** Show a static glyph inside the glass for a notification ('alert' | 'check'
    *  | a task name), or null to clear. Overrides the spinning task glyph. */
   setNoteGlyph: (name: string | null) => void;
-  /** Switch render quality (full ↔ lite) live. See OrbQuality. */
+  /** Switch render quality (full / lite / static) live. See OrbQuality. */
   setQuality: (q: OrbQuality) => void;
   destroy: () => void;
 };
@@ -98,16 +69,10 @@ export function createOrbEngine(opts: {
   const img = opts.bgImg;
   const stageEl = opts.stageEl;
 
-  /* ---------- backdrop: paints the offscreen image the shader refracts ----------
-     Ported verbatim from the makeBackdrop IIFE (2786-2831); the only change is
-     that it writes bgImg.src instead of document.getElementById("bg").src. */
+  /* ---------- backdrop: paints the offscreen image the shader refracts ---------- */
   function makeBackdrop(): void { if (destroyed) return;
-    /* Paint at the viewport's aspect ratio (capped) rather than a fixed
-       1600x1000. Both the visible `.dojo3-orb-bg` img and the shader's bg()
-       cover-scale this texture; a fixed landscape image cover-scaled onto a
-       tall phone ballooned the cast glow into a screen-filling white wash. By
-       matching the viewport aspect AND sizing the glow off the SHORTER side, the
-       orb's cast light stays a contained halo on any shape. */
+    /* Paint at the viewport aspect (capped): cover-scaling a fixed landscape
+       texture onto a tall phone balloons the cast glow into a screen-wide wash. */
     const vw = Math.max(1, typeof innerWidth === 'number' ? innerWidth : 1600);
     const vh = Math.max(1, typeof innerHeight === 'number' ? innerHeight : 1000);
     const aspect = vw / vh;
@@ -129,9 +94,8 @@ export function createOrbEngine(opts: {
     x.fillStyle = g;
     x.fillRect(0, 0, W, H);
 
-    /* glow the orb appears to cast on the room. Centered near the top where the
-       orb sits; radius bounded by the SHORTER side so a portrait phone gets a
-       tight halo instead of a blown-out wash. */
+    /* glow the orb appears to cast on the room, centered near the top where
+       the orb sits; radius bounded by the SHORTER side so phones stay tight. */
     const glowR = Math.min(W * 0.62, H * 0.46);
     const gy = H * (aspect >= 1 ? 0.16 : 0.12);
     const r = x.createRadialGradient(W / 2, gy, 16, W / 2, gy, glowR);
@@ -142,8 +106,6 @@ export function createOrbEngine(opts: {
     x.fillStyle = r;
     x.fillRect(0, 0, W, H);
 
-    /* (horizon hairline removed: it read as an unwanted bar across the top
-       of the page; the glow + grain give the lens enough to refract) */
 
     /* corner vignette */
     const v = x.createRadialGradient(W / 2, H * 0.45, H * 0.3, W / 2, H * 0.45, H * 1.05);
@@ -171,10 +133,6 @@ export function createOrbEngine(opts: {
 
     img.src = c.toDataURL('image/png');
   }
-
-  /* ============================================================
-     DOJO ORB v2 runtime shaders (copied verbatim)
-     ============================================================ */
 
   const VERT = `
 attribute vec2 a_pos;
@@ -824,21 +782,13 @@ void main(){
   /* ---------------- WebGL setup ---------------- */
   const gl = canvas.getContext('webgl', {
     alpha: true,
-    // The orb is decorative; ask the browser for the low-power GPU profile so
-    // it never forces a discrete GPU (and stays gentle on integrated chips).
+    // Decorative element: request the low-power GPU profile explicitly.
     powerPreference: 'low-power',
-    // REQUIRED for the idle-throttle / static modes: we deliberately stop
-    // redrawing when the orb is calm (down to ~1fps in 'static'). With the
-    // default (false) the browser clears the canvas on frames we don't draw, so
-    // a frozen orb would vanish between redraws. Preserving the buffer keeps the
-    // last drawn frame on screen until we draw the next one.
+    // Required by the idle-throttle / static modes: they stop redrawing when the
+    // orb is calm, and the default (false) clears the canvas on skipped frames.
     preserveDrawingBuffer: true,
-    // Premultiplied output (the fragment shader multiplies col by alpha at the
-    // end). iOS/WebKit effectively ignores `premultipliedAlpha:false` and
-    // composites the canvas as premultiplied anyway, which turned every
-    // low-alpha-but-bright pixel (the orb's glow/atmosphere) into a blown-out
-    // white wash over the page. Premultiplied is well-supported everywhere and
-    // is mathematically identical to the old straight-alpha path on desktop.
+    // The fragment shader outputs premultiplied colors; iOS/WebKit composites as
+    // premultiplied regardless, so claiming otherwise washes bright pixels white.
     premultipliedAlpha: true,
   }) as WebGLRenderingContext | null;
   if (!gl) throw new Error('WebGL unavailable');
@@ -859,14 +809,11 @@ void main(){
   let tex: WebGLTexture | null = null;
   let iconTex: WebGLTexture | null = null;
 
-  /* ---------------- task glyph atlas ----------------
-     Seven line-art glyphs in a grid, white on transparent, drawn
-     crisply at a generous cell size. The shader reads one cell as the
-     "inside the glass" spinner. Order fixes each task's atlas index. */
+  /* Task glyph atlas: the shader reads one grid cell as the "inside the glass"
+     spinner. Order fixes each task's index, so TASK_ORDER never reorders. */
   const TASK_ORDER = ['image', 'audio', 'song', 'video', 'compaction', 'dreamer', 'healer'];
-  /* The atlas also holds notification glyphs (exclamation / check) shown inside
-     the glass for warnings/errors and info — same mechanism as the task icons,
-     but driven statically (no spin) by setNoteGlyph(). */
+  /* Notification glyphs ride the same atlas but are driven statically
+     (no spin) by setNoteGlyph(). */
   const GLYPH_ORDER = [...TASK_ORDER, 'alert', 'check'];
   const ATLAS_COLS = 4; /* 4-wide grid */
   const ATLAS_CELL = 128;
@@ -892,7 +839,6 @@ void main(){
       const S = 38; /* glyph half-extent */
       x.beginPath();
       if (name === 'image') {
-        /* framed photo: frame + mountain + sun */
         x.strokeRect(-S, -S * 0.78, S * 2, S * 1.56);
         x.beginPath();
         x.moveTo(-S + 6, S * 0.6);
@@ -905,7 +851,6 @@ void main(){
         x.arc(-S * 0.42, -S * 0.4, 7, 0, Math.PI * 2);
         x.stroke();
       } else if (name === 'audio') {
-        /* waveform: bars of varying height */
         const hs = [0.3, 0.7, 1.0, 0.55, 0.85, 0.4];
         const n = hs.length,
           gap = (S * 2) / (n - 1);
@@ -918,7 +863,6 @@ void main(){
           x.stroke();
         }
       } else if (name === 'song') {
-        /* single eighth note: one stem, one head, one flag */
         const stemX = S * 0.5,
           headY = S * 0.62,
           topY = -S * 0.95;
@@ -926,27 +870,22 @@ void main(){
         x.moveTo(stemX, headY);
         x.lineTo(stemX, topY);
         x.stroke();
-        /* flag off the top of the stem */
         x.beginPath();
         x.moveTo(stemX, topY);
         x.quadraticCurveTo(S * 1.15, topY + S * 0.35, stemX + S * 0.18, topY + S * 0.85);
         x.stroke();
-        /* note head */
         x.beginPath();
         x.ellipse(stemX - S * 0.34, headY, S * 0.42, S * 0.3, -0.35, 0, Math.PI * 2);
         x.stroke();
       } else if (name === 'video') {
-        /* clapperboard, sized to fit the cell (stay within ~1.35*S).
-           A board body, a hinged clapper bar across the top with
-           diagonal stripes, and a small play triangle. */
+        /* Sized to fit the cell (stay within ~1.35*S). */
         const halfW = S * 1.25; /* board half-width */
         const clapTop = -S * 0.95; /* top of the clapper bar */
         const clapH = S * 0.5; /* clapper bar height */
         const boardTop = clapTop + clapH; /* board starts below the bar */
         const boardBot = S * 1.15;
-        /* board body */
         x.strokeRect(-halfW, boardTop, halfW * 2, boardBot - boardTop);
-        /* clapper bar across the top (slight upward tilt on the left) */
+        /* slight upward tilt on the left */
         x.beginPath();
         x.moveTo(-halfW, boardTop);
         x.lineTo(-halfW + S * 0.12, clapTop);
@@ -954,7 +893,6 @@ void main(){
         x.lineTo(halfW, boardTop);
         x.closePath();
         x.stroke();
-        /* diagonal stripes inside the clapper bar */
         for (let k = 1; k <= 4; k++) {
           const f = k / 5;
           const xb = -halfW + halfW * 2 * f; /* along the bottom edge */
@@ -964,7 +902,6 @@ void main(){
           x.lineTo(xt, clapTop - S * 0.16 * f);
           x.stroke();
         }
-        /* play triangle centered on the board */
         const py = (boardTop + boardBot) / 2 + S * 0.05,
           ps = S * 0.36;
         x.beginPath();
@@ -974,17 +911,14 @@ void main(){
         x.closePath();
         x.stroke();
       } else if (name === 'compaction') {
-        /* two arrows squeezing toward a center bar: the clearest read
-           of "compaction". Down-arrow above, bar, up-arrow below. */
+        /* Two arrows squeezing toward a center bar: the clearest read of compaction. */
         const barY = 0,
           barW = S * 1.0,
           head = S * 0.4;
-        /* center bar */
         x.beginPath();
         x.moveTo(-barW, barY);
         x.lineTo(barW, barY);
         x.stroke();
-        /* top arrow: shaft down + arrowhead pointing at the bar */
         const topTip = -S * 0.28,
           topTail = -S * 1.15;
         x.beginPath();
@@ -996,7 +930,6 @@ void main(){
         x.lineTo(0, topTip);
         x.lineTo(head, topTip - head);
         x.stroke();
-        /* bottom arrow: shaft up + arrowhead pointing at the bar */
         const botTip = S * 0.28,
           botTail = S * 1.15;
         x.beginPath();
@@ -1009,14 +942,12 @@ void main(){
         x.lineTo(head, botTip + head);
         x.stroke();
       } else if (name === 'dreamer') {
-        /* crescent moon */
         x.beginPath();
         x.arc(0, 0, S, Math.PI * 0.3, Math.PI * 1.55, false);
         x.arc(S * 0.42, -S * 0.18, S * 0.92, Math.PI * 1.35, Math.PI * 0.42, true);
         x.closePath();
         x.stroke();
       } else if (name === 'healer') {
-        /* pulse / heartbeat line */
         x.beginPath();
         x.moveTo(-S, 0);
         x.lineTo(-S * 0.4, 0);
@@ -1027,7 +958,6 @@ void main(){
         x.lineTo(S, 0);
         x.stroke();
       } else if (name === 'alert') {
-        /* exclamation: a tapered bar + a dot below */
         x.beginPath();
         x.moveTo(0, -S * 0.92);
         x.lineTo(0, S * 0.22);
@@ -1036,7 +966,6 @@ void main(){
         x.arc(0, S * 0.74, 6.5, 0, Math.PI * 2);
         x.fill();
       } else if (name === 'check') {
-        /* checkmark */
         x.beginPath();
         x.moveTo(-S * 0.78, S * 0.02);
         x.lineTo(-S * 0.16, S * 0.62);
@@ -1118,11 +1047,8 @@ void main(){
       'u_taskSpin',
     ].forEach((n) => (U[n] = glc.getUniformLocation(prog!, n)));
 
-    /* No GL blending: we draw a single full-screen triangle whose shader
-       already composites the orb over the refracted page, then emits
-       premultiplied color (col*alpha, alpha). The browser does the final
-       page compositing from that premultiplied buffer — correct on every
-       engine including iOS/WebKit (which mishandles premultipliedAlpha:false). */
+    /* No GL blending: the shader composites the orb over the refracted page and
+       emits premultiplied color; the browser does the final page compositing. */
     glc.disable(glc.BLEND);
 
     tex = glc.createTexture();
@@ -1144,9 +1070,7 @@ void main(){
     if (img.complete && img.naturalWidth) upload();
     else img.addEventListener('load', upload);
 
-    /* second texture: an atlas of task glyphs, drawn into the glass as
-       a spinning icon while a job runs. White line-art on transparent,
-       so the shader can tint and refract it like everything else. */
+    /* Second texture: the task glyph atlas, white line-art the shader tints. */
     iconTex = glc.createTexture();
     glc.activeTexture(glc.TEXTURE1);
     glc.bindTexture(glc.TEXTURE_2D, iconTex);
@@ -1162,11 +1086,7 @@ void main(){
     layout();
   }
 
-  /* ---------------- stage CSS var helpers ----------------
-     The dashboard sets --dojo3-orb-size / --dojo3-orb-top on the
-     .dojo3-stage. We read those (falling back to the prototype's
-     --orb-* names, then to computed canvas size). --canvas-scale
-     falls back to the prototype's hardcoded 3.8. */
+  /* The dashboard sets --dojo3-orb-size / --dojo3-orb-top on the .dojo3-stage. */
   function readStageVar(names: string[]): number {
     const cs = getComputedStyle(stageEl);
     for (const name of names) {
@@ -1176,7 +1096,6 @@ void main(){
     return NaN;
   }
 
-  /* ---------------- layout ---------------- */
   let cssSize = 0,
     canvasPos = { x: 0, y: 0 },
     center = { x: 0, y: 0 },
@@ -1219,30 +1138,24 @@ void main(){
 
     center.x = cssSize / 2;
     center.y = cssSize / 2;
-    // canvasPos is the canvas top-left in VIEWPORT css px. The canvas is
-    // centered in the stage's main column (which narrows when the right dock
-    // opens), so it is NOT centered on the window — read its real rect rather
-    // than assuming innerWidth/2. syncCanvasPos() keeps it correct every frame
-    // (dock open/close transition, drag-resize, window resize).
+    // canvasPos is the canvas top-left in VIEWPORT css px: the canvas centers on
+    // the stage's main column, not the window, so its real rect must be read.
     syncCanvasPos();
   }
 
-  /* Track the canvas's live viewport offset so pointer math + screen-space
-     refraction follow the orb when the main column resizes (e.g. the dock
-     slides open). Cheap: one getBoundingClientRect on a single element. */
+  /* One getBoundingClientRect per frame keeps pointer math + refraction correct
+     while the main column resizes (e.g. the dock slides open). */
   function syncCanvasPos(): void {
     const r = canvas.getBoundingClientRect();
     canvasPos.x = r.left;
     canvasPos.y = r.top;
   }
 
-  /* ---------------- state machine ---------------- */
-  /* atmosphere strength: 0 = no fog, 1 = reference look, 1.3 = moody */
+  /* Atmosphere strength: 0 = no fog, 1 = reference look, 1.3 = moody. */
   const ORB_HAZE = 1.0;
 
   type ParamTable = Record<string, number>;
 
-  /* params: wobble, wobSpeed, swirl, squish, warmth, ring, streak, refr, disp, lens, drift */
   const STATES: Record<string, ParamTable> = {
     idle: { wobble: 0.030, wobSpeed: 0.55, swirl: 0.25, squish: 0.032, warmth: 0.55, ring: 0.35, streak: 0.50, refr: 0.34, disp: 0.11, lens: 0.85, drift: 2.5, breath: 1, anger: 0, tempo: 1, envFloor: 0, desat: 0, seal: 0, scale: 1, envScale: 1 },
     listening: { wobble: 0.038, wobSpeed: 0.80, swirl: 0.35, squish: 0.040, warmth: 0.25, ring: 0.80, streak: 0.35, refr: 0.36, disp: 0.13, lens: 0.90, drift: 4.0, breath: 1, anger: 0, tempo: 1, envFloor: 0, desat: 0, seal: 0, scale: 1, envScale: 1 },
@@ -1250,16 +1163,8 @@ void main(){
     speaking: { wobble: 0.042, wobSpeed: 0.95, swirl: 0.45, squish: 0.036, warmth: 0.85, ring: 0.70, streak: 1.0, refr: 0.38, disp: 0.16, lens: 0.90, drift: 6.0, breath: 1, anger: 0, tempo: 1, envFloor: 0, desat: 0, seal: 0, scale: 1, envScale: 1 },
   };
 
-  /* ============================================================
-     EMOTION LAYER
-     The engine owns the base state (what the orb is doing); the
-     LLM paints emotion on top (how it feels about it). Each
-     emotion = sustained parameter targets, blended over the base,
-     plus a choreographed motion track built on the classic
-     animation principles: anticipation, squash & stretch with
-     volume conservation, follow-through ringing, slow in/out,
-     arcs, and secondary action from the light.
-     ============================================================ */
+  /* EMOTION LAYER: the engine owns the base state (what the orb is doing); the
+     LLM paints emotion on top as sustained parameter targets, plus motion. */
   const sm01 = (p: number) => {
     p = Math.max(0, Math.min(1, p));
     return p * p * (3 - 2 * p);
@@ -1290,23 +1195,19 @@ void main(){
   };
 
   const EMOTIONS: Record<string, EmotionDef> = {
-    /* a jolt: anticipation squash, leap with stretch, then a
-       ringing wobble as it settles. Auto-clears. */
     startled: {
       hold: 1.8,
       attack: 22,
       params: { wobble: 0.060, wobSpeed: 2.4, disp: 0.22, ring: 1.0, tempo: 1.5, envFloor: 0.7 },
       motion(tE) {
-        /* a jump-in-place: the orb lives at the top of the page, so
-           the startle is a crouch DOWN, then a pop with the energy
-           going into the stretch and the "!" crown spike, not height */
+        /* The orb lives at the top of the page: the startle crouches DOWN,
+           energy going into the stretch and the "!" crown spike, not height. */
         let dy = 0,
           vs = 0,
           flash = 0,
           alert = 0,
           droop = 0;
         if (tE < 0.09) {
-          /* crouch */
           const p = tE / 0.09;
           vs = -0.24 * p;
           droop = 0.40 * p;
@@ -1328,8 +1229,6 @@ void main(){
       },
     },
 
-    /* three diminishing hops on proper arcs, squash at each
-       landing, stretch midair, settling into a happy bob */
     joyous: {
       hold: 3.0,
       attack: 6,
@@ -1348,7 +1247,6 @@ void main(){
           if (tE >= s0 && tE < e0) {
             const p = (tE - s0) / (e0 - s0);
             dy = -h * arc01(p);
-            /* stretch midair, squash at the contacts */
             vs = 0.15 * Math.sin(p * Math.PI) - 0.11 * Math.pow(Math.abs(Math.cos(p * Math.PI)), 6.0);
             hopping = true;
             break;
@@ -1365,8 +1263,6 @@ void main(){
       },
     },
 
-    /* effort: tight fast wobble, inward focus, rhythmic squeeze
-       pulses like strain, a fine tremor */
     working: {
       hold: null,
       attack: 5,
@@ -1378,8 +1274,6 @@ void main(){
       },
     },
 
-    /* coil, flare up, then simmer: hot palette, trembling with
-       rage, periodic temper flashes */
     mad: {
       hold: 2.8,
       attack: 10,
@@ -1404,8 +1298,6 @@ void main(){
       },
     },
 
-    /* everything slows and softens: deep slow breath, near-perfect
-       sphere, cool pearl, unhurried light */
     calm: {
       hold: 3.2,
       attack: 2.5,
@@ -1415,8 +1307,6 @@ void main(){
       },
     },
 
-    /* sags into itself, dims, breathes long and deep, and every
-       few seconds slowly nods off then catches itself */
     sleepy: {
       hold: null,
       attack: 2.5,
@@ -1435,8 +1325,6 @@ void main(){
       },
     },
 
-    /* the head-tilt: sways side to side, and every couple of
-       seconds a small question-mark bump rises from the crown */
     confused: {
       hold: 2.6,
       attack: 5,
@@ -1448,8 +1336,6 @@ void main(){
       },
     },
 
-    /* the ta-da: a quick lift with stretch, a double-beat flash,
-       then a satisfied settle. Auto-clears. */
     success: {
       hold: 1.7,
       attack: 20,
@@ -1474,8 +1360,6 @@ void main(){
       },
     },
 
-    /* owning a mistake: deflates, dims, shrinks away a little,
-       one small apologetic bob, then quietly recovers. Auto-clears. */
     sheepish: {
       hold: 2.6,
       attack: 8,
@@ -1487,8 +1371,6 @@ void main(){
       },
     },
 
-    /* leaning in: brightened, slightly magnifying (it peers), with
-       a gentle inquisitive sway and a perked crown */
     curious: {
       hold: 3.0,
       attack: 5,
@@ -1498,8 +1380,6 @@ void main(){
       },
     },
 
-    /* soft, warm, dim, slow: settles gently toward the user and
-       just stays present */
     sympathetic: {
       hold: 3.4,
       attack: 3,
@@ -1509,8 +1389,6 @@ void main(){
       },
     },
 
-    /* contained pre-reveal energy: rapid tiny hops it can barely
-       suppress, with a bigger one slipping out every few seconds */
     excited: {
       hold: 3.0,
       attack: 8,
@@ -1528,8 +1406,6 @@ void main(){
       },
     },
 
-    /* patience: a slow circling sway like drumming fingers, with a
-       soft metronome tick of light */
     waiting: {
       hold: null,
       attack: 4,
@@ -1546,8 +1422,6 @@ void main(){
       },
     },
 
-    /* has something to say, won't interrupt: a polite periodic
-       lift with a small crown perk and ping of light */
     alert: {
       hold: 2.4,
       attack: 12,
@@ -1568,12 +1442,8 @@ void main(){
     },
   };
 
-  /* ============================================================
-     SYSTEM LAYER (overrides everything: trust must win over mood)
-     muted: mic sealed, unmistakably so. offline: drained, not
-     alive. asleep: dormant, shrunk, breathing slow. Leaving any
-     system state plays the wake stinger.
-     ============================================================ */
+  /* SYSTEM LAYER overrides every other layer: trust must win over mood.
+     Leaving a system state plays the wake stinger. */
   type SystemDef = { params: ParamTable; pose: { droop: number; dy: number; vs: number } };
   const SYSTEM: Record<string, SystemDef> = {
     muted: {
@@ -1630,11 +1500,8 @@ void main(){
     target = STATES[name];
   }
 
-  /* ---------------- per-agent hue ---------------- */
-  /* The orb tints toward the active agent's hue. We store the TARGET shift in
-     radians and ease the live value toward it each frame so switching agents
-     glides rather than snaps. Shift is measured from the orb's signature
-     champagne hue (~42°), so an agent hue of 42 = no shift. */
+  /* The orb tints toward the active agent's hue: the target shift (radians from
+     the signature champagne ~42°, so hue 42 = no shift) eases in, never snaps. */
   const CHAMPAGNE_HUE_DEG = 42;
   let hueShiftTarget = 0; // radians
   let hueShift = 0;       // radians (eased)
@@ -1650,10 +1517,8 @@ void main(){
     hueShiftTarget = (d * Math.PI) / 180;
   }
 
-  /* ---------------- envelope: simulated voice / thought activity ---------------- */
   function envelope(t: number): number {
     if (stateName === 'speaking') {
-      /* syllable-ish bursts */
       const a = Math.max(0, Math.sin(t * 7.3)) * (0.5 + 0.5 * Math.sin(t * 1.9));
       const b = Math.max(0, Math.sin(t * 11.7 + 2.0)) * 0.5;
       return Math.min(1, 0.25 + 0.75 * (a * 0.7 + b * 0.5));
@@ -1663,7 +1528,6 @@ void main(){
     return 0.15 + 0.1 * Math.sin(t * 0.8);
   }
 
-  /* ---------------- pointer ---------------- */
   const mouse = { x: -9999, y: -9999, in: 0 };
   const onPointerMove = (e: PointerEvent) => {
     mouse.x = e.clientX;
@@ -1692,35 +1556,26 @@ void main(){
     }
   };
 
-  /* ---------------- main loop ---------------- */
-  /* prefers-reduced-motion is re-queried live via a matchMedia object
-     (the prototype cached it once at load; here we read .matches each
-     frame so a runtime change takes effect, and remove the listener on
-     destroy). */
+  /* Reduced motion is re-queried live via matchMedia so an OS change takes
+     effect at runtime; the listener is removed on destroy. */
   const reduceMotionMq = matchMedia('(prefers-reduced-motion: reduce)');
   const onReduceMotionChange = () => {
-    /* nothing to cache: the loop reads reduceMotionMq.matches directly.
-       The listener exists only so we can remove it cleanly on destroy. */
+    /* Nothing to cache: the listener exists to be removable on destroy. */
   };
   if (reduceMotionMq.addEventListener) reduceMotionMq.addEventListener('change', onReduceMotionChange);
 
   let last = performance.now() / 1000,
     simT = 0;
 
-  /* motion state: the bubble's center is base position plus ambient
-     drift plus a spring that yields away from the cursor. Velocity
-     of the composite center drives the wisps and momentum stretch. */
+  /* The bubble center is base position + ambient drift + a spring that yields
+     from the cursor; the composite velocity drives wisps + momentum stretch. */
   const spring = { x: 0, y: 0, vx: 0, vy: 0 };
   let prevCx: number | null = null,
     prevCy: number | null = null;
   const velS = { x: 0, y: 0 };
 
-  /* ---------------- task indicator controller ----------------
-     Drives the spinning glyph inside the glass and the thin progress
-     line pinned under the orb. Image/audio/song/video/compaction are
-     "jobs": glyph + line. Dreamer/Healer are ambient agent states:
-     glyph + an emotion shift, no line. One task shows at a time; extra
-     starts replace the current glyph with a soft crossfade. */
+  /* Task indicator: one task at a time. Jobs = spinning glyph + progress line;
+     dreamer/healer are ambient: glyph + emotion shift, no line. */
   const Task = {
     icon: -1 as number,
     amt: 0,
@@ -1743,7 +1598,6 @@ void main(){
       this._target = 1;
       this._isAgent = name === 'dreamer' || name === 'healer';
       this._progress = typeof opts.progress === 'number' ? opts.progress : -1;
-      /* ambient agents also tug the orb's demeanor */
       if (name === 'dreamer') setEmotion('sleepy');
       if (name === 'healer') setEmotion('calm');
       ProgressLine.show(!this._isAgent, this._progress);
@@ -1766,7 +1620,6 @@ void main(){
     tick(now: number) {
       const dt = Math.min(now - (this._last || now), 0.05);
       this._last = now;
-      /* fade the glyph in/out */
       const speed = 5.0;
       this.amt += (this._target - this.amt) * Math.min(1, dt * speed);
       /* swap icon at the bottom of a fade so it doesn't pop */
@@ -1775,15 +1628,13 @@ void main(){
         this._pendingIcon = null;
       }
       if (this.amt < 0.01 && this._target === 0) this.icon = -1;
-      /* spin: agents drift slower and calmer than jobs. The task glyph is an
-         informational overlay (image gen / healer / compaction…), so it keeps
-         spinning even in static — only the orb BODY is frozen, not the icon. */
+      /* The task glyph is an informational overlay, so it keeps spinning even in
+         static: only the orb BODY is frozen. Agents drift slower than jobs. */
       const rate = this._isAgent ? 0.7 : 2.1;
       if (this.amt > 0.01) this.spin += dt * rate;
 
-      /* healer heartbeat: a lub-dub envelope on the orb's whole body.
-         Runs only while the healer task is active; eases in with the
-         glyph fade and decays out when it ends. */
+      /* Healer heartbeat: a lub-dub envelope on the whole orb, eased in with
+         the glyph fade and decayed out when the task ends. */
       const healerOn = this._active === 'healer';
       let target = 0;
       if ((healerOn || this.heartbeat > 0.001) && quality !== 'static') {
@@ -1807,8 +1658,7 @@ void main(){
     },
   };
 
-  /* notification glyph: a STATIC (non-spinning) icon shown inside the glass for
-     notifications, driven by setNoteGlyph(). Overrides the task glyph while
+  /* Static (non-spinning) notification glyph: overrides the task glyph while
      active (an error/warning is more important than a running job). */
   const Note = { icon: -1, amt: 0, target: 0 };
   function setNoteGlyph(name: string | null): void {
@@ -1819,7 +1669,6 @@ void main(){
     Note.target = 1;
   }
 
-  /* the thin progress line pinned under the orb */
   const ProgressLine = {
     el: null as HTMLDivElement | null,
     fill: null as HTMLElement | null,
@@ -1870,7 +1719,6 @@ void main(){
         this.fill.style.left = '0%';
         this.fill.style.right = 100 - this._p * 100 + '%';
       } else {
-        /* indeterminate shuttle sweep */
         this._shuttle = (now * 0.6) % 1;
         const w = 0.32;
         const x = this._shuttle * (1 + w) - w;
@@ -1885,17 +1733,11 @@ void main(){
     },
   };
 
-  /* ---------------- lifecycle scaffolding ---------------- */
   let running = false;
   let rafId = 0;
   let destroyed = false;
-  /* Power management. The heavy glass fragment shader runs per-pixel every
-     frame, so the cheapest big win is simply NOT drawing when nothing needs to:
-       - pageVisible / onScreen: pause entirely when the tab is hidden or the
-         orb is scrolled out of view.
-       - idle throttle: when the orb is calm and static, render at a low frame
-         rate (it still breathes/drifts) instead of the display's full refresh.
-       - quality: 'lite' throttles harder and (with #4) skips costly effects. */
+  /* Power management: the fragment shader runs per-pixel every frame, so the
+     cheapest win is not drawing: pause when hidden, idle low, 'lite' harder. */
   let pageVisible = typeof document === 'undefined' ? true : !document.hidden;
   let onScreen = true;
   let quality: OrbQuality = 'full';
@@ -1905,9 +1747,8 @@ void main(){
   const poke = () => { lastPoke = performance.now() / 1000; };
   const IDLE_FPS = 20; // idle, full quality
   const IDLE_FPS_LITE = 4; // idle, lite / reduced-motion (lighter than full)
-  // 'static' redraws the SAME frozen frame at a low rate. It can't go much
-  // lower than this without the browser clearing the canvas between redraws
-  // (the orb would vanish); the frames are identical so it still looks frozen.
+  // 'static' redraws the SAME frozen frame at a low rate; the floor is where the
+  // browser starts clearing the canvas between redraws and the orb would vanish.
   const IDLE_FPS_STATIC = 8;
   const ACTIVE_SETTLE = 1.2; // stay at full refresh this long after the last poke
 
@@ -1915,21 +1756,15 @@ void main(){
     if (!running) return;
     const now = performance.now() / 1000;
     const reduceMotion = reduceMotionMq.matches;
-    /* 'static' quality renders the full orb but freezes time + all ambient
-       motion (handled below), so the orb looks live but never animates on its
-       own. State changes still settle (they go 'active' and render), then it
-       re-freezes at ~1fps. */
+    /* 'static' renders the full orb but freezes time and ambient motion; state
+       changes still settle ('active'), then it re-freezes at ~1 fps. */
     const staticMode = quality === 'static';
 
-    /* Adaptive frame rate: full refresh while the orb is doing something
-       (emotion/system pose, wake/pulse stinger, live voice, a running task, or
-       within ACTIVE_SETTLE of the last interaction), a low idle rate otherwise.
-       Skipped frames just reschedule without touching the GPU. */
+    /* Full refresh while something is happening (stingers, indicators, recent
+       poke), low idle rate otherwise; skipped frames reschedule without GPU work. */
     const active = staticMode
-      ? // frozen BODY, but keep rendering while a change settles OR while a
-        // task/notification indicator is on screen, so its glyph keeps spinning
-        // and its progress bar keeps running. The orb body itself stays still
-        // via the motion suppressions below.
+      ? // BODY frozen, but keep rendering while a change settles or a
+        // task/notification indicator is up (its glyph spins, its bar moves).
         now - lastPoke < ACTIVE_SETTLE || Task.amt > 0.01 || Note.amt > 0.01
       : emotion !== null || system !== null || pulseFx !== null || wakeFx !== null ||
         extEnv >= 0 || Task.amt > 0.01 || Note.amt > 0.01 ||
@@ -1946,12 +1781,8 @@ void main(){
     let dt = Math.min(now - last, 0.05);
     last = now;
 
-    /* keep the orb's viewport offset current so pointer interaction + screen
-       refraction follow the orb as the main column resizes (dock open/close,
-       drag, window resize) — not where the orb used to be. */
     syncCanvasPos();
 
-    /* ---- emotion lifecycle ---- */
     let mo: Required<MotionOut> = { dy: 0, vs: 0, flash: 0, shake: 0, droop: 0, alert: 0, spike: 0, leanX: 0, leanY: 0 };
     if (emotion) {
       const E = EMOTIONS[emotion.name];
@@ -1983,14 +1814,12 @@ void main(){
       }
     }
 
-    /* ---- system lifecycle (overrides everything below) ---- */
     if (system) {
       const rate = system.releasing ? -2.8 : 3.0;
       system.weight = Math.max(0, Math.min(1, system.weight + rate * dt));
       if (system.releasing && system.weight <= 0.01) system = null;
     }
 
-    /* ---- wake stinger: inflate back to life with an overshoot ---- */
     let wakeScale = 1,
       wakeFlash = 0;
     if (pulseFx) {
@@ -2008,7 +1837,6 @@ void main(){
       }
     }
 
-    /* ---- compose targets: base state, then emotion, then system ---- */
     const baseT = STATES[stateName];
     const effT: ParamTable = {};
     for (const key in baseT) {
@@ -2024,7 +1852,6 @@ void main(){
       effT[key] = v;
     }
 
-    /* system pose folds into the motion channels */
     if (system) {
       const po = SYSTEM[system.name].pose,
         ws = system.weight;
@@ -2033,13 +1860,10 @@ void main(){
       mo.vs += po.vs * ws;
     }
 
-    /* tempo: emotions change the orb's sense of time */
-    // 'static' freezes the glass clock for a truly motionless orb. (Freezing it
-    // used to blank the orb, but that was the separate still-velocity NaN bug
-    // now fixed in the shader's vdir computation, not the clock.)
+    /* Tempo: emotions change the orb's sense of time. 'static' freezes the
+       glass clock so the orb is truly motionless. */
     simT += dt * (staticMode ? 0 : reduceMotion ? 0.06 : cur.tempo);
 
-    /* ease params toward composed target */
     const k = 1 - Math.exp(-dt * 3.2);
     for (const key in effT) {
       if (cur[key] === undefined) cur[key] = effT[key];
@@ -2051,12 +1875,10 @@ void main(){
     const baseEnv = staticMode ? 0.15 : extEnv >= 0 ? envExtSmooth : (reduceMotion ? 0.15 : envelope(simT));
     const env = Math.max(baseEnv, cur.envFloor || 0) * (cur.envScale === undefined ? 1 : cur.envScale);
 
-    /* ambient drift: slow wander, larger while thinking */
     const dAmp = (reduceMotion || staticMode) ? 0 : cur.drift;
     const driftX = dAmp * (Math.sin(simT * 0.43 + 1.3) + 0.5 * Math.sin(simT * 0.97 + 4.1)) * 0.66;
     const driftY = dAmp * (Math.sin(simT * 0.37 + 2.6) + 0.5 * Math.sin(simT * 1.13 + 0.8)) * 0.5;
 
-    /* cursor-push spring: the bubble shies away from a close pointer */
     const baseCx = canvasPos.x + cssSize / 2;
     const baseCy = canvasPos.y + cssSize / 2;
     let pushX = 0,
@@ -2092,7 +1914,6 @@ void main(){
     const cx = center.x + driftX + spring.x + shakeX;
     const cy = center.y + driftY + spring.y + mo.dy + shakeY;
 
-    /* velocity of the composite center, smoothed */
     if (prevCx !== null && prevCy !== null && dt > 0) {
       const vx = (cx - prevCx) / dt,
         vy = (cy - prevCy) / dt;
@@ -2120,10 +1941,8 @@ void main(){
     glc.uniform1f(U.u_swirl, cur.swirl);
     glc.uniform1f(U.u_squish, reduceMotion ? 0 : cur.squish);
     glc.uniform1f(U.u_warmth, cur.warmth);
-    /* ease the per-agent hue toward its target (~0.5s glide) */
     hueShift += (hueShiftTarget - hueShift) * Math.min(1, dt * 4.5);
     glc.uniform1f(U.u_hueShift, hueShift);
-    /* ease the held alert tint */
     alertLevel += (alertTarget - alertLevel) * Math.min(1, dt * 5.5);
     glc.uniform1f(U.u_alert, alertLevel);
     glc.uniform1f(U.u_ring, cur.ring);
@@ -2150,10 +1969,7 @@ void main(){
     glc.uniform1f(U.u_centerClear, 1.0);
     glc.uniform1f(U.u_clearFade, 0.95);
 
-    /* task spinner inside the glass */
     Task.tick(now);
-    /* ease the notification glyph; while it's up it overrides the task glyph
-       and renders static (no spin). */
     Note.amt += (Note.target - Note.amt) * Math.min(1, dt * 5.0);
     if (Note.amt < 0.01 && Note.target === 0) Note.icon = -1;
     const showNote = Note.amt > 0.01 && Note.icon >= 0;
@@ -2172,11 +1988,8 @@ void main(){
     layout();
   }
 
-  /* ---------------- listeners ---------------- */
-  /* Repaint the backdrop when the viewport aspect shifts enough to matter
-     (orientation change, large window resize) so the cast glow stays correctly
-     sized. Debounced + threshold-gated so a drag-resize doesn't thrash the
-     toDataURL/texture-upload. */
+  /* The backdrop repaints when the viewport aspect shifts enough to matter,
+     debounced + threshold-gated so a drag-resize doesn't thrash the upload. */
   let lastBackdropAspect = (typeof innerWidth === 'number' && typeof innerHeight === 'number')
     ? innerWidth / Math.max(1, innerHeight) : 1.6;
   let backdropTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2211,7 +2024,6 @@ void main(){
     start();
   };
 
-  /* ---------------- wiring ---------------- */
   makeBackdrop();
 
   addEventListener('resize', onResize);
@@ -2221,11 +2033,8 @@ void main(){
   canvas.addEventListener('webglcontextlost', onContextLost);
   canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-  /* #2 — pause the whole loop only when the TAB is hidden. We deliberately do
-     NOT use an IntersectionObserver: the orb is a fixed, always-visible element,
-     so it saves nothing, and a transient layout shift on load could make IO
-     report "off-screen" and pause the loop, which showed up as the orb
-     vanishing a few seconds after it appeared. */
+  /* The loop pauses only when the TAB is hidden; no IntersectionObserver: the
+     orb is always visible, and a layout shift could pause it as "off-screen". */
   const pause = () => { running = false; cancelAnimationFrame(rafId); };
   const onVisibility = () => {
     pageVisible = !document.hidden;
@@ -2236,7 +2045,6 @@ void main(){
   init();
   start();
 
-  /* ---------------- teardown ---------------- */
   function destroy(): void {
     if (destroyed) return;
     destroyed = true;
@@ -2255,12 +2063,8 @@ void main(){
 
     ProgressLine.remove();
 
-    /* delete GL resources. We intentionally do NOT call
-       WEBGL_lose_context.loseContext(): the browser hands back the SAME
-       context for a given canvas+type, so losing it here would break the
-       immediate re-init when React StrictMode (or a normal remount) mounts
-       a fresh engine on the same canvas. A real unmount GCs the canvas and
-       its context together, so nothing leaks. */
+    /* GL resources only: never loseContext(). The browser reissues the SAME
+       context for a canvas, so losing it breaks a StrictMode remount re-init. */
     try {
       if (tex) glc.deleteTexture(tex);
       if (iconTex) glc.deleteTexture(iconTex);
@@ -2272,13 +2076,10 @@ void main(){
     tex = iconTex = buf = prog = null;
   }
 
-  /* mark target as referenced (kept for parity with the prototype's
-     state machine; setState reassigns it). */
+  /* `target` is assigned (by setState) but never read: void it so tsc keeps it. */
   void target;
 
-  /* Every external command pokes the activity clock so the orb jumps back to
-     full refresh immediately (the idle throttle only applies when nothing has
-     happened for ACTIVE_SETTLE). */
+  /* Every external command pokes the activity clock to leave idle refresh. */
   return {
     setState: (n) => { poke(); setState(n); },
     setEmotion: (n) => { poke(); setEmotion(n); },
