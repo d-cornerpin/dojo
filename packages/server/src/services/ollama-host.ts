@@ -9,8 +9,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { homeDir, isTestRun } from '../home.js';
-import { checkOllamaHealth } from './ollama.js';
+import { homeDir } from '../home.js';
 import { attachIdleBound, type WatchableChild } from '../child-idle-bound.js';
 
 /** How Ollama's own CLI waits after it opens the Mac app (`cmd/start.go waitForServer`: a heartbeat every
@@ -104,7 +103,7 @@ export function makeRealDeps(
     launchApp: async () => {
       await attachIdleBound(spawnChild('/usr/bin/open', ['-j', '-a', 'Ollama', '--args', '--fast-startup']), { idleMs: WAIT_MS, ceilingMs: WAIT_MS });
     },
-    answers: (baseUrl) => checkOllamaHealth(baseUrl),   // the Dojo's one Ollama health check (`services/ollama.ts`)
+    answers: async (baseUrl) => (await import('./ollama.js')).checkOllamaHealth(baseUrl),   // the Dojo's one Ollama health check (`services/ollama.ts`), loaded late: it imports the upkeep, which imports this file
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     brewServicePid: async () => {
       try {
@@ -157,8 +156,5 @@ const REAL = makeRealDeps(
   },
 );
 
-let override: OllamaHost | null = null;
-/** A test's fake host for the code that is not handed one (null puts the real one back). */
-export function overrideOllamaHost(host: OllamaHost | null): void { override = host; }
-/** The host the platform uses, or null off a Mac and in a test run with no fake: a test never touches the real launchctl, brew or app. */
-export function getOllamaHost(): OllamaHost | null { return override ?? (isTestRun() || process.platform !== 'darwin' ? null : REAL); }
+/** The host the platform uses, or null off a Mac. */
+export function getOllamaHost(): OllamaHost | null { return process.platform !== 'darwin' ? null : REAL; }

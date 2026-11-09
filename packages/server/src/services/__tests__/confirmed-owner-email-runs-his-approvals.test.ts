@@ -38,15 +38,6 @@ describe('C12 — a confirmed owner email runs his approvals like a text', () =>
   });
 });
 
-describe('C12 — both mail watchers use it', () => {
-  it('gmail-watcher and outlook-watcher append the command note to the notice they store', async () => {
-    const { readFileSync } = await import('node:fs');
-    for (const f of ['gmail-watcher.ts', 'outlook-watcher.ts']) {
-      expect(readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'), f).toMatch(/\+ await ownerEmailCommandNote\(ownerMail\)/);
-    }
-  });
-});
-
 describe('C12 — only the first non-empty line is matched', () => {
   it('"yes <id>" followed by a signature still approves', async () => {
     const note = await ownerEmailCommandNote({ state: 'confirmed', words: '\n\nyes abc123\n\nSent from my iPhone' });

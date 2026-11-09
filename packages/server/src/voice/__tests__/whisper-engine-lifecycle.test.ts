@@ -200,17 +200,6 @@ vi.mock('../model-manager.js', () => ({
   freeDiskMb: async () => 0,
 }));
 
-// stt-service re-exports from tts-service, which imports kokoro-js at module
-// eval. kokoro-js pulls the ~200 KB minified espeak phonemizer blob, which
-// crashes the vitest worker on load; this test never exercises TTS, so stub
-// the classes out.
-vi.mock('kokoro-js', () => ({
-  KokoroTTS: class {
-    static from_pretrained = vi.fn();
-  },
-  TextSplitterStream: class {},
-}));
-
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 const { ensureSttReady, stopWhisperServer } = await import('../stt-service.js');

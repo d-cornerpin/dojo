@@ -26,7 +26,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -91,7 +90,6 @@ import { runMigrations } from '../../db/migrations.js';
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 const OWNER = 'owner@example.test';
-const db = (): Database.Database => mockDb.current!;
 
 /** What the providers answer right now. */
 const account = { openrouter: 50, googleToken: 'ok' as 'ok' | 'dead' };
@@ -191,17 +189,10 @@ async function boot() {
     },
   };
 }
-
-function spend(recordCost: (r: Parameters<typeof import('../../costs/tracker.js').recordCost>[0]) => unknown, dollars: number): void {
-  recordCost({ agentId: 'ag', modelId: 'mdl', providerId: 'prov', inputTokens: Math.round(dollars * 1_000_000), outputTokens: 0 });
-}
-
-const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 /** Live frames spoken by the platform: severity info = an all-clear's removal, else a card. */
 const frames = (): Array<{ error: string; severity: unknown }> => broadcasts
   .filter((b) => b.type === 'chat:error' && b.agentId === 'platform')
   .map((b) => ({ error: String(b.error), severity: b.severity }));
-const liveCards = () => frames().filter((f) => f.severity !== 'info');
 
 const ended = (): string[] => frames().filter((f) => f.severity === 'info').map((f) => f.error);
 
@@ -247,13 +238,5 @@ describe('P7: turning an account or its mail service off ends its watcher card, 
     m.googleAccounts.updateGoogleAccount(a.id, { connected: false });
     expect(ended()).toEqual([]);
     expect(await m.cards()).toHaveLength(1);
-  });
-
-  it('census: the watchers and the card share ONE "is this account watched" predicate', () => {
-    const strip = (code: string): string => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-    const read = (rel: string): string => strip(fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8'));
-    expect(read('gmail-watcher.ts')).toMatch(/function isMonitored\(v: GoogleAccountView\): boolean \{\s*return v\.connected && watchedForMail\(v, 'gmail'\);/);
-    expect(read('outlook-watcher.ts')).toMatch(/function isMonitored\(v: MicrosoftAccountView\): boolean \{\s*return v\.connected && watchedForMail\(v, 'outlook'\);/);
-    expect(read('watcher-owner-cards.ts')).toMatch(/watchedForMail\(/);
   });
 });

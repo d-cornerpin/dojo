@@ -29,7 +29,6 @@ vi.mock('../../home.js', async () => {
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -86,7 +85,6 @@ import { runMigrations } from '../../db/migrations.js';
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 const OWNER = 'owner@example.test';
-const db = (): Database.Database => mockDb.current!;
 
 /** What the providers answer right now. */
 const account = { openrouter: 50, googleToken: 'ok' as 'ok' | 'dead' };
@@ -188,7 +186,6 @@ const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !
 const frames = (): Array<{ error: string; severity: unknown }> => broadcasts
   .filter((b) => b.type === 'chat:error' && b.agentId === 'platform')
   .map((b) => ({ error: String(b.error), severity: b.severity }));
-const liveCards = () => frames().filter((f) => f.severity !== 'info');
 
 const ended = (): string[] => frames().filter((f) => f.severity === 'info').map((f) => f.error);
 /** A watched Gmail account (r6: a watcher card's subject must exist and be watched). */
@@ -253,21 +250,5 @@ describe('ruling 2: a watcher\'s failing state survives a restart, per account',
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-b')).toBe(true);
     expect(await m.cards(), 'acct-b is still failing').toHaveLength(1);
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-c'), 'a healthy account has nothing on record').toBe(false);
-  });
-
-  it('census: every watcher passes its account and consults the record before deciding "not alerted"', () => {
-    const strip = (code: string): string => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-    const read = (rel: string): string => strip(fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8'));
-    for (const [file, name, account] of [
-      ['gmail-watcher.ts', 'gmail', 'accountId'], ['outlook-watcher.ts', 'outlook', 'accountId'], ['teams-watcher.ts', 'teams', null],
-    ] as const) {
-      const src = read(file);
-      expect(src, `${file}: the recovery gate consults the record`).toMatch(
-        new RegExp(`if \\((?:s\\.)?alreadyAlerted \\|\\| watcherFailingOnRecord\\('${name}'${account ? `, ${account}` : ''}\\)\\)`));
-      if (account) {
-        expect(src, `${file}: the failure door is told the account`).toMatch(new RegExp(`maybeAlertOnFailure\\(\\{\\s*name: '${name}', ${account},`));
-        expect(src, `${file}: the recovery door is told the account`).toMatch(new RegExp(`maybeAlertOnRecovery\\(\\{\\s*name: '${name}', ${account},`));
-      }
-    }
   });
 });

@@ -11,11 +11,11 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { getOllamaLock, localWorkBegins } from '../ollama-lock.js';
 import { upkeep } from '../ollama-upkeep.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, appServe, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, appServe, LATEST, type Mac, useOllamaHost } from './fake-mac.js';
 
 const LOCAL = 'ollama-local';
 let mac: Mac;
@@ -27,10 +27,10 @@ beforeEach(async () => {
   ollama.installed = new Set(['nomic-embed-text:latest', STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.windowTag, STANDARD_WRITER_MODEL.tag]);
   mockDb.current.prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES (?, 'Ollama', 'ollama', ?, 'none', 1)").run(LOCAL, baseUrl);
   mac = fakeMac({ running: appServe(LATEST), app: LATEST });   // current; its limit is not raised yet, so a start restarts it once
-  overrideOllamaHost(mac);
+  useOllamaHost(mac);
 });
 afterEach(async () => {
-  overrideOllamaHost(null);
+  useOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });

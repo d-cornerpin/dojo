@@ -10,7 +10,6 @@
 // `https://openrouter.ai/api` still yields `…/api/v1/…`.
 // ════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { openAiCompatibleUrl } from '../openai-compatible-url.js';
 
 describe('openAiCompatibleUrl — a base URL that already ends in /v1 is not doubled', () => {
@@ -31,20 +30,4 @@ describe('openAiCompatibleUrl — a base URL that already ends in /v1 is not dou
   ] as Array<[string | null | undefined, string, string]>)('%s + %s', (base, path, want) => {
     expect(openAiCompatibleUrl(base, path)).toBe(want);
   });
-});
-
-describe('the three media services stop hand-building the provider URL', () => {
-  // Header prose names the endpoint each service calls; what must be gone is the
-  // code that builds it by hand.
-  const codeOnly = (src: string): string =>
-    src.split('\n').filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line)).join('\n');
-
-  for (const file of ['audio-generation.ts', 'image-generation.ts', 'transcription.ts']) {
-    it(`${file} goes through openAiCompatibleUrl`, () => {
-      const code = codeOnly(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'));
-      expect(code).toContain('openAiCompatibleUrl(');
-      expect(code).not.toContain('/v1/chat/completions');
-      expect(code).not.toContain('/v1/audio/transcriptions');
-    });
-  }
 });

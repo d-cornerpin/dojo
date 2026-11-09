@@ -12,11 +12,11 @@ const frames = vi.hoisted(() => ({ list: [] as Array<{ type?: string; error?: st
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { frames.list.push(f); }, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
 import { OLLAMA_TOO_OLD_WORDS } from '../../healer/owner-notices.js';
 import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, useOllamaHost } from './fake-mac.js';
 
 let baseUrl = '';
 beforeEach(async () => {
@@ -25,12 +25,12 @@ beforeEach(async () => {
   baseUrl = await startFakeOllama();
   ollama.silent = new Set(); ollama.pulls = []; ollama.installed = new Set(['nomic-embed-text:latest']); ollama.failPulls = false; ollama.refuseAllBelow035 = false;
   mockDb.current.prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', ?, 'none', 1)").run(baseUrl);
-  overrideOllamaHost(fakeMac({ running: formulaServe('0.30.1', { foreign: true }), formula: '0.30.1' }));
+  useOllamaHost(fakeMac({ running: formulaServe('0.30.1', { foreign: true }), formula: '0.30.1' }));
   frames.list.length = 0;
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null);
+  useOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });

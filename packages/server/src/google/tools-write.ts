@@ -24,8 +24,8 @@ import {
 import type { AccountSlot } from './auth.js';
 import { homeDir } from '../home.js';
 import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js';
+import { GMAIL_BASE } from './gmail-search.js';
 
-const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DOCS_BASE = 'https://docs.googleapis.com/v1/documents';

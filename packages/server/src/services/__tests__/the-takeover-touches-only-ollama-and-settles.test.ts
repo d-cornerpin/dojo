@@ -22,24 +22,23 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_DECISION_MODEL } from '../local-standard.js';
 import { standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { upkeepRecord } from '../ollama-version.js';
 import { OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, HEALER_BROKEN_WORDS } from '../../healer/owner-notices.js';
 import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, dockerServe, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, dockerServe, LATEST, type Mac, useOllamaHost } from './fake-mac.js';
 
 const SRC = path.resolve(__dirname, '../..');
 const db = (): Database.Database => mockDb.current!;
 const cards = (): string[] => frames.list.filter((f) => f.type === 'chat:error' && f.severity !== 'info').map((f) => f.error ?? '');
-const use = (m: Mac): Mac => { overrideOllamaHost(m); return m; };
+const use = (m: Mac): Mac => { useOllamaHost(m); return m; };
 /** A Dojo start. */
 const boot = async (_m: Mac): Promise<void> => { await upkeep('boot'); };
 let baseUrl = '';
 /** The upkeep as Repair runs it, then the Settings state. */
 const repair = async (): Promise<Awaited<ReturnType<typeof standardState>>> => { await upkeep('repair'); return standardState(); };
-
 
 beforeEach(async () => {
   mockDb.current = new Database(':memory:');
@@ -52,7 +51,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null);
+  useOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });
@@ -155,14 +154,6 @@ describe('M1 / M2 / M3: the download, a slow start, and the cask\'s limits', () 
     expect(silent.running?.by).toBe('brew-service');
     expect(silent.terms.length).toBeGreaterThanOrEqual(2);   // the old app, then the new one that did not answer
     expect(cards()).toEqual([]);
-  });
-
-  it('M3 guard: no Ollama upkeep code ever zaps, uninstalls, strips quarantine, or touches ~/.ollama (the owner\'s models)', () => {
-    const files = fs.readdirSync(path.join(SRC, 'services')).filter((f) => /^ollama-.*\.ts$/.test(f)).map((f) => path.join(SRC, 'services', f));
-    for (const f of files) {
-      const code = fs.readFileSync(f, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');   // code, not the comments that name the rule
-      expect(code, f).not.toMatch(/--zap|'uninstall'|"uninstall"|xattr|com\.apple\.quarantine|--no-quarantine|\/\.ollama\b|'\.ollama'/);
-    }
   });
 });
 

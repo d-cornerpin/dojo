@@ -19,22 +19,21 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../local-standard.js';
 import { standardProgressLines, standardState, upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { parseOllamaVersion, ollamaAtLeast, requiredOllamaVersion, isVersionRefusal } from '../ollama-version.js';
 import { OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords } from '../../healer/owner-notices.js';
 import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, serviceServe, REFUSAL, APP_PROGRAM, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, serviceServe, REFUSAL, APP_PROGRAM, LATEST, type Mac, useOllamaHost } from './fake-mac.js';
 
 const db = (): Database.Database => mockDb.current!;
 const SLASH_PULLS = (): string[] => ollama.pulls.filter((p) => p === STANDARD_DECISION_MODEL.tag);
-const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 30));
 const owner = (): Array<string | undefined> => frames.list.filter((f) => f.severity !== 'info' && (f as { type?: string }).type !== 'engine:activity').map((f) => f.error);
 /** No owner text may tell him to fetch, quit or restart anything (owner ruling OR-UPKEEP-AUTOMATIC). */
 const NO_CHORES = /download|ollama\.com|quit|restart it|start it again|brew upgrade/i;
 let baseUrl = '';
 /** The upkeep as Repair runs it, then the Settings state. */
 const repair = async (): Promise<Awaited<ReturnType<typeof standardState>>> => { await upkeep('repair'); return standardState(); };
-const use = (m: Mac): Mac => { overrideOllamaHost(m); return m; };
+const use = (m: Mac): Mac => { useOllamaHost(m); return m; };
 
 beforeEach(async () => {
   mockDb.current = new Database(':memory:');
@@ -46,7 +45,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null);
+  useOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });

@@ -101,6 +101,9 @@ export type Mac = OllamaHost & {
   wait(ms: number): void;
 };
 
+/** The host `getOllamaHost()` hands the platform in this test file (null: none, as off a Mac); see `vitest.setup.ts`. */
+export function useOllamaHost(host: OllamaHost | null): void { (globalThis as { __fakeOllamaHost?: unknown }).__fakeOllamaHost = host; }
+
 let nextPid = 800;
 export function fakeMac(o: { running?: Serve | null; formula?: string | null; app?: string | null; appCask?: string | null } = {}): Mac {
   let serve: Serve | null = null;

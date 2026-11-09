@@ -1,23 +1,22 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t138 round 6 — ONE RULE FOR EVERY CARD: IT LIVES EXACTLY AS LONG AS ITS CONDITION'S OWN RECORD
-// SAYS THE CONDITION IS LIVE; THE SAME RECORD DECIDES THE TEXT, THE CARD AND THE CLEAR.
+// t138 round 4 — EVERY CARD LASTS, AND A CARD LEAVES THE MOMENT ITS CONDITION ENDS.
 //
-// The round 2-5 review (overhaul-plans/t138-r2-5-review.md) found the clearing signals wrong:
-//   C1 a budget card for a NEW crossing was killed by the next cost record whenever an older,
-//      higher latch was still set (P1);
-//   I1 a Healer self-watchdog reset counted as recovery, so a Healer that keeps failing texted
-//      "broken" every cycle (P2);
-//   I2 the 30-minute cooldown sweep (a clock) ended the stuck card (P3);
-//   I3 cards whose subject is gone (agent terminated or purged, account removed, watcher
-//      disabled) stood forever and could render a raw id (P5/P6);
-//   minors: the engine's own pause card used other words (two cards), and some endings sent no
-//   live END (window turnover, account deleted, agent deleted).
-// Driven through the real doors: the cost door and the scheduler tick, the Healer's injury,
-// recovery and watchdog doors, the status writer, the purge door, the accounts' writers, the
-// watcher-status door, and the two routes.
+// Round 3 left four kinds of card living only in an open tab (a Google or Microsoft sign-in
+// expired, a mail watcher failing, rate-limit retries exhausted), and every card waited for the
+// next page load to notice that its condition had ended. Orchestrator rulings (round 4):
+//   1. those cards last the same way — re-derived on load from the incident's own row;
+//   2. when the server records a condition clearing (agent resumed, balance back above the line,
+//      spend dropped, sign-in restored, Healer back, memory recovered) it broadcasts the card's
+//      removal on the frame path the all-clears already use — one mechanism for every kind;
+//   3. the Healer's broken/missing state is re-checked on the Healer's own watchdog, and memory
+//      on the scheduler's existing tick, not only on the next injury or spawn;
+//   4. a manual resume ends the paused agent's incident, so its card cannot come back.
+// Driven through the real doors (the Google token door and its connect writer, the watcher
+// status door, the rate-limit retry ladder, the cost door, the scheduler tick, the status writer,
+// the Healer's watchdog) and the two real routes.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-// RED-FIRST at 9eecf35e: clauses marked `it.fails` are the witness, failing before the fix;
+// RED-FIRST at 7145d73b (plus a no-behaviour refactor of the door's frame and 193's three empty columns): clauses marked `it.fails` are the witness, failing before the fix;
 // the fix commits flip them to `it`.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -25,16 +24,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const HOME = path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'dojo-t138-r6-cards');
+const HOME = path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'dojo-t138-r4-cards');
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t138-r6-cards');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t138-r4-cards');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
-    isTestRun: (): boolean => true,
   };
 });
 
@@ -48,7 +46,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t138-r6-cards', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t138-r4-cards', 'dojo.db'),
   };
 });
 
@@ -190,7 +188,6 @@ async function boot() {
     rateLimit: await import('../../agent/rate-limit-retry.js'),
     resources: await import('../resource-monitor.js'),
     healerAgent: await import('../../healer/healer-agent.js'),
-    purge: await import('../../agent/purge.js'),
     googleAccounts: await import('../../google/accounts.js'),
     tick: async () => { await clock.runSchedulerTick(); await clock.balanceCheckSettled(); },
     /** What a dashboard that just loaded is shown. */
@@ -219,158 +216,176 @@ const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !
 const frames = (): Array<{ error: string; severity: unknown }> => broadcasts
   .filter((b) => b.type === 'chat:error' && b.agentId === 'platform')
   .map((b) => ({ error: String(b.error), severity: b.severity }));
-const liveCards = () => frames().filter((f) => f.severity !== 'info');
 
 /** The removals broadcast so far: each names the card that leaves. */
 const ended = (): string[] => frames().filter((f) => f.severity === 'info').map((f) => f.error);
-/** Every budget latch told `seconds` earlier: the passage of a window, as the rows record it. */
-const ageLatches = (seconds: number): void => {
-  for (const f of ['alert_50_sent', 'alert_75_sent', 'alert_90_sent']) {
-    db().prepare(`UPDATE budgets SET ${f} = ${f} - ? WHERE ${f} > 0`).run(seconds);
-  }
-  db().prepare("UPDATE cost_records SET created_at = datetime(created_at, ?)").run(`-${seconds} seconds`);
-};
 
-describe('C1: a budget card is the CURRENT window\'s incident', () => {
-  it('P1: a new 50% crossing after an earlier 90% day keeps its card through the next record', async () => {
-    const m = await boot();
-    m.budget.setGlobalBudget(10);
-    spend(m.recordCost, 9.2); // day 1: 90%
-    ageLatches(2 * 86_400);   // two days on
-    (await import('../../costs/tracker.js')).invalidateDailySpendCache();
-    spend(m.recordCost, 5.1); // day 3: 50%
-    const card = (await m.cards())[0]?.words;
-    expect(card).toContain('51%');
-    spend(m.recordCost, 0.1); // the next agent call
-    expect(ended(), 'nothing ended: the condition is live').not.toContain(card);
-    expect((await m.cards()).map((c) => c.words)).toEqual([card]);
-  });
-
-  it('window turnover is the clear: the scheduler tick ends the card live; the next crossing is a new text and card', async () => {
-    const m = await boot();
-    m.budget.setGlobalBudget(10);
-    spend(m.recordCost, 5.1);
-    const card = (await m.cards())[0].words;
-    spend(m.recordCost, 0.1);
-    expect(ended()).toEqual([]); // spend moving inside the window ends nothing
-    ageLatches(2 * 86_400);
-    await m.tick();
-    expect(ended()).toEqual([card]);
-    expect(await m.cards()).toEqual([]);
-    (await import('../../costs/tracker.js')).invalidateDailySpendCache();
-    spend(m.recordCost, 5.2);
-    expect(texts()).toHaveLength(2);
-    expect(await m.cards()).toHaveLength(1);
-  });
-});
-
-describe('I1: only the Healer working ends "Healer broken"', () => {
-  it('P2: three failing watchdog cycles are ONE text; a clean Healer turn ends the card; breaking again texts again', async () => {
-    const m = await boot();
-    vi.useFakeTimers();
-    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
-    m.healerAgent.startHealerSelfWatchdog();
-    for (let cycle = 0; cycle < 3; cycle++) {
-      db().prepare("UPDATE agents SET status = 'error' WHERE id = 'hl'").run(); // its provider is still down
-      m.healer.onAgentInjured('hl', 'provider down');
-      await vi.advanceTimersByTimeAsync(5 * 60_000 + 1_000); // the watchdog resets it to idle
-    }
-    const broken = (): string[] => texts().filter((t) => t.includes('Healer agent is broken'));
-    expect(broken(), 'one text for one unchanged condition').toHaveLength(1);
-    const card = (await m.cards()).find((c) => c.words.includes('Healer agent is broken'))?.words;
-    expect(card).toBeDefined();
-    m.errors.clearErrors('hl'); // the Healer completed a healthy model turn
-    expect(ended()).toContain(card);
-    db().prepare("UPDATE agents SET status = 'error' WHERE id = 'hl'").run();
-    m.healer.onAgentInjured('hl', 'provider down');
-    expect(broken()).toHaveLength(2);
-  });
-});
-
-describe('I2: a clock is never evidence of recovery', () => {
-  it('P3: the cooldown sweep leaves the stuck card standing; real recovery ends it', async () => {
-    const m = await boot();
-    vi.useFakeTimers();
-    db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
-    m.healer.onAgentInjured('ag', 'fetch failed: ECONNRESET');
-    const card = (await m.cards())[0].words;
-    m.healer.onAgentRecovered('ag', 'cooldown');
-    expect(ended()).toEqual([]);
-    expect((await m.cards()).map((c) => c.words)).toEqual([card]);
-    m.healer.onAgentRecovered('ag'); // evidence
-    expect(ended()).toEqual([card]);
-  });
-});
-
-describe('I3: a card whose subject is gone leaves, live, and never shows a raw id', () => {
-  it('P5: a stuck agent that is terminated, and one that is purged', async () => {
-    const m = await boot();
-    vi.useFakeTimers();
-    db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
-    m.healer.onAgentInjured('ag', 'fetch failed: ECONNRESET');
-    const card = (await m.cards())[0].words;
-    m.status.writeAgentStatus('ag', 'terminated');
-    expect(ended()).toEqual([card]);
-    expect(await m.cards()).toEqual([]);
-
-    db().prepare(`INSERT INTO agents (id, name, model_id, status, recovery_attempts, created_at, updated_at)
-                  VALUES ('ag2', 'Second', 'mdl', 'error', 3, datetime('now'), datetime('now'))`).run();
-    m.healer.onAgentInjured('ag2', 'fetch failed: ECONNRESET');
-    const second = (await m.cards())[0].words;
-    m.purge.purgeAgentRows('ag2');
-    expect(ended()).toContain(second);
-    const after = await m.cards();
-    expect(after).toEqual([]);
-    expect(after.some((c) => c.words.startsWith('ag2 '))).toBe(false);
-  });
-
-  it('a paused agent that is purged: its card leaves live', async () => {
-    const m = await boot();
-    let p = false;
-    for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag');
-    const card = (await m.cards())[0].words;
-    m.purge.purgeAgentRows('ag');
-    expect(ended()).toContain(card);
-  });
-
-  it('P6: a failing Gmail account that is removed, and one whose watching is turned off', async () => {
-    const m = await boot();
-    const a = m.googleAccounts.insertGoogleAccount({ kind: 'agent', email: 'one@example.test', connected: true, watchEmail: true });
-    const b = m.googleAccounts.insertGoogleAccount({ kind: 'user', email: 'two@example.test', connected: true, watchEmail: true });
-    const fail = (accountId: string): unknown => m.watcher.maybeAlertOnFailure({
-      name: 'gmail', accountId, consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
-      lastError: 'boom', alreadyAlerted: false,
-    } as Parameters<typeof m.watcher.maybeAlertOnFailure>[0]);
-    fail(a.id);
-    const card = (await m.cards())[0].words;
-    m.googleAccounts.deleteGoogleAccount(a.id);
-    expect(ended()).toEqual([card]);
-    expect(await m.cards()).toEqual([]);
-    fail(b.id);
-    m.googleAccounts.updateGoogleAccount(b.id, { watchEmail: false });
-    expect(ended()).toHaveLength(2);
-    expect(await m.cards()).toEqual([]);
-  });
-
-  it('M3: an expired Google account that is deleted: its card leaves live', async () => {
-    const m = await boot();
+describe('ruling 1: the remaining cards last too', () => {
+  it('an expired Google sign-in: a card on load in the text\'s words; dismissed stays dismissed; a restored sign-in ends it, live', async () => {
+    let m = await boot();
     const acc = m.googleAccounts.insertGoogleAccount({
       kind: 'agent', email: 'helper@example.test', connected: true,
       accessToken: 'at-old', refreshToken: 'rt-1', tokenExpiresAt: Date.now() - 1000,
     });
     account.googleToken = 'dead';
     await m.google.getValidAccessTokenForAccount(acc.id);
-    const card = (await m.cards())[0].words;
-    m.googleAccounts.deleteGoogleAccount(acc.id);
-    expect(ended()).toEqual([card]);
+    m = await boot(); // reload after a restart
+    let shown = await m.cards();
+    expect(shown).toHaveLength(1);
+    expect(shown[0].words).toContain('connection expired');
+    expect(texts(), 'OR-AUDIT-ANSWERS (d): a sign-in is not one of the Dojo\'s texts').toEqual([]);
+    // The owner reconnects in Settings: the connect flow's writer marks it connected.
+    m.googleAccounts.updateGoogleAccount(acc.id, { connected: true, accessToken: 'at-new' });
+    expect(ended(), 'the card leaves open dashboards at once').toEqual([shown[0].words]);
+    expect(await m.cards()).toEqual([]);
+    // Benched again later: a new incident, a new card; dismissed, it stays gone.
+    m.googleAccounts.updateGoogleAccount(acc.id, { tokenExpiresAt: Date.now() - 1000 });
+    account.googleToken = 'dead';
+    await m.google.getValidAccessTokenForAccount(acc.id);
+    shown = await m.cards();
+    expect(shown).toHaveLength(1);
+    await m.dismiss(shown[0].words);
+    m = await boot();
+    expect(await m.cards()).toEqual([]);
+  });
+
+  it('a watcher failing: a card on load; a restart mid-failure raises nothing again; recovery ends it', async () => {
+    let m = await boot();
+    m.googleAccounts.insertGoogleAccount({ id: 'acct-a', kind: 'agent', email: 'one@example.test', connected: true, watchEmail: true });
+    const failing = (): boolean => m.watcher.maybeAlertOnFailure({
+      name: 'gmail', accountId: 'acct-a', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      lastError: 'boom', alreadyAlerted: false,
+    });
+    expect(failing()).toBe(true);
+    m = await boot(); // restart (round 5, owner-correct again): the watcher's memory of "already alerted" is gone, the failure is not
+    expect(failing()).toBe(true);
+    expect(texts(), 'OR-AUDIT-ANSWERS (d): a watcher is not one of the Dojo\'s texts').toEqual([]);
+    const shown = await m.cards();
+    expect(shown).toHaveLength(1);
+    expect(shown[0].words).toContain('has been failing');
+    m.watcher.maybeAlertOnRecovery({ name: 'gmail', accountId: 'acct-a', alreadyAlerted: false, totalNotificationsSinceFailure: 0 });
+    expect(texts()).toEqual([]);
+    expect(await m.cards()).toEqual([]);
+  });
+
+  it('rate-limit retries exhausted: a card on load; the agent getting through ends it, live', async () => {
+    const m = await boot();
+    vi.useFakeTimers();
+    m.rateLimit.scheduleRateLimitRetry('ag', null, 'hello');
+    await vi.runAllTimersAsync();
+    const exhausted = texts().filter((t) => t.includes('rate-limited for'));
+    expect(exhausted).toHaveLength(1);
+    const shown = (await m.cards()).filter((c) => c.words.includes('rate-limited for'));
+    expect(shown).toHaveLength(1);
+    expect(exhausted[0]).toContain(shown[0].words);
+    m.status.writeAgentStatus('ag', 'working'); // its next turn goes through
+    expect(ended()).toContain(shown[0].words);
+    expect((await m.cards()).filter((c) => c.words.includes('rate-limited for'))).toEqual([]);
   });
 });
 
-describe('M1: on the real engine pause path the owner card is the one card', () => {
-  it('the engine\'s own pause notice carries the owner card\'s words (the dashboard folds them into one)', () => {
-    const src = fs.readFileSync(path.resolve(__dirname, '../../agent/v2/recovery.ts'), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-    expect(src).not.toContain("'Agent paused after repeated errors.");
-    expect(src).toMatch(/:\s*paused\s*\?\s*pausedWords\(agentId\)/);
+describe('ruling 2: a card leaves the moment the server records its condition ending', () => {
+  it('a balance back above its line', async () => {
+    account.openrouter = 2;
+    const m = await boot();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    let now = Date.now();
+    vi.setSystemTime(now);
+    await m.tick();
+    const words = (await m.cards())[0].words;
+    account.openrouter = 40;
+    now += 60 * 60_000; vi.setSystemTime(now);
+    await m.tick();
+    expect(ended()).toEqual([words]);
+  });
+
+  it('a budget whose window turned over (r6: spend moving inside the window ends nothing), and a budget whose limit the owner changed', async () => {
+    const m = await boot();
+    m.budget.setGlobalBudget(10);
+    spend(m.recordCost, 9.2);
+    const words = (await m.cards())[0].words;
+    db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run(); // spend ages out
+    (await import('../../costs/tracker.js')).invalidateDailySpendCache();
+    m.budget.checkBudget('ag', 0.01);
+    expect(ended(), 'inside the window the incident stands (review C1)').toEqual([]);
+    for (const f of ['alert_50_sent', 'alert_75_sent', 'alert_90_sent']) {
+      db().prepare(`UPDATE budgets SET ${f} = ${f} - 2 * 86400 WHERE ${f} > 0`).run();
+    }
+    m.budget.checkBudget('ag', 0.01);
+    expect(ended()).toEqual([words]);
+    expect(await m.cards()).toEqual([]);
+
+    m.budget.setAgentBudget('ag', 4, 'daily');
+    spend(m.recordCost, 3.8);
+    const agentWords = (await m.cards())[0].words;
+    m.budget.setAgentBudget('ag', 40, 'daily');
+    expect(ended()).toContain(agentWords);
+  });
+
+  it('ruling 4: a manual resume ends the paused incident, live, and a later manual pause cannot bring it back', async () => {
+    const m = await boot();
+    let p = false;
+    for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag');
+    const words = (await m.cards())[0].words;
+    m.status.writeAgentStatus('ag', 'idle'); // resumed from its detail page; no turn has run
+    expect(ended()).toEqual([words]);
+    m.status.writeAgentStatus('ag', 'paused'); // paused by hand
+    expect(await m.cards()).toEqual([]);
+  });
+
+  it('a stuck agent recovering', async () => {
+    const m = await boot();
+    vi.useFakeTimers();
+    db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
+    m.healer.onAgentInjured('ag', 'fetch failed: ECONNRESET');
+    const words = (await m.cards())[0].words;
+    m.healer.onAgentRecovered('ag');
+    expect(ended()).toEqual([words]);
+  });
+});
+
+describe('ruling 3: the clearing is noticed on the existing clocks', () => {
+  it('the Healer\'s own watchdog notices it is back: "missing" ends, live, with no injury needed', async () => {
+    const m = await boot();
+    vi.useFakeTimers();
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
+    db().prepare("UPDATE agents SET status = 'terminated' WHERE id = 'hl'").run();
+    db().prepare("UPDATE agents SET status = 'error' WHERE id = 'ag'").run();
+    m.healer.onAgentInjured('ag', 'provider down');
+    await vi.advanceTimersByTimeAsync(10 * 60_000); // auto-wake, grace, the Healer is looked for
+    const words = (await m.cards()).find((c) => c.words.includes('Healer agent is missing'))?.words;
+    expect(words).toBeDefined();
+    db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'hl'").run(); // restored
+    m.healerAgent.startHealerSelfWatchdog();
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    expect(ended()).toContain(words);
+    expect((await m.cards()).filter((c) => c.words.includes('Healer agent is missing'))).toEqual([]);
+  });
+
+  it('r6: the watchdog resetting the Healer is NOT recovery; its completing a healthy turn ends "broken", live', async () => {
+    const m = await boot();
+    vi.useFakeTimers();
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
+    db().prepare("UPDATE agents SET status = 'error' WHERE id = 'hl'").run();
+    m.healer.onAgentInjured('hl', 'provider down');
+    const words = (await m.cards()).find((c) => c.words.includes('Healer agent is broken'))?.words;
+    expect(words).toBeDefined();
+    m.healerAgent.startHealerSelfWatchdog();
+    await vi.advanceTimersByTimeAsync(6 * 60_000); // reset to idle
+    expect(ended()).not.toContain(words);
+    m.errors.clearErrors('hl'); // a healthy Healer turn
+    expect(ended()).toContain(words);
+  });
+
+  it('the scheduler\'s tick re-measures memory while it is low: recovery ends the card with no spawn needed', async () => {
+    const m = await boot();
+    memory.freeMb = 300;
+    m.resources.canSpawnAgent();
+    const words = (await m.cards()).find((c) => c.words.includes('512MB'))?.words;
+    expect(words).toBeDefined();
+    memory.freeMb = 6000;
+    await m.tick();
+    expect(ended()).toContain(words);
+    expect(await m.cards()).toEqual([]);
   });
 });

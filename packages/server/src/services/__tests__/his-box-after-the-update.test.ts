@@ -17,7 +17,7 @@ vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
   const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-his-box');
-  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs), isTestRun: (): boolean => true };
+  return { homeDir: (): string => dir, dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs) };
 });
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -34,13 +34,13 @@ import { standardModelRowId, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } fr
 import { upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { noteUpkeep, ollamaAtLeast } from '../ollama-version.js';
 import { onTheModel } from '../../agent/decision-policy.js';
 import { getDecisionProvider } from '../../agent/decision-provider.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 import { configRouter } from '../../gateway/routes/config.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, appServe, LATEST, type Mac, useOllamaHost } from './fake-mac.js';
 
 const EMBEDDER = 'nomic-embed-text:latest';
 const DECISION = STANDARD_DECISION_MODEL.tag;
@@ -91,12 +91,12 @@ beforeEach(async () => {
   ollama.silent = new Set(); ollama.pulls = []; ollama.refuseAllBelow035 = false; ollama.failPulls = false;
   ollama.installed = new Set([EMBEDDER, WRITER]);
   mac = fakeMac({ running: formulaServe('0.30.10'), formula: '0.30.10' });   // the formula's program, started by nothing recorded
-  overrideOllamaHost(mac);
+  useOllamaHost(mac);
   frames.list.length = 0;
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null);
+  useOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });
@@ -197,7 +197,7 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     db().prepare("UPDATE models SET capabilities = '[\"chat\"]' WHERE api_model_id = ?").run(WRITER);
     db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_id', ?)").run(DECISION_ROW);
     if (listed) ollama.installed.add(DECISION);
-    mac = fakeMac({ running: appServe(LATEST), app: LATEST }); overrideOllamaHost(mac);   // current, and the app: nothing to take over
+    mac = fakeMac({ running: appServe(LATEST), app: LATEST }); useOllamaHost(mac);   // current, and the app: nothing to take over
   }
   const decisionRow = (): { is_enabled: number } | undefined => db().prepare('SELECT is_enabled FROM models WHERE id = ?').get(DECISION_ROW) as { is_enabled: number } | undefined;
   const decisionId = (): string | undefined => (db().prepare("SELECT value FROM config WHERE key = 'decision_model_id'").get() as { value: string } | undefined)?.value;
@@ -246,7 +246,7 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
   // an incomplete health answer.
   it('(d) migration 209 healed with no dashboard: Ollama down at the boot\'s first look, then up as the start hook\'s own start comes up: the queued boot ask registers it', async () => {
     v35Box(true);
-    mac = fakeMac({ running: null, app: LATEST }); overrideOllamaHost(mac);
+    mac = fakeMac({ running: null, app: LATEST }); useOllamaHost(mac);
     mac.relaunchGate = new Promise<void>((r) => setTimeout(r, 50));   // the app the start hook opens takes real time to come up
     db().exec(MIGRATION_209());
     await updateFirstBoot();   // no dashboard: nothing else ever asks Ollama
@@ -257,7 +257,7 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
 
   it('(e) Ollama comes up long after the boot, still no dashboard: the next judgment asks once, and its answer registers the model', async () => {
     v35Box(true);
-    mac = fakeMac({ running: null }); overrideOllamaHost(mac);   // nothing to start at boot
+    mac = fakeMac({ running: null }); useOllamaHost(mac);   // nothing to start at boot
     db().exec(MIGRATION_209());
     await updateFirstBoot();
     expect(getDecisionProvider()).toBeNull();
@@ -270,7 +270,7 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
 
   it('(f) no storm while Ollama stays down: twenty judgments in a row ask it once', async () => {
     v35Box(true);
-    mac = fakeMac({ running: null }); overrideOllamaHost(mac);
+    mac = fakeMac({ running: null }); useOllamaHost(mac);
     db().exec(MIGRATION_209());
     await updateFirstBoot();
     const before = ollama.requests;

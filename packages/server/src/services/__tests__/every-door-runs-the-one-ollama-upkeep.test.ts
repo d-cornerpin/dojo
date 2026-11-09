@@ -11,11 +11,11 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { upkeep, upkeepSettled } from '../ollama-upkeep.js';
 import { checkOllamaHealth } from '../ollama.js';
 import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac, useOllamaHost } from './fake-mac.js';
 
 let baseUrl = '';
 beforeEach(async () => {
@@ -29,7 +29,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null); vi.unstubAllGlobals();
+  useOllamaHost(null); vi.unstubAllGlobals();
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });
@@ -37,7 +37,7 @@ afterEach(async () => {
 /** An old formula serve nothing supervises; what the door made the Mac do, once the upkeep it started has ended. */
 async function through(door: () => Promise<unknown>): Promise<Mac> {
   const mac = fakeMac({ running: formulaServe('0.30.1'), formula: '0.30.1' });
-  overrideOllamaHost(mac);
+  useOllamaHost(mac);
   await door();
   await upkeepSettled();
   return mac;

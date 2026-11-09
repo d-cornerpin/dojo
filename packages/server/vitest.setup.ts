@@ -64,9 +64,9 @@ const realHomedir = (): string => realHome;
 (globalThis as Record<string, unknown>).__dojoRealHomedir = realHomedir;
 
 /**
- *  'sanctioned' — src/home.ts, the ONE place allowed to ask. It only gets this far
- *                 when DOJO_HOME is unset and the run is not flagged as a test, which
- *                 is the production path one test drives on purpose.
+ *  'sanctioned': src/home.ts, the ONE place allowed to ask, when DOJO_HOME is unset.
+ *                 It gets the real home only with VITEST unset (the production path one
+ *                 test drives on purpose); otherwise it throws like any other caller.
  *  'third-party'  — node_modules. Not the defect this guards; layer 2 covers it.
  *  'banned'       — anything else under packages/server.
  */
@@ -84,7 +84,7 @@ Object.defineProperty(os, 'homedir', {
   writable: true,
   value: function patchedHomedir(): string {
     const who = classifyCaller();
-    if (who === 'sanctioned') return realHomedir();
+    if (who === 'sanctioned' && process.env.VITEST === undefined) return realHomedir();
     if (who === 'third-party') return home;
     throw new Error(
       'REAL-HOME TRIPWIRE: os.homedir() was called directly during a test run.\n' +
@@ -147,4 +147,19 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
     if (typeof script?.query === 'function') return script.query(args);
     throw new Error(AGENT_CLI_NET_MESSAGE);
   },
+}));
+
+// The Ollama host: no test reaches the real launchctl, brew or app. A test that drives the upkeep puts its fake in
+// `globalThis.__fakeOllamaHost` (`src/services/__tests__/fake-mac.ts`, `useOllamaHost`); reset before every file.
+(globalThis as { __fakeOllamaHost?: unknown }).__fakeOllamaHost = undefined;
+vi.mock('./src/services/ollama-host.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOllamaHost: () => (globalThis as { __fakeOllamaHost?: unknown }).__fakeOllamaHost ?? null,
+}));
+
+// kokoro-js: its import loads the espeak phonemizer blob, which installs process-wide error handlers that crash the
+// worker. No test loads the real TTS model; a file that drives TTS mocks it with its own fake.
+vi.mock('kokoro-js', () => ({
+  KokoroTTS: class { static from_pretrained = (): never => { throw new Error('no test loads the real TTS model'); }; },
+  TextSplitterStream: class {},
 }));

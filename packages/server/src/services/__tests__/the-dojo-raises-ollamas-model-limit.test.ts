@@ -22,7 +22,8 @@ vi.mock('node:child_process', async (orig) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { makeRealDeps, overrideOllamaHost, type OllamaHost } from '../ollama-host.js';
+import { makeRealDeps, type OllamaHost } from '../ollama-host.js';
+import { useOllamaHost } from './fake-mac.js';
 import { desiredLoaded, raisedLoadedLimit } from '../ollama-restart.js';
 import { upkeep } from '../ollama-upkeep.js';
 import { STANDARD_DECISION_MODEL, STANDARD_TAGS, STANDARD_WRITER_MODEL } from '../local-standard.js';
@@ -68,7 +69,7 @@ function fakeDeps(env: Record<string, string>, o: {
 }
 
 /** One Dojo start on `deps`. */
-const boot = async (deps: Fake): Promise<void> => { overrideOllamaHost(deps); await upkeep('boot'); };
+const boot = async (deps: Fake): Promise<void> => { useOllamaHost(deps); await upkeep('boot'); };
 /** A child process stand-in: exits cleanly at once, or (`hang`) never. */
 function quickChild(hang = false): WatchableChild & { killed: boolean } {
   const closers: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
@@ -96,7 +97,7 @@ beforeEach(() => {
   mockDb.current.prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES (?, 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1)").run(LOCAL);
   frames.list.length = 0; spawned.n = 0;
 });
-afterEach(async () => { overrideOllamaHost(null); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(async () => { useOllamaHost(null); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('the Dojo raises Ollama\'s model limit', () => {
   it('the value: the embedder + the pair + the lock\'s agent slots (default 1 → 4; the owner\'s 2 → 5)', () => {

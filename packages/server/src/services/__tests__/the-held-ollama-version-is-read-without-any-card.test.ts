@@ -11,10 +11,10 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { overrideOllamaHost } from '../ollama-host.js';
+
 import { heldOllamaVersion } from '../ollama-version.js';
 import { upkeep, upkeepSettled, upkeepWhenIncomplete } from '../ollama-upkeep.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac } from './fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac, useOllamaHost } from './fake-mac.js';
 
 const db = (): Database.Database => mockDb.current!;
 let baseUrl = '';
@@ -26,11 +26,11 @@ beforeEach(async () => {
   ollama.silent = new Set(); ollama.pulls = []; ollama.installed = new Set(['nomic-embed-text:latest']); ollama.failPulls = false; ollama.refuseAllBelow035 = false;
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', ?, 'none', 1)").run(baseUrl);
   mac = fakeMac({ running: formulaServe('0.30.1', { foreign: true }), formula: '0.30.1' });
-  overrideOllamaHost(mac);
+  useOllamaHost(mac);
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null);
+  useOllamaHost(null);
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });

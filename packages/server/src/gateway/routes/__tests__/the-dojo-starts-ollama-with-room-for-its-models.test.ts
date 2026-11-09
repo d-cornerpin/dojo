@@ -15,9 +15,9 @@ vi.mock('../../../db/connection.js', () => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
 import { getOllamaLock } from '../../../services/ollama-lock.js';
-import { overrideOllamaHost } from '../../../services/ollama-host.js';
+
 import { upkeepSettled } from '../../../services/ollama-upkeep.js';
-import { fakeMac, type Mac } from '../../../services/__tests__/fake-mac.js';
+import { fakeMac, type Mac, useOllamaHost } from '../../../services/__tests__/fake-mac.js';
 
 // Setup's "start" goes through the one Ollama upkeep (a fake Mac here: nothing real runs). What setup
 // installed is started as a kind that LASTS (Homebrew's service, here), never as a child of the Dojo that dies with it, and
@@ -28,7 +28,7 @@ const start = async (): Promise<void> => { await setupDepsRouter.request('/deps/
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
-  mac = fakeMac({ running: null, formula: '0.41.0' }); overrideOllamaHost(mac);
+  mac = fakeMac({ running: null, formula: '0.41.0' }); useOllamaHost(mac);
   vi.stubGlobal('fetch', vi.fn(async () => new Response('Ollama is running', { status: 200 })));
 });
 afterEach(() => {
@@ -39,7 +39,7 @@ afterEach(() => {
       ON CONFLICT(key) DO UPDATE SET value = '1'`).run();
     getOllamaLock().reloadConfig();
   }
-  overrideOllamaHost(null); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null;
+  useOllamaHost(null); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null;
 });
 
 describe('setup starts Ollama with room for the Dojo\'s models', () => {

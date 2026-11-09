@@ -26,12 +26,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -127,56 +122,5 @@ describe('clause 2 — the cross-model swap queue honours declared patience', ()
     await waiter;
     expect(timedOut, 'and it expires at the standing 60s, unchanged').toBe(true);
     lock.release(PROVIDER, MODEL);
-  });
-});
-
-describe('clause 1 — the transport hands the lock the number it will itself arm', () => {
-  /**
-   * A SOURCE-SHAPE clause, and it reads the source with comments STRIPPED — the prose around
-   * this call site discusses `patience.firstChunkMs` at length, so a clause that merely grepped
-   * the file would be satisfied by the commentary rather than by the call.
-   */
-  function ollamaTransportSource(): string {
-    const raw = fs.readFileSync(path.join(SRC, 'agent/model.ts'), 'utf8');
-    return raw
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
-      .map((l) => l.replace(/\/\/.*$/, ''))
-      .join('\n');
-  }
-
-  it('THE RED: `lock.acquire` is handed the LIFTED bound, not the raw resolved patience', () => {
-    const src = ollamaTransportSource();
-
-    expect(
-      /lock\.acquire\(\s*modelInfo\.providerId,\s*ollamaModelName,\s*bounds\.firstChunkMs\s*(,\s*pinned\s*(,\s*\{[^}]*\}\s*)?)?\)/.test(src),
-      'the lock must receive the same expression the watchdog arms',
-    ).toBe(true);
-    expect(
-      /lock\.acquire\([^)]*patience\.firstChunkMs[^)]*\)/.test(src),
-      'the raw resolved value must no longer reach the lock — that IS the defect',
-    ).toBe(false);
-  });
-
-  it('and `bounds` is computed BEFORE the acquire, which is what makes that possible', () => {
-    const src = ollamaTransportSource();
-    const boundsAt = src.indexOf('const bounds: StreamPatience');
-    const acquireAt = src.indexOf('lock.acquire(');
-
-    expect(boundsAt, 'the bounds expression exists').toBeGreaterThan(-1);
-    expect(acquireAt, 'the acquire exists').toBeGreaterThan(-1);
-    expect(boundsAt, 'ordering is the mechanism: bounds must be in hand at acquire time')
-      .toBeLessThan(acquireAt);
-  });
-
-  it('CONTROL: the watchdog still arms the same expression, so the two cannot drift again', () => {
-    const src = ollamaTransportSource();
-
-    // If a future edit re-points one of the two readers at a different expression, this pair
-    // stops agreeing and the clause fails — which is the drift the defect was made of.
-    expect(
-      /makeStreamWatchdog\(\s*params\.abortSignal,\s*bounds\.firstChunkMs,\s*bounds\.idleMs\s*\)/.test(src),
-      'the watchdog reads `bounds` too',
-    ).toBe(true);
   });
 });

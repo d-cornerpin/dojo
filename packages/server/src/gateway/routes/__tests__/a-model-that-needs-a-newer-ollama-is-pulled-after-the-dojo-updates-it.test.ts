@@ -14,9 +14,9 @@ vi.mock('../../ws.js', () => ({ broadcast: (f: { error?: string }) => { frames.l
 
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
-import { overrideOllamaHost } from '../../../services/ollama-host.js';
+
 import { upkeepSettled } from '../../../services/ollama-upkeep.js';
-import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac } from '../../../services/__tests__/fake-mac.js';
+import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, type Mac, useOllamaHost } from '../../../services/__tests__/fake-mac.js';
 
 const MODEL = 'agent-model:7b';
 const NO_CHORES = /download|ollama\.com|quit|start it again|restart it|brew upgrade/i;
@@ -36,14 +36,14 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await upkeepSettled();
-  overrideOllamaHost(null); vi.unstubAllGlobals();
+  useOllamaHost(null); vi.unstubAllGlobals();
   await stopFakeOllama();
   mockDb.current?.close(); mockDb.current = null;
 });
 
 describe('setup\'s pull of a model that needs a newer Ollama', () => {
   it('the Dojo makes Ollama current (the same upkeep as Repair), then pulls it: no card, no chore', async () => {
-    mac = fakeMac({ running: formulaServe('0.30.1'), formula: '0.30.1' }); overrideOllamaHost(mac);
+    mac = fakeMac({ running: formulaServe('0.30.1'), formula: '0.30.1' }); useOllamaHost(mac);
     const r = await pull();
     expect(r.ok).toBe(true);
     expect(ollama.pulls).toEqual([MODEL, MODEL]);   // refused once, pulled after the update
@@ -53,7 +53,7 @@ describe('setup\'s pull of a model that needs a newer Ollama', () => {
   });
 
   it('an Ollama the Dojo truly cannot update: the plain reason on the screen, ONE card, and neither asks for a chore', async () => {
-    mac = fakeMac({ running: formulaServe('0.30.1', { foreign: true }), formula: '0.30.1' }); overrideOllamaHost(mac);
+    mac = fakeMac({ running: formulaServe('0.30.1', { foreign: true }), formula: '0.30.1' }); useOllamaHost(mac);
     const r = await pull();
     expect(r.ok).toBe(false);
     expect(r.error).toContain('it runs as another user or as the system');

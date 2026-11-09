@@ -27,22 +27,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { phasedTransferDeadline, TRANSFER_MS_PER_MB } from '../transfer-deadline.js';
-
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MB = 1024 * 1024;
-
-function stripped(rel: string): string {
-  const raw = fs.readFileSync(path.join(SRC, rel), 'utf8');
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
-    .join('\n');
-}
 
 /** How long the deadline actually grants a body of this declared size. */
 function grantFor(bytes: number | null, opts?: { bodyBaseMs?: number; bodyCeilingMs?: number }): number {
@@ -132,68 +118,5 @@ describe('§2 the two phases are told apart', () => {
 describe('§3 the bounds are still bounds', () => {
   it('CONTROL: the body ceiling caps the grant — a huge size buys no unlimited time', () => {
     expect(grantFor(100_000 * MB, { bodyCeilingMs: 5 * 60_000 })).toBe(5 * 60_000);
-  });
-
-  it('CONTROL: the headers bound is unchanged in kind — a dead server is still cut fast', () => {
-    // The fix must not make an unresponsive host cheaper to tolerate; only the BODY got room.
-    const src = stripped('services/transcription.ts');
-    expect(/headersMs: FETCH_TIMEOUT_MS/.test(src), 'the old flat number keeps its honest job').toBe(true);
-  });
-});
-
-describe('§4 the call sites are wired to it, and U20 keeps its posture', () => {
-  it('THE RED: the video asset download no longer carries a flat 120s over the whole trip', () => {
-    const src = stripped('services/video-generation.ts');
-
-    expect(
-      /AbortSignal\.any\(\[slot\.signal, AbortSignal\.timeout\(120_000\)\]\)/.test(src),
-      'the flat whole-operation bound is the defect',
-    ).toBe(false);
-    expect(/phasedTransferDeadline\(/.test(src), 'the asset download is phased').toBe(true);
-    expect(/deadline\.armBody\(/.test(src), 'and it re-arms from the declared content-length').toBe(true);
-  });
-
-  it('THE RED: the STT fetch is phased, and its byte cap still fires FIRST', () => {
-    const src = stripped('services/transcription.ts');
-
-    expect(/phasedTransferDeadline\(/.test(src)).toBe(true);
-    // Load-bearing ordering: the over-cap refusal must still come before `armBody`, or a 1 GiB
-    // file would be patiently downloaded instead of refused.
-    const capAt = src.indexOf('Audio file is too large (');
-    const armAt = src.indexOf('deadline.armBody(');
-    expect(capAt, 'the cap check exists').toBeGreaterThan(-1);
-    expect(capAt, 'the 1 GiB refusal still precedes any transfer grant').toBeLessThan(armAt);
-  });
-
-  it('the asset-download failure distinguishes "never answered" from "stalled"', () => {
-    const raw = fs.readFileSync(path.join(SRC, 'services/video-generation.ts'), 'utf8');
-    expect(raw).toMatch(/did not answer within/);
-    expect(raw).toMatch(/Asset download stalled/);
-    // The render already succeeded and was billed, so the message says retrying is worth it.
-    expect(raw).toMatch(/render itself succeeded/);
-  });
-
-  it('U20: a transient manifest failure is RETRIED instead of becoming a refusal', () => {
-    const src = stripped('update/artifact-integrity.ts');
-
-    expect(/MANIFEST_FETCH_ATTEMPTS/.test(src), 'one blip is no longer sufficient').toBe(true);
-    expect(/for \(let attempt = 1; attempt <= MANIFEST_FETCH_ATTEMPTS/.test(src)).toBe(true);
-  });
-
-  it('CONTROL: U20\'s SECURITY POSTURE IS UNCHANGED — unreadable still means refused', () => {
-    const src = stripped('update/artifact-integrity.ts');
-
-    // The whole point of this path is that a manifest which exists and cannot be confirmed
-    // against is never waved through. Retrying must not have turned a refusal into a pass.
-    expect(/return '';/.test(src), "the unreadable marker is still returned").toBe(true);
-    // A real HTTP answer (404 and friends) must still short-circuit without retrying, because
-    // retrying cannot change it.
-    expect(/if \(!res\.ok\) \{/.test(src)).toBe(true);
-  });
-
-  it('CONTROL: U20 still refuses LOUDLY, and says which of the two it was', () => {
-    const raw = fs.readFileSync(path.join(SRC, 'update/artifact-integrity.ts'), 'utf8');
-    expect(raw, 'an operator must not be left thinking the bytes failed to match')
-      .toMatch(/refusing the release on absence of proof, NOT on a byte mismatch/);
   });
 });

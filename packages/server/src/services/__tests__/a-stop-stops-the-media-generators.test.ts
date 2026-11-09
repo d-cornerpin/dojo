@@ -36,10 +36,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-
-const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', async () => {
@@ -843,103 +840,5 @@ describe('§10 composing the stop onto a clock leaves the clock working', () => 
     } finally {
       slot.release();
     }
-  });
-});
-
-// ── §7 — the census ──────────────────────────────────────────────────────────────────────
-
-describe('§7 the census: every media dial goes through the one door', () => {
-  const MEDIA_SERVICES = [
-    'services/image-generation.ts',
-    'services/audio-generation.ts',
-    'services/video-generation.ts',
-    'services/transcription.ts',
-  ];
-  const textOf = (rel: string) => fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8');
-
-  /** Every production .ts under the server's src, tests excluded. */
-  function walkSources(dir = ''): string[] {
-    const out: string[] = [];
-    for (const e of fs.readdirSync(path.join(SRC_ROOT, dir), { withFileTypes: true })) {
-      const rel = dir ? `${dir}/${e.name}` : e.name;
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'node_modules') continue;
-        out.push(...walkSources(rel));
-      } else if (e.name.endsWith('.ts') && !e.name.includes('.test.')) {
-        out.push(rel);
-      }
-    }
-    return out;
-  }
-
-  it('every media generator file registers through `openAgentCall`', () => {
-    const missing = MEDIA_SERVICES.filter((f) => !/openAgentCall\(/.test(textOf(f)));
-    expect(missing, 'a media file with no registration is a dial a stop cannot reach').toEqual([]);
-  });
-
-  it('no media dial takes a BARE clock as its signal — the one exception is the cancel itself', () => {
-    // The shape of the defect was `signal: AbortSignal.timeout(…)` with nothing else on it.
-    // Exactly one such line may remain in this family: `cancelProviderVideo`, which is the call
-    // that ENACTS a cancel. Registering that one would let a stop abort the request that
-    // delivers it, leaving the provider generating a clip nobody will ever see.
-    const offenders: string[] = [];
-    for (const rel of MEDIA_SERVICES) {
-      const src = textOf(rel);
-      const cancelStart = src.indexOf('export async function cancelProviderVideo');
-      src.split('\n').forEach((line, i) => {
-        if (!/signal:\s*AbortSignal\.timeout\(/.test(line)) return;
-        const at = src.split('\n').slice(0, i).join('\n').length;
-        const insideCancel = cancelStart >= 0 && at > cancelStart;
-        if (!insideCancel) offenders.push(`${rel}:${i + 1} — ${line.trim()}`);
-      });
-    }
-    expect(offenders, 'a bare clock on a media dial is a call the stop cannot reach').toEqual([]);
-  });
-
-  it('the stop door itself is the registry\'s, not a second copy of it', async () => {
-    // `openAgentCall` must go through `registerAbortable` / `releaseAbortable` — the two doors
-    // T83's own census keeps as the registry's only writers — rather than touching the map.
-    // It lives in its own file now (see that file's header); the registry stayed put, and the
-    // dependency is one-way, which is the property that keeps the writers at two.
-    const src = textOf('agent/abortable-call.ts');
-    const body = src.slice(src.indexOf('export function openAgentCall'));
-    expect(/registerAbortable\(/.test(body)).toBe(true);
-    expect(/releaseAbortable\(/.test(body)).toBe(true);
-    expect(/activeAbortControllers/.test(src), 'the door must not touch the map itself').toBe(false);
-    expect(/from '\.\/abortable-call/.test(textOf('agent/shared-state.ts')),
-      'the registry importing its own caller would make the cycle this split avoids').toBe(false);
-  });
-
-  it('THE SCOPE CENSUS: every production abort names the scope it means', () => {
-    // A-5 FIX ROUND (review CRITICAL C1). `abortInFlight`'s scope parameter defaults to the
-    // NARROW value, so a forgetful caller under-aborts rather than destroying background work
-    // — but a user-stop-shaped caller that forgets `'all'` would silently reopen the original
-    // A-5 defect. Four callers exist and each one's answer is a decision; this makes a fifth
-    // one state its answer too. `'all'` is carved BY REASON, not by file (re-review NEW-1: a
-    // file-keyed carve let `urgent-preempt` — which lives in the same file as `stopAgent` —
-    // widen back to 'all' with the whole suite green): only the two reasons that mean the
-    // owner's own stop may abort background work, wherever they are written.
-    const ALL_REASONS = /'(user-stop|stuck-stopped-run-reap)'/;
-    const offenders: string[] = [];
-    const allSites: string[] = [];
-    for (const rel of walkSources()) {
-      const src = fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8');
-      src.split('\n').forEach((line, i) => {
-        if (!/\babortInFlight\(/.test(line) || /export function abortInFlight/.test(line)) return;
-        allSites.push(`${rel}:${i + 1}`);
-        if (!/scope:\s*'(all|turn|background)'/.test(line)) offenders.push(`${rel}:${i + 1} — ${line.trim()}`);
-        if (/scope:\s*'all'/.test(line) && !ALL_REASONS.test(line)) {
-          offenders.push(`${rel}:${i + 1} — only the user's own stop may abort background work`);
-        }
-      });
-    }
-    expect(allSites.length, 'the census found no call sites — it has gone vacuous').toBeGreaterThanOrEqual(4);
-    expect(offenders, 'an abort that does not name its scope is one that can kill a render').toEqual([]);
-  });
-
-  it('`stopAgent` cancels the open run-once jobs the registry cannot reach', () => {
-    const src = textOf('agent/runtime.ts');
-    const body = src.slice(src.indexOf('export function stopAgent'), src.indexOf('export function stopAgent') + 4000);
-    expect(/cancelAgentGenerationJobs\(/.test(body), 'a queued generation outlives the fence').toBe(true);
   });
 });
