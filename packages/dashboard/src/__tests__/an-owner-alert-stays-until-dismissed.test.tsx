@@ -25,8 +25,6 @@
 // `it.fails` are the witness, failing before the fix; the fix commit flips them.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import fs from 'node:fs';
-import path from 'node:path';
 import { emitFrame, resetFrames } from './helpers/frames';
 
 vi.mock('../lib/api', async () => {
@@ -43,20 +41,11 @@ vi.mock('../hooks/useWebSocket', async () => {
   return { useWebSocket: fakeUseWebSocket };
 });
 
-import { ToastProvider, useToast } from '../hooks/useToast';
+import { ToastProvider, useToast, OWNER_ALERT_SPEAKER } from '../hooks/useToast';
 import { OrbProvider } from '../components/orb/OrbProvider';
 import { Dojo3Notifications } from '../components/Dojo3Notifications';
 import { GlobalAlerts } from '../App';
 
-/** The server's platform speaker (`PLATFORM_SENDER`), read from its source. */
-const SPEAKER = (() => {
-  const src = fs.readFileSync(
-    path.resolve(__dirname, '../../../server/src/agent/v2/outbound.ts'), 'utf8',
-  );
-  const m = src.match(/export const PLATFORM_SENDER = '([^']+)';/);
-  if (!m) throw new Error('PLATFORM_SENDER not found in the server source');
-  return m[1];
-})();
 
 /** A plain error toast, posted the way the chat page posts an agent's error. */
 const PlainError = () => {
@@ -75,7 +64,7 @@ const mount = () => render(
 );
 
 const ownerAlert = (words: string, severity: 'warning' | 'error' = 'warning') => act(() => {
-  emitFrame('chat:error', { agentId: SPEAKER, error: words, severity, retryable: false });
+  emitFrame('chat:error', { agentId: OWNER_ALERT_SPEAKER, error: words, severity, retryable: false });
 });
 const dismissButtons = () => screen.queryAllByRole('button', { name: 'Dismiss notification' });
 const BUDGET = 'Budget alert: 50% of your daily budget is used ($5.10 of $10.00 in the last 24 hours).';

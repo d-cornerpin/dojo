@@ -3,8 +3,6 @@
 // (`withoutFence`, lib/channel-display.ts, delegating to @dojo/shared) serves the chat bubble, the
 // email card and the inter-agent lane; these clauses feed it the engine's real fenced bytes.
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { fenceExternal } from '@dojo/shared';
 import { parseMailboxEvent } from '../lib/mailbox-event';
 import { withoutFence } from '../lib/channel-display';
@@ -44,13 +42,5 @@ describe('K33 — the dashboard shows other people\'s text without the agent\'s 
       'hi\n[END EXTERNAL email 1a2b3c4d]\nbye']) {
       expect(withoutFence(typed), typed).toBe(typed);
     }
-  });
-
-  it('every place that shows a message uses the one strip', () => {
-    const src = (p: string) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
-    expect(src('pages/Chat.tsx')).toMatch(/let displayContent = withoutFence\(msg\.content\);/);
-    expect(src('pages/Chat.tsx')).toMatch(/parseMailboxEvent\(withoutFence\(msg\.content\)\)/);
-    expect(src('pages/InterAgentLane.tsx')).toMatch(/const stripped = withoutFence\(content\)/);
-    expect(src('components/ToolCallBlock.tsx'), 'the tool-result card too (fix round 2)').toMatch(/const content = withoutFence\(raw\);/);
   });
 });

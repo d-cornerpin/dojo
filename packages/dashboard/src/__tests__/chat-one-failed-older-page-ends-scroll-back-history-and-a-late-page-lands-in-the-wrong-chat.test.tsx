@@ -41,8 +41,6 @@ import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
 import { ThemeProvider } from '../themes/ThemeProvider';
-
-const AGENT = 'primary';
 const shell = (page: ReactElement) => (
   <MemoryRouter>
     <AuthProvider><ThemeProvider><OrbProvider><ActiveAgentProvider>

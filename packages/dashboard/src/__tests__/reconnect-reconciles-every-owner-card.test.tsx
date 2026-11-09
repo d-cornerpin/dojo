@@ -87,8 +87,6 @@ const tree = () => (
 
 const BUDGET = 'Budget alert: 50% of your daily budget is used ($5.10 of $10.00 in the last 24 hours).';
 const PAUSED = 'Helper has been paused after repeated errors. Open the Vitals page to investigate, or resume it from its detail page.';
-const EXPIRED = 'Google Workspace agent\'s account (helper@example.test) connection expired. Re-authenticate in Settings > Google.';
-const dismissButtons = () => screen.queryAllByRole('button', { name: 'Dismiss notification' });
 
 beforeEach(() => {
   server.cards = [];

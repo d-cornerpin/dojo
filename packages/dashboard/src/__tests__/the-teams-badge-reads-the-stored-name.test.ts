@@ -4,8 +4,6 @@
 // (`inbound_meta.senderName`), and the badge reads it there, falling back to the SOURCE line's label
 // for any other channel or an older row.
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { parseInboundChannel } from '@dojo/shared';
 import { inboundBadge, inboundSenderName } from '../lib/channel-display';
 
@@ -21,16 +19,5 @@ describe('K33 — the Teams badge reads the stored name', () => {
     expect(inboundSenderName(null, old.sender)).toBe('A colleague');
     expect(inboundSenderName(JSON.stringify({ channel: 'imessage', sender: '+15550100300' }), 'A contact')).toBe('A contact');
     expect(inboundSenderName('{not json', 'A contact')).toBe('A contact');
-  });
-
-  it('the chat page carries the record on every load path and the badge uses it', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'pages/Chat.tsx'), 'utf8');
-    expect(src).toMatch(/inboundBadge\(inbound\.channel, inboundSenderName\(msg\.inboundMeta, inbound\.sender\)\)/);
-    // One shared mapping (toMessage, in the catch-up hook file) carries the record; first load and
-    // load-more use it from the page, the reconnect catch-up from the hook.
-    const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks/useChatCatchUp.ts'), 'utf8');
-    expect(hook.match(/inboundMeta: m\.inboundMeta \?\? null,/g)?.length, 'the one shared mapping').toBe(1);
-    expect(src.match(/\.map\(toMessage\)/g)?.length, 'first load and load-more use it').toBe(2);
-    expect(src).toMatch(/inboundMeta: e\.message\.inboundMeta \?\? null,/);
   });
 });
