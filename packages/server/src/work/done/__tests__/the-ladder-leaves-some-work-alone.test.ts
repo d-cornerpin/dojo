@@ -1,5 +1,5 @@
-// The ladder leaves alone: an owner-paused task (its clock restarts when the pause lifts), a row whose
-// worker no longer exists, a Working row already idle 14 days when the box first ran the ladder (and a
+// The ladder leaves alone: an owner-paused or timed pause (its clock restarts when the pause lifts), a Working
+// row whose worker no longer exists, a Working row already idle 14 days when the box first ran the ladder (and a
 // younger idle row's clock starts at that first run, never at its old date), a worker in a live turn, and
 // a row decided between two sweeps.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -33,6 +33,15 @@ describe('the ladder leaves some work alone', () => {
     expect(hintsTo(WORKER)).toEqual([]);
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER)).toHaveLength(1);
+  });
+
+  it('a pause the owner set on the dashboard, or one that ends at a set time, gets no hint', async () => {
+    expect(setHold(TASK, 'paused', 'paused by the owner on the dashboard', 'owner').ok).toBe(true);
+    await runLadder(Date.now() + 60 * MIN);
+    expect(clearHold(TASK, 'owner')).toBe(true);
+    expect(setHold(TASK, 'paused', 'waiting until the shop opens on Monday', WORKER, Date.now() + DAY).ok).toBe(true);
+    await runLadder(Date.now() + 60 * MIN);
+    expect(hintsTo(WORKER)).toEqual([]);
   });
 
   it('a row whose worker no longer exists is never touched', async () => {
@@ -82,6 +91,7 @@ describe('the ladder leaves some work alone', () => {
     expect(ids.map((id) => entries(id, LADDER_ENTRY.pm))).toEqual([0, 0, 0]);
     expect(cards).toEqual([]);
     await runLadder(Date.now() + 6 * MIN);
-    expect(hintsTo(WORKER).filter((h) => h.includes('An older job'))).toHaveLength(3);
+    expect(hintsTo(WORKER)).toHaveLength(1);
+    expect(ids.map((id) => [hintsTo(WORKER)[0].includes(`[${id}]`), entries(id, LADDER_ENTRY.hint)])).toEqual([[true, 1], [true, 1], [true, 1]]);
   });
 });

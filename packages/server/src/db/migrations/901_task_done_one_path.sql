@@ -52,7 +52,7 @@ SELECT id, class, from_state,
             WHEN class = 'project_abandoned' THEN 'abandoned'
             WHEN class IN ('on_deck','project_paused','project_blocked') OR from_state = 'on_deck' THEN 'open'
             ELSE from_state END,
-       hold, CASE WHEN hold IS NOT NULL THEN COALESCE(NULLIF(trim(replace(replace(entry_reason, char(10), ' '), char(13), ' ')), ''), from_state) END,
+       hold, CASE WHEN hold IS NOT NULL THEN trim(replace(replace(entry_reason, char(10), ' '), char(13), ' ')) END,
        class IN ('rehandin','rehandin_recurring'), live AND verdict_open, live AND override_open,
        class = 'rehandin_recurring',
        CASE WHEN live AND NULLIF(trim(COALESCE(goal, '')), '') IS NULL THEN
@@ -76,6 +76,21 @@ SELECT id, class, from_state,
                 THEN f.from_state END AS hold
       FROM _td_facts f
   );
+-- Every other task or project in an old state (a join piece) is mapped the same way: held Working, or Open.
+INSERT INTO _td_map
+SELECT id, state, state, CASE state WHEN 'on_deck' THEN 'open' ELSE 'claimed' END, NULLIF(state, 'on_deck'), NULL, 0, 0, 0, 0, NULL, NULL
+  FROM work WHERE kind IN ('task','project') AND root_kind NOT IN ('legacy','tracker','engine_scaffold') AND state IN ('paused','blocked','on_deck');
+-- A held row's reason is its own, unless empty or an engine string (a tool call, the dashboard door, the state name);
+-- then the last non-empty line of its notes, then a plain sentence.
+CREATE TEMP TABLE _td_note AS WITH RECURSIVE l(id, n, rest, line) AS (
+  SELECT w.id, 0, replace(w.notes, char(13), char(10)) || char(10), '' FROM work w JOIN _td_map m ON m.id = w.id
+   WHERE m.hold_kind IS NOT NULL AND w.notes IS NOT NULL
+  UNION ALL SELECT id, n + 1, substr(rest, instr(rest, char(10)) + 1), trim(substr(rest, 1, instr(rest, char(10)) - 1)) FROM l WHERE rest <> '')
+SELECT id, line, MAX(n) AS n FROM l WHERE line <> '' GROUP BY id;
+UPDATE _td_map SET hold_reason = COALESCE((SELECT line FROM _td_note n WHERE n.id = _td_map.id),
+       CASE hold_kind WHEN 'blocked' THEN 'Blocked before the upgrade; no reason recorded.' ELSE 'Paused before the upgrade; no reason recorded.' END)
+ WHERE hold_kind IS NOT NULL AND (COALESCE(hold_reason, '') = '' OR hold_reason LIKE 'work_update(%' OR hold_reason LIKE 'dashboard PUT%' OR hold_reason = from_state);
+DROP TABLE _td_note;
 
 -- 2. The census before, and the pre-image the no-wake assertions compare against.
 CREATE TEMP TABLE _td_before AS SELECT class, COUNT(*) AS n FROM _td_map GROUP BY class;
@@ -220,8 +235,9 @@ INSERT INTO work_events (work_id, kind, payload, actor, created_at)
 SELECT m.id, 'override_resolved', json_object('reason', 'upgrade: the request is answered by the one path to done'), 'migration-901', n.ms
   FROM _td_map m, _td_now n WHERE m.clear_override ORDER BY m.id;
 
--- 7. Triggers: a delivery that is a done row's evidence stays; board work reaches done or failed only
---    on an upheld decision for that outcome (the owner's own decisions write one too).
+-- 7. Triggers: a delivery that is a done row's evidence stays. Board work reaches done or failed only on an upheld
+--    decision for that outcome: a backstop per row (any such decision the row ever had passes), as the real check is
+--    the gate in work/store.ts.
 CREATE TRIGGER deliveries_done_evidence_no_delete
 BEFORE DELETE ON deliveries
 FOR EACH ROW
@@ -305,7 +321,8 @@ INSERT OR IGNORE INTO _cards SELECT 'balance:' || key, json_extract(value, '$.at
 INSERT OR IGNORE INTO _cards SELECT 'memory-low', json_extract(value, '$.at'), 'Critical: System memory below 512MB. Terminate idle sub-agents.', json_extract(value, '$.dismissedAt')
   FROM config WHERE key = 'owner_notice_memory_low' AND json_valid(value);
 INSERT OR IGNORE INTO _cards SELECT 'watcher:' || substr(c.key, 22) || ':' || w.key, json_extract(w.value, '$.at'), json_extract(w.value, '$.words'), json_extract(w.value, '$.dismissedAt')
-  FROM config c, json_each(CASE WHEN json_valid(c.value) THEN c.value ELSE '{}' END) w WHERE c.key IN ('owner_notice_watcher_gmail', 'owner_notice_watcher_outlook', 'owner_notice_watcher_teams');
+  FROM config c, json_each(CASE WHEN json_valid(c.value) THEN c.value ELSE '{}' END) w
+ WHERE c.key IN ('owner_notice_watcher_gmail', 'owner_notice_watcher_outlook', 'owner_notice_watcher_teams') AND w.type = 'object';
 INSERT OR IGNORE INTO _cards SELECT 'budget:' || id, 1000 * MAX(COALESCE(alert_50_sent, 0), COALESCE(alert_75_sent, 0), COALESCE(alert_90_sent, 0)), alert_words, alert_dismissed_at
   FROM budgets WHERE alert_words IS NOT NULL;
 INSERT OR IGNORE INTO healer_state (scope, key, at_ms, value) SELECT 'owner_told', key, COALESCE(at_ms, 0), words FROM _cards WHERE words IS NOT NULL;
@@ -322,7 +339,7 @@ DROP TABLE IF EXISTS prompt_sections;
 CREATE TEMP TABLE _td_assert (name TEXT PRIMARY KEY, ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _td_assert (name, ok) VALUES
   ('every_scoped_row_mapped_once',
-   (SELECT COUNT(*) FROM _td_map) = (SELECT COUNT(*) FROM work WHERE kind IN ('task','project') AND root_kind IN ('legacy','tracker','engine_scaffold'))),
+   (SELECT COUNT(*) FROM _td_map m JOIN _td_facts f ON f.id = m.id) = (SELECT COUNT(*) FROM work WHERE kind IN ('task','project') AND root_kind IN ('legacy','tracker','engine_scaffold'))),
   ('history_keeps_its_state',
    (SELECT COUNT(*) FROM _td_map m JOIN work w ON w.id = m.id WHERE m.from_state IN ('done','failed','abandoned') AND w.state <> m.from_state) = 0),
   ('other_rows_keep_their_states',

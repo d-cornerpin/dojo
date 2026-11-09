@@ -71,16 +71,18 @@ export function workerOfRecord(agentId: string): string {
   return a.parent_agent ?? getPrimaryAgentId();
 }
 
-/** One hint to the worker of record, which works the row from here on. */
+/** One hint to the worker of record, which works the row from here on: the owner's send-back as an engine hint in his
+ *  name, an agent decider's as its own message. */
 function sendBackHint(workId: string, title: string | null, deciderId: string, reason: string): void {
   const worker = workerOf(workId);
   const to = workerOfRecord(worker);
   if (to !== worker && writeAssignee(workId, { agentId: to }) > 0) {
     recordMove({ taskId: workId, actor: 'engine', from: worker, to: { agentId: to }, cause: 'assignee_gone', door: 'send-back' });
   }
-  sendAgentMessage(deciderId === OWNER_ID ? getPMAgentId() : deciderId, to, 'status',
-    `[Engine hint: "${title ?? workId}" [${workId}] was sent back${to !== worker ? ` (its worker ${worker} has ended, so it is yours now)` : ''}: ${reason}. `
-    + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]', { taskId: workId, event: 'sent_back' });
+  const hint = `[Engine hint: "${title ?? workId}" [${workId}] was sent back${deciderId === OWNER_ID ? ' by the owner' : ''}${to !== worker ? ` (its worker ${worker} has ended, so it is yours now)` : ''}: ${reason}. `
+    + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]';
+  if (deciderId !== OWNER_ID) sendAgentMessage(deciderId, to, 'status', hint, { taskId: workId, event: 'sent_back' });
+  else void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply({ toAgentId: to, fromAgentId: null, content: hint, taskId: workId }));
 }
 
 /** The asker of an assigned task hears the work on its thread when the worker never said anything there. */

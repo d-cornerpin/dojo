@@ -29,7 +29,7 @@ import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { continueTheJob } from './job-continues.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
-import { heldExpr } from '../../../../work/done/hold.js';
+import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
 
 const logger = createLogger('v2-loop');
 
@@ -123,7 +123,7 @@ export async function runGoingIdle(
     const openTasks = db.prepare(`
       SELECT w.id AS id, w.title AS title FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
-        AND w.state = 'claimed'
+        AND ${workingExpr('w')}
         AND w.is_paused = 0 AND NOT ${heldExpr('w')}
       ORDER BY w.updated_at DESC
       LIMIT 5
@@ -280,7 +280,7 @@ export async function runGoingIdle(
     const recurringDanglers = db.prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
-        AND w.state = 'claimed'
+        AND ${workingExpr('w')}
         AND w.is_paused = 0 AND NOT ${heldExpr('w')}
         AND w.repeat_interval IS NOT NULL
       ORDER BY w.updated_at DESC

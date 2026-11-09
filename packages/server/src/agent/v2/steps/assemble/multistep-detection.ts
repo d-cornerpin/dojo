@@ -21,6 +21,7 @@ import type { TurnContext } from '../../../turn-context.js';
 import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
 import { armStartAck, startAckDoorOpen } from './start-ack-door.js';
+import { workingExpr } from '../../../../work/done/hold.js';
 
 const logger = createLogger('v2-loop');
 
@@ -134,7 +135,7 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
         const db = getDb();
         const existingTask = db.prepare(`
           SELECT w.id AS id FROM work w
-          WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('open', 'claimed')
+          WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w', true)}
             AND w.updated_at >= ?
           LIMIT 1
         `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;

@@ -24,6 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { clearAgentLastError } from '../agent/agent-status.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
+import { workingExpr } from '../work/done/hold.js';
 import * as told from './owner-notices.js'; // once per condition, and the owner's cards
 import { brokenWords, noteNoticeOnce, readNotice } from '../agent/agent-owner-cards.js'; // t143: BROKEN
 
@@ -850,7 +851,7 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     interface StalledTask { id: string; title: string; status: string }
     const stalledTasks = db.prepare(`
       SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('claimed', 'open')
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w', true)}
       ORDER BY w.updated_at DESC LIMIT 5
     `).all(agentId) as StalledTask[];
 

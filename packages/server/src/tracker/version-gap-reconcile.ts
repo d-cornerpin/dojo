@@ -55,6 +55,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { projectScope, taskScope } from '../work/tracker-view.js';
 import { deriveProjectState, settleProject } from '../work/done/project-state.js';
+import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('version-gap');
 
@@ -107,7 +108,7 @@ export const ORPHANED_TASK_JOIN = (t = 't', a = 'a'): string =>
   `JOIN agents ${a} ON ${a}.id = ${t}.assignee_agent`;
 
 export const ORPHANED_TASK_WHERE = (t = 't', a = 'a'): string =>
-  `${taskScope(t)} AND ${t}.state IN ('claimed', 'open')`
+  `${taskScope(t)} AND ${workingExpr(t, true)}`
   + ` AND ${t}.assignee_agent IS NOT NULL AND ${a}.status = 'terminated'`;
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -181,7 +182,7 @@ export function scanVersionGap(): ReconcileScan {
       WHERE ${projectScope('p')} AND p.state IN ('done', 'failed', 'abandoned')
         AND EXISTS (
           SELECT 1 FROM work t
-          WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state IN ('claimed', 'open')
+          WHERE t.parent_id = p.id AND t.kind = 'task' AND ${workingExpr('t', true)}
         )`,
   ).all() as Row[]).map((r) => r.id));
 

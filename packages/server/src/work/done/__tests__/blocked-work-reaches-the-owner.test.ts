@@ -15,7 +15,7 @@ import { runLadder, LADDER_ENTRY } from '../ladder.js';
 import { setHold } from '../hold.js';
 import { decide } from '../decide.js';
 import { freshBoard, WORKER, TASK } from './helpers/decision-world.js';
-import { hintsTo, cards, entries, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { hintsTo, cards, entries, resetLadderWorld, anchorBack, MIN } from './helpers/ladder-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 const REASON = 'waiting for the landlord to send the signed lease';
@@ -27,7 +27,7 @@ const backdate = (ms: number): void => {
   doneDb().prepare("UPDATE _migrations SET applied_at = datetime(applied_at, ?) WHERE name LIKE '901%'").run(`-${ms / 1000} seconds`);
 };
 
-beforeEach(() => { freshBoard(); resetLadderWorld(); expect(setHold(TASK, 'blocked', REASON, WORKER).ok).toBe(true); });
+beforeEach(() => { freshBoard(); anchorBack(60 * MIN); resetLadderWorld(); expect(setHold(TASK, 'blocked', REASON, WORKER).ok).toBe(true); });
 
 describe('blocked work reaches the owner', () => {
   it('hint with the reason, then the PM, then one card for the owner', async () => {
@@ -42,7 +42,7 @@ describe('blocked work reaches the owner', () => {
     backdate(6 * MIN);
     await runLadder();
     expect(stallCards()).toHaveLength(1);
-    expect(stallCards()[0].error).toMatch(/^"Write the report" has not moved since .+\. Tried: .*a hint to its worker.*the project manager was told/);
+    expect(stallCards()[0].error).toMatch(/^"Write the report" has been blocked since .+, waiting on: waiting for the landlord to send the signed lease\. Tried: .*a hint to its worker.*the project manager was told/);
     backdate(6 * MIN);
     await runLadder();
     expect(stallCards()).toHaveLength(1);

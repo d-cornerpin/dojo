@@ -13,7 +13,7 @@ import { runLadder } from '../ladder.js';
 import { whoDecides } from '../who-decides.js';
 import { runPMReview } from '../../../tracker/pm-agent.js';
 import { freshBoard, handedIn, call, stateOf, PM, MAIN, WORKER, TASK } from './helpers/decision-world.js';
-import { hintsTo, cards, pmCanRun, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { hintsTo, cards, pmCanRun, resetLadderWorld, anchorBack, MIN } from './helpers/ladder-world.js';
 
 beforeEach(() => resetLadderWorld());
 
@@ -43,7 +43,7 @@ describe('an undecided hand-in goes to the next decider', () => {
   });
 
   it("the main agent's own task goes to the owner's card, never to the main agent", async () => {
-    freshBoard(MAIN); pmCanRun(PM);
+    freshBoard(MAIN); pmCanRun(PM); anchorBack(2 * 60 * MIN);
     await handedIn(MAIN);
     await twoReviewsWithNoVerdict();
     expect(whoDecides(TASK)).toEqual({ kind: 'owner' });
@@ -68,7 +68,7 @@ describe('an undecided hand-in goes to the next decider', () => {
   });
 
   it("three quick send-backs on the main agent's own task card the owner no sooner than 15 minutes after the hand-in", async () => {
-    freshBoard(MAIN); pmCanRun(PM);
+    freshBoard(MAIN); pmCanRun(PM); anchorBack(2 * 60 * MIN);
     for (const reason of ['The totals page is missing', 'The chart has no labels', 'The summary is cut off']) {
       await handedIn(MAIN);
       expect((await call(PM, 'work_validate', { action: 'decide', task_id: TASK, verdict: 'send_back', reason })).isError).toBe(false);

@@ -51,6 +51,21 @@ export function pmCanRun(pmId: string): void {
   doneDb().prepare("UPDATE agents SET model_id = 'm' WHERE id = ?").run(pmId);
 }
 
+/** One more Working board task of `agentId`, opened now (or `ago` ms back) with no movement since. */
+export function workingTask(id: string, agentId: string, title: string, ago = 0): string {
+  const at = Date.now() - ago;
+  doneDb().prepare(
+    `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+     VALUES (?, 'task', ?, 'owner', 'tracker', ?, 'claimed', 'task', 1, 0, ?, ?, ?)`,
+  ).run(id, agentId, id, title, at, at);
+  return id;
+}
+
+/** Move the upgrade (migration 901's applied time, the ladder's anchor) back by `ms`. */
+export const anchorBack = (ms: number): void => {
+  doneDb().prepare("UPDATE _migrations SET applied_at = datetime(applied_at, ?) WHERE name LIKE '901%'").run(`-${Math.round(ms / 1000)} seconds`);
+};
+
 /** Reset what the stand-ins recorded. */
 export function resetLadderWorld(): void {
   cards.length = 0;

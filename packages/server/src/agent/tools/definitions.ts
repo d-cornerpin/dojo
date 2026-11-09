@@ -1129,7 +1129,7 @@ export const toolDefinitions: ToolDefinition[] = [
         status: {
           type: 'string',
           enum: ['on_deck', 'in_progress', 'blocked', 'paused'],
-          description: 'action="status": the new status. "in_progress" = actively working / about to take an action this turn. "paused" = waiting on the user (already asked them), PM ignores entirely, no pokes. "blocked" = needs escalation/attention, PM surfaces this to the primary user. "on_deck" = queued, not yet started. Finished or can\'t-be-done work is not a status: it is handed in (action="hand_in"), and only the decision on the hand-in closes it.',
+          description: 'action="status": the new status. "in_progress" = actively working / about to take an action this turn. "paused" = waiting on a person (already asked them); you are reminded about it and the owner is shown what it waits on. "blocked" = needs escalation/attention, PM surfaces this to the primary user. "on_deck" = queued, not yet started. Finished or can\'t-be-done work is not a status: it is handed in (action="hand_in"), and only the decision on the hand-in closes it.',
         },
         notes: {
           type: 'string',

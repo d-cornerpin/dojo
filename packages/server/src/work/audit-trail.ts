@@ -140,9 +140,15 @@ export function readAuditTrail(
             ${jx('reason')}, NULL, 'close requested — awaiting validation', NULL, e.created_at
        FROM work_events e
       WHERE e.work_id = ? AND e.kind = 'validation_requested'`,
+    // A hand-in (outcome, note), a decision (verdict, reason, and who relayed the owner's quote) and a proof item opened.
+    `SELECT e.id, e.work_id, e.actor, e.kind, NULL, NULL, CASE e.kind WHEN 'handed_in' THEN ${jx('note')} ELSE ${jx('reason')} END,
+            CASE e.kind WHEN 'proof_opened' THEN 'opened proof item ' || ${jx('index')} WHEN 'handed_in' THEN ${jx('outcome')} ELSE ${jx('verdict')} END,
+            CASE WHEN ${jx('relayedBy')} IS NOT NULL THEN 'relayed by ' || ${jx('relayedBy')} || ', quoting the owner: "' || ${jx('quote')} || '"' END, NULL, e.created_at
+       FROM work_events e
+      WHERE e.work_id = ? AND e.kind IN ('handed_in', 'decided', 'proof_opened')`,
   ];
 
-  const params: unknown[] = [workId, workId, workId, workId];
+  const params: unknown[] = [workId, workId, workId, workId, workId];
   let sql =
     `SELECT id, task_id, from_entity, entry_kind, from_status, to_status, reason,
             action_taken, note, evidence_json,

@@ -26,6 +26,7 @@ import { taskScope } from '../work/tracker-view.js';
 import { ENGINE_SENT_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import { writeTaskLog } from './task-log.js';
+import { workingExpr } from '../work/done/hold.js';
 
 const HELD = 'delivery_held';
 const sqlList = (xs: Iterable<string>): string => [...xs].map((k) => `'${k}'`).join(', ');
@@ -72,7 +73,7 @@ export function tasksOwingADelivery(agentId: string, turnStartMs: number, picked
   try {
     const worked = (getDb().prepare(
       `SELECT DISTINCT w.id AS id FROM work w JOIN work_events e ON e.work_id = w.id
-        WHERE ${taskScope('w')} AND COALESCE(w.assignee_agent, w.agent_id) = ? AND w.state = 'claimed'
+        WHERE ${taskScope('w')} AND COALESCE(w.assignee_agent, w.agent_id) = ? AND ${workingExpr('w')}
           AND e.actor IN (?, 'agent:' || ?) AND e.created_at >= ?
           AND e.kind IN ('transition', 'validation_requested', 'opened', 'audit')`,
     ).all(agentId, agentId, agentId, turnStartMs) as Array<{ id: string }>).map((r) => r.id);

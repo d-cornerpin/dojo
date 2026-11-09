@@ -39,7 +39,7 @@ const logger = createLogger('liveness');
 
 export { DEFAULT_SILENT_WINDOW_MINUTES, silentWindowMs } from './silent-window.js';   // a leaf now (audit #14: the exec door reads it)
 import { silentWindowMs } from './silent-window.js';
-import { heldExpr } from '../work/done/hold.js';
+import { heldExpr, workingExpr } from '../work/done/hold.js';
 
 const MIN_MS = 60_000;
 const textMs = (col: string): string => `CAST(strftime('%s', ${col}) AS INTEGER) * 1000`;
@@ -135,7 +135,7 @@ interface OpenWork { id: string; title: string; updated: number; opened: number 
 function openWorkOf(agentId: string, now: number): OpenWork[] {
   return getDb().prepare(`SELECT w.id, COALESCE(w.title, w.id) AS title, w.updated_at AS updated,
         MAX(w.opened_at, COALESCE(w.last_run_at, 0), ${taskMovedAtSql('w')}) AS opened
-      FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0 AND NOT ${heldExpr('w')}
+      FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND w.is_paused = 0 AND NOT ${heldExpr('w')}
         AND (w.scheduled_start IS NULL OR w.scheduled_start <= ?) AND COALESCE(w.schedule_status, '') != 'waiting'`)
     .all(agentId, now) as OpenWork[];
 }
@@ -173,7 +173,7 @@ export function sweepSilentAgents(now = Date.now()): void {
   try {
     agents = getDb().prepare(`SELECT a.id, a.name, a.status FROM agents a WHERE a.status != 'terminated' AND (
         a.status = 'working' OR a.silent_notice IS NOT NULL OR a.broken_notice IS NOT NULL
-        OR EXISTS (SELECT 1 FROM work w WHERE ${taskScope('w')} AND w.agent_id = a.id AND w.state = 'claimed'))`)
+        OR EXISTS (SELECT 1 FROM work w WHERE ${taskScope('w')} AND w.agent_id = a.id AND ${workingExpr('w')}))`)
       .all() as Array<{ id: string; name: string; status: string }>;
   } catch (err) {
     logger.warn('liveness sweep could not read the agents', { error: err instanceof Error ? err.message : String(err) });

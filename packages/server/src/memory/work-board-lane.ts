@@ -513,7 +513,7 @@ export async function buildWorkBoardLane(agentId: string, view?: TaskListView): 
   if (tasks.length === 0) return { attemptLedger: null, activeTasks: null };
 
   // The attempt ledger keeps its own subject: the work being DONE, i.e. in-progress tasks.
-  const inProgress = tasks.filter((t) => (t.status === undefined || t.status === 'in_progress') && !t.hold);
+  const inProgress = tasks.filter((t) => t.status !== 'on_deck' && !t.hold);
   // t207 (D6): THE LEDGER TAKES THE ROOM THE ARRAY LEAVES AFTER THE LIST. The list is laid out in the whole
   // room first; whatever it leaves unspent is the ledger's, and the ledger is never offered less than its own
   // guarantee (`attemptLedgerWorstCaseTokens`, derived from the renderer). When the list wanted the whole

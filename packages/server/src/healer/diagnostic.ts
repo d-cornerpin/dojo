@@ -33,6 +33,7 @@ import { taskScope, msToText } from '../work/tracker-view.js';
 // SWEEP CORE-2 item 3 — "what counts as orphaned" has ONE definition, shared with the
 // version-gap reconciliation pass that looks for the same two shapes on a different clock.
 import { ORPHANED_TASK_WHERE, ORPHANED_TASK_JOIN } from '../tracker/version-gap-reconcile.js';
+import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('healer-diagnostic');
 
@@ -314,7 +315,7 @@ function getTrackerHealth(): DiagnosticItem[] {
            a.name as agent_name, a.status as agent_status
     FROM work t
     LEFT JOIN agents a ON a.id = t.agent_id
-    WHERE ${taskScope('t')} AND t.state = 'claimed'
+    WHERE ${taskScope('t')} AND ${workingExpr('t')}
       AND t.updated_at < ?
   `).all(Date.now() - 24 * 3600 * 1000) as Array<{ id: string; title: string; assigned_to: string | null; updated_at: string; agent_name: string | null; agent_status: string | null }>;
 
@@ -449,7 +450,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     JOIN work t ON t.agent_id = a.id AND ${taskScope('t')}
     WHERE a.status = 'idle'
       AND a.classification = 'apprentice'
-      AND t.state IN ('open', 'claimed')
+      AND ${workingExpr('t', true)}
       AND a.created_at < datetime('now', '-30 minutes')
       AND NOT EXISTS (
         SELECT 1 FROM messages m

@@ -9,6 +9,7 @@ import { appendAuditEntry } from '../audit-trail.js';
 import { patchWork } from '../tracker-store.js';
 import { noteUnsettled } from '../store.js';
 import { taskScope } from '../tracker-view.js';
+import { workingExpr } from '../terminal-states.js';
 
 export type HoldKind = 'paused' | 'blocked';
 export interface Hold { kind: HoldKind; reason: string; at: number }
@@ -25,8 +26,10 @@ export function holdOf(workId: string): Hold | null {
 export const heldExpr = (a: string, kind?: HoldKind): string =>
   kind ? `(${a}.hold_kind IS '${kind}')` : `(${a}.hold_kind IS NOT NULL)`;
 
+export { WORKING_STATES, workingExpr } from '../terminal-states.js';
+
 const holdable = (workId: string): boolean => !!getDb().prepare(
-  `SELECT 1 FROM work w WHERE w.id = ? AND w.state IN ('open','claimed','sent_back') AND ${taskScope('w')}`,
+  `SELECT 1 FROM work w WHERE w.id = ? AND ${workingExpr('w', true)} AND ${taskScope('w')}`,
 ).get(workId);
 
 /** Hold an Open or Working task. `pausedUntilMs` is when a pause lifts by itself. */

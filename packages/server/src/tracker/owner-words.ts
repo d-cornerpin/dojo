@@ -82,27 +82,28 @@ function askedAt(taskId: string, kind: string): number | null {
   return r.at;
 }
 
-/** Did the owner write `q` (normalised) in a message sent at or after `atMs`? */
-function ownerSaidSince(atMs: number, q: string): boolean {
+/** Did the owner write `q` (normalised) to `agentId` in a message sent at or after `atMs`? */
+function ownerSaidSince(atMs: number, q: string, agentId: string): boolean {
   const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
   const rows = getDb().prepare(
-    `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND sent_at >= ?`,
-  ).all(floor) as Row[];
+    `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND agent_id = ? AND sent_at >= ?`,
+  ).all(agentId, floor) as Row[];
   return saidIn(rows, q, floor);
 }
 
 // "The owner decided" is accepted only when the owner's words really appear in the conversation: agents
 // must not close jobs on their own to get out of the work, so a relayed owner decision is checked here.
 //
-// Newer than the ask: the ask is the task's own `validation_escalated` event; with no ask on record nothing verifies.
+// Newer than the ask, and written to the agent relaying it: the ask is the task's own `validation_escalated` event; with
+// no ask on record nothing verifies.
 export type OwnerQuoteProof = { ok: true } | { ok: false; why: string };
 
-export function ownerQuoteProof(taskId: string, quote: string): OwnerQuoteProof {
+export function ownerQuoteProof(taskId: string, quote: string, agentId: string): OwnerQuoteProof {
   const q = normalizeQuote(quote);
   if (!q) return { ok: false, why: 'no quote was given' };
   const at = askedAt(taskId, WORK_EVENT.validationEscalated);
   if (at === null) return { ok: false, why: 'the owner was never asked about this task' };
-  return ownerSaidSince(at, q)
+  return ownerSaidSince(at, q, agentId)
     ? { ok: true }
-    : { ok: false, why: 'the quote is not in any message the owner sent after being asked about this task' };
+    : { ok: false, why: 'the quote is not in any message the owner sent you after being asked about this task' };
 }

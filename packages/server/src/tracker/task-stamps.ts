@@ -26,6 +26,7 @@ import { relAgoFromNow, absInstant } from './task-stamp-time.js';
 // T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
 // never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
+import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('task-stamps');
 
@@ -188,7 +189,7 @@ export function stampTasksAtTurnFinalize(input: {
       `SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
           AND w.agent_id = ?
-          AND w.state IN ('claimed', 'open')
+          AND ${workingExpr('w', true)}
           AND (
             (w.source_message_id IS NOT NULL AND w.source_message_id = ?)
             OR w.origin_turn = ?

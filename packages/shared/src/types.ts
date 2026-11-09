@@ -600,6 +600,8 @@ export interface Task {
   goal: string | null;
   result: string | null;
   evidence: Array<{ kind: string; [k: string]: unknown }>;
+  /** The hand-in waiting for a decision: its outcome, note and each proof item as one line. */
+  handIn?: { outcome: 'finished' | 'cant_be_done'; note: string; proof: string[] } | null;
 }
 
 export interface CompletionAnnouncement {

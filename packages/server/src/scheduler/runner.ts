@@ -20,7 +20,7 @@ import {
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, bumpWorkAttempts } from '../work/tracker-store.js';
 import { engineHandIn } from '../work/done/hand-in.js';
-import { clearHold, heldExpr } from '../work/done/hold.js';
+import { clearHold, heldExpr, workingExpr } from '../work/done/hold.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { noteUnsettled } from '../work/store.js';
@@ -188,7 +188,7 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
     WHERE group_id = ? AND status IN ('idle', 'working') AND classification != 'sensei'
     ORDER BY
       CASE status WHEN 'idle' THEN 0 ELSE 1 END,
-      (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.agent_id = agents.id AND w.state = 'claimed') ASC
+      (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.agent_id = agents.id AND ${workingExpr('w')}) ASC
   `).all(groupId) as Array<{ id: string }>;
 
   return agents.length > 0 ? agents[0].id : null;
@@ -750,7 +750,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
           detail: { task_id: taskId, run_status: settled.runStatusRecorded },
         }, { broadcast });
       }
-      if (occRow?.agent_id) await hintOnce(taskId, occRow.agent_id, LADDER_HINT.undelivered(title), `undelivered:${runId}`);
+      if (occRow?.agent_id) await hintOnce(occRow.agent_id, [{ workId: taskId, text: LADDER_HINT.undelivered(title) }], `undelivered:${runId}`);
     } catch (err) {
       logger.warn('Scheduler: could not surface an undelivered run to the owner (non-fatal)', {
         taskId, runId, error: err instanceof Error ? err.message : String(err),

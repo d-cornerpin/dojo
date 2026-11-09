@@ -68,14 +68,14 @@ const toldWords = (key: string): string =>
 /** The stall card: what is stuck, since when, and what was tried; '' once the task is no longer waiting. */
 function stallWords(workId: string): string {
   const db = getDb();
-  const w = db.prepare(`SELECT title, state, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), ${taskMovedAtSql('w')}) AS since
-    FROM work w WHERE w.id = ? AND w.state IN ('claimed', 'sent_back', 'handed_in')`).get(workId) as { title: string | null; state: string; since: number } | undefined;
+  const w = db.prepare(`SELECT title, state, hold_kind, hold_reason, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), ${taskMovedAtSql('w')}) AS since
+    FROM work w WHERE w.id = ? AND w.state IN ('claimed', 'sent_back', 'handed_in')`).get(workId) as { title: string | null; state: string; hold_kind: string | null; hold_reason: string | null; since: number } | undefined;
   if (!w) return '';
   const tried = db.prepare(`SELECT json_extract(payload, '$.entry_kind') AS k, COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND created_at >= ?
     AND json_extract(payload, '$.entry_kind') IN (${Object.keys(STALL_TRIED).map((k) => `'${k}'`).join(', ')}) GROUP BY k`).all(workId, w.since) as Array<{ k: string; n: number }>;
-  const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : 'has not moved';
+  const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : w.hold_kind ? `has been ${w.hold_kind}` : 'has not moved';
   const triedWords = tried.length > 0 ? tried.map((t) => `${STALL_TRIED[t.k]}${t.n > 1 ? ` (${t.n} times)` : ''}`).join(', ') : 'nothing yet';
-  return `"${w.title ?? workId}" ${what} since ${msToUtcText(w.since)}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
+  return `"${w.title ?? workId}" ${what} since ${msToUtcText(w.since)}${w.hold_kind ? `, waiting on: ${w.hold_reason ?? ''}` : ''}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
 }
 /** "The limit is reached" for one budget window (`global_daily` or `agent_<id>`); the words never name an agent. */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
@@ -105,18 +105,22 @@ export function wordsOf(key: string): string {
     : '';
 }
 
-/** Tell the owner `words` under `key`; true on the first telling (of the key, or of any key under `family`), when a
- *  caller that also texts him texts. The same words change nothing; new words replace the card live and lift a dismissal. */
 /** The owner's standing rule, held where every told sentence is stored: no em-dash reaches him. */
 const noEmDash = (sentence: string): string => sentence.replace(/\s*\u2014\s*/g, ', ');
 
+/** Tell the owner `words` under `key`; true on the first telling (of the key, or of any key under `family`), when a
+ *  caller that also texts him texts. The same words (or a stored row with none) change nothing; new words replace the
+ *  card live and lift a dismissal. */
 export function tellOwner(key: string, sentence: string, family?: string): boolean {
   const words = noEmDash(sentence);
   try {
     const db = getDb();
     const first = !db.prepare(`SELECT 1 FROM healer_state WHERE scope = ? AND (key = ? OR (? IS NOT NULL AND key LIKE ? || '%'))`).get(TOLD, key, family ?? null, family ?? null);
     const row = db.prepare('SELECT value FROM healer_state WHERE scope = ? AND key = ?').get(TOLD, key) as { value: string | null } | undefined;
-    if (!first && (row === undefined || row.value === words)) return false;
+    if (!first && (row === undefined || row.value === null || row.value === words)) {
+      if (row?.value === null) db.prepare('UPDATE healer_state SET value = ? WHERE scope = ? AND key = ?').run(words, TOLD, key);
+      return false;
+    }
     db.prepare(`INSERT INTO healer_state (scope, key, at_ms, value) VALUES (?, ?, ?, ?)
                 ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(TOLD, key, Date.now(), words);
     db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(DISMISSED, key);

@@ -1,5 +1,6 @@
-// The owner decides by dashboard button or by his own verified words. A made-up quote is refused; his
-// real reply after he was asked is applied. Cancel is the owner's alone.
+// The owner decides by dashboard button or by his own verified words. A made-up quote, or one he wrote to another
+// agent, is refused; his real reply to the relaying agent after he was asked is applied, and the decision records who
+// relayed it and the quote. Cancel is the owner's alone.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -8,7 +9,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { appendWorkEvent } from '../../store.js';
-import { freshBoard, handedIn, call, stateOf, MAIN, WORKER, TASK } from './helpers/decision-world.js';
+import { freshBoard, handedIn, call, stateOf, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 /** The main agent's own task, past the PM: the owner decides it, and he was asked. */
@@ -18,7 +19,7 @@ async function ownersToDecide(): Promise<void> {
   appendWorkEvent(TASK, 'validation_escalated', 'scheduler', { thread_id: null });
 }
 
-const OWNER_ROW = { lane: 'owner', role: 'user', channel: 'dashboard', source_agent_id: null as string | null,
+const OWNER_ROW = { agent: MAIN, lane: 'owner', role: 'user', channel: 'dashboard', source_agent_id: null as string | null,
   inbound_meta: JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }) as string | null, at: 1000 };
 
 function ownerSays(content: string, over: Partial<typeof OWNER_ROW> = {}): void {
@@ -27,7 +28,7 @@ function ownerSays(content: string, over: Partial<typeof OWNER_ROW> = {}): void 
   doneDb().prepare(
     `INSERT INTO messages (id, agent_id, conversation_id, lane, role, content, channel, source_agent_id, authorized, inbound_meta, sent_at, created_at)
      VALUES (?, ?, 'conv-owner', ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-  ).run(`m-${Math.random()}`, MAIN, r.lane, r.role, content, r.channel, r.source_agent_id, r.inbound_meta, at, at);
+  ).run(`m-${Math.random()}`, r.agent, r.lane, r.role, content, r.channel, r.source_agent_id, r.inbound_meta, at, at);
 }
 
 const relay = (quote: string, verdict = 'approve') =>
@@ -49,6 +50,7 @@ describe('the owner decides by button or by his own words', () => {
     ['an A2A message from another agent', { source_agent_id: 'some-agent', lane: 'a2a', inbound_meta: null }],
     ['a contact who is not the owner', { channel: 'imessage', inbound_meta: JSON.stringify({ channel: 'imessage', sender: '+15550100', authorized: true }) }],
     ['the owner\'s own message from before he was asked', { at: -120_000 }],
+    ['the owner\'s words to another agent', { agent: OTHER }],
   ] as const) {
     it(`approve quoting ${why} is refused`, async () => {
       await ownersToDecide();
@@ -64,6 +66,17 @@ describe('the owner decides by button or by his own words', () => {
     const r = await relay('yes, the report is fine');
     expect(r.isError).toBe(false);
     expect(stateOf()).toBe('done');
+  });
+
+  it('a relayed decision records who relayed it and the quote, and the trail shows both', async () => {
+    await ownersToDecide();
+    ownerSays('Yes, the report is fine.');
+    expect((await relay('Yes, the report is fine.')).isError).toBe(false);
+    const decided = doneDb().prepare("SELECT actor, payload FROM work_events WHERE work_id = ? AND kind = 'decided'").get(TASK) as { actor: string; payload: string };
+    expect(decided.actor).toBe('user');
+    expect(JSON.parse(decided.payload)).toMatchObject({ verdict: 'approve', relayedBy: MAIN, quote: 'Yes, the report is fine.' });
+    const log = await (await trackerRouter.request(`/tasks/${TASK}/log`)).json() as { data: Array<{ entryKind: string; note: string | null }> };
+    expect(log.data.find((e) => e.entryKind === 'decided')?.note).toBe(`relayed by ${MAIN}, quoting the owner: "Yes, the report is fine."`);
   });
 
   it('a worker relaying the owner\'s "Thanks" on its own open task is refused: there is no hand-in and no ask', async () => {

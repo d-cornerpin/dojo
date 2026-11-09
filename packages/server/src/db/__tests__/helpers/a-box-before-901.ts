@@ -59,6 +59,7 @@ export interface RowSpec {
   root?: string; parent?: string; idleDays?: number; recurring?: boolean; nextRunAt?: number | null; isPaused?: 0 | 1;
   scheduleStatus?: string | null; title?: string | null; goal?: string | null; description?: string | null;
   measured?: boolean; sequence?: number; scheduledStart?: number | null; missedRunsPausedAt?: number | null; pausedUntil?: number | null;
+  notes?: string;
 }
 
 /** One old-shape row. A terminal row is closed on its own delivery when it is done. */
@@ -68,15 +69,15 @@ export function seedRow(s: RowSpec, now = Date.now()): string {
   doneDb().prepare(
     `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread,
        title, goal, description, opened_at, updated_at, closed_at, result_delivery_id, repeat_interval, repeat_unit,
-       schedule_status, next_run_at, is_paused, measure_json, sequence, scheduled_start, missed_runs_paused_at, paused_until)
-     VALUES (?, ?, ?, ?, 'owner', ?, ?, ?, 'task', 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       schedule_status, next_run_at, is_paused, measure_json, sequence, scheduled_start, missed_runs_paused_at, paused_until, notes)
+     VALUES (?, ?, ?, ?, 'owner', ?, ?, ?, 'task', 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     s.id, s.kind ?? 'task', s.parent ?? null, s.worker ?? MAIN, s.root ?? 'tracker', s.id, s.state,
     s.title === undefined ? `Job ${s.id}` : s.title, s.goal === undefined ? 'The owner has it' : s.goal, s.description ?? null,
     at, at, terminal ? at : null, s.state === 'done' ? delivery(s.worker) : null,
     s.recurring ? 1 : null, s.recurring ? 'day' : null, s.scheduleStatus ?? (s.recurring ? 'waiting' : null),
     s.nextRunAt ?? null, s.isPaused ?? 0, s.measured ? '{"kind":"label","target":0}' : null, s.sequence ?? null,
-    s.scheduledStart ?? null, s.missedRunsPausedAt ?? null, s.pausedUntil ?? null,
+    s.scheduledStart ?? null, s.missedRunsPausedAt ?? null, s.pausedUntil ?? null, s.notes ?? null,
   );
   event(s.id, 'opened', {}, at, s.worker ?? MAIN);
   return s.id;
@@ -121,6 +122,11 @@ export function seedLivedInBox(now = Date.now()): Record<string, string[]> {
   put('on_deck', { id: 't-missed-runs', state: 'on_deck', worker: HELPER, recurring: true, nextRunAt: now - 5 * DAY, isPaused: 1, scheduleStatus: 'paused', missedRunsPausedAt: now - 2 * DAY });
   put('on_deck', { id: 't-future-one-off', state: 'on_deck', scheduledStart: now + 2 * DAY });
   put('paused', { id: 't-paused-until', state: 'paused', pausedUntil: now + DAY });
+  enter(put('blocked', { id: 't-blocked-tool-reason', state: 'blocked', notes: 'Started the draft.\nwaiting for the vendor quote\n\n' }),
+    'claimed', 'blocked', 'work_update(action="status") -> blocked', t);
+  enter(put('blocked', { id: 't-blocked-dashboard', state: 'blocked' }), 'claimed', 'blocked', 'dashboard PUT /tracker/tasks/:id', t);
+  enter(put('paused', { id: 't-paused-named', state: 'paused' }), 'claimed', 'paused', 'paused', t);
+  put('paused', { id: 't-piece-paused', state: 'paused', root: 'a2a_thread', worker: HELPER });
   for (const [cls, state] of [['paused', 'paused'], ['blocked', 'blocked']]) {
     const id = put(cls, { id: `t-${state}-pm-confirmed`, state });
     event(id, 'validation_requested', { requested_state: state, reason: 'confirm the hold', from: 'claimed' }, t - 1000);

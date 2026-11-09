@@ -31,6 +31,7 @@ import { getDb } from '../db/connection.js';
 import { runCarriesJob, jobCarriedOrigin } from './task-freshness.js';
 import { turnContext } from '../agent/turn-context.js';
 import { taskScope } from './tracker-view.js';
+import { workingExpr } from './done/hold.js';
 
 /** The request a job started from. */
 export type JobOrigin =
@@ -115,7 +116,7 @@ export function parkOrigin(agentId: string, named: string[], served: string[]): 
     const fromNamed = originOfTasks(agentId, named);
     if (fromNamed) return fromNamed;
     const held = getDb().prepare(
-      `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'`,
+      `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')}`,
     ).all(agentId) as Array<{ id: string }>;
     const origins = held.map((h) => originOfTasks(agentId, [h.id])).filter((o): o is JobOrigin => o !== null);
     return origins.length > 0 && origins.every((o) => sameOrigin(o, origins[0])) ? origins[0] : null;

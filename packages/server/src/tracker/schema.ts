@@ -32,7 +32,9 @@ import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 import type { Plan } from '../work/plan.js';
-import { heldExpr } from '../work/done/hold.js';
+import { heldExpr, workingExpr } from '../work/done/hold.js';
+import { latestHandIn } from '../work/done/record.js';
+import { proofLines } from '../work/done/proof.js';
 
 const logger = createLogger('tracker-schema');
 
@@ -139,6 +141,7 @@ function mapTaskRow(row: TaskRow): Task {
   }
 
   const assignee = assigneeOf(row.assigned_to, row.worker_id);
+  const handIn = row.status === 'handed_in' ? latestHandIn(row.id) : null;
   return {
     id: row.id,
     projectId: row.project_id,
@@ -178,6 +181,7 @@ function mapTaskRow(row: TaskRow): Task {
     goal: row.goal ?? null,
     result: row.result ?? null,
     evidence: parseEvidence(row.evidence_json),
+    handIn: handIn ? { outcome: handIn.outcome, note: handIn.note, proof: proofLines(handIn.items) } : null,
   };
 }
 
@@ -850,6 +854,8 @@ function taskListWhere(filter?: TaskListFilter): { conditions: string[]; params:
   }
   if (filter?.status === 'paused' || filter?.status === 'blocked') {
     conditions.push(heldExpr('work', filter.status));   // a hold, not a state
+  } else if (filter?.status === 'in_progress') {
+    conditions.push(workingExpr('work'));   // Working: claimed or sent back
   } else if (filter?.status) {
     conditions.push('work.state = ?');
     params.push(statusToState(filter.status));

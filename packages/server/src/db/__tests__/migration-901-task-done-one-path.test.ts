@@ -66,7 +66,11 @@ describe('migration 901 on a lived-in box', () => {
     }
     expect(work('t-blocked-reason').hold_reason).toBe("waiting on the owner's login");
     expect(work('t-blocked-unvalidated').hold_reason).toBe('the venue is closed on weekends');
-    expect(work('t-blocked-bare').hold_reason).toBe('blocked');
+    expect(work('t-blocked-bare').hold_reason).toBe('Blocked before the upgrade; no reason recorded.');
+    expect(work('t-blocked-tool-reason').hold_reason).toBe('waiting for the vendor quote');
+    expect(work('t-blocked-dashboard').hold_reason).toBe('Blocked before the upgrade; no reason recorded.');
+    expect(work('t-paused-named').hold_reason).toBe('Paused before the upgrade; no reason recorded.');
+    expect(work('t-piece-paused')).toMatchObject({ state: 'claimed', hold_kind: 'paused', hold_reason: 'Paused before the upgrade; no reason recorded.' });
     expect(work('t-paused-step').hold_at).toBe(old('t-paused-step').updated_at);
     expect(work('t-paused-until').paused_until).toBe(old('t-paused-until').paused_until);
     for (const id of ['t-paused-pm-confirmed', 't-blocked-pm-confirmed']) expect(entriesOf(id, 'upgrade_rehandin_hint'), id).toHaveLength(0);

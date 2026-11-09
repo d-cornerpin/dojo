@@ -109,7 +109,7 @@ beforeEach(() => {
 
 const PM = 'pm-agent-x';
 function seedPM(): void {
-  db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
+  db().prepare(`INSERT OR IGNORE INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
     VALUES (?, 'PM', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(PM);
 }
 
@@ -200,9 +200,11 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   const awaiting = (id: string): boolean => (db().prepare(
     "SELECT (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_requested') > COALESCE((SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_cleared'), -1) AS a",
   ).get(id, id) as { a: number }).a === 1;
+  /** The owner writes to the PM, the agent that relays his words here. */
   const ownerSays = (content: string, over: Record<string, unknown> = {}): void => {
+    seedPM();
     const row = {
-      id: `m-${Math.random()}`, agent_id: AGENT, conversation_id: 'conv-owner', lane: 'owner', role: 'user', content,
+      id: `m-${Math.random()}`, agent_id: PM, conversation_id: 'conv-owner', lane: 'owner', role: 'user', content,
       channel: 'dashboard', authorized: 1, provenance: 'live', display_kind: 'unclassified', display_tier: 'user-visible',
       inbound_meta: JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }),
       ...over,

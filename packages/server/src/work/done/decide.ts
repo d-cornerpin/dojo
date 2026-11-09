@@ -8,7 +8,8 @@
 //   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns the row
 //     to Open for its next run, and a send-back is a hint to the worker.
 // The owner decides from the dashboard (decider null), or approves or sends back a hand-in he was
-// asked about by his own words relayed by an agent, verified against his messages (`ownerQuoteProof`).
+// asked about by his own words to the relaying agent, verified against his messages (`ownerQuoteProof`); the decision
+// records who relayed them and the quote.
 // One unit per row (`applyDecision`): the adjudication, the `decided` event and the transition with
 // `claim: 'decided'`, then the decision's effects (`effects.ts`). A project that ends closes each of its
 // open tasks the same way.
@@ -60,7 +61,7 @@ function deciderOf(input: DecideInput, state: WorkState): Who | { refused: strin
   if (!handIn || !ownerAskSinceHandIn(input.workId, handIn.eventId) || (input.verdict !== 'approve' && input.verdict !== 'send_back')) {
     return { refused: 'the owner\'s relayed words decide only a hand-in he was asked about, and only to approve or send it back. Nothing changed.' };
   }
-  const proof = ownerQuoteProof(input.workId, input.ownerQuote);
+  const proof = ownerQuoteProof(input.workId, input.ownerQuote, input.deciderAgentId);
   return proof.ok ? { owner: true } : { refused: `the owner's words could not be verified: ${proof.why}. Nothing changed.` };
 }
 
@@ -84,7 +85,7 @@ function settleOn(workId: string, decider: string): string | null {
   return delivered ?? deliveryIdOf(recordDecisionReceipt(workId, decider === OWNER_ID ? 'The owner' : `Agent ${decider}`, 'a decision on its hand-in'));
 }
 
-interface Applied { verdict: Verdict; reason: string; deciderId: string; by: Actor; outcome: 'finished' | 'cant_be_done'; run: boolean }
+interface Applied { verdict: Verdict; reason: string; deciderId: string; by: Actor; outcome: 'finished' | 'cant_be_done'; run: boolean; relay?: { relayedBy: string; quote: string } }
 
 /** One row moved by a decision, as one unit, then the decision's effects. */
 function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): WorkOutcome {
@@ -93,7 +94,7 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
     const resultDeliveryId = to === 'done' ? settleOn(id, p.deciderId) : null;
     const rejected = p.verdict === 'send_back';
     recordAdjudication(id, rejected || p.run ? (p.outcome === 'finished' ? 'done' : 'failed') : to, p.deciderId, resultDeliveryId, p.reason, rejected ? 'rejected' : 'upheld');
-    decisionId = appendWorkEvent(id, 'decided', p.deciderId, { verdict: p.verdict, reason: p.reason, to });
+    decisionId = appendWorkEvent(id, 'decided', p.deciderId, { verdict: p.verdict, reason: p.reason, to, ...p.relay });
     return transition(id, {
       to, by: p.by, actorId: p.deciderId, reason: `${p.verdict}: ${p.reason}`, expectedState: from,
       claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
@@ -132,7 +133,8 @@ export function decide(input: DecideInput): DecideResult {
   const run = last?.scope === 'run' && (input.verdict === 'approve' || input.verdict === 'send_back');
   const to: WorkState = run ? 'open' : input.verdict === 'send_back' ? 'sent_back' : input.verdict === 'cancel' ? 'abandoned'
     : input.verdict === 'owner_done' || outcome === 'finished' ? 'done' : 'failed';
-  const p = { verdict: input.verdict, reason, deciderId, by, outcome, run };
+  const relay = who.owner && input.deciderAgentId !== null ? { relayedBy: input.deciderAgentId, quote: input.ownerQuote ?? '' } : undefined;
+  const p = { verdict: input.verdict, reason, deciderId, by, outcome, run, relay };
   const moved = applyDecision(row.id, row.state, to, p);
   if (moved.kind !== 'applied') return refused(`${name} could not move to ${to}: ${moved.detail}.`);
   if (input.verdict === 'owner_done') recordOwnerRemainder(row.id);

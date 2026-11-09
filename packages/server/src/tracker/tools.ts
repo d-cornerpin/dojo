@@ -41,7 +41,7 @@ import { taskWriteRefusal } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
-import { setHold, clearHold, holdOf } from '../work/done/hold.js';
+import { setHold, clearHold, holdOf, workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('tracker-tools');
 
@@ -236,7 +236,7 @@ function findRecentNearDuplicateProject(
   const engineAuto = rootMatch ?? db.prepare(`
     SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
     WHERE ${engineScaffoldScope('w')} AND w.requester_id = ?
-      AND w.state IN ('open', 'claimed')
+      AND ${workingExpr('w', true)}
       AND w.opened_at >= ?
     ORDER BY w.opened_at DESC
     LIMIT 1
@@ -246,7 +246,7 @@ function findRecentNearDuplicateProject(
     const createdMs = new Date(engineAuto.created_at.includes('Z') ? engineAuto.created_at : engineAuto.created_at + 'Z').getTime();
     const firstOpen = db.prepare(`
       SELECT w.id AS id, w.title AS title FROM work w
-      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'open')
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND ${workingExpr('w', true)}
       ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
       LIMIT 1
     `).get(engineAuto.id) as { id: string; title: string } | undefined;
@@ -289,7 +289,7 @@ function findRecentNearDuplicateProject(
       const createdMs = new Date(row.created_at.includes('Z') ? row.created_at : row.created_at + 'Z').getTime();
       const firstOpen = db.prepare(`
         SELECT w.id AS id, w.title AS title FROM work w
-        WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'open')
+        WHERE ${taskScope('w')} AND w.parent_id = ? AND ${workingExpr('w', true)}
         ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
         LIMIT 1
       `).get(row.id) as { id: string; title: string } | undefined;
@@ -590,7 +590,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         WHERE ${taskScope('w')} AND w.requester_id = ?
           AND LOWER(w.title) = LOWER(?)
           AND COALESCE(w.assignee_agent, '') = COALESCE(?, '')
-          AND w.state IN ('open', 'claimed')
+          AND ${workingExpr('w', true)}
           AND w.opened_at >= ?
         ORDER BY w.opened_at DESC
         LIMIT 1
@@ -609,7 +609,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         const recent = db.prepare(`
           SELECT w.id AS id, w.title AS title, substr(w.id, 1, 8) as id8 FROM work w
           WHERE ${taskScope('w')} AND w.requester_id = ?
-            AND w.state IN ('open', 'claimed')
+            AND ${workingExpr('w', true)}
             AND w.opened_at >= ?
           ORDER BY w.opened_at DESC
           LIMIT 20
@@ -2313,19 +2313,9 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
 const REDRIVE_LATER = ' The directive could not be delivered just now (it is logged); the task is back in play and the PM sweep re-drives it on its schedule.';
 
 // ── trackerRetask ──
-//
-// PM-only forward-leaning verb. Use when an agent's outcome on a task is
-// wrong (work skipped, channel wrong, evidence missing, claim doesn't
-// match goal) and you want them to redo it with specific guidance, 
-// instead of just confirming a pause or rejecting a complete.
-//
-// Works from any status except 'cancelled'. Resets validation flags so
-// the engine treats the next pass as fresh. Increments revert_count
-// (this is functionally a PM revert). Delivers the directive over A2A
-// to the assigned agent. May trigger stalemate if PM and agent are
-// ping-ponging the same task.
-//
-// Required: directive >= 30 chars so PM can't fire a one-liner.
+// PM-only: an open task's worker is told to redo it with a directive (at least 30 characters). Refused on a
+// cancelled task, a handed-in one (that is decided instead) and one with no worker. Moves the task to in_progress
+// or on_deck through `transition()`, logs the directive on its trail, and wakes the worker with it, owing no reply.
 
 export async function trackerRetask(
   pmAgentId: string,

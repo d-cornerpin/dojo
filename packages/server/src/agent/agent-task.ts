@@ -3,6 +3,7 @@
 import { getDb } from '../db/connection.js';
 import { taskScope } from '../work/tracker-view.js';
 import { createLogger } from '../logger.js';
+import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('spawner');
 
@@ -17,7 +18,7 @@ export function resolveAgentTaskId(agentId: string, link?: string | null): strin
     const candidates = db.prepare(`
       SELECT w.id AS id FROM work w
        WHERE ${taskScope('w')} AND w.agent_id = ?
-         AND w.state IN ('open','claimed')
+         AND ${workingExpr('w', true)}
     `).all(agentId) as Array<{ id: string }>;
     if (candidates.length === 1) {
       resolvedTaskId = candidates[0].id;

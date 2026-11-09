@@ -186,6 +186,12 @@ export const TaskDetailPanel = ({
             {task.status === 'handed_in' && (
               <div className="mt-2 glass-nested rounded-lg p-2 border border-cp-amber/30">
                 <div className="text-xs text-cp-amber mb-1">Handed in: waiting for a decision</div>
+                {task.handIn && (
+                  <div className="text-xs text-ui/70 mb-2 space-y-1">
+                    <div className="whitespace-pre-wrap">{task.handIn.outcome === 'finished' ? 'Finished' : "Can't be done"}: {task.handIn.note}</div>
+                    {task.handIn.proof.map((line, i) => <div key={i} className="whitespace-pre-wrap">{i + 1}. {line}</div>)}
+                  </div>
+                )}
                 <input
                   value={decisionReason}
                   onChange={(e) => setDecisionReason(e.target.value)}

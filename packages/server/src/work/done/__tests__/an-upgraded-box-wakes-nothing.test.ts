@@ -1,6 +1,6 @@
 // An upgraded box wakes nothing: right after 901 the ladder's sweep and the PM's review send no hint, mark,
 // card, text or turn. A row idle under 14 days is clocked from the upgrade, so it is hinted one bound later;
-// a row idle 14 days or more, or whose worker is gone, is never touched, however long the box runs.
+// a row held at the upgrade, idle 14 days or more, or whose worker is gone, is never touched, however long the box runs.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -66,12 +66,14 @@ describe('an upgraded box wakes nothing', () => {
     expect(messages()).toBe(sent);
   });
 
-  it('a row idle under 14 days is hinted one bound after the upgrade; one idle 14 days or more, or whose worker is gone, never', async () => {
+  it('a row idle under 14 days is hinted one bound after the upgrade; one held then, idle 14 days or more, or whose worker is gone, never', async () => {
     upgrade();
     await runLadder(Date.now() + 2 * 60_000);
     expect(hintsTo(FRESH)).toEqual([]);
     await runLadder(Date.now() + DAY);
-    expect(hintsTo(FRESH)).toHaveLength(2);
+    expect(hintsTo(FRESH)).toHaveLength(1);
+    expect(hintsTo(FRESH)[0]).toContain('[young-claimed]');
+    expect(hintsTo(FRESH)[0]).not.toContain('[young-blocked]');
     for (const later of [2 * DAY, 30 * DAY]) await runLadder(Date.now() + later);
     quiet([OLD, GONE, DELETED]);
   });

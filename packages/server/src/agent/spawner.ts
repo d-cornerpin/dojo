@@ -18,7 +18,7 @@ import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
-import { setHold, heldExpr } from '../work/done/hold.js';
+import { setHold, heldExpr, workingExpr } from '../work/done/hold.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -565,7 +565,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
   try {
     const danglers = db.prepare(`
       SELECT w.id AS id FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')}
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND NOT ${heldExpr('w')}
     `).all(agentId) as Array<{ id: string }>;
     const why = `assigned agent "${agent.name}" was terminated (${reason ?? 'manual'}); reassign or close it from the dashboard`;
     for (const dt of danglers) {
@@ -814,7 +814,7 @@ export async function completeAgent(
     const items = resolvedTaskId ? (latestHandIn(resolvedTaskId)?.items ?? []).map(({ kind, ref }) => ({ kind, ref })) : [];
     const danglers = db.prepare(`
       SELECT w.id AS id, w.parent_id AS project_id, w.source_message_id AS source_message_id FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')} AND w.id != COALESCE(?, '')
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND NOT ${heldExpr('w')} AND w.id != COALESCE(?, '')
     `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; project_id: string | null; source_message_id: string | null }>;
     for (const dt of danglers) {
       const sameWork = !!primary && ((dt.project_id !== null && dt.project_id === primary.project_id)

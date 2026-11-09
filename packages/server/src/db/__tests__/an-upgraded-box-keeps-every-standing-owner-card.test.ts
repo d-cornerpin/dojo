@@ -26,7 +26,7 @@ beforeEach(() => {
   db.prepare("UPDATE agents SET status = 'paused' WHERE id = ?").run(SENSEI);
   db.prepare("INSERT INTO error_loop_state (agent_id, kind, at_ms) VALUES (?, 'paused', ?)").run(SENSEI, Date.now());
   db.prepare("INSERT INTO config (key, value) VALUES ('openrouter_threshold_alerted', ?), ('owner_notice_memory_low', ?), ('owner_notice_watcher_gmail', ?)")
-    .run(notice('The balance is at its warning line.'), JSON.stringify({ at: Date.now() }), JSON.stringify({ 'g-2': { at: Date.now(), words: 'Gmail watching has been failing.' } }));
+    .run(notice('The balance is at its warning line.'), JSON.stringify({ at: Date.now() }), JSON.stringify({ 'g-2': { at: Date.now(), words: 'Gmail watching has been failing.' }, 'g-3': 'not a card' }));
   db.prepare("UPDATE budgets SET alert_90_sent = ?, alert_words = 'Spend is at 90% of the daily limit.' WHERE id = 'global_daily'").run(nowS);
 });
 

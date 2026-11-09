@@ -1,12 +1,15 @@
 // A send-back reaches someone who can act on it: the worker, or, when the worker was a helper that has
-// ended, the agent that spawned it, else the main agent. That agent becomes the row's worker.
+// ended, the agent that spawned it, else the main agent. That agent becomes the row's worker. The owner's
+// send-back reaches it as his, never as a message from the project manager.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../../agent/runtime.js', async () => (await import('./helpers/ladder-world.js')).runtimeMock());
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { workerOf } from '../record.js';
+import { decide } from '../decide.js';
 import { freshBoard, handedIn, call, stateOf, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 
@@ -37,6 +40,16 @@ describe('a send-back reaches the worker of record', () => {
     expect(hintTo(OTHER)).toContain('it is yours now');
     expect(hintTo(WORKER)).toBeUndefined();
     expect(workerOf(TASK)).toBe(OTHER);
+  });
+
+  it('the owner\'s send-back says it is his, and the project manager sends nothing', async () => {
+    freshBoard();
+    await handedIn();
+    expect(decide({ workId: TASK, deciderAgentId: null, verdict: 'send_back', reason: 'The totals page is missing' }).kind).toBe('decided');
+    await vi.waitFor(() => expect(doneDb().prepare(
+      "SELECT content FROM messages WHERE agent_id = ? AND source_agent_id IS NULL AND content LIKE '%was sent back by the owner: The totals page is missing%'",
+    ).get(WORKER)).toBeTruthy());
+    expect(hintTo(WORKER)).toBeUndefined();
   });
 
   it('an ended helper with no parent: the main agent gets it', async () => {

@@ -26,7 +26,7 @@ import { noteTurnCalls } from '../../../../work/job-momentum.js';
 import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
 import type { ToolEffect } from '../../../tools/types.js';
 import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
-import { heldExpr } from '../../../../work/done/hold.js';
+import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
 
 /**
  * The agent's CURRENT claimed task, the one this iteration's work calls are booked to; `null` when
@@ -43,7 +43,7 @@ import { heldExpr } from '../../../../work/done/hold.js';
 export function resolveCurrentClaimedTaskId(agentId: string): string | null {
   const row = getDb().prepare(
     `SELECT w.id AS id FROM work w
-     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')}
+     WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND NOT ${heldExpr('w')}
      ORDER BY ${workingTaskOrder('w')} LIMIT 1`,
   ).get(agentId) as { id: string } | undefined;
   return row?.id ?? null;

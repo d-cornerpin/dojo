@@ -15,11 +15,11 @@ import { runPMReview } from '../../../tracker/pm-agent.js';
 import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 import { dismissOwnerNotice } from '../../../healer/owner-notices.js';
 import { freshBoard, handedIn, eventCount, PM, MAIN, TASK } from './helpers/decision-world.js';
-import { cards, texts, pmCanRun, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { cards, texts, pmCanRun, resetLadderWorld, anchorBack, MIN } from './helpers/ladder-world.js';
 
 beforeEach(async () => {
   resetLadderWorld();
-  freshBoard(MAIN); pmCanRun(PM);
+  freshBoard(MAIN); pmCanRun(PM); anchorBack(2 * 60 * MIN);
   await handedIn(MAIN);
   await runPMReview();
   await runPMReview();

@@ -18,12 +18,13 @@ import { checkProof, proofFor, type HandInOutcome, type ProofItemInput } from '.
 import { workerOf, unitOrRollback, type HandInRecord, type HandInScope } from './record.js';
 import { onHandedIn } from './effects.js';
 import { isHousekeeping, settleHousekeeping } from './housekeeping.js';
+import { WORKING_STATES, workingExpr } from './hold.js';
 
 export type HandInBy = { kind: 'worker'; agentId: string } | { kind: 'engine'; onBehalfOf: string; because: string };
 export interface HandInInput { workId: string; by: HandInBy; outcome: HandInOutcome; items: ProofItemInput[]; note: string; scope?: HandInScope }
 export type HandInResult = { kind: 'handed_in'; eventId: number; text: string } | { kind: 'refused'; text: string };
 
-const HANDS_IN_FROM: readonly WorkState[] = ['open', 'claimed', 'sent_back'];
+const HANDS_IN_FROM: readonly WorkState[] = ['open', ...WORKING_STATES];
 
 interface DoorRow { id: string; kind: string; state: WorkState; title: string | null; worker: string; open_tasks: number; live_schedule: number }
 
@@ -120,7 +121,7 @@ export function engineHandIn(
 export function handInOnAssignReply(threadId: string, workerId: string, intent: string, deliveryId: string | null): void {
   if (!['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL'].includes(intent)) return;
   const row = getDb().prepare(
-    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state IN ('open', 'claimed') AND w.repeat_interval IS NULL LIMIT 1`,
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND ${workingExpr('w', true)} AND w.repeat_interval IS NULL LIMIT 1`,
   ).get(threadId, workerId) as { id: string } | undefined;
   if (!row) return;
   if (intent === 'FAIL') engineHandIn(row.id, 'the assignee replied FAIL on its assignment thread', { outcome: 'cant_be_done' });

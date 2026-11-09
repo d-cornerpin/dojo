@@ -425,6 +425,7 @@ import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
+import { workingExpr } from '../work/done/hold.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
 // so v2/recovery.ts and v1 catch share the same per-agent streak tracking.
@@ -1274,7 +1275,7 @@ class AgentRuntime {
       interface StalledTaskRow { id: string; title: string; status: string }
       const stalledTasks = db.prepare(`
         SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
-        WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('claimed', 'open')
+        WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w', true)}
         ORDER BY w.updated_at DESC
         LIMIT 5
       `).all(injuredAgentId) as StalledTaskRow[];

@@ -49,7 +49,8 @@ export type TaskLogEntryKind =
   | 'claim_rejected'
   // C8 (evidence round, owner ruling (a)): the Dojo held back a line a task owed its owner, and why
   // (`tracker/owed-delivery.ts`). The PM's review says so; it never counts as delivered.
-  | 'delivery_held';
+  | 'delivery_held'
+  | 'handed_in' | 'decided' | 'proof_opened';
 
 export interface TaskLogEntryInput {
   taskId: string;
