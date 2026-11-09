@@ -13,6 +13,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { runLadder } from '../ladder.js';
 import { runPMReview } from '../../../tracker/pm-agent.js';
 import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
+import { dismissOwnerNotice } from '../../../healer/owner-notices.js';
 import { freshBoard, handedIn, eventCount, PM, MAIN, TASK } from './helpers/decision-world.js';
 import { cards, texts, pmCanRun, resetLadderWorld, MIN } from './helpers/ladder-world.js';
 
@@ -36,6 +37,10 @@ describe('the owner hears by one card a day', () => {
     expect(stallCards()).toHaveLength(1);
     expect(stallCards()[0].error).toMatch(/^"Write the report" has been handed in and waiting for a decision since .+\. Tried: a project manager review with no verdict \(2 times\)\./);
     expect(eventCount('validation_escalated')).toBe(1);
+    dismissOwnerNotice(`stall:${TASK}`);
+    await runPMReview();   // another miss: the card's "Tried:" count moves
+    await runLadder(Date.now() + 3 * 60 * MIN);
+    expect(stallCards(), 'a card he dismissed is not pushed again the same day').toHaveLength(1);
   });
 
   it('the card stands on the next dashboard load, and the owner is never texted', async () => {

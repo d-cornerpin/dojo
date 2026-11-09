@@ -51,6 +51,8 @@ export function clearImportCard(): void {
 
 /** Does the import card still stand: raised in this process, or its marker beside ~/.dojo? */
 export const importCardStands = (): boolean => standing !== null || stuckFromMarker() !== null;
+/** He dismissed the card: it does not come back after a restart either. */
+export function importCardDismissed(): void { standing = null; dropMarker(); }
 
 /** The owner-facing sentence when the old data could not be put back (rename and copy both refused). The path is
  *  exact. Final round: a fact, no chore. */

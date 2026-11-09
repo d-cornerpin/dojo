@@ -39,7 +39,6 @@ const DECLARED: Record<string, Array<[string, string]>> = {
   'memory/window-starvation-card.ts': [["'error'", "'action'"]],                   // a bigger model or fewer tools
   'plaud/auth.ts': [["'error'", "'action'"]],                                      // sign in to Plaud again
   'providers/billing-breaker.ts': [["'error'", "'action'"]],                       // top up or change the key
-  'services/watcher-status.ts': [["'error'", "'action'"]],                         // reconnect the account
 };
 /** Not this census's: the debug toast route (developer-only, sends whatever severity the request names), and the
  *  one owner-notice writer, which takes each card's class from its kind (`healer/owner-notice-kinds.ts`). */

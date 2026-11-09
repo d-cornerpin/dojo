@@ -1,15 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE ONE WRITER OF WHAT THE OWNER IS TOLD ON HIS DASHBOARD.
-//
-// A site that must tell the owner something calls `tellOwner(key, sentence)` (or the per-window form). The writer takes
-// the card's class and severity from the key's kind (`owner-notice-kinds.ts`), de-duplicates on key AND words (a new
-// sentence under a standing key replaces it in place and is pushed live), records it, and pushes the card frame. The
-// record is the Healer's durable `healer_state` table:
-//   scope 'owner_told'      key = the notice key, at_ms = when first told, value = the sentence;
-//   scope 'owner_dismissed' key = the same key, at_ms = when he dismissed its card.
-// A notice's rows are deleted when its condition ends (`ownerConditionCleared`), so telling it again starts fresh. The
-// dashboard's reload list reads the same rows (`owner-notice-kinds.ts standingOwnerNotices`).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// THE ONE WRITER OF WHAT THE OWNER IS TOLD ON HIS DASHBOARD. `tellOwner(key, sentence)` takes the card's class and
+// severity from the key's kind (`owner-notice-kinds.ts`), de-duplicates on key and words, records the sentence in
+// `healer_state` ('owner_told': key, first-told time, sentence; 'owner_dismissed': his X), and pushes the card. A
+// notice's rows go when its condition ends; the dashboard's reload list reads the same rows.
 
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
@@ -23,7 +15,7 @@ export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_W
 
 export const TOLD = 'owner_told';
 export const DISMISSED = 'owner_dismissed';
-/** `PLATFORM_SENDER` (agent/v2/outbound.ts), spelled here so this module stays a leaf; the dashboard reads it. */
+/** `PLATFORM_SENDER` (agent/v2/outbound.ts), spelled here rather than imported from outbound; the dashboard reads it. */
 const PLATFORM_SENDER = 'platform';
 
 /** What a card asks of the owner: `action` (sticky, stands on reload) or `informational` (a toast that leaves by itself). */
@@ -100,8 +92,7 @@ export const healerMissingWords = (name: string): string =>
 const nameOf = (id: string): string => (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
 const isAutoAgent = (id: string): boolean => ['auto', '__auto__'].includes((getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(id) as { model_id: string | null } | undefined)?.model_id ?? '');
 
-/** The words a key's card carries when they are derived from the key alone (the Healer's cases, the stall ladder, the
- *  budget stop, the embedding switch, an unchecked fit); '' for a key whose words only its site knows. */
+/** The words a key's card carries when the key alone derives them; '' for a key whose words only its site knows. */
 export function wordsOf(key: string): string {
   const [kind, id = ''] = key.split(/:(.*)/s);
   return kind === 'stuck' ? stuckWords(nameOf(id))
@@ -115,11 +106,8 @@ export function wordsOf(key: string): string {
     : '';
 }
 
-/**
- * Tell the owner `words` under `key`. True exactly when he had not been told of this condition yet (its own key, or for
- * a condition one agent stands for, any key under `family`): a caller that also texts him texts then. The same words
- * again change nothing; new words replace the card in place, live, and lift a dismissal.
- */
+/** Tell the owner `words` under `key`; true on the first telling (of the key, or of any key under `family`), when a
+ *  caller that also texts him texts. The same words change nothing; new words replace the card live and lift a dismissal. */
 export function tellOwner(key: string, words: string, family?: string): boolean {
   try {
     const db = getDb();
@@ -143,8 +131,7 @@ export function tellOwnerOncePerWindow(key: string, words: string, windowMs: num
   return tellOwner(key, words);
 }
 
-/** The window's telling was done by another text that carries its own card (the budget's crossing): record it as told
- *  AND dismissed, so the second door stays silent and no second card stands beside the first. */
+/** Another text with its own card already told this window (the budget's crossing): told and dismissed, no card. */
 export function tellLimitReachedWithoutCard(key: string, windowMs: number): void {
   try {
     ageOut(key, windowMs);
@@ -166,7 +153,13 @@ function ageOut(key: string, windowMs: number): void {
 export function dismissOwnerNotice(key: string): void {
   getDb().prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
                    ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`).run(DISMISSED, key, Date.now());
+  kindOf(key).dismissed?.();
   frame(toldWords(key), 'info', key);
+}
+
+/** The key of the told notice carrying exactly these words, or null. */
+export function ownerNoticeKeyOf(words: string): string | null {
+  return (getDb().prepare('SELECT key FROM healer_state WHERE scope = ? AND value = ?').get(TOLD, words) as { key: string } | undefined)?.key ?? null;
 }
 
 /** Is the condition `key` told and standing (not dismissed)? */
@@ -174,8 +167,7 @@ export function ownerToldOf(key: string): boolean {
   try { return !!getDb().prepare('SELECT 1 FROM healer_state t WHERE t.scope = ? AND t.key = ? AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)').get(TOLD, key, DISMISSED); } catch { return false; }
 }
 
-/** The condition ended (its `key`, or every key under it with `family`): forget he was told and dismissed, and its card
- *  leaves every open dashboard now. */
+/** The condition ended (its `key`, or every key under it): its rows go and its card leaves every open dashboard. */
 export function ownerConditionCleared(key: string, family = false): void {
   try {
     const db = getDb();

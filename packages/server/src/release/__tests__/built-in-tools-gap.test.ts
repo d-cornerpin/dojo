@@ -19,9 +19,8 @@ vi.mock('../../agent/agent-notice.js', () => ({
 }));
 
 import { raiseBuiltInToolsGap } from '../built-in-tools-gap.js';
-import { missingTools, readGap } from '../../services/built-in-tools-card.js';
 import { dismissOwnerNotice } from '../../healer/owner-notices.js';
-import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
+import { servedOwnerNotices, standingOwnerNotices, sweepOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { RELEASE_STEPS } from '../release-steps.js';
 import { DREAMER_TOOLS_POLICY } from '../../vault/maintenance.js';
 import { PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
@@ -36,12 +35,8 @@ function addAgent(id: string, name: string, tools_policy: string | null, permiss
   mockDb.current!.prepare('INSERT INTO agents (id, name, tools_policy, permissions) VALUES (?, ?, ?, ?)').run(id, name, tools_policy, permissions);
 }
 const rows = () => mockDb.current!.prepare('SELECT id, tools_policy, permissions, updated_at FROM agents ORDER BY id').all();
-/** The built-in-tools notices the table holds, told and undismissed, while a recorded name is still missing. */
-const cards = (): Array<{ words: string; cardKey: string }> =>
-  (mockDb.current!.prepare(`SELECT key, value FROM healer_state t WHERE scope = 'owner_told' AND key LIKE 'built-in-tools:%'
-    AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = 'owner_dismissed' AND d.key = t.key)`).all() as Array<{ key: string; value: string }>)
-    .filter((r) => missingTools(r.key.slice('built-in-tools:'.length), readGap()[r.key.slice('built-in-tools:'.length)]?.names ?? []).length > 0)
-    .map((r) => ({ words: r.value, cardKey: r.key }));
+/** The built-in-tools notices standing now (the reload reader, which only reads). */
+const cards = (): ReturnType<typeof standingOwnerNotices> => standingOwnerNotices().filter((c) => c.cardKey.startsWith('built-in-tools:'));
 
 beforeEach(() => {
   notices.length = 0;
@@ -74,8 +69,9 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
   it('the card is informational and named once: after it is served it is not derived again', () => {
     addAgent('pm', 'Boss', JSON.stringify({ allow: PM_OLD }), JSON.stringify(grantsOf({ allow: PM_OLD, deny: [] })));
     raiseBuiltInToolsGap();
-    expect(standingOwnerNotices()).toEqual([expect.objectContaining({ cardClass: 'informational', cardKey: 'built-in-tools:pm' })]);
-    expect(standingOwnerNotices(), 'the next load (and every reconnect) does not show it again').toEqual([]);
+    sweepOwnerNotices();   // the scheduler's tick, before any dashboard loads: it does not spend the card
+    expect(servedOwnerNotices()).toEqual([expect.objectContaining({ cardClass: 'informational', cardKey: 'built-in-tools:pm' })]);
+    expect(servedOwnerNotices(), 'the next load (and every reconnect) does not show it again').toEqual([]);
   });
 
   it('the main agent is told exactly what the card says, once', () => {
@@ -149,7 +145,7 @@ describe('a built-in agent that lacks tools the code lists have gained', () => {
     raiseBuiltInToolsGap();
     expect(cards()).toHaveLength(1);
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify(grantsOf({ allow: PM, deny: [] })), 'pm');
-    expect(standingOwnerNotices()).toEqual([]);                       // the next load finds nothing missing
+    expect(servedOwnerNotices()).toEqual([]);                         // the next load finds nothing missing
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify(grantsOf({ allow: PM_OLD, deny: [] })), 'pm');
     raiseBuiltInToolsGap();                                           // the owner's own trim after the fact: not re-raised
     expect(notices).toHaveLength(1);

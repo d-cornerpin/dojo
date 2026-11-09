@@ -1,12 +1,5 @@
-// ════════════════════════════════════════
-// Technique Secret Scrubber
-// ════════════════════════════════════════
-//
-// THE ONE LIST OF CREDENTIAL SHAPES. The technique exporter replaces each match with a {{NEEDS_FROM_USER:LABEL}}
-// placeholder before a package is shipped (a Trainer review pass follows), and every dojo_inspect view blanks the same
-// matches (`inspect/redact.ts redactText`). Both apply the whole list in the same order, so a span either use blanked
-// is blanked by both. The LAST capture group (or the whole match when there is none) is the secret; `keep` may veto a
-// match that is code, a number or a placeholder rather than a credential.
+// THE ONE LIST OF CREDENTIAL SHAPES. The technique exporter replaces each secret with a {{NEEDS_FROM_USER:LABEL}}
+// placeholder; every dojo_inspect view blanks the same spans (`inspect/redact.ts redactText`), in the same order.
 
 export interface Redaction {
   file: string;       // relative path inside the technique dir
@@ -31,12 +24,10 @@ export interface Pattern {
   keep?: (value: string, match: string) => boolean;
 }
 
-/** A name whose last segment (`_`, `-`, `.` or camelCase) is a credential word. `tokens`, `tokenizer`,
- *  `secretary`, `token_count`, `secret_path` do not end in one. */
+/** A name whose last segment is a credential word (`token_count`, `tokenizer`, `secretary` are not). */
 const CREDENTIAL_NAME = String.raw`[\w.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|private[_-]?key)`;
 
-/** A value that is not a credential literal: empty, a placeholder or reference, a number, a flag or
- *  nothing-word, a type name, or a code expression (a call, an index, a member path). */
+/** Empty, a placeholder or reference, a number, a nothing-word, a type name, or a code expression. */
 const TYPE_WORDS = /^(?:string|number|boolean|any|unknown|object|void|never|bigint|symbol|str|int|bool|bytes)$/i;
 const NOTHING = /^(?:true|false|null|undefined|none|nil|nan)$/i;
 const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+$/;
@@ -47,9 +38,7 @@ export function notACredentialLiteral(v: string): boolean {
   if (/[()[\]]/.test(t) && /^[A-Za-z_$][\w$.?]*[([]/.test(t)) return true;
   return MEMBER_PATH.test(t) && !/\d/.test(t);
 }
-/** For a key/value pair or a flag: also not a credential when the value is code (a placeholder
- *  `?`/`$1`, a brace or bracket opening an object, a digit-free identifier, a very short word)
- *  rather than a quoted string or a generated secret. Real credentials the Dojo handles carry digits. */
+/** For a pair or a flag, also code (a placeholder, an object, a digit-free identifier, a very short word). */
 export function notAPairedCredential(v: string, match: string): boolean {
   if (notACredentialLiteral(v)) return true;
   const quoted = match.endsWith(`"`) || match.endsWith(`'`);
@@ -57,15 +46,12 @@ export function notAPairedCredential(v: string, match: string): boolean {
   return /^[?:@]\w*$/.test(v) || /^[$({[`<]|^\/[^/]|^\/\^/.test(v) || (/^[A-Za-z_$][A-Za-z_$]*$/.test(v) && (v.length <= 20 || v.includes('_'))) || v.length < 6;
 }
 
-/** The short password flag `-p <value>` (a sshpass or mysql-style call). `-p` is also a port, a
- *  "make parents" flag and a path flag, so a value is blanked only when it is not code, not a number,
- *  not a path or a phrase with spaces, and carries both a letter and a digit the way a generated password does. */
+/** `-p` is also a port, "make parents" and a path flag: only a value with a letter and a digit and no path or space. */
 function notAShortFlagPassword(v: string, match: string): boolean {
   if (notAPairedCredential(v, match)) return true;
   if (/[\\/]/.test(v)) return true;
   return /\s/.test(v) || !(/\d/.test(v) && /[A-Za-z]/.test(v));
 }
-/** A query-parameter value that looks like a key: long, one unbroken run, letters and digits both. */
 const KEY_LIKE = String.raw`(?=[A-Za-z0-9_.~+/=-]*\d)(?=[A-Za-z0-9_.~+/=-]*[A-Za-z])[A-Za-z0-9_.~+/=-]{16,}`;
 
 const PAIR_VALUE = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s,;"'}\])]+))`;
@@ -73,39 +59,26 @@ const GENERIC_HINT = 'A credential. Provide your own.';
 /** A pair's placeholder label is its own name, upper snake case (`db.password` becomes DB_PASSWORD). */
 const namedLabel = (m: RegExpExecArray): string => (/^[\w.-]+/.exec(m[0])?.[0] ?? 'credential').replace(/[.-]/g, '_').toUpperCase();
 
-// The broad shapes first (a whole bearer run, a key/value pair), then the labelled vendor shapes.
+// The broad shapes first, then the labelled vendor shapes.
 export const PATTERNS: Pattern[] = [
-  // Whole PEM block; a block cut off before its END line is blanked to the end of the text.
   { name: 'pem-private-key', regex: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g },
   { name: 'google-access-token', regex: /\bya29\.[A-Za-z0-9_-]{10,}/g },
   { name: 'google-refresh-token', regex: /(?<![\w/])1\/\/[A-Za-z0-9_-]{20,}/g },
   { name: 'github-fine-grained', regex: /\bgithub_pat_[A-Za-z0-9_]{20,}/g },
-  // The whole run after `Bearer` (Microsoft tokens carry + / = ! * $ ~), not the exporter's narrower run.
   { name: 'bearer-run', regex: /\bbearer\s+([^\s"'`,;<>)]{12,})/gi, keep: notACredentialLiteral, label: () => 'BEARER_TOKEN', hint: 'Bearer token used in an Authorization header.' },
-  // `Authorization: Basic <b64>` (any case), and a bare `Basic <b64>` that looks encoded (has a digit, + / or =).
   { name: 'basic-auth-header', regex: /\bauthorization["']?\s*[:=]\s*["']?basic\s+([A-Za-z0-9+/]{4,}={0,2})/gi },
   { name: 'basic-auth', regex: /\bBasic\s+((?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2})/g },
-  // A password in a URL of any scheme: scheme://user:password@host.
   { name: 'url-password-any-scheme', regex: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:([^\s/@]+)@/gi },
-  // The bare tunnel token: long base64 starting eyJ with no dots (a JWT has dots and is the exporter's).
   { name: 'tunnel-token', regex: /\beyJ[A-Za-z0-9+/_-]{60,}={0,2}(?![A-Za-z0-9.])/g },
-  // A cookie header carries session credentials.
   { name: 'cookie-header', regex: /\b(?:set-)?cookie\s*:[ \t]*([^\r\n]+)/gi },
-  // A command-line flag naming a credential, value after a space or `=`: --token <v>, --api-key=<v>.
   { name: 'credential-flag', regex: /(?<![\w-])--?[\w-]*(?:token|password|passwd|secret|api-?key)(?:[ \t]+|=)(?!-)(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"']+))/gi, keep: notAPairedCredential },
-  // Google OAuth client secret, and Google API keys (the shapes of the Google accounts the Dojo stores).
   { name: 'google-client-secret', regex: /\bGOCSPX-[A-Za-z0-9_-]{10,}/g },
   { name: 'google-api-key', regex: /\bAIza[0-9A-Za-z_-]{30,}/g, label: () => 'GOOGLE_API_KEY', hint: 'Google API key (starts with AIza). Get one from the Google Cloud Console.' },
-  // The short password flag with its value after a space: -p <value>.
   { name: 'password-short-flag', regex: /(?<![\w-])-p[ \t]+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"']+))/g, keep: notAShortFlagPassword },
-  // A credential written as an XML element: <password>value</password>, with or without CDATA.
   { name: 'credential-xml-element', regex: new RegExp(String.raw`<(${CREDENTIAL_NAME})(?:\s[^>]*)?>\s*(?:<!\[CDATA\[([^\]]*)\]\]>|([^<]*?))\s*</\1\s*>`, 'gi'), keep: notAPairedCredential },
-  // A generic key= query parameter (?key=, &access_key=), blanked only when the value looks like a key.
   { name: 'key-query-parameter', regex: new RegExp(String.raw`(?<=[?&])[\w.-]*key=(${KEY_LIKE})`, 'gi') },
-  // JSON that is itself inside a JSON string: a quoted credential name, then a quoted value, both escaped.
   { name: 'credential-pair-escaped', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}\\"\s*:\s*\\"((?:[^"\\]|\\(?!"))+)\\"`, 'gi'), keep: notAPairedCredential },
-  // A name that ENDS in a credential word, in JSON, `name=value` or `name: value`, any case.
-  // Key and punctuation stay; `==`, `=>` and `=~` are comparisons, not assignments.
+  // `==`, `=>` and `=~` are comparisons, not assignments.
   { name: 'credential-pair', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}["'\`]?[ \t]*[:=](?![=>~])(?:[ \t]*|[ \t]*\r?\n[ \t]+)${PAIR_VALUE}`, 'gi'), keep: notAPairedCredential, label: namedLabel, hint: 'A credential assigned to a named setting.' },
 
   {
@@ -164,40 +137,32 @@ export const PATTERNS: Pattern[] = [
   },
   {
     name: 'jwt',
-    // Three base64url segments joined by dots — JWT shape. Min lengths keep
-    // it from matching random short tokens like git SHAs.
     regex: /\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g,
     label: () => 'JWT_TOKEN',
     hint: 'JSON Web Token (JWT). Typically a session or bearer token — get a fresh one for your install.',
   },
   {
     name: 'url-creds',
-    // URLs with user:pass@host — postgres://user:secret@host etc.
     regex: /\b(?:https?|postgres(?:ql)?|mysql|mongodb|redis|amqp|ftp|ssh):\/\/[^\s:/@]+:[^\s/@]+@[^\s/]+/g,
     label: () => 'SERVICE_URL_WITH_CREDENTIALS',
     hint: 'A connection URL containing inline credentials. Provide the URL with your own user/password.',
   },
   {
     name: 'bearer-header',
-    // Authorization: Bearer <token> — catch the value
     regex: /\b[Bb]earer\s+([a-zA-Z0-9._-]{20,})\b/g,
     label: () => 'BEARER_TOKEN',
     hint: 'Bearer token used in an Authorization header.',
   },
   {
     name: 'env-secret-assignment',
-    // FOO_TOKEN="..." / FOO_SECRET=..., common in .env style or inline.
-    // Captures the assigned value — only flags assignments that look like
-    // real values (length >= 12, no spaces), so we don't redact
-    // documentation lines like `API_KEY=<your-key-here>`.
+    // A value of 12 or more with no spaces, so `API_KEY=<your-key-here>` is left alone.
     regex: /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|PASSWD|PRIVATE_KEY))\s*[:=]\s*['"]?([^'"\s<>{}]{12,})['"]?/g,
     label: (m) => m[1].replace(/^[A-Z_]+_/, '') ? m[1] : m[1],
     hint: 'An environment variable holding a credential.',
   },
 ];
 
-// Files we never scrub line-by-line because they're binary or huge — skip
-// entirely and emit a redaction note so the README mentions them.
+// Binary files are never scrubbed line by line.
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico',
   '.pdf', '.zip', '.tar', '.gz', '.tgz',
@@ -220,25 +185,14 @@ export function isBinaryFile(relPath: string): boolean {
   return BINARY_EXTENSIONS.has(relPath.slice(idx).toLowerCase());
 }
 
-/**
- * Run the deterministic scrubber over a set of files.
- *
- * Returns a map of file → redacted-content for every file that had at
- * least one match (callers can write those back to disk in a staging
- * dir before zipping), plus the full redactions list and a de-duped
- * placeholder summary for the manifest.
- *
- * Files passed in but not present in the returned map were clean.
- */
+/** Scrub `files`: the content of each file that had a match, every redaction, and the de-duplicated placeholders. */
 export function scrubFiles(files: Array<{ path: string; content: string }>): ScrubResult {
   const scrubbed = new Map<string, string>();
   const redactions: Redaction[] = [];
   const seenLabels = new Set<string>();
   const placeholders: Array<{ label: string; hint: string }> = [];
 
-  // Count how many times we've used a label so a technique with two
-  // GitHub tokens gets GITHUB_TOKEN and GITHUB_TOKEN_2, not two
-  // collisions that round-trip to the same value on import.
+  // Two GitHub tokens become GITHUB_TOKEN and GITHUB_TOKEN_2, not one placeholder for two values.
   const labelCounts = new Map<string, number>();
 
   for (const file of files) {
@@ -248,9 +202,6 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
     let dirty = false;
 
     for (const pattern of PATTERNS) {
-      // We re-execute against the freshly-scrubbed content each iteration
-      // so an earlier replacement doesn't double-count and so the regex's
-      // lastIndex state stays consistent.
       content = content.replace(pattern.regex, (match, ...rest) => {
         const secret = secretOf(pattern, match, rest);
         if (secret === null) return match;

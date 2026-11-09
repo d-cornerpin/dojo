@@ -22,9 +22,9 @@ export function runtimeMock(): { getAgentRuntime: () => unknown } {
 /** Every owner card and owner text raised, by the broadcast and the bridge's text door. */
 export const cards: Array<{ error: string; cardKey?: string }> = [];
 export const texts = vi.fn(async () => {});
-export function wsMock(): { broadcast: (e: { type: string; error?: string; cardKey?: string }) => void; stampPersistedRow: (e: unknown) => unknown } {
+export function wsMock(): { broadcast: (e: { type: string; error?: string; cardKey?: string; severity?: string }) => void; stampPersistedRow: (e: unknown) => unknown } {
   return {
-    broadcast: (e) => { if (e.type === 'chat:error' && e.error) cards.push({ error: e.error, cardKey: e.cardKey }); },
+    broadcast: (e) => { if (e.type === 'chat:error' && e.error && e.severity !== 'info') cards.push({ error: e.error, cardKey: e.cardKey }); },
     stampPersistedRow: (e) => e,
   };
 }

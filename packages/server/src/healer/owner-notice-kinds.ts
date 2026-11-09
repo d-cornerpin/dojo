@@ -12,7 +12,7 @@ import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { heldOllamaVersion } from '../services/ollama-version.js';
 import { latestToldAt, windowOf } from '../costs/budget-cards.js';
 import { watcherCardStands } from '../services/watcher-owner-cards.js';
-import { importCardStands } from '../migration/import-recovery.js';
+import { importCardDismissed, importCardStands } from '../migration/import-recovery.js';
 import { missingTools, readGap } from '../services/built-in-tools-card.js';
 import { DISMISSED, TOLD, dismissOwnerNotice, ownerConditionCleared, wordsOf, type OwnerCardClass } from './owner-notices.js';
 
@@ -23,6 +23,8 @@ interface Kind {
   stands?: (id: string) => boolean;
   /** Its told record belongs to a window, so a notice that stops standing is dismissed, not forgotten. */
   perWindow?: boolean;
+  /** Called when he dismisses its card (the import card's truth lives outside the database). */
+  dismissed?: () => void;
 }
 
 const one = <T>(sql: string, ...args: unknown[]): T | undefined => getDb().prepare(sql).get(...args) as T | undefined;
@@ -57,7 +59,7 @@ const KINDS: Record<string, Kind> = {
       : 'SELECT 1 FROM google_accounts WHERE id = ? AND owner_notice IS NOT NULL AND connected = 0', account);
   }, { critical: true }),
   watcher: action((id) => watcherCardStands(id), { critical: true }),
-  'import-failed-not-running': action(() => importCardStands(), { critical: true }),
+  'import-failed-not-running': action(() => importCardStands(), { critical: true, dismissed: () => importCardDismissed() }),
   ollama: { cls: () => (heldOllamaVersion() !== null ? 'action' : 'informational'), stands: () => heldOllamaVersion() !== null },
   'embedding-switch': informational,
   fitunchecked: informational,
@@ -70,29 +72,44 @@ export function kindOf(key: string): Kind {
   return KINDS[key.split(':')[0]] ?? { cls: () => 'informational' };
 }
 
-/** The dashboard's reload list: every told, undismissed notice with a check whose condition still holds. An action
- *  notice that no longer holds leaves here (a windowed one is dismissed so its window is not told twice). */
-export function standingOwnerNotices(): Array<{ words: string; severity: 'critical' | 'notice'; cardKey: string; cardClass: OwnerCardClass }> {
+type Notice = { key: string; words: string; kind: Kind; holds: boolean };
+function toldNotices(): Notice[] {
   const rows = getDb().prepare(`SELECT t.key, t.value FROM healer_state t WHERE t.scope = ?
     AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key) ORDER BY t.at_ms`).all(TOLD, DISMISSED) as Array<{ key: string; value: string | null }>;
   return rows.flatMap(({ key, value }) => {
     const kind = kindOf(key);
     if (!kind.stands) return [];
     const words = value ?? wordsOf(key);
-    const cardClass = kind.cls(key);
-    const holds = words !== '' && kind.stands(key.split(/:(.*)/s)[1] ?? '');
-    // An informational notice is shown at one load or not at all; its record stays, so the same words are never told again.
-    if (cardClass === 'informational') getDb().prepare('INSERT OR IGNORE INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)').run(DISMISSED, key, Date.now());
-    if (!holds) {
-      if (cardClass === 'action') { if (kind.perWindow) dismissOwnerNotice(key); else ownerConditionCleared(key); }
-      return [];
-    }
-    return [{ words: scrubTechnicalDetail(words), severity: kind.critical ? 'critical' as const : 'notice' as const, cardKey: key, cardClass }];
+    return [{ key, words, kind, holds: words !== '' && kind.stands(key.split(/:(.*)/s)[1] ?? '') }];
   });
 }
 
-/** The scheduler's tick: a standing notice whose condition ended without a site saying so (a budget window turned over)
- *  leaves every open dashboard now. */
-export function sweepOwnerNotices(): void {
-  try { standingOwnerNotices(); } catch { /* the next tick or load does it */ }
+/** The dashboard's reload list: every told, undismissed notice with a check whose condition still holds. Reads only. */
+export function standingOwnerNotices(): Array<{ words: string; severity: 'critical' | 'notice'; cardKey: string; cardClass: OwnerCardClass }> {
+  return toldNotices().filter((n) => n.holds).map((n) => ({
+    words: scrubTechnicalDetail(n.words), severity: n.kind.critical ? 'critical' as const : 'notice' as const, cardKey: n.key, cardClass: n.kind.cls(n.key),
+  }));
 }
+
+/** The scheduler's tick and every load: an action notice whose condition ended unsaid (a budget window turned over)
+ *  leaves every open dashboard now; a windowed one is dismissed so its window is not told twice. */
+export function sweepOwnerNotices(): void {
+  try {
+    for (const n of toldNotices()) {
+      if (n.holds) continue;
+      if (n.kind.cls(n.key) === 'informational') markShown(n.key);   // over before it was shown: never shown later
+      else if (n.kind.perWindow) dismissOwnerNotice(n.key); else ownerConditionCleared(n.key);
+    }
+  } catch { /* the next tick or load does it */ }
+}
+
+/** What a dashboard load is served: the sweep, then the standing list. An informational notice is served at one load,
+ *  once; its record stays, so the same words are never told again. */
+export function servedOwnerNotices(): ReturnType<typeof standingOwnerNotices> {
+  sweepOwnerNotices();
+  const cards = standingOwnerNotices();
+  for (const c of cards) if (c.cardClass === 'informational') markShown(c.cardKey);
+  return cards;
+}
+
+const markShown = (key: string): void => { getDb().prepare('INSERT OR IGNORE INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)').run(DISMISSED, key, Date.now()); };

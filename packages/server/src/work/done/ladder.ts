@@ -65,7 +65,7 @@ function ladderStep(workId: string, now: number): LadderStep {
   const row = getDb().prepare(`SELECT w.state, w.updated_at, ${stallSinceSql('w')} AS since FROM work w WHERE w.id = ?`).get(workId) as { state: string; updated_at: number; since: number } | undefined;
   if (!row || !['claimed', 'sent_back', 'handed_in'].includes(row.state)) return { reached: 0, due: null };
   const evs = eventsOf(workId);
-  const asked = (since: number): boolean => !!newest(evs, isKind(OWNER_ASK), since);
+  const asked = (since: number): boolean => !!newest(evs, isKind(OWNER_ASK), Math.min(since, now - DAY_MS));   // one owner card a day
   const decider = whoDecides(workId);
   if (row.state === 'handed_in') {
     const handAt = newest(evs, isKind('handed_in'))?.at ?? row.updated_at;

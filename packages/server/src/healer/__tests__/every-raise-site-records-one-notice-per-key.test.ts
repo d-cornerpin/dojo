@@ -1,5 +1,9 @@
-// Every site that tells the owner something reaches the one writer: triggering each site's own raise in one box leaves
-// exactly one notices-table row per key, in the site's words, and the dashboard's reload list is those rows.
+// Raise sites reach the one writer: triggering each site's own raise in one box leaves exactly one notices-table row per
+// key, in the site's words, and the dashboard's reload list is those rows. Covered here: memory low, an expired Google
+// sign-in, a failing watcher, a broken agent, rate-limit retries exhausted, the import card, the budget stop. Covered by
+// their own suites: the stall card (the-owner-hears-by-one-card-a-day), no fit (t148, t149), the budget crossing (t167),
+// paused, balance, the Healer's cases (t138-r2 to r7), built-in tools (built-in-tools-gap), Ollama (the upkeep suites),
+// the embedding switch and an unchecked fit (their suites).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -15,12 +19,14 @@ vi.mock('../../services/imessage-bridge.js', () => ({ sendAlert: async () => und
 import { runMigrations } from '../../db/migrations.js';
 import { noteCriticalMemory } from '../../services/memory-low-notice.js';
 import { noteSignInExpired } from '../../services/account-owner-cards.js';
-import { recordFailureTold } from '../../services/watcher-owner-cards.js';
-import { noteNoticeOnce, noteRateLimitExhausted } from '../../agent/agent-owner-cards.js';
+import { insertGoogleAccount } from '../../google/accounts.js';
+import { getValidAccessTokenForAccount } from '../../google/auth.js';
+import { maybeAlertOnFailure } from '../../services/watcher-status.js';
+import { onAgentInjured } from '../injury-recovery.js';
+import { noteRateLimitExhausted } from '../../agent/agent-owner-cards.js';
 import { noteBackupStuck, clearImportCard } from '../../migration/import-recovery.js';
 import { budgetStopToTell } from '../../costs/budget-cards.js';
-import { stallKey, tellOwnerOncePerWindow, wordsOf } from '../owner-notices.js';
-import { standingOwnerNotices } from '../owner-notice-kinds.js';
+import { servedOwnerNotices, standingOwnerNotices } from '../owner-notice-kinds.js';
 
 const db = (): Database.Database => mockDb.current!;
 beforeEach(() => {
@@ -31,40 +37,42 @@ beforeEach(() => {
   db().prepare("UPDATE agents SET last_error = '[budget_stop] waiting' WHERE id = 'a-3'").run();
   db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-1', 'user', 0, 'owner@example.com', 0)").run();
   db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected, enabled, watch_email) VALUES ('g-2', 'agent', 1, 'agent@example.com', 1, 1, 1)").run();
-  db().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
-    VALUES ('w-1', 'task', 'a-2', 'owner', 'tracker', 'w-1', 'claimed', 'tracker', 0, 0, 'A stuck task', ?, ?)`).run(Date.now() - 86_400_000, Date.now());
 });
 afterEach(() => { clearImportCard(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('every raise site records one notice per key', () => {
-  it('each site leaves one row in its words, and the reload list is exactly those rows', () => {
+  it('each site leaves one row in its words, and the reload list is exactly those rows', async () => {
+    const failing = { name: 'gmail' as const, accountId: 'g-2', consecutiveFailures: 10, firstFailureAt: new Date(Date.now() - 3_600_000).toISOString(), lastError: 'boom', alreadyAlerted: false };
     noteCriticalMemory(100);
-    noteSignInExpired('google_accounts', 'g-1', 'The Google account needs signing in again.');
-    recordFailureTold('gmail', 'g-2', 'Gmail watching has been failing for 12 minutes.');
-    noteNoticeOnce('a-2', 'broken_notice', 'Second has stopped: the key was refused.');
+    const acc = insertGoogleAccount({ kind: 'agent', email: 'helper@example.com', connected: true, accessToken: 'at-old', refreshToken: 'rt-1', tokenExpiresAt: Date.now() - 1000 });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 })));
+    await getValidAccessTokenForAccount(acc.id);
+    vi.unstubAllGlobals();
+    maybeAlertOnFailure(failing);
+    onAgentInjured('a-2', '[auth_invalid] the key was refused');
     noteRateLimitExhausted('a-1', 'Helper has been rate-limited for 6 hours.');
     noteBackupStuck('/tmp/example-backup');
     budgetStopToTell(null, () => undefined);
-    tellOwnerOncePerWindow(stallKey('w-1'), wordsOf(stallKey('w-1')), 86_400_000);
     // the same raise twice records nothing more and pushes nothing more
     const pushes = frames.length;
     noteCriticalMemory(100);
-    recordFailureTold('gmail', 'g-2', 'Gmail watching has been failing for 12 minutes.');
+    maybeAlertOnFailure(failing);
     expect(frames.length).toBe(pushes);
 
     const rows = db().prepare("SELECT key, value FROM healer_state WHERE scope = 'owner_told' ORDER BY key").all() as Array<{ key: string; value: string }>;
     expect(rows.map((r) => r.key)).toEqual([
-      'broken:a-2', 'budgetstop:global_daily', 'import-failed-not-running', 'memory-low', 'ratelimit:a-1', 'signin:google:g-1', 'stall:w-1', 'watcher:gmail:g-2',
+      'broken:a-2', 'budgetstop:global_daily', 'import-failed-not-running', 'memory-low', 'ratelimit:a-1', `signin:google:${acc.id}`, 'watcher:gmail:g-2',
     ]);
     for (const r of rows) expect(r.value, r.key).not.toBe('');
     expect(standingOwnerNotices().map((c) => c.cardKey).sort()).toEqual(rows.map((r) => r.key));
     for (const key of rows.map((r) => r.key)) expect(frames.filter((f) => f.type === 'chat:error' && f.cardKey === key && f.severity !== 'info'), key).toHaveLength(1);
   });
 
-  it('a row whose condition has ended leaves the reload list as it is read', () => {
+  it('a row whose condition has ended is off the reload list, and a dashboard load removes it', () => {
     noteSignInExpired('google_accounts', 'g-1', 'The Google account needs signing in again.');
     db().prepare("UPDATE google_accounts SET connected = 1 WHERE id = 'g-1'").run();
     expect(standingOwnerNotices()).toEqual([]);
+    expect(servedOwnerNotices()).toEqual([]);
     expect(db().prepare("SELECT 1 FROM healer_state WHERE key = 'signin:google:g-1'").get()).toBeUndefined();
   });
 });

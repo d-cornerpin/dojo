@@ -278,13 +278,39 @@ DELETE FROM config WHERE key = 'standard_models_version';
 INSERT INTO config (key, value) SELECT 'ollama_upkeep', json_patch('{}', json_object(
   'starting', (SELECT value FROM config WHERE key = 'ollama_start_pending'),
   'limitOwed', CASE WHEN EXISTS (SELECT 1 FROM config WHERE key = 'ollama_limit_restart_owed') THEN json('true') END,
-  'settled', json((SELECT value FROM config WHERE key = 'ollama_takeover_settled'))))
+  'settled', (SELECT CASE WHEN json_valid(value) THEN json(value) END FROM config WHERE key = 'ollama_takeover_settled')))
 WHERE EXISTS (SELECT 1 FROM config WHERE key IN ('ollama_start_pending', 'ollama_limit_restart_owed', 'ollama_takeover_settled'));
 DELETE FROM config WHERE key IN ('ollama_start_pending', 'ollama_limit_restart_owed', 'ollama_takeover_settled');
 
--- 13. Every owner notice is one row in healer_state ('owner_told', with its sentence); the budget's own copy of its
---     card's words and dismissal has no reader.
+-- 13. Every owner notice is one row in healer_state ('owner_told', with its sentence). A card standing in its own
+--     store carries over under the key and words its site writes, dismissed where it was; the budget's own copy of its
+--     card's words and dismissal then has no reader.
 ALTER TABLE healer_state ADD COLUMN value TEXT;
+CREATE TEMP TABLE _cards (key TEXT PRIMARY KEY, at_ms INTEGER, words TEXT, dismissed INTEGER);
+INSERT OR IGNORE INTO _cards SELECT 'signin:google:' || id, json_extract(owner_notice, '$.at'), json_extract(owner_notice, '$.words'), json_extract(owner_notice, '$.dismissedAt')
+  FROM google_accounts WHERE connected = 0 AND json_valid(owner_notice);
+INSERT OR IGNORE INTO _cards SELECT 'signin:microsoft:' || id, json_extract(owner_notice, '$.at'), json_extract(owner_notice, '$.words'), json_extract(owner_notice, '$.dismissedAt')
+  FROM microsoft_accounts WHERE connected = 0 AND json_valid(owner_notice);
+INSERT OR IGNORE INTO _cards SELECT 'ratelimit:' || id, json_extract(rate_limit_notice, '$.at'), json_extract(rate_limit_notice, '$.words'), json_extract(rate_limit_notice, '$.dismissedAt')
+  FROM agents WHERE status = 'rate_limited' AND json_valid(rate_limit_notice);
+INSERT OR IGNORE INTO _cards SELECT 'broken:' || id, json_extract(broken_notice, '$.at'), json_extract(broken_notice, '$.words'), json_extract(broken_notice, '$.dismissedAt')
+  FROM agents WHERE status != 'terminated' AND json_valid(broken_notice);
+INSERT OR IGNORE INTO _cards SELECT 'silent:' || id, json_extract(silent_notice, '$.at'), json_extract(silent_notice, '$.words'), json_extract(silent_notice, '$.dismissedAt')
+  FROM agents WHERE status != 'terminated' AND json_valid(silent_notice);
+INSERT OR IGNORE INTO _cards SELECT 'paused:' || a.id, MAX(e.at_ms),
+  a.name || ' has been paused after repeated errors. Open the Vitals page to investigate, or resume it from its detail page.', NULL
+  FROM error_loop_state e JOIN agents a ON a.id = e.agent_id WHERE e.kind = 'paused' AND a.status = 'paused' AND e.owner_card_closed_at IS NULL GROUP BY a.id;
+INSERT OR IGNORE INTO _cards SELECT 'balance:' || key, json_extract(value, '$.at'), json_extract(value, '$.words'), json_extract(value, '$.dismissedAt')
+  FROM config WHERE key IN ('openrouter_threshold_alerted', 'deepseek_threshold_alerted') AND json_valid(value);
+INSERT OR IGNORE INTO _cards SELECT 'memory-low', json_extract(value, '$.at'), 'Critical: System memory below 512MB. Terminate idle sub-agents.', json_extract(value, '$.dismissedAt')
+  FROM config WHERE key = 'owner_notice_memory_low' AND json_valid(value);
+INSERT OR IGNORE INTO _cards SELECT 'watcher:' || substr(c.key, 22) || ':' || w.key, json_extract(w.value, '$.at'), json_extract(w.value, '$.words'), json_extract(w.value, '$.dismissedAt')
+  FROM config c, json_each(CASE WHEN json_valid(c.value) THEN c.value ELSE '{}' END) w WHERE c.key IN ('owner_notice_watcher_gmail', 'owner_notice_watcher_outlook', 'owner_notice_watcher_teams');
+INSERT OR IGNORE INTO _cards SELECT 'budget:' || id, 1000 * MAX(COALESCE(alert_50_sent, 0), COALESCE(alert_75_sent, 0), COALESCE(alert_90_sent, 0)), alert_words, alert_dismissed_at
+  FROM budgets WHERE alert_words IS NOT NULL;
+INSERT OR IGNORE INTO healer_state (scope, key, at_ms, value) SELECT 'owner_told', key, COALESCE(at_ms, 0), words FROM _cards WHERE words IS NOT NULL;
+INSERT OR IGNORE INTO healer_state (scope, key, at_ms) SELECT 'owner_dismissed', key, dismissed FROM _cards WHERE words IS NOT NULL AND dismissed IS NOT NULL;
+DROP TABLE _cards;
 ALTER TABLE budgets DROP COLUMN alert_words;
 ALTER TABLE budgets DROP COLUMN alert_dismissed_at;
 

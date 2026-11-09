@@ -18,8 +18,8 @@ import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
 import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance } from '../../costs/provider-balance-check.js';
-import { dismissOwnerNotice } from '../../healer/owner-notices.js';
-import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
+import { dismissOwnerNotice, ownerNoticeKeyOf, ownerToldOf } from '../../healer/owner-notices.js';
+import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
@@ -2889,15 +2889,16 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 // and restarts, and a NEW incident is a new card.
 
 // GET /api/config/owner-notices: the owner cards still standing
-configRouter.get('/owner-notices', (c) => c.json({ ok: true, data: standingOwnerNotices() }));
+configRouter.get('/owner-notices', (c) => c.json({ ok: true, data: servedOwnerNotices() }));
 
 // POST /api/config/owner-notices/dismiss: { cardKey } (or { words }), the card's X
 configRouter.post('/owner-notices/dismiss', async (c) => {
   const body = await c.req.json().catch(() => null) as { words?: unknown; cardKey?: unknown } | null;
   if (typeof body?.cardKey !== 'string' && typeof body?.words !== 'string') return c.json({ ok: false, error: 'cardKey or words is required' }, 400);
-  const hits = standingOwnerNotices().filter((card) => (typeof body.cardKey === 'string' ? card.cardKey === body.cardKey : card.words === body.words));
-  for (const card of hits) dismissOwnerNotice(card.cardKey);
-  return c.json({ ok: true, data: { dismissed: hits.length } });
+  const key = typeof body.cardKey === 'string' ? body.cardKey : ownerNoticeKeyOf(body.words as string);
+  const hit = key !== null && ownerToldOf(key);
+  if (hit) dismissOwnerNotice(key);
+  return c.json({ ok: true, data: { dismissed: hit ? 1 : 0 } });
 });
 
 // GET /api/config/openrouter/credits — fetch OpenRouter account balance

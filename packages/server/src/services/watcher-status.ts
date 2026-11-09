@@ -101,16 +101,6 @@ export function maybeAlertOnFailure(params: {
   const elapsedMin = Math.round(elapsedMs / 60000);
   const itemType = params.name === 'teams' ? 'messages' : 'emails';
   const message = `${label} has been failing for ${elapsedMin} minute${elapsedMin === 1 ? '' : 's'}. New ${itemType} aren't reaching your agents. Open ${settingsPath('channels')} to reconnect.`;
-  try {
-    broadcast({
-      type: 'chat:error',
-      agentId: 'system',
-      error: message,
-      severity: 'error',
-      cardClass: 'action',   // he reconnects the account
-      retryable: false,
-    });
-  } catch { /* best effort */ }
   recordFailureTold(params.name, account, message);   // no text: his lasting owner card is how he hears it
   return true;
 }
