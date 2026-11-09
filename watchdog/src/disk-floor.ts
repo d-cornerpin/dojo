@@ -1,6 +1,6 @@
 // The watchdog's one disk floor: never below the largest threshold the platform's own
-// operations refuse at (its backup guard measures the database and passes a flat gigabyte
-// once the database is big; a flat floor alone could call disk healthy while backups could not run).
+// operations refuse at. A backup needs a multiple of the database size, which exceeds a flat
+// gigabyte on a large database, so a flat floor alone would call disk healthy when backups cannot run.
 
 import fs from 'node:fs';
 import path from 'node:path';

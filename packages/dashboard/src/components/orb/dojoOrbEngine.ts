@@ -1757,7 +1757,7 @@ void main(){
     const now = performance.now() / 1000;
     const reduceMotion = reduceMotionMq.matches;
     /* 'static' renders the full orb but freezes time and ambient motion; state
-       changes still settle ('active'), then it re-freezes at ~1 fps. */
+       changes still settle ('active'), then it re-freezes at IDLE_FPS_STATIC. */
     const staticMode = quality === 'static';
 
     /* Full refresh while something is happening (stingers, indicators, recent
