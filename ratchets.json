@@ -4217,13 +4217,6 @@
       "why": "+34 net (26 code, 16 comment, -8). The whole of it is the pin: the snapshot list now carries the `from`/`to` levels parsed out of the name the namer above wrote, and the prune skips the lowest-`from` snapshot sharing the current target. It is here because keep-newest-2 was measured DELETING the only pre-update restore point under exactly the failure it exists for — W52 watched a KeepAlive crash loop evict `dojo-pre-109-to-900` in about thirty seconds and leave a user holding two 1.57 GB copies of the broken state. The comment half is the measurement, kept at the site because the next person to shrink this file needs to know which two lines are load-bearing. From here this file may only shrink."
     },
     {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 270,
-      "to": 277,
-      "by": "UPDATE-INTEGRITY U0 (W53) — 3.1.18: 135b's amendment is adjudicated in the shipped ledger",
-      "why": "+7 net (6 data, 1 punctuation, -0). One KNOWN_DIVERGENCES entry and nothing else. Demoting `park_namespace_empty` means every box in the field that already applied `135b` diverges from the file it applied, and the alternative to an entry here is a MIGRATION DIVERGENCE error on every boot of every updated box for ever — the instrument-rot shape this ledger was built to end. The entry is data, it names both hashes so it cannot pre-approve a future edit, and the file hash is machine-checked against the tree by migration-checksums.test.ts. From here this file may only shrink."
-    },
-    {
       "path": "packages/dashboard/src/pages/Settings.tsx",
       "from": 6535,
       "to": 6738,
@@ -5722,13 +5715,6 @@
       "why": "972 -> 977 (+5; numstat 5/0 - 1 import, 1 call, 3 comment). THE CODE IS TWO LINES, and they close a hole this door has had since the work spine landed: `work.agent_id` carries NO foreign key and NO cascade (migration 135, PART 0 rider 1, so a work row stays readable after its agent is gone), so NOTHING deleted an agent's work rows - not this door, which sweeps SEVEN other tables by hand, and not the database. Measured on the owner's body: 18 orphaned `work` rows across 9 vanished agents carrying 78 `work_events`, and the state that matters is `on_deck`, which `scheduler/runner.ts` polls every 30 seconds - an orphan there is a timer armed for an agent that cannot run. THE 3 COMMENT LINES NAME THE RIDER, because the missing cascade looks like an oversight and is not: a reader who 'fixes' it by adding ON DELETE CASCADE to `work.agent_id` would destroy the spine history that rider exists to keep, and a reader who deletes the call because 'the database surely cascades this' re-opens the hole. THE ALTERNATIVES WERE MEASURED. (a) PUT THE SWEEP IN `work/store.ts` beside the spine's other row work: REFUSED TWICE OVER - that module declares itself the spine's ONE WRITER OF `work.state` and a delete is not a transition, and at 2,076 lines it is pinned decrease-only, which is this same gate's standing instruction not to grow it. The sweep lives in a NEW 74-line `work/purge-sweep.ts` instead, under `maxNewFileLines`. (b) CALL IT FROM `deleteAllForAgent()` so this file does not change at all: REFUSED and it would have been a defect - that function is messages-only and three singleton agents (imaginer, trainer, PM) call it to reset their own scratch history, so sweeping work there would delete a live agent's open obligations on every reset. (c) LET THE MIGRATION DO IT ALONE: REFUSED - `172_orphaned_work_rows.sql` repairs the rows already orphaned, once; without this call every FUTURE purge mints new ones, because nothing revisits a purge that already happened. The two are halves of one change and each header names the other. From 977 this file may only shrink."
     },
     {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 277,
-      "to": 307,
-      "by": "PII RANGE REVIEW H1 (2026-09-26) — three adjudications the review ruled mandatory, plus the freeze gate that now requires them",
-      "why": "277 -> 307 (+30; 21 lines of ledger ROW — three entries at seven lines each, the same shape as every entry above them — and 9 of warrant). THE PIN AND THE NEW FREEZE GATE WERE IN DIRECT COLLISION, and that is the whole argument. Review H1 found THREE already-applied migrations comment-edited by the names/PII scrub; `_migrations.checksum` records what was APPLIED, so every box that applied them logs MIGRATION DIVERGENCE at ERROR on every boot for ever, and the ONLY mechanism that silences it is a KNOWN_DIVERGENCES entry naming both hashes. In the same round I mechanised the freeze (`deploy/checks/check-migration-freeze.mjs`): any commit touching `db/migrations/**` now FAILS unless it adds a matching entry to this very file. A decrease-only pin on an append-only adjudication ledger therefore forbids the exact act another blocking gate demands — the next legitimate migration edit could satisfy neither gate, which is an instrument deadlock rather than a size problem. This file is DATA, not logic: its bulk is five-field rows and hashes, `migrationChecksum` is three lines, and `migration-checksums.test.ts` machine-checks every `fileChecksum` against the tree, so a row that stops being true fails a test rather than rotting. THE RAISE IS TO THE MEASURED MINIMUM, NOT TO COMFORT: the commit before this one (`a0c31153`) deleted 20 lines of my own warrant prose — a stripped-SQL hash table duplicated inside each row's own `reason`, and a paragraph restating `135`'s third sentence — taking 327 to 307, and REFUSED going further: no arrangement of three entries fits under 277 without deleting an existing adjudication, which would re-arm the boot ERROR that entry exists to silence. REFUSED also: parking the three rows in a second module to dodge the pin — `KNOWN_DIVERGENCES` is read by one consumer as one array, and splitting a ledger for accounting is the accounting this gate exists to prevent. From 307 this file may only shrink, and the next adjudication pays the same way: trim first, argue the residual here, or delete an entry no box can still be carrying."
-    },
-    {
       "path": "packages/server/src/services/capability-registry.ts",
       "from": 0,
       "to": 251,
@@ -5825,13 +5811,6 @@
       "to": 111,
       "by": "ARM C HONESTY GATE (2026-09-26) - the fifth truth guard's decision, in its own module",
       "why": "NEW ENTRY at 111, pinned on arrival rather than waiting for the 240-line cap to notice. It holds the decision, the delivery vocabulary and the steer text for the `false-delivery-claim` floor, the way `claimed-delivery.ts` and `recorded-commitment.ts` hold guards 10's and 13's. Most of it is the argument, and the argument is what a reader cannot reconstruct: WHY the ledger-reading guard could not see this (`dojo_report` writes no `deliveries` row), WHY only `submitted` and `delivered` stand alone while `sent`/`posted`/`filed`/`published` need their object (measured against the honest sentences an agent says on a failing report turn - \"I sent you the link in chat\" fires on a bare-word list), WHY a bare word is enough HERE when the kit-side detector needs a destination, and WHY the steer may never ask for silence (ruling 10(d)). Delete that and the next editor re-derives a false positive or a false denial. From 111 it may only shrink."
-    },
-    {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 307,
-      "to": 317,
-      "by": "BACKLOG INFRA lane merge (2026-09-27), coordinator-applied — the lane DECLARED this raise in its report and the coordinator missed it at merge; slice C caught the red",
-      "why": "KNOWN_DIVERGENCES is a data table; an entry's minimum shape is 7 lines and the 168 adjudication is trimmed to it (a 14-line explanation cut to 3). The alternative — a rule in a file nobody opens — is the failure mode the table exists to prevent (infra-bundle-report.md item 2)."
     },
     {
       "path": "packages/server/src/voice/model-manager.ts",
@@ -6784,13 +6763,6 @@
       "to": 975,
       "by": "t107 B — the dashboard create door's DEFAULT grant set (OWNER RULING 2026-10-05 #4)",
       "why": "963 -> 975 (+12 net: 2 code added (the import and the fifth argument), 0 code removed, 10 comment added net — 16 new against 6 of the old block the ruling made false). THE TWO CODE LINES ARE THE WHOLE CHANGE AT THIS DOOR: one import of `DASHBOARD_CREATE_DEFAULT_GRANTS` from the new leaf `agent/access/create-defaults.ts` (71 lines, unpinned, under the 400 new-file cap, and the home of the ruling text, the no-backfill decision and the argument for why the shared floor did not move), and one argument on the `resolveSpawnGrants` call. THE COMMENT ARITHMETIC IS A REPLACEMENT, NOT AN ADDITION: the block above that call said \"it gets the same most-restrictive default a spawn does\" and ruling #4 makes that sentence false, so six lines went and sixteen say what is true now — which default this door resolves against, that everything else in the floor is unchanged (the half of the ruling as load-bearing as the addition), and that the base is clamped to the ceiling before anything merges over it. A reader who trims that paragraph re-derives \"this route is the same as a spawn\" and deletes the argument as redundant. WHAT WAS REFUSED: (a) putting the constant in `access/read.ts` or `access/authorize.ts` so it could join an EXISTING import line here, saving the 2 code lines — `read.ts` is the derivation and `authorize.ts` decides what may be WRITTEN, while this is a POLICY about one door, and the no-backfill decision has to be written somewhere a reader will find it; (b) appending the fifth argument to the `body.toolsPolicy` line, which hides an argument inside another's line to satisfy a number and would also defeat the wire clause's POSITION assertion. From 975 this file may only shrink."
-    },
-    {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 317,
-      "to": 369,
-      "by": "t112 — the cherry-pick of t102 item F: 165 is adjudicated by EFFECT, verified against the live DB on every boot",
-      "why": "317 -> 369 (+52 net: 55 added, 3 removed; 37 code, 18 comment). The mechanism cannot be moved out of this file and that was MEASURED, not assumed: check-migration-freeze.mjs parses `migrationChecksum` out of it by name and self-checks that it found it, the SQL-prepares gate declares it a runtime-DDL source and fails if it yields zero DDL statements, and the freeze gate also parses KNOWN_DIVERGENCES out of it — each tested by moving the thing and watching the gate refuse. What is here is the wiring, the third report arm and the effect-aware finding shape; the LEDGER itself went to a new db/migration-effects.ts (99 lines, unpinned, under the 240 crossing) because data plus predicates is a different kind of thing from the comparison. Nothing was paid for out of the existing prose — that would be comment-stripping to beat a pin. From 369 this file may only shrink."
     },
     {
       "path": "packages/server/src/gateway/routes/tracker.ts",
@@ -8720,13 +8692,6 @@
       "why": "+4: the import of `a2aJobOrigin`, the original `isA2ATurn` renamed `a2aWakeTurn` in place (no new lines), the one-line `jobA2A` read plus the root it sets, and the new `isA2ATurn = a2aWakeTurn || jobA2A !== null` line; `a2aCounterpartyIdentity` takes the job as its last fallback by replacing its `: null` in place. What the job's origin is, how it is read from the job's task, and why the continuation is not a reply-needed turn live in the NEW `work/job-origin.ts`, so this file carries no comment for it. REFUSED: putting the read in `counterparty-and-record.ts` (the classifier is where `isA2ATurn` is decided, and the turn's counterparty, scope and served request all read it). A later reader should know the earlier note in this file refused re-rooting a turn here for a different reason (a task read); this change roots only a trigger-less continuation, which has no root of its own to disturb. From here this file may only shrink."
     },
     {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 369,
-      "to": 376,
-      "by": "t155 A (2026-10-14) - one KNOWN_DIVERGENCES entry for the 129b sender-less peer row amendment",
-      "why": "369 -> 376 (+7: seven lines of ledger ROW, no logic). The v3.3.3 cut checks found that `129b_stable_merge_messages.sql` section 4a aborts the whole update chain, on every boot, for a box holding one peer message with no sender (fixed in the commit before this one). 129b is a released, applied migration, so amending it means every box that already ran the old bytes reports MIGRATION DIVERGENCE at ERROR for ever unless `KNOWN_DIVERGENCES` holds the (file, appliedChecksum, fileChecksum) triple, and `check-migration-freeze.mjs` fails the build without that entry in the same commit. The same collision the 2026-09-26 raise above argued: a decrease-only pin on an append-only adjudication ledger forbids the act another blocking gate demands. The entry is five fields, its fileChecksum is machine-checked against the tree by migration-checksums.test.ts, and its appliedChecksum is checked by t155-migration-129b-null-sender-peer-row.test.ts, which rebuilds the pre-amend bytes by reversing the edit. REFUSED: trimming existing warrant prose to fit (it would delete the argument for the other entries), and a second module for the row (one consumer reads one array). From 376 this file may only shrink."
-    },
-    {
       "path": "packages/server/src/memory/row-label.ts",
       "from": 292,
       "to": 313,
@@ -9049,13 +9014,6 @@
       "why": "+1: one import. The writer's refusal joins the existing `??` chain on the same line (`blockedDisposalRefusal ?? takeoverRefusal ?? measuredCloseRefusal`), and its body lives in the new `work/measure-close-gate.ts`. It is HERE because this is the tracker's one status writer, the only place every close crosses (the same reason t129's gate sits here). From 1,016 this file may only shrink."
     },
     {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 376,
-      "to": 383,
-      "by": "t250 (2026-10-23): v3.5 fix round 1, the one work_events rebuild of the release",
-      "why": "+7: seven lines of ledger ROW, no logic, the same five-field shape as every entry above it. The orchestrator ruled that D1's `continued` and `stalled` kinds fold into migration 200b, so the release rebuilds work_events once instead of twice. 200b had an earlier version on the v3.5 lane branch, and `check-migration-freeze.mjs` counts branch history since the tag as applied, so the amendment needs its (file, appliedChecksum, fileChecksum) triple here. The entry's reason states that the earlier bytes were applied by no released or owner box; `migration-checksums.test.ts` machine-checks the fileChecksum against the tree and pins the file list. REFUSED: a second rebuild file (200c) to avoid the entry, which would copy every box's work_events twice for the release, the cost the ruling exists to avoid. From 383 this file may only shrink."
-    },
-    {
       "path": "packages/server/src/work/occurrences.ts",
       "from": 835,
       "to": 841,
@@ -9168,13 +9126,6 @@
       "why": "+2: one import and one collector line in compileDiagnosticReport. The section itself (the score per question, the mode and the switching sentence the plan specifies) lives in the NEW agent/decision-policy.ts beside the policy it reports, so the report builder only mounts it, the way it mounts every other collector."
     },
     {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 376,
-      "to": 383,
-      "by": "t252 B4 (v3.5, 2026-10-23): two KNOWN_DIVERGENCES entries for the in-lane amendments of unreleased migration 201",
-      "why": "+7, now holding TWO ledger entries for 201 written compactly (one per earlier in-lane version: the summary_checks table added, then its `failed` literal renamed), in the shape every other entry has. The migration freeze gate counts every commit on the branch since the last tag as applicable, and the lane's one reserved migration was amended after B2 committed it (B4 added summary_checks). The ledger is the gate's only adjudication mechanism and the entry is data, not code. ALTERNATIVE REFUSED: rewriting the lane's history to fold B4's table into B2's commit is a rebase, which the lane rules forbid."
-    },
-    {
       "path": "packages/server/src/memory/summary-writer-health.ts",
       "from": null,
       "to": 243,
@@ -9229,13 +9180,6 @@
       "to": 467,
       "by": "t252 fix round 4 (v3.5, 2026-10-24): the model-limit restart never cuts a running call or a download",
       "why": "+1 over the pin (the file stood at 465 under a 466 pin; +3 lines, -1 by folding a comment into its line): the lock waits out the model-limit restart's hold and counts its pinned calls (fix round 4, NB-1): one import, one line in acquire, one wake call in release. The state and the hold live in the NEW services/ollama-quiet.ts."
-    },
-    {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 383,
-      "to": 387,
-      "by": "t252 rebase onto v35 (2026-10-24)",
-      "why": "+4, a merge correction, no new code: both v35 (the 200b row, +7 over the 376 base) and t252 (the two compact 201 rows, +4) raised this pin to 383 independently, so the rebased file holds both sides: 376 + 7 + 4 = 387. Every KNOWN_DIVERGENCES entry is kept, as the orchestrator ruled. From 387 this file may only shrink."
     },
     {
       "path": "packages/server/src/healer/diagnostic.ts",
@@ -9739,7 +9683,6 @@
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 387,
     "packages/server/src/gateway/routes/agents.ts": 1110,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 497,

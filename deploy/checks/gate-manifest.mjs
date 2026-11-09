@@ -86,9 +86,9 @@ export const GATES = [
     phase: 'pre-build',
     script: 'deploy/checks/check-migration-freeze.mjs',
     args: [],
-    title: 'Migration freeze (an applied migration may not change without an adjudication)',
-    fail: 'Migration freeze: a migration that a box has already applied changed with no KNOWN_DIVERGENCES entry. Every such box logs MIGRATION DIVERGENCE at ERROR on every boot. NOT publishing.',
-    why: 'The names/PII scrub comment-edited three migrations users\' boxes had already applied (135, 159, 171), and `_migrations.checksum` records what was APPLIED — so every boot of every one of those boxes logged MIGRATION DIVERGENCE at ERROR, for ever, over a comment. The edits were legitimate: migrations are RAW-COPIED into the package, so a dev-box agent name inside one genuinely ships, and the owner\'s rule of 2026-09-26 forbids that; the same legitimate reason will recur, which is why the freeze is MECHANISED rather than declared. `KNOWN_DIVERGENCES` deliberately cannot pre-approve a future edit — amend again and the triple stops matching and the ERROR returns silently — so the gate ties the edit to the entry. Two tiers, and the discriminator is when the old version stopped being current: if the LAST RELEASE shipped bytes the tree no longer has, that is this gate\'s business and it REFUSES; a divergence already superseded before that tag is somebody else\'s earlier amendment and is printed as declared debt every run (8 today, including the two wave-1A rows). It reads the hash and the ledger out of the product module — the hash PINNED by source match, the entries parsed, never a second copy — because a gate that re-typed either would report green while the boot errored. `--staged` is the pre-commit form: a staged migration change must ride with a staged `migration-checksums.ts`.',
+    title: 'Migration freeze (a migration a box may have applied never changes)',
+    fail: 'Migration freeze: a migration a box may already have applied changed. That box keeps the old bytes and warns at every boot. NOT publishing.',
+    why: 'Migrations are raw-copied into the package and `_migrations.checksum` records the bytes a box applied, so an edit to a released (or branch-committed) migration never reaches that box: the change belongs in a new numbered file. The gate compares each such version against the tree with the runner\'s own checksum.',
   },
   {
     id: 'size-ratchets',

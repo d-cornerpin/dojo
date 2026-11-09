@@ -1,47 +1,14 @@
 #!/usr/bin/env node
 // ════════════════════════════════════════
-// THE MIGRATION FREEZE — an applied migration may not change without an adjudication.
+// THE MIGRATION FREEZE: a migration a box may have applied never changes.
 //
-// ── THE INCIDENT THIS MECHANISES (2026-09-26) ──
-// The names/PII scrub edited COMMENT lines in three migrations that users' boxes had already applied
-// — `135_work_spine.sql`, `159_owed_interrupt_event_kind.sql`, `171_report_read_indexes.sql`. The edits
-// were legitimate: migrations are RAW-COPIED into the package (`deploy/build-package.sh:57-58`), so a
-// dev-box agent name inside one genuinely ships to every user's disk, and the owner's rule forbids
-// that. But `_migrations.checksum` records what was APPLIED, so every boot of every box that ran those
-// files then logged `MIGRATION DIVERGENCE` at ERROR — for ever, on a cosmetic change.
+// Migrations are raw-copied into the package and `_migrations.checksum` records the bytes a box
+// applied; a box whose file later differs warns at every boot and never re-runs it. So a version
+// that shipped in a release tag, or that this branch committed since the last tag (the dev box runs
+// the branch), may not be edited: a change goes in a NEW numbered file. The checksum here is the
+// runner's own (sha256 of the text with CRLF normalised, `db/migrations.ts`).
 //
-// The repair is `KNOWN_DIVERGENCES` in `packages/server/src/db/migration-checksums.ts`: an entry whose
-// (file, appliedChecksum, fileChecksum) triple matches turns the ERROR into an examined INFO. And the
-// reason that repair needs a GATE rather than a convention is in the mechanism itself: an entry
-// CANNOT pre-approve a future edit. Amend the file again and the triple stops matching and the ERROR
-// comes straight back — silently, because nobody re-reads a boot log they have learned to ignore.
-// "Comment-frozen once applied" as a habit will not hold, because the same legitimate reason (a name,
-// a wrong word, a stale pointer in raw-copied SQL) will recur.
-//
-// ── WHAT IT ASSERTS, AND WHY THAT IS CHECKABLE RATHER THAN HISTORICAL ──
-// The baseline is the LATEST RELEASE TAG, because a file that shipped in a release is a file some box
-// has applied. For every migration present at that tag:
-//
-//     bytes unchanged  ->  nothing to adjudicate
-//     bytes CHANGED    ->  KNOWN_DIVERGENCES must hold an entry for that filename whose
-//                          `appliedChecksum` is the TAG's checksum and whose `fileChecksum` is the
-//                          CURRENT one. Anything else — no entry, a stale entry, an entry that
-//                          adjudicates some other pair of versions — fails.
-//     file REMOVED     -> fails loudly: that is the `superseded` class and it needs a human, not a
-//                          checksum (a box will report a recorded name whose file is gone).
-//
-// It also runs in `--staged` mode for a pre-commit hook: any staged change under
-// `db/migrations/**` demands that the same staged set touch `migration-checksums.ts`.
-//
-// ⚠ THE HASH AND THE LEDGER ARE BOTH READ FROM THE PRODUCT, AND THE HASH IS PINNED.
-// A plain-node gate cannot import the TypeScript module (its specifiers are `.js` and there is no
-// build at pre-build time), so this file computes the checksum itself — sha256 over the text with CRLF
-// normalised — and then PINS the product's implementation by reading its source and refusing if it is
-// no longer that. A gate that re-typed the logic and drifted would report green while every boot
-// errored, which is the whole failure mode here. The ledger entries are parsed out of the same file,
-// so there is no second copy of the adjudications either.
-//
-// Usage:  node deploy/checks/check-migration-freeze.mjs [--staged] [--verbose]
+// Usage:  node deploy/checks/check-migration-freeze.mjs
 // ════════════════════════════════════════
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -50,70 +17,11 @@ import { execFileSync } from 'node:child_process';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const DIR = 'packages/server/src/db/migrations';
-const VERBOSE = process.argv.includes('--verbose');
-const STAGED = process.argv.includes('--staged');
 
 const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
-const CHECKSUM_MODULE = 'packages/server/src/db/migration-checksums.ts';
-const moduleSource = fs.readFileSync(path.join(ROOT, CHECKSUM_MODULE), 'utf8');
-
-/**
- * The product's own hash, PINNED. If `migrationChecksum` stops being "sha256 of the text with CRLF
- * normalised", this gate is computing a different number from the boot and must say so rather than
- * compare apples to oranges.
- */
-const PINNED_IMPL = "crypto.createHash('sha256').update(sqlText.replace(/\\r\\n/g, '\\n'), 'utf-8').digest('hex')";
-if (!moduleSource.includes(PINNED_IMPL)) {
-  console.error(`✗ migration freeze: \`migrationChecksum\` in ${CHECKSUM_MODULE} is no longer the`);
-  console.error('  implementation this gate pins, so the numbers it computes would no longer be the');
-  console.error('  numbers the boot compares. Update the pin here in the same commit as that change.');
-  console.error(`  pinned: ${PINNED_IMPL}`);
-  process.exit(1);
-}
 const migrationChecksum = (sqlText) =>
   crypto.createHash('sha256').update(sqlText.replace(/\r\n/g, '\n'), 'utf-8').digest('hex');
-
-/** The adjudications, parsed out of the product module — never a second copy. */
-function knownDivergences() {
-  const body = moduleSource.slice(moduleSource.indexOf('export const KNOWN_DIVERGENCES'));
-  const out = [];
-  for (const m of body.matchAll(/\{\s*file:\s*'([^']+)',\s*appliedChecksum:\s*'([0-9a-f]{64})',\s*fileChecksum:\s*'([0-9a-f]{64})',\s*since:\s*'([^']*)'/g)) {
-    out.push({ file: m[1], appliedChecksum: m[2], fileChecksum: m[3], since: m[4] });
-  }
-  if (out.length === 0) {
-    console.error('✗ migration freeze: parsed ZERO adjudications out of the product module. The shape '
-      + 'of KNOWN_DIVERGENCES changed and this reader went blind — which would pass every unadjudicated '
-      + 'edit. Fix the reader, do not delete the clause.');
-    process.exit(1);
-  }
-  return out;
-}
-const KNOWN_DIVERGENCES = knownDivergences();
-
-// ── --staged: the pre-commit form. A migration edit and its adjudication ride together. ──
-if (STAGED) {
-  const staged = git(['diff', '--cached', '--name-only']).split('\n').filter(Boolean);
-  const migrations = staged.filter((f) => f.startsWith(`${DIR}/`));
-  if (migrations.length === 0) {
-    console.log('✓ migration freeze: no staged migration change');
-    process.exit(0);
-  }
-  const adjudicated = staged.some((f) => f.endsWith('db/migration-checksums.ts'));
-  if (adjudicated) {
-    console.log(`✓ migration freeze: ${migrations.length} staged migration change(s), and `
-      + 'migration-checksums.ts is in the same commit');
-    process.exit(0);
-  }
-  console.error(`✗ migration freeze: ${migrations.length} staged change(s) under ${DIR}/ with no `
-    + 'adjudication in the same commit:');
-  for (const m of migrations) console.error(`    ${m}`);
-  console.error('\n  An applied migration that changes without a KNOWN_DIVERGENCES entry makes every');
-  console.error('  box that ran it log MIGRATION DIVERGENCE at ERROR on every boot, for ever. Add the');
-  console.error('  entry to packages/server/src/db/migration-checksums.ts in THIS commit, or make the');
-  console.error('  change a NEW numbered migration instead of an amendment.');
-  process.exit(1);
-}
 
 // ── the default form: the invariant, over every version a box could have APPLIED ──
 //
@@ -125,8 +33,7 @@ if (STAGED) {
 //     to ship in a release to have been applied; it only has to exist in a commit somebody runs.
 //  2. EVERY HISTORICAL VERSION was too wide the other way: it flagged eight files whose only "old"
 //     versions are development-time iteration from months before their first release. Nobody ever
-//     applied those bytes, and a gate that demands a ledger entry for them teaches people to write
-//     ledger entries that mean nothing.
+//     applied those bytes, and a gate that refuses them teaches people to ignore it.
 //
 // So a version counts as APPLICABLE when it could have reached a database:
 //   · its commit is contained in a RELEASE TAG (`git tag --contains`) — it shipped, so a user's box
@@ -176,14 +83,7 @@ const isReleased = (rev) => {
   return releasedCache.get(rev);
 };
 
-const ledger = new Map();
-for (const k of KNOWN_DIVERGENCES) {
-  if (!ledger.has(k.file)) ledger.set(k.file, []);
-  ledger.get(k.file).push(k);
-}
-
-const unadjudicated = [];
-const adjudicated = [];
+const changed = [];
 const preRelease = [];
 const debt = [];
 let single = 0;
@@ -228,14 +128,12 @@ for (const name of fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith
     const releasedIn = isReleased(rev);
     const applicable = releasedIn !== null || sinceTag.has(rev);
     if (!applicable) { preRelease.push({ name, rev: rev.slice(0, 8) }); continue; }
-    const entry = (ledger.get(name) ?? []).find((k) => k.appliedChecksum === sum && k.fileChecksum === nowSum);
     const where = releasedIn ? `released in ${releasedIn}` : `on this branch since ${tag}`;
-    const row = { name, rev: rev.slice(0, 8), where, oldSum: sum, nowSum, near: (ledger.get(name) ?? []).length };
+    const row = { name, rev: rev.slice(0, 8), where, oldSum: sum, nowSum };
     // `v` is the freeze's business when the last release shipped exactly `v` (so the tree changed it),
     // or when the file is newer than the tag and `v` came from this branch (171's class).
     const bindsNow = tagSum === null ? sinceTag.has(rev) : sum === tagSum;
-    if (entry) adjudicated.push({ ...row, entry });
-    else if (bindsNow) unadjudicated.push(row);
+    if (bindsNow) changed.push(row);
     else debt.push(row);
   }
 }
@@ -250,8 +148,7 @@ if (tag) {
 
 console.log('── migration freeze ──');
 console.log(`  ${single} migration(s) with one version in their whole history (cannot diverge)`);
-console.log(`  ${adjudicated.length} applicable change(s) WITH a matching adjudication, `
-  + `${unadjudicated.length} without, ${removed.length} removed since ${tag ?? 'the tag'}`);
+console.log(`  ${changed.length} applied migration(s) changed, ${removed.length} removed since ${tag ?? 'the tag'}`);
 if (debt.length > 0) {
   console.log(`  ⚠ ${debt.length} HISTORICAL divergence(s) — a released version differs from the file, `
     + 'and it had ALREADY been superseded by the time the last tag shipped, so the divergence was '
@@ -263,24 +160,19 @@ if (preRelease.length > 0) {
   console.log(`  ${preRelease.length} development-time version(s) that never reached a tag or this `
     + 'branch — not findings: ' + [...new Set(preRelease.map((p) => p.name))].join(', '));
 }
-if (VERBOSE) for (const a of adjudicated) console.log(`     adjudicated: ${a.name} (was ${a.rev}, ${a.where}, since ${a.entry.since})`);
-
-if (unadjudicated.length === 0 && removed.length === 0) {
-  console.log('✓ migration freeze: every applied migration that changed carries a matching adjudication');
+if (changed.length === 0 && removed.length === 0) {
+  console.log('✓ migration freeze: no migration a box may have applied has changed');
   process.exit(0);
 }
-for (const u of unadjudicated) {
-  console.error(`✗ ${u.name} differs from the version at ${u.rev} (${u.where}), with no matching KNOWN_DIVERGENCES entry`);
+for (const u of changed) {
+  console.error(`✗ ${u.name} differs from the version at ${u.rev} (${u.where})`);
   console.error(`    applied: ${u.oldSum}`);
   console.error(`    now:     ${u.nowSum}`);
-  if (u.near > 0) console.error(`    (${u.near} entr(y/ies) exist for this file but adjudicate other versions — a stale entry is not an adjudication)`);
 }
 for (const r of removed) {
   console.error(`✗ ${r} shipped at ${tag} and is GONE from the tree — the \`superseded\` class.`);
   console.error('    A box carrying that name will report a recorded migration whose file is absent.');
 }
-console.error('\n  Every box that applied the old bytes logs MIGRATION DIVERGENCE at ERROR on every');
-console.error('  boot until the triple matches. Add the entry (file, appliedChecksum, fileChecksum,');
-console.error('  since, reason) to packages/server/src/db/migration-checksums.ts — or revert the');
+console.error('\n  A box that applied the old bytes keeps them and warns at every boot. Revert the');
 console.error('  migration and put the change in a NEW numbered file.');
 process.exit(1);

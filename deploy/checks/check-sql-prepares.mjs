@@ -113,18 +113,9 @@ const SQL_SCOPE = [
 ];
 
 // ── Runtime DDL the migration runner applies OUTSIDE the .sql chain ──
-// PHASE-3 T0 found the gap by widening the scope: `_migrations.checksum` is added by
-// `ensureChecksumColumn` on every boot, so the built schema lacked a column two
-// production statements name and the gate reported them broken. A builder that
-// silently lacks a column is the exact "green because blind" shape this gate refuses,
-// so the DDL is EXTRACTED from the runner's own source rather than copied here — a
-// hand-copied `ALTER TABLE` would drift the moment the runner changed.
-const RUNTIME_DDL_SOURCES = [
-  {
-    file: 'packages/server/src/db/migration-checksums.ts',
-    why: '`ensureChecksumColumn` ALTERs `_migrations` at boot, outside the .sql chain (added 2026-07-29 after migration 139 shipped amended).',
-  },
-];
+// None today: `_migrations.checksum` is in the runner's own CREATE TABLE, which the base DDL
+// above already applies. A future boot-time ALTER is declared here, extracted from its source.
+const RUNTIME_DDL_SOURCES = [];
 
 // ── Declared skip classes: a refusal here is REPORTED BY CLASS, never investigated ──
 // Not a blanket ignore. Each class states its reason, is as narrow as the reason
