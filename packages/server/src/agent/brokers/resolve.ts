@@ -1,35 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE RESOLVER (PHASE-5 T2 Step 2) — the ONLY mint for a brokered resource.
-//
-// A broker never sees a raw argument. It sees a `ResolvedPath`, a
-// `ResolvedCommand` or a `ResolvedUrl`, and the only way to obtain one is to
-// call this module. That is the whole point of the brand: the type system
-// refuses to let a caller hand `authorize()` the string the model typed, so the
-// "check one spelling, open another" class of defect — a `..` traversal, a
-// symlink, a case fold — cannot be re-introduced by forgetting a step.
-//
-// ── THE TRUTHINESS SKIP DIES HERE (plan T2 Step 3) ──
-// The ladder read `args.path as string | undefined` and then `if (filePath)`.
-// That cast was a lie the compiler could not see: a caller could pass an array
-// or an object, the truthiness test passed, and `path.resolve` threw — so the
-// class was a CRASH, never a bypass. Resolution now answers with three distinct
-// verdicts and the dispatcher treats them differently:
-//
-//   ok               → a branded resource; the gate applies.
-//   `not_present`    → the argument is absent (undefined / null / empty string).
-//                      The gate DOES NOT APPLY, which is exact parity with
-//                      `if (filePath)`: the handler goes on to produce its own
-//                      friendlier "Path must be absolute" error. Preserving this
-//                      is the difference between a tidy-up and a narrowing.
-//   `not_a_string`   → the argument is present and is not a string. REFUSED.
-//                      It replaces a crash; nothing that used to work stops.
-//
-// ── BRANDS ──
-// `PATH_BRAND` and friends are module-private `unique symbol`s. No module
-// outside this file can construct a value that satisfies the interface — only
-// cast to it, which is visible in review and covered by a conformance clause in
-// `broker-contract.test.ts`.
-// ════════════════════════════════════════════════════════════════════════════
+// The ONLY mint for a brokered resource: brokers get branded values, never the typed string, so
+// "check one spelling, open another" cannot return. Absent argument: the gate does not apply (the
+// handler's own friendlier error runs); a present non-string is REFUSED. Brands are private symbols.
 
 import path from 'node:path';
 import { canonicalizeAgentPath, resolveRealPathHardened } from '../path-resolve.js';
@@ -40,20 +11,11 @@ declare const COMMAND_BRAND: unique symbol;
 declare const ARGV_BRAND: unique symbol;
 declare const URL_BRAND: unique symbol;
 
-/**
- * An absolute, tilde-expanded, `..`-collapsed path, carried together with its
- * symlink-resolved target.
- *
- * BOTH spellings are kept on purpose. A deny that matches only `lexical` is
- * walked around with a symlink; a deny that matches only `real` would refuse a
- * legitimate path whose parent directory happens to be a link. Every fs rule
- * therefore gets asked about both, and the verdict records which one bit — that
- * is what lets T2's staging tell a parity refusal from a hardening refusal.
- */
+/** BOTH spellings are kept on purpose: a deny matching only `lexical` is walked around with a
+ *  symlink, a deny matching only `real` refuses a legit path whose parent is a link. Ask both. */
 export interface ResolvedPath {
-  /** Exactly what the caller passed, for messages. */
   readonly raw: string;
-  /** `path.resolve(expandTilde(raw))` — absolute, `..` collapsed, NO symlinks. */
+  /** `path.resolve(expandTilde(raw))`: absolute, `..` collapsed, NO symlinks. */
   readonly lexical: string;
   /** The deepest-existing-ancestor realpath, broken links followed. */
   readonly real: string;
@@ -62,14 +24,8 @@ export interface ResolvedPath {
   readonly [PATH_BRAND]: true;
 }
 
-/**
- * A command line, together with the INNER commands a shell construct actually
- * runs. `execInnerCommands` is the EXEC-LOOP grammar the owner ruled on
- * (2026-07-28): a `for`/`while`/`if` line is the shell's own syntax, not a
- * program, so the authority check runs per inner command and the refusal names
- * the inner command. `inner` is empty when the line uses no construct, and the
- * broker then checks the whole line — exactly the pre-ruling behaviour.
- */
+/** The INNER commands a shell construct actually runs: authority runs per inner command and the
+ *  refusal names it; `inner` is empty for a plain line, which is then checked whole. */
 export interface ResolvedCommand {
   readonly raw: string;
   readonly trimmed: string;
@@ -77,27 +33,12 @@ export interface ResolvedCommand {
   readonly [COMMAND_BRAND]: true;
 }
 
-/**
- * AN ARGUMENT VECTOR (PHASE-5 T3) — a program and its literal arguments, with
- * NO shell anywhere near them.
- *
- * The difference from `ResolvedCommand` is the whole point of T3's rebuild. A
- * `ResolvedCommand` is a line the shell will PARSE: its `|`, `$( )`, `>` and
- * `for` are syntax, which is why it carries `inner` at all. A `ResolvedArgv` is
- * a program name plus bytes that are handed to `execFile` untouched — the same
- * characters are inert text, so there is no substitution to look inside, no
- * redirect to follow and no construct to unpack.
- *
- * `display` exists ONLY for the deny scans and the audit row. It is a
- * reconstruction for matching and messages and it is never executed; nothing may
- * ever hand it back to a shell.
- */
+/** A program plus bytes handed to `execFile` untouched: no shell parses them, so there is no
+ *  substitution to look inside, no redirect to follow, no construct to unpack. */
 export interface ResolvedArgv {
-  /** The vector exactly as the caller passed it. */
   readonly argv: readonly string[];
-  /** `argv[0]` — the program, as spelled. */
   readonly program: string;
-  /** `path.basename(program)` — what an allowlist entry like `git` matches. */
+  /** `path.basename(program)`, what an allowlist entry like `git` matches. */
   readonly base: string;
   /** The vector joined with single spaces, FOR MATCHING AND MESSAGES ONLY. */
   readonly display: string;
@@ -131,7 +72,6 @@ function notAString(what: string, raw: unknown): Resolution<never> {
   };
 }
 
-/** `undefined` / `null` / `''` → absent. Anything non-string → refusal. */
 function asPresentString(raw: unknown, what: string): Resolution<string> {
   if (raw === undefined || raw === null) return absent(what);
   if (typeof raw !== 'string') return notAString(what, raw);
@@ -151,7 +91,6 @@ export function resolvePathArg(raw: unknown): Resolution<ResolvedPath> {
   };
 }
 
-/** Mint a `ResolvedCommand`. */
 export function resolveCommandArg(raw: unknown): Resolution<ResolvedCommand> {
   const str = asPresentString(raw, 'command');
   if (!str.ok) return str;
@@ -163,14 +102,8 @@ export function resolveCommandArg(raw: unknown): Resolution<ResolvedCommand> {
   };
 }
 
-/**
- * Mint a `ResolvedArgv`. The ONLY place one comes from.
- *
- * A STRING is `not_a_string` here, which reads backwards until you see what it
- * is for: the old exec entry point took a string, and a caller that still passes
- * one must be REFUSED rather than quietly re-parsed into a vector. Re-parsing is
- * how the shell would come back.
- */
+/** Mint a `ResolvedArgv`, the only place one comes from. A STRING is `not_a_string` on purpose:
+ *  re-parsing one into a vector is how the shell would come back. */
 export function resolveArgvArg(raw: unknown): Resolution<ResolvedArgv> {
   if (raw === undefined || raw === null) return absent('argv');
   if (!Array.isArray(raw)) {
@@ -214,8 +147,7 @@ export function resolveUrlArg(raw: unknown): Resolution<ResolvedUrl> {
   } catch {
     return { ok: false, code: 'invalid_url', reason: `"${str.value}" is not a valid URL` };
   }
-  // WHATWG keeps the brackets on an IPv6 host; strip them once, here, so every
-  // consumer sees the same spelling `net.isIP` accepts.
+  // WHATWG keeps the brackets on an IPv6 host; strip them once here so consumers see one spelling.
   const hostname = u.hostname.replace(/^\[/, '').replace(/\]$/, '');
   return {
     ok: true,
@@ -223,11 +155,7 @@ export function resolveUrlArg(raw: unknown): Resolution<ResolvedUrl> {
   };
 }
 
-/**
- * A hostname the platform reaches unconditionally (`web_search` only ever talks
- * to `api.search.brave.com`). Declared effects whose `from` is `fixed:<host>`
- * resolve through here rather than through an argument.
- */
+/** A fixed hostname the platform reaches unconditionally; `from: 'fixed:<host>'` resolves here. */
 export function resolveFixedHost(host: string): ResolvedUrl {
   return { raw: host, href: `https://${host}/`, hostname: host, protocol: 'https:' } as unknown as ResolvedUrl;
 }

@@ -1,16 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════
-// `authorize(grant, effect)` — ONE DOOR (PHASE-5 T2 Step 2).
-//
-// The plan's whole sentence for this phase: *"Locks move from a name-ladder at
-// one entrance to `authorize(grant, effect)` at the actual doors."* This is that
-// function. It takes a GRANT (rows, deny before allow) and an EFFECT (a kind and
-// a RESOLVED resource) and answers with a verdict that names the rule it used.
-//
-// It is async because one kind — `net` — genuinely needs DNS to answer the SSRF
-// question, and pretending otherwise would have meant either a second entry
-// point or a weaker answer. Every other kind resolves without I/O; the sync
-// cores are exported by their own modules for `checkPermission`'s legacy shape.
-// ════════════════════════════════════════════════════════════════════════════
+// One door: authorize(grant, effect) takes a GRANT (rows, deny before allow) and an EFFECT
+// (kind + resolved resource) and returns a verdict naming the rule it used. Async because
+// only `net` needs I/O: DNS to answer the SSRF question.
 
 import { authorizeFs } from './fs.js';
 import { authorizeProc, authorizeArgv } from './proc.js';
@@ -44,20 +34,15 @@ export {
   type DenyRule, type DenyTier,
 } from './deny.js';
 
-/** `can_spawn_agents`, as a grant row. Branch 4's requirement. */
+/** `can_spawn_agents`, as a grant row. */
 export function authorizeSpawn(grant: Grant): Verdict {
   const verdict = evaluateRules(grant, 'spawn', () => true);
   if (verdict.decided && verdict.allowed) return allow(verdict.pattern);
   return deny('ladder-parity', 'no-spawn-grant', 'Agent spawning is not permitted');
 }
 
-/**
- * `system_control`, as grant rows. Branches 14a and 15's requirement — including
- * branch 15's CATEGORY derivation (`mouse` / `keyboard` / `screen` /
- * `applescript`), which is the decomposition T3 Step 2 owes and which this gate
- * already honours because the ladder did: a manifest may name the category, the
- * tool, or `'*'`.
- */
+/** `system_control`, as grant rows: a manifest may name the category, the tool, or `'*'`,
+ *  as the ladder's category derivation did (mouse, keyboard, screen, applescript). */
 export function authorizeSystemControl(grant: Grant, category: string, toolName: string): Verdict {
   const verdict = evaluateRules(grant, 'system_control', (pattern) =>
     pattern === '*' || pattern === category || pattern === toolName);
@@ -65,16 +50,8 @@ export function authorizeSystemControl(grant: Grant, category: string, toolName:
   return deny('ladder-parity', 'no-system-control-grant', `system_control permission required: ${category}`);
 }
 
-/**
- * THE FOUR SYSTEM-CONTROL CLASSES (PHASE-5 T3 Step 2), declared rather than
- * inferred from a string compare scattered across two files.
- *
- * The ladder derived the category and so does the gate table; what was missing
- * was anywhere that says *these are the classes* — so a fifth HID tool could be
- * added tomorrow with a typo'd category and nothing would notice. This constant
- * is the enumeration, `applescript` is on it, and `system-control.test.ts`
- * asserts every gated tool maps onto exactly one member.
- */
+/** THE SYSTEM-CONTROL CLASSES, declared rather than inferred from a string compare:
+ *  the enumeration every gated tool maps onto, held by `system-control.test.ts`. */
 export const SYSTEM_CONTROL_CLASSES = ['mouse', 'keyboard', 'screen', 'applescript'] as const;
 export type SystemControlClass = (typeof SYSTEM_CONTROL_CLASSES)[number];
 

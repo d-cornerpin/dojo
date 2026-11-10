@@ -1,36 +1,11 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE PROCESS BROKER (PHASE-5 T2 Step 2).
-//
-// `permissions.ts:checkExecPermission` + `checkExecCommand` + the exec handler's
-// own sensitive-file scan, in one place, asked of a RESOLVED command.
-//
-// ── THE THREE THINGS IT REFUSES, AND WHY EACH EXISTS ──
-// 1. THE GLOBAL EXEC DENY (`rm -rf /`, `rm -rf ~`, `chmod 777 *`; `sudo *` is a policy now) —
-//    unoverridable, checked on the WHOLE line before any construct is unpacked,
-//    so a deny cannot be hidden inside a `for` header.
-// 2. THE `secrets.yaml` SUBSTRING (v2.3.19, Scenario 3 finding) — a file_write
-//    deny cannot see `echo x >> ~/.dojo/secrets.yaml`, and the substring catches
-//    every spelling: tilde, absolute, `$HOME`, bare basename, inside `$(…)` or
-//    backticks, on either side of a redirect. This is the redirection-append
-//    class the T2 corpus names.
-// 3. THE SENSITIVE-FILE COMMAND SCAN — `cat ~/.ssh/id_rsa` and friends, caught
-//    at the tokenized-argument level before the shell runs.
-//
-// (3) MOVED HERE from the string-exec handler body in the same change that
-// introduced this module, because leaving it there would have left two places
-// that answer "may this command run" — the disease this phase exists to delete.
-// Its refusal MESSAGE is carried verbatim on the verdict (`blockedMessage`), so
-// nothing an agent reads changed: `agent/v2/loop.ts` keys retry behaviour off
-// the `[BLOCKED]` prefix and the text after it is what the model is steered by.
-//
-// ── EXEC-LOOP (owner ruling 2026-07-28) IS PRESERVED EXACTLY ──
-// *"why wouldn't we allow an agent to do commands if they have shell access?"*
-// A control-flow line is the shell's own grammar, not a program, so the
-// per-command authority check runs over the INNER commands `execInnerCommands`
-// names, and the refusal names the inner command. Grammar widens; authority does
-// not. A construct with nothing nameable inside it falls back to the whole line,
-// i.e. the pre-ruling refusal, so an agent with no shell access is still denied.
-// ════════════════════════════════════════════════════════════════════════════
+// THE PROCESS BROKER: the exec permission checks and the sensitive-file scan in one place, asked
+// of a resolved command. Refusals: the global exec deny on the WHOLE line before any construct is
+// unpacked (so it cannot hide in a for header; sudo is a per-box policy, not a floor item), the
+// secrets.yaml substring (every spelling a file_write deny cannot see: tilde, absolute, $HOME,
+// basename, inside $() or backticks, either side of a redirect), the sensitive-file command scan.
+// Refusal text rides verbatim on the verdict: the agent loop keys retry off [BLOCKED]. Control
+// is grammar, not a program: authority runs per inner command, refusal names it; a construct with
+// nothing nameable inside falls back to the whole line. Grammar widens; authority does not.
 
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
@@ -49,15 +24,10 @@ import {
 import type { ResolvedArgv, ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
-/** Hard-coded, unoverridable, NOT a `grant_rule` row: the platform's floor. Was FOUR — `'sudo *'` left
- *  it (v3.2.2 ruling) and is a per-box POLICY; THESE THREE STILL BITE INSIDE A SUDO LINE UNDER EVERY
- *  POLICY, because the wrapper comes off and this pipeline re-runs over the inner command first. */
+/** Hard-coded, unoverridable, NOT a grant_rule row: the platform's floor. These three still bite
+ *  inside a sudo line under every policy: the wrapper comes off and this pipeline re-runs first. */
 const GLOBAL_EXEC_DENY: readonly string[] = ['rm -rf /', 'rm -rf ~', 'chmod 777 *'];
 
-/** Verbatim from `tools.ts:SENSITIVE_FILE_READING_COMMANDS` — the obvious
- *  readers and the exfiltration shapes. Not a full shell parser and never
- *  claimed to be: the point is that an accidental `cat ~/.dojo/secrets.yaml`
- *  never leaks into the conversation. */
 const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
   'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings',
   'cp', 'mv', 'rsync', 'scp', // exfiltration shapes
@@ -65,21 +35,10 @@ const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
   'xxd', 'od', 'hexdump',
 ]);
 
-/**
- * THE OPTIONS OF THE READERS WHOSE FIRST OPERAND IS TEXT (re-review 5 P2, tightened in re-review 6
- * Q1). A grep-family PATTERN and a sed/awk SCRIPT are text, not a file: `grep ".env" src` searches
- * for the text `.env`. Which word is the pattern depends on every option before it, and these
- * programs accept forms a table cannot list (macOS grep takes any unique prefix of a long name, so
- * `--reg=` is `--regexp=`; sed's `-i` takes a value on one system and not on another). So the
- * pattern is skipped ONLY when every option word is known here EXACTLY; one unknown option, a
- * prefix included, and every word is scanned as a possible path. A misread can only scan more.
- *
- * Per program: `flags` short letters with no value, `values` short letters whose value is the rest
- * of the word or the next word, `text`/`file` the letters that give the pattern or script itself /
- * a FILE of it (read, so scanned), the long names of each kind, and `longNoText`: the long flags
- * that mean there is no pattern at all (`rg --files`), so every operand is a path. Every option
- * value but the text itself is scanned.
- */
+/** Options of readers whose first operand is TEXT (a grep pattern, a sed/awk script): the pattern
+ *  is skipped ONLY when every option word is known EXACTLY: forms a table cannot list exist, and a
+ *  misread must only widen the scan. Fields: flags = no-value letters; values = letters taking a
+ *  value; text/file = the pattern or script / a FILE of it; long names; longNoText = no pattern. */
 interface ReaderOptions {
   flags: string; values: string; text: string; file: string;
   longFlags: readonly string[]; longValues: readonly string[]; longText: readonly string[]; longFile: readonly string[];
@@ -114,7 +73,6 @@ const READER_OPTIONS: Readonly<Record<string, ReaderOptions>> = {
   awk: { flags: '', values: 'vF', text: '', file: 'f', longFlags: [], longValues: [], longText: [], longFile: [] },
 };
 
-/** The words of one reader that name a FILE it reads, for the sensitive-path scan. */
 function fileOperands(cmd: string, words: readonly string[]): string[] {
   const spec = READER_OPTIONS[cmd];
   if (!spec) return words.filter((w) => !w.startsWith('-'));
@@ -138,7 +96,6 @@ function fileOperands(cmd: string, words: readonly string[]): string[] {
       if (value === undefined && spec.longFlags.includes(name)) continue;
       unknown = true; continue;
     }
-    // A short cluster: the first letter that takes a value ends it.
     for (let c = 1; c < w.length; c++) {
       const letter = w[c];
       const rest = (): string | undefined => (c < w.length - 1 ? w.slice(c + 1) : words[++k]);
@@ -157,11 +114,8 @@ const ALWAYS_RECURSIVE: ReadonlySet<string> = new Set(['rg', 'ag', 'ack', 'mv'])
 const RECURSIVE_SHORT: Readonly<Record<string, string>> = { grep: 'rR', egrep: 'rR', fgrep: 'rR', cp: 'rRa', scp: 'r', rsync: 'ra' };
 const RECURSIVE_LONG: ReadonlySet<string> = new Set(['recursive', 'dereference-recursive', 'archive']);
 
-/**
- * Does this reader walk the folders it is given (re-review 6)? A recursive read of a folder reads
- * every file under it, so a folder that holds a sensitive location is refused for it. A long option
- * the scan does not know, a prefix like `--recur` included, counts as recursive.
- */
+/** Does this reader walk the folders it is given? A recursive read reads every file under it, so a
+ *  folder holding a sensitive location is refused for it; an unknown long option counts as recursive. */
 function readsRecursively(cmd: string, words: readonly string[]): boolean {
   if (ALWAYS_RECURSIVE.has(cmd)) return true;
   const letters = RECURSIVE_SHORT[cmd];
@@ -191,8 +145,6 @@ function readsRecursively(cmd: string, words: readonly string[]): boolean {
 /** Copy-style readers whose LAST operand is the destination: written, not read. */
 const WRITES_TO_LAST: ReadonlySet<string> = new Set(['cp', 'mv', 'rsync', 'scp']);
 
-/** The sensitive read one reader's words make, or null: a file on the sensitive list, or, for a
- *  recursive reader, a folder that is or holds a fixed sensitive location (not a copy's destination). */
 function readerReadsSensitive(cmd: string, words: readonly string[]): { blocked: true; reason: string } | null {
   const files = fileOperands(cmd, words);
   const recursive = readsRecursively(cmd, words);
@@ -209,21 +161,8 @@ function readerReadsSensitive(cmd: string, words: readonly string[]): { blocked:
   return null;
 }
 
-/**
- * The same line with its PROGRAM spelled as a basename.
- *
- * ⚠ FOUND BY THE T3 CORPUS, AND IT WAS OPEN BEFORE T3 TOO: `rm -rf /` is a
- * global deny and `/bin/rm -rf /` was not, because the deny patterns are
- * matched against the line as typed. An absolute path is the same program by
- * another spelling — the exec family's version of the case-fold and symlink
- * classes T2 closed on the filesystem side — so the deny is asked about BOTH.
- *
- * Deliberately asymmetric: only the DENY side normalises. The ALLOW side keeps
- * matching the line as written, because widening `exec_allow:['git *']` to also
- * accept `/usr/bin/git` would be a new capability, and P5-R5 says a new
- * capability is the owner's decision, not a worker's tidy-up. Normalising for
- * denies only can refuse more and never permit more.
- */
+/** The same line with its PROGRAM spelled as a basename: an absolute path is the same program, so
+ *  the deny asks both spellings. Only DENY normalises; a wider allow is the owner's capability call. */
 function basenameNormalized(trimmed: string): string | null {
   const firstSpace = trimmed.search(/\s/);
   const head = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
@@ -233,10 +172,7 @@ function basenameNormalized(trimmed: string): string | null {
   return base + (firstSpace === -1 ? '' : trimmed.slice(firstSpace));
 }
 
-/** The deny scan over ONE spelling of the line. `basis` is what tells a refusal
- *  the tree already produced (`ladder-parity`) from the one T3 adds by
- *  normalising the program's path (`bypass-hardening`) — the verdict says which
- *  it is rather than a comment claiming it. */
+/** Deny over ONE spelling; basis says whether basename normalising added the refusal. */
 function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict | null {
   for (const pattern of GLOBAL_EXEC_DENY) {
     if (matchCommandDenyPattern(pattern, trimmed)) {
@@ -268,10 +204,7 @@ function secretsSubstringDeny(spelling: string, basis: 'ladder-parity' | 'bypass
   return null;
 }
 
-/** ONE VOICE FOR THE SENSITIVE-READ REFUSAL, because it is now asked in two places — the whole line,
- *  and each command a PRIVILEGED line would really run. The `basis` differs (`ladder-parity` is the
- *  refusal this tree already produced; `bypass-hardening` is the one unwrapping a sudo line adds) and
- *  the words the agent reads do not, which is what keeps the two from drifting apart. */
+/** ONE VOICE for the sensitive-read refusal: two places, identical words, different basis. */
 function sensitiveReadDeny(reason: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict {
   return deny(
     basis,
@@ -281,15 +214,12 @@ function sensitiveReadDeny(reason: string, basis: 'ladder-parity' | 'bypass-hard
   );
 }
 
-/** The deny scan, exported for the AppleScript broker: a `do shell script`
- *  payload is a shell command and must meet the identical floor. */
+/** The deny scan, exported so the AppleScript broker's do shell script payload meets the same floor. */
 export function globalExecDenyPublic(trimmed: string): Verdict | null {
   return globalExecDeny(trimmed);
 }
 
-/** One command's SHELL authority, exported for the AppleScript broker so a
- *  `do shell script "…"` payload answers to the same grant rows the shell tool
- *  does — the whole point of the cage. */
+/** SHELL authority for one command: a do shell script payload meets the shell tool's own grant rows. */
 export function authorizeShellCommandText(grant: Grant, command: string): Verdict {
   return authorizeOneCommand(grant, command, 'shell');
 }
@@ -305,29 +235,16 @@ function globalExecDeny(trimmed: string): Verdict | null {
   return secretsSubstringUnquoted(trimmed);
 }
 
-/**
- * THE SECRETS SUBSTRING, ASKED OF THE LINE AS THE SHELL WILL UNQUOTE IT (field fix 3, re-review 4).
- * The owner's ruling: secrets stay hidden from every agent. The shell joins `secr''ets.yaml`,
- * `"secrets".yaml` and `secr\ets.yaml` back into the protected name, so the substring is also asked of
- * the unquoted reading (`shell-words.ts`, the one lexer the database door uses too). Only the
- * substring is asked of it, not the command-prefix denies, whose quoted data (`echo "rm -rf /"`) must
- * stay data. It can only refuse more.
- */
+/** The substring is also asked of the UNQUOTED line, never the prefix denies: quoted data stays data. */
 function secretsSubstringUnquoted(trimmed: string): Verdict | null {
   const unquoted = shellUnquoted(trimmed);
   if (unquoted === null || unquoted === trimmed) return null;
   return secretsSubstringDeny(unquoted, 'bypass-hardening');
 }
 
-/**
- * The tokenized sensitive-path scan, moved from the string-exec handler. Crude on purpose
- * — a sufficiently motivated bypass (heredocs, base64-decoded paths) gets
- * through, and the substring rule above is what covers the file that actually
- * matters.
- */
+/** The tokenized sensitive-path scan, crude on purpose: the substring covers what matters. */
 export function commandReadsSensitiveFile(command: string): { blocked: true; reason: string } | { blocked: false } {
-  // Re-review 4: the same scan over the words as the shell will unquote them, one simple command at a
-  // time, so a path split apart with quotes or a backslash is the path (`shell-words.ts`).
+  // Same scan over the words as the shell will unquote them, so a path split by quotes is still the path.
   for (const seg of lexShellLine(command)?.segments ?? []) {
     const scan = argvReadsSensitiveFile(seg.words.map((w) => w.value));
     if (scan.blocked) return scan;
@@ -349,8 +266,7 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
   return { blocked: false };
 }
 
-/** Per-command authority: the deny rows, then the allow rows, `checkExecCommand`
- *  semantics verbatim (glob on the whole line OR on the base command). */
+/** Per-command authority: deny rows, then allow rows; glob on the whole line OR the base command. */
 function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell'): Verdict {
   const trimmed = command.trim();
   const globals = globalExecDeny(trimmed);
@@ -388,35 +304,11 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   );
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// THE ARGV DOOR (PHASE-5 T3 Step 1) — `exec({argv})`, no shell anywhere.
-// ════════════════════════════════════════════════════════════════════════════
 
 /**
- * INLINE SCRIPT TEXT IS NOT AN ARGUMENT, AND THAT IS THE ONLY THING THIS
- * REFUSES.
- *
- * `exec({argv:['sh','-c','<anything>']})` is a shell script wearing argv's
- * clothes: the allowlist would gate `sh` and then never see what `sh` was told
- * to do, which would make the whole no-shell rebuild theatre. So the argv door
- * refuses the `-c` form and NAMES the other door in the refusal.
- *
- * ⚠ AND IT REFUSES NOTHING ELSE, WHICH IS THE PART THAT MATTERS. `sh
- * count.sh`, `bash build.sh`, `node script.js`, `zsh -l` all still run: they
- * execute a FILE, the file got there through the fs broker, and refusing them
- * would delete the ordinary "write a script and run it" workflow — a capability
- * loss, which the phase's posture makes the owner's decision and not a
- * worker's. The first draft of this function refused any interpreter as argv[0]
- * and the kit's own `coding-task` scenario is what showed that up: its entire
- * premise is *"write a small script … run your script"*.
- *
- * The `-c` scan runs over EVERY element, not just argv[1], because
- * `env FOO=1 sh -c '…'` re-points the program after the allowlist has already
- * looked at it.
- *
- * `eval`, `source`, `.` and `exec` are shell BUILTINS — there is no such program
- * to execFile — so naming them produces a refusal a model can act on instead of
- * an ENOENT it will retry.
+ * INLINE SCRIPT TEXT IS NOT AN ARGUMENT, AND THAT IS THE ONLY THING THE ARGV DOOR REFUSES: `sh -c`
+ * is a shell script in argv's clothes, refused over EVERY element (`env FOO=1 sh -c` re-points the
+ * program after argv[0] was read). Running a script FILE still runs: refusing it is a capability loss.
  */
 const SHELL_INTERPRETERS: ReadonlySet<string> = new Set<string>([
   'sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'ash', 'busybox',
@@ -436,20 +328,9 @@ function isInlineShellScript(argv: readonly string[]): boolean {
   return argv.some((a) => INLINE_SCRIPT_FLAGS.has(a));
 }
 
-/**
- * `authorize(grant, {kind:'proc', resource})` — the rebuilt exec door.
- *
- * Three refusals, in the order that makes each one un-walk-around-able:
- *   1. the shell interpreters above, on the PROGRAM (basename and spelling);
- *   2. the global deny + the `secrets.yaml` substring, on the reconstructed
- *      line, so `['rm','-rf','/']` is the same refusal `rm -rf /` always was;
- *   3. the tokenized sensitive-read scan over the argv ELEMENTS, which is
- *      strictly better than the string version it inherits: there is no quoting
- *      to get wrong, because the caller already told us where each token ends.
- * Then the grant's own `proc` rows decide, deny before allow, and an agent with
- * no allow row runs nothing — deny-by-default is the absence of a row, not a
- * special case.
- */
+/** The argv door: refusals in the order that makes each un-walk-around-able: builtins and -c on
+ *  the program; global deny and secrets substring on the reconstructed line; sensitive-read over the
+ *  rows, deny before allow; deny-by-default is the absence of a row, not a special case. */
 export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
   if (SHELL_BUILTINS.has(resource.base)) {
     return deny(
@@ -484,14 +365,7 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
   return authorizeOneCommand(grant, resource.display, 'proc');
 }
 
-/**
- * The tokenized sensitive-path scan over an ARGUMENT VECTOR.
- *
- * Same rule as `commandReadsSensitiveFile`, and deliberately the same crudeness,
- * but it does not have to guess where a token ends: the caller supplied the
- * boundaries, so the whitespace split that the string version lives with is gone
- * and a quoted path with a space in it is finally one token.
- */
+/** Same scan over a vector: token boundaries come from the caller, no whitespace guess. */
 export function argvReadsSensitiveFile(argv: readonly string[]): { blocked: true; reason: string } | { blocked: false } {
   if (argv.length === 0) return { blocked: false };
   for (let i = 0; i < argv.length; i++) {
@@ -503,23 +377,15 @@ export function argvReadsSensitiveFile(argv: readonly string[]): { blocked: true
   return { blocked: false };
 }
 
-/**
- * `authorize(grant, {kind:'shell'|'proc', resource})`.
- *
- * `scanSensitiveReads` exists so `checkPermission`'s legacy `type:'exec'` shape
- * — which is also the EXACT call the destructive-approval seam records
- * (`destructive-gate.ts:126`, and RULING P5-R3 makes that coupling T3's to
- * move) — keeps answering the identical question it answered before. The
- * dispatcher asks with the scan ON, which is where the string-exec handler used to ask it.
- */
+/** The command door. scanSensitiveReads keeps the legacy type:'exec' shape (the exact call the
+ *  destructive-approval seam records) answering its identical question; the shell door asks ON. */
 export function authorizeProc(
   grant: Grant,
   resource: ResolvedCommand,
   scanSensitiveReads = false,
 ): Verdict {
-  // The WHOLE line meets the global deny first: a construct's header is not one
-  // of the inner commands, and `secrets.yaml` must not become reachable by
-  // hiding it in one.
+  // The WHOLE line meets the global deny first: a construct's header is not one of the inner
+  // commands, and `secrets.yaml` must not become reachable by hiding it in one.
   const wholeLine = globalExecDeny(resource.trimmed);
   if (wholeLine) return wholeLine;
 
@@ -528,45 +394,28 @@ export function authorizeProc(
     if (scan.blocked) return sensitiveReadDeny(scan.reason, 'ladder-parity');
   }
 
-  // ── ⚠ THE PRIVILEGE PASS (v3.2.2 security review S1/S3) — BEFORE the grant pass, over EVERY
-  //    SIMPLE COMMAND the line contains, not just the ones a construct exposed. ──
-  // Two layers, and the ORDER is the soundness argument:
-  //   1. the SOUND FLOOR: does a privilege token appear in the RAW line at all? Crude, case-folded,
-  //      quote- and backslash-tolerant, asked before any parse, so nothing can hide it.
-  //   2. the PRECISE WALK: every simple command from the shared grammar, wrappers unwrapped. A segment
-  //      that really is privileged gets the full sudo authorization (strip, inner re-run, role wall,
-  //      policy). If the sound floor fired and the walk placed NOTHING, the line is UNPLACEABLE and it
-  //      is REFUSED — a line whose structure cannot be read is not run as root.
-  // `execSimpleCommands` shares this tree's ONE grammar with `execInnerCommands`; only the contract
+  // THE PRIVILEGE PASS, BEFORE the grant pass, over EVERY simple command the line contains.
+  // 1. the sound floor: a privilege token anywhere in the RAW line, asked before any parse.
+  // 2. the precise walk: simple commands from the shared grammar, wrappers unwrapped; a privileged
+  //    segment gets full sudo authorization; floor fired and walk placed nothing: UNPLACEABLE, refused.
+  // execSimpleCommands shares this tree's ONE grammar with `execInnerCommands`; only the contract
   // differs, because this view feeds the FLOOR and the allowlist keeps the old one (see that module).
   const segments = execSimpleCommands(resource.raw);
   let privilegedSeen = false;
   for (const seg of segments) {
-    // ⚠ THE FLOOR, PER SEGMENT, AND IT WAS NOT BITING EITHER. The review noted `sudo;rm -rf /` as
-    // giving "no root, but an unchecked `rm -rf /` (pre-existing prefix-floor property)" — and my own
-    // §4 clause measured the plainer form: `ls | rm -rf /` was ALLOWED for a scoped agent, because the
-    // floor read the head program of the whole line. The floor is meant to be UNOVERRIDABLE, and it was
-    // escapable by a pipe for every command in it, not just sudo.
-    // SAFE BY CONSTRUCTION, which is why it belongs in this round rather than the owner's queue: the
-    // floor is `rm -rf /`, `rm -rf ~`, `chmod 777 *` and the credentials file. None of those is a
-    // capability anybody can lose, so asking about every segment can only refuse the catastrophic.
+    // The floor PER SEGMENT, not just the head program of the line (an unoverridable floor must
+    // not be escapable by a pipe); its items are the catastrophic only, so this cannot lose a capability.
     const floored = globalExecDeny(seg);
     if (floored) return floored;
     if (!isSudoLine(seg)) continue;
     privilegedSeen = true;
-    // ⚠ AND THE FLOOR AGAIN, ONE INTERPRETER DEEPER, for the commands a PRIVILEGED line would really
-    // run. The pass above floors what the grammar can see as segments; a command inside `sh -c "…"` is
-    // one quoted word to that grammar, so `sudo sh -c "rm -rf /"` reached the grant pass with `sh` as
-    // its program and was ALLOWED under `free`. Removing `sudo *` from the floor is what made this
-    // reachable, so closing it belongs to this feature. See `privilegedInnerCommands`.
+    // The floor again ONE INTERPRETER DEEPER: the pass above floors what the segment grammar can
+    // see, and a command inside `sh -c "..."` is one quoted word to that grammar.
     for (const innerCommand of privilegedInnerCommands(seg)) {
       const flooredInner = globalExecDeny(innerCommand);
       if (flooredInner) return flooredInner;
-      // ⚠ AND THE SENSITIVE-READ SCAN, WHICH THE MODULE HEADER PROMISES BITES INSIDE A SUDO LINE AND
-      // DID NOT. It runs once over `resource.raw` and splits on whitespace, so in
-      // `su root -c "cat ~/.ssh/id_rsa"` it saw the tokens `"cat` and `~/.ssh/id_rsa"` — quotes
-      // attached, neither matching a reader program nor a sensitive path. Measured ALLOWED under
-      // `free` while the same command bare is refused `exec-sensitive-read`.
+      // The sensitive-read scan for the INNER command too: the outer scan splits the raw line on
+      // whitespace: a reader in a quoted span (su root -c "cat ~/.ssh/id_rsa") matches nothing.
       if (!scanSensitiveReads) continue;
       const innerScan = commandReadsSensitiveFile(innerCommand);
       if (innerScan.blocked) return sensitiveReadDeny(innerScan.reason, 'bypass-hardening');
@@ -575,9 +424,8 @@ export function authorizeProc(
     if (!v.allowed) return v;
   }
   if (!privilegedSeen && mentionsPrivilegeToken(resource.raw)) {
-    // The token is in the line and no segment owns it: a substitution, a nested quote, a construct the
-    // grammar reports opaquely. HARMLESS DATA IS THE ONE EXEMPTION, and it is narrow: the token appears
-    // only inside quoted spans AND no segment runs an interpreter that would execute those spans.
+    // The token is in the line and no segment owns it: a substitution, a nested quote, an opaque
+    // construct. HARMLESS DATA is the one exemption: quoted spans only, and no interpreter runs them.
     if (!privilegeTokenIsQuotedData(resource.raw, segments)) {
       return deny('bypass-hardening', 'sudo-unplaceable', SUDO_UNPLACEABLE_REASON);
     }
@@ -591,21 +439,7 @@ export function authorizeProc(
   return allow('exec-grant');
 }
 
-/**
- * THE SHELL DOOR (PHASE-5 T3 Step 1) — `shell({script})` under `/bin/zsh -c`.
- *
- * The authority is byte-identical to what `exec` applied yesterday, because it
- * IS that code: `authorizeProc` with the sensitive-read scan ON, reading the
- * `shell` grant rows. What changed is not the answer, it is the NAME of the
- * grant that gives it and the fact that the script's full text now arrives at a
- * door that exists to audit it, instead of at a door whose schema said
- * *"the shell command to execute"* and whose gate pretended a program name was
- * the whole story.
- *
- * The EXEC-LOOP ruling (owner, 2026-07-28) lives here: `resource.inner` is the
- * grammar unpack, so a `for`/`while`/`if` line is checked per inner command and
- * a construct with nothing nameable inside falls back to the whole line.
- */
+/** THE SHELL DOOR: shell({script}) under /bin/zsh -c, authorizeProc with the scan ON over shell rows. */
 export function authorizeShellScript(grant: Grant, resource: ResolvedCommand): Verdict {
   return authorizeProc(grant, resource, true);
 }

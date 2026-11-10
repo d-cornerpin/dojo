@@ -1,47 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════
-// ONE DENY LIST (PHASE-5 T2 Step 2) — the merge of the two twins.
-//
-// Until this module there were two hard-coded lists that both answered "may an
-// agent touch this file?", written years apart, never compared:
-//
-//   `isSensitivePath`        (agent/path-guards.ts:149 at `16bd0b8`) — basenames
-//                            and directory containment; gated file_read,
-//                            file_patch, the exec sensitive-file scan, and every
-//                            share / pdf input path.
-//   `GLOBAL_FILE_READ_DENY`  (agent/permissions.ts:86 at `16bd0b8`) — four globs
-//                            read by `checkPermission({type:'file_read'})`.
-//
-// They are non-overlapping in CONTENT and identical in PURPOSE, which is exactly
-// how a path ends up protected at one door and open at the next. Two more lists
-// sat beside them with the same shape (`GLOBAL_FILE_WRITE_DENY`,
-// `GLOBAL_FILE_DELETE_DENY`), so the merge takes all four.
-//
-// ── WHAT "MERGE" MEANS HERE, PRECISELY (RULING P5-R5) ──
-// It is a DATA merge, not a behaviour merge. One table; every row names the
-// TIERS it denies. `isSensitivePath` answers "does any row deny the sensitive
-// tier"; the global read/write/delete checks answer the same question of their
-// own tier. **The per-tier answers are byte-for-byte what they were**, so the
-// merge adds no refusal anywhere — it only removes the second place a future
-// secret file would have to be remembered. `negative-corpus.test.ts` §10 holds
-// that as a test, with both legacy lists frozen in the test as the reference.
-//
-// ── THE ONE PLACE THIS TABLE IS DELIBERATELY WIDER THAN ITS TWINS ──
-// Two rows carry `since: 'T2-hardening'`, and both are the corpus's own BYPASS
-// classes rather than new policy:
-//   * the `-wal` / `-shm` siblings of a globally write-denied database. They are
-//     the same database's bytes mid-transaction and they slip `~/.dojo/data/*.db`
-//     on the extension alone.
-//   * the SYMLINK-resolved target on the READ tier. `checkGlobalDenyFileWrite`
-//     already matched the resolved target (N3); the read tier never did, so a
-//     link planted in an allowed directory read `secrets.yaml` in the clear.
-// Both reach a resource that is ALREADY denied, which is the carve-out P5-R5
-// states in so many words. Both are labelled `T2-hardening` because a staging
-// window once existed that could record a refusal instead of applying it, and
-// `isGlobalDenyRule` below is what excluded these from it — earned on the live
-// box, where without it a sub-agent read `secrets.yaml` through a planted
-// symlink and a `file_write` corrupted `dojo.db-wal`. PHASE-5 T7 deleted the
-// window; every refusal here now applies to every agent by construction.
-// ════════════════════════════════════════════════════════════════════════════
+// One deny table; each row names the tiers it shuts. A tier's answer must stay
+// byte-for-byte what its pre-merge list gave, so the merge adds no refusal anywhere.
 
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
@@ -52,7 +10,7 @@ export type DenyTier = 'sensitive' | 'global_read' | 'global_write' | 'global_de
 
 export const DENY_TIERS: readonly DenyTier[] = ['sensitive', 'global_read', 'global_write', 'global_delete'];
 
-/** Where a rule came from — parity with the pre-T2 tree, or T2's own bypass hardening. */
+/** Where a rule came from: the pre-merge lists, or a bypass hardening row. */
 export type DenyProvenance = 'legacy' | 'T2-hardening';
 
 export interface DenyMatchContext {
@@ -71,22 +29,17 @@ export interface DenyRule {
   readonly since: DenyProvenance;
   /** What this row protects, in the words a removal would have to argue with. */
   readonly reason: string;
-  /** Field fix 3 re-review 2 (S12, OR-AUDIT-ANSWERS (b)): a row that protects a discipline, not a
-   *  secret. It binds every agent EXCEPT the main agent, who reads the path like any file; helper and
-   *  worker agents keep the limit. */
+  /** A discipline row: it binds every agent EXCEPT the one named, who reads the path like any file. */
   readonly exceptFor?: 'main';
   readonly test: (ctx: DenyMatchContext) => boolean;
 }
 
-/** Who is asking, as far as a scoped row cares. Omitted means unknown, and a scoped row then
- *  applies (the conservative reading for a caller that names no agent). A function is asked only
- *  when a scoped row's path matches, so the common path never looks the agent up. */
+/** Who is asking, as far as a scoped row cares. Omitted means unknown and the row then
+ *  applies, conservatively. A function viewer is asked only when a scoped row's path matches. */
 export type DenyViewer = 'main' | 'healer' | 'other';
 export type DenyViewerArg = DenyViewer | (() => DenyViewer);
 
-// ── The basenames the sensitive tier has always carried (verbatim from
-//    path-guards.ts's SENSITIVE_BASENAMES at `16bd0b8`; entries are lower-case
-//    because every comparison runs through foldPath). ──
+// Entries are lower-case: every comparison runs through foldPath.
 export const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
   'secrets.yaml',
   'secrets.yml',
@@ -107,20 +60,13 @@ export const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
   'credentials',
 ]);
 
-/**
- * Simple glob matcher supporting `**` (any number of segments), `*` (within one
- * segment) and `?`. Duplicated from `permissions.ts:matchGlob` deliberately? No —
- * it is NOT duplicated: `permissions.ts` re-exports its matcher and this module
- * would close a cycle importing it, so the deny rows below express containment
- * with plain string operations instead of globs. Every legacy glob is
- * reproduced exactly; `negative-corpus.test.ts` §10 is the proof, and it holds
- * the legacy patterns as literals so a drift fails naming the pattern.
- */
+/** No glob matcher lives here: importing permissions.ts's would close a cycle, so the
+ *  rows below express containment with plain string ops that match each legacy glob. */
 function underDir(folded: string, dir: string): boolean {
   return folded === dir || folded.startsWith(dir + path.sep);
 }
 
-/** `~/.dojo/data/<one segment>.db` — the legacy `~/.dojo/data/*.db` glob. */
+/** `~/.dojo/data/<one segment>.db`, reproducing the legacy `~/.dojo/data/*.db` glob. */
 function isDojoDbFile(folded: string, home: string): boolean {
   const dataDir = path.join(home, '.dojo', 'data');
   if (!folded.startsWith(dataDir + path.sep)) return false;
@@ -129,7 +75,6 @@ function isDojoDbFile(folded: string, home: string): boolean {
 }
 
 export const DENY_RULES: readonly DenyRule[] = [
-  // ── from GLOBAL_FILE_READ_DENY + GLOBAL_FILE_WRITE_DENY + isSensitivePath ──
   {
     id: 'dojo-secrets-store',
     tiers: ['sensitive', 'global_read', 'global_write', 'global_delete'],
@@ -185,11 +130,6 @@ export const DENY_RULES: readonly DenyRule[] = [
     reason: '~/.kube/config holds cluster credentials.',
     test: ({ folded, home }) => folded === path.join(home, '.kube', 'config'),
   },
-  // ── the rest of GLOBAL_FILE_READ_DENY: Dreamer-style log discipline ──
-  // FIELD FIX 3 (OR-MAC-BELONGS-TO-THE-AGENT, 2026-10-31: "the Mac belongs to the dojo agent"): these
-  // three rows fenced EVERY agent's file_read, the main agent's included. Re-review 2 (S12, OR-AUDIT-
-  // ANSWERS (b), full-Mac access is the main agent's): they bind every agent but the main agent
-  // (`exceptFor`); the Mac-belongs round's Healer-only scope had opened them to every worker.
   {
     id: 'healer-log',
     tiers: ['global_read'],
@@ -216,7 +156,6 @@ export const DENY_RULES: readonly DenyRule[] = [
     reason: 'same log discipline as healer.log, for the rotated archive tree.',
     test: ({ folded, home }) => folded.startsWith(path.join(home, '.dojo', 'logs', 'healer-archives') + path.sep),
   },
-  // ── the rest of GLOBAL_FILE_WRITE_DENY ──
   {
     id: 'dojo-database-files',
     tiers: ['global_write'],
@@ -246,17 +185,14 @@ export const DENY_RULES: readonly DenyRule[] = [
     reason:
       '"never modify your own system prompt" is engine-enforced. The glob covers every sensei soul ' +
       '(PM/TRAINER/HEALER/DREAMER/IMAGINER-SOUL.md), not only SOUL.md — the old pair left the rest writable.',
-    // The legacy matcher folded BOTH the pattern and the value, so on a
-    // case-SENSITIVE volume only the exact spelling matched. Folding the
-    // pattern here keeps that true in both directions.
-    // FIELD FIX 3 (OR-MAC-BELONGS-TO-THE-AGENT): the Dojo's OWN souls only, the ones it reads
-    // (`~/.dojo/prompts`, `prompt/assembler.ts` PROMPTS_DIR). It matched the basename anywhere, so a
-    // SOUL.md in a project folder on the Mac was unwritable; that is an ordinary file.
+    // Folding the pattern as well as the value keeps the legacy behaviour on a
+    // case-SENSITIVE volume, where only the exact spelling matched.
+    // The Dojo's own souls only, under ~/.dojo/prompts (assembler.ts PROMPTS_DIR): a
+    // SOUL.md in a project folder is an ordinary file and stays writable.
     test: ({ folded, base, home }) =>
       folded.startsWith(path.join(home, '.dojo', 'prompts') + path.sep)
       && (base === foldPath('SOUL.md') || base.endsWith(foldPath('-SOUL.md'))),
   },
-  // ── GLOBAL_FILE_DELETE_DENY ──
   {
     id: 'dojo-tree-undeletable',
     tiers: ['global_delete'],
@@ -266,16 +202,7 @@ export const DENY_RULES: readonly DenyRule[] = [
   },
 ];
 
-/**
- * Substrings that are denied inside a COMMAND LINE, regardless of the command's
- * shape (read, write, redirect, pipe, substitution). Moved verbatim from
- * `permissions.ts:GLOBAL_EXEC_DENY_SUBSTRINGS` so the one deny list owns the
- * exec spelling of the same protection too.
- *
- * v2.3.19 (Scenario 3 finding): `echo '...' >> ~/.dojo/secrets.yaml` went through
- * cleanly, because a file_write deny cannot see a shell redirect. The substring
- * catches every path form — tilde, absolute, `$HOME`, bare basename.
- */
+/** Denied in a command line whatever its shape: a file_write deny cannot see a shell redirect. */
 export const GLOBAL_EXEC_DENY_SUBSTRINGS: readonly string[] = ['secrets.yaml'];
 
 function contextFor(absPath: string): DenyMatchContext {
@@ -286,7 +213,7 @@ function contextFor(absPath: string): DenyMatchContext {
   };
 }
 
-/** Every tier on which `absPath` is denied, in table order. */
+/** Does this rule bind this viewer? Unscoped rows bind all; an unknown viewer stays bound. */
 const bindsViewer = (rule: DenyRule, viewer?: DenyViewerArg): boolean =>
   !rule.exceptFor || viewer === undefined || (typeof viewer === 'function' ? viewer() : viewer) !== rule.exceptFor;
 
@@ -309,26 +236,16 @@ export function denyRuleFor(absPath: string, tier: DenyTier, viewer?: DenyViewer
   return null;
 }
 
-// ── The tier readers. These are the ONLY shapes the rest of the tree uses, and
-//    each is byte-for-byte the answer its pre-merge twin gave. ──
+// The tier readers: the only deny shapes the rest of the tree uses.
 
-/**
- * Files that must NEVER appear in tool output and must never be published to a
- * share URL. This is `path-guards.ts`'s `isSensitivePath`, now a reader of the
- * merged table; `path-guards.ts` re-exports it so no call site moved.
- */
+/** Files that must NEVER appear in tool output or a published share URL.
+ *  `path-guards.ts` re-exports this so none of its call sites had to move. */
 export function isSensitivePath(absPath: string): boolean {
   return denyRuleFor(absPath, 'sensitive') !== null;
 }
 
-/**
- * The FIXED places under home that hold credentials, relative to home (re-review 6). The rows above
- * deny a file by its name or by being INSIDE one of these, which says nothing about a FOLDER that
- * holds one: `grep -r . ~/.ssh` names the folder, not a key. A recursive read of any folder that is,
- * or contains, one of these reads it, so the broker's reader scan refuses it
- * (`containsSensitiveLocation`). Each entry is on the sensitive list itself or by its contents, which
- * a test asserts, so this list cannot name a place the rows do not protect.
- */
+/** Rows deny files by name; a folder holding one is named whole by a recursive read
+ *  like `grep -r`, so the reader scan refuses these too. A test pairs each entry with a row. */
 export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config'];
 
 /** Is this path one of the fixed sensitive locations, or a folder that contains one? */
@@ -341,60 +258,19 @@ export function containsSensitiveLocation(absPath: string): boolean {
   });
 }
 
-/**
- * The broker-facing question: is this resource denied for this effect kind,
- * on ANY tier the kind consults? `fs_read` consults the read tier AND the
- * sensitive tier, because both doors existed on the read path before the merge
- * (`checkGlobalDenyFileRead` in permissions.ts, `isSensitivePath` in the
- * file_read handler body) — this is the union those two already formed, not a
- * new one.
- */
+/** fs_read consults read AND sensitive, the union the pre-merge read doors already formed. */
 export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write' | 'fs_delete'): boolean {
   return tiersForKind(kind).some((tier) => denyRuleFor(absPath, tier) !== null);
 }
 
-/**
- * IS THIS VERDICT A GLOBAL DENY? Every id in the table above names a resource
- * protected for EVERY agent regardless of manifest — `secrets.yaml`, the SSH
- * keys, the platform database, the sensei souls.
- *
- * ⚰ ITS FIRST JOB IS GONE AND ITS SECOND IS WHY IT STAYS (PHASE-5 T7). T2's
- * staging window asked this to decide whether a refusal was applied or merely
- * recorded; the window is deleted, so this has no production caller. It survives
- * as the classifier the census in `__tests__/staged-set.test.ts` uses: a new
- * `bypass-hardening` refusal that is NOT one of these bites sub-agents the moment
- * it lands — under RULING P5-R5 a narrowing somebody must decide, not discover.
- */
+/** True when the id names a resource denied for EVERY agent regardless of manifest.
+ *  No production caller; the census in `__tests__/staged-set.test.ts` uses it so a new
+ *  `bypass-hardening` id cannot silently become a narrowing nobody agreed to. */
 export function isGlobalDenyRule(ruleId: string): boolean {
-  // PHASE-5 T3: the EXEC global denies join this answer, and the omission was
-  // latent rather than harmless. RULING P5-R6's carve-out is *"a global deny is
-  // NEVER staged"*, and while the staging window existed (T2 → T7) this function
-  // is what it asked. At T2 every exec refusal carried `basis:'ladder-parity'`, which the
-  // staging window excludes anyway, so no exec deny ever reached this check. T3
-  // adds the first exec refusal with a `bypass-hardening` basis (the
-  // basename-normalised `/bin/rm -rf /` spelling), and without this line a
-  // SUB-AGENT would have run it log-only — the exact shape of the incident that
-  // earned P5-R6 on the filesystem side.
+  // A global deny is NEVER staged: an exec deny missing here would run log-only
+  // for a sub-agent, exactly what every other agent is refused outright.
   if (ruleId.startsWith('global-exec-deny:') || ruleId.startsWith('global-exec-substring:')) return true;
-  // PHASE-5 T5: the TOKENIZED SENSITIVE-READ refusals join it too, and this is
-  // the same omission one line later rather than a new idea. All three ids below
-  // are `isSensitivePath` — the `sensitive` tier of the table above — enforced at
-  // a door that reaches it by a route other than a path argument:
-  //
-  //   `exec-sensitive-read`                argv / shell command tokens
-  //   `applescript-shell-sensitive-read`   a `do shell script "…"` payload
-  //   `sensitive-share`                    the share / pdf-input surface
-  //
-  // Two of them already carried `basis:'ladder-parity'`, so the window never
-  // reached them and naming them here changes no answer. The AppleScript one did
-  // NOT: T3 gave it `basis:'bypass-hardening'` (correctly — the pre-T3 tree never
-  // audited a script body at all) and an id this function did not recognise, so
-  // for a SUB-AGENT the block list was RECORDED and not applied, and because the
-  // payload scan runs ahead of the grant rows the staged verdict also returned
-  // before `no-applescript-grant` could. P5-R6 is verbatim — *"a global deny is
-  // NEVER staged"* — and the sensitive-files list is a global deny however the
-  // door reaches it. Held by `__tests__/staged-set.test.ts`, which asks the
-  // brokers themselves rather than trusting this list.
+  // The sensitive tier reached by a non-path route is a global deny too, however the door gets there.
   if (ruleId === 'exec-sensitive-read' || ruleId === 'applescript-shell-sensitive-read' || ruleId === 'sensitive-share') return true;
   return DENY_RULES.some((r) => r.id === ruleId);
 }
@@ -402,13 +278,9 @@ export function isGlobalDenyRule(ruleId: string): boolean {
 /** Which tiers an effect kind consults. Stated once so the brokers cannot drift. */
 export function tiersForKind(kind: 'fs_read' | 'fs_write' | 'fs_delete'): readonly DenyTier[] {
   switch (kind) {
-    // The file_read door has always consulted both: `checkGlobalDenyFileRead`
-    // inside checkPermission AND `isSensitivePath` inside the handler body.
     case 'fs_read': return ['global_read', 'sensitive'];
-    // The file_write door consulted the write globals; `file_patch` additionally
-    // consulted the sensitive list in its own handler body, and file_write /
-    // file_append did not. Kept exactly that way — widening file_write to the
-    // sensitive tier would refuse writes the platform allows today (P5-R5).
+    // The sensitive tier stays out of fs_write on purpose: widening it here would
+    // refuse writes the platform allows today.
     case 'fs_write': return ['global_write'];
     case 'fs_delete': return ['global_delete'];
   }

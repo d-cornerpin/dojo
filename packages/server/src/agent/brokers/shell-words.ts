@@ -1,26 +1,15 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// ONE QUOTE-AWARE READING OF A SHELL LINE, shared by the doors that ask what a line names.
-//
-// A shell joins `secr''ets.yaml`, `"secrets".yaml` and `secr\ets.yaml` back into `secrets.yaml`
-// before the program sees it, so a check that reads the line as typed misses the name. The
-// database door (`dojo-redirect.ts`) and the broker's sensitive-path checks (`proc.ts`) both read
-// the words as the shell will unquote them, through this one lexer, so the two cannot drift.
-//
-// It is a reading for CHECKS: it splits simple commands at ; && || | and newlines, removes quotes
-// and backslash escapes, and marks what the shell would expand or treat as syntax. It never builds
-// a command to run. A path assembled while the command runs (a variable, a string built inside
-// another program) is beyond any reading of the text.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// ONE quote-aware reading of a shell line, shared by the doors that ask what a line names:
+// a shell rejoins `secr''ets.yaml`, `"secrets".yaml` and `secr\ets.yaml` back into `secrets.yaml`
+// before the program sees it, so a check reading the line as typed misses the name.
+// dojo-redirect.ts and proc.ts share this one lexer so the two readings cannot drift apart.
+// It never builds a command to run; a path assembled while the command runs is beyond any reading.
 
 export interface Word {
   value: string;
-  /** No quotes, escapes or expansions: the word is exactly its characters. */
   plain: boolean;
-  /** The whole word is one quoted span. */
   quotedWhole: boolean;
   /** Contains something the shell expands or substitutes ($name, glob, brace, backtick). */
   expands: boolean;
-  /** Starts with an unquoted `~/` (the shell's home expansion); otherwise plain. */
   tilde: boolean;
 }
 export interface Segment { words: Word[]; text: string; pipedIn: boolean }
@@ -80,7 +69,6 @@ export function lexShellLine(line: string): Lexed | null {
       i = j + 1; continue;
     }
     if (c === '\\') { const cur = run(); cur.plain = false; cur.value += line[i + 1] ?? ''; i += 2; continue; }
-    // An ordinary unquoted character.
     const fresh = w === null;
     const cur = run();
     if (fresh && c === '~') {
