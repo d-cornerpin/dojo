@@ -76,6 +76,7 @@ export function readLegacyAccess(
     shareProfile,
     maxProcesses: p.max_processes ?? 3,
     rawAllow: (tools?.allow ?? []).join(', '),
+    // Only denies no toggle owns: seeding the toggles' own denies here makes a web toggle one-way.
     rawDeny: (tools?.deny ?? []).filter((t) => !WEB_TOOLS.includes(t)).join(', '),
   };
 }

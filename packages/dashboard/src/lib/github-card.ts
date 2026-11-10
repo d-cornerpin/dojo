@@ -43,6 +43,7 @@ export const describeScope = (scope: string | null): string => {
     + `"${GITHUB_EXPECTED_SCOPE}" permission the Dojo asks for. Disconnect and connect again to narrow it.`;
 };
 
+// Derived from GITHUB_EXPECTED_SCOPE; never copy this wording into JSX, or a widened scope keeps reassuring.
 export const scopeRequestSentence = (): string => {
   if (GITHUB_EXPECTED_SCOPE === 'public_repo') {
     return 'It asks for one permission, GitHub\'s "public_repo": it lets the Dojo create issues on public repositories, '

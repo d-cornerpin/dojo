@@ -1,5 +1,5 @@
 
-/** [a-z0-9]+ and not \w: the pattern refuses tags the engine never writes, so prose never draws as a chip. */
+/** Copy of the server's PLACEHOLDER_RE, pinned by a server test; [a-z0-9]+ not \w so prose never reads as a chip. */
 export const CREDENTIAL_PLACEHOLDER_SOURCE = '<redacted-credential(?::([a-z0-9]+))?>';
 
 export type CredentialSegment =

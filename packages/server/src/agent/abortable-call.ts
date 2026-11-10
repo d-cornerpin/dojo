@@ -1,4 +1,4 @@
-
+// Per-call abort slot for media dials over the registry in `shared-state.ts`, which must never import this file.
 import { announceLiveWork } from './live-work.js';
 import {
   registerAbortable,

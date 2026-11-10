@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 
 /** useState scoped to agentId: a switch reads the new agent's fresh initial in the same render,
- *  a stale agent's closure write is dropped, and remember:true parks unsent work in its own slot. */
+ *  a stale agent's closure write is dropped. remember:true keeps unsent work per agent, so a
+ *  parked agent's late write lands in its own slot instead of being dropped. */
 export function useAgentState<T>(
   agentId: string,
   initial: T | (() => T),

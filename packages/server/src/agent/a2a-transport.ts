@@ -70,8 +70,8 @@ const TERMINAL_INTENTS = new Set<A2AIntent>(['DELIVERABLE', 'FYI', 'COMPLETE', '
 const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
 const REPLY_INTENTS = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);   // the answer-class intents
 
-// "No-wake" intents are terminal and need not be seen now; ANSWER and DELIVERABLE are terminal
-// but wake, the receiver awaits the content. requires_response=false overrides per call.
+// Only FYI and STATUS are ambient no-wake. COMPLETE and FAIL must wake: the assigner has a next
+// step, and a silent one stalls multi-step work. requires_response=false overrides per call.
 const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS']);
 
 import { SEMANTIC_DEDUP_THRESHOLD as DEDUP_SIMILARITY_THRESHOLD } from '../memory/dedup-threshold.js';   // the one shared number
@@ -388,7 +388,7 @@ export interface A2ADeliveryResult {
 /** The sender's declared hand-off, beside the envelope: a platform fact, not a message fact. */
 export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null; work?: EngineEventWork | null };   // the work a wake belongs to, as the serve-boundary columns
 
-/** It must not hard-name a recipient or channel: the destination is whoever asked, whence came. */
+/** It must not hard-name a recipient or channel: the deliverable is owed to whoever asked, on their channel. */
 export function deliverableArrivedNote(senderName: string): string {
   return `\n\n[Engine note: ${senderName} returned a deliverable on this thread. Whoever asked for this work is owed it, `
     + 'on the channel they asked on, unless a task, project, technique or live message names a channel.]';
@@ -592,6 +592,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // A deliverable to the primary gets an owner-surface hint; ops senders and join-owned threads
   // are excluded: ops traffic is not user-facing, and the join already delivers "Heard back".
   let primaryDeliverableHint = '';
+  // Read BEFORE the piece lands: landing settles the child, and this one lookup serves the hint and the join.
   const joinChild = findJoinChildByThread(target.id, threadId), joinHandlesDelivery = !!joinChild;
   try {
     const { isPrimaryAgent, isPMAgent, isHealerAgent } = await import('../config/platform.js');
@@ -952,7 +953,8 @@ function relayDoorDetail(r: ToolOutcome): string {
 }
 
 /** Deliver a join's result on the ask's channel, falling back to the dashboard so the owner
- *  always sees it; records the delivery and returns its row id, or null when nothing recorded. */
+ *  always sees it; records the delivery and returns its row id, or null when nothing recorded.
+ *  Exactly-once is the caller's: it must have won the `work` transition first; this sets no flag. */
 async function deliverJoinResultToOwner(
   join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' | 'courier'; onOutcome?: (o: JoinRelayOutcome) => void },
 ): Promise<string | null> {
@@ -1501,9 +1503,9 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
       }
 
       if (rung.rung === 'engine-relay') {
-        // THE ENGINE SHIPS THE PIECES ITSELF: the drives are spent and every piece is back, so
-        // announcing a failure is the one shape silence cannot excuse. It composes one preface
-        // line plus the pieces VERBATIM; the "already told them?" read runs FIRST, no second telling.
+        // THE ENGINE SHIPS THE PIECES ITSELF: the drives are spent and every piece is back, so a
+        // "could not do it" stuck notice would be false. It composes one preface line plus the
+        // pieces VERBATIM; the "already told them?" read runs FIRST, no second telling.
         const already = priorEngineJoinRelay(join.id);
         if (already) {
           noteSettlementRefusal(settleAskOnJoin(join.id, {
@@ -1608,7 +1610,7 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
         continue;
       }
 
-      // 4. THE OWNER STILL GETS WHAT CAME BACK: the relay runs only after the agent's turn.
+      // 4. THE OWNER STILL GETS WHAT CAME BACK: last in the ladder, and only past the grace floor.
       const ans = db.prepare('SELECT created_at FROM messages WHERE id = ?')
         .get(join.rootId) as { created_at: number } | undefined;
       const ageSec = ans ? (Date.now() - ans.created_at) / 1000 : COMPILE_GRACE_SECONDS + 1;

@@ -8,10 +8,10 @@ export interface MailboxEvent {
 }
 
 export function parseMailboxEvent(content: string): MailboxEvent | null {
-  // All three inbox framings card the same, the old direct-message one included for old chat history.
   if (!content.includes('[MAILBOX EVENT]') && !content.includes('[EMAIL FROM A KNOWN CONTACT]') && !content.includes('[DIRECT MESSAGE]')) return null;
 
   const subject = content.match(/^Subject:[ \t]*(.*)$/m)?.[1]?.trim() ?? null;
+  // Subject marks the per-email detail; the "N new emails" summary has none and is not carded.
   if (subject === null) return null;
 
   const account =

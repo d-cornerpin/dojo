@@ -25,7 +25,7 @@ export interface VoiceClientOptions {
   speed?: number;
   /** Whisper model size to use server-side (e.g. "large-v3-turbo"). */
   sttModel?: string;
-  /** VAD end-of-speech patience: quick, normal, patient. */
+  /** Turn-taking patience setting: quick, normal, patient. The client VAD redemption itself is fixed. */
   vadSensitivity?: 'quick' | 'normal' | 'patient';
   /** Override for the WS endpoint; defaults to `/api/ws/voice`. */
   wsUrl?: string;
@@ -144,7 +144,7 @@ export class VoiceClient {
     this.speed = opts.speed ?? 1;
     // Moonshine default (no native deps); the server maps stored values via parseSttModelKey.
     this.sttModel = opts.sttModel ?? 'moonshine-base';
-    // Quick (200ms): longer settings put dead air before every STT pass.
+    // Default 'quick'; the client VAD redemption is the fixed VAD_REDEMPTION_MS, so this does not change it.
     this.vadSensitivity = opts.vadSensitivity ?? 'quick';
     this.wakeWordEnabled = opts.wakeWordEnabled ?? false;
     this.wakePhrase = opts.wakePhrase ?? 'hey agent';
