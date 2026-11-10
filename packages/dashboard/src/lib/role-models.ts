@@ -1,16 +1,10 @@
-// ── v3.5 (fix round 1): choosing a model for an agent, the way the server will judge it ──
-//
-// The Dojo's decision model answers yes/no questions; it is never an agent's, a tier's or the voice
-// opener's model, so no picker offers it. A role agent's default is the cheapest model the server would
-// ACCEPT for an agent (the memory fit and the 32K floor), asked of the server rather than guessed here,
-// and a save that the server refuses says why instead of saying "saved".
 import type { Model } from '@dojo/shared';
 import { request } from './door';
 
 /** May a person pick this model for an agent? (Enabled, and not the Dojo's decision model.) */
 export const isPickableAgentModel = (m: Model): boolean => m.isEnabled && !m.capabilities.includes('decision');
 
-/** The cheapest pickable model the server accepts for an agent — free ones first — or '' when none does. */
+/** The cheapest pickable model the server accepts for an agent, free ones first, or '' when none. */
 export async function defaultRoleModel(models: readonly Model[]): Promise<string> {
   const byCost = [...models].filter(isPickableAgentModel)
     .sort((a, b) => (a.inputCostPerM ?? 0) - (b.inputCostPerM ?? 0));

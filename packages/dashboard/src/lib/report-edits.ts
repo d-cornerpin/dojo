@@ -1,13 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// WHAT THE REPORT PREVIEW CARD IS ALLOWED TO SAY, AND WHAT IT IS ALLOWED TO SEND.
-//
-// ── WHY THIS IS NOT IN `ReportPreviewCard.tsx` ──
-// `packages/dashboard` has NO test runner, so a rule inside a `.tsx` is a rule nothing checks.
-// The precedent is `lib/provider-edits.ts` (T66b) and `lib/github-card.ts` (T5), both imported
-// directly by `packages/server`'s suite. The rules here are the ones where being wrong is a
-// BROKEN CONSENT GATE rather than a cosmetic slip, which is this module's whole test for what
-// belongs in it.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// What the report card may say and send. Consent-gating rules live here so the server suite tests them.
 
 import { GITHUB_EXPECTED_SCOPE } from './github-card';
 
@@ -22,14 +13,7 @@ const BRIEF_KEYS: ReadonlyArray<keyof BriefFields> = [
   'title', 'whatHappened', 'whatShouldHaveHappened', 'whyItWentWrong', 'fixIdeas',
 ];
 
-/**
- * T66b's anti-trap: *"a field the user did not touch is NEVER MENTIONED in any request."*
- *
- * A key is PRESENT only when that field actually moved; absent means "this door is not asked
- * about it at all". Compared with `!==` on the raw strings — no trim, no normalisation — because
- * D4 says the posted text is the text the owner read, and a whitespace change IS a change they
- * made deliberately.
- */
+// Only fields whose raw string moved are sent: an untouched field is never mentioned, no trim.
 export function briefEditsFor(original: BriefFields, edited: BriefFields): BriefEdits {
   const edits: BriefEdits = {};
   for (const key of BRIEF_KEYS) {
@@ -38,11 +22,6 @@ export function briefEditsFor(original: BriefFields, edited: BriefFields): Brief
   return edits;
 }
 
-/**
- * Nobody may be asked to approve nothing. The server refuses an empty field too (`.min(1)`), so
- * this exists to give the owner a sentence instead of a 400 — and it names the field, because
- * "invalid" in front of five textareas is a puzzle rather than an instruction.
- */
 export function briefIsPostable(b: BriefFields): { ok: true } | { ok: false; reason: string } {
   for (const key of BRIEF_KEYS) {
     if (b[key].trim() === '') return { ok: false, reason: `\`${key}\` is empty, fill it in or cancel.` };
@@ -50,18 +29,10 @@ export function briefIsPostable(b: BriefFields): { ok: true } | { ok: false; rea
   return { ok: true };
 }
 
-/** What the door tells the card when the tracker already carries this signature (T7). */
+/** What the card is told when the tracker already carries this signature. */
 export interface DuplicateMatch { number: number; url: string; title: string }
 
-/**
- * THE SECOND CONSENT SENTENCE, and it is a QUESTION rather than a statement.
- *
- * The platform found an open issue carrying this report's signature and posted NOTHING. The
- * owner now chooses, and the sentence has to make both options honest: adding to the existing
- * thread publishes their words on someone else's issue, and posting separately files a second
- * one. It names the issue by NUMBER AND TITLE so the choice can be checked before it is made —
- * a bare "we found a duplicate" asks somebody to agree to a page they have not seen.
- */
+// A question, not a statement: it names the issue so the owner can check it before agreeing.
 export function duplicateQuestion(match: DuplicateMatch): string {
   const title = match.title.trim();
   const named = title === '' ? `issue #${match.number}` : `#${match.number} “${title}”`;
@@ -69,64 +40,27 @@ export function duplicateQuestion(match: DuplicateMatch): string {
     + 'or post a separate one?';
 }
 
-/** The fields of the served `GithubStatus` this decision reads, plus the DESTINATION the report
- *  route serves beside the rows. Declared structurally, never imported: pulling in `lib/api.ts`
- *  would drag `fetch` and the auth token into a module the server's vitest imports directly. A
- *  real `githubStatus()` result satisfies the first three. */
 export interface PostTarget {
   connected: boolean; login: string | null; loginInProgress: boolean;
   /** `owner/name`, as the server's `reportRepo()` resolved it. `''` = the box has not said yet. */
   repo: string;
 }
 
-/**
- * THE MOST LOAD-BEARING SENTENCE IN THE FEATURE. D4: the user sees the exact text, and knows
- * exactly where it goes, BEFORE anything posts.
- *
- * ⚠ IT READS `connected`, AND DELIBERATELY NOT `githubCardState`. T5's four-state precedence
- * answers a different question — "which of four cards to draw" — and there `connecting` OUTRANKS
- * `connected`, which is right for a Settings card. Here the question is "will pressing Post
- * publish, or write a file?", and the route answers that from the TOKEN. A card that re-derived
- * this from `githubCardState` would promise *"nothing is sent"* at the exact moment the route
- * publishes a public issue, because a sign-in can be open on top of a live connection. That is
- * the consent gate stating the opposite of what happens. `loginInProgress` is in the shape above
- * so that its IRRELEVANCE here is visible rather than forgotten.
- *
- * ⚠ IT NAMES THE REPOSITORY, AND THAT IS A T8 FIX RATHER THAN A FLOURISH. The sentence used to
- * say *"the Dojo's issue tracker"* and stop. `DOJO_REPORT_REPO` redirects the destination, and on
- * the box the T8 live run used it was pointed at a scratch repository — so the most load-bearing
- * sentence in the feature named a page that was not the page, to the one person whose consent the
- * whole gate exists to obtain. Both branches name it, because BOTH deliveries go there: the
- * connected one files the issue, and the unconnected one writes a file whose prefilled link
- * (`export.ts`) opens `https://github.com/<repo>/issues/new`.
- */
+// Reads connected, not the card state: the route posts from the token even mid sign-in.
 export function postTargetSentence(s: PostTarget): string {
   const slug = s.repo.trim();
-  // An empty slug is "this box has not told us yet", and the honest answer is the generic phrase.
-  // Substituting the default repository here would be this module GUESSING a destination — the
-  // same class of wrong as the sentence it replaces, one step further from the evidence.
+  // An empty slug is "not said yet"; substituting a default repo would guess a destination.
   const where = slug === '' ? 'the Dojo\'s issue tracker' : `the GitHub repository ${slug}`;
   if (!s.connected) {
     return 'GitHub isn\'t connected, so this will be saved as a file on this Mac with a link '
       + `you can paste into a new issue on ${where} yourself. Nothing is sent.`;
   }
   const who = (s.login ?? '').trim();
-  // A missing NAME is never a missing connection (T4: `GET /user` is called once and not
-  // retried). Printing `as null` would be the shape of bug this exists to make impossible.
   const asWho = who === '' ? 'the GitHub account connected to this Mac' : who;
   return `This will be posted as a public issue on ${where}, as ${asWho}. Anyone can read it.`;
 }
 
-/**
- * WHAT CONNECTING GITHUB FROM THE REPORT CARD GRANTS, in one plain sentence (v3.4 E2).
- *
- * Read from the same constant the Settings card and the server pin, so it stops reassuring the
- * moment the scope the Dojo asks for changes. The honest weight of `public_repo` is stated, not
- * hidden: GitHub's sign-in for this kind of app has no narrower permission that can file an
- * issue, so the same permission also covers changing the owner's public repositories. The Dojo
- * only uses it to file reports. The Settings sentence (`scopeRequestSentence`) is the shorter
- * one, and it undersells this; that is for its owner to revisit, not for this module to copy.
- */
+// Read from the same constant the server pins, so it changes when the asked scope changes.
 export function connectOfferSentence(): string {
   if (GITHUB_EXPECTED_SCOPE === 'public_repo') {
     return 'Connect GitHub and this report is filed for you, with nothing to copy. The Dojo asks for '

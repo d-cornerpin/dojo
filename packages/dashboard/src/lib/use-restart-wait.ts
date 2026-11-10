@@ -1,6 +1,5 @@
-// The shared "wait for the restarted server" step of Update Now and Rollback: keeps the plain
-// status for the screen, reloads the page once the expected version is running, hands back the
-// server's failure message (or null), and cancels the wait if the component goes away.
+// The shared "wait for the restarted server" step of Update Now and Rollback. Reloads the page
+// when the expected version is up, returns the server's failure message or null, aborts on unmount.
 import { useEffect, useRef, useState } from 'react';
 import { waitForRestart } from './wait-for-restart';
 

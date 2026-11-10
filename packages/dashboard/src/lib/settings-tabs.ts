@@ -2,7 +2,6 @@ import { SETTINGS_TAB_LIST, type SettingsTabKey } from '@dojo/shared';
 
 export type Tab = SettingsTabKey;
 
-/** The Settings tabs in display order. The tab bar, the link check and every "Settings → …" message read the one list in @dojo/shared. */
 export const SETTINGS_TABS: { key: Tab; label: string }[] = SETTINGS_TAB_LIST;
 
 export const TAB_KEYS: Tab[] = SETTINGS_TABS.map((t) => t.key);
