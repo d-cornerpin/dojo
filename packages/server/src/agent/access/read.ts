@@ -1,21 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════
-// READING AN AGENT'S GRANTS (UX-ACCESS A1) — the one door every enforcement
-// layer asks.
-//
-// `agents.permissions` is a JSON DOCUMENT, and it now carries two things: the
-// `PermissionManifest` (effect classes — files, exec, net, system control) read
-// by `agent/manifest.ts`, and the `grants` object (tools, integrations,
-// channels) read here. Two readers of one column is not two truths: they read
-// DISJOINT keys, and the column is the single place an owner's access edit
-// lands. A second table would have been the second truth.
-//
-// ── THE FALLBACK IS THE SAFETY NET, NOT A DEFAULT ──
-// An agent with no stored `grants` answers with `deriveLegacyGrants` — its own
-// effective access at HEAD, measured. That is what makes A1 byte-equivalent
-// whether or not the materializer has run, on a fresh box and on the owner's.
-// A stored object always wins, which is what makes an owner edit stick (owner
-// ruling 3: the boot rewriter retires so edits stop silently reverting).
-// ════════════════════════════════════════════════════════════════════════════
+// THE one read door: a stored object always wins, so an owner's edit sticks; with none stored,
+// `deriveLegacyGrants` answers, so every door reads HEAD's measured access even before materializing.
 
 import type { AccessChannel, AccessGrants, AccountKind, IntegrationLevel, ToolGrants } from '@dojo/shared';
 import {
@@ -28,12 +12,8 @@ import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { deriveLegacyGrants } from './derive.js';
 import { canonicalizeToolsPolicy } from './tools-policy.js';
 
-// ── The memo, keyed by the stored text itself ──
-// Every read is one indexed SELECT of `agents.permissions`; the parse and the
-// derivation are what cost, and both are pure functions of that text. Keying the
-// memo on the text means a write to the column self-invalidates without any
-// write site having to remember to forget — the same property `grantFor`'s
-// fingerprint gives the broker grant.
+// The memo keys on the stored text itself: a write to the column self-invalidates the cache
+// without any write site remembering to forget, so no writer can leave a stale verdict.
 const memo = new Map<string, { raw: string; grants: AccessGrants }>();
 const MEMO_MAX = 512;
 
@@ -47,18 +27,12 @@ function storedGrants(raw: string | null): AccessGrants | null {
   try {
     const parsed = JSON.parse(raw) as { grants?: unknown };
     const g = parsed.grants as AccessGrants | undefined;
-    // Shape check, not a schema validator: the three sections are what every
-    // reader below indexes into, and a half-written object must fall back to the
-    // measured derivation rather than throw at a tool door.
+    // A half-written object falls back to the derivation rather than throwing at a tool door.
     if (!g || g.v !== 1 || !g.tools || !g.integrations || !g.channels) return null;
     return {
       ...g,
       tools: { ...g.tools, ...canonicalizeToolsPolicy(g.tools) },
-      // UX-ACCESS A5 — THE CREDENTIAL FOLD, APPLIED ONCE, HERE.
-      // Every stored row written before A5 carries the A1 list shape (`'*'` on
-      // all 111 live agents). Folding at this boundary means no door, no route,
-      // no panel and no audit delta ever sees it, so the boolean is not a type
-      // the tree merely claims — it is the only value that leaves this function.
+      // THE credential fold, applied once here: no door, route, panel or audit ever sees the old shape.
       integrations: { ...g.integrations, credentials: foldCredentialGrant(g.integrations.credentials) },
     };
   } catch {
@@ -66,15 +40,7 @@ function storedGrants(raw: string | null): AccessGrants | null {
   }
 }
 
-/**
- * The grants this agent DECLARES, or null if it declares none (UX-ACCESS A2).
- *
- * The other question, and the reason it is not `getAccessGrants`: that one never
- * answers null, because a row with no stored object falls back to the measured A1
- * snapshot so every DOOR has something to read. An EDIT needs to know whether
- * there is a declaration here at all, and answering it with the derivation would
- * quietly promote a snapshot to a declaration.
- */
+/** Declared grants or null: never falls back, because an edit needs to know a declaration exists. */
 export function readStoredGrants(agentId: string): AccessGrants | null {
   const raw = (getDb().prepare('SELECT permissions FROM agents WHERE id = ?').get(agentId) as
     { permissions: string | null } | undefined)?.permissions ?? null;
@@ -88,7 +54,7 @@ export function getAccessGrants(agentId: string): AccessGrants {
     raw = (getDb().prepare('SELECT permissions FROM agents WHERE id = ?').get(agentId) as
       { permissions: string | null } | undefined)?.permissions ?? null;
   } catch {
-    // A database failure never narrows — see `grantFor`'s own note.
+    // A database failure never narrows: same posture as grantFor's note in the broker grants.
     return deriveLegacyGrants(agentId);
   }
   const key = raw ?? '';
@@ -111,34 +77,21 @@ export function mayUseChannel(agentId: string, channel: AccessChannel): boolean 
   return mayReachChannel(getAccessGrants(agentId), channel);
 }
 
-/** The tier — `none` / `owner` / `all` — this agent holds on this channel. */
+/** The tier this agent holds on this channel: `none` / `owner` / `all`. */
 export function channelTierFor(agentId: string, channel: AccessChannel) {
   return channelTierOf(getAccessGrants(agentId), channel);
 }
 
-/**
- * May this agent reach a NON-OWNER recipient on this channel? (UX-ACCESS A4.)
- *
- * The me-vs-others half of owner ruling 1. A1 declared the tier,
- * A2 taught the no-escalation ladder to compare it and A3 drew it in the panel,
- * and until A4 the shared `mayReachOthersOn` predicate had no server-side caller
- * at all — a declared field with no reader, which is the shape this overhaul
- * exists to end. Its first door is `imessage_send`'s, beside the four walls A1
- * wrote in the same file.
- */
 export function mayReachOthersOn(agentId: string, channel: AccessChannel): boolean {
   return mayReachOthersOnIn(getAccessGrants(agentId), channel);
 }
 
-/** Does this agent have the human-channel master switch at all? (`null` = a
- *  sensei other than the primary, which communicates through the main agent.) */
 export function hasChannelMaster(agentId: string): boolean {
   return getAccessGrants(agentId).channels.master !== null;
 }
 
 // ── Integrations ──
 
-/** This agent's granted Workspace tier for one provider/account-kind. */
 export function integrationLevelFor(
   agentId: string,
   provider: 'google' | 'microsoft',
@@ -148,43 +101,30 @@ export function integrationLevelFor(
   return providerLevelOf(getAccessGrants(agentId).integrations[provider], kind, accountId);
 }
 
-/** The widest tier this agent holds on a provider across both account kinds —
- *  the answer the surface's single `access` variable has always needed. */
 export function widestIntegrationLevel(agentId: string, provider: 'google' | 'microsoft'): IntegrationLevel {
   const p = getAccessGrants(agentId).integrations[provider];
   const ranked: IntegrationLevel[] = ['none', 'read', 'full'];
   return ranked.indexOf(p.agent) >= ranked.indexOf(p.user) ? p.agent : p.user;
 }
 
-/** Is the Plaud integration granted to this agent? */
 export function mayUsePlaud(agentId: string): boolean {
   return getAccessGrants(agentId).integrations.plaud;
 }
 
 // ── Credentials ──
 
-/**
- * May this agent reach the credential store? (UX-ACCESS A5.)
- *
- * ONE question, read exactly the way `mayUsePlaud` above reads its own boolean.
- * A1's per-service sibling is deleted rather than kept for one caller: the
- * owner's ruling is that credentials are all-or-none, and a second, finer
- * authority living below a single toggle is the drift this phase ends.
- */
 export function holdsCredentialGrant(agentId: string): boolean {
   return getAccessGrants(agentId).integrations.credentials;
 }
 
 // ── Tools ──
 
-/** The curated allow/deny this agent carries (migrated `tools_policy`). */
 export function toolGrantsFor(agentId: string): ToolGrants {
   return getAccessGrants(agentId).tools;
 }
 
-// A tool may appear under more than one label (`work_open` is in two); holding
-// ANY of its categories is holding the tool. Built once — `TOOL_CATEGORIES` is a
-// module constant and cannot change at runtime.
+// A tool may sit under several labels; holding ANY of its categories holds the tool.
+// Built once: TOOL_CATEGORIES is a module constant and cannot change at runtime.
 let categoryIndex: Map<string, string[]> | null = null;
 function categoriesOf(tool: string): string[] {
   if (!categoryIndex) {
@@ -199,38 +139,12 @@ function categoriesOf(tool: string): string[] {
   return categoryIndex.get(tool) ?? [];
 }
 
-/**
- * The `TOOL_CATEGORIES` labels this tool is filed under; empty for a tool the
- * index does not name.
- *
- * Exported for the EXECUTOR's row-17 gate (UX-ACCESS A3): the declaration in
- * `gates.ts` asks whether the tool is categorised at all, and the refusal names
- * the group the owner would have to grant. Both answers have to come from this
- * index and not from a second list, which is the same reason the surface strip
- * and the gate share `toolCategoryGranted` below.
- */
 export function toolCategoryLabels(tool: string): string[] {
   return [...categoriesOf(tool)];
 }
 
-/**
- * Is this tool inside a granted CATEGORY?
- *
- * A tool in NO category (the `user_` twins, the Office set, anything newly
- * registered outside the index) passes: the category grant is a positive layer
- * over the 38 declared groups, not an allow-list of every name the platform can
- * mint, and treating an unlisted name as denied would refuse tools the owner
- * never saw a control for.
- *
- * ── ONE PREDICATE, TWO LAYERS (UX-ACCESS A3) ──
- * This is the surface strip's filter (`surface.ts`) AND the executor's row-17
- * gate. Architecture Rule 1: the strip is advice — the floor model parses tool
- * calls out of free text and can emit a name it was never advertised — so until
- * A3 an agent granted a channel but not the tool's group passed the permission
- * door while its own capability line said it could not (A2 §6.1, measured).
- * Asking the same function at both layers is what stops "advertised" and
- * "permitted" from drifting apart again.
- */
+// A tool with no labels PASSES: the grant is a positive layer, not an allow-list of every name.
+// One predicate for the surface strip AND the executor gate: two copies is how they drift apart.
 export function toolCategoryGranted(agentId: string, tool: string): boolean {
   const labels = categoriesOf(tool);
   if (labels.length === 0) return true;
@@ -238,27 +152,16 @@ export function toolCategoryGranted(agentId: string, tool: string): boolean {
   return labels.some((l) => categoryGranted(grants, l));
 }
 
-// ── Techniques (UX-ACCESS A4) ──
+// ── Techniques ──
 
-/** The technique grant this agent holds — `'*'` or an explicit id list. */
 export function techniqueGrantFor(agentId: string): string[] | '*' {
   return techniqueGrantOf(getAccessGrants(agentId));
 }
 
-/**
- * May this agent run this technique? THE ONE technique predicate.
- *
- * Asked by all four places a technique reaches an agent (the published index,
- * the matcher's candidate set, the `use_technique` / `technique_read` door, and
- * the equipped pre-load), for the same reason `toolCategoryGranted` is asked by
- * both the surface strip and row 17: a second copy of the rule is how
- * "advertised" and "permitted" drift apart.
- */
 export function mayUseTechnique(agentId: string, techniqueId: string): boolean {
   return techniqueGranted(getAccessGrants(agentId), techniqueId);
 }
 
-/** Does this agent hold any technique at all? */
 export function holdsTechniqueGrant(agentId: string): boolean {
   return holdsAnyTechniqueGrant(getAccessGrants(agentId));
 }

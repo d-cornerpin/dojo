@@ -1,30 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE PRESETS (UX-ACCESS A3) — four profiles, one click, then the owner adjusts.
-//
-// The plan names them: *"presets incl. the owner's two exemplar profiles
-// ('Reader: Plaud + chosen mail accounts, no channels' · 'Operator: exec +
-// iMessage-me')"*, beside ruling 2's most-restrictive default and a
-// primary-like full-trust profile. A preset FILLS THE CHECKBOXES; it never
-// saves. The owner adjusts and presses save, which goes through the same
-// validated door (`resolveUpdateGrants`) and writes the same audit row as any
-// other edit — a preset is a starting point, not a second write path.
-//
-// ── WHY THEY LIVE ON THE SERVER ──
-// A preset names TOOL GROUPS, and the list of groups is `TOOL_CATEGORIES`, a
-// server module. A copy in the dashboard would be a second truth that drifts the
-// first time somebody re-files a tool — which is precisely the disease this
-// overhaul exists to end. The panel fetches them (`GET /api/access/catalog`)
-// along with the group list it draws checkboxes from.
-//
-// ── THE HONESTY RULE, AND WHY IT IS TESTED RATHER THAN REMEMBERED ──
-// A2 §6.2 handed A3 a finding: *"a channel granted without its tool category is
-// inert"*. With A3's rider the inert case became a REFUSAL at the executor, so a
-// preset that grants a channel without the group its send tool lives in would
-// hand the owner a profile that cannot do the thing its own name promises.
-// `channelToolGroups` answers which groups a channel needs — DERIVED from the
-// index, so re-filing `imessage_send` moves the answer with it — and the preset
-// test walks every preset against it.
-// ════════════════════════════════════════════════════════════════════════════
+// Profiles FILL THE PANEL; the owner's save goes through the same validated door as any edit.
+// They live here because the group list is a server module; a dashboard copy would drift.
 
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, channelOfSendTool, cloneGrants } from '@dojo/shared';
@@ -34,44 +9,29 @@ import { TOOL_CATEGORIES } from '../../tools/categories.js';
 export interface AccessPreset {
   readonly id: 'most_restrictive' | 'reader' | 'operator' | 'full_trust';
   readonly label: string;
-  /**
-   * One line, owner-facing, in plain words (UX-ACCESS A6's language pass).
-   *
-   * ONE OF THEM WAS FALSE AND IS FIXED HERE. "Operator" said *"Runs commands on
-   * this Mac and can iMessage you"*, and a preset is a GRANTS object: it cannot
-   * grant `exec_allow`, which lives in the permission manifest, so the first
-   * half of that sentence was never true of the profile the button applied. The
-   * grants did not move — only the sentence beside them.
-   */
+  /** One line, owner-facing. A preset is a GRANTS object: it cannot grant manifest switches, so
+   *  this sentence may only claim what `grants` actually applies. */
   readonly description: string;
   readonly grants: AccessGrants;
 }
 
 // ── The channel ⇄ tool-group coupling, derived ──
 
-/** The groups whose tools actually reach a human on `channel`.
- *
- *  Built from two things that already exist and are already build-checked:
- *  `SEND_TO_PEOPLE` (the comms-to-people surface, held exhaustive by
- *  `sensei-policy`'s own census) and `channelOfSendTool` (the canonical
- *  send-tool → channel map in `@dojo/shared`). Nothing here is hand-listed, so a
- *  tool re-filed into another label moves this answer with it. */
+/** The groups whose tools reach a human on `channel`, DERIVED from the build-checked send surface
+ *  and the canonical tool→channel map: a tool re-filed into another label moves this answer. */
 function buildChannelGroups(): Record<AccessChannel, string[]> {
   const out = Object.fromEntries(ACCESS_CHANNELS.map((c) => [c, [] as string[]])) as Record<AccessChannel, string[]>;
   for (const category of TOOL_CATEGORIES) {
     for (const tool of category.tools) {
       if (!SEND_TO_PEOPLE.includes(tool)) continue;
-      // `channelOfSendTool` answers in `ChannelKind`, where the phone channel is
-      // called `phone`; the grants object calls it `voice`. One rename, stated
-      // here rather than by keeping a second list.
+      // `channelOfSendTool` answers `phone` for the phone channel; the grants object calls it `voice`.
       const kind = channelOfSendTool(tool);
       const channel = (kind === 'phone' ? 'voice' : kind) as AccessChannel | null;
       if (!channel || !ACCESS_CHANNELS.includes(channel)) continue;
       if (!out[channel].includes(category.label)) out[channel].push(category.label);
     }
   }
-  // `imessage_list_contacts` is not a SEND, but iMessage's send tool is in the
-  // same group, so the derivation above already covers the channel.
+  // `imessage_list_contacts` is not a SEND, but its group already contains the send tool.
   return out;
 }
 
@@ -91,14 +51,9 @@ export function channelToolGroupMap(): Record<AccessChannel, string[]> {
 
 // ── The four profiles ──
 
-/** Every group a sub-agent needs to exist at all: its own lifecycle, its files,
- *  and the two-phase tool loader. Ruling 2's floor, named once. */
+/** The groups a sub-agent needs to exist at all: the most-restrictive floor's list, named once. */
 const FLOOR = MOST_RESTRICTIVE_GRANTS.tools.categories as string[];
 
-/** The read-side Workspace groups. Mail and calendar on both providers, plus the
- *  cross-account search that spans them — the "chosen mail accounts" half of the
- *  owner's Reader profile. WHICH accounts is then a per-account checkbox in the
- *  panel; the preset opens the door and the owner narrows it. */
 const MAIL_AND_CALENDAR = [
   'Unified Search (all connected accounts at once)',
   'Gmail',
@@ -121,17 +76,11 @@ function preset(
   return { id, label, description, grants };
 }
 
-/**
- * THE FOUR, in the order an owner meets them: the safe default first, the two
- * exemplar profiles next, the wide-open one last.
- */
+/** The four, in the order an owner meets them: safe default first, wide-open last. */
 export const ACCESS_PRESETS: readonly AccessPreset[] = [
   preset(
     'most_restrictive',
     'Most restrictive',
-    // "and its own task list" (owner ruling, 2026-09-22): the floor now carries
-    // the two work-tracker groups, and a preset whose sentence still said "and
-    // nothing else" would be the panel lying about what the button applies.
     'Its own files and its own task list. No people, no accounts, no keys. Every new agent starts here.',
     () => { /* the constant itself — ruling 2's default, unmodified */ },
   ),
@@ -168,12 +117,8 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
       g.integrations.microsoft = { agent: 'full', user: 'full' };
       g.channels.master = true;
       for (const channel of ACCESS_CHANNELS) g.channels[channel] = 'all';
-      // UX-ACCESS A4: the only preset that names `'*'`. The other three leave
-      // `techniques: []` (the constant's own value), because a technique is a
-      // standing procedure the matcher can inject unasked and none of the three
-      // narrower profiles is about running the owner's procedures. The owner
-      // ticks the ones he wants — which is the point of the section being a
-      // grant rather than a default.
+      // The only preset naming `'*'`: a technique is a standing procedure the matcher can inject
+      // unasked, so the narrower profiles leave the section empty for the owner to tick.
       g.techniques = '*';
     },
   ),
