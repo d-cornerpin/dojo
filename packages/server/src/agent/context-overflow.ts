@@ -1,11 +1,6 @@
-// The provider's own "your input is too long for my window" answer, as prose. A leaf: the summary writer
-// (t152) and the recovery cascade read the one predicate, and neither may pull the other's module graph.
+// Providers' own "input too long" answers differ in wording per provider: match substrings, not codes.
+// A leaf: the summary writer and the recovery cascade read one predicate; neither pulls the other's graph.
 
-/**
- * Detect provider responses that indicate the prompt exceeded the model's
- * context window. Different providers phrase this differently, so we match
- * on common substrings rather than error codes.
- */
 export function isContextOverflowError(message: string): boolean {
   const lower = message.toLowerCase();
   return (

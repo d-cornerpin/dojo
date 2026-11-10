@@ -1,20 +1,7 @@
-// ════════════════════════════════════════
-// canvas_read, let the agent "look at" the right-dock canvas.
-//
-// The canvas is a client-side surface, so the server tracks the most recent
-// thing the agent put there (setCurrentCanvas, called from canvas_render /
-// open_browser). canvas_read then renders that content and routes it through
-// the platform vision model:
-//   - HTML (inline / .html file / any URL) -> headless Chromium screenshot
-//   - image file                            -> the image itself
-//   - PDF file                              -> Chromium screenshot (first view)
-//   - text / markdown / code file           -> returned as text (cheaper +
-//                                              more accurate than a screenshot)
-//
-// Vision uses getEffectiveVisionModel: the agent's own model if it is
-// vision-capable, otherwise the configured fallback vision model, so this
-// works even when the calling agent can't see images itself.
-// ════════════════════════════════════════
+// canvas_read: the agent looks at its right-dock canvas. The server renders the latest thing it put there:
+// HTML (inline / .html / URL), office and PDF go to a headless Chromium screenshot;
+// an image file goes as pixels; text/markdown/code comes back as text (cheaper and more accurate).
+// Vision uses getEffectiveVisionModel: the agent's own model if it can see, else the fallback model.
 
 import * as effectFs from './effects/fs.js';
 import path from 'node:path';
@@ -87,7 +74,7 @@ async function describeImage(
     const result = await callModel({
       agentId,
       modelId: visionModel.modelId,
-      // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+      // An engine caption for the agent to read, not the user's turn.
       purpose: 'vision_caption',
       messages: [{
         role: 'user' as const,

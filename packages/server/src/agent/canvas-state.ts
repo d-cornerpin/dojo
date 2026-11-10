@@ -1,17 +1,7 @@
 // ════════════════════════════════════════
-// The right-dock canvas, PER AGENT — what is on it, and whether it is showing.
-//
-// Each agent owns its own dock slot, keyed by agentId. A background agent
-// finishing a delegated job opens ITS slot; the dashboard shows only the slot of
-// the agent the user is currently viewing (client-side, off the agentId stamped
-// on every dock event), so a background open can never replace the viewed
-// agent's canvas. (No GC of per-agent rows when an agent is deleted; that's an
-// accepted choice at this scale, one small config row per agent.)
-//
-// This module touches NO file. It was separated out of `canvas-view.ts`
-// (PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(3)) because that module held
-// three different things behind one `node:fs` import: the dispatch-only viewer,
-// this state, and the disk watcher whose callback fires outside any dispatch.
+// The right-dock canvas, PER AGENT: what is on it, and whether the dock shows it.
+// A background agent opens its own slot; the dashboard shows only the viewed agent's, so a background
+// open can never replace it. No GC of per-agent rows: accepted at this scale. This module touches no file.
 // ════════════════════════════════════════
 
 import path from 'node:path';
@@ -31,15 +21,10 @@ export interface CanvasState {
 
 const currentCanvasByAgent = new Map<string, CanvasState>();
 
-// Canvas status: once a canvas exists it is either OPEN (dock showing) or
-// COLLAPSED (minimised to the edge handle; content retained). Persisted to the
-// DB so the canvas survives a browser refresh, a server restart, and follows the
-// user from one device to another (the dashboard reads GET /api/canvas on mount).
-// Per agent, like the canvas state itself.
+// OPEN (dock showing) or COLLAPSED (edge handle, content kept); persisted per agent so it survives restart.
 export type CanvasStatus = 'open' | 'collapsed';
 const canvasStatusByAgent = new Map<string, CanvasStatus>();
 const hydratedAgents = new Set<string>();
-// One config row per agent: `current_canvas:<agentId>`.
 const canvasConfigKey = (agentId: string): string => `current_canvas:${agentId}`;
 
 function persistCanvas(agentId: string): void {
@@ -55,8 +40,7 @@ function persistCanvas(agentId: string): void {
   } catch { /* best effort, never let persistence break a canvas open */ }
 }
 
-// Lazily rehydrate one agent's in-memory canvas from the DB on first access, so a
-// server restart doesn't drop an open canvas the user expects to still be there.
+// Rehydrate from the DB on first access, so a restart does not drop an open canvas.
 function hydrateCanvas(agentId: string): void {
   if (hydratedAgents.has(agentId)) return;
   hydratedAgents.add(agentId);
@@ -78,8 +62,7 @@ export function setCurrentCanvas(agentId: string, state: CanvasState | null): vo
   hydrateCanvas(agentId);
   if (state) currentCanvasByAgent.set(agentId, state);
   else currentCanvasByAgent.delete(agentId);
-  // Opening a canvas always brings it to the OPEN state (the agent put something
-  // there for the user to see). Clearing it resets to collapsed.
+  // Opening brings the dock OPEN (the agent put it there to be seen); clearing resets to collapsed.
   canvasStatusByAgent.set(agentId, state ? 'open' : 'collapsed');
   if (state?.kind === 'canvas' && state.path) startCanvasWatch(agentId, state.path);
   else stopCanvasWatch(agentId);
@@ -89,13 +72,11 @@ export function getCurrentCanvas(agentId: string): CanvasState | null {
   hydrateCanvas(agentId);
   return currentCanvasByAgent.get(agentId) ?? null;
 }
-/** Full persisted shape for the dashboard's load-on-mount (GET /api/canvas). */
 export function getPersistedCanvas(agentId: string): { state: CanvasState; status: CanvasStatus } | null {
   hydrateCanvas(agentId);
   const state = currentCanvasByAgent.get(agentId);
   return state ? { state, status: canvasStatusByAgent.get(agentId) ?? 'collapsed' } : null;
 }
-/** Update just the open/collapsed status (user collapsed or re-opened the dock). */
 export function setCanvasStatus(agentId: string, status: CanvasStatus): void {
   hydrateCanvas(agentId);
   if (!currentCanvasByAgent.has(agentId)) return;
@@ -109,20 +90,10 @@ export function resolveHome(p: string): string {
   return p;
 }
 
-/**
- * THE ONE RESOLUTION POINT for *which file is this agent's canvas showing?*
- * (PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(b)).
- *
- * `canvas_read` takes a `prompt` and nothing else — its schema names no path and
- * its one production call site passes none — so the resource is the file the
- * agent put on its own canvas EARLIER, and the CALL'S OWN AGENT IDENTITY is the
- * only key there is. The gate loop resolves it with this function, which is the
- * handler's own reader (`getCurrentCanvas`) followed by the handler's own home
- * expansion, so the two cannot answer differently.
- *
- * An agent with nothing on its canvas resolves to `null` and gets no grant,
- * which leaves the handler's own "nothing is open in the canvas" message intact.
- */
+// THE one resolution point for "which file is this agent's canvas showing?"; null when nothing is open.
+// canvas_read takes a prompt, no path: the file the agent put on its own canvas earlier, keyed by its id.
+// The gate loop resolves it with THIS function: the handler's own reader plus its own home expansion,
+// so the two cannot answer differently; null means no grant, leaving the handler's own message intact.
 export function canvasFilePath(agentId: string): { path: string } | null {
   const state = getCurrentCanvas(agentId);
   return state?.path ? { path: resolveHome(state.path) } : null;

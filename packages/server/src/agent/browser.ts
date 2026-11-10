@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Headless Browser Session Manager (Phase 5B)
+// Headless Browser Session Manager
 // Playwright-backed web_browse tool
 // ════════════════════════════════════════
 
@@ -45,12 +45,8 @@ function checkRateLimit(agentId: string): boolean {
   return true;
 }
 
-// Vision-model resolution now lives in services/vision-model.ts so a
-// single helper governs every place on the platform that needs to
-// route an image through a vision-capable model. See the rationale at
-// the top of that module: the old auto-pick heuristic that lived here
-// hid an important config decision (which model is doing the seeing?
-// at what cost?) and is replaced by an explicit user-set fallback.
+// Vision-model resolution lives in services/vision-model.ts: one helper governs every place
+// the platform routes an image to a vision-capable model; which model sees is the user's choice.
 
 // ── Browser Session ──
 
@@ -91,7 +87,7 @@ export class BrowserSession {
       args: ['--disable-gpu', '--no-sandbox'],
     });
 
-    // Log memory usage of the Chromium process
+    // A stale disconnect must not blank a newer session: clear only if this is still the live browser.
     browser.on('disconnected', () => {
       logger.info('Browser disconnected', {}, this.agentId);
       if (this.browser === browser) {
@@ -122,10 +118,9 @@ export class BrowserSession {
   }
 
   async navigate(url: string): Promise<string> {
-    // T11 (SSRF): refuse loopback/LAN/metadata BEFORE a browser is launched.
-    // Playwright follows redirects and sub-resources itself, so this covers the
-    // requested URL only — per-hop enforcement is Phase 5's net broker.
-    const address = ownsTheMac(this.agentId) ? null : (await assertPublicHttpTarget(url)).address;   // OR-AUDIT-ANSWERS: the main agent
+    // SSRF: refuse loopback/LAN/metadata BEFORE a browser is launched.
+    // Playwright follows redirects and sub-resources itself: only the requested URL is checked.
+    const address = ownsTheMac(this.agentId) ? null : (await assertPublicHttpTarget(url)).address;   // the main agent is exempt: it owns the Mac
     const page = await this.ensurePage();
 
     logger.info('Browser navigate', { url, address }, this.agentId);
@@ -133,7 +128,7 @@ export class BrowserSession {
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     } catch (err) {
-      // networkidle can timeout on busy pages — try domcontentloaded
+      // networkidle can time out on busy pages: retry with domcontentloaded
       if (String(err).includes('Timeout')) {
         logger.warn('networkidle timeout, retrying with domcontentloaded', { url }, this.agentId);
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -144,7 +139,7 @@ export class BrowserSession {
 
     const title = await page.title();
     const currentUrl = page.url();
-    return `Navigated to ${outsideSpan(`"${title}"`)} (${currentUrl})`;   // v3.5 K33: a page title is page-author text
+    return `Navigated to ${outsideSpan(`"${title}"`)} (${currentUrl})`;   // a page title is page-author text
   }
 
   async screenshot(agentId: string): Promise<string> {
@@ -157,11 +152,8 @@ export class BrowserSession {
     const buffer = await this.page.screenshot({ type: 'png', fullPage: false });
     const base64 = buffer.toString('base64');
 
-    // Try to get a vision model description. Uses the platform-wide
-    // resolution helper: agent's own model if vision-capable, otherwise
-    // the configured fallback vision model. If neither is available we
-    // return a degraded text response with a clear pointer at the
-    // Settings → Models control so the user can fix it.
+    // Describe the page via the platform-wide vision helper: the agent's own model if it can see,
+    // else the configured fallback; if neither exists the answer degrades with a pointer at Settings.
     const visionModel = getEffectiveVisionModel(agentId);
     if (!visionModel) {
       const currentUrl = this.page.url();
@@ -173,7 +165,7 @@ export class BrowserSession {
       const result = await callModel({
         agentId,
         modelId: visionModel.modelId,
-        // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+        // An engine caption for the agent to read, not the user's turn.
         purpose: 'vision_caption',
         messages: [{
           role: 'user' as const,
@@ -196,7 +188,7 @@ export class BrowserSession {
         tools: false,
       });
 
-      return outsideSpan(result.content);   // v3.5 K33: a description of the page is the page's text
+      return outsideSpan(result.content);   // a description of the page is the page's text
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn('Vision model failed for browser screenshot', { error: msg }, agentId);
@@ -217,14 +209,14 @@ export class BrowserSession {
       await this.page.click(selector, { timeout: 5000 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return `Error clicking "${selector}": ${outsideSpan(msg)}`;   // v3.5 K33: Playwright quotes the page's HTML
+      return `Error clicking "${selector}": ${outsideSpan(msg)}`;   // Playwright quotes the page's HTML
     }
 
     // Wait for potential navigation/ajax
     try {
       await this.page.waitForLoadState('networkidle', { timeout: 10000 });
     } catch {
-      // networkidle timeout is fine — page might have long-polling
+      // fine: the page might have long-polling
     }
 
     const currentUrl = this.page.url();
@@ -243,7 +235,7 @@ export class BrowserSession {
       return `Typed "${text.length > 100 ? text.slice(0, 100) + '...' : text}" into ${selector}`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return `Error typing into "${selector}": ${outsideSpan(msg)}`;   // v3.5 K33: Playwright quotes the page's HTML
+      return `Error typing into "${selector}": ${outsideSpan(msg)}`;   // Playwright quotes the page's HTML
     }
   }
 
@@ -368,10 +360,7 @@ export async function executeWebBrowse(
         );
 
       case 'extract': {
-        // Phase 3.5 (2026-05-04) — `goal` is required for the extract
-        // action. Without it the page would dump raw HTML/text into context.
-        // Other actions (navigate, click, type, scroll, screenshot, close)
-        // don't return page content so they don't need goal.
+        // `goal` is required for extract: without it, the raw page would dump into context.
         if (!goal || goal.trim().length === 0) {
           return (
             'Error: web_browse(action="extract") requires a `goal` parameter ' +
@@ -381,12 +370,8 @@ export async function executeWebBrowse(
           );
         }
         const raw = await session.extract();
-        // t114 (census row 34, the `web_browse` extractor arm) — same shape and same argument as
-        // `web-tools.ts`'s: the 45s bound is DEFENSIBLE and kept (W3-1 carried F3's measured
-        // finding that a busy extractor stalls real turns for minutes, and the raw page below is
-        // a genuine fallback), but the fallback was INVISIBLE TO THE AGENT. It asked for a goal to
-        // be applied, got the raw page under an unchanged header, and could not tell the
-        // difference. The note below travels with the result so the degradation is not silent.
+        // The 45s bound is kept: a busy extractor stalls real turns for minutes, and the raw page
+        // below is a genuine fallback; the note that rides the result keeps that fallback visible.
         let extractionSkipped: string | null = null;
         if (goal && goal.trim().length > 0) {
           try {
@@ -398,7 +383,7 @@ export async function executeWebBrowse(
               const result = await callModel({
                 agentId,
                 modelId: lightModel.modelId,
-                // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+                // An engine reading-aid for the agent to consume, not the user's turn.
                 purpose: 'vision_caption',
                 systemPrompt:
                   'You are a focused web page extractor. Return ONLY the information described by the goal, ' +
@@ -408,10 +393,7 @@ export async function executeWebBrowse(
                   { role: 'user', content: `Goal: ${goal}\n\nPage content:\n${snippet}` },
                 ],
                 tools: false,
-                // W3-1: same F3 pattern as web_fetch's extractor. The catch
-                // below falls back to returning the raw page, so this is a
-                // fully handled best-effort call. Fail fast to the fallback
-                // instead of stalling the turn on a busy extractor model.
+                // Fail fast to the raw-page fallback below: a busy extractor model must not stall the turn.
                 abortSignal: AbortSignal.timeout(45_000),
                 bestEffort: true,
               });
@@ -434,7 +416,7 @@ export async function executeWebBrowse(
             }, agentId);
           }
         }
-        // t114: the note rides the RESULT, so the agent learns its goal was not applied.
+        // The note rides the RESULT, so the agent learns its goal was not applied.
         return extractionSkipped
           ? `(NOTE: your extraction goal was NOT applied — ${extractionSkipped})\n\n${raw}`
           : raw;

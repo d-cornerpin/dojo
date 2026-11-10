@@ -1,21 +1,7 @@
-// ════════════════════════════════════════
-// Destructive-action gate (remediation Phase 4 item 4d, open question 6).
-//
-// Decision (owner, 2026-06-12): the PRIMARY agent has full reign and uses its
-// own judgment about confirming with the owner. Every OTHER agent's
-// destructive tool call is held by the ENGINE and routed to the primary for
-// approval. The hierarchy: sub-agent → engine gate → primary → (primary's
-// judgment) → owner. Prose cannot hold a safety line on the weakest model;
-// this module is the mechanism.
-//
-// Flow (async approval, no blocked turns): the gate REFUSES the call with a
-// "held for approval" result, files a token-bound request, and A2A-wakes the
-// primary with the exact call. The primary decides via the
-// approve_destructive_action tool; on approval the requester is A2A-woken to
-// retry, and the retry passes because the gate finds a one-shot approval
-// bound to (agent, canonical signature). Approvals expire and are consumed
-// on use: one approval, one execution.
-// ════════════════════════════════════════
+// The PRIMARY agent uses its own judgment; every OTHER agent's destructive call is held by the engine.
+// and routed to the primary for approval: sub-agent -> engine gate -> primary -> judgment -> owner.
+// The gate refuses with a held result, files a token-bound request and A2A-wakes the primary.
+// An approval is one-shot, expires, and the retry passes once: prose cannot hold a line on weak models.
 
 import { URGENT_APPROVAL_EXPIRY_NOTE } from './engine-lines.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -35,80 +21,34 @@ import { APPROVAL_TTL_MINUTES, deliverGateWake } from './approval-decision.js';
 
 const logger = createLogger('destructive-gate');
 
-// FA-P1: a pending request the primary never received (a dropped wake) or simply
-// ignored must not sit silent until the worker is reaped. The sweeper re-wakes the
-// primary ONCE more after a request has been pending this long, then, if it is
-// still undecided at APPROVAL_TTL_MINUTES, marks it expired with an owner-visible
-// note. Kept well under the TTL so the extra wake has time to be acted on.
+// A pending request the primary never got (a dropped wake) or ignored must not sit silent past the reap.
+// The sweeper re-wakes once after STALE_PENDING_MINUTES; it stays well under the approval TTL.
 const STALE_PENDING_MINUTES = 5;
 
-// Conservative v1 surface: outright deletion, and exec commands whose text
-// matches clearly-destructive patterns. (Catastrophic commands are already
-// hard-denied for everyone in permissions.ts GLOBAL_EXEC_DENY; this gate
-// covers the destructive-but-sometimes-legitimate band for non-primary
-// agents.) Widen deliberately, not speculatively.
-//
-// FA-P4 (exec classification): `truncate` joins the outright-destroy group
-// (truncate -s0 zeroes a file, unambiguously destructive, and as a bare command
-// name it is low false positive, SQL "TRUNCATE" is quote-preceded, not
-// whitespace/;&|-preceded, and "truncated" fails the trailing \b). mv/cp are
-// deliberately NOT added: they are overwhelmingly non-destructive, "onto an
-// existing path" (the only destructive form) cannot be detected statically, and
-// holding every move/copy would bury the primary in approvals for benign work.
+// Conservative surface: outright deletion, plus exec text matching clearly-destructive patterns.
+// Catastrophics are hard-denied in permissions.ts; this covers the destructive-but-legitimate band.
+// truncate joins the destroy group; mv/cp stay out: benign overwhelmingly, destructive form undetectable.
 const DESTRUCTIVE_EXEC_RE = /(^|[\s;&|])(rm|rmdir|shred|truncate|mkfs(\.\w+)?|dd)\b|--force|--hard\b|git\s+(push\s+.*--force|reset\s+--hard|clean\s+-[a-z]*f)/i;
 
-// FU-4: caller passed as an OPTIONAL third arg so the pre-existing 2-arg call
-// sites keep compiling. Only the Healer classification below consults it; when it
-// is omitted the function behaves exactly as before.
 export function isDestructiveCall(
   toolName: string,
   args: Record<string, unknown>,
   callerAgentId?: string,
 ): string | null {
-  // FA-P4 (option B): there is no agent-callable file_delete tool today, so this
-  // branch is currently unreachable, real deletion rides the exec/rm path below
-  // (which the gate + manifest now handle coherently, FA-P2). The branch is kept
-  // as future-proofing for FU-4's possible scoped-delete tool: a file_delete tool
-  // is destructive by definition, so this classifies it the day it exists without
-  // another edit here. It does NOT imply a live file_delete tool exists now.
+  // No agent-callable file_delete tool exists; kept so one is classified the day it is added.
+  // Real deletion rides the exec path; file_delete is destructive by definition, so this stays ahead.
   if (toolName === 'file_delete') return 'file deletion';
-  // ── PHASE-5 T3 / RULING P5-R3: read the call's REAL shape, at both doors ──
-  // This branch used to read `String(args.command ?? '')`, which the argv
-  // rebuild turns into the empty string — the regex stops matching and the gate
-  // silently stops holding `rm` for approval. `execCallText` is the one owner of
-  // "what did this call ask to run", and it answers for `exec({argv})`,
-  // `shell({script})` and the legacy `{command}` spelling alike.
-  //
-  // A shape it CANNOT read returns null, and null here means UNKNOWN, not
-  // harmless: an exec-shaped call whose arguments are unreadable is classified
-  // destructive and held, because the alternative is a malformed call walking
-  // past the gate. The manifest pre-check below then refuses it outright, so no
-  // unsatisfiable approval is ever filed for one.
+  // execCallText is the one owner of 'what did this call ask to run', at both doors and every call shape.
+  // A shape it cannot read is UNKNOWN, not harmless: hold it; the manifest pre-check then refuses outright.
   if (execDoorFor(toolName)) {
     const text = execCallText(toolName, args);
     if (text === null) return 'destructive shell command';
     if (DESTRUCTIVE_EXEC_RE.test(text)) return 'destructive shell command';
-    // ⚠ SUDO IS DELIBERATELY NOT CLASSIFIED HERE, AND IT WAS FOR ONE DAY. The first cut of the sudo
-    // policy (v3.2.2) put a `gated` arm right here, reusing this gate the way the Healer's identity
-    // writes do. THE OWNER'S RULING OF 2026-09-27 — *"ONLY the main agent gets Sudo access ever."* —
-    // made that arm DEAD CODE, and dead classification is worse than none because it invites the next
-    // reader to debug why it never fires:
-    //   · a NON-PRIMARY agent cannot sudo at all now (the role wall in `brokers/sudo-policy.ts` refuses
-    //     it under every policy), so this branch — which only runs for non-primary agents — can never
-    //     see a sudo line that could proceed;
-    //   · the PRIMARY's `gated` hold is filed directly in `steps/execute/dispatch-bookkeeping.ts`,
-    //     routed to the OWNER's card rather than to the primary itself.
-    // Removed rather than left as a comment-free no-op. The clauses live in
-    // `brokers/__tests__/sudo-is-a-policy-not-a-wall.test.ts` §6.
+    // Sudo is not classified here: the role wall in brokers/sudo-policy.ts is the one owner of that policy.
+    // Non-primary agents cannot sudo at all; the primary's gated hold goes to the owner's card at dispatch.
   }
-  // FU-4: the Healer now holds full primary-equivalent write ('*'), so a
-  // file_write/file_patch/file_append to one of the owner's identity/config files
-  // (PROTECTED_IDENTITY_PATHS: USER.md, ~/.dojo/config/**, loose ~/.dojo/*.yaml)
-  // is a NEW destructive path that rm alone does not cover. Classify it as
-  // destructive ONLY for the Healer, so it routes through the same approval hold
-  // as its rm/dd calls instead of a free write. SOUL/secrets are already globally
-  // write-denied and never reach here. isProtectedIdentityPath canonicalizes the
-  // path (collapses '..') before matching, so a traversal cannot slip the prefix.
+  // The Healer holds primary-equivalent write, so a protected-identity-file write is destructive for it.
+  // isProtectedIdentityPath canonicalizes the path first, so a traversal cannot slip the prefix.
   if (
     callerAgentId &&
     isHealerAgent(callerAgentId) &&
@@ -122,41 +62,11 @@ export function isDestructiveCall(
   return null;
 }
 
-/**
- * FA-P2 pre-hold check: would the agent's OWN permission manifest let this call
- * run at all? The gate HOLDS a non-primary destructive call for primary
- * approval, but holding a call the manifest denies anyway (e.g. a restricted
- * worker's `rm`, which is absent from its exec_allow) files an approval that can
- * never be satisfied: the primary approves, the worker is woken to retry, and the
- * executor's allowlist (this same checkPermission, called INSIDE executeTool)
- * denies it, wasting the one-shot approval and dead-ending the worker after it
- * was told approval was granted. So the caller runs this first and only holds
- * when it returns true; when it returns false the caller lets the normal executor
- * path deny the call, which yields the standard [BLOCKED] result plus the
- * permissionAlternativeFinder escalation (send_to_agent to a privileged agent,
- * request a grant), with no unsatisfiable approval row filed.
- *
- * ⚠ THE SEAM IS `authorizeExecShapedArgs`, AND IT IS THE EXACT CALL THE
- * DISPATCHER'S OWN GATE ROW MAKES — the same function, not a second one that
- * agrees (PHASE-5 T3, RULING P5-R3). Until T3 both sides spelled out
- * a `checkPermission` call on the legacy exec action shape, reading the command
- * out of the arguments with a `?? ''` fallback,
- * and the identity was a coincidence of typing: the day exec's shape became
- * `{argv}`, both sides would have kept compiling and both would have started
- * asking about the EMPTY STRING — an approval seam authorizing a command nobody
- * typed. Now there is one function and no second implementation to drift.
- *
- * A manifest-permitted-but-destructive call still returns true and is still
- * held: a destructive git subcommand like `git reset --hard` (base command `git`
- * is on the default allowlist), or an `rm` a privileged worker lists explicitly.
- *
- * A SHAPE-MISMATCHED exec call returns FALSE — refused, never authorized as
- * empty — so the caller lets the executor's own refusal speak and no
- * unsatisfiable approval row is filed.
- *
- * Non-exec destructive kinds have no manifest command to check (file_delete has
- * no live tool, FA-P4), so they return true and hold exactly as before.
- */
+// Pre-hold check: only hold what the manifest would allow, or the hold files an unfillable approval.
+// The seam is authorizeExecShapedArgs, the EXACT call the dispatcher's own gate row makes: one, no drift.
+// Manifest-permitted but destructive still returns true and is held (git reset --hard, an explicit rm).
+// A shape-mismatched exec call returns FALSE: refused, never authorized as the empty command.
+// Non-exec destructive kinds have no manifest command to check: they return true and hold as before.
 export function manifestPermitsDestructiveCall(
   agentId: string,
   toolName: string,
@@ -172,25 +82,15 @@ export function manifestPermitsDestructiveCall(
   return verdict.allowed;
 }
 
-/**
- * D-B step 2: mint a one-shot, consumable approval for an already-decided call,
- * bound to (agentId, signature). This is the bridge for the Healer's owner-
- * authority path: a HELD Healer call files a healer_proposals row (not a primary
- * wake), and when the OWNER approves it (gateway/routes/healer.ts, dashboard JWT
- * = owner authority) this writes the destructive_approvals row consumeApproval
- * expects, so the Healer's RE-ATTEMPT of the same signature passes exactly once.
- * The signature is the canonical one stored on the proposal at hold time, so the
- * retry (same canonicalToolSignature on the same call) matches it deterministically.
- * tool_name is derived from the signature prefix (canonicalToolSignature emits
- * "<toolName>:<json>"); it is display/audit only and never used in the match.
- */
+// Mint a one-shot approval for a decided call, bound to (agent, signature): the Healer's owner path.
+// The owner's dashboard approval writes the row the retry consumes, so it passes exactly once.
+// tool_name comes off the signature prefix; display and audit only, never part of the match.
 export function grantApprovalForSignature(input: {
   agentId: string;
   signature: string;
   requestText: string;
   decidedBy: string;
-  // P7: full args of the approved call when the approving flow has them; a
-  // NULL keeps the legacy signature-only consumption for that row.
+  // A NULL args_json keeps the legacy signature-only consumption for that row.
   argsJson?: string | null;
 }): void {
   const token = uuidv4();
@@ -209,13 +109,8 @@ export function grantApprovalForSignature(input: {
 export function consumeApproval(agentId: string, signature: string, argsJson?: string | null): boolean {
   try {
     const db = getDb();
-    // P7 exact-call contract (owner ruling 2026-07-20): the approval covers
-    // PRECISELY the command the approver saw, once. Consumption requires the
-    // FULL argument JSON to match, not just the lossy canonical signature
-    // (which drops prose, truncates long strings, and masks digit runs, so two
-    // different destructive commands could collide). Legacy rows filed before
-    // migration 117 carry NULL args_json and consume by signature alone, one
-    // release only.
+    // The approval covers precisely the command the approver saw, once: the FULL args JSON must match,
+    // not the lossy signature (prose dropped, strings cut, digits masked; two calls could collide).
     const row = db.prepare(`
       SELECT token FROM destructive_approvals
       WHERE agent_id = ? AND signature = ? AND status = 'approved'
@@ -249,10 +144,7 @@ function buildPrimaryWakePayload(input: {
   );
 }
 
-/**
- * File the request and wake the primary. Returns the refusal text the
- * requesting agent receives as its tool result.
- */
+// File the request, wake the primary, and return the refusal text the requester gets as its tool result.
 export async function requestApproval(input: {
   agentId: string;
   agentName: string;
@@ -260,8 +152,6 @@ export async function requestApproval(input: {
   signature: string;
   kind: string;
   callDescription: string;
-  // P7: the FULL argument JSON of the held call (exact-call contract) plus
-  // execution lineage so the approval record shows which turn and root asked.
   argsJson?: string | null;
 }): Promise<string> {
   const token = uuidv4();
@@ -281,17 +171,9 @@ export async function requestApproval(input: {
     return `[BLOCKED by engine: destructive-action gate] This ${input.kind} requires the primary agent's approval, and the approval request could not be filed. Do not retry; mark the task blocked.`;
   }
 
-  // The gate is about to HOLD this call and rely on waking the primary to
-  // approve, then waking THIS worker to retry. Neither wait may count against the
-  // worker's task-timeout: a worker blocked on approval is not idle by choice,
-  // and its per-agent reap timer (armed in-memory at spawn) would otherwise kill
-  // it mid-approval, silently dropping the approved action. Push the reap out to
-  // the approval window via extendAgentTimeout, which reschedules the DB row AND
-  // the in-memory timer together (FA-A3; the raw UPDATE this replaces never
-  // rescheduled the timer, so the extension helped no worker). Anchored at REQUEST
-  // time here; re-anchored at DECISION time on approval so the one-shot window is
-  // actually usable. Never shortens a longer timeout; no-timeout agents (ronin/
-  // persist) are left on their own semantics.
+  // Neither approval wait may count against the task-timeout: a reap would drop an action just approved.
+  // extendAgentTimeout moves the DB row AND the in-memory timer together; the raw UPDATE helped nobody.
+  // Re-anchored at request and on approval; never shortens; no-timeout agents keep their semantics.
   try {
     const { extendAgentTimeout } = await import('./spawner.js');
     extendAgentTimeout(input.agentId, new Date(Date.now() + APPROVAL_TTL_MINUTES * 60_000).toISOString());
@@ -336,11 +218,8 @@ export async function requestApproval(input: {
     );
   }
 
-  // The wake did NOT land: the primary was not told. Do not leave the worker
-  // waiting on a wake that will never arrive. Tell it plainly to escalate in
-  // band, and hand it the reference token so the primary can approve the exact
-  // request. The sweeper will also re-wake the primary on its own shortly; this
-  // in-band nudge is just the faster of the two paths.
+  // If the wake did not land the primary was never told; say so and hand the worker the reference token.
+  // Tell it to escalate in band with send_to_agent; the sweeper re-wakes shortly anyway.
   return (
     `[HELD by engine: destructive-action gate] ${input.kind} requires approval from ${getPrimaryAgentName()}, ` +
     `but the engine could NOT reach ${getPrimaryAgentName()} to request it automatically. Do not retry the call and do ` +
@@ -351,23 +230,13 @@ export async function requestApproval(input: {
   );
 }
 
-/**
- * FA-P1 sweeper (boot + periodic; piggybacks the 30s agent-reap interval in
- * index.ts rather than arming its own timer). Bounded and idempotent:
- *   1. Any pending request past APPROVAL_TTL_MINUTES is marked 'expired' with an
- *      owner-visible note (the FA-S2 primary-chat system-row idiom), so an
- *      undelivered or ignored approval fails LOUDLY instead of evaporating when
- *      the worker is reaped.
- *   2. Any pending request older than STALE_PENDING_MINUTES that has not yet been
- *      re-woken gets ONE more wake to the primary (covers both a dropped first
- *      wake and a primary that simply has not acted). rewake_count bounds it to
- *      exactly once.
- * Expiry runs before re-wake, so a row past the TTL is expired, not re-woken.
- */
+// Boot + periodic on the 30s reap interval; bounded and idempotent.
+// Pending past the TTL: mark 'expired' with an owner-visible note, so an unanswered request fails LOUDLY.
+// Pending past STALE_PENDING_MINUTES and never re-woken: exactly one more wake to the primary.
+// Expiry runs first, so a row past the TTL is expired, not re-woken.
 export async function sweepStaleApprovals(): Promise<void> {
   const db = getDb();
 
-  // 1. Loud expiry for anything the primary never decided within the TTL.
   let expired: Array<{ token: string; agent_id: string; request_text: string }> = [];
   try {
     expired = db.prepare(`
@@ -386,7 +255,6 @@ export async function sweepStaleApprovals(): Promise<void> {
     }
   }
 
-  // 2. One extra wake for stale-but-still-live pending requests.
   let stale: Array<{ token: string; agent_id: string; tool_name: string; request_text: string }> = [];
   try {
     stale = db.prepare(`
@@ -398,8 +266,7 @@ export async function sweepStaleApprovals(): Promise<void> {
     logger.warn('destructive-gate: sweep re-wake query failed', { error: err instanceof Error ? err.message : String(err) });
   }
   for (const row of stale) {
-    // Mark the re-wake BEFORE attempting it so a throw cannot cause an unbounded
-    // re-wake loop; exactly one extra attempt is the contract.
+    // Mark the re-wake BEFORE attempting it: a throw cannot loop it; exactly one extra attempt.
     db.prepare(`UPDATE destructive_approvals SET rewake_count = rewake_count + 1, updated_at = datetime('now') WHERE token = ?`).run(row.token);
     const name = (db.prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined)?.name ?? row.agent_id;
     const delivered = await deliverGateWake({
@@ -418,13 +285,8 @@ export async function sweepStaleApprovals(): Promise<void> {
     });
   }
 
-  // 3. D-B v2: the CRITICAL TEXTED class only (surface='imessage') expires on the
-  //    SAME 60-minute clock as gate holds, with the same loud owner notice (keep
-  //    the "Heads up:" prefix). Owner-directed v2 narrowed the loud-expiry class
-  //    from all 'urgent' to just the texted lane: a quietly-queued Vitals consent
-  //    is NOT loud here, it keeps its 14-day healer_proposals lifecycle and a
-  //    quiet expiry note (healer-agent.ts runHealingCycle sweep). Legacy toast
-  //    rows never match surface='imessage'.
+  // Texted (surface='imessage') proposals expire on the SAME clock, with the same loud owner notice.
+  // A quietly-queued consent keeps its own quiet lifecycle; legacy toast rows never match this surface.
   let expiredUrgent: Array<{ id: string; agent_id: string | null; proposed_fix: string | null; title: string }> = [];
   try {
     expiredUrgent = db.prepare(`
@@ -443,7 +305,7 @@ export async function sweepStaleApprovals(): Promise<void> {
       SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
       WHERE id = ? AND status = 'pending'
     `).run(
-      URGENT_APPROVAL_EXPIRY_NOTE,   // field fix 3 audit round (#6): the Dojo speaking, never 'I'
+      URGENT_APPROVAL_EXPIRY_NOTE,   // the Dojo speaking, never 'I'
       row.id,
     );
     if (marked.changes > 0) {
@@ -451,20 +313,15 @@ export async function sweepStaleApprovals(): Promise<void> {
         agent_id: row.agent_id ?? getPrimaryAgentId(),
         request_text: row.proposed_fix ?? row.title,
       });
-      // Nudge the live Vitals view to reload; the status stamp lets any surface
-      // drop a stale pending card no matter where it resolved.
+      // The status stamp lets any surface drop a stale pending card, wherever it resolved.
       try { broadcast({ type: 'healer:proposal', data: { id: row.id, status: 'auto_resolved' } }); } catch { /* */ }
       logger.warn('destructive-gate: texted healer approval expired unanswered', { proposalId: row.id });
     }
   }
 }
 
-/**
- * Owner-visible surface for an expired approval, the FA-S2 idiom: a role='system'
- * row into the primary agent's chat plus a chat:message broadcast, which renders
- * in the owner's history WITHOUT waking any agent turn (role='system' rows are
- * dropped by the model-message builder). Plain language for a non-technical owner.
- */
+// Owner-visible surface for an expired approval: a role='system' row in the primary's chat plus a broadcast.
+// System rows render in history without waking any agent turn; plain words for a non-technical owner.
 function notifyOwnerApprovalExpired(row: { agent_id: string; request_text: string }): void {
   try {
     const name = (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined)?.name ?? 'a helper';

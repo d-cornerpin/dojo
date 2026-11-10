@@ -1,51 +1,19 @@
-// ── THE DRAIN LADDERS, MADE RESTART-SAFE (PHASE-2 T10, RULING 5) ──
-//
-// Two drains in `runtime.ts` bound their own self-re-triggering by counting CONSECUTIVE
-// passes that saw the same head without advancing it. Both kept that count in a
-// module-scope `Map`, so **a crash loop reset the storm protection to zero on every boot** —
-// the 2026-07-23 storm hazard wearing a different hat, on exactly the kind of box (lived-in,
-// deep backlog) where it did the damage.
-//
-// T9 refused every column that already existed, each on its own measurement — `work.attempts`
-// is the recurrence fire count, `messages.delivery_attempts` expires engine events, and a
-// derivation from `turns` was refused BY THE BATTERY (`multi-agent-project` 0/3, run
-// `bms651uo8lh`: it counts turns during which the drain was not looking at the head). The
-// reasoning is preserved in full in `work/work-reaper.ts`'s landmine block and in migration
-// `140_drain_state.sql`; this module is the home T9 said was owed.
-//
-// ── ONE STATEMENT, BECAUSE "CONSECUTIVE" IS THE WHOLE PROPERTY ──
-//
-// `bumpDrainLadder` is a single UPSERT that decides same-head-or-new-head IN SQL. Read-then-
-// write in JS would give two drains racing on one agent a window to each read `stuck` and
-// each write `stuck+1`, losing a pass — and a lost pass is a longer spin, which is the exact
-// direction this bound exists to prevent.
-//
-// ── DIRECTION OF ERROR, STATED ──
-//
-// If the spine cannot be written, this returns a count ABOVE any caller's bound, so the drain
-// stands DOWN. That is deliberate and it matches `selfWakeStandDown`'s own rule ("an
-// unreadable spine returns stand down"): standing down costs a delayed wake, which the
-// periodic sweeps then pick up; the other direction costs a storm.
+// The drain ladders live in SQLite, so a crash loop cannot reset the storm protection on every boot.
+// bumpDrainLadder is one UPSERT that decides in SQL whether the head is the same or new: read and write
+// together, so two drains racing on one agent never each write stuck+1 from one read and lose a pass.
+// An unwritable spine returns a count above every caller's bound: stand down; a delayed wake beats a storm.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('drain-state');
 
-/** The two drains, named. A third one has to declare itself here and in the migration's
- *  CHECK rather than quietly sharing another drain's counter. */
+// A third drain declares itself here and in the migration's CHECK; it never shares another drain's counter.
 export type DrainKind = 'unserved_wake' | 'human_conversation';
 
-/** What a caller gets when the spine cannot be read or written: stand down. Above every
- *  bound in the tree (2 for the unserved-wake drain, MAX_DRAIN_STUCK = 4 for the human one)
- *  without being a magic number either of them has to know about. */
+// The stand-down value: above every bound in the tree, so neither drain needs the other's number.
 export const DRAIN_LADDER_UNREADABLE = Number.MAX_SAFE_INTEGER;
 
-/**
- * Record one drain pass over `head` and return how many CONSECUTIVE passes have now seen
- * that same head without it advancing. Zero on the first sighting — the Map's semantics,
- * preserved exactly, and now surviving a restart.
- */
 export function bumpDrainLadder(agentId: string, drain: DrainKind, head: string): number {
   try {
     const row = getDb().prepare(`
@@ -66,8 +34,7 @@ export function bumpDrainLadder(agentId: string, drain: DrainKind, head: string)
   }
 }
 
-/** There is no head any more — nothing to drain. Clears the ladder so the next head starts
- *  at zero. (Also what a served or quarantined head does.) */
+// No head left: clear so the next head starts at zero. A served or quarantined head clears it too.
 export function clearDrainLadder(agentId: string, drain: DrainKind): void {
   try {
     getDb().prepare('DELETE FROM drain_state WHERE agent_id = ? AND drain = ?').run(agentId, drain);
@@ -78,7 +45,6 @@ export function clearDrainLadder(agentId: string, drain: DrainKind): void {
   }
 }
 
-/** Every ladder for one agent — a session reset clears both drains at once. */
 export function clearAllDrainLadders(agentId: string): void {
   try {
     getDb().prepare('DELETE FROM drain_state WHERE agent_id = ?').run(agentId);
@@ -89,8 +55,7 @@ export function clearAllDrainLadders(agentId: string): void {
   }
 }
 
-/** The ladder as stored. For diagnosis and for tests; the drains themselves only ever
- *  bump and clear, so they cannot read a value and then act on a stale copy of it. */
+// For diagnosis and tests only: the drains only bump and clear, so they never act on a stale read.
 export function drainLadder(agentId: string, drain: DrainKind): { head: string; stuck: number } | null {
   try {
     return (getDb().prepare('SELECT head, stuck FROM drain_state WHERE agent_id = ? AND drain = ?')

@@ -1,7 +1,5 @@
-// decide(): the one door to the local decision model. It returns typed answers, or null on any failure (no
-// model, Ollama down, the timeout, the agent's Stop, a non-2xx, an answer that does not parse), and then the
-// caller's rule answers. The call is its own request, so the agent's prompt is untouched; the model stays
-// resident (`keep_alive: -1`) at the window the memory fit sets aside for it.
+// The one door to the local decision model: typed answers, or null on any failure; then the caller's rule.
+// Its own request, so the agent's prompt is untouched; the model stays resident at its reserved window.
 
 import { createLogger } from '../logger.js';
 import { recordCost } from '../costs/tracker.js';
@@ -26,7 +24,6 @@ export const MAX_DECISION_BODY_BYTES = 64 * 1024;
 
 /** Models this process saw answer: resident until any call of theirs fails, after which the next call gets the load time. */
 const resident = new Set<string>();
-/** Test-only: forget which models this process saw answer. */
 export function __forgetResidencyForTests(): void { resident.clear(); }
 /** Failures are logged once per class per minute: a down Ollama on a busy box is one line, not one per turn. */
 const LOG_EVERY_MS = 60_000;
@@ -55,7 +52,6 @@ function inTurn<T>(stop: AbortSignal | null, work: () => Promise<T | null>): Pro
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-/** One typed answer from the documented shape, or null when it is not that shape. */
 function typed(a: unknown): Answer | null {
   const noul = a && typeof a === 'object' ? (a as Record<string, unknown>).noul : undefined;
   return isNum(noul) ? { type: 'noul', noul } : null;
@@ -128,13 +124,10 @@ async function sent(
   }
 }
 
-// ── Sizing a request: the state fenced as material, the body as sent, the bytes Ollama counts, the time it is given ──
 
-/**
- * The timeout, measured on a box whose GPU the writer shares: a warm call took 62 + 1.33·T + 94·(Q − 1) ms
- * (T the state's tokens, Q the questions), observed over fitted was 2.05 at p99, and loading a model that is
- * not resident added about 1.3 s. So a call is given that long for its own size; a caller may pass its own.
- */
+// The timeout fits the call's measured size: 62 + 1.33*T + 94*(Q-1) ms (T state tokens, Q questions, warm).
+// Observed p99 ran 2.05 times the fit; a non-resident model added about 1.3 s; the box shared its GPU.
+// So a call gets its own size's worth; a caller may pass its own.
 export function decideTimeoutMs(stateTokens: number, questions: number, resident: boolean): number {
   return Math.ceil(decideFitMs(stateTokens, questions) * P99_OVER_FIT) + (resident ? 0 : MODEL_LOAD_MS);
 }
@@ -143,12 +136,9 @@ const decideFitMs = (stateTokens: number, questions: number): number => 62 + 1.3
 const P99_OVER_FIT = 2.05;
 const MODEL_LOAD_MS = 1_300;
 
-/**
- * The state is the MATERIAL the questions are about (a reply, a summary, a job's source rows with a contact's
- * message or a page in them), never instructions. So every text in it goes to the model
- * inside its own fence (the one fence, `fenceExternal`; a forged end in it is defanged), named by its key.
- * Numbers, flags and the shape pass as they are. Exported so a caller sizing a request can count the fences.
- */
+// The state is the MATERIAL the questions are about, never instructions.
+// Each text in it goes to the model in its own fence (fenceExternal defangs a forged end), named by its key.
+// Numbers, flags and shape pass through; exported so a caller sizing a request can count the fences.
 export function fencedState(v: unknown, key = 'state'): unknown {
   if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v);
   if (Array.isArray(v)) return v.map((x) => fencedState(x, key));
@@ -159,8 +149,7 @@ export function fencedState(v: unknown, key = 'state'): unknown {
 /** The request body exactly as `decide()` sends it. */
 export const decideRequestBody = (model: string, state: unknown, questions: Record<string, Question>): string =>
   JSON.stringify({ model, state: fencedState(state), questions, keep_alive: -1 });
-/** Measured: what Ollama counts against `MAX_DECISION_BODY_BYTES` is the
- *  JSON of `state` plus the JSON of `questions` plus 93 bytes of its own, not the body (the model name and `keep_alive`
- *  are not counted; a part filled to a 64 KiB BODY was refused). A caller sizing parts counts with this. */
+// Measured: Ollama counts state's JSON plus questions' JSON plus 93 bytes of its own, not the full body.
+// A caller sizing parts counts with this.
 export const decideCountedBytes = (state: unknown, questions: Record<string, Question>): number =>
   Buffer.byteLength(JSON.stringify(fencedState(state))) + Buffer.byteLength(JSON.stringify(questions)) + 93;

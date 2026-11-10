@@ -1,22 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t149 F6 — THE MONEY WALL'S REDIRECT TO A FREE MODEL: ANNOUNCED ONCE, AFTER IT ANSWERS, AND NEVER
-// AN ERROR LOOP.
-//
-// When a call to a paid model is walled by the spending limit and a free model exists, the call is
-// sent to the free model instead (`callModel`, the wall). This used to announce "Using <free model>
-// instead" the moment it chose the model — on every walled call, so a message whose turn made three
-// calls, plus its utility dials, was announced two or three times, before the free model had
-// answered anything — and a free model that was unreachable threw its transport error out of the
-// wall, which the turn took for a fault: error texts, Healer cards, agents paused after repeated
-// errors, while the true cause was the limit.
-//
-// Now: the free models are tried in the order the wall offers them, until one ANSWERS. The
-// announcement is made only then, only for the turn's own call, and only if this message has not
-// been announced already (the record is the chat itself: a note newer than the last inbound row).
-// When no free model answers, the call fails with the limit's own error (`BUDGET_EXCEEDED`), which
-// the engine's recovery reads as the honest budget stop (`agent/v2/honest-stop.ts`): the agent is
-// parked, the owner is told the true cause once, and it runs again when the limit changes.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A walled paid call goes to a free model, tried in the wall's own order until one ANSWERS.
+// It is announced only once one answers, only for the turn's own call, once per inbound message.
+// None answers: throw the wall's own BUDGET_EXCEEDED, which the honest stop reads and names the true cause.
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
@@ -35,7 +19,7 @@ const logger = createLogger('budget-redirect');
 
 const NOTE_LEAD = '[SOURCE: SYSTEM, not a message from the user] Daily budget reached';
 
-/** Tell the agent's chat (and the primary, for a sub-agent) — once per inbound message. Best effort. */
+/** Tell the agent's chat (and the primary, for a sub-agent), once per inbound message. Best effort. */
 function announce(agentId: string, check: BudgetCheckResult, modelName: string): void {
   try {
     const already = getDb().prepare(
@@ -74,8 +58,7 @@ export async function redirectToAFreeModel(
     logger.warn(`Budget exceeded, falling back to free model: ${fb.modelName}`, {
       agentId, dailySpend: check.dailySpend, dailyLimit: check.dailyLimit, freeModel: fb.modelName,
     }, agentId);
-    // t140 fix round 1 (review I1): re-fit the array to the free model's own window first. A free model
-    // too small for the agent's instructions and tools refuses by name and the next one is tried.
+    // Re-fit the array to the free model's own window first: one too small refuses by name, the next is tried.
     let refit: Awaited<ReturnType<NonNullable<ModelCallParams['refitFor']>>> = null;
     try {
       refit = params.refitFor ? await params.refitFor(fb.modelId) : null;
@@ -84,8 +67,7 @@ export async function redirectToAFreeModel(
       throw err;
     }
     try {
-      // The redirect target is an ollama transport (exempt from the wall) or a paid $0 model (skipped
-      // via the budget_fallback tier): either way it dispatches without re-walling.
+      // The target is wall-exempt (ollama) or $0 via the budget_fallback tier: it dispatches without re-walling.
       const result = await dial({ ...params, ...(refit ?? {}), modelId: fb.modelId, routerTier: 'budget_fallback' });
       if (params.purpose === 'agent_turn') announce(agentId, check, fb.modelName);
       return result;

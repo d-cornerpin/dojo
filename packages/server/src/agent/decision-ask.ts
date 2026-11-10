@@ -1,5 +1,4 @@
-// The decision model's verdicts for the judgments the owner put on it (`decision-policy.ts`): one `decide()` call,
-// null for every other question and on any failure, so the caller's rule answers. Installs itself into the leaf.
+// One decide() call for the owner's on-the-model questions; null otherwise means the rule answers.
 import { decide } from './decide.js';
 import { isYes, onTheModel } from './decision-policy.js';
 import { installJudgment, type Judge } from './decision-hooks.js';
