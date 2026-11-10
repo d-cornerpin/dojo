@@ -2,6 +2,7 @@
 // bumpDrainLadder is one UPSERT that decides in SQL whether the head is the same or new: read and write
 // together, so two drains racing on one agent never each write stuck+1 from one read and lose a pass.
 // An unwritable spine returns a count above every caller's bound: stand down; a delayed wake beats a storm.
+// Its own table: work.attempts, messages.delivery_attempts and a turns count each measure something else.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';

@@ -1,5 +1,5 @@
-// The sudo policy's vocabulary and its copy; a LEAF, imported by the decision and owning no decision.
-// A leaf on purpose: sudo-policy.ts imports platform.ts, which needs SudoPolicy; living there cycles.
+// The sudo policy's vocabulary and copy: a LEAF (sudo-policy.ts imports platform.ts, which needs SudoPolicy).
+// Mirrors dashboard/src/lib/sudo-policy.ts (the UI's copy of the same policy words): change both together.
 
 export type SudoPolicy = 'blocked' | 'gated' | 'free';
 

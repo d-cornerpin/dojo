@@ -1,4 +1,4 @@
-// Local Ollama only; null = the caller's rule. One health check at a time: it runs the upkeep's door.
+// Local Ollama only; null = the caller's rule. Ollama up but no decision model: one health check registers one.
 import { localOllamaProvider, standardModelRowId, STANDARD_DECISION_MODEL } from '../services/local-standard.js';
 import { checkOllamaHealth } from '../services/ollama.js';
 import { decisionTagWindow } from '../services/dojo-working-memory.js';

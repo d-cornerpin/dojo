@@ -5,8 +5,9 @@ import { getAgentPermissions } from '../manifest.js';
 import { getSudoPolicy } from './sudo-policy.js';
 import type { SudoPolicy } from './sudo-copy.js';
 
-/** `gated` and `free` both ALLOW here (the hold is filed upstream at dispatch), which is why the
- *  words name the hold rather than promising execution. The policy is a parameter, not a read. */
+/** `gated` and `free` both ALLOW (the hold is filed upstream), so the words name the hold, not execution.
+ *  Role wall first: no setting reaches a non-primary. The grant test cannot bite today but keeps the
+ *  manifest the authority. The soul line rides the cached prefix: ask only state that moves the fingerprint. */
 export function agentMayRunAdminCommands(agentId: string, policy: SudoPolicy): boolean {
   if (!isPrimaryAgent(agentId)) return false;
   if (policy === 'blocked') return false;

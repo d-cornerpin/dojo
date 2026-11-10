@@ -1,6 +1,7 @@
 // A grant is rows {effect_kind, mode, pattern} read ORDER BY mode DESC: deny-wins is a
 // property of the query, not of discipline. The rows are a PROJECTION of the manifest,
-// stamped with its fingerprint; the global deny lives in deny.ts, never in a row.
+// stamped with its fingerprint. The global deny stays hard-coded in deny.ts, never a row: a row
+// is deletable, and that would make the platform's strongest protection removable.
 
 import { createHash } from 'node:crypto';
 import type { PermissionManifest } from '@dojo/shared';

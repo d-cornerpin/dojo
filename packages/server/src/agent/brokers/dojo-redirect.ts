@@ -31,7 +31,8 @@ const SYSTEM_BIN = new Set(['/bin', '/usr/bin', '/usr/sbin', '/sbin']);
 const OUTPUT_FLAGS = new Set(['-readonly', '-header', '-noheader', '-csv', '-json', '-line', '-column', '-list', '-box', '-table', '-markdown', '-tabs']);
 const READ_PRAGMAS = new Set(['table_info', 'table_xinfo', 'index_list', 'index_info', 'index_xinfo', 'foreign_key_list']);
 const TILDE_PATH = '~/.dojo/data/dojo.db';
-/** Shell-only tables/functions: raw page reads, file writes, code loads; refused by name in any CLI. */
+/** Shell-only tables/functions (raw page reads, file writes, code loads): the agent's sqlite3 CLI may
+ *  differ from the server's SQLite, so its compile check cannot see them; refused by name. */
 const CLI_ONLY_NAME = /(?<![\w$])(?:sqlite_dbpage|sqlite_dbdata|sqlite_dbptr|fsdir|lsdir|zipfile|sqlar(?:_\w+)?|sha3_query|sha3_agg|sha3|readfile|writefile|edit|load_extension|fts3_tokenizer)(?![\w$])/i;
 /** Table-valued functions a read may name in its FROM clause. Any other one is refused. */
 const SAFE_TABLE_FUNCTIONS = new Set(['json_each', 'json_tree', 'pragma_table_info', 'pragma_table_xinfo', 'pragma_index_list', 'pragma_index_info', 'pragma_index_xinfo', 'pragma_foreign_key_list']);
@@ -247,8 +248,8 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
   return result;
 }
 
-/** The refusal for a command the broker ALLOWED, or null to let it run; it is asked
- *  only after the allow, so it can refuse and never permit (never a display string). */
+/** The refusal for a command the broker ALLOWED, or null; asked only after the allow, so it can refuse,
+ *  never permit. Pass the script text or the argv vector, never the space-joined display (it loses quoting). */
 export function redirectDojoQuestion(agentId: string, command: string | readonly string[]): Verdict | null {
   const role: DoorRole = isPrimaryAgent(agentId) ? 'main' : isHealerAgent(agentId) ? 'healer' : 'worker';
   const v = dojoDoorVerdict(command, role);

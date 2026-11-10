@@ -1,4 +1,4 @@
-// The PRIMARY agent uses its own judgment; every OTHER agent's destructive call is held by the engine.
+// The PRIMARY agent uses its own judgment; every OTHER agent's destructive call is held by the engine
 // and routed to the primary for approval: sub-agent -> engine gate -> primary -> judgment -> owner.
 // The gate refuses with a held result, files a token-bound request and A2A-wakes the primary.
 // An approval is one-shot, expires, and the retry passes once: prose cannot hold a line on weak models.

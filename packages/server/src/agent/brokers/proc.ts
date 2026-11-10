@@ -328,9 +328,9 @@ function isInlineShellScript(argv: readonly string[]): boolean {
   return argv.some((a) => INLINE_SCRIPT_FLAGS.has(a));
 }
 
-/** The argv door: refusals in the order that makes each un-walk-around-able: builtins and -c on
- *  the program; global deny and secrets substring on the reconstructed line; sensitive-read over the
- *  rows, deny before allow; deny-by-default is the absence of a row, not a special case. */
+/** The argv door. Refusals in order: builtins and -c on the program; global deny and secrets substring
+ *  on the rebuilt line; the sensitive-read scan over the elements. Then the proc rows, deny before
+ *  allow; no row means deny. */
 export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
   if (SHELL_BUILTINS.has(resource.base)) {
     return deny(

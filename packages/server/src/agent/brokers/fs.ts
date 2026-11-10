@@ -92,7 +92,7 @@ export function authorizeFs(
     if (shared) return shared;
   }
 
-  // A row scoped to one agent binds that agent only, so the viewer comes from the grant's agent.
+  // A scoped row binds every agent except the one it names, so the viewer is derived from the grant's agent.
   const globallyDenied = globalDeny(kind, resource, () => (ownsTheMac(grant.agentId) ? 'main' : isHealerAgent(grant.agentId) ? 'healer' : 'other'));
   if (globallyDenied) return globallyDenied;
 
