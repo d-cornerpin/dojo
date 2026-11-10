@@ -32,69 +32,32 @@ import { routerWindowTokens } from '../router/router-window.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
 import { settleFailedCall } from './failed-call.js';
 import { broadcast } from '../gateway/ws.js';
-// T83: the abort registry's two doors. `shared-state.ts` imports nothing but the logger, so
-// this is a leaf edge — no cycle back through the runtime.
+// The abort registry's two doors. shared-state.ts imports nothing but the logger: leaf edge, no cycle.
 import { registerAbortable, releaseAbortable } from './shared-state.js';
 import { redirectToAFreeModel } from './budget-redirect.js';
 import { utilityBoundaryOutputTokens } from './utility-boundary.js';
 import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured, imageTokenAllowance, NUM_CTX_BLOCK, NUM_CTX_MARGIN_TOKENS } from './utility-dial.js';
 
-/**
- * ⚠ THE SMALLEST STORED "Max output" THIS ENGINE WILL BIND on an ordinary Ollama call (review M3).
- * The field was inert on this path until t88, so its stored values were never exercised by use — a box
- * carrying a tiny number from a dead knob must not start truncating its agent's turns on update. Below
- * this the value is ignored with a warn that names it; a utility dial's own cap is unaffected, because
- * that number comes from this engine rather than from a field nobody could see working.
- * 256 tokens is a short paragraph: the smallest output that could be somebody's real answer.
- */
+/** Smallest bindable stored "Max output"; below it ignored with a warn. 256: the smallest real answer. */
 export const MIN_BINDABLE_MAX_OUTPUT_TOKENS = 256;
 import type { ToolCall } from '@dojo/shared';
 import { attachmentBrackets, defangExternalMarkers } from '../tools/external-content.js';
-/** v3.5 K33: an attachment's text (an extracted PDF) inside the fence that brackets it, if any. */
+/** An attachment's text (an extracted PDF) inside the fence that brackets it, if any. */
 const withinFence = (fence: { head: string; end: string } | null | undefined, text: string): string => (fence ? `${fence.head}\n${defangExternalMarkers(text)}\n${fence.end}` : text);
 
 const logger = createLogger('model');
 
-// Client cache is defined below after CachedClient type
 
-// ── Stream idle watchdog (2026-07-10) ──
-// A provider can hang or slow-walk a streaming response indefinitely; the
-// production trigger was a 602-second call that returned one empty token and
-// held a reminder turn hostage (DOJO-ISSUES-LOG 2026-07-10). Bound the STREAM,
-// not the generation: a healthy long answer keeps producing chunks and never
-// times out; a dead connection dies at the first-chunk bound and a mid-stream
-// stall dies at the idle bound. The watchdog's abort is distinguishable from
-// the user's stop button (timedOut()), and the v2 loop grants one same-model
-// retry on the translated timeout error.
-//
-// T65b: the sentence above — "a mid-stream stall dies at the idle bound" — was a claim this
-// file could not keep on the OpenAI transport for the whole of its life, because the SDK
-// swallowed the watchdog's abort and the half-answer was returned as a finished one. It is
-// true now; the check that makes it true, and why it is a throw rather than a second
-// translation, is at the consume seam in `callOpenAIModel`.
-//
-// T64b: the two numbers now live in `stream-patience.ts` beside the rule for when a provider
-// replaces them, because the write door has to validate against the same pair and cannot
-// import this module to get them. Re-exported here, so every existing importer of these two
-// names is unaffected.
+// Bound the stream, not the generation: healthy chunks never time out, and the abort is
+// distinguishable from a user stop. `stream-patience.ts` holds and validates the same pair.
 export { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS };
 
 export interface StreamWatchdog {
   /** Combined signal: fires on watchdog timeout OR the external (stop) signal. */
   signal: AbortSignal;
-  /**
-   * Call on every received chunk/event. Re-arms the CURRENT bound: the first-chunk bound
-   * until `contentStarted()` has been called, the idle bound after it. A frame proves the
-   * socket is alive, which is what this re-arm is for; it does not prove the machine has
-   * begun generating, which is what `contentStarted()` is for.
-   */
+  /** Call on every received chunk/event; re-arms the CURRENT bound. */
   bump: () => void;
-  /**
-   * Call the first time the stream carries GENERATED CONTENT — a text delta, a reasoning
-   * delta, or a tool-call delta. This is the moment the provider proves it can emit, and it
-   * is the moment the dead-connection detector (`idleMs`) takes over from prompt-processing
-   * patience (`firstChunkMs`). Idempotent.
-   */
+  /** Call on the first generated content; the idle bound takes over. Idempotent. */
   contentStarted: () => void;
   /** Call when the stream finishes (success or failure); disarms the timer. */
   finish: () => void;
@@ -102,64 +65,11 @@ export interface StreamWatchdog {
   timedOut: () => boolean;
   /** True iff the watchdog fired BEFORE any generated content arrived. */
   firstChunkTimedOut: () => boolean;
-  /** Milliseconds since the watchdog was armed. */
   elapsedMs: () => number;
 }
 
-/**
- * ════════════════════════════════════════════════════════════════════════════════════════
- * T72b claim 2 — THE FIRST-CHUNK GRANT IS NOT SPENT ON AN ACK FRAME.
- * ════════════════════════════════════════════════════════════════════════════════════════
- *
- * `bump()` used to re-arm with `idleMs` unconditionally, starting with the very first bump.
- * The OpenAI-compatible consume loop bumps as the FIRST statement of its body — before the
- * `if (!delta) continue` guard and before any look at what the frame carried — so the first
- * SSE frame of any kind spent the entire first-chunk grant: the content-free
- * `delta: {"role":"assistant"}` ack that llama.cpp, vLLM, LM Studio and LiteLLM all emit as
- * soon as generation is queued; a zero-choice frame; the `include_usage` frame.
- *
- * From that instant the bound was `idleMs`, which nobody raises when buying patience for a
- * long PREFILL. The owner's incident is that arithmetic exactly: a declared
- * `first_chunk_timeout_ms` of 200 s, an ack frame at ~106 s, the standing 60 s idle bound,
- * and an abort at ~166 s with the 200 s bound never consulted again.
- *
- * T64b wrote the correct rule in `stream-patience.ts` and this function did not implement
- * it: "Declaring that a machine may think for six minutes before it speaks says nothing
- * about how long it may go silent ONCE IT HAS PROVEN IT CAN EMIT." An empty ack frame
- * proves the socket is open, which was never in doubt. So there are two phases now, and
- * `bump()` re-arms whichever one is current. The 602-second hang the watchdog was built for
- * (DOJO-ISSUES-LOG 2026-07-10) stays caught: the first-chunk bound is still a bound, it is
- * simply no longer surrendered to a frame carrying nothing.
- *
- * ── T73b: SSE KEEPALIVE COMMENTS (`: ping`) DO NOT BUMP THIS, AND THAT IS THE ANSWER ──
- * W69 handed up that a `: ping` line never reaches the consume loop, so a server that pings
- * politely while emitting nothing is treated as dead. Both halves of that are true —
- * `openai@6.32.0`'s `SSEDecoder.decode` returns `null` for any line starting with `:`
- * (`core/streaming.js`), so comments are discarded a layer below this file — and it was
- * considered and REFUSED here rather than left unexamined. Three reasons, in order of weight:
- *
- *   1. IT IS THE ACK FRAME AGAIN, POINTING THE OTHER WAY. T72b's whole finding is that a frame
- *      carrying no generated output proves the socket is open, which was never in doubt, and
- *      must not be allowed to decide how long the machine may stay silent. A `: ping` carries
- *      strictly less than the ack frame does. Honouring one after refusing the other would
- *      leave this file holding two opposite rules about the same evidence.
- *
- *   2. THE EXTENSION IS UNBOUNDED AND THE REMOTE PARTY CONTROLS IT. Bumping on a heartbeat
- *      hands the provider an unlimited renewal of its own leash: a wedged server that keeps
- *      its ping timer alive is never cut at all. That is precisely the 602-second hang this
- *      watchdog exists to end, wearing a heartbeat. Every bound above is finite on purpose.
- *
- *   3. THE DAMAGE W69 SAW WAS THE TRANSPORT'S, NOT THIS TIMER'S. A ping is bytes on the wire,
- *      so it always reset undici's `bodyTimeout` — pings were the accidental reason some long
- *      prefills survived the 300 s ceiling at all. T73b lifts that ceiling from the declared
- *      patience instead, which is the bound a person can see, argue with and edit. A provider
- *      that needs longer says so on its row; it does not earn it by pinging.
- *
- * If this is ever revisited, the shape it would need is a BOUNDED extension (a ping buys one
- * further grant, a fixed number of times) and a place to hook it that is not this loop, since
- * the SDK eats the comment lines. Neither is free, and neither is warranted by a bound that
- * now covers the prefill it was always supposed to cover.
- */
+// An ack frame proves the socket is open, never that generation began, so the first-chunk grant
+// is not spent on it; `: ping` keepalives never bump either: a wedged server must not renew its leash.
 export function makeStreamWatchdog(
   external?: AbortSignal,
   firstChunkMs: number = STREAM_FIRST_CHUNK_TIMEOUT_MS,
@@ -194,87 +104,42 @@ export function makeStreamWatchdog(
 /** The loop matches on this exact phrase to grant a single same-model retry. */
 export const STREAM_IDLE_TIMEOUT_ERROR = 'model stream idle timeout';
 
-/**
- * The phrase for a first-chunk timeout on a provider that DECLARED its first-chunk patience.
- * Deliberately does NOT contain `STREAM_IDLE_TIMEOUT_ERROR`, because the loop's single
- * same-model retry matches on that substring and this case must not collect it.
- *
- * T72b claim 2, second half. Both bounds used to throw the same phrase, so a first-chunk
- * timeout was indistinguishable from a mid-answer stall and took the retry. That retry
- * re-dials COLD with the identical messages, so a local box restarts the whole prompt
- * processing it was most of the way through — and dies at the same bound again, having spent
- * twice the wall clock to produce one error. The owner's word for it was "cannibalises".
- *
- * A provider whose owner declared how long it needs before token 1, and which then blew
- * through that declaration, has already answered the question a retry would ask. The honest
- * outcome is the error, with the bound named in it. Providers that declared nothing are
- * unchanged in every respect — same abort, same phrase, same one retry.
- */
+// Deliberately does NOT contain `STREAM_IDLE_TIMEOUT_ERROR`: the loop's one same-model retry matches
+// on that substring, and re-dialing COLD restarts prompt processing and dies at the same bound.
+// Providers that declared nothing keep the same phrase and the same one retry.
 export const STREAM_FIRST_CHUNK_TIMEOUT_ERROR = 'model first-chunk timeout';
 
-/**
- * R7 (owner ruling, 2026-10-31: "retry a model answer cut off without 'finished'"). An OpenAI-style stream that
- * ends with no `finish_reason` on any chunk was hung up on mid-answer: the answer is NOT complete. It used to be
- * returned as a normal `end_turn` (half an answer shipped as the whole). It is raised as this retryable cut
- * instead, and the v2 loop's single same-model retry (model-call.ts) gives the person the whole answer.
- */
+/** A stream that ends with no `finish_reason` was hung up mid-answer: this retryable cut lets
+ *  the loop's single same-model retry deliver the whole answer. */
 export const STREAM_NO_FINISH_ERROR = 'model stream ended without a finish signal';
 class StreamEndedUnfinished extends Error {}
 
-/**
- * Which timeout phrase this abort deserves. The one decision point, so the four throw sites
- * across both transports cannot come to disagree — the same discipline
- * `streamWasCutByWatchdog` applies to "was this the watchdog or the user".
- */
+/** The one decision point for which timeout phrase an abort deserves, so the four throw sites
+ *  across both transports cannot come to disagree. */
 export function streamTimeoutPhrase(watchdog: StreamWatchdog, patience: StreamPatience): string {
   return watchdog.firstChunkTimedOut() && patience.firstChunkDeclared
     ? STREAM_FIRST_CHUNK_TIMEOUT_ERROR
     : STREAM_IDLE_TIMEOUT_ERROR;
 }
 
-/**
- * Which `AgentError` CODE this abort deserves — the sibling decision to `streamTimeoutPhrase`,
- * split out at T81a because the phrase alone was never read by anything downstream of the
- * throw site. `provider-error.ts` and `healer/injury-recovery.ts` both classify from `.code`
- * (or, for the latter, from the identical literal phrase surviving in a persisted string once
- * the process a Map lived in is gone) — and until now the phrase's own distinction never
- * reached that layer: every watchdog abort left with the identical `'stream_idle_timeout'`
- * code, first-chunk-declared and genuinely-idle alike. One decision point, so the two throw
- * sites across both transports cannot come to disagree, same discipline as the phrase above.
- */
+/** Which `AgentError` code this abort deserves; the phrase's declared/idle split must reach
+ *  `provider-error.ts` and `healer/injury-recovery.ts`, which classify from `.code`. */
 export function streamTimeoutCode(watchdog: StreamWatchdog, patience: StreamPatience): string {
   return watchdog.firstChunkTimedOut() && patience.firstChunkDeclared
     ? DECLARED_PATIENCE_EXCEEDED_CODE
     : STREAM_IDLE_TIMEOUT_CODE;
 }
 
-/**
- * WHICH bound this trip spent, and whose number it was — the third sibling of the two above,
- * for the LOG line rather than the error. The phrase says what happened; this says what it
- * happened against, and the word "declared" appears only when the row actually declared.
- *
- * T83b: the Ollama path's log used to open `aborted by declared patience` unconditionally, on a
- * provider whose patience columns were both NULL. A reader chasing three nights of failures was
- * told the owner had configured the bound that killed the call; nobody had configured anything.
- * The standing/declared split is worded exactly as `refuseIfDoomed` words its own, so the two
- * sentences a human meets about the same fact read the same way.
- */
+/** Which bound this trip spent and whose number it was, for the log line rather than the error.
+ *  The word "declared" appears only when the row actually declared it. */
 export function streamTripBound(watchdog: StreamWatchdog, patience: StreamPatience): string {
   return watchdog.firstChunkTimedOut()
     ? `${patience.firstChunkDeclared ? 'its declared' : 'the standing'} ${patience.firstChunkMs}ms first-chunk bound`
     : `${patience.idleDeclared ? 'its declared' : 'the standing'} ${patience.idleMs}ms idle bound`;
 }
 
-/**
- * The extra clause a declared-patience-exceeded message carries: how big the request the
- * provider gave up on was, and how long its own owner said it needed. Empty for a genuine
- * mid-stream idle timeout — that case is not size-driven, and appending a size here would be a
- * guess this function has no basis for.
- *
- * T81a: this is the fact `injury-recovery.ts`'s human-facing note reads, because it survives
- * every layer between here and a restart inside the one string that does —
- * `AgentError.message`, and from it `agents.last_error`.
- */
+/** The clause a declared-patience message carries: request size against declared patience; empty for idle
+ *  timeouts. `injury-recovery.ts` reads it from `AgentError.message`, which outlives this call. */
 export function declaredPatienceClause(
   watchdog: StreamWatchdog, patience: StreamPatience, estimatedInputTokens: number,
 ): string {
@@ -282,107 +147,42 @@ export function declaredPatienceClause(
   return `; ~${estimatedInputTokens} estimated prompt tokens against a declared ${patience.firstChunkMs}ms first-chunk patience`;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T81b (NO-DOOMED-DIALS) — REFUSE TO DIAL A REQUEST THE DECLARED FACTS SAY CANNOT FINISH.
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// Everything above this point translates a watchdog abort AFTER the call was made. Census row
-// 37 is the mechanism that did not exist at all: both transports already compute a token
-// estimate for the exact request about to go out (`finalInputEstimate` / `inputEstimate`,
-// below) and, until now, compared it against nothing. `resolveDoomCeiling` turns a provider's
-// declared patience and declared prefill throughput into the largest prompt that patience can
-// possibly cover; this function is the one place that estimate is checked against it, on every
-// transport, before a single byte reaches the wire.
+// Refuse to dial a request the declared facts say cannot finish: the one place the outgoing
+// token estimate is checked against `resolveDoomCeiling`, on every transport, before the wire.
 
-/**
- * Names the pre-dial refusal distinctly from every watchdog-timeout phrase above, so a human
- * reading `agents.last_error` (or a log line) can tell "never dialed" from "dialed and died"
- * at a glance — the same belt-and-suspenders `AgentError.preDialRefusal` carries structurally
- * for `v2/recovery.ts`'s routing decision (see that field's own doc for why both exist).
- */
+/** Distinct from every watchdog-timeout phrase: "never dialed" reads apart from "dialed and died". */
 export const PRE_DIAL_REFUSAL_PHRASE = 'refused before any network dial';
 
-/**
- * Throws T81a's own `DECLARED_PATIENCE_EXCEEDED_CODE` — never a second code, per the brief —
- * when `estimatedInputTokens` exceeds what this provider's declared patience and declared
- * prefill throughput can cover. A `null` ceiling (undeclared or incoherent throughput) is a
- * silent no-op: this is the byte-preservation control, the same NULL-row shape migration 166's
- * header promises. Never retryable, for the identical reason a declared-patience watchdog
- * abort is never retryable (P3) — re-dialing the identical prompt would only prove the same
- * arithmetic again, at the cost of a dial this function exists to avoid spending at all.
- */
+// Throws `DECLARED_PATIENCE_EXCEEDED_CODE` when the estimate exceeds what declared patience and
+// prefill throughput can cover; a `null` ceiling is a silent no-op, so an undeclared row keeps
+// byte-identical behavior. Never retryable: re-dialing the identical prompt proves the same math again.
 function refuseIfDoomed(
   agentId: string,
   estimatedInputTokens: number,
   patience: StreamPatience,
   provider: { providerType: string; providerBaseUrl: string | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec?: number | null },
 ): void {
-  // v3.5 field fix 3 (#11, OR-FIELD3 (a)): a cloud provider gets its full window; the backstop guards a local box only.
+  // A cloud provider gets its full window; this backstop guards a local box only.
   if (!doomGuardApplies(provider)) return;
   const { prefillTokensPerSec, measuredPrefillTokensPerSec } = provider;
-  // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22). Declared still wins outright; the
-  // measured reading off the cost ledger is consulted only where the declaration is absent,
-  // i.e. only where this gate was previously a no-op. `throughput` carries the SOURCE as well
-  // as the number because the message below names it, and the T81 fix wave already established
-  // in this same sentence that a number must not be called "declared" when nobody declared it.
+  // PREFILL SELF-CALIBRATION: declared wins outright; the measured reading applies only where
+  // no declaration exists. The source rides along: never call a number "declared" that nobody declared.
   const throughput = resolvePrefillThroughput(prefillTokensPerSec, measuredPrefillTokensPerSec);
   if (throughput === null) return;
-  // ══════════════════════════════════════════════════════════════════════════════════════
-  // FIX ROUND 1, CRITICAL C1 — A MEASUREMENT MAY ONLY TIGHTEN A BOUND SOMEBODY DECLARED.
-  // ══════════════════════════════════════════════════════════════════════════════════════
-  //
-  // This function was, until this line, the ONLY consumer of the doom ceiling without a
-  // `firstChunkDeclared` guard. Its two siblings both have one, and both record the same
-  // reason: `getProviderCeilingTokens` ("planning an admission budget off a number nobody
-  // declared is not this task's job") and `router/selector.ts`'s mirrored query ("a declared
-  // throughput alone, with no declared patience, is not 'this provider declared both halves'").
-  //
-  // The asymmetry was HARMLESS while a throughput had to be typed by a human: declaring one was
-  // a deliberate act, and the prefill-throughput door had no client caller anywhere in the tree,
-  // so this branch was structurally unreachable. Self-calibration removes that precondition. The
-  // reviewer proved the consequence at the real dial site: same provider, same 40,007-token
-  // prompt — with `measured_prefill_tokens_per_sec` NULL it dials; with 181.07 it refuses, zero
-  // dials, citing a ceiling of 60 × rate = 10,860 tokens "inside the standing 90000ms
-  // first-chunk patience". The owner's own conversations run 42–52K. His box would have started
-  // refusing them the moment it finished measuring itself, on a bound nobody agreed to.
-  //
-  // Three things made it worse than a wrong number. The one-shot compaction recovery a pre-dial
-  // refusal routes into aims via `getProviderCeilingTokens`, which returns `null` here — so the
-  // forced compaction cannot even target the ceiling that refused, and the turn honest-fails
-  // AFTER a destructive compaction. Ollama and agent-sdk providers cannot declare patience from
-  // the UI at all (`Settings.tsx` renders that pair only where the stream watchdog arms), so the
-  // refusal's own advice — "raise this provider's declared patience" — points at a control they
-  // do not have. And for Ollama the 90s standing bound is not even the real one; that transport
-  // waits 300s.
-  //
-  // So: a MEASURED rate arms this gate only where the owner declared the patience it is measured
-  // against. A DECLARED throughput keeps today's behaviour exactly, standing patience included —
-  // that is a deliberate act, and the `firstChunkClause` below already tells the truth about
-  // which bound it is being held to.
+  // A MEASUREMENT MAY ONLY TIGHTEN A BOUND SOMEBODY DECLARED: measured throughput alone must not
+  // arm this gate on standing patience, or the box would refuse its owner's normal conversations.
   if (throughput.source === 'measured' && !patience.firstChunkDeclared) return;
   const ceiling = resolveDoomCeiling(patience.firstChunkMs, prefillTokensPerSec, measuredPrefillTokensPerSec);
   if (ceiling === null || estimatedInputTokens <= ceiling) return;
-  // T81 fix wave (final review, Minor M2): `resolveDoomCeiling` only needs `prefillTokensPerSec`
-  // declared — `patience.firstChunkMs` can still be the STANDING default (nobody set it) when a
-  // provider declares throughput alone. Calling that number "declared" unconditionally was a
-  // claim about a fact that may not be true; `firstChunkDeclared` (T72b) already answers which
-  // case this is, the same fact `streamTimeoutCode`/`streamTimeoutPhrase` key on above.
+  // With throughput alone declared, `firstChunkMs` may be the standing default, not "declared".
   const firstChunkClause = patience.firstChunkDeclared
     ? `its declared ${patience.firstChunkMs}ms first-chunk patience`
     : `the standing ${patience.firstChunkMs}ms first-chunk patience`;
-  // T82a: with the admission budget and the compaction trigger both now planning against this
-  // same ceiling (memory/budget.ts, memory/compaction.ts), this gate is a BACKSTOP — an
-  // assertion that the upstream planning already agrees with itself, not the mechanism that
-  // keeps a request off the wire. Seeing it fire is therefore a signal about where to look.
-  // `${throughput.source}` is the ONLY byte that moves here, and only for a provider that
-  // declared nothing — where this sentence could not previously be produced at all, because the
-  // gate was off. A declared provider reads the identical message it read before the 2026-09-22
-  // ruling, down to the number: `throughput.tokensPerSec` IS `prefillTokensPerSec` in that case.
+  // The admission budget and the compaction trigger both plan against this same ceiling, so this
+  // gate is a BACKSTOP: only the source word changes in the message below, for undeclared rows.
   const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's ${throughput.source} ${throughput.tokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput. This gate is a backstop, not the mechanism — post-T82a its firing means the upstream budget was sized wrong, not that nothing upstream tried.`;
-  // Fix round 1 (review N6): `prefillTokensPerSec` stays bound to the DECLARED column — which is
-  // what that key has always named, and is `null` on a measured refusal. The number actually
-  // spent gets its own key beside its source. A key that reads "declared" while carrying a
-  // measured value is the same class of lie the T81 M2 rule removed from the message above.
+  // `prefillTokensPerSec` in the log stays bound to the DECLARED column (`null` on a measured
+  // refusal); the number actually spent gets its own key. No key may read "declared" on a measured value.
   logger.warn(`Refusing to dial a doomed request: ${message}`, {
     agentId, estimatedInputTokens, ceiling, prefillTokensPerSec,
     throughputTokensPerSec: throughput.tokensPerSec, throughputSource: throughput.source,
@@ -395,19 +195,8 @@ function refuseIfDoomed(
   });
 }
 
-/**
- * T65b — THE ONE TRUTH CHECK: did the WATCHDOG cut this stream, or did the user?
- *
- * The distinction is the whole reason `StreamWatchdog` reports `timedOut()` separately from
- * its abort signal, and the two answers are opposites: a watchdog cut means the provider
- * stopped talking and whatever arrived is NOT an answer; a stop-button abort means the person
- * asked for it to end, and the partial text they already watched arrive is theirs to keep.
- *
- * It was written out longhand at the two `catch` sites and nowhere else, which is how the
- * defect below survived: the sentence existed, but only on the path where the SDK raised.
- * One expression, four call sites (both consume seams, both catches), so the two transports
- * cannot come to disagree about what a stalled stream is.
- */
+/** THE ONE TRUTH CHECK: did the watchdog cut this stream, or did the user? A cut means whatever
+ *  arrived is NOT an answer; a stop means the partial text is the person's to keep. Four call sites. */
 export function streamWasCutByWatchdog(
   watchdog: StreamWatchdog,
   external: AbortSignal | undefined,
@@ -420,44 +209,29 @@ export interface ModelCallParams {
   modelId: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>;
   systemPrompt: string;
-  /**
-   * C28 Part 1 (P-2): optional system-side volatile tail. Rendered AFTER the
-   * cached stable system block (Anthropic: a second uncached text block;
-   * OpenRouter: a second unmarked system message), so it can never invalidate
-   * the cached prefix. Empty after P-1; defense-in-depth for future needs.
-   */
+  /** Optional system-side volatile tail, rendered AFTER the cached stable system block
+   *  so it can never invalidate the cached prefix. */
   systemVolatile?: string;
   tools?: boolean;
   onChunk?: (chunk: string) => void;
-  /**
-   * Streamed thinking / reasoning chunks from providers that expose them
-   * as a sibling field of `content` (e.g. DeepSeek v4-pro). Called once
-   * per delta. Live UI uses this to render a collapsible "Thinking…"
-   * section above the eventual answer. Anthropic's thinking blocks
-   * arrive inside content and don't use this callback.
-   */
+  /** Streamed thinking chunks from providers that expose thinking as a sibling of `content`.
+   *  Anthropic's thinking arrives inside content and does not use this callback. */
   onReasoningChunk?: (chunk: string) => void;
-  /** t195: extra output room asked for THIS call (the engine's escalation); 0/absent = the everyday budget. */
+  /** Extra output room asked for THIS call (the engine's escalation); 0/absent = the everyday budget. */
   outputRoomAsk?: number;
-  routerTier?: string; purpose?: string; // routerTier: the auto-router's tier. purpose: WHAT THIS CALL IS, for the cost ledger's `request_type` — the served-turn path declares 'agent_turn' (`v2/steps/call-llm/model-call.ts`); every engine utility dial leaves it unset and records 'completion'. Never inferred from `tools`: `runtime.ts`'s tools gate turns a REAL turn toolless on a model without the capability.
+  // routerTier is the auto-router's tier. purpose is what this call is, for the cost ledger's
+  // request_type: the served turn declares 'agent_turn', every engine utility leaves it unset and
+  // records 'completion'. Never inferred from `tools`: the tools gate can make a real turn toolless.
+  routerTier?: string; purpose?: string;
   /** A utility caller that knows its artifact's size (the summariser knows its `targetTokens`) may ask
    *  for LESS than that purpose's ceiling; nobody may ask for more. Ignored unless `purpose` names a
-   *  utility dial — see `utility-dial.ts`. */
+   *  utility dial; see `utility-dial.ts`. */
   utilityTargetTokens?: number | null;
-  /** t140 fix round 1 (review I1): re-fit this call's array for a DIFFERENT model before it is
-   *  dialed — the budget redirect below picks a free model the array was never sized for. The
-   *  served turn supplies it (`model-call.ts`, which holds the turn's assembly context); `null`
-   *  means the array already fits that model. Absent on utility dials, whose arrays are tiny. */
+  /** Re-fit for a DIFFERENT model before dialing (the redirect picks an unsized-for one); `null` = fits. */
   refitFor?: (modelId: string) => Promise<{ messages: ModelCallParams['messages']; systemPrompt: string } | null>;
-  // External abort signal, when fired, the underlying SDK call aborts
-  // and callModel throws. Used by the runtime's stop button to actually
-  // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
-  // affected the runtime loop, not the underlying fetch).
+  /** When fired the SDK call aborts and callModel throws (the runtime's stop button). */
   abortSignal?: AbortSignal;
-  // F3: set by best-effort utility calls whose caller fully handles failure
-  // with a fallback (e.g. web_fetch page extraction falls back to raw fetch).
-  // Downgrades the provider-failure log from ERROR to WARN so a handled,
-  // recoverable failure doesn't read as an agent-level error in the log.
+  /** Best-effort utility call with a fallback; downgrades the provider-failure log from ERROR to WARN. */
   bestEffort?: boolean;
 }
 
@@ -467,27 +241,20 @@ export interface ModelCallResult {
   inputTokens: number;
   outputTokens: number;
   stopReason: string | null;
-  /**
-   * Aggregated reasoning text returned by the model when thinking is
-   * enabled (DeepSeek v4-pro etc.). Empty string when thinking didn't
-   * fire. The runtime persists this on the assistant message so the
-   * next request can round-trip it (DeepSeek requires reasoning_content
-   * be echoed on tool-call follow-up turns).
-   */
+  /** Aggregated reasoning text when thinking fired; the runtime persists it so the next request
+   *  can round-trip it (DeepSeek requires echoing it on tool-call follow-up turns). */
   reasoningContent?: string;
-  /** t195: the output room this call was sent with and the most a retry could be given. Absent = none to offer. */
+  /** The output room this call was sent with and the most a retry could be given. Absent = none to offer. */
   outputRoom?: { sent: number; ceiling: number };
 }
 
-// OAuth tokens require specific beta headers per Anthropic's API
-// claude-code-20250219 is required for OAuth tokens to access Sonnet/Opus models
+// These beta headers are required for OAuth tokens to access Sonnet/Opus models.
 const OAUTH_BETAS = [
   'oauth-2025-04-20',
   'claude-code-20250219',
   'interleaved-thinking-2025-05-14',
 ];
 
-// Auto-detect OAuth tokens by prefix (sk-ant-oat*)
 function isOAuthToken(credential: string): boolean {
   return credential.includes('sk-ant-oat');
 }
@@ -499,29 +266,8 @@ function getProviderAuthType(providerId: string): 'api_key' | 'oauth' | 'agent-s
   return (row?.auth_type === 'oauth' ? 'oauth' : 'api_key');
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T73b — THE HTTP CLIENT IS TOLD WHAT THE PROVIDER DECLARED.
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// The derivation and the whole argument are in `stream-patience.ts`; this is the one place
-// that turns those numbers into something a Stainless client will accept. Two facts make the
-// shape what it is:
-//
-//   1. `undici`'s `Agent` is the only way to move `headersTimeout`/`bodyTimeout`. Node's
-//      built-in fetch reads `init.dispatcher` and duck-types it, so an Agent from the npm
-//      package governs the built-in fetch's clock — which is why `undici` is now a declared
-//      dependency of this package rather than a thing we hope Node exposes. (It does not:
-//      there is no accessor for the global dispatcher and no constructor to reach.)
-//
-//   2. Both SDKs take `fetchOptions` — merged into the `RequestInit` they hand `fetch` — and
-//      a `timeout` of their own. A provider that needs more than the defaults gets both set;
-//      a provider that does not gets NEITHER OPTION PASSED AT ALL, so its client object is
-//      constructed from exactly the arguments it was constructed from yesterday.
-//
-// The agents are cached BY THEIR TIMEOUTS, not by provider: two providers that need the same
-// clock share one connection pool, and re-reading a provider row cannot leak a pool per read.
-// A pool per distinct clock is the smallest number of pools that can express the requirement.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The one place patience becomes client options: a provider that declares nothing gets NEITHER
+// OPTION PASSED. `undici`'s `Agent` is the only way to move `headersTimeout`/`bodyTimeout`.
 
 const transportAgentCache = new Map<string, Agent>();
 
@@ -532,11 +278,8 @@ interface TransportClientOptions {
   key: string;
 }
 
-/**
- * The client options this provider's declared patience requires, or `null` for "nothing to
- * configure" — which is every provider that has ever existed here until one declares a bound
- * past the transport's standing 300 s.
- */
+/** The client options this provider's declared patience requires, or `null` for "nothing to
+ *  configure": any provider declaring no bound past the transport's standing 300 s. */
 function transportClientOptions(patience: StreamPatience): TransportClientOptions | null {
   const t = resolveTransportTimeouts(patience);
   if (!t) return null;
@@ -562,9 +305,7 @@ interface CachedClient {
 const clientCache = new Map<string, CachedClient>();
 
 function getClient(providerId: string, patience: StreamPatience): CachedClient {
-  // T73b: the cache key carries the transport clock, because the same provider row edited to
-  // declare more patience must not be answered out of the cache by a client still wired to the
-  // old one. `clearClientCache` deletes by the same prefix, so an edit clears every variant.
+  // The cache key carries the transport clock: a row edited past the old clock must not get a stale client.
   const transport = transportClientOptions(patience);
   const cacheKey = `${providerId}:${transport?.key ?? 'transport-default'}`;
   const cached = clientCache.get(cacheKey);
@@ -581,7 +322,6 @@ function getClient(providerId: string, patience: StreamPatience): CachedClient {
     });
   }
 
-  // Determine auth mode: check DB auth_type first, then auto-detect from token prefix
   const dbAuthType = getProviderAuthType(providerId);
   const useOAuth = dbAuthType === 'oauth' || isOAuthToken(credential);
 
@@ -591,16 +331,14 @@ function getClient(providerId: string, patience: StreamPatience): CachedClient {
     credentialLength: credential.length, // never log secret bytes (audit finding 8/21)
   });
 
-  // T73b: spread, not set. When nothing is declared this object has exactly the keys it had
-  // before this task, which is what makes the control arm a fact about the construction site
-  // rather than a claim about behaviour.
+  // Spread, not set: when nothing is declared this object has exactly the keys the control
+  // arm is compared against, so the construction site is the fact, not a claim about it.
   const transportOpts = transport
     ? { fetchOptions: transport.fetchOptions, timeout: transport.timeout }
     : {};
 
   let client: Anthropic;
   if (useOAuth) {
-    // OAuth: Authorization: Bearer header + required beta headers
     client = new Anthropic({
       authToken: credential,
       defaultHeaders: {
@@ -610,7 +348,6 @@ function getClient(providerId: string, patience: StreamPatience): CachedClient {
       ...transportOpts,
     });
   } else {
-    // API Key: standard x-api-key header
     client = new Anthropic({ apiKey: credential, ...transportOpts });
   }
 
@@ -619,40 +356,9 @@ function getClient(providerId: string, patience: StreamPatience): CachedClient {
   return entry;
 }
 
-/**
- * ════════════════════════════════════════════════════════════════════════════════════════
- * T72b claim 1 — HOW MUCH ROOM AN ANSWER GETS, AND WHY THERE ARE TWO FLOORS.
- * ════════════════════════════════════════════════════════════════════════════════════════
- *
- * `max_tokens` on the wire is `min(the model's own cap, what the window can spare)`. The
- * second term is DERIVED — 25% of the context window, or whatever is left after the prompt,
- * whichever is smaller — and it carried a floor of 1024 so it could never go to zero or
- * negative.
- *
- * That floor was not a floor. It was the answer, in two situations a local box hits
- * constantly:
- *
- *   1. `contextWindow <= 4096` (llama.cpp's default `n_ctx` is 4096, and our provider
- *      validate writes whatever the endpoint reports) makes `floor(cw * 0.25) <= 1024`, so
- *      the min collapses onto the floor whatever the model's cap says;
- *   2. the prompt is within ~2 K tokens of the declared window — including the very common
- *      case where the declared window is simply WRONG, because a manual provider's
- *      /v1/models reports no `context_length` and the box accepts a prompt the guess cannot
- *      hold. Then the headroom term is negative and the floor is, again, the answer.
- *
- * 1024 tokens is a workable last resort for a model that starts writing immediately. For a
- * model with thinking enabled it is a GUARANTEED empty answer: the reasoning spends the
- * budget, the provider returns `finish_reason: 'length'`, and no visible word is ever
- * written. The owner's DS4 box reported exactly that — "gen=1024 finish=length" — and the
- * engine's own grind classifier had already measured the population without naming the
- * cause (17 of 19,124 calls reaching their cap with nothing to show,
- * `post-call-classify/empty-response.ts`).
- *
- * So the floor is thinking-aware. It governs ONLY the derived term: a `max_output_tokens`
- * someone put in a row is their number and is never overridden here. The matching write-side
- * repair is in the provider-validate path, which used to persist `min(floor(cw / 4), 16384)`
- * — exactly 1024 for a 4096-window model.
- */
+// `max_tokens` = min(the model's own cap, what the window spares); the floors guard ONLY the
+// derived term, never a stored `max_output_tokens`. Thinking-aware: a thinking model spends
+// output on reasoning and returns `finish_reason: 'length'` with nothing visible.
 export const OUTPUT_FLOOR_TOKENS = 1024;
 export const THINKING_OUTPUT_FLOOR_TOKENS = 4096;
 
@@ -665,18 +371,14 @@ type OutputBudgetInfo = {
   outputEscalationCeiling?: number | null;
 };
 
-/**
- * What `max_tokens` will be for this model on this prompt. Pure, so it can be argued with.
- * t195: `escalatedAsk` (the engine giving a cut-off call more room) is honoured up to `resolveOutputCeiling`
- * and never lowers the everyday budget, which stays modest (owner ruling 10).
- */
+/** What `max_tokens` will be for this model on this prompt. Pure, so it can be argued with.
+ *  `escalatedAsk` is honoured up to `resolveOutputCeiling` and never lowers the everyday budget. */
 export function resolveOutputBudget(modelInfo: OutputBudgetInfo, inputEstimate: number, escalatedAsk = 0): number {
   // Thinking has to be both DECLARED by the model and left ON by the owner. A capability the
   // Models page switched off spends no output tokens, so it earns no extra room.
   const thinkingActive = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking');
   const floor = thinkingActive ? THINKING_OUTPUT_FLOOR_TOKENS : OUTPUT_FLOOR_TOKENS;
 
-  // Reserve at most 25% of context for output, or whatever's left after input.
   const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
   const availableForOutput = Math.max(
     floor,
@@ -687,39 +389,25 @@ export function resolveOutputBudget(modelInfo: OutputBudgetInfo, inputEstimate: 
   return Math.min(escalatedAsk, resolveOutputCeiling(modelInfo, inputEstimate));
 }
 
-/**
- * The most output room one call could be given on this prompt: what the window has left after the prompt,
- * bounded by the contract's documented ceiling (or the stored cap when the contract knows nothing more).
- * Never below the everyday budget.
- */
+/** The most output room one call could be given on this prompt: window room after the prompt,
+ *  bounded by the contract's ceiling; never below the everyday budget. */
 export function resolveOutputCeiling(modelInfo: OutputBudgetInfo, inputEstimate: number): number {
   const windowRoom = modelInfo.contextWindow - inputEstimate - 1000;
   const declared = modelInfo.outputEscalationCeiling ?? modelInfo.maxOutputTokens;
   return Math.max(resolveOutputBudget(modelInfo, inputEstimate), Math.min(declared, windowRoom));
 }
 
-// Determine max output tokens based on model family
 function getMaxOutputTokens(apiModelId: string, providerType: string): number {
   if (providerType === 'ollama') return 8192; // Ollama models typically support 8k output
 
-  // Anthropic model families
   if (apiModelId.includes('opus')) return 32768;
   if (apiModelId.includes('sonnet')) return 64000;
   if (apiModelId.includes('haiku')) return 8192;
 
-  // Default for unknown models
   return 16384;
 }
 
-// ── Universal orphan tool_use/tool_result sanitization ──
-// The repair itself is `agent/tool-pairing.ts` (PHASE-3 T6): extracted so it could be unit
-// tested at all, and FIXED there — the walk's carrier test required a message to be PURELY
-// tool_results, so a carrier the assembler's own `mergeConsecutiveRoles` had folded a user
-// line into stopped it dead and the repair CREATED an orphan `tool_result`, which is 14 of
-// the detect window's 17 day-0 divergences. That module's header carries the derivation.
-//
-// This wrapper keeps the log line the correlation was measured against, and now reports
-// BOTH directions, so the same grep still answers the same question.
+// Orphan repair lives in `agent/tool-pairing.ts` (its header carries the derivation); this is the warn log.
 function sanitizeOrphanToolBlocks(
   messages: Array<{ role: string; content: unknown }>,
   agentId: string,
@@ -785,98 +473,50 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
       capabilitiesValid = false;
     }
   } else {
-    // No capabilities data at all, don't assume anything
     capabilitiesValid = false;
   }
 
   return {
     providerId: row.provider_id,
     apiModelId: row.api_model_id,
-    // The model's ADVERTISED window, as stored. The RAM-aware cap the engine BUDGETS against is
-    // applied at `getContextWindow`, deliberately not here — t103 C's own note says why, and the
-    // utility dial's per-call widening is the reason.
-    // t140: through `declaredContextWindow`, so a stored 0 (or any non-window) reads as the
-    // documented default instead of a window of nothing — `??` only ever replaced NULL.
+    // The ADVERTISED window as stored; the RAM-aware budget cap applies at `getContextWindow`,
+    // not here: the utility dial widens per call. A stored 0 reads as the documented default.
     contextWindow: declaredContextWindow(row.context_window),
-    // Use the provider-reported value from DB, fall back to derived value for older records
     maxOutputTokens: row.max_output_tokens ?? getMaxOutputTokens(row.api_model_id, row.provider_type),
     providerType: row.provider_type,
     providerBaseUrl: row.provider_base_url,
-    // T63: how this provider authenticates, and what dialect its owner declared it speaks.
-    // `auth_type='none'` is the local-server case — a real, long-legal value (migration 005)
-    // that nothing outside the Ollama branch used to read.
+    // How this provider authenticates, and what dialect its owner declared it speaks.
+    // `auth_type='none'` is the local-server case: a real, long-legal value.
     providerAuthType: row.provider_auth_type ?? 'api_key',
     providerBehavesLike: row.provider_behaves_like,
-    // T64b: how long this endpoint is worth waiting for, as its owner declared it (migration
-    // 163). NULL on every provider that has never said — which is all of them until someone
-    // does — and `resolveStreamPatience` turns NULL back into the standing constants.
+    // Declared patience; NULL = never said: `resolveStreamPatience` turns NULL into the standing constants.
     firstChunkTimeoutMs: row.provider_first_chunk_timeout_ms,
     streamIdleTimeoutMs: row.provider_stream_idle_timeout_ms,
-    // T81b: how many tokens/sec this box's owner says it chews through a prompt at (migration
-    // 166). NULL on every provider today — nobody has benchmarked one yet — and
-    // `resolveDoomCeiling` turns NULL into "no ceiling, skip the pre-dial gate entirely".
+    // Declared prefill throughput in tok/sec; NULL on every row today = no ceiling, gate skipped.
     prefillTokensPerSec: row.provider_prefill_tokens_per_sec,
-    // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22, migration 167): the same fact derived
-    // from this engine's own cost ledger, for the providers whose owner never typed one. Read
-    // ONLY when the declared column above is NULL — `resolvePrefillThroughput` holds that
-    // precedence, and this is one more column on a join this function already performs.
+    // Cost-ledger prefill read, used ONLY when the declared column is NULL; see `resolvePrefillThroughput`.
     measuredPrefillTokensPerSec: row.provider_measured_prefill_tokens_per_sec,
-    // Default ON, matches migration default and the UX the user asked for.
+    // Default ON, matching the migration default.
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
       : Boolean(row.thinking_enabled),
     thinkingLevel: row.thinking_level ?? 'high',
     capabilities,
-    // Ollama num_ctx controls. Runtime uses `override ?? recommended`.
-    // Both null → no `options.num_ctx` sent, Ollama uses Modelfile default.
+    // Ollama num_ctx: runtime uses `override ?? recommended`; both null sends none (Modelfile default).
     numCtxOverride: typeof row.num_ctx_override === 'number' ? row.num_ctx_override : null,
     numCtxRecommended: typeof row.num_ctx_recommended === 'number' ? row.num_ctx_recommended : null,
   };
 }
 
 /**
- * ════════════════════════════════════════════════════════════════════════════════════════
- * THE RAM RECOMMENDATION IS THE DEFAULT CAP (t103 item C — OWNER RULING 2026-10-05 #2).
- * ════════════════════════════════════════════════════════════════════════════════════════
- *
- * ── WHAT WAS MEASURED AT `09514572` ──────────────────────────────────────────────────
- * `services/num-ctx-calculator.ts` sizes a KV window to the box's actual obligations (total
- * RAM, this model's weights, the OTHER enabled models' weights, a desktop reserve and an
- * engine reserve) and stores it in `models.num_ctx_recommended`. `callOllamaModel` already sent
- * it as `options.num_ctx`, so Ollama was told the truth about the box.
- *
- * The ENGINE was not. Everything that decides how much prompt to BUILD — `memory/assembler.ts`,
- * `memory/budget.ts`'s policy, the compaction trigger, `reassemble-for-fit`, the recovery
- * compactor — reads `getContextWindow(modelId)`, which returned `models.context_window`: the
- * model's advertised maximum. So on a tight box the assembler packed a full advertised window
- * into a KV cache sized for a fraction of it, and the recommendation it was shown beside did
- * nothing to stop it. "Small models still land at max context" is that gap, and the backlog
- * line's own question — "should the recommendation itself bite?" — is what the ruling answers.
- *
- * ── THE RULE ────────────────────────────────────────────────────────────────────────
- *   no override            → the window the engine budgets against IS the recommendation;
- *   override set           → the override wins (it is the user's number, and a person who
- *                            types one has decided);
- *   no recommendation and  → today's behaviour exactly, byte-identical: the advertised window.
- *   no override              This is every hosted provider — the columns are Ollama's — so the
- *                            change cannot reach a row that has nothing to say about itself.
- *
- * Always a `min` against the advertised window, so neither knob can talk the engine into
- * budgeting for MORE context than the model admits to having. That direction is one-way on
- * purpose: a too-small budget costs a compaction, a too-large one costs a truncated prompt and
- * an answer built on history the model never saw.
- *
- * NO MIGRATION, verified: not one stored row changes meaning. `num_ctx_recommended` already
- * meant "the window this box can afford" and `num_ctx_override` already meant "the window the
- * user chose"; what changed is which of them the ENGINE's budget reads. The API still reports
- * `context_window` as the model's advertised maximum (`gateway/routes/config.ts`'s `rowToModel`
- * is untouched), so the Settings card keeps showing the model's real ceiling beside the
- * recommendation rather than quietly restating it.
+ * THE RAM RECOMMENDATION IS THE DEFAULT CAP: no override → budget against it; an override wins
+ * (a person who types one has decided); neither set → the advertised window. Always a `min`
+ * against advertised, one-way: too small costs a compaction, too large a truncated prompt.
  */
 export interface NumCtxResolution {
   /** The `num_ctx` this model's calls carry, or null for "send none, let the Modelfile decide". */
   effective: number | null;
-  /** Which knob answered. `default` means neither column is set — the hosted-provider case. */
+  /** Which knob answered. `default` means neither column is set: the hosted-provider case. */
   source: 'override' | 'recommended' | 'default';
 }
 
@@ -894,42 +534,21 @@ export function resolveNumCtx(info: {
   return { effective: null, source: 'default' };
 }
 
-/**
- * The window the engine budgets against: the advertised one, capped by whatever num_ctx the
- * calls actually carry. `null` num_ctx — every hosted row — returns the advertised window
- * UNCHANGED, which is the both-directions control.
- */
+/** The window the engine budgets against: the advertised one, capped by the num_ctx the calls
+ *  carry. `null` num_ctx (every hosted row) returns the advertised window unchanged. */
 export function effectiveContextWindow(declaredWindow: number, numCtx: number | null): number {
   if (typeof numCtx !== 'number' || !Number.isFinite(numCtx) || numCtx <= 0) return declaredWindow;
   return Math.min(declaredWindow, numCtx);
 }
 
-/**
- * The declared capability contract for a CONFIGURED model id — the door the engine's own
- * steps use (they hold a `modelId` string, never a `modelInfo` row).
- *
- * The registry lookup lives here because `getModelInfo` does; `model-contract.ts` stays a
- * pure declaration site with no database in it, which is what makes its seeds cheap to
- * test. Never throws: an unknown or unreadable model gets the conservative base contract.
- */
+/** The declared contract for a CONFIGURED model id; the lookup lives here because `getModelInfo`
+ *  does, keeping `model-contract.ts` a pure declaration site. Never throws: unknown = base contract. */
 export function contractForConfiguredModel(modelId: string | null | undefined): ModelContract {
   return contractForModelId(getModelInfo, modelId);
 }
 
-// ── Ollama Call Path (Native /api/chat API) ──
-//
-// Uses Ollama's native /api/chat endpoint (not /v1/chat/completions) so we
-// can access the `think` parameter, get the separate `thinking` response
-// field, use native `images: [base64]` on user messages for vision models,
-// and pick up future Ollama features as they land.
-//
-// The native response shape differs from OpenAI-compat in a few key ways:
-//   • flat `message` (not `choices[0].message`)
-//   • `thinking` as a separate field alongside `content`
-//   • `tool_calls[].function.arguments` is a pre-parsed object (not JSON string)
-//   • token counts in `prompt_eval_count` / `eval_count` (not `usage.*`)
-//   • streaming is newline-delimited JSON (one object per line)
-//   • `done_reason` / `done: true` instead of `finish_reason`
+// Ollama native /api/chat, chosen for `think`, the sibling `thinking` field, and native `images`;
+// its shape is flat `message`, pre-parsed tool args, `done_reason`, newline-delimited JSON.
 
 import { getOllamaLock } from '../services/ollama-lock.js';
 import { isStandardModelRow } from '../services/local-standard.js';
@@ -950,17 +569,8 @@ interface NativeOllamaMessage {
   tool_name?: string; // required on role:'tool' messages
 }
 
-// Translate our internal Anthropic-style message format into Ollama's native
-// /api/chat message shape. Handles:
-//   • tool_use content blocks → assistant.tool_calls
-//   • tool_result content blocks → separate {role:'tool', tool_name, content}
-//     messages (tool name recovered from the matching prior tool_use id)
-//   • image content blocks → `images: [base64,...]` on the user message
-//   • document (PDF) blocks → text extracted via pdfjs and inlined as a
-//     framed text section in the user message. Extraction failures broadcast
-//     a chat:error banner and the PDF is dropped.
-//
-// Async because PDF extraction via pdfjs is async; the call site must await.
+// Anthropic-style messages → /api/chat shape: tool_use → assistant.tool_calls, tool_result →
+// role:'tool' (name from the prior tool_use id), images ride `images:`, PDFs inline as framed text.
 export async function buildNativeOllamaMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
@@ -982,7 +592,7 @@ export async function buildNativeOllamaMessages(
 
       if (toolResults.length > 0) {
         const pendingOllamaImages: string[] = []; // base64 data for images
-        const fencedImages: NativeOllamaMessage[] = []; // v3.5 K33: each after the whole run of tool messages
+        const fencedImages: NativeOllamaMessage[] = []; // each placed after the whole run of tool messages
 
         for (const tr of toolResults) {
           const toolUseId = tr.tool_use_id as string;
@@ -991,10 +601,9 @@ export async function buildNativeOllamaMessages(
           if (typeof tr.content === 'string') {
             native.push({ role: 'tool', content: tr.content, tool_name: toolName });
           } else if (Array.isArray(tr.content)) {
-            // Structured content blocks, extract text for tool result,
-            // queue images for a follow-up user message
+            // Structured blocks: text for the tool result, images queued for a follow-up user message.
             const contentBlocks = tr.content as Array<Record<string, unknown>>;
-            // v3.5 K33: a fenced attachment's head and end travel WITH the image, not in the tool text.
+            // A fenced attachment's head and end travel WITH the image, not in the tool text.
             const { around, isBracket } = attachmentBrackets(contentBlocks as Array<{ type: string; text?: unknown }>);
             const textParts = contentBlocks.filter((b, i) => b.type === 'text' && !isBracket[i]).map(b => (b.text as string) ?? '').join('\n');
             native.push({ role: 'tool', content: textParts || '[Image loaded]', tool_name: toolName });
@@ -1012,7 +621,6 @@ export async function buildNativeOllamaMessages(
           }
         }
 
-        // Ollama supports images in user messages via the 'images' field
         native.push(...fencedImages);
         if (pendingOllamaImages.length > 0) {
           native.push({
@@ -1022,7 +630,6 @@ export async function buildNativeOllamaMessages(
           } as unknown as typeof native[0]);
         }
 
-        // Emit any remaining text blocks
         const remainingText = blocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n').trim();
         if (remainingText) {
           native.push({ role: 'user', content: remainingText });
@@ -1030,7 +637,7 @@ export async function buildNativeOllamaMessages(
         continue;
       }
 
-      // Regular user message: text + optional images + documents (a contact's bracketed by its fence, v3.5 K33)
+      // User message: text + images + documents; an attached contact's fence travels with its image.
       const { around, isBracket } = attachmentBrackets(blocks as Array<{ type: string; text?: unknown }>);
       const fenceOf = new Map(blocks.map((b, i) => [b, around[i]]));
       const textBlocks = blocks.filter((b, i) => b.type === 'text' && !isBracket[i]);
@@ -1041,12 +648,8 @@ export async function buildNativeOllamaMessages(
       const userText = textBlocks.map(b => (b.text as string) ?? '').join('\n');
       if (userText) textParts.push(userText);
 
-      // ── PDF text extraction ──
-      // For each PDF document block, extract the text via pdfjs and splice
-      // it into the user message as a labeled section. This gives local
-      // models the full textual content of the document without needing a
-      // native document type. Extraction failures broadcast a banner and
-      // the PDF is dropped from the turn.
+      // Each PDF block's text is extracted via pdfjs and spliced into the message as a labeled
+      // section: local models get the document without a native document type; failures banner and drop.
       if (documentBlocks.length > 0) {
         const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
         for (const doc of documentBlocks) {
@@ -1148,8 +751,6 @@ export async function buildNativeOllamaMessages(
 
 async function callOllamaModel(
   params: ModelCallParams,
-  // `maxOutputTokens` was already on every row `getModelInfo` returns and simply absent from this
-  // one parameter's inline type, which is why the "Max output" setting could not be sent from here.
   modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
@@ -1158,9 +759,7 @@ async function callOllamaModel(
 
   const nativeMessages = await buildNativeOllamaMessages(systemPrompt, messages, agentId);
 
-  // Build tools in the shape Ollama's native API accepts (same as the OpenAI
-  // function-calling schema, Ollama mirrors it). Two-phase loading: only
-  // always-loaded + session-loaded tools go to the model.
+  // Ollama-shape tools; two-phase loading: only always-loaded + session-loaded tools reach the model.
   let nativeTools: Array<{
     type: 'function';
     function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -1182,14 +781,7 @@ async function callOllamaModel(
     }
   }
 
-  // Effective num_ctx: the user's explicit override wins, otherwise the
-  // auto-computed RAM-aware recommendation, otherwise no value at all
-  // (Ollama falls back to the model's Modelfile default).
-  //
-  // t103 C: this WAS two hand-rolled ternaries here, and the same precedence is now what the
-  // engine's own context budget reads (`getModelInfo`'s `contextWindow`). Two copies of a
-  // precedence rule is how the wire and the budget come to disagree about which number is real,
-  // so there is one resolver and both callers use it.
+  // One resolver, `resolveNumCtx`, shared by the wire and the engine's context budget; see its doc.
   const { effective: effectiveNumCtx, source: numCtxSource } = resolveNumCtx(modelInfo);
 
   logger.info('Calling Ollama native /api/chat (streaming)', {
@@ -1205,26 +797,19 @@ async function callOllamaModel(
     numCtxSource,
   }, agentId);
 
-  // ── THE UTILITY DIAL (t88) ───────────────────────────────────────────────────────────────
-  // `null` for every agent turn, every fallback retry and every purpose this engine has not
-  // declared — see `utility-dial.ts` for why this keys off the caller's declaration and never off
-  // `tools === false`. When it IS a utility dial, three things change and nothing else does.
+  // THE UTILITY DIAL: `null` for every agent turn and undeclared purpose; `utility-dial.ts` holds why
+  // it keys off the caller's declaration, never off `tools === false`; a dial changes exactly three things.
   const dial = utilityDial(params.purpose);
   const pinned = !!dial && isStandardModelRow(modelId);   // an engine job on the local provider's own row of the pair
   const dialShown = {
-    // Every character the model is shown: the system prompt plus every message part.
     inputChars: (systemPrompt?.length ?? 0) + nativeMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0),
-    // ⚠ THE IMAGES COUNT TOO (review M1). A caption prompt is one sentence, so a vision dial sized on
-    // text alone lands on the floor while the screenshot beside it costs thousands of tokens — and a
-    // large one then overflows the window and truncates the prompt silently.
+    // THE IMAGES COUNT TOO: a caption prompt is one sentence, so a dial sized on text alone
+    // picks the floor while the screenshot beside it costs thousands and silently truncates.
     imageBase64Lengths: nativeMessages.flatMap((m) => (m.images ?? []).map((img) => img.length)),
     configuredNumCtx: effectiveNumCtx,
-    charsPerToken: modelCharsPerToken(modelId),   // t268: this model's measured density (B5: ~2.5, not 4)
+    charsPerToken: modelCharsPerToken(modelId),   // this model's measured density, not a fixed 4
   };
-  // t269: a dial asked for more room (a summary the output limit cut) is sent it, up to the model's own maximum
-  // and (fix round 1, I3) never past the configured window: what that window cannot hold, the caller splits.
-  // The window's room for output: its whole blocks, less the input (at this model's density) and the margin
-  // (`utilityNumCtx`'s own terms).
+  // A dial asking for room gets it, up to the model's max, never past the window; callers split the rest.
   const windowRoom = typeof effectiveNumCtx === 'number' && effectiveNumCtx > 0 ? Math.floor(effectiveNumCtx / NUM_CTX_BLOCK) * NUM_CTX_BLOCK
     - Math.ceil(dialShown.inputChars / effectiveDivisor(dialShown.charsPerToken)) - imageTokenAllowance(dialShown.imageBase64Lengths) - NUM_CTX_MARGIN_TOKENS : Number.POSITIVE_INFINITY;
   const dialRoom = dial ? Math.max(0, Math.min(modelInfo.maxOutputTokens, windowRoom)) : Number.POSITIVE_INFINITY;
@@ -1236,50 +821,31 @@ async function callOllamaModel(
     model: ollamaModelName,
     messages: nativeMessages,
     stream: true,
-    // `think` is driven by the per-model toggle in Settings → Models. For
-    // models without the thinking capability this is a harmless no-op. Some
-    // families (gpt-oss, DeepSeek-R1) are trained to always think and will
-    // ignore the flag, the call still works; we just capture the thinking
-    // separately and don't surface it to the UI.
-    // ⚠ A UTILITY DIAL NEVER THINKS, whatever that toggle says. The toggle is the user's choice for
-    // their AGENT's turns; inheriting it here is what spent 4,156 output tokens of reasoning on a
-    // 60-character ticket title. The engine's own artifacts are not the place for deliberation.
+    // `think` follows the per-model toggle; a no-op on non-thinking models, ignored by always-think ones.
+    // A UTILITY DIAL NEVER THINKS: inherited, the agent-turn toggle can eat the whole output budget.
     think: dial ? false : modelInfo.thinkingEnabled,
-    // v3.5: an engine job on the Dojo's own resident writer stays loaded and takes no lock slot (I-1: the call's, not the tag's).
+    // An engine job on the Dojo's own resident writer stays loaded and takes no lock slot.
     ...(pinned ? { keep_alive: -1 } : {}),
   };
   if (nativeTools && nativeTools.length > 0) {
     requestBody.tools = nativeTools;
   }
-  // ── options: the window, and the output cap that did not exist ──────────────────────────────
-  // Set options.num_ctx when we have either an override or an auto-computed
-  // recommendation. If neither is set, let Ollama use the Modelfile default.
   const options: Record<string, number> = {};
   if (typeof dialNumCtx === 'number') {
     options.num_ctx = dialNumCtx;
   } else if (typeof effectiveNumCtx === 'number') {
     options.num_ctx = effectiveNumCtx;
   }
-  // ⚠ `num_predict` APPEARED NOWHERE IN THIS ENGINE BEFORE t88. Settings showed a "Max output" field
-  // and the Ollama native path honoured it nowhere — a knob that lied. It is sent for a utility dial
-  // (the artifact's own cap) and for an ordinary call (the model's configured maximum), so the field
-  // now means what it says on every Ollama call.
+  // `num_predict` rides both shapes (dial cap, else configured max) so Settings means what it says.
   if (typeof dialOutputCap === 'number') {
     options.num_predict = dialOutputCap;
   } else if (typeof modelInfo.maxOutputTokens === 'number' && modelInfo.maxOutputTokens > 0) {
-    // ⚠ A FLOOR ON A KNOB THAT WAS INERT UNTIL NOW (review M3). This is the package's one behaviour
-    // change for existing users: the field has always been in Settings and was sent nowhere on this
-    // path, so whatever a box has stored was never exercised by use. A user who once typed `100` into a
-    // dead field would get silently truncated agent turns the day they updated — `done_reason: length`
-    // and no error anywhere. So an implausibly small stored value is NOT bound: the call falls back to
-    // the model's own default, exactly as it behaved before this package, and the stored number is
-    // named in a warn so it can be corrected rather than guessed at.
-    // The floor is the smallest number that could be a real answer: 256 tokens is a short paragraph.
+    // An implausibly small stored value is NOT bound; a leftover must not silently truncate turns.
+    // The call uses the model default and a warn names it; floor = smallest plausible real answer.
     if (modelInfo.maxOutputTokens >= MIN_BINDABLE_MAX_OUTPUT_TOKENS) {
       options.num_predict = modelInfo.maxOutputTokens;
       if (modelInfo.maxOutputTokens > modelInfo.contextWindow && modelInfo.contextWindow > 0) {
-        // Incoherent stored data rather than a decision: report it, do not silently "fix" it, because
-        // the honest repair is a person correcting the row.
+        // Incoherent stored row, not a decision: report it; the honest repair is a person correcting it.
         logger.warn('this model\'s Max output exceeds its own context window — the stored row is incoherent', {
           model: ollamaModelName,
           maxOutputTokens: modelInfo.maxOutputTokens,
@@ -1303,49 +869,16 @@ async function callOllamaModel(
       outputCap: dialOutputCap,
       numCtx: dialNumCtx,
       configuredNumCtx: effectiveNumCtx,
-      // The one case where the call's input did not fit the box's configured window: we ask for what
-      // the input needs rather than let the prompt be silently truncated into a confident wrong answer.
+      // The one case the window is raised: input overran it; silent truncation would yield wrong answers.
       windowRaisedForInput: dialNumCtxInput ? utilityNumCtxExceedsConfigured(dialNumCtxInput) : false,
     }, agentId);
   }
 
-  // T81b review round, finding 2: `patience` and the gate now sit HERE — before the lock is
-  // even acquired, before `startTime` starts, before the try/catch/finally that means "we are
-  // actually attempting a dial" — matching the OTHER two transports' structure exactly rather
-  // than special-casing the one shape that used to differ. `nativeMessages`/`nativeTools` are
-  // already fully built above for `requestBody`, so the estimate is the identical cost class
-  // the other two transports already pay at their own estimate sites, not new work invented
-  // for the gate. The FIRST cut of this gate lived inside the try below, which meant a refusal
-  // fell into the generic `catch` a few lines down: `recordProviderError(modelInfo.providerId)`
-  // marked a perfectly healthy provider unhealthy for a request that never touched it, and an
-  // ERROR-level log read "Ollama call failed: refused before any network dial" — a sentence
-  // that contradicts itself, because nothing failed and nothing was dialed. Hoisting the check
-  // out here removes the mislabelling at its root instead of teaching the catch a special case.
-  //
-  // A useful side effect, not the reason for the move: the Ollama model lock (below) now
-  // serializes actual DIALS only. A refused request never queues behind a slot it will never
-  // use, and this transport's estimate is cheap enough that computing it lock-free costs
-  // nothing measurable.
+  // As on the other transports, patience and this gate precede the lock and catch: a refusal must never
+  // mark a healthy provider unhealthy for a call that never dialed it. The lock serializes dials only.
   const patience = resolveStreamPatience(modelInfo);
-  // t113 D (BACKLOG line 101): THROUGH THE SHARED ESTIMATOR, like the other two gates.
-  //
-  // t108 wired the learned per-population divisor into `estimateRequestTokens` and three
-  // consumers read the truer number — the OpenAI-compatible transport's gate, the output budget
-  // and the ledger row. This side door, and the agent-sdk one below, kept spending the raw
-  // `/4` constant, so on a provider whose own ledger says its dense prompts run nearer 2
-  // chars/token these two gates were deciding against roughly half the real size. No regression
-  // (they always did it) but the same undercount class on two doors, which is what the line
-  // routed rather than patched.
-  //
-  // THE PROSE/SCHEMA SPLIT IS THE POINT, not a formatting change: the messages are prose and
-  // the tools array is dense JSON, and the two populations have different measured divisors.
-  // Counting them together would spend the prose divisor on a schema, which is the thing
-  // `estimateRequestTokens`'s two bounds exist to prevent.
-  //
-  // ⚠ BYTE-PRESERVING WHERE NOTHING WAS MEASURED, which is every box until it has measured
-  // itself: with `{prose: null, dense: null}` both bounds reduce to `/CHARS_PER_TOKEN` over the
-  // same total characters, so the estimate is identical to the line this replaces. That half is
-  // claused as explicitly as the improvement.
+  // THE SHARED ESTIMATOR, like the other gates: prose and dense JSON carry different measured
+  // per-provider divisors; `{prose: null, dense: null}` reduces both bounds to /CHARS_PER_TOKEN.
   const nativeDivisors = measuredDivisorsFor(modelInfo.providerId);
   const nativeEstimate = estimateRequestTokens(
     {
@@ -1356,25 +889,9 @@ async function callOllamaModel(
   ).tokens;
   refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo);
 
-  // ════════════════════════════════════════════════════════════════════════════════════════
-  // T83b — THE BOUNDS THIS TRANSPORT ARMS, AND WHY THEY ARE NOT `patience`'s TWO NUMBERS.
-  //
-  // `resolveStreamPatience`'s standing 90s/60s are derived from HOSTED behaviour (its own
-  // header says so) and this transport has never used them: its bound has always been the
-  // flat `TRANSPORT_DEFAULT_TIMEOUT_MS`. Arming the hosted constants here would make an
-  // undeclared local box LESS patient than it was yesterday — a 31B model reading a 50K prompt
-  // is not a dead socket at t=91s — so an undeclared row keeps the 300s it has always had, now
-  // as a per-phase bound instead of a total one. A DECLARED row is honoured exactly, on both
-  // sides, which is the whole point of the two columns.
-  //
-  // `patience` itself stays raw for `refuseIfDoomed`/`transportClientOptions` above: lifted
-  // numbers would build a dispatcher for every NULL row and lose T79e's byte-preservation control.
-  //
-  // STANDING EXCEPTION to stream-patience.ts's never-equal rule: any NULL-`first_chunk_timeout_ms`
-  // row (even one declaring an idle bound) arms a 300,000ms first-chunk watchdog that TIES
-  // undici's global headersTimeout; if undici fires first the trip loses its honest identity.
-  // Accepted — either fix breaks a recorded principle; census row 7 carries the full case.
-  // ════════════════════════════════════════════════════════════════════════════════════════
+  // `resolveStreamPatience`'s 90s/60s come from HOSTED behaviour; an undeclared local box keeps the
+  // 300s default per phase (arming 90s there is LESS patient), a declared row is exact; `patience`
+  // stays raw elsewhere; accepted exception: a NULL row's 300s watchdog ties undici's headersTimeout.
   const bounds: StreamPatience = {
     firstChunkMs: patience.firstChunkDeclared ? patience.firstChunkMs : TRANSPORT_DEFAULT_TIMEOUT_MS,
     idleMs: patience.idleDeclared ? patience.idleMs : TRANSPORT_DEFAULT_TIMEOUT_MS,
@@ -1382,53 +899,26 @@ async function callOllamaModel(
     idleDeclared: patience.idleDeclared,
   };
 
-  // Acquire the Ollama model lock (waits if a different model is in use
-  // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
+  // Model lock: waits if a different model is in use on the SAME provider; remote hosts pool their own.
   const lock = getOllamaLock();
-  // ── t114 (CENSUS ROW 8) — THE WAIT BOUND IS THE SAME NUMBER THE OCCUPANT IS ENTITLED TO ──
-  //
-  // T81c handed the lock `patience.firstChunkMs` — the RAW resolved value, 90s on an undeclared
-  // row — while the transport below arms `bounds.firstChunkMs`, the LIFTED value, which for that
-  // same undeclared row is `TRANSPORT_DEFAULT_TIMEOUT_MS` (300s). So agent B queued behind an
-  // entirely healthy same-model call that is ENTITLED to 300 seconds of prefill was rejected at
-  // 90 with "timed out waiting behind a long prefill": a healthy turn killed by the gap between
-  // two numbers that were always meant to be the same one.
-  //
-  // `bounds` is therefore computed above this line rather than below it, and the lock is handed
-  // the identical number the watchdog will arm. The two cannot drift again without someone
-  // editing one expression that both read.
-  await refuseUncheckedAtFirstLoad(modelId);   // v3.5: a model picked while it could not be sized is judged now
+  // THE WAIT BOUND IS THE NUMBER THE OCCUPANT IS ENTITLED TO: the lock gets the identical number
+  // the watchdog arms below, so a queued call is never rejected at 90s while the holder gets 300s.
+  await refuseUncheckedAtFirstLoad(modelId);   // a model picked while it could not be sized is judged now
   await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs, pinned);
 
   const startTime = Date.now();
 
-  // T83b: the SAME `makeStreamWatchdog` the other two transports arm — bumped per chunk,
-  // `contentStarted()` on the first delta — replacing T79e's flat total-duration timeout that
-  // killed healthy long generations (census row 7). External stop rides `AbortSignal.any` as before.
+  // The SAME `makeStreamWatchdog` the other two transports arm: bumped per chunk,
+  // `contentStarted()` on the first delta. External stop rides `AbortSignal.any`.
   const watchdog = makeStreamWatchdog(params.abortSignal, bounds.firstChunkMs, bounds.idleMs);
 
   try {
-    // T79e FIX ROUND — THE WATCHDOG ALONE IS NOT ENOUGH. Node's built-in `fetch` runs on
-    // undici's GLOBAL dispatcher unless one is explicitly attached via `init.dispatcher`, and
-    // that global dispatcher carries its OWN independent `headersTimeout`/`bodyTimeout`
-    // (unconfigured default: 300,000, same fact `stream-patience.ts`'s header documents). Those
-    // are INTER-READ timers, not a total duration, so they are the right shape to sit under a
-    // per-chunk watchdog — but a declared 600 s row still died at ~300 s until one was attached.
-    // The fix reuses `transportClientOptions`, the SAME cache-by-clock undici `Agent` machinery
-    // `getClient` and `getOpenAIClient` already use, rather than a second Agent-construction
-    // path. A NULL row (or a declaration the standing transport already covers) gets
-    // `transport === null`, so no `dispatcher` key is set at all — the call goes out on undici's
-    // global dispatcher exactly as it always has, which is R6 for the client configuration.
+    // THE WATCHDOG ALONE IS NOT ENOUGH: built-in `fetch` rides undici's GLOBAL dispatcher, whose 300s
+    // `headersTimeout`/`bodyTimeout` cut a declared 600s row at ~300s unless a `transportClientOptions`
+    // Agent is attached; a NULL row sets no `dispatcher` key and rides the global one unchanged.
     const transport = transportClientOptions(patience);
-    // Node's global `RequestInit.dispatcher` is typed off `undici-types` (bundled with
-    // `@types/node`) — a separately-versioned package from the `undici` npm dependency this
-    // file imports `Agent` from for the SDK clients above. The two `Dispatcher` interfaces
-    // have drifted (a `FormData` iterator shape, at this version pairing) enough that TS
-    // refuses the direct assignment even though the identical `Agent` instance already flows
-    // through an equivalent field for the OpenAI/Anthropic clients, whose own `fetchOptions`
-    // typing is looser. The cast is narrow — this one field, to the exact type Node's own
-    // `fetch` declares for it — not a blanket `any`, and is runtime-verified by this task's
-    // driven tests (a real `Agent`'s `connect` event firing on a call built with it).
+    // Node's `RequestInit.dispatcher` types off separately-versioned `undici-types`, drifted from the
+    // `undici` package importing `Agent` here; the cast is narrow: this one field, not a blanket `any`.
     const dispatcher = transport?.fetchOptions.dispatcher as NonNullable<RequestInit['dispatcher']> | undefined;
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
@@ -1455,15 +945,12 @@ async function callOllamaModel(
       });
     }
 
-    // ── Streaming accumulator: newline-delimited JSON ──
-    // Each line is a complete JSON object. Content tokens, thinking tokens,
-    // and tool_calls arrive in `message.*` across successive lines; the
-    // final line has `done: true` with usage stats.
+    // NDJSON: each line is a complete object; the final line carries `done: true` and the usage counts.
     let fullContent = '';
     let fullThinking = '';
     let accumulatedToolCalls: ToolCall[] = [];
     let doneReason: string | null = null;
-    let streamError: string | null = null; // 9605: Ollama reports a mid-reply failure as an `error` line
+    let streamError: string | null = null; // Ollama reports a mid-reply failure as an `error` line
     let sawDone = false;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -1501,11 +988,8 @@ async function callOllamaModel(
       if (typeof chunk.error === 'string' && chunk.error) { streamError = chunk.error; return; }
       const message = chunk.message;
       if (message) {
-        // T72b claim 2, this transport's spelling of it: the moment this box proves it can
-        // EMIT, which ends prompt-processing patience and starts the dead-connection bound. A
-        // text, thinking or tool-call delta is generated output; Ollama's bare
-        // `{"message":{"role":"assistant"}}` frame is the ack frame under another name and must
-        // not buy a shorter leash while the machine is still reading the prompt.
+        // Text, thinking or tool-call deltas are generated output and start the dead-connection
+        // bound; Ollama's bare role-only frame is an ack frame and must not buy a shorter leash.
         if (
           (typeof message.content === 'string' && message.content.length > 0)
           || (typeof message.thinking === 'string' && message.thinking.length > 0)
@@ -1521,9 +1005,7 @@ async function callOllamaModel(
           fullThinking += message.thinking;
         }
         if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-          // Ollama emits the full tool_calls array in one chunk (typically the
-          // last message chunk before `done: true`), not per-argument deltas.
-          // Replacing-on-each-chunk is safe across gpt-oss / qwen3 / llama3.1.
+          // Ollama emits the whole tool_calls array in one chunk, not per-arg deltas, so replacing is safe.
           accumulatedToolCalls = message.tool_calls.map((tc, idx) => {
             const rawArgs = tc.function?.arguments;
             let parsedArgs: Record<string, unknown>;
@@ -1533,8 +1015,7 @@ async function callOllamaModel(
               try {
                 parsedArgs = JSON.parse(rawArgs);
               } catch {
-                // Structured repair before rejecting (OPEN-1), same floor-model
-                // failure mode (raw control chars in long string args).
+                // Structured repair before rejecting (control chars in long args on floor models).
                 const repaired = repairToolCallArgs(rawArgs);
                 if (repaired !== null) {
                   parsedArgs = repaired;
@@ -1572,24 +1053,17 @@ async function callOllamaModel(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // Bytes arrived, so the socket is alive: the same per-chunk re-arm the other two
-      // transports do on every SSE event. `processLine` decides separately whether any of them
-      // were generated CONTENT, which is a different question (see `contentStarted` below).
+      // Same per-chunk re-arm as the other transports; `processLine` decides what was CONTENT.
       watchdog.bump();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
       for (const line of lines) processLine(line);
     }
-    // Flush any trailing content left in the buffer after the stream ends.
     if (buffer.trim()) processLine(buffer);
 
-    // T65b's post-loop truth check is deliberately NOT mirrored here: unlike `openai`'s SSE
-    // reader, which swallows its own abort and returns, an aborted `fetch` body errors the
-    // stream, so `reader.read()` always rejects into the catch below. There is no silent exit
-    // from this loop to guard.
-    // 9605: a reply is finished only when Ollama said so (`done: true`); an error line or a stream
-    // that just stops is a failure, never a short answer.
+    // No post-loop truth check is mirrored here on purpose: an aborted `fetch` body errors the stream,
+    // `reader.read()` rejects into the catch: no silent exit to guard; only `done: true` finishes.
     if (streamError !== null || !sawDone) {
       const msg = `Ollama call failed: ${streamError ?? 'the reply stream ended before Ollama said it was finished'}`;
       throw new AgentError(msg, agentId, { code: 'MODEL_CALL_FAILED', retryable: true, provider: classifyProviderErrorText(msg) });
@@ -1614,9 +1088,7 @@ async function callOllamaModel(
       outputTokens,
       latencyMs,
       requestType: routerTier ?? purpose ?? 'completion',
-      // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
-      // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
-      // the fact that chain discards, recorded beside it rather than instead of it.
+      // The purpose on its OWN axis; `requestType` above, ?? chain included, is byte-unchanged.
       callPurpose: purpose,
     });
 
@@ -1638,10 +1110,9 @@ async function callOllamaModel(
       toolCalls: accumulatedToolCalls,
       inputTokens,
       outputTokens,
-      stopReason: resolveProviderStopReason(doneReason, accumulatedToolCalls.length),   // t239: the provider's cut wins over a parsed tool call
-      // B14: the room this call was really given, so a cut at it is read against a true number. Only
-      // when `num_predict` went on the wire; a call that sent no cap has no room figure to report.
-      // The ceiling is the model's own configured maximum (never below what was sent).
+      stopReason: resolveProviderStopReason(doneReason, accumulatedToolCalls.length),   // the provider's cut wins over a parsed tool call
+      // The room this call really got, so a cut at it reads against a true number; only set when
+      // `num_predict` went on the wire, ceiling the model's configured max, never below what was sent.
       ...(typeof options.num_predict === 'number'
         ? { outputRoom: { sent: options.num_predict, ceiling: Math.max(options.num_predict, Math.min(modelInfo.maxOutputTokens, dialRoom)) } }
         : {}),
@@ -1651,18 +1122,8 @@ async function callOllamaModel(
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
 
-    // T83b — THE TRIP'S IDENTITY IS NOW MEASURED RATHER THAN ASSERTED.
-    //
-    // This branch used to build a `StreamWatchdog` whose `timedOut()` was hardcoded `true` and
-    // then report "no data from provider for too long" — a claim about inter-chunk gaps the flat
-    // timer above had never measured. The real watchdog answers both questions itself, so the
-    // same shared `streamWasCutByWatchdog` / `streamTimeoutCode` / `streamTimeoutPhrase` the
-    // other two transports go through now decide here too, fed by a clock that actually watched.
-    //
-    // The discrimination it preserves is the one that matters: `watchdog.timedOut()` is set in
-    // the timer callback and nowhere else, so an external stop — which aborts the combined
-    // signal via `AbortSignal.any` but never this timer — can never mint a patience code.
-    // `!external?.aborted` is the belt to that braces, unchanged from the timer it replaces.
+    // THE TRIP'S IDENTITY IS MEASURED, NOT ASSERTED: the shared helper reads a clock that actually watched,
+    // and `timedOut()` is set only in the timer callback: an external stop cannot mint a patience code.
     if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
       const code = streamTimeoutCode(watchdog, bounds);
       const declaredMsg = `${streamTimeoutPhrase(watchdog, bounds)}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)${declaredPatienceClause(watchdog, bounds, nativeEstimate)}`;
@@ -1670,14 +1131,11 @@ async function callOllamaModel(
       logger.warn(`Ollama call aborted by ${streamTripBound(watchdog, bounds)}: ${declaredMsg}`, {
         model: ollamaModelName, baseUrl, latencyMs,
       }, agentId);
-      // T81a: a declared-patience exhaustion is never retryable; a genuine mid-stream idle
-      // timeout (code falls to STREAM_IDLE_TIMEOUT_CODE) keeps its ordinary retry — the same
-      // rule the other two transports apply at their own watchdog-cut throw sites.
+      // Declared-patience exhaustion is never retryable; a plain idle timeout keeps its retry.
       throw new AgentError(declaredMsg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
 
-    // F3: best-effort utility calls (caller has a fallback) log at WARN, a handled recoverable
-    // failure is not an agent-level error; t220: a call the caller stopped is no failure at all.
+    // Best-effort calls log handled failures at WARN, and a caller-stopped call is no failure at all.
     settleFailedCall('Ollama call', message, { model: ollamaModelName, baseUrl, latencyMs },
       { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
     throw err instanceof AgentError ? err : new AgentError(`Ollama call failed: ${message}`, agentId, {
@@ -1694,14 +1152,7 @@ async function callOllamaModel(
 
 const openaiClientCache = new Map<string, OpenAI>();
 
-/**
- * The base URL the OpenAI SDK is pointed at, for a configured provider.
- *
- * HL1: the host list this used to carry (`NO_V1_HOSTS` + `hostNeedsNoV1`, deleted here)
- * now lives at the capability contract's definition site, with every other provider name
- * in the engine. The rule is unchanged: a provider whose chat endpoint sits at the bare
- * host keeps its root, everyone else gets `/v1`.
- */
+// Base URL: bare-host endpoints keep their root, the rest get `/v1`; host list at its contract site.
 export function resolveOpenAIBaseUrl(baseUrl?: string | null): string | undefined {
   if (!baseUrl) return undefined;
   const cleaned = baseUrl.replace(/\/+$/, '');
@@ -1709,16 +1160,8 @@ export function resolveOpenAIBaseUrl(baseUrl?: string | null): string | undefine
   return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
 }
 
-/**
- * T63 — the stand-in key for a provider that declares `auth_type='none'`.
- *
- * A local OpenAI-compatible server (ollama / vLLM / LM Studio) checks no key, and the owner
- * has none to type. The OpenAI SDK still requires an `apiKey` string and will refuse to
- * construct without one, so a keyless provider gets this visible placeholder rather than a
- * throw. It is sent as `Authorization: Bearer` to a server that ignores the header; it is
- * never stored, never logged as a credential, and is only ever reached when the provider row
- * itself says no credential exists.
- */
+// Stand-in for `auth_type='none'`: the SDK refuses construction without an `apiKey` string, so
+// a keyless provider gets this visible placeholder rather than a throw. Never stored, never logged.
 const NO_AUTH_PLACEHOLDER_KEY = 'dojo-provider-declares-no-auth';
 
 function getOpenAIClient(
@@ -1727,14 +1170,14 @@ function getOpenAIClient(
   baseUrl?: string | null,
   authType?: string | null,
 ): OpenAI {
-  // T73b: the declared patience is part of the client's identity — see `transportClientOptions`.
+  // The declared patience is part of the client's identity; see `transportClientOptions`.
   const transport = transportClientOptions(patience);
   const cacheKey = `${providerId}:${baseUrl ?? 'default'}:${transport?.key ?? 'transport-default'}`;
   const cached = openaiClientCache.get(cacheKey);
   if (cached) return cached;
 
   const credential = getProviderCredential(providerId);
-  // T63: a provider that declares no auth is not a provider that is missing its key.
+  // A provider that declares no auth is not a provider that is missing its key.
   const declaresNoAuth = authType === 'none';
   if (!credential && !declaresNoAuth) {
     throw new AgentError(`No credential found for OpenAI provider: ${providerId}`, '', {
@@ -1750,8 +1193,7 @@ function getOpenAIClient(
   const client = new OpenAI({
     apiKey: credential ?? NO_AUTH_PLACEHOLDER_KEY,
     ...(resolvedBaseUrl ? { baseURL: resolvedBaseUrl } : {}),
-    // T73b: absent unless the provider declared patience the standing transport clock cannot
-    // honour. The owner's DS4 box is the one that does.
+    // Absent unless the provider declared patience the standing transport clock cannot honour.
     ...(transport ? { fetchOptions: transport.fetchOptions, timeout: transport.timeout } : {}),
   });
 
@@ -1759,14 +1201,8 @@ function getOpenAIClient(
   return client;
 }
 
-// Build OpenAI Chat Completions messages from our internal Anthropic-style
-// content blocks. Image blocks become proper `image_url` parts (data URLs),
-// document blocks get their text extracted via pdf-extract and inlined so
-// providers without native document support still see the content.
-//
-// Any image/document blocks for models that LACK vision should already have
-// been stripped by `enforceModelCapabilities` in runtime.ts before this
-// function runs, this helper just translates whatever's left.
+// Anthropic blocks → OpenAI messages: images become data-URL `image_url` parts, documents inline.
+// Models lacking vision were stripped upstream by `enforceModelCapabilities`; this only translates.
 export async function buildOpenAIMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
@@ -1774,19 +1210,13 @@ export async function buildOpenAIMessages(
   contract: ModelContract,
   systemVolatile = '',
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
-  // OpenAI & DeepSeek auto-cache a stable system prefix with NO markup, so they
-  // get a plain string (changing the shape could disturb their auto-cache).
-  // OpenRouter is a proxy: Anthropic/Gemini-backed models behind it need an
-  // explicit cache_control marker (OpenRouter's adopted convention), which it
-  // ignores for backends that already auto-cache. So mark only for OpenRouter.
-  // HL1: which of those two a provider is, is a contract field now.
+  // OpenAI & DeepSeek auto-cache a stable system prefix with NO markup, so they get a plain string.
+  // OpenRouter needs an explicit marker; which one a provider is lives in the contract field.
   const systemMessage = (contract.systemPromptCacheMarker === 'explicit-ephemeral'
     ? { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] }
     : { role: 'system', content: systemPrompt }) as OpenAI.ChatCompletionMessageParam;
   const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [systemMessage];
-  // C28 P-2: a second, unmarked system message for any system-side volatile
-  // content, so it sits AFTER the marked/auto-cached stable system prefix and
-  // cannot invalidate it. Empty after P-1; only added if ever populated.
+  // A second unmarked system message puts volatile content after the cached prefix so it cannot break it.
   if (systemVolatile) {
     openaiMessages.push({ role: 'system', content: systemVolatile } as OpenAI.ChatCompletionMessageParam);
   }
@@ -1803,10 +1233,7 @@ export async function buildOpenAIMessages(
       const toolResults = blocks.filter(b => b.type === 'tool_result');
 
       if (toolResults.length > 0) {
-        // Collect any image blocks from tool results that contain structured
-        // content (e.g., file_read on an image). OpenAI tool results only
-        // support string content, so we extract the text portion for the tool
-        // result and emit any images as a follow-up user message.
+        // OpenAI tool results are string-only: the text stays inside, images follow as a user message.
         const pendingImages: Array<Record<string, unknown>> = [];
 
         for (const tr of toolResults) {
@@ -1817,17 +1244,14 @@ export async function buildOpenAIMessages(
               content: tr.content,
             });
           } else if (Array.isArray(tr.content)) {
-            // Structured content blocks, extract text and images separately
             const contentBlocks = tr.content as Array<Record<string, unknown>>;
-            // v3.5 K33: a fenced attachment's head and end travel WITH the image or PDF, in the order
-            // they are rendered, never joined into the tool text with nothing between them.
+            // A fenced attachment's head and end travel WITH the image (render order), not in the tool text.
             const { around, isBracket } = attachmentBrackets(contentBlocks as Array<{ type: string; text?: unknown }>);
             const textParts = contentBlocks.filter((b, i) => b.type === 'text' && !isBracket[i]).map(b => (b.text as string) ?? '').join('\n');
             const imageBlks = contentBlocks.flatMap((b, i) => (b.type === 'image' ? [{ b, fence: around[i] }] : []));
             const docBlks = contentBlocks.flatMap((b, i) => (b.type === 'document' ? [{ b, fence: around[i] }] : []));
 
-            // Inline PDF text for non-vision document blocks — inside the tool message itself (v3.5 K33
-            // round 4: a user message between tool results breaks the order OpenAI-compatible APIs require).
+            // PDF text stays in the tool message: a user message between tool results breaks the order.
             const pdfTexts: string[] = [];
             for (const { b: doc, fence } of docBlks) {
               const source = doc.source as Record<string, unknown> | undefined;
@@ -1846,7 +1270,6 @@ export async function buildOpenAIMessages(
               content: [textParts, ...pdfTexts].filter(Boolean).join('\n') || '[Image loaded, see below]',
             });
 
-            // Queue images to be emitted as a user message after tool results
             for (const { b: img, fence } of imageBlks) {
               const source = img.source as Record<string, unknown> | undefined;
               if (source?.type === 'base64' && typeof source.data === 'string') {
@@ -1868,9 +1291,7 @@ export async function buildOpenAIMessages(
           }
         }
 
-        // Emit queued images as a user message so the model can see them.
-        // OpenAI doesn't support images in tool results, but a follow-up
-        // user message with the image works for vision-capable models.
+        // Queued images ride a follow-up user message: OpenAI tool results carry no images.
         if (pendingImages.length > 0) {
           const parts: OpenAI.ChatCompletionContentPart[] = [
             { type: 'text', text: '[Image from tool result, analyze this image]' },
@@ -1879,7 +1300,6 @@ export async function buildOpenAIMessages(
           openaiMessages.push({ role: 'user', content: parts });
         }
 
-        // Fall through to emit any remaining text blocks
         const remainingText = blocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n').trim();
         if (remainingText) {
           openaiMessages.push({ role: 'user', content: remainingText });
@@ -1887,18 +1307,15 @@ export async function buildOpenAIMessages(
         continue;
       }
 
-      // Regular user message, text + optional images + optional PDFs (a contact's bracketed by its fence, v3.5 K33)
       const { around, isBracket } = attachmentBrackets(blocks as Array<{ type: string; text?: unknown }>);
       const fenceOf = new Map(blocks.map((b, i) => [b, around[i]]));
       const textBlocks = blocks.filter((b, i) => b.type === 'text' && !isBracket[i]);
       const imageBlocks = blocks.filter(b => b.type === 'image');
       const documentBlocks = blocks.filter(b => b.type === 'document');
 
-      // Start with any user-typed text.
       let textContent = textBlocks.map(b => (b.text as string) ?? '').join('\n');
 
-      // Inline PDF text (the OpenAI Chat Completions API has no document
-      // type, so this is the only way to get PDFs in front of the model).
+      // Inline PDF text: Chat Completions has no document type; the only way a PDF reaches the model.
       if (documentBlocks.length > 0) {
         const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
         for (const doc of documentBlocks) {
@@ -1944,17 +1361,12 @@ export async function buildOpenAIMessages(
         }
       }
 
-      // No images → send as a simple string (backwards compatible).
       if (imageBlocks.length === 0) {
         openaiMessages.push({ role: 'user', content: textContent });
         continue;
       }
 
-      // Images present → build multimodal content as an array of parts,
-      // using OpenAI's image_url with a base64 data URL so we don't need
-      // external hosting. This is supported by OpenAI itself, OpenRouter,
-      // MoonshotAI, Gemini (via OpenAI compat), Together, and most other
-      // OpenAI-compatible providers for models with vision capability.
+      // Images: `image_url` with a base64 data URL, so no external hosting is needed.
       const parts: OpenAI.ChatCompletionContentPart[] = [];
       if (textContent) {
         parts.push({ type: 'text', text: textContent });
@@ -1978,25 +1390,16 @@ export async function buildOpenAIMessages(
       }
 
       if (parts.length === 0) {
-        // Nothing survived encoding, fall back to whatever text we have.
         openaiMessages.push({ role: 'user', content: textContent || '(attachment could not be decoded)' });
       } else if (parts.length === 1 && parts[0].type === 'text') {
-        // Only text survived, send as string for compat with providers that
-        // don't love the array form for text-only messages.
+        // Only text survived: string form, for providers that dislike the array form there.
         openaiMessages.push({ role: 'user', content: parts[0].text });
       } else {
         openaiMessages.push({ role: 'user', content: parts });
       }
     } else if (m.role === 'assistant') {
       if (typeof m.content === 'string') {
-        // HL8 (C) — A STRING-CONTENT ASSISTANT MESSAGE CAN NEVER CARRY TOOL CALLS, so it
-        // is a PLAIN turn and its reasoning is dropped. dsh's own rule, from the official
-        // passback guide (`llm-deepseek/src/serialize.ts:96-100`): reasoning_content must
-        // return on tool-call turns and is IGNORED on plain turns. Both branches that used
-        // to attach it here are deleted — the stored body AND the `''` fallback, which was
-        // introduced against a 400 that is a TOOL-CALL-turn constraint. Measured waste
-        // removed: 3,535 chars ≈ 884 tokens on a 32,367-token request (2.7%), and it grew
-        // without bound — 3,191 stored plain rows on the dev box carry reasoning.
+        // A string-content assistant message can never carry tool calls, so its reasoning is dropped.
         const msg: OpenAI.ChatCompletionAssistantMessageParam = { role: 'assistant', content: m.content };
         openaiMessages.push(msg);
       } else if (Array.isArray(m.content)) {
@@ -2020,18 +1423,8 @@ export async function buildOpenAIMessages(
           }));
         }
 
-        // HL8 (C) — REASONING RIDES TOOL-CALL TURNS ONLY, per dsh's official passback rule
-        // (`llm-deepseek/src/serialize.ts:96-100`): required on tool-call turns, IGNORED on
-        // plain ones. A block-content message with only text blocks is a plain turn.
-        // The `''` fallback is KEPT on tool-call turns: some providers 400 when the field is
-        // missing on a tool-call follow-up, dsh omits it there and we are strictly safer, and
-        // it costs zero tokens. After HL8 (B) it should almost never fire — that is the point.
-        //
-        // T56: the CONDITION is now `memory/budget.ts`'s `reasoningRidesThisTurn`, which is
-        // the same predicate the token arithmetic asks. It answers identically to the
-        // `tool_calls.length > 0` test it replaces (both are "this block array holds a
-        // tool_use"), and having ONE expression is what stops the budget from billing for
-        // bytes this site drops, or missing bytes it sends.
+        // Reasoning rides tool-call turns only; keep the `''` fallback: some providers 400 without it.
+        // The condition is `memory/budget.ts`'s `reasoningRidesThisTurn`, the predicate the token math uses.
         if (reasoningRidesThisTurn(m.content)) {
           if (m.reasoningContent) {
             (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
@@ -2048,18 +1441,8 @@ export async function buildOpenAIMessages(
   return openaiMessages;
 }
 
-/**
- * Best-effort repair of malformed tool-call argument JSON from weak models.
- * The dominant DeepSeek (and other floor-model) failure mode is raw, unescaped
- * control characters, newlines / tabs / carriage returns, inside long string
- * values (e.g. a multi-line `result` or `description` field), plus the
- * occasional trailing comma. The engine must build to the floor: rejecting the
- * call forces a full retry that burns turns and can trip the thrash breaker
- * (DOJO-ISSUES-LOG OPEN-1/OPEN-4). We walk the raw string tracking in-string
- * state and escape any raw control char that appears inside a JSON string, then
- * re-parse (also trying a trailing-comma strip). Returns the parsed object on
- * success, or null if it still can't parse (e.g. genuinely truncated output).
- */
+// Repairs malformed tool JSON: raw control chars and trailing commas are the dominant floor-model failure,
+// and refusing costs a full retry that burns turns; escape control chars, re-parse, null if still broken.
 export function repairToolCallArgs(raw: string): Record<string, unknown> | null {
   const escapeControlCharsInStrings = (s: string): string => {
     let out = '';
@@ -2074,8 +1457,7 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
         if (ch === '\n') { out += '\\n'; continue; }
         if (ch === '\r') { out += '\\r'; continue; }
         if (ch === '\t') { out += '\\t'; continue; }
-        // Other C0 control chars (e.g. \b, \f, vertical tab) are illegal raw in
-        // JSON strings too, escape via \u00XX so the parser accepts them.
+        // Other C0 control chars are illegal raw in JSON strings too; escape as \u00XX.
         if (ch < ' ') { out += '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'); continue; }
         out += ch;
       } else {
@@ -2098,39 +1480,16 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
   return null;
 }
 
-/**
- * The provider-shaped knobs on an OpenAI-compatible chat request.
- *
- * HL1: was two provider-name branches inside `callOpenAIModel`; the branches now read the
- * model's declared contract instead, and the blocks keep their original order. Mutates
- * `requestParams` in place exactly as the inline code did.
- *
- * `openrouter-reasoning` — the proxy's unified `reasoning` object, which it translates
- * into each upstream provider's convention (Anthropic thinking, o-series
- * reasoning_effort, Gemini thinkingBudget…). Only when the model can think at all.
- *
- * `native-thinking-param` — a top-level `thinking: { type }` plus (t195) the level as `reasoning_effort`. The per-model
- * `thinking_enabled` flag is honoured so the owner keeps control from the Models page;
- * the round trip is (a) `delta.reasoning_content` captured in the stream loop below and
- * (b) `reasoning_content` replayed by `buildOpenAIMessages`.
- *
- * `rejectsSamplingParamsWhenThinking` — temperature / top_p are refused by some models
- * while thinking. Until HL1 that was a COMMENT asserting the dispatch happened not to
- * send them: true about one day's code, and nothing a future caller would read. It is an
- * enforced guard now. Nothing sets those keys at HEAD, so it removes nothing and the
- * request shape is unmoved — asserted by the golden.
- *
- * Field definitions and their seeds: `model-contract.ts`.
- */
+// Mutates `requestParams` in place from the contract; field definitions: `model-contract.ts`.
+// Proxy thinking gets the unified `reasoning` object; native models get `thinking` + `reasoning_effort`.
+// temperature/top_p dropped while thinking when the contract rejects them.
 export function applyProviderRequestParams(
   requestParams: OpenAI.ChatCompletionCreateParams,
   contract: ModelContract,
   opts: { supportsThinking: boolean; thinkingEnabled: boolean; thinkingLevel?: string | null },
 ): void {
   if (contract.thinkingToggle === 'openrouter-reasoning' && opts.supportsThinking) {
-    // `extra_body` survives the OpenAI SDK's pass-through to non-standard
-    // params. Use it so the unified reasoning object makes it into the
-    // wire request untouched.
+    // `extra_body` survives the SDK's pass-through, so the reasoning object reaches the wire untouched.
     (requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body = {
       ...((requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body ?? {}),
       reasoning: { enabled: opts.thinkingEnabled },
@@ -2142,8 +1501,7 @@ export function applyProviderRequestParams(
     (requestParams as unknown as { thinking?: { type: string } }).thinking = {
       type: thinkingActive ? 'enabled' : 'disabled',
     };
-    // t195: the thinking LEVEL, beside the toggle: only while thinking is on, and only a value the
-    // contract lists (none, for a contract without levels). A caller that names no level sends none.
+    // The level travels only while thinking is on and only if the contract lists it; no name sends none.
     if (thinkingActive && opts.thinkingLevel && (contract.thinkingLevels as readonly string[]).includes(opts.thinkingLevel)) {
       (requestParams as unknown as { reasoning_effort?: string }).reasoning_effort = opts.thinkingLevel;
     }
@@ -2163,18 +1521,14 @@ async function callOpenAIModel(
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
   const startTime = Date.now();
 
-  // T73b: resolved HERE rather than at the watchdog below, because the HTTP client is built
-  // from it too. One read, one answer, two consumers — the watchdog and the socket underneath
-  // it — which is the only arrangement in which the transport cannot be less patient than the
-  // bound it is supposed to be carrying.
+  // One read feeds the watchdog and the socket: the transport can never be less patient than its own bound.
   const patience = resolveStreamPatience(modelInfo);
   const client = getOpenAIClient(modelInfo.providerId, patience, modelInfo.providerBaseUrl, modelInfo.providerAuthType);
 
-  // HL1: the two provider-name checks that used to live here are the contract's business.
+  // Which knobs a provider needs is the contract's business, not a name check.
   const contract = contractForModel(modelInfo);
   const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, contract, params.systemVolatile ?? '');
 
-  // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
   let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
   if (tools) {
     const allPermitted = getFilteredTools(agentId);
@@ -2191,36 +1545,14 @@ async function callOpenAIModel(
     }));
   }
 
-  // Determine the right max tokens parameter
-  // o-series models use max_completion_tokens, others use max_tokens
+  // o-series models take `max_completion_tokens`, the rest take `max_tokens`.
   const isReasoningModel = modelInfo.apiModelId.match(/^o[1-4]/);
 
-  // ── THE OPENAI FRONT-TRIMMER IS DELETED (PHASE-3 T4 Step 2b, 2026-08-01) ──
-  // STRIP. It was `model.ts:1224-1292` at `1d112ad`: a `splice(1, 1)` loop that deleted the
-  // OLDEST conversation messages until the input fit, plus its own orphan repair.
-  // requirement preserved: NEVER EXCEED THE PROVIDER'S WINDOW. That requirement now belongs
-  // upstream and it is enforced IN PRIORITY ORDER instead of oldest-first — the allocator
-  // budgets against `contextWindowPolicy` (memory/budget.ts) and `validateAssembly` /
-  // `repairAssembly` (memory/assembly-validation.ts) check and repair at this same boundary,
-  // dropping the LOWEST-PRIORITY lane and throwing when nothing droppable is left (C10/C11).
-  // What this deletion actually removes is the INVERSION: a front-trimmer only knows slot
-  // order, so it ate `lane.scratchpad` (priority 20) while keeping `lane.events` (40) — the
-  // owner's directive going out of the window before the morning briefing did.
-  // Measured before deleting: day-0 detect run 73 calls / **0 budget violations**; the driven
-  // pre-flip arm at `1d112ad` **checked=63 diverged=0**. The trimmer had nothing to trim.
+  // No front-trimmer: NEVER EXCEED THE PROVIDER'S WINDOW; upstream (allocator + assembly) enforces it.
 
-  // Reserve at most 25% of context for output, or whatever's left after input.
-  // The arithmetic (and the two floors it rests on) is `resolveOutputBudget` above — pulled
-  // out of this function by T72b claim 1 so it could be argued with in a test instead of
-  // only observed on a wire.
-  //
-  // T108 (BACKLOG 56): the estimate now SPENDS this provider's measured divisors instead of the
-  // asserted 4. The two populations were already separated here — the messages are prose, the
-  // tools array is dense JSON — so the split costs no classifier, only the arithmetic moving into
-  // `estimateRequestTokens`. That function is floored so the estimate can only GROW relative to
-  // today (both bounds argued in `memory/budget.ts`), and an unmeasured provider gets today's
-  // number byte for byte. Everything downstream of this line reads the truer estimate: the
-  // pre-dial fit gate, the output budget, and the recorded ledger row.
+  // Output reserve: at most 25% of context or what's left after input; the math is `resolveOutputBudget`.
+  // The estimate SPENDS this provider's measured divisors, not the asserted 4.
+  // It can only GROW: an unmeasured provider gets today's number, and everything downstream reads it.
   const openaiProseChars = openaiMessages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
     return sum + content.length;
@@ -2232,51 +1564,26 @@ async function callOpenAIModel(
   );
   const finalInputEstimate = openaiEstimate.tokens;
 
-  // T81b: the pre-dial gate, right where the estimate for THIS exact request first exists and
-  // strictly before anything below builds a client or touches a socket (`patience` above is
-  // the same resolved bound the watchdog and the transport clock are armed with, a few lines
-  // up). Byte-preserving no-op when this provider has not declared a prefill throughput.
+  // Pre-dial gate on this exact request's estimate, before any socket; a no-op until a throughput exists.
   refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo);
 
-  // t195: the engine's ask for extra room is honoured up to the contract's ceiling; the result reports
-  // what was sent and the most a retry could be given, so escalation is sized from this call's own facts.
-  // t269: a summary job does not think where the contract can switch it off (DeepSeek's `thinking`, OpenRouter's
-  // `reasoning`); where it cannot, the model's own budget still counts its thinking. The Ollama dial already did this.
+  // The engine's extra-room ask is honoured up to the contract's ceiling; the result reports what was sent.
+  // A memory-summarize dial forces thinking off where the contract allows; else the model's own value.
   const thinkingSent = utilityDial(purpose)?.purpose === 'memory_summarize' && contract.thinkingToggle !== 'none' ? false : modelInfo.thinkingEnabled;
   const budgetInfo = { ...modelInfo, thinkingEnabled: thinkingSent, outputEscalationCeiling: contract.outputEscalationCeiling };
   const effectiveMaxTokens = resolveOutputBudget(budgetInfo, finalInputEstimate, params.outputRoomAsk ?? 0);
   const outputRoomCeiling = resolveOutputCeiling(budgetInfo, finalInputEstimate);
 
-  // v2.7.27: belt-and-suspenders tool_call/tool_result pair sanitizer.
-  // The trimming logic earlier only fires when input exceeds the context
-  // window. The PM agent was hitting "Messages with role 'tool' must be
-  // a response to a preceding message with 'tool_calls'" (orphaned tool result) AND
-  // "An assistant message with 'tool_calls' must be followed by tool messages
-  // responding to each 'tool_call_id'" (assistant tool_calls without matching
-  // results) without crossing the context ceiling. Two passes:
-  //   1. Drop any role='tool' message whose tool_call_id isn't owed by the
-  //      MOST RECENT assistant-with-tool_calls. (The old version checked
-  //      the immediately-prior kept message only, that broke parallel
-  //      calls because after the first tool result was kept, subsequent
-  //      tool results in the same parallel batch had a tool message as
-  //      their immediate prior and got dropped. That made Pass 2 also
-  //      drop the assistant because its tool_calls were "unanswered",
-  //      erasing the whole turn from history, the regression that made
-  //      DeepSeek re-fire identical parallel calls every turn.)
-  //   2. Drop any assistant message whose tool_calls do not all have
-  //      matching tool-result messages immediately after (orphan call).
-  // Idempotent and cheap, runs every call.
+  // Tool pair sanitizer, idempotent, every call: orphan pairs 400 before trimming fires.
+  // Pass 1 drops tool results outside the most recent assistant's owed-set, which spans the WHOLE batch;
+  // a per-message check once erased parallel turns. Pass 2 drops assistant turns not fully answered next.
   {
     type AnyMsg = OpenAI.ChatCompletionMessageParam & {
       tool_calls?: Array<{ id: string }>;
       tool_call_id?: string;
     };
 
-    // Pass 1: drop orphan tool results. A tool result is an orphan iff its
-    // tool_call_id is not in the set of pending call ids the most recent
-    // assistant-with-tool_calls is owed answers for. As we keep tool
-    // messages we remove their id from the pending set; when we encounter
-    // the NEXT assistant message we reset.
+    // Pass 1: drop tool results whose id is not in the owed set; keeping one consumes its id.
     const afterPass1: OpenAI.ChatCompletionMessageParam[] = [];
     let strippedOrphanResult = 0;
     let pendingOwedIds: Set<string> | null = null;
@@ -2299,14 +1606,12 @@ async function callOpenAIModel(
         afterPass1.push(m);
         continue;
       }
-      // Any other role (user, system) breaks the parallel-batch run; the
-      // assistant's tool_calls should have been fully answered by then.
+      // Any other role breaks the parallel-batch run; those calls should be answered by then.
       pendingOwedIds = null;
       afterPass1.push(m);
     }
 
-    // Pass 2: drop assistant messages whose tool_calls are not all answered
-    // by the immediately-following tool-result messages with matching ids.
+    // Pass 2: drop assistant turns whose tool_calls aren't all answered by the tool results right after.
     const afterPass2: OpenAI.ChatCompletionMessageParam[] = [];
     let strippedOrphanCall = 0;
     for (let i = 0; i < afterPass1.length; i++) {
@@ -2321,16 +1626,13 @@ async function callOpenAIModel(
           if (f.tool_call_id) followIds.add(f.tool_call_id);
           j++;
         }
-        // Every call id must be answered.
         let allAnswered = true;
         for (const id of callIds) {
           if (!followIds.has(id)) { allAnswered = false; break; }
         }
         if (!allAnswered) {
-          // Drop this assistant message AND any of the following tool
-          // results that belong to it (they would orphan too).
+          // Drop this assistant AND its following tool results, they would orphan too.
           strippedOrphanCall++;
-          // Skip the following tool results we just inspected.
           i = j - 1;
           continue;
         }
@@ -2355,9 +1657,7 @@ async function callOpenAIModel(
     model: modelInfo.apiModelId,
     messages: openaiMessages,
     stream: true,
-    // Ask for a final usage chunk so we can see real prompt-cache hits (DeepSeek
-    // reports prompt_cache_hit_tokens; OpenAI reports prompt_tokens_details
-    // .cached_tokens). Used for cache-hit logging below; harmless if ignored.
+    // A final usage chunk makes real prompt-cache hits visible (DeepSeek/OpenAI); harmless if ignored.
     stream_options: { include_usage: true },
     ...(isReasoningModel
       ? { max_completion_tokens: effectiveMaxTokens }
@@ -2383,9 +1683,7 @@ async function callOpenAIModel(
     reasoningToggleApplied: contract.thinkingToggle === 'openrouter-reasoning' && supportsThinking,
   }, agentId);
 
-  // The replay diagnostic: log per-assistant-message reasoning_content presence so future
-  // "must be passed back" 400s can be diagnosed from logs. It exists for the models that
-  // require the passback, so that is the contract field it asks about.
+  // Replay diagnostic: per-assistant reasoning_content presence, so passback 400s are diagnosable.
   if (contract.requiresReasoningReplay) {
     const assistantSummary = openaiMessages
       .map((m, i) => ({ m, i }))
@@ -2400,37 +1698,21 @@ async function callOpenAIModel(
           reasoningChars: typeof rc === 'string' ? rc.length : 0,
         };
       });
-    // HL1 renamed this label off the provider's name (it was "DeepSeek request, assistant
-    // message reasoning round-trip"): the diagnostic belongs to the CONTRACT FIELD, and any
-    // future model that requires the passback gets the same line. `contract` names which.
+    // The label follows the contract field, not a provider name; `contract` names which one was dialed.
     logger.info('reasoning replay round-trip, per assistant message', {
       contract: contract.id,
       assistantMessages: assistantSummary,
     }, agentId);
   }
 
-  // Stream idle watchdog: bounds connect/first-token and inter-chunk gaps;
-  // combined with the stop-button signal so user aborts still work unchanged.
-  //
-  // T64b: the bounds come from the PROVIDER now. This is the path the owner's local DeepSeek
-  // box runs on, and a machine that reads a 35k-character prompt before it can emit token 1
-  // is not a hung connection — but the standing 90s bound had no way to tell those apart.
-  // A provider that declares nothing resolves to exactly the two constants this line has
-  // passed implicitly since 2026-07-10.
-  //
-  // T73b: `patience` is resolved at the top of this function now, because the client above was
-  // built from the same answer. The watchdog is the BINDING bound by construction — the
-  // transport underneath was given the same numbers plus a margin — so a cut stream is one
-  // this file decided to cut, and `streamTimeoutPhrase` speaks for every timeout a caller can
-  // see. Before T73b a declaration past 300 s produced an undici abort instead: the watchdog
-  // never fired, `timedOut()` stayed false, and the loop's one same-model retry was lost to a
-  // transport error rather than withheld by T72b's rule.
+  // The watchdog bounds first-token and inter-chunk gaps, combined with the stop signal.
+  // The PROVIDER sets the bounds: a local box reading a 35k prompt before token 1 is not a hang.
+  // The watchdog is the BINDING bound: the transport clock gets the same numbers plus a margin, so it
+  // never aborts first, and `streamTimeoutPhrase` names every timeout a caller can see.
   const watchdog = makeStreamWatchdog(params.abortSignal, patience.firstChunkMs, patience.idleMs);
   try {
     const requestOptions = { signal: watchdog.signal };
-    // .withResponse() hands back both the parsed stream and the raw Response so
-    // we can feed rate-limit headers into the proactive tracker (FA-R2). It does
-    // not consume the SSE body; `stream` is iterated below exactly as before.
+    // .withResponse() returns the stream AND the raw Response (rate limits) without consuming the body.
     const { data: stream, response: rawResponse } =
       await client.chat.completions.create(requestParams, requestOptions).withResponse();
 
@@ -2438,29 +1720,22 @@ async function callOpenAIModel(
     let fullReasoning = '';
     const toolCalls: ToolCall[] = [];
     const toolCallAccumulator = new Map<number, { id: string; name: string; args: string }>();
-    // Final usage chunk (from stream_options.include_usage), carries cache stats.
     let realUsage: (OpenAI.CompletionUsage & { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }) | undefined;
 
-    // TB8 JOB 1: the provider's own terminal reason, kept rather than thrown away. It
-    // arrives on the last content-bearing chunk, before the usage chunk, so it is captured
-    // beside `realUsage` and read once the stream is done.
+    // The provider's terminal reason, kept: it arrives on the last content chunk, before the usage chunk.
     let providerFinishReason: string | null = null;
 
     for await (const chunk of stream) {
       watchdog.bump();
-      // The usage chunk arrives last with an empty choices array, capture it
-      // before the delta guard skips it.
+      // The usage chunk arrives last with an empty choices array; capture before the delta guard.
       if (chunk.usage) realUsage = chunk.usage as typeof realUsage;
       const finish = chunk.choices[0]?.finish_reason;
       if (finish) providerFinishReason = finish;
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
-      // T72b claim 2: the moment this provider proves it can EMIT, which is what ends
-      // prompt-processing patience and starts the dead-connection bound. A delta carrying
-      // text, reasoning or a tool call is generated output; `delta: {"role":"assistant"}`
-      // — the frame llama.cpp/vLLM/LM Studio send the instant generation is queued — is not,
-      // and it must not buy the machine a shorter leash while it is still reading the prompt.
+      // The moment the provider proves it can EMIT: ends prompt patience, starts the dead-connection bound.
+      // A role-only delta is NOT generated output and must not buy a shorter leash.
       if (
         delta.content
         || delta.tool_calls
@@ -2470,12 +1745,7 @@ async function callOpenAIModel(
         watchdog.contentStarted();
       }
 
-      // Reasoning content (DeepSeek-style sibling field). Stream it through
-      // a separate callback so the dashboard renders it in a collapsible
-      // "Thinking…" section that's distinct from the final answer text.
-      // OpenRouter also surfaces this when reasoning is enabled on its
-      // unified path. Anthropic's thinking blocks come via content-array,
-      // not here, and are handled in the Anthropic dispatch path.
+      // Reasoning (DeepSeek-style sibling field, OpenRouter's unified path) streams via its own callback.
       const reasoningChunk = (delta as unknown as { reasoning_content?: string }).reasoning_content
         ?? (delta as unknown as { reasoning?: string }).reasoning
         ?? null;
@@ -2484,13 +1754,11 @@ async function callOpenAIModel(
         if (params.onReasoningChunk) params.onReasoningChunk(reasoningChunk);
       }
 
-      // Text content
       if (delta.content) {
         fullText += delta.content;
         if (onChunk) onChunk(delta.content);
       }
 
-      // Tool calls come in incrementally
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           const idx = tc.index;
@@ -2505,49 +1773,18 @@ async function callOpenAIModel(
       }
     }
 
-    // ════════════════════════════════════════════════════════════════════════════════════
-    // T65b (2026-08-31) — A STALL IS NEVER SHIPPED AS AN ANSWER.
-    //
-    // The loop above ends two ways and they mean opposite things. Either the provider
-    // finished, or the watchdog cut it off and `openai@6.32.0` did not say so:
-    //
-    //     // core/streaming.js:74-76
-    //     catch (e) {
-    //       // If the user calls `stream.controller.abort()`, we should exit without throwing.
-    //       if (isAbortError(e)) return;
-    //
-    // A mid-answer stall therefore looked, from here down, exactly like a completed call. It
-    // was costed, audit-logged `result='success'`, given the synthesised `end_turn` — "the
-    // model finished normally" — and RETURNED, so the owner got half an answer with nothing
-    // anywhere saying it was half. The `catch` below is the only reader of `timedOut()` on
-    // this path and it was never entered, which also made the v2 loop's one same-model retry
-    // unreachable for the whole class: it matches on a phrase that was never thrown. The
-    // first-chunk case escaped this only by accident of WHERE the abort lands — on the
-    // awaited `create()`, which does reject.
-    //
-    // So the engine raises what the SDK dropped. Deliberately a throw into this function's
-    // OWN catch rather than a second translation: the catch's watchdog branch is already the
-    // one place that decides what a watchdog abort means, and routing through it means the
-    // swallowed abort and the raised one produce the same `AgentError`, the same provider
-    // health record and the same log line — with no second copy to drift. The message below
-    // is a fallback that only surfaces if the user's stop lands in the microseconds between
-    // this check and the catch's; it carries the retry phrase so even that reads correctly.
-    //
-    // SCOPE, stated so it is not mistaken for more: this speaks for the WATCHDOG's abort and
-    // nothing else. A server that closes the connection mid-answer is a different signal (no
-    // `finish_reason` arrived) and is raised just below as STREAM_NO_FINISH_ERROR (R7).
-    // ════════════════════════════════════════════════════════════════════════════════════
+    // A STALL IS NEVER AN ANSWER: the SDK swallows a watchdog abort, so a stall looks like completion here.
+    // Re-raise HERE: this function's catch gives both abort kinds the same AgentError and health record.
+    // Watchdog only: a mid-answer close sends no `finish_reason`; below that raises STREAM_NO_FINISH_ERROR.
     if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
       throw new Error(`${streamTimeoutPhrase(watchdog, patience)}: the stream ended on the watchdog's abort, which the SDK did not raise`);
     }
 
-    // R7: no finish_reason on any chunk = the provider hung up mid-answer. A user's own stop keeps its partial
-    // (the abort signal is theirs); anything else is a cut answer and is never shipped as a finished one.
+    // No finish_reason = the provider hung up mid-answer; only the user's own stop may ship a partial.
     if (providerFinishReason === null && !params.abortSignal?.aborted) {
       throw new StreamEndedUnfinished(`${STREAM_NO_FINISH_ERROR}: the provider closed the stream before saying the answer was finished`);
     }
 
-    // Finalize tool calls
     for (const [, acc] of toolCallAccumulator) {
       let parsedArgs: Record<string, unknown> = {};
       let malformedArgs = false;
@@ -2555,9 +1792,6 @@ async function callOpenAIModel(
         try {
           parsedArgs = JSON.parse(acc.args);
         } catch {
-          // Attempt a structured repair before rejecting (OPEN-1): weak models
-          // routinely emit raw control chars inside long string args. Rejecting
-          // forces a full retry that burns turns and feeds the thrash breaker.
           const repaired = repairToolCallArgs(acc.args);
           if (repaired !== null) {
             parsedArgs = repaired;
@@ -2574,12 +1808,7 @@ async function callOpenAIModel(
         }
       }
       if (malformedArgs) {
-        // Instead of silently using empty args, synthesize an error tool result
-        // so the model sees the failure and can retry with valid JSON.
-        // We push a synthetic tool call that the runtime will execute, the
-        // executeTool dispatcher will receive it, but we flag it here by
-        // injecting a special __malformed_args field. The runtime handles this
-        // before dispatching to produce a clear error message for the model.
+        // Not silent empty args: an error tool result so the model sees it, flagged `__malformed_args`.
         parsedArgs = { __malformed_args: acc.args.slice(0, 500) };
       }
       toolCalls.push({
@@ -2592,26 +1821,15 @@ async function callOpenAIModel(
     watchdog.finish();
     const latencyMs = Date.now() - startTime;
 
-    // Prompt-cache visibility: log how much of the prompt was served from cache.
-    // DeepSeek exposes prompt_cache_hit/miss_tokens; OpenAI exposes
-    // prompt_tokens_details.cached_tokens. Lets us confirm caching actually
-    // HITS (markers alone don't guarantee it, the prefix must be stable).
-    // Token accounting (C28 P-7). Prefer real provider usage; the char
-    // estimate is now only the fallback for when the stream returned no usage.
-    //   inputTokens      = TOTAL prompt tokens (returned to the caller for
-    //                      context accounting; real when reported, else estimate)
-    //   uncachedInputTokens = the DISJOINT uncached input passed to recordCost
-    //   cacheReadTokens  = cache-hit portion (DeepSeek prompt_cache_hit /
-    //                      OpenAI prompt_tokens_details.cached), undefined when
-    //                      the provider did not report (persists NULL)
-    // These providers report cache HITS only (no cache-creation surcharge),
-    // so cacheCreationTokens is never passed here.
+    // Cache visibility: markers alone don't guarantee a HIT, the prefix must be stable.
+    // Prefer real provider usage; char estimates only when no usage came back.
+    // inputTokens is the TOTAL prompt, uncachedInputTokens the DISJOINT uncached input recordCost bills;
+    // cacheReadTokens stays undefined if unreported; such providers report HITS only: no creation surcharge.
     let inputTokens: number;
     let outputTokens: number;
     let uncachedInputTokens: number;
     let cacheReadTokens: number | undefined;
-    // Fix round 1 (review N1): flipped true only by the no-usage branch below, and read only by
-    // the prefill speedometer. `false` here is the claim "this came off a usage block".
+    // Flipped true only by the no-usage branch below; `false` claims "this came off a usage block".
     let inputTokensEstimated = false;
     if (realUsage) {
       const promptTokens = realUsage.prompt_tokens ?? 0;
@@ -2631,27 +1849,20 @@ async function callOpenAIModel(
         cacheHitRatio: promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) / 100 : 0,
       }, agentId);
     } else {
-      // No usage in the stream: fall back to char-length estimates.
       inputTokens = Math.ceil((systemPrompt.length + JSON.stringify(openaiMessages).length) / 4);
       outputTokens = Math.ceil((fullText.length + JSON.stringify(toolCalls).length) / 4);
       uncachedInputTokens = inputTokens;
       cacheReadTokens = undefined;
-      // Fix round 1 (review N1): this is the ONE branch in the engine where the recorded input
-      // count is not a count anybody billed. The numerator above is characters of JSON — struct-
-      // ure and escaping included — divided by four, so on prose it runs ~10-15% ABOVE the true
-      // token count. That is harmless for cost (it always has been) and NOT harmless for the
-      // prefill speedometer, which divides this number by latency and takes a MAXIMUM: an
-      // inflated numerator is the one direction a max-of-lower-bounds may not be wrong in.
+      // The ONE estimated-input branch: chars/4 runs ABOVE truth and the prefill speedometer keeps a
+      // maximum, so an inflated count must never reach it.
       inputTokensEstimated = true;
     }
 
-    // Calculate cost. Uncached input at full rate + cache reads at 0.1x (P-7).
     const costPerM = getOpenAICost(modelInfo.apiModelId);
     const totalCost = (uncachedInputTokens / 1_000_000) * costPerM.input
       + ((cacheReadTokens ?? 0) / 1_000_000) * costPerM.input * 0.1
       + (outputTokens / 1_000_000) * costPerM.output;
 
-    // Audit log
     const db = getDb();
     db.prepare(`
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, cost, created_at)
@@ -2667,25 +1878,20 @@ async function callOpenAIModel(
       providerId: modelInfo.providerId,
       inputTokens: uncachedInputTokens, outputTokens, latencyMs,
       requestType: routerTier ?? purpose ?? 'completion',
-      // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
-      // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
-      // the fact that chain discards, recorded beside it rather than instead of it.
+      // The purpose on its OWN axis; `requestType` above, ?? chain included, is byte-unchanged.
       callPurpose: purpose,
       cacheReadTokens,
-      // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
+      // The post-trim estimate, i.e. the one describing the request that actually went out.
       estimatedInputTokens: finalInputEstimate,
-      // T108: the divisor THIS estimate was really produced by, so `chars = estimate x divisor`
-      // keeps recovering this request's character count now that the divisor is per-request.
+      // The divisor THIS estimate used; `chars = estimate x divisor` recovers the count, per-request.
       estimatorCharsPerToken: openaiEstimate.effectiveCharsPerToken,
-      // Fix round 1 (review N1): true only on the no-usage fallback above. The prefill
-      // speedometer refuses such a row; nothing else reads it.
+      // True only on the no-usage fallback above; the speedometer refuses such a row.
       inputTokensEstimated,
     });
 
     recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
-    // ── Text-based tool call fallback ── (models that print a tool call as text; only a tool
-    // this call offered is taken — see text-tool-fallback.ts)
+    // Text tool-call fallback: only a tool this call actually offered is taken; see text-tool-fallback.ts.
     if (toolCalls.length === 0 && openaiTools) {
       const extracted = extractTextToolCalls(fullText, openaiTools.flatMap(t => (t.type === 'function' ? [t.function.name] : [])));
       if (extracted.toolCalls.length > 0) {
@@ -2699,10 +1905,7 @@ async function callOpenAIModel(
       }
     }
 
-    // TB8 JOB 1: the honest stop reason, and the shape the census reads. `finishReason` on
-    // this line is what makes the recorded runaway class countable from the log for the
-    // first time — the 17 at-cap calls in the durable sink were only ever identifiable by
-    // joining `cost_records` to `models`, after the fact.
+    // The honest stop reason and the shape the census reads, countable straight from the log.
     const stopReason = resolveProviderStopReason(providerFinishReason, toolCalls.length);
     logger.info('OpenAI call completed', {
       model: modelInfo.apiModelId,
@@ -2714,8 +1917,7 @@ async function callOpenAIModel(
     }, agentId);
 
     if (stopReason === 'length' && toolCalls.length === 0) {
-      // THE GRIND, named where it happens. The engine's restart is the ladder in
-      // `v2/steps/post-call-classify/empty-response.ts`; this line is the record.
+      // THE GRIND, named where it happens; restart lives in `v2/steps/post-call-classify/empty-response.ts`.
       logger.warn('OpenAI call ran out its ENTIRE output budget with no tool call — the grind class', {
         model: modelInfo.apiModelId,
         outputTokens, latencyMs,
@@ -2724,12 +1926,7 @@ async function callOpenAIModel(
       }, agentId);
     }
 
-    // FA-R2: feed the proactive rate-limit tracker from the response headers,
-    // mirroring the Anthropic path. OpenAI sends x-ratelimit-remaining-requests
-    // / x-ratelimit-reset-requests, which updateRateLimits already understands;
-    // DeepSeek and OpenRouter vary and may send none, so this is best-effort and
-    // no-ops when no rate-limit headers are present. Lets selectModel skip a
-    // model that has run its window down on the NEXT turn.
+    // Headers feed the rate-limit tracker, as on the Anthropic path; selectModel skips worn models.
     try {
       const rlHeaders: Record<string, string> = {};
       rawResponse?.headers?.forEach?.((value: string, key: string) => { rlHeaders[key] = value; });
@@ -2755,43 +1952,32 @@ async function callOpenAIModel(
       throw new AgentError(err.message, agentId, { code: 'MODEL_CALL_FAILED', retryable: true });
     }
     if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
-      // The WATCHDOG aborted (never the user's stop; that leaves timedOut()
-      // false or shows on the external signal). Translate to the retryable
-      // phrase the v2 loop matches for its single same-model retry.
+      // The WATCHDOG aborted (never the user's stop; that leaves timedOut() false or shows on the
+      // external signal). Translate to the retryable phrase the v2 loop matches for its one retry.
       recordProviderError(modelInfo.providerId);
       const code = streamTimeoutCode(watchdog, patience);
       const msg = `${streamTimeoutPhrase(watchdog, patience)}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)${declaredPatienceClause(watchdog, patience, finalInputEstimate)}`;
       logger.warn(`OpenAI call aborted by stream watchdog: ${msg}`, {
         model: modelInfo.apiModelId, providerId: modelInfo.providerId,
       }, agentId);
-      // T81a: a declared-patience exhaustion is NOT retryable — the phrase above already
-      // withholds the v2 loop's same-model retry; this says the same thing to anything that
-      // reads the flag structurally instead of matching the message.
+      // Declared-patience exhaustion is not retryable: the phrase withholds v2's retry, the flag says so.
       throw new AgentError(msg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
 
-    // F3/W3-1: best-effort utility calls (caller fully handles failure with a fallback) log at
-    // WARN; genuine agent-turn calls stay at ERROR; t220: a call the caller stopped is no failure.
+    // settleFailedCall: best-effort calls log WARN, genuine ones ERROR, a caller-stopped call is no failure.
     settleFailedCall('OpenAI call', message, { model: modelInfo.apiModelId, providerId: modelInfo.providerId, latencyMs },
       { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
 
-    // PHASE-4 T5 (provider-error.ts): the provider's STATUS, never this message's digits —
-    // `message.includes('503')` was true of "prompt is too long: 250316 tokens".
+    // Classify by the provider's STATUS, never by this message's digits.
     const facts = classifyProviderError(err);
-    // t151: out-of-credit (402, a quota 429) is NOT a rate limit — waiting never fixes it, and the silent
-    // retry below hid it from the owner for ever. It propagates as the `quota` it is (recovery's Tier D).
+    // Out-of-credit (402, quota 429) is not a rate limit: waiting won't fix it; propagate as `quota`.
     const isRateLimited = facts.class === 'rate_limit';
     const isOverloaded = facts.class === 'overloaded';
 
-    // FA-R2: record the rate limit in the proactive tracker regardless of routing
-    // mode, mirroring the Anthropic path (see callAnthropicSdkModel). This lets
-    // selectModel skip this model on the NEXT turn without hitting the 429 again.
-    // OpenAI-compatible providers (DeepSeek, OpenRouter, OpenAI) don't reliably
-    // surface usable rate-limit headers here, so synthesize remaining=0 and set
-    // the reset from retry-after when present (else a 60s default). Control flow
-    // is unchanged; the error still propagates below exactly as before.
+    // Record the rate limit whatever the routing mode; selectModel skips this model on its next pick.
+    // These providers surface no usable headers: synthesize remaining=0, take reset from retry-after.
     if (isRateLimited || isOverloaded) {
       try {
         const rlHeaders: Record<string, string> = { 'x-ratelimit-remaining': '0' };
@@ -2810,10 +1996,8 @@ async function callOpenAIModel(
       } catch { /* best effort */ }
     }
 
-    // Schedule background retry for rate limits, skip for auto-routed agents
-    // (the auto-router's fallback chain handles model switching)
+    // Schedule background retry on rate limit, skip auto-routed agents; their fallback chain owns switching.
     if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      // OpenAI and OpenRouter include retry-after headers
       let retryAfterSeconds: number | null = null;
       if (err instanceof OpenAI.APIError && err.headers) {
         const retryAfter = err.headers['retry-after'];
@@ -2870,10 +2054,8 @@ async function callAnthropicSdkModel(
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
 
-  // Dynamic import, gracefully fail if SDK not installed
   const { callAnthropicViaSdk, AgentSdkVisionUnsupportedError, AgentSdkPatienceExceededError } = await import('../providers/anthropic-sdk.js');
 
-  // Get tools for prompt-based formatting (two-phase loading)
   let toolDefs: ToolDefinition[] = [];
   if (tools) {
     const allPermitted = getFilteredTools(agentId);
@@ -2882,60 +2064,15 @@ async function callAnthropicSdkModel(
     toolDefs = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
   }
 
-  // T81d (NO-DOOMED-DIALS, census row 35) — THE THIRD TRANSPORT HAD NO CLOCK AT ALL.
-  // Census row 35: "No timeout/AbortSignal found in this codebase at all for this path" —
-  // whatever `@anthropic-ai/claude-agent-sdk`'s `query()` does internally was uncontrolled
-  // here. Bring it under the same `resolveStreamPatience` discipline the other two transports
-  // already have (T73b/T79e).
-  //
-  // t114 (census row 35) — AND THEN THE CLOCK IT WAS GIVEN WAS THE WRONG SHAPE.
-  //
-  // This comment used to read: "This transport has no per-chunk watchdog … that makes its shape
-  // match `callOllamaModel`'s raw-fetch transport (T79e) for the CLOCK itself: one flat derived
-  // ceiling, no first-chunk/idle split armed in real time." It cited as precedent the very fix
-  // the census's row 7 note records as INSUFFICIENT — "a derived flat ceiling is still a flat
-  // ceiling. Only the `makeStreamWatchdog` half is a fix" — and the premise was wrong besides:
-  // `query()`'s async generator yields a message per chunk, which is exactly the per-token hook
-  // the comment said did not exist. The transport now re-arms its timer on every message it
-  // receives, so both declared bounds are applied as the inter-read gaps
-  // `resolveTransportTimeouts` already defines them to be, and a healthily streaming call is no
-  // longer killed for the crime of taking a long time in total.
-  //
-  // The CODE the abort carries is unchanged in kind — see the catch block's
-  // `AgentSdkPatienceExceededError` branch below — except that it now reports the bound that
-  // actually expired, which only became a distinction worth drawing once the two bounds differ.
-  //
-  // t140 round 6 (final review I3, R-V333-15): A NULL ROW IS BOUNDED TOO. It used to keep "no bound
-  // at all", so a wedged call held whatever waited on it (a summary writer: the background slot and
-  // the agent's compaction lock) until a restart. A hung call is a safety case: when nothing is
-  // declared, or the declaration needs no lift above the standing transport default, the bounds are
-  // the provider's resolved patience itself — first token, then a gap — exactly as the other three
-  // transports arm `makeStreamWatchdog`. The transport now sees tokens, so a call that is streaming
-  // is never cut (`providers/anthropic-sdk.ts`).
+  // All transports obey `resolveStreamPatience`; a hung call must not hold the compaction lock.
+  // `query()` yields a message per chunk, so both bounds apply as inter-read gaps.
   const patience = resolveStreamPatience(modelInfo);
   const transportTimeouts = resolveTransportTimeouts(patience);
-  // t114 (census row 35): WAS a single `sdkTimeoutMs = bodyTimeoutMs`, armed once at dial as a
-  // TOTAL duration that no chunk ever bumped — row 7's exact defect on a different transport,
-  // and it only armed for rows that had DECLARED patience, so it punished the owner who tried
-  // to configure the problem away. The two bounds are now kept apart and applied as gaps.
+  // The two bounds are kept apart and applied as gaps, never merged into one flat total armed at dial.
   const sdkFirstChunkTimeoutMs = transportTimeouts?.headersTimeoutMs ?? patience.firstChunkMs;
   const sdkIdleTimeoutMs = transportTimeouts?.bodyTimeoutMs ?? patience.idleMs;
 
-  // T81d, closing the T81b review-round's parked minor finding: the pre-dial doomed-request
-  // gate (`refuseIfDoomed`) covered the OpenAI-compat and direct-Anthropic transports and left
-  // this one exempt only because nobody had computed an input estimate for it — not because the
-  // gate doesn't apply here. `systemPrompt` + `messages` + `toolDefs` are the exact three inputs
-  // this transport is about to send (`callAnthropicViaSdk` folds them into its own prompt/system
-  // string below), and estimating their size is the same cheap estimate call the other
-  // two transports already pay at their own estimate sites — not new work invented for this
-  // gate. (t113 D: that call is `estimateRequestTokens` at all four gates now.) Byte-preserving no-op when this provider has not declared a prefill throughput,
-  // identical to the other two call sites.
-  //
-  // t113 D (BACKLOG line 101): and through the SHARED estimator, the second of the two side
-  // doors. Same argument as the Ollama gate above — the system prompt and the messages are
-  // prose, `toolDefs` is dense JSON, the two populations carry different measured divisors, and
-  // an unmeasured provider gets today's number byte for byte because both of
-  // `estimateRequestTokens`'s bounds collapse to `/CHARS_PER_TOKEN` with no reading.
+  // All four transports pay the same `estimateRequestTokens` gate; an unmeasured provider is a no-op.
   const sdkDivisors = measuredDivisorsFor(modelInfo.providerId);
   const sdkInputEstimate = estimateRequestTokens(
     {
@@ -2960,20 +2097,10 @@ async function callAnthropicSdkModel(
         streamedChunks.push(chunk);
         onChunk?.(chunk);
       },
-      // t114 (census row 35): the two bounds are handed down SEPARATELY now, because the
-      // transport applies them as inter-read gaps rather than as one flat total. They are the
-      // same two numbers `resolveTransportTimeouts` has always produced and already defines as
-      // inter-read: `headersTimeoutMs` bounds "request written -> first response", and
-      // `bodyTimeoutMs` bounds "the gap between two bytes of the response body". A NULL row
-      // still sends `null` for both and still arms no timer at all.
+      // Both bounds travel separately, as gaps: send-to-first-byte, and between body bytes.
       timeoutMs: sdkFirstChunkTimeoutMs,
       idleTimeoutMs: sdkIdleTimeoutMs,
-      // T83 FIX ROUND (review CRITICAL A-1): the fourth transport joins the other three. Ollama
-      // folds this signal into its `fetch` (`:1133`), the OpenAI-compatible and Anthropic-direct
-      // paths fold it into their stream watchdogs (`:2085`, `:3213`) — this one passed nothing,
-      // so an `agent-sdk` dial ran to natural completion through a stop while `stopAgent` logged
-      // `callsAborted: 1` for it. `a-stop-stops-…test.ts` now censuses all four rather than
-      // asserting only that `model.ts` is among the registrars.
+      // Every transport folds the stop signal into its abort; none may run on past a stop.
       abortSignal: params.abortSignal,
     });
 
@@ -2991,16 +2118,13 @@ async function callAnthropicSdkModel(
         outputTokens: result.outputTokens,
         latencyMs,
         requestType: routerTier ?? purpose ?? 'completion',
-        // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
-        // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
-        // the fact that chain discards, recorded beside it rather than instead of it.
+        // The purpose on its OWN axis; `requestType` above, ?? chain included, is byte-unchanged.
         callPurpose: purpose,
         cacheReadTokens: result.cacheReadTokens,
         cacheCreationTokens: result.cacheCreationTokens,
       });
     } catch { /* cost tracking is best-effort */ }
 
-    // Map SDK tool calls to our format
     const toolCalls = result.toolCalls.map(tc => ({
       id: tc.id,
       name: tc.name,
@@ -3018,10 +2142,8 @@ async function callAnthropicSdkModel(
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
 
-    // A pre-flight vision refusal (FA-PC4) is NOT a provider fault: don't mark
-    // the provider unhealthy and don't log at error. Re-throw so the recovery
-    // cascade's vision_mismatch branch gives the agent a plain "this model can't
-    // see images" note. The message wording is what that classifier keys on.
+    // A pre-flight vision refusal is NOT a provider fault: don't mark the provider unhealthy
+    // and don't log at error. The recovery cascade's vision_mismatch branch keys on this wording.
     if (err instanceof AgentSdkVisionUnsupportedError) {
       logger.warn(`Agent SDK call refused an image: ${message}`, { model: modelInfo.apiModelId, agentId }, agentId);
       throw new AgentError(message, agentId, {
@@ -3031,29 +2153,11 @@ async function callAnthropicSdkModel(
       });
     }
 
-    // T81d FIX ROUND (CRITICAL, review round) — OUR OWN DECLARED-PATIENCE ABORT MUST CARRY THE
-    // SAME IDENTITY THE OTHER TWO TRANSPORTS BUILD FROM `streamWasCutByWatchdog`.
-    //
-    // Without this branch, the abort surfaced as a generic `MODEL_CALL_FAILED` at the bottom of
-    // this catch: `provider-error.ts` classified it 'unknown', `v2/recovery.ts`'s `recordInjury`
-    // never set `declaredPatienceHonestFailTurn` (it keys on the CODE, and the code never
-    // arrived), T81c's restart-decline never fired, and the Healer's 5s blind auto-wake
-    // cold-redialled the identical unfinishable prompt — reopening the exact GPU livelock this
-    // whole plan exists to close, through the one transport this task was scoped to protect.
-    //
-    // `AgentSdkPatienceExceededError` is thrown by `callAnthropicViaSdk` ONLY when THIS
-    // process's own timer (armed from `patience`/`sdkTimeoutMs` above) is what fired the abort.
-    // T83 gave that same `AbortController` a second aborter — the stop signal threaded in below
-    // — and the transport's `timedOutByPatience` flag is what keeps the two apart, so the TYPE
-    // is still the disambiguator `streamWasCutByWatchdog` gives the other two transports via a
-    // shared signal: a stop or a genuine SDK failure never reaches this branch, and keeps
-    // today's classification below unchanged.
-    //
-    // The synthetic `StreamWatchdog` stand-in is HONEST, not a hardcoded first-chunk claim:
-    // `firstChunkTimedOut` reads `!err.sawAnyContent`, so a trip that happened after the model
-    // had already started answering correctly falls through `streamTimeoutCode` to the ORDINARY
-    // retryable `STREAM_IDLE_TIMEOUT_CODE` — the same distinction the other two transports make,
-    // not a coarser one invented for this one.
+    // The type is the discriminator: thrown only when our own patience timer fired, never for a stop
+    // (the shared AbortController is told apart by `timedOutByPatience`) or an SDK failure.
+    // The abort carries the other transports' identity, or recovery's honest-fail flag never sets.
+    // The healer would otherwise cold-redial the same unfinishable prompt.
+    // It is honest: `firstChunkTimedOut` reads `!sawAnyContent`, so trips after start stay retryable.
     if (err instanceof AgentSdkPatienceExceededError) {
       const syntheticWatchdog: StreamWatchdog = {
         signal: new AbortController().signal,
@@ -3070,29 +2174,21 @@ async function callAnthropicSdkModel(
       logger.warn(`Agent SDK call aborted by declared patience: ${declaredMsg}`, {
         model: modelInfo.apiModelId, providerId: modelInfo.providerId, timeoutMs: err.timeoutMs,
       }, agentId);
-      // T81a: a declared-patience exhaustion is never retryable; a genuine mid-stream idle
-      // timeout (code falls to STREAM_IDLE_TIMEOUT_CODE) keeps its ordinary retry — the same
-      // rule the other two transports apply at their own watchdog-cut throw sites.
+      // Declared-patience exhaustion is never retryable; a plain idle timeout keeps its retry.
       throw new AgentError(declaredMsg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
 
     settleFailedCall('Agent SDK call', message, { model: modelInfo.apiModelId, providerId: modelInfo.providerId, latencyMs },
       { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
 
-    // Classify with the SHARED recovery classifier so the SDK path, the direct
-    // Anthropic path, and the FA-A1 step-0 passthrough all agree on what counts
-    // as a rate limit (recovery.ts classifyError, reused rather than a fourth
-    // hand-rolled substring set). classifyError also recognizes subscription
-    // "usage limit" wording. Known drift, still: the direct/OpenAI catches and
-    // rate-limit-retry.ts keep their own substring sets (FA-A1 3-classifier note).
+    // The shared recovery classifier decides rate limits for every path, 'usage limit' wording included.
+    // Known drift: the direct/OpenAI catches and rate-limit-retry.ts keep their own substring sets.
     const { classifyError } = await import('./v2/recovery.js');
     const kind = classifyError(err instanceof Error ? err : new Error(message)).kind;
     const isRateLimited = kind === 'rate_limit';
     const isOverloaded = kind === 'overloaded';
 
-    // Retry-after: the SDK usually throws generic errors with no headers, so
-    // this stays null and the reset falls back to 60s, mirroring the direct
-    // path's no-header branch. Kept for the rare Anthropic.APIError shape.
+    // The SDK usually throws headerless errors, so retry-after stays null and the reset falls back to 60s.
     let retryAfterSeconds: number | null = null;
     if (err instanceof Anthropic.APIError && err.headers) {
       const retryAfter = err.headers['retry-after'];
@@ -3102,9 +2198,7 @@ async function callAnthropicSdkModel(
       }
     }
 
-    // (a) Feed the proactive next-turn tracker exactly like the FA-R2 / direct
-    // sites: synthesize remaining=0 + a reset from retry-after (else 60s). Lets
-    // selectModel skip a rate-limited pinned model on the NEXT turn.
+    // Feed the next-turn tracker as at the other sites: remaining=0, reset from retry-after else 60s.
     if (isRateLimited || isOverloaded) {
       try {
         const rlHeaders: Record<string, string> = { 'x-ratelimit-remaining': '0' };
@@ -3115,10 +2209,7 @@ async function callAnthropicSdkModel(
       } catch { /* best effort */ }
     }
 
-    // (b) Pinned-model 429/overload -> arm the background decay retry, same as
-    // the direct path. NOT for auto-routed agents (routerTier set): the router's
-    // fallback chain owns those. Once armed, hasActiveRateLimitRetry is true, so
-    // the FA-A1 step-0 passthrough owns recovery and the agent is never injured.
+    // A pinned-model 429/overload arms the background retry; auto-routed agents are the router's business.
     if ((isRateLimited || isOverloaded) && !params.routerTier) {
       const lastMsg = (() => {
         try {
@@ -3142,40 +2233,16 @@ async function callAnthropicSdkModel(
   }
 }
 
-// FA-PC5 (D-I): provider types whose inference is genuinely free + local. They
-// are exempt from the daily paid-spend wall BY TYPE, not by where they sit in
-// the transport dispatch ladder, so a local model never trips a spend cap.
-// The set lives beside the doom guard that also reads it (`stream-patience.ts`); a future local type goes there.
+// Provider types whose inference is genuinely free + local: exempt from the daily paid-spend
+// wall BY TYPE, not by dispatch position. The set lives beside the doom guard that reads it.
 const FREE_LOCAL_PROVIDER_TYPES = LOCAL_PROVIDER_TYPES;
 
-// ════════════════════════════════════════
-// T83 — EVERY PROVIDER CALL AN AGENT MAKES IS ABORTABLE BY THAT AGENT'S STOP.
-//
-// Here and not in the turn loop, because this is the ONE place a provider call is dialled and
-// the turn loop is one of eighteen callers. The other seventeen — the forced compaction's
-// summariser, the continuity brief, the classifiers, ask-title, the vision-caption fallback,
-// the web-tool extractor, canvas, browser, voice, the router probe — dialled with no
-// controller anywhere and no signal at all, so `stopAgent` had nothing to reach them with.
-// MEASURED (dev log, a test agent `a504e5c9`, 2026-09-21): the call the 04:22:42 stop failed to
-// abort was `memory/summarize.ts`'s, dialled 04:22:25.273 by the turn-budget checkpoint and
-// completed 04:27:10.615 after 285,328 ms — not the turn's own call, which had finished at
-// 04:22:16.150 and correctly de-registered.
-//
-// Register through the stop-aware door, dial with that controller folded into whatever signal
-// the caller brought (`AbortSignal.any`, the combinator the transport timeout already uses one
-// layer down), release by identity on every exit path. A caller that brings its own controller
-// — the turn loop, for its `onChunk` suppression — keeps it and keeps its meaning; it simply
-// no longer has to be the thing the stop finds. The door REFUSES while a stop is live, so a
-// call racing the stop comes back already aborted and throws before a byte leaves the box.
-// ════════════════════════════════════════
+// EVERY PROVIDER CALL AN AGENT MAKES IS ABORTABLE BY THAT AGENT'S STOP. One place dials every
+// provider call, so the stop reaches all its callers: register at the stop-aware door, release by
+// identity on every exit; the door REFUSES while a stop is live.
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
   const stopCtl = new AbortController();
-  // T83 FIX ROUND (review CRITICAL A-1): the REFUSAL IS READ, not merely relied upon. The first
-  // cut discarded this boolean and trusted the pre-aborted signal to propagate — which is true
-  // of three transports and was false of the fourth, so a stop that landed a millisecond before
-  // an agent-sdk dial still dialled. Reading the answer makes "stop before register ⇒ no dial" a
-  // property of this function rather than of each transport's signal handling, and the SDK's own
-  // pre-aborted-signal check below is then belt-and-braces instead of the whole mechanism.
+  // The refusal is READ: pre-aborted signal doesn't stop all transports; stop early => no dial.
   if (!registerAbortable(params.agentId, stopCtl)) {
     throw new AgentError(
       'The user stopped this agent before this call could be dialled.',
@@ -3196,45 +2263,15 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
 
-  // ── Universal orphan tool_use/tool_result sanitization ──
-  // Runs BEFORE provider dispatch so ALL code paths (Anthropic, OpenAI, Ollama,
-  // Agent SDK) get clean messages. The assembler has its own sanitization, but
-  // provider-specific budget trimming and message transforms can create new
-  // orphans after that runs.
+  // Sanitize orphaned pairs before dispatch: provider-side trimming makes some the assembler missed.
   sanitizeOrphanToolBlocks(messages, agentId);
 
   const modelInfo = getModelInfo(modelId);
 
-  // ── EXIT VALIDATION (PHASE-3 T4 Step 2, requirements C9/C10/C11) ──
-  // ONE call, above every transport branch (ollama :2262, openai :2267, agent-sdk :2273,
-  // anthropic-direct falls through) and after every mutation the assembler and the loop
-  // make — including the tail-append and the orphan sanitize directly above. Research 06
-  // §3: there was no exit boundary at all, and the only size authority was the pair of
-  // oldest-first front-trimmers further down this file.
-  //
-  // DETECT-ONLY for a dated 7-calendar-day window — see the AS-BUILT note on PHASE-3 T4
-  // Step 2 for the literal start date and SHA. It logs divergence and returns the array
-  // UNCHANGED; the front-trimmers below are still the ceiling backstop and T4's sequencing
-  // rider forbids removing them while this only watches. Step 2b flips the mode constant in
-  // `memory/assembly-validation.ts` and deletes both trimmers in the same commit.
-  //
-  // AS-BUILT deviation, +2 lines from the planned insertion point: the plan pinned this
-  // immediately after `sanitizeOrphanToolBlocks`, ABOVE `getModelInfo`. It sits just below
-  // it instead, because the budget it validates against is a function of the model's window
-  // and output cap, both of which `getModelInfo` produces. Everything the pin was for is
-  // preserved: one insertion, all transports, after every mutation.
-  //
-  // The catch is for a defect in the INSTRUMENT — a measurement that throws must not break
-  // a turn it was only watching. `AssemblyValidationError` is re-thrown unconditionally:
-  // that is C11's loud failure, and a boundary that swallows it is warn-and-send with extra
-  // steps. It cannot fire before the Step-2b flip (detect mode never repairs and never
-  // throws), and it must not be neutered by that flip either.
-  //
-  // PHASE-3 T6: `laneIds` is now SUPPLIED. `repairAssembly`'s priority repair (C10) refuses
-  // without a lane map, so before T6 a Step-2b flip would have turned every size violation
-  // into a throw. The map is read off the messages themselves (`memory/message-lane-tag.ts`)
-  // rather than threaded through `ModelCallParams`, so it is aligned by construction and no
-  // caller can forget to pass it.
+  // Exit validation: ONE call above every transport branch, after every mutation.
+  // Repairs in priority order and throws when nothing droppable is left; no front trimmer remains below.
+  // `AssemblyValidationError` always re-throws; any other validator failure only warns and the call is sent.
+  // This only watches: must not break a live turn. `laneIds` is read off the messages and self-aligns.
   try {
     await validateAtProviderBoundary({
       agentId,
@@ -3243,7 +2280,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       systemPrompt,
       contextWindow: modelInfo.contextWindow,
       maxOutputTokens: modelInfo.maxOutputTokens,
-      // t140/t283: a dial is charged only what it SENDS: no tool payload when toolless, and its own output cap (64 for a title), not the everyday 4,096.
+      // A dial is charged only what it SENDS: no tool payload when toolless, and its own output
+      // cap (64 for a title), not the everyday 4,096.
       dialOutputTokens: utilityBoundaryOutputTokens(purpose, modelInfo.maxOutputTokens, params.utilityTargetTokens, params.outputRoomAsk),
       toolsSent: tools !== false,
       laneIds: collectMessageLaneIds(messages),
@@ -3255,11 +2293,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     }, agentId);
   }
 
-  // The 'auto' sentinel (provider '__system__') is a router pointer, not a
-  // callable model. On the normal path the router resolves it BEFORE callModel
-  // (v2/loop decideTier + selectModel), so a sentinel reaching here is always a
-  // caller bug. Fail fast with a named error instead of dying downstream with
-  // the opaque "No credential found for provider __system__".
+  // The 'auto' sentinel (provider '__system__') is a router pointer, not a callable model.
+  // The router resolves it before callModel, so reaching here is a caller bug: named error, not opaque one.
   if (modelInfo.providerId === '__system__') {
     throw new AgentError(
       `Model '${modelId}' is a router sentinel, not a callable model; resolve it through the router before callModel`,
@@ -3268,24 +2303,16 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     );
   }
 
-  // FA-PC5 (D-I): apply the daily cap to ALL paid transports. This wall runs
-  // ABOVE the transport dispatch so OpenAI / openai-compatible / Agent-SDK calls
-  // are guarded identically to Anthropic-direct (previously only the latter saw
-  // it, since the others early-return below before the old wall). Genuinely-free
-  // local providers are exempt BY PROVIDER TYPE, not by dispatch order. The
-  // budget_fallback recursion is also skipped: the outer call already made the
-  // budget decision and the redirect target is a $0 model, so re-running the
-  // wall here would loop (and would needlessly re-notify).
+  // The daily cap runs above the transport dispatch, so every paid transport is guarded identically.
+  // Free local providers are exempt by type; budget_fallback recursion skips it, a re-run would loop.
   if (!FREE_LOCAL_PROVIDER_TYPES.has(modelInfo.providerType) && routerTier !== 'budget_fallback') {
     const budgetCheck = checkBudget(agentId, WALL_ESTIMATE_USD);
     if (!budgetCheck.allowed) {
       if (budgetCheck.freeModelFallback) {
-        // Budget exceeded but free models exist: the free models are tried until one answers; the
-        // redirect is announced once, after it has (t149 F6, agent/budget-redirect.ts).
+        // Free models are tried until one answers; the redirect is announced once, after it has.
         return redirectToAFreeModel(params, budgetCheck, callModel);
       }
 
-      // No free models, block the call with clear message
       const blockMsg = budgetCheck.reason ?? `Daily budget limit reached ($${budgetCheck.dailySpend?.toFixed(2)} spent of $${budgetCheck.dailyLimit?.toFixed(2)} limit). No free models available.`;
       throw new AgentError(blockMsg, agentId, {
         code: 'BUDGET_EXCEEDED',
@@ -3294,26 +2321,20 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     }
   }
 
-  // Ollama uses OpenAI-compatible API, not Anthropic SDK
   if (modelInfo.providerType === 'ollama') {
     return callOllamaModel(params, modelInfo);
   }
 
-  // OpenAI and OpenAI-compatible providers
   if (modelInfo.providerType === 'openai' || modelInfo.providerType === 'openai-compatible') {
     return callOpenAIModel(params, modelInfo);
   }
 
-  // Agent SDK transport, uses query() instead of the Anthropic Messages API
   const authType = getProviderAuthType(modelInfo.providerId);
   if (authType === 'agent-sdk') {
     return callAnthropicSdkModel(params, modelInfo);
   }
 
-  // T73b: the same argument T64b made for arming this path's watchdog from the provider row
-  // applies one layer down. A declaration this transport's socket could not honour would be
-  // the same form telling the same lie, one level quieter. `anthPatience` below reads the same
-  // resolver on the same `modelInfo`; this is the client built from it.
+  // The client is built from the resolved patience: a declaration this socket cannot honour is a lie.
   const anthPatience = resolveStreamPatience(modelInfo);
   const { client, isOAuth } = getClient(modelInfo.providerId, anthPatience);
 
@@ -3322,15 +2343,11 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     content: m.content,
   }));
 
-  // OAuth tokens require the system parameter as an array with a specific
-  // passphrase as the first block for Sonnet/Opus model access
+  // OAuth requires the system parameter as an array with this passphrase as its first block.
   const OAUTH_SYSTEM_PASSPHRASE = 'You are Claude Code, Anthropic\'s official CLI for Claude.';
-  // Prompt caching: the system prompt is a large, mostly-stable prefix. Marking
-  // its final block with cache_control lets Anthropic reuse the prefill across
-  // turns instead of re-processing it every call, a big TTFT + cost win for
-  // rapid back-and-forth (e.g. voice). The OAuth passphrase block stays unmarked;
-  // the breakpoint sits on the real prompt. Anthropic safely ignores the marker
-  // on sub-minimum blocks, so this never errors on a short prompt.
+  // Prompt caching: the system prompt is a large, mostly-stable prefix, so its final block carries
+  // cache_control and Anthropic reuses the prefill across turns; the OAuth passphrase block stays
+  // unmarked so the breakpoint sits on the real prompt. Sub-minimum blocks ignore the marker.
   const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
   const systemParam: Anthropic.TextBlockParam[] = isOAuth
     ? [
@@ -3338,22 +2355,16 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
         { type: 'text' as const, text: systemPrompt, cache_control: CACHE_EPHEMERAL },
       ]
     : [{ type: 'text' as const, text: systemPrompt, cache_control: CACHE_EPHEMERAL }];
-  // C28 P-2: the stable system block above carries the cache breakpoint; any
-  // system-side volatile content trails it UNCACHED so it can't invalidate the
-  // cached prefix. Empty after P-1, so this block is only added if ever populated.
+  // The stable system block above carries the breakpoint; system-side volatile content trails
+  // it UNCACHED so it cannot invalidate the cached prefix. Only added if ever populated.
   if (params.systemVolatile) {
     systemParam.push({ type: 'text' as const, text: params.systemVolatile });
   }
 
-  // Estimate input tokens and enforce hard cap.
-  // Use ~3.5 chars/token (conservative) to avoid underestimating.
-  // Two-phase tool loading: only send always-loaded + session-loaded tools.
+  // Two-phase tool loading: only always-loaded + session-loaded tools are sent.
   let filteredTools: ToolDefinition[] = [];
-  // S1 (PHASE-3 T3): where the cache breakpoint goes. The LAST ALWAYS-LOADED tool, so a
-  // mid-session `load_tool_docs` appends behind it and the ~24.7K-token cached prefix
-  // survives. `-1` = no always-loaded tool at all; the breakpoint then falls back to the end
-  // of the array, which is the pre-S1 behaviour and the only honest answer when there is no
-  // stable head to cache.
+  // Cache breakpoint: the LAST ALWAYS-LOADED tool, so a mid-session `load_tool_docs` appends
+  // behind it and the cached prefix survives; `-1` = none, so it falls back to the array end.
   let toolCacheBreakpoint = -1;
   if (tools) {
     const allPermitted = getFilteredTools(agentId);
@@ -3364,15 +2375,10 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     toolCacheBreakpoint = part.cacheBreakpointIndex;
   }
   const toolsJson = tools ? JSON.stringify(filteredTools) : '';
-  // PHASE-3 T2: the ONE estimator. Was /3.5 here and /3 on the OpenAI path — two answers to
-  // "what does this text cost" in one file.
-  //
-  // T108 (BACKLOG 56): characters are counted here and turned into tokens ONCE, below, by
-  // `estimateRequestTokens` — which spends this provider's two measured divisors on the two
-  // populations (prose for the system prompt and the messages, dense for the schema array) and
-  // is floored so the estimate can only grow relative to the asserted 4. The per-part token
-  // numbers are kept because the log lines and `resolveOutputBudget` name them, but they are now
-  // the measured-divisor answers rather than four separate `/4`s.
+  // One estimator: `estimateRequestTokens` turns characters into tokens ONCE, spending this
+  // provider's two measured divisors on the two populations (prose for system/messages, dense for
+  // schemas), floored so it can only grow against the asserted 4. Per-part numbers feed logs and
+  // `resolveOutputBudget`.
   const toolSchemaChars = toolsJson.length;
 
   const messageChars = (msgs: Anthropic.MessageParam[]) =>
@@ -3381,20 +2387,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       return sum + content.length;
     }, 0);
 
-  // ── THE ANTHROPIC FRONT-TRIMMER IS DELETED (PHASE-3 T4 Step 2b, 2026-08-01) ──
-  // STRIP. It was `model.ts:2244-2292` at `1d112ad`: `minOutputReserve = 4096`, a
-  // `hardInputLimit`, a `splice(0, 1)` loop deleting the OLDEST messages until the input
-  // fit, its own leading-`tool_result` repair, and — the part requirement C11 names by
-  // name — a final `logger.warn('Input still exceeds context window after trimming')`
-  // that then SENT ANYWAY.
-  // requirement preserved: NEVER EXCEED THE PROVIDER'S WINDOW, and never send an array that
-  // does. Both halves now live upstream and both are stronger: the allocator budgets against
-  // `contextWindowPolicy` (memory/budget.ts), and `validateAssembly`/`repairAssembly`
-  // (memory/assembly-validation.ts) run at THIS boundary in `'repair'` mode — repairing in
-  // PRIORITY order (lowest lane first, C10) and THROWING when nothing droppable is left
-  // (C11). Warn-and-send has no expression left in the tree.
-  // Measured before deleting: day-0 detect run 73 calls / **0 budget violations**; the driven
-  // pre-flip arm at `1d112ad` **checked=63 diverged=0**. On real traffic this loop never ran.
+  // No front-trimmer here: NEVER EXCEED THE PROVIDER'S WINDOW is enforced upstream, in priority
+  // order at the assembly boundary, throwing when nothing droppable is left.
   const anthropicEstimate = estimateRequestTokens(
     {
       proseChars: systemPrompt.length + messageChars(anthropicMessages),
@@ -3404,27 +2398,18 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   );
   const inputEstimate = anthropicEstimate.tokens;
 
-  // T81b: the pre-dial gate, on the second transport. `anthPatience` above is the same
-  // resolved bound `getClient` built its transport clock from — building that client is not a
-  // dial (`client.messages.stream`, well below, is), so this still runs strictly before
-  // anything reaches a socket. Byte-preserving no-op when this provider has not declared a
-  // prefill throughput.
+  // Pre-dial gate, second transport: building the client is not a dial, so this still runs
+  // strictly before anything reaches a socket; byte-preserving no-op without a declared prefill rate.
   refuseIfDoomed(agentId, inputEstimate, anthPatience, modelInfo);
 
-  // KEPT with the trimmer gone, deliberately (T4 Step 2b pinned it as a SEPARATE guard).
-  // Its old comment said "post-trim … in case budget trimming created new orphans", and that
-  // reason died with the loop above. What it is now is the last pairing check on the array
-  // this transport actually sends — `anthropicMessages` is a shallow re-map of `messages`,
-  // so the universal `sanitizeOrphanToolBlocks` at the boundary already covers it, and this
-  // is layered defense rather than a duplicate mechanism (Part I). Deleting a guard because
-  // its stated reason went away is exactly the inference roadmap #15 forbids.
+  // The last pairing check on the array this transport sends (a shallow re-map of `messages`):
+  // layered defense, not duplication; deleting a guard because its stated reason went away is
+  // exactly the forbidden inference.
   sanitizeOrphanToolBlocks(anthropicMessages as unknown as Array<{ role: string; content: unknown }>, agentId);
 
-  // T72b claim 1: the same thinking-aware floor as the OpenAI path. The two transports
-  // deliberately keep their different headroom reserves (500 here, 1000 there) and the 25%
-  // window rule stays OpenAI-side only — those differences predate this task and changing
-  // them is not this task's business. The floor is not a difference, it is a bug either
-  // transport can have: 1024 tokens is a guaranteed empty answer for a thinking model.
+  // Thinking-aware floor: 1024 tokens is a guaranteed empty answer for a thinking model. The two
+  // transports deliberately keep different reserves (500/1000 headroom, the 25% rule is
+  // OpenAI-side only); this floor is not such a difference.
   const anthropicFloor = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking')
     ? THINKING_OUTPUT_FLOOR_TOKENS
     : OUTPUT_FLOOR_TOKENS;
@@ -3436,18 +2421,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     max_tokens: anthropicMaxTokens,
     system: systemParam,
     messages: anthropicMessages,
-    // Tools are a large block that never changes turn-to-turn, so caching them
-    // is a guaranteed win. Anthropic caches everything up to the breakpoint, and
-    // tools come before the system block in the request, so this marker caches
-    // the tools array up to the breakpoint (and the system block's marker extends it).
-    //
-    // S1 (PHASE-3 T3, §T0-E): the breakpoint used to sit on `arr.length - 1` — the LAST
-    // tool, whichever it happened to be. Membership grows mid-session (`load_tool_docs`),
-    // so "the last tool" moved, and every such load re-wrote the cached prefix: the next
-    // call re-billed ~24.7K tokens, about 13× the whole prefix growth the owner accepted.
-    // It now sits on the last ALWAYS-LOADED tool, which `partitionToolsForApiCall`
-    // guarantees is a stable, deterministically ordered head. Session extras append behind
-    // it and cost nothing but themselves.
+    // Tools never change turn-to-turn and come before the system block; this marker caches them up to
+    // the last ALWAYS-LOADED tool, so session extras append behind it and cost only themselves.
     ...(filteredTools.length > 0 ? { tools: filteredTools.map((t, i, arr) => ({
       name: t.name,
       description: t.description,
@@ -3458,12 +2433,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     })) } : {}),
   };
 
-  // FA-PC5: the budget wall (and free-model redirect) now runs above the
-  // transport dispatch at the top of callModel, covering every paid transport
-  // uniformly. The Anthropic-direct path is guarded there, so no separate wall
-  // is needed here.
-
-  // Log request details for debugging
+  // The budget wall's check sits at the top of callModel, above dispatch, for every paid transport.
   const msgPreview = anthropicMessages.map((m, i) => ({
     idx: i,
     role: m.role,
@@ -3482,30 +2452,18 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
 
   const startTime = Date.now();
 
-  // T64b: the same provider-declared bounds as the OpenAI path. The owner's incident is a
-  // local OpenAI-compatible box, but the declaration lives on the PROVIDER row, and a pair of
-  // columns that silently did nothing on one of the two transports that arm this watchdog
-  // would be a form that lies. NULL — every provider today — is the two standing constants,
-  // so this line's behaviour is unchanged for everything currently configured.
-  //
-  // T73b moved the resolution up to the client construction site; this arms from the same
-  // value rather than reading the row a second time.
+  // Provider-declared bounds from the PROVIDER row: a column that silently did nothing would be
+  // a form that lies; NULL (every provider today) = the two standing constants the client uses.
   const anthWatchdog = makeStreamWatchdog(params.abortSignal, anthPatience.firstChunkMs, anthPatience.idleMs);
   try {
     // Stream idle watchdog (see makeStreamWatchdog): bounds first-token and
     // inter-event gaps; the stop button rides the combined signal unchanged.
     const requestOptions = { signal: anthWatchdog.signal };
     const stream = client.messages.stream(requestParams, requestOptions);
-    // Bump on EVERY SSE event, not just text: an extended-thinking phase emits
-    // non-text events for long stretches, and those prove the connection is
-    // alive just as well as words do.
-    //
-    // T72b claim 2: a bump proves the connection is alive; it does not prove generation has
-    // BEGUN, and only the latter should end prompt-processing patience. A
-    // `content_block_delta` is the first event carrying generated output — text, thinking or
-    // tool-input JSON — so that is where the idle bound takes over. `message_start` and
-    // `content_block_start` are the Anthropic-side equivalents of the OpenAI ack frame and
-    // deliberately do not qualify.
+    // Bump on EVERY SSE event: extended thinking emits non-text events for long stretches, and
+    // they prove liveness without proving generation began. `content_block_delta` is the first
+    // event carrying output, so the idle bound takes over there; `message_start` and
+    // `content_block_start` are ack frames and do not qualify.
     stream.on('streamEvent', (event) => {
       anthWatchdog.bump();
       if (event.type === 'content_block_delta') anthWatchdog.contentStarted();
@@ -3538,15 +2496,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
 
     const finalMessage = await stream.finalMessage();
 
-    // T65b: the same truth check as the OpenAI seam, on the other transport that arms this
-    // watchdog. At `@anthropic-ai/sdk@0.110.0` it is unreachable, and that is worth saying
-    // exactly: `MessageStream._createMessage` re-checks its controller after its own
-    // `for await` and throws `APIUserAbortError`, so the abort arrives at the catch below on
-    // its own (probed against the real SDK and a real stalling server; T65b report). That is
-    // the DEPENDENCY's promise, not one anybody made to us, and a guarantee this engine only
-    // holds while a third party keeps a post-loop guard is not a guarantee. The two seams
-    // must also not come to disagree about whether a stalled stream is an answer, which is
-    // precisely the state T65b found them in.
+    // Same truth check as the OpenAI seam: the SDK's post-loop guard is a dependency's promise,
+    // not ours, and the two seams must never disagree on whether a stalled stream is an answer.
     if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
       throw new Error(`${streamTimeoutPhrase(anthWatchdog, anthPatience)}: the stream ended on the watchdog's abort, which the SDK did not raise`);
     }
@@ -3556,11 +2507,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     const inputTokens = finalMessage.usage.input_tokens;
     const outputTokens = finalMessage.usage.output_tokens;
 
-    // Prompt-cache visibility (Anthropic): cache_read = served from cache,
-    // cache_creation = written to cache this call. Confirms the cache_control
-    // markers are actually hitting. Anthropic reports input_tokens DISJOINT
-    // from these (it is already the uncached input), so they thread straight
-    // into recordCost without any normalization (C28 P-7).
+    // Cache visibility: cache_read = served from cache, cache_creation = written this call.
+    // Anthropic reports input_tokens DISJOINT from both, so they go to recordCost unnormalized.
     const anthropicUsage = finalMessage.usage as typeof finalMessage.usage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
     const cacheReadTokens = anthropicUsage.cache_read_input_tokens;
     const cacheCreationTokens = anthropicUsage.cache_creation_input_tokens;
@@ -3574,7 +2522,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       }, agentId);
     }
 
-    // Calculate cost
     const inputCost = modelInfo.apiModelId.includes('opus')
       ? (inputTokens / 1_000_000) * 15.0
       : modelInfo.apiModelId.includes('sonnet')
@@ -3589,7 +2536,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
 
     const totalCost = inputCost + outputCost;
 
-    // Audit log for model call
     const db = getDb();
     db.prepare(`
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, cost, created_at)
@@ -3602,7 +2548,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       totalCost,
     );
 
-    // Record cost in the Phase 4 cost_records table
     recordCost({
       agentId,
       modelId,
@@ -3611,26 +2556,17 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       outputTokens,
       latencyMs,
       requestType: routerTier ?? purpose ?? 'completion',
-      // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
-      // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
-      // the fact that chain discards, recorded beside it rather than instead of it.
+      // The purpose on its OWN axis; `requestType` above, ?? chain included, is byte-unchanged.
       callPurpose: purpose,
       cacheReadTokens,
       cacheCreationTokens,
-      // T2 Step 3 recorded this as "the same sum this transport's hard cap compares against
-      // `hardInputLimit`, so the recorded estimate is the one that decided whether history
-      // was trimmed". T4 Step 2b DELETED that hard cap, so the second half of that sentence
-      // no longer names anything. What survives is the first half and it is the reason to
-      // keep recording it: this is the sum the transport actually sends, beside what the
-      // provider charged, which is how the estimator's divisor stays checkable against
-      // reality (`memory/budget.ts`). Nothing here decides a trim any more — the allocator
-      // and `validateAssembly` do that upstream.
+      // The sum this transport actually sends, beside what the provider charged: this keeps the
+      // estimator's divisor checkable (`memory/budget.ts`); nothing here decides a trim.
       estimatedInputTokens: inputEstimate,
-      // T108: as on the OpenAI path — the divisor this estimate was really produced by.
+      // As on the OpenAI path: the divisor this estimate was really produced by.
       estimatorCharsPerToken: anthropicEstimate.effectiveCharsPerToken,
     });
 
-    // Update rate limits from response headers (if available from stream)
     try {
       const rawResponse = (stream as unknown as { response?: { headers?: Record<string, string> } }).response;
       if (rawResponse?.headers) {
@@ -3646,7 +2582,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       // Rate limit header extraction is best-effort
     }
 
-    // Track provider health
     recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     logger.info('Model call completed', {
@@ -3678,7 +2613,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
 
-    // Extract detailed error info from Anthropic SDK
     const errorDetail: Record<string, unknown> = {
       model: modelInfo.apiModelId,
       providerId: modelInfo.providerId,
@@ -3694,32 +2628,26 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       errorDetail.stack = err.stack?.split('\n').slice(0, 3).join(' | ');
     }
 
-    // Put the key info in the message itself so it's visible in the log viewer.
-    // F3/W3-1: best-effort utility calls log at WARN (caller fully handles the
-    // failure); genuine agent-turn calls stay at ERROR.
+    // Key info goes in the message itself so the log viewer shows it: best-effort utility calls
+    // log at WARN (the caller fully handles the failure); genuine agent-turn calls stay at ERROR.
     const statusStr = err instanceof Anthropic.APIError ? `[${err.status}] ` : '';
-    // Provider health is tracked in the same place (t220: not for a call the caller stopped).
+    // Provider health is tracked in the same place, and NOT for a call the caller stopped.
     settleFailedCall('Model call', `${statusStr}${message}`, errorDetail,
       { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
 
-    // Determine if retryable — PHASE-4 T5, from `err.status` (which the line above already
-    // read into errorDetail) and the structured body, never the message's digits.
+    // Determine if retryable: from `err.status` and the structured body, never the message's digits.
     const facts = classifyProviderError(err);
-    // t151: out-of-credit (402, a quota 429) is NOT a rate limit — waiting never fixes it, and the silent
-    // retry below hid it from the owner for ever. It propagates as the `quota` it is (recovery's Tier D).
+    // Out-of-credit (402, quota 429) is not a rate limit: waiting won't fix it; propagate as `quota`.
     const isRateLimited = facts.class === 'rate_limit';
     const isOverloaded = facts.class === 'overloaded';
 
-    // Record the rate limit in the proactive tracker regardless of routing mode.
-    // This lets selectModel skip the rate-limited model on the NEXT turn without
-    // having to hit the 429 again. Extract retry-after to set the cooldown.
+    // Recorded in the tracker regardless of routing mode, so the next turn skips the model without a 429.
     if (isRateLimited || isOverloaded) {
       try {
         if (err instanceof Anthropic.APIError && err.headers) {
           const rlHeaders: Record<string, string> = {};
           // Set remaining to 0 so isRateLimited() returns true
           rlHeaders['x-ratelimit-remaining'] = '0';
-          // Use retry-after to set the reset time
           const retryAfter = err.headers['retry-after'];
           if (retryAfter) {
             const secs = parseInt(retryAfter, 10);
@@ -3727,7 +2655,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
               rlHeaders['x-ratelimit-reset'] = new Date(Date.now() + secs * 1000).toISOString();
             }
           } else {
-            // Default: assume 60 seconds if no retry-after header
             rlHeaders['x-ratelimit-reset'] = new Date(Date.now() + 60000).toISOString();
           }
           updateRateLimits(modelId, rlHeaders);
@@ -3735,10 +2662,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       } catch { /* best effort */ }
     }
 
-    // Schedule background retry for rate limits, but NOT for auto-routed agents.
-    // Auto-routed agents handle rate limits via the fallback chain in the runtime.
+    // Background retry only for non-auto-routed agents: auto-routed ones use the runtime's fallback chain.
     if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      // Try to extract retry-after header (Anthropic API key responses include this)
       let retryAfterSeconds: number | null = null;
       if (err instanceof Anthropic.APIError && err.headers) {
         const retryAfter = err.headers['retry-after'];
@@ -3748,7 +2673,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
         }
       }
 
-      // Get the last user message to replay on retry
       const lastMsg = (() => {
         try {
           const db = getDb();
@@ -3773,14 +2697,11 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
 
 export function clearClientCache(providerId?: string): void {
   if (providerId) {
-    // T73b: both caches are keyed `providerId:...` now — the Anthropic one gained the
-    // transport clock, so a bare `delete(providerId)` would leave the edited provider being
-    // answered by a client wired to the patience it used to declare. Prefix deletion is the
-    // only spelling that survives another key fragment being added later.
+    // Both caches key on `providerId:...`; a bare `delete(providerId)` would leave an edited
+    // provider answered by a stale client. Prefix deletion survives any future key fragment.
     for (const key of clientCache.keys()) {
       if (key.startsWith(`${providerId}:`)) clientCache.delete(key);
     }
-    // Also clear OpenAI client cache entries for this provider
     for (const key of openaiClientCache.keys()) {
       if (key.startsWith(`${providerId}:`)) openaiClientCache.delete(key);
     }
@@ -3791,21 +2712,10 @@ export function clearClientCache(providerId?: string): void {
 }
 
 /**
- * THE WINDOW THE ENGINE BUDGETS AGAINST — advertised, capped by what this box can afford.
- *
- * The ONE door every prompt-size decision reads: `memory/assembler.ts`, `memory/budget.ts`'s
- * policy, the compaction trigger, `agent/v2/steps/call-llm/reassemble-for-fit.ts` and the
- * recovery compactor. t103 C makes the RAM recommendation bite HERE, and the placement is the
- * design rather than a convenience:
- *
- *   * this is the question the ruling is about — "how much prompt may I BUILD" — and capping it
- *     once reaches every builder without touching any of them;
- *   * `getModelInfo().contextWindow` stays the ADVERTISED number, so the utility dial keeps
- *     working. t88 widens `num_ctx` PER CALL for a dial whose input is large (a screenshot
- *     caption asks for more window than its one sentence would), and a cap applied inside
- *     `getModelInfo` would have told the provider boundary to refuse the very assembly the dial
- *     had just widened the window for. Decision #2's own wording — "stay advisory now the
- *     per-call window protects the box" — names that mechanism; this keeps it.
+ * THE WINDOW THE ENGINE BUDGETS AGAINST: the ONE door every prompt-size decision reads, so
+ * capping it once reaches every builder. `getModelInfo().contextWindow` stays the ADVERTISED
+ * number so the utility dial keeps working: a cap inside `getModelInfo` would make the
+ * provider boundary refuse assemblies the per-call `num_ctx` widening had just enlarged.
  */
 export function getContextWindow(modelId: string): number {
   if (isAutoRouteSentinel(modelId)) return routedOpeningWindow();
@@ -3817,16 +2727,10 @@ export function getContextWindow(modelId: string): number {
   }
 }
 
-// t140 (tracker #13) — NO 200K STAND-IN, AND NO WINDOW OF ZERO.
-//  * DEFAULT: one number for "this model declared no usable window" — a NULL, ZERO, negative or
-//    non-finite `context_window` (`?? 200000` replaced only NULL, so a stored 0 budgeted every
-//    dial on that row to "N tokens against 0"), and an id with no row at all.
-//  * THE AUTO-ROUTER: the `'__auto__'` sentinel (and `'auto'`, the seeded row agents point at)
-//    names no model. It fell into the catch above and was sized for 200K whatever the box routes
-//    to (#13's "45K family"); t140 round 5 made it the LARGEST opening pick's window. v3.5 N42 (the
-//    owner's design, GitHub #25): it is THE ROUTER WINDOW (`router/router-window.ts`), the one window
-//    every automatic pick runs at, so what the dashboard and the opening turn report is the window
-//    the agent actually runs at. The seeded `auto` row's own 200,000 is never read for budgeting.
+// No window of zero: DEFAULT_CONTEXT_WINDOW covers "declared no usable window": NULL, ZERO,
+// negative, non-finite, or an id with no row at all.
+// The `'__auto__'`/`'auto'` sentinel names no model: it reads THE ROUTER WINDOW (`router/
+// router-window.ts`), the one window every automatic pick runs at; the seeded 200,000 is never read.
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 function declaredContextWindow(stored: number | null | undefined): number {
@@ -3837,18 +2741,15 @@ function isAutoRouteSentinel(modelId: string): boolean {
   return modelId === '__auto__' || modelId === 'auto';
 }
 
-/** The router window (N42); the default when no model is on the light, standard or heavy tier. */
+/** The router window; the default when no model is on the light, standard or heavy tier. */
 function routedOpeningWindow(): number {
   return routerWindowTokens() ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 /**
- * The most output tokens this model can emit, for the budget's output reserve (PHASE-3 T4).
- * `getModelInfo` is private (it reads the provider row and normalises six fields); this is
- * the one field `memory/budget.ts` needs and the same one both transports cap `max_tokens`
- * against (`:1353`, `:2368`), so the reserve and the request agree by construction.
- * `undefined` on an unknown model means "no cap known" and the reserve uses its own floor
- * rather than inventing one.
+ * The most output tokens this model can emit. `getModelInfo` is private; this is the one field
+ * `memory/budget.ts` needs, the same one both transports cap `max_tokens` against, so reserve
+ * and request agree by construction. `undefined` = no cap known; the reserve uses its own floor.
  */
 export function getModelOutputCap(modelId: string): number | undefined {
   try {
@@ -3862,33 +2763,15 @@ export function getModelOutputCap(modelId: string): number | undefined {
 }
 
 /**
- * ════════════════════════════════════════════════════════════════════════════════════════
- * T82a (ANSWER-ANYWAY) — THE ADMISSION BUDGET AND THE COMPACTION TRIGGER LEARN THE BOX.
- * ════════════════════════════════════════════════════════════════════════════════════════
- *
- * `refuseIfDoomed` (T81b, above) already turns a declared patience and a declared prefill
- * throughput into `resolveDoomCeiling`'s ceiling, off exactly the `getModelInfo` join this
- * file performs for every other provider-declared fact. This is the same derivation, exposed
- * the way `getContextWindow` and `getModelOutputCap` expose their own single field off that
- * same row — one more accessor beside two that already exist, not a second join.
- *
- * `null` unless the provider's declaration is genuinely BOTH halves, not one:
- *   • `patience.firstChunkDeclared` false means `first_chunk_timeout_ms` is NULL — the
- *     resolved `firstChunkMs` is the STANDING 90s default, not anything this provider said,
- *     and planning an admission budget off a number nobody declared is not this task's job.
- *   • `resolveDoomCeiling` itself returns `null` when `prefillTokensPerSec` is undeclared or
- *     incoherent.
- * Either gap alone reproduces R6 exactly: `memory/budget.ts`'s admission budget and
- * `memory/compaction.ts`'s own trigger threshold both leave `providerCeilingTokens` as
- * `null`/omitted and every number they compute is untouched.
- *
- * Never throws, the same convention as its two siblings: a budget/compaction decision is not
- * the place to discover a missing table, a broken connection, or an unknown model.
+ * THE ADMISSION BUDGET AND THE COMPACTION TRIGGER LEARN THE BOX: the same patience-plus-prefill
+ * derivation `refuseIfDoomed` makes. `null` unless the provider declared BOTH halves (a standing
+ * default patience is not a declaration); either gap alone leaves every budget number untouched.
+ * Never throws, like its two siblings: a budget decision is not where to find a missing table.
  */
 export function getProviderCeilingTokens(modelId: string): number | null {
   try {
     const info = getModelInfo(modelId);
-    if (!doomGuardApplies(info)) return null;   // v3.5 field fix 3 (#11): a cloud model gets its full window
+    if (!doomGuardApplies(info)) return null;   // a cloud model gets its full window
     const patience = resolveStreamPatience(info);
     if (!patience.firstChunkDeclared) return null;
     return resolveDoomCeiling(patience.firstChunkMs, info.prefillTokensPerSec, info.measuredPrefillTokensPerSec);
