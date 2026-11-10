@@ -1,16 +1,5 @@
-// ════════════════════════════════════════
-// Watcher Cards: surfaces Gmail / Outlook / Teams watcher health.
-//
-// Pre-2026-04-30 there was no surface for these watchers. A stuck OAuth
-// token, a quietly-disabled service, or a silent poll failure left the
-// user staring at an inbox with new emails their agents weren't seeing.
-// This panel shows running/enabled/connected, last poll time/result,
-// last error, and recent notifications, refreshed every 30s.
-//
-// Rebuilt onto the dojo3 panel primitives (.group / .cards / .tile +
-// .tech__head + .rows). The status indicator maps onto a pill variant
-// (ok / down / draft) so the same health semantics carry through.
-// ════════════════════════════════════════
+// Watcher Cards: Gmail / Outlook / Teams watcher health, refreshed every 30s.
+// The status pill variants (ok / down / draft) carry the health semantics.
 
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api';
@@ -126,10 +115,8 @@ export const WatcherCards = () => {
     };
   }, []);
 
-  // Hide entirely if nothing is enabled (no Google or Microsoft).
-  // Pre-2026-04-30 the user couldn't see whether watchers were running;
-  // now showing this section only when at least one integration is in
-  // play keeps the Health page tidy for users who don't use email.
+  // Hide entirely if nothing is enabled: showing this section only when an
+  // integration is in play keeps the Health page tidy for other users.
   if (!data) {
     return error ? (
       <section className="group">
@@ -148,8 +135,8 @@ export const WatcherCards = () => {
       <div className="group__head">
         <div><div className="group__title">Email &amp; Teams Watchers</div></div>
       </div>
-      {/* Failed refresh: keep the cards, but say they are stale — silence
-          here read as "still Healthy" while the box was unreachable. */}
+      {/* Failed refresh: keep the cards, but label them stale; unlabeled
+          silence reads as "still Healthy" while the box is unreachable. */}
       {error && (
         <p className="stub__line" style={{ color: 'var(--dojo3-rust)', marginTop: 14, marginBottom: 0 }}>
           Could not refresh watcher status (showing the last answer from{' '}

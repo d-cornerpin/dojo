@@ -10,11 +10,8 @@ interface ToolCallCardProps {
   input: Record<string, unknown>;
 }
 
-// COSMETIC: specific per-tool glyphs for the tools worth a distinct icon. This
-// is intentionally NOT exhaustive, iconFor() below falls back to a bucket icon
-// derived from the canonical classifyTool class, so a brand-new tool always gets
-// a sensible glyph (effectful/retrieval/etc.) instead of a bare "T". Drift here
-// only dulls an icon; it can never make a tool render wrong.
+// Specific glyphs for the tools worth one; not exhaustive. iconFor() falls back
+// to a bucket icon from classifyTool, so drift here only dulls an icon.
 const toolIcons: Record<string, string> = {
   exec: '>_',
   file_read: 'R',
@@ -31,8 +28,7 @@ const toolIcons: Record<string, string> = {
   kill_agent: '\u{274C}',
   send_to_agent: '\u{1F4E8}',
   broadcast_to_group: '\u{1F4E2}',
-  // PHASE-2 T8V: three tracker names became one verb, so one clipboard entry
-  // covers every open/update/note/close.
+  // The work_* tools share one verb family, so one clipboard entry covers all.
   work_open: '\u{1F4CB}',
   work_update: '\u{1F4CB}',
   work_note: '\u{1F4CB}',
@@ -47,8 +43,8 @@ const CLASS_ICONS: Record<ReturnType<typeof classifyTool>, string> = {
   bookkeeping: '\u{2022}',        // dot: internal machinery
 };
 
-// UX-REPAIR T54(d): the bucket fallback reads the call's arguments, like every other
-// client site, so a reminder gets the effectful gear rather than the bookkeeping dot.
+// The bucket fallback reads the call's arguments, like every other client site,
+// so a reminder gets the effectful gear rather than the bookkeeping dot.
 function iconFor(name: string, input: Record<string, unknown>): string {
   return toolIcons[name] ?? CLASS_ICONS[classifyTool(name, input)];
 }
@@ -80,8 +76,7 @@ function toolSummary(name: string, input: Record<string, unknown>): string {
       return String(input.agent ?? input.agent_id ?? '').slice(0, 20);
     case 'broadcast_to_group':
       return `group: ${String(input.group_id ?? '').slice(0, 12)}`;
-    // PHASE-2 T8V: one verb, several operations, so the summary reads the
-    // discriminator instead of the name.
+    // One verb, several operations, so the summary reads the discriminator.
     case 'work_open':
       return String(input.title ?? input.what ?? input.description ?? '');
     case 'work_update':
@@ -99,9 +94,8 @@ export const ToolCallCard = ({ name, input }: ToolCallCardProps) => {
   const [showRaw, setShowRaw] = useState(false);
   const icon = iconFor(name, input);
   const summary = toolSummary(name, input);
-  // Same payload-derived headline the regular-mode pill chips use (exec -> the
-  // base command, applescript_run -> the app), so both display modes agree.
-  // The raw tool name stays one click away in the expanded JSON.
+  // Same payload-derived headline the pill chips use (exec -> the base
+  // command), so both display modes agree; the true name is one click away.
   const headline = deriveChipLabel(name, input);
 
   return (
@@ -140,7 +134,7 @@ const TRUNCATE_LENGTH = 600;
 
 export const ToolResultBlock = ({ content: raw, isError }: ToolResultBlockProps) => {
   const [expanded, setExpanded] = useState(false);
-  // v3.5 K33: the owner sees the tool's text as it arrived, without the agent's fence lines.
+  // The owner sees the tool's text as it arrived, without the agent's fence lines.
   const content = withoutFence(raw);
   const isTruncated = content.length > TRUNCATE_LENGTH && !expanded;
   const displayContent = isTruncated ? content.slice(0, TRUNCATE_LENGTH) : content;

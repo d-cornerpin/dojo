@@ -17,14 +17,11 @@ export interface ScheduleConfig {
   repeatUnit: string | null;
   repeatEndType: string;
   repeatEndValue: string | null;
-  /** v2.5.2 — CSV of day-of-week ints (0=Sun..6=Sat) for repeatUnit='specific_days'. */
+  /** CSV of day-of-week ints (0=Sun..6=Sat) for repeatUnit='specific_days'. */
   repeatDaysOfWeek: string | null;
   /**
-   * v2.5.45 — Full ISO timestamp that anchors every future run of a
-   * recurring task. Only the time-of-day matters for the drift fix.
-   * Auto-populated from scheduledStart when the user enables repeat;
-   * editable via the "Runs at" field to change WHEN a recurring task
-   * fires without recreating it. Null = falls back to scheduledStart.
+   * Full ISO timestamp anchoring every future run of a recurring task; only
+   * the time-of-day matters. Null = falls back to scheduledStart.
    */
   anchorTime: string | null;
 }
@@ -72,10 +69,8 @@ export function localDateDaysFromNow(days: number, now: Date = new Date()): stri
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-// Helpers for the "Runs at" time picker. The anchor is stored as a full
-// ISO timestamp (only the time-of-day is load-bearing) but the UI shows
-// just an HH:MM picker. On every edit we keep the anchor's date portion
-// stable and only mutate hours/minutes.
+// Helpers for the "Runs at" picker: the anchor is a full ISO timestamp but
+// the UI shows HH:MM, so edits keep the date portion and mutate only H:M.
 function anchorTimeOfDay(iso: string | null): string {
   if (!iso) return '';
   const d = parseUtc(iso);
@@ -95,9 +90,8 @@ function applyTimeOfDayToAnchor(currentAnchorIso: string | null, fallbackIso: st
 
 export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => {
   const [enabled, setEnabled] = useState(!!value.scheduledStart);
-  // v2.5.2 — a recurring schedule is identified by repeatUnit (the unit drives
-  // the engine; interval is ignored for specific_days). Keying off interval
-  // alone hid the picker for agent-created specific_days tasks.
+  // A recurring schedule is identified by repeatUnit: the unit drives the
+  // engine, and interval is ignored for specific_days.
   const [repeatEnabled, setRepeatEnabled] = useState(!!value.repeatUnit || !!value.repeatInterval);
 
   const update = (partial: Partial<ScheduleConfig>) => {
@@ -113,16 +107,14 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
       const future = new Date(Date.now() + 3600000);
       const localIso = toLocalIso(future);
       update({ scheduledStart: future.toISOString() });
-      // We store UTC but display local -- the dateTimeValue getter handles conversion
+      // We store UTC but display local; the dateTimeValue getter converts.
     }
   };
 
-  // Convert a UTC ISO string from the server to a local datetime-local value
-  // datetime-local inputs expect "YYYY-MM-DDTHH:MM" in LOCAL time
+  // Server UTC -> the local "YYYY-MM-DDTHH:MM" a datetime-local input wants.
   const dateTimeValue = (() => {
     if (!value.scheduledStart) return '';
-    // Parse as UTC. This used to hand-roll the append-Z rule; it now shares the one
-    // parser in lib/dates.ts (UX-REPAIR T9 — the duplicate is gone, not merely bypassed).
+    // parseUtc is the one parser handling both the Z and the Z-less ISO forms.
     const d = parseUtc(value.scheduledStart);
     if (!d || isNaN(d.getTime())) return '';
     return toLocalIso(d);
@@ -130,7 +122,6 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
   return (
     <div className="space-y-3">
-      {/* Toggle */}
       <div className="flex items-center justify-between">
         <span className="text-sm text-ui/70">Schedule this task</span>
         <button
@@ -143,7 +134,6 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
       {enabled && (
         <div className="space-y-3 pl-2 border-l-2 border-ui/[0.06]">
-          {/* Start date/time */}
           <div>
             <label className="text-xs text-ui/40 block mb-1">Start Date & Time</label>
             <input
@@ -154,7 +144,6 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
             />
           </div>
 
-          {/* Repeat toggle */}
           <div className="flex items-center justify-between">
             <span className="text-xs text-ui/55">Repeat</span>
             <button
@@ -163,9 +152,8 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                 if (repeatEnabled) {
                   update({ repeatInterval: null, repeatUnit: null, repeatEndType: 'never', repeatEndValue: null, anchorTime: null });
                 } else {
-                  // v2.5.45 — auto-populate anchorTime from scheduledStart so
-                  // the recurring schedule preserves the user's chosen
-                  // time-of-day on every future run (no completion-drift).
+                  // Seed the anchor from scheduledStart so every future run
+                  // keeps the chosen time-of-day (no completion-drift).
                   update({
                     repeatInterval: 1,
                     repeatUnit: 'days',
@@ -181,9 +169,8 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
           {repeatEnabled && (
             <div className="space-y-2">
-              {/* v2.5.45 — Runs at (anchor time of day). Auto-populates from
-                  start time. Edit it later to change WHEN the recurring task
-                  fires without recreating the task. */}
+              {/* Runs at: the anchor's time-of-day. Edit it to change WHEN the
+                  recurring task fires without recreating it. */}
               <div>
                 <label className="text-xs text-ui/40 block mb-1">
                   Runs at
@@ -269,7 +256,6 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                 </div>
               )}
 
-              {/* End condition */}
               <div>
                 <label className="text-xs text-ui/40 block mb-1">End</label>
                 <div className="space-y-1.5">

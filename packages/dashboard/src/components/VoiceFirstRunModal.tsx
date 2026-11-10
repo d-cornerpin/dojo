@@ -68,10 +68,8 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     return unsub;
   }, [ws]);
 
-  // FA-DB3: a failed download/install would otherwise leave the progress bar
-  // and "Downloading…" state stuck forever (the auto-close effect only fires on
-  // all-complete). Surface the error, stop the installing state, and drop that
-  // model's progress so the bar clears.
+  // Surface a failed download/install: otherwise the bar and "Downloading"
+  // state stay stuck (auto-close only fires on all-complete). Clear and report.
   useEffect(() => {
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
@@ -97,9 +95,7 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
         kind: 'kokoro',
         id: models.kokoro?.id ?? 'onnx-community/Kokoro-82M-v1.0-ONNX',
         label: 'Kokoro voice synthesis',
-        // Actual on-disk size for the q8 quantized model_quantized.onnx we use
-        // (≈96 MB). The Kokoro paper's "330 MB" number refers to the fp32
-        // variant which is much larger.
+        // q8 quantized onnx file on disk (≈96 MB), not the fp32 size.
         approxBytes: 96 * 1024 * 1024,
       });
     }
@@ -148,13 +144,8 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
       }
       return next;
     });
-    // Install Kokoro FIRST and serially. Running it in parallel with the
-    // whisper download (~570 MB raw stream) contends for fetch sockets in a
-    // way that crashes transformers.js's FS-cache layer with
-    // "Unable to get model file path or buffer." (2026-05-19 — reproduces
-    // every time in the dev server, never in a standalone process). Kokoro's
-    // multi-file fetch via @huggingface/transformers seems sensitive to the
-    // single-large-fetch saturation; serializing them dodges the issue.
+    // Kokoro FIRST and serially: in parallel with the whisper download it
+    // contends for fetch sockets and crashes the transformers.js FS cache.
     const kokoro = missing.find((m) => m.kind === 'kokoro');
     const whisper = missing.find((m) => m.kind === 'whisper');
     if (kokoro) {
@@ -167,20 +158,10 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     }
   };
 
-  // Anchored to the BOTTOM of the chat-input wrapper so the modal sits
-  // directly above the message box. Using fixed/viewport positioning was
-  // unreliable — the chat tree has CSS transforms upstream (sidebar transitions,
-  // glass blur layers) which contain `position: fixed`, so it ended up
-  // rendering offscreen below the input.
-  //
-  // Mobile layout:
-  //   - `inset-x-2 sm:inset-x-0` gives an 8px gutter on phones so the card
-  //     never touches the screen edges (the desktop layout has the chat input's
-  //     own padding handle this).
-  //   - The inner card uses `max-h-[calc(100dvh-7rem)] overflow-y-auto` so a
-  //     tall modal on a short viewport (phone with keyboard open, ~250px of
-  //     space) scrolls internally instead of pushing the top above the
-  //     viewport where the user can't see / scroll to it.
+  // Anchored to the bottom of the chat-input wrapper: upstream CSS transforms
+  // contain `position: fixed`, so viewport-fixed positioning renders offscreen.
+  // `inset-x-2` keeps a phone gutter; the card scrolls internally so a tall
+  // modal on a short viewport never pushes its top above the screen.
   const anchorClasses = 'absolute bottom-full inset-x-2 sm:inset-x-0 mb-3 z-30';
   const cardMaxH = 'max-h-[calc(100dvh-7rem)] overflow-y-auto overscroll-contain';
 
@@ -194,13 +175,13 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     );
   }
 
-  // Nothing to install — defer to caller (shouldn't normally render at all in this case).
+  // Nothing to install: defer to caller (shouldn't normally render at all).
   if (missing.length === 0) {
     setTimeout(onComplete, 0);
     return null;
   }
 
-  // Minimized pill — stays anchored above the chat input too, just compact.
+  // Minimized pill: still anchored above the chat input, just compact.
   if (minimized) {
     const totalDone = missing.reduce((s, m) => {
       const dl = downloads[`${m.kind}/${m.id}`];

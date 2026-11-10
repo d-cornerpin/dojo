@@ -67,9 +67,8 @@ export const VoiceSetupStep = () => {
     return unsub;
   }, [ws]);
 
-  // FA-DB3: surface a failed download/install. Without this the progress bar
-  // sits at whatever fraction it stalled on forever. Clear that model's
-  // progress and show the error so the user can retry.
+  // Surface a failed download/install: without this the bar stays stuck at
+  // whatever fraction it stalled on. Clear that model's progress, show the error.
   useEffect(() => {
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;

@@ -9,21 +9,13 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useRequestGuard } from '../lib/load-guard';
 
 /*
- * Technique-session fusion.
- *
- * The owner's vision: building or editing a technique should NOT bounce the user to
- * a separate dark page. Instead the persistent dojo3 chat BECOMES the trainer
- * (a sub-agent / the Trainer) conversation — it slides left — and the Technique Mat (the
- * form) docks on the right. This provider owns everything trainer-specific so
- * the persistent <Chat> only has to (a) target the trainer agent while a
- * session is active, (b) prepend build/edit context to the first outgoing
- * message, and (c) strip that context from the user's bubble. Default state is
- * inactive, so with no session the chat behaves exactly as before.
- *
- * What lived in the old TechniqueBuilder.tsx and now lives here: the Mat
- * (CanvasState), the build/edit/setup/refresh context injection, the
- * resume-vs-clear decision on entry, the canvas<->disk sync (save_technique /
- * update_technique tool calls + technique:updated), and Save Draft / Publish.
+ * Technique-session fusion: building or editing a technique happens in the
+ * persistent dojo3 chat, not a separate page. The chat BECOMES the trainer
+ * conversation (slides left) and the Technique Mat docks on the right. This
+ * provider owns everything trainer-specific so <Chat> only has to (a) target
+ * the trainer while a session is active, (b) prepend build/edit context to
+ * the first outgoing message, and (c) strip that context from the user bubble.
+ * Default state is inactive: with no session, the chat behaves normally.
  */
 
 export interface CanvasState {
@@ -35,8 +27,7 @@ export interface CanvasState {
   files: Array<{ path: string; content?: string }>;
 }
 
-// ── Context injected as the first user message (kept verbatim from the old
-//    TechniqueBuilder so trainer behavior is unchanged) ──
+// ── Context injected as the first user message ──
 
 const BUILDER_CONTEXT = `I want to build a new technique for the dojo. Help me create it step by step.
 
@@ -87,8 +78,8 @@ Ready when you are, start by reading the manifest and the README.`;
 export const USER_PROMPT_MARKER_OPEN = '\n\n════════════════════════════════════════\nUSER MESSAGE BELOW (the rest above is build/edit context for you):\n════════════════════════════════════════\n\n';
 
 /** Remove injected build/edit/setup/refresh context so the user bubble only
- *  shows what they typed. Safe to call on any message: returns content
- *  unchanged unless it carries the sentinel (or a legacy v2.5.17 header). */
+ *  shows what they typed. Safe on any message: returns it unchanged unless it
+ *  carries the sentinel or one of the older fixed headers it also recognizes. */
 export function stripBuilderContext(content: string): string {
   const markerIdx = content.indexOf(USER_PROMPT_MARKER_OPEN);
   if (markerIdx >= 0) {
@@ -157,7 +148,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
   const [error, setError] = useState<string | null>(null);
   const [createdTechniqueId, setCreatedTechniqueId] = useState<string | null>(null);
 
-  // Context-injection gate + stale-state tracking (mirrors the old builder).
+  // Context-injection gate + stale-state tracking.
   const contextSentRef = useRef(false);
   const techniqueStateRef = useRef<string | null>(null);
   const techniqueUpdatedAtRef = useRef<string | null>(null);
@@ -188,15 +179,11 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
   }, []);
 
   const loadTechniqueFromDisk = useCallback(async (id: string, token: number) => {
-    // Through `lib/api`'s one door (BACKLOG line 31); the token read and csrf
-    // scrape this file used to repeat four times over live there now.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data = await api.request<any>(`/techniques/${id}`);
     if (data.ok) {
-      // Load each file's BODY (not just its path) so the file is editable on the
-      // canvas and edits round-trip on save (saveTechnique only uploads files
-      // that carry `content`). Path segments are URL-encoded so spaces / # / ?
-      // in a filename don't break the request.
+      // Load each file's BODY so it is editable on the canvas and round-trips
+      // on save (only files carrying `content` upload); segments URL-encoded.
       const filePaths: string[] = (data.data.files ?? [])
         .filter((f: { isDirectory: boolean }) => !f.isDirectory)
         .map((f: { path: string }) => f.path);
@@ -235,11 +222,9 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       const firstUserMsg = result.data.find((m: Message) => m.role === 'user');
       if (firstUserMsg) {
         if (mode === 'edit') {
-          // Edit sessions always start a fresh thread. Resuming by fuzzy
-          // name-match grabbed the wrong prior conversation for short/common
-          // technique names. The technique's current state is loaded into the
-          // canvas from disk and re-sent to the trainer via the edit-context
-          // header on the first message, so a fresh thread loses nothing.
+          // Edit sessions always start a fresh thread: the technique's current
+          // state is loaded from disk and re-sent via the edit-context header
+          // on the first message, so a fresh thread loses nothing.
           conversationMatches = false;
         } else {
           conversationMatches = firstUserMsg.content.includes('build a new technique');
@@ -304,8 +289,8 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     setCanvas((prev) => ({ ...prev, ...updates }));
   }, []);
 
-  // Canvas <- trainer tool calls. Mirrors the old builder so the Mat reflects
-  // what the trainer just wrote and a later Save doesn't clobber it.
+  // Canvas <- trainer tool calls: the Mat reflects what the trainer just
+  // wrote, so a later Save doesn't clobber it.
   const handleToolCallForCanvas = useCallback((toolName: string, args: Record<string, unknown>) => {
     if (toolName === 'save_technique') {
       const techName = (args.name as string) || '';
@@ -371,8 +356,8 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     return () => { unsubToolCall(); unsubTechUpdated(); };
   }, [session, subscribe, handleToolCallForCanvas, loadTechniqueFromDisk, startGuard]);
 
-  // Build the outgoing message, injecting build/edit/setup/refresh context on
-  // the first (or post-edit) turn. Mirrors the old builder's handleSend.
+  // Build the outgoing message, injecting build/edit/setup/refresh context
+  // on the first (or post-edit) turn.
   const prepareOutgoing = useCallback((typed: string): OutgoingPlan => {
     const sess = sessionRef.current;
     if (!sess) return { outgoing: typed, commit: () => {}, rollback: () => {} };

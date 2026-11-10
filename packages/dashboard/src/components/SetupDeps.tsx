@@ -4,18 +4,13 @@ import { request } from '../lib/api';
 import { automationInstructions, AUTOMATION_VERIFY } from '../lib/automation-permission';
 import { StandardModels } from './settings/StandardModels';
 
-// ════════════════════════════════════════
-// Dependencies & Local Models — OOBE Step
-// ════════════════════════════════════════
-//
-// FENG-SHUI EXEMPTION: this component intentionally uses standard Tailwind
-// status colors (text-green-700, text-yellow-400) for installed/installing
-// status. Setup wizard is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
+// Dependencies & Local Models: OOBE step.
+// Theme exemption: standard Tailwind status colors (text-green-700,
+// text-yellow-400) are intentional here, per FENG-SHUI-THEME-SPEC.md.
 
 // Paths are relative to the shared api client's /api base. Setup routes are
-// reachable without a token only during a genuine first run (PHASE-0 T9), so
-// these calls go through `request`, which carries the token and the CSRF header
-// once the box has one — and they keep working if the server restarts mid-setup.
+// tokenless only during a genuine first run, so calls go through `request`,
+// which carries token and CSRF once present and survives a mid-setup restart.
 const API = '/setup';
 
 type DepStatus = 'checking' | 'installed' | 'installing' | 'failed' | 'not-installed';
@@ -86,9 +81,7 @@ const DepItem = ({ label, status, detail, error, onRetry }: {
   );
 };
 
-// ════════════════════════════════════════
-// Main Component
-// ════════════════════════════════════════
+// ── Main component ──
 
 export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [deps, setDeps] = useState<DepState>({
@@ -105,9 +98,9 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const [configured, setConfigured] = useState(false);
 
   const [pullElapsed, setPullElapsed] = useState(0);
-  // Required deps: all must be installed before proceeding
-  // Also block Next while a model is downloading. (v3.5: the Dojo's own two models are NOT waited on —
-  // they download in the background and the Ollama tile shows their progress.)
+  // Next waits for every required dep and stays blocked while a model pulls.
+  // The Dojo's own two models are not waited on: they download in the
+  // background and their tile shows their progress.
   const requiredReady =
     !pulling &&
     deps.node === 'installed' &&
@@ -162,7 +155,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     if (d.ollama.installed && d.nomic.installed) {
       setPhase('models');
       loadInstalledModels();
-      // Auto-configure Ollama provider
       await request(`${API}/ollama/auto-configure`, { method: 'POST' });
       setConfigured(true);
     }
@@ -180,7 +172,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       const r = await request(`${API}/deps/install/ollama`, { method: 'POST' });
       if (r.ok) {
         setDeps(d => ({ ...d, ollama: 'installed' }));
-        // Also start Ollama
         await request(`${API}/deps/install/ollama-start`, { method: 'POST' });
         // Re-check to get running state
         const check = await request<{ ollama: { running: boolean } }>(`${API}/deps/check`);
@@ -228,11 +219,9 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     const d = await checkDeps();
     if (!d) return;
 
-    // Install missing deps sequentially
     if (!d.ollama.installed) {
       await installDep('ollama');
     } else if (d.ollama.installed && !d.ollama.running) {
-      // Start Ollama if installed but not running
       setDeps(dd => ({ ...dd, ollama: 'installing' }));
       await request(`${API}/deps/install/ollama-start`, { method: 'POST' });
       await new Promise(r => setTimeout(r, 3000));
@@ -256,7 +245,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       }
     }
 
-    // Final check
     await checkDeps();
     setPhase('models');
     loadInstalledModels();
@@ -276,10 +264,8 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   useEffect(() => {
     if (!pulling) { setPullElapsed(0); setPullProgress(null); return; }
 
-    // Elapsed timer
     const timerInterval = setInterval(() => setPullElapsed(e => e + 1), 1000);
 
-    // Poll progress every second
     const pollInterval = setInterval(async () => {
       try {
         const r = await request<{
@@ -337,7 +323,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
   return (
     <div className="space-y-6">
-      {/* Section 1: Dependencies */}
       <div>
         <h3 className="card-header mb-3">System Dependencies</h3>
         <div className="glass-nested rounded-xl p-4 divide-y divide-gray-700">
@@ -387,7 +372,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           />
         </div>
 
-        {/* Retry all / status bar */}
         {hasFailed && (
           <div className="mt-3 flex items-center justify-between px-1">
             <span className="text-xs text-red-400">Some dependencies failed to install</span>
@@ -414,7 +398,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
         )}
       </div>
 
-      {/* Section 2: Local Models (once Ollama is ready) */}
       {phase === 'models' && deps.ollamaRunning && deps.nomic === 'installed' && (
         <div>
           <h3 className="card-header mb-1">Dojo's two models</h3>
@@ -432,7 +415,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             Optional. Pull a local model for your agents to use, or skip this if your agents will use cloud models.
           </p>
 
-          {/* Manual pull */}
           <div className="flex gap-2 mb-4">
             <input
               value={manualModel}
@@ -473,7 +455,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                   </span>
                 </div>
 
-                {/* Progress bar */}
                 <div className="w-full h-2 rounded-full bg-ui/[0.08] overflow-hidden mb-1.5">
                   <div
                     className="h-full rounded-full bg-yellow-500/60 transition-all duration-300"
@@ -502,7 +483,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             <div className="alert-banner alert-error mb-3">{pullError}</div>
           )}
 
-          {/* Installed models */}
           {installedModels.length > 0 && (
             <div>
               <h4 className="text-xs font-medium text-ui/55 mb-2">Installed Models</h4>
@@ -533,9 +513,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   );
 };
 
-// ════════════════════════════════════════
-// Permissions Check — separate OOBE step
-// ════════════════════════════════════════
+// ── Permissions Check: separate OOBE step ──
 
 export const SetupPermissions = () => {
   const [permissions, setPermissions] = useState<Record<string, string>>({});
@@ -588,12 +566,8 @@ export const SetupPermissions = () => {
     },
   ];
 
-  // THREE STATES, BECAUSE THE SERVER HAS THREE ANSWERS (t113, re-argued t115). t113 added the
-  // third because the Automation probe had stopped claiming `granted`, making `allGranted`
-  // unreachable. t115's ruling gave Automation a REAL probe, so that row reaches `granted`
-  // again — but the third state is not scaffolding to remove: Accessibility still answers
-  // `unknown` without cliclick, and Automation still does when Messages cannot be reached or a
-  // consent dialog waits on the owner. Folding that into failure would accuse them of denying.
+  // Three states because `unknown` is a real server answer (e.g. Accessibility without
+  // cliclick); folding it into denied would accuse an owner of denying what they never denied.
   const statusOf = (key: string): string => permissions[key] ?? 'unknown';
   const allGranted = permItems.every(item => statusOf(item.key) === 'granted');
   const anyDenied = permItems.some(item => statusOf(item.key) === 'denied');
@@ -647,7 +621,6 @@ export const SetupPermissions = () => {
                 </div>
               </div>
 
-              {/* Expanded hint */}
               {isExpanded && status !== 'granted' && (
                 <div className="mt-2 ml-9 px-3 py-2 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed">
                   {item.hint}

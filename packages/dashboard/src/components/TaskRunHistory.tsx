@@ -19,19 +19,17 @@ const statusColors: Record<string, string> = {
 
 export const formatDuration = (start: string | null, end: string | null): string => {
   if (!start || !end) return '--';
-  // `startedAt`/`completedAt` are ISO-with-Z (`work/occurrence-runs.ts:53`) while the sibling
-  // `scheduledFor` is Z-less second-resolution text (`:58`) — one row, two shapes, documented at
-  // `occurrence-runs.ts:39-44`. `parseUtc` is right for both, so neither can drift (UX-REPAIR T9).
+  // `startedAt`/`completedAt` are ISO-with-Z while `scheduledFor` is Z-less
+  // second-resolution text; `parseUtc` is right for both, so neither can drift.
   const s = parseUtc(start);
   const e = parseUtc(end);
   if (!s || !e) return '--';
   const ms = e.getTime() - s.getTime();
-  // A run that ends before it starts (a clock step) has no duration to report; the honest
-  // answer is the same `--` a missing timestamp gets, not a sub-second one. (Fresh-eyes 10.)
+  // A run that ends before it starts (a clock step) has no duration to report;
+  // the honest answer is the same `--` a missing timestamp gets, not a sub-second one.
   if (ms < 0) return '--';
-  // `floor`, never `round`: rounding let a 59.6 s run print "60s" and a 59.7-minute one "60m"
-  // — a number that belongs to the next unit. Past an hour the minutes are named too, so the
-  // hour figure stops hiding them (90 min read "2h" when `round` took the half up).
+  // `floor`, never `round`: rounding prints a number that belongs to the next
+  // unit (59.6 s as "60s"). Past an hour the minutes are named, not hidden.
   if (ms < 1000) return '<1s';
   if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
   if (ms < 3600000) return `${Math.floor(ms / 60000)}m`;
@@ -63,10 +61,8 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Live-update when THIS task starts or finishes a scheduled run. Previously
-  // task:run_started/run_complete were emitted but consumed nowhere, so the
-  // history froze at page-open until a manual refresh (FA-DB7). Filter to the
-  // viewed task so an unrelated task's run doesn't refetch this one.
+  // Live-update when THIS task starts or finishes a scheduled run. Filter to
+  // the viewed task so an unrelated task's run doesn't refetch this one.
   useEffect(() => {
     const onRun = (event: WsEvent) => {
       if (event.type !== 'task:run_started' && event.type !== 'task:run_complete') return;
@@ -82,7 +78,6 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
 
   return (
     <div className="space-y-1">
-      {/* Header */}
       <div className="flex items-center gap-3 px-3 py-2 text-[10px] text-ui/25 uppercase tracking-wide">
         <span className="w-8">#</span>
         <span className="w-28">Scheduled</span>
@@ -110,7 +105,6 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
             <span className="flex-1 text-xs text-ui/55 truncate">{run.agentName ?? run.assignedTo ?? '--'}</span>
           </div>
 
-          {/* Expanded detail */}
           {expandedRun === run.id && (run.resultSummary || run.error) && (
             <div className="ml-8 mr-3 mb-1 px-3 py-2 glass-nested rounded-lg text-xs">
               {run.resultSummary && (
