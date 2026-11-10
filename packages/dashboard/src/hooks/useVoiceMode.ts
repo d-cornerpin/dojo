@@ -20,12 +20,8 @@ export interface UseVoiceModeResult {
   enabled: boolean;
   state: VoiceState;
   error: string | null;
-  /**
-   * Transient, non-fatal server notice (e.g. the cloud voice fell back to the
-   * local voice for a reply). Distinct from `error`: the session stays live.
-   * Set when the server sends one, cleared when the session ends. The consumer
-   * renders it as an info toast.
-   */
+  /** Transient non-fatal server notice (e.g. cloud voice fell back to local for a reply). Unlike
+   *  `error` the session stays live: set by the server, cleared when the session ends. */
   notice: string | null;
   /** Most recently FINALIZED transcript (after speech-end). */
   lastTranscript: string | null;
@@ -49,13 +45,10 @@ export interface UseVoiceModeResult {
   toggleMute: () => Promise<void>;
   toggle: () => Promise<void>;
   stop: () => Promise<void>;
-  /**
-   * When non-null, the toggle was clicked but the required STT/TTS models
-   * aren't installed yet. The hook returns immediately and the consumer
-   * should render <VoiceFirstRunModal /> with these props.
-   */
+  /** When non-null, the toggle was clicked but the required STT/TTS models aren't installed yet:
+   *  return immediately and render <VoiceFirstRunModal /> with these props. */
   setupNeeded: { whisperModelId: string } | null;
-  /** Called by the modal once required models are installed — starts voice. */
+  /** Called by the modal once required models are installed: start voice. */
   completeSetup: () => Promise<void>;
   /** Called by the modal if the user cancels setup. */
   cancelSetup: () => void;
@@ -101,22 +94,18 @@ export async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
     return {
       voice: (v.ok && v.data.value) || 'am_michael',
       speed: Number.isFinite(speedNum) && speedNum >= 0.5 && speedNum <= 2 ? speedNum : 1.0,
-      // Default is 'moonshine-base' (Moonshine v2 base, no native deps).
-      // Existing users with 'large-v3-turbo' or any other WhisperSize keep
-      // their preference; the server's parseSttModelKey normalises it.
+      // Default 'moonshine-base' (no native deps). Any other saved model keeps working:
+      // the server's parseSttModelKey normalises it.
       sttModel: (stt.ok && stt.data.value) || 'moonshine-base',
-      // Default VAD redemption is 'quick' (200 ms). Lower latency at the
-      // cost of occasional early cutoffs vs the prior 'normal' default.
+      // Default 'quick' (200 ms): lower latency, at the cost of occasional early cutoffs.
       vadSensitivity: vadVal === 'normal' ? 'normal' : vadVal === 'patient' ? 'patient' : 'quick',
       wakeWordEnabled: wake.ok && wake.data.value === 'true',
       wakePhrase: (wp.ok && wp.data.value && wp.data.value.trim()) || defaultWakePhrase,
       sleepPhrase: (sp.ok && sp.data.value && sp.data.value.trim()) || 'stop listening',
-      // Off by default — phone speakers echo the primary agent's TTS into the mic and
-      // make voice-based barge-in unreliable. Users on headphones (or
-      // desktop with good speaker separation) can enable it in Settings.
+      // Off by default: phone speakers echo the agent's TTS into the mic, so voice
+      // barge-in is unreliable. Headphone users can enable it in Settings.
       bargeInEnabled: bargeIn.ok && bargeIn.data.value === 'true',
-      // On by default — chimes confirm wake / sleep / prompt-sent so the
-      // user has audible feedback that the system heard them.
+      // On by default: chimes are the user's audible proof the system heard them.
       soundEffectsEnabled: !(sfx.ok && sfx.data.value === 'false'),
     };
   })();
@@ -168,9 +157,8 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       clientRef.current = null;
     }
     if (!clientRef.current) {
-      // Merge explicit overrides with the saved Settings → Voice config so
-      // the user's picker selections (voice, speed, STT model, VAD sensitivity,
-      // wake-word setup) actually take effect when they toggle voice mode on.
+      // Merge explicit overrides with the saved Settings → Voice config so the user's
+      // picker selections take effect when they toggle voice mode on.
       const saved = await loadSavedVoiceSettings();
       if (!mountedRef.current) return null;   // left the page while settings loaded: build nothing
       const effectiveWakeWordEnabled = wakeWordEnabled ?? saved.wakeWordEnabled;
@@ -195,20 +183,17 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       });
       client.on('state-change', (s) => {
         setState(s);
-        // Drop the meter when we're no longer capturing — keeps the banner clean.
+        // Drop the meter when we're no longer capturing; keeps the banner clean.
         if (s !== 'capturing' && s !== 'listening') setAudioLevel(0);
-        // Clear partial when speech ends — final-transcript handler takes over.
+        // Clear partial when speech ends; the final-transcript handler takes over.
         if (s === 'transcribing' || s === 'waiting' || s === 'speaking') setPartialTranscript(null);
-        // Voice mode turned off (or errored): return the composer mic to its
-        // default unmuted state. The mute icon should only ever show while
-        // voice mode is on. The client re-inits unmuted on the next start, so
-        // this just keeps the React state in step. Also drop stale transcripts.
+        // Voice off (or errored): the mute icon only shows while voice mode is on, so return
+        // the mic to unmuted and drop stale transcripts (the client re-inits unmuted anyway).
         if (s === 'idle' || s === 'error') {
           setMutedState(false);
           setPartialTranscript(null);
           setLastTranscript(null);
-          // Clear any stale fallback notice so a fresh session starts clean
-          // (and the server's once-per-session notice can re-fire next time).
+          // Clear any stale notice so the server's once-per-session notice can fire again.
           setNotice(null);
         }
       });
@@ -226,7 +211,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     return clientRef.current;
   }, [agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled, soundEffectsEnabled]);
 
-  // One build at a time: a second caller waits for the first one's client instead of making another.
+  // One build at a time: a second caller joins the first instead of building a duplicate client.
   const ensureClient = useCallback((): Promise<VoiceClient | null> => {
     if (inFlightRef.current) return inFlightRef.current;
     const pending = buildClient().finally(() => { inFlightRef.current = null; });
@@ -243,17 +228,15 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
 
   const toggle = useCallback(async () => {
     if (state !== 'idle' && state !== 'error') {
-      // Turning OFF — always safe to do directly.
+      // Turning off: always safe to stop directly.
       if (clientRef.current) await clientRef.current.stop();
       return;
     }
     if (startingRef.current) return;   // a start is already under way: ignore the extra click
     startingRef.current = true;
     try {
-    // Turning ON — check that the required models are installed first.
-    // Without this, a fresh user clicks the mic and gets silence for 20s
-    // while whisper-server downloads + Kokoro loads, with zero indication
-    // anything is happening.
+    // Turning on: check the required models are installed first, else a fresh user
+    // gets ~20s of silence while whisper-server downloads and Kokoro loads.
     try {
       const saved = await loadSavedVoiceSettings();
       const wantedStt = sttModel ?? saved.sttModel;

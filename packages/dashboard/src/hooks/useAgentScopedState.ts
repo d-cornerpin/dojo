@@ -1,25 +1,7 @@
 import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 
-/*
- * STATE THAT BELONGS TO AN AGENT (GitHub #14).
- *
- * The chat and the composer are mounted once for the whole shell while the agent under them
- * changes, so plain `useState` there is state that outlives its agent: a busy agent's
- * "working" latches rode over to an idle one, a slow answer for the old agent landed under
- * the new one, an unsent draft and its attached files followed you to the wrong agent.
- *
- * `useAgentState(agentId, initial)` is `useState` whose value is FOR that agent:
- *   - when the agent changes you read a fresh `initial`, in the same render (no frame of the
- *     old agent's value under the new one, and no reset list to keep in step);
- *   - a setter belongs to the agent it was created for. A write from a closure of an agent
- *     that is no longer showing is dropped, which is the cancel token for every async path
- *     (a load, a send) at once.
- *
- * `remember: true` is for an owner's UNSENT work (draft, staged files): each agent keeps its
- * own value, a switch shows the other agent's, and a write from a closure of an agent that
- * is parked lands in that agent's slot (a send that finishes after you switched still clears
- * the draft it sent).
- */
+/** useState scoped to agentId: a switch reads the new agent's fresh initial in the same render,
+ *  a stale agent's closure write is dropped, and remember:true parks unsent work in its own slot. */
 export function useAgentState<T>(
   agentId: string,
   initial: T | (() => T),
@@ -31,12 +13,12 @@ export function useAgentState<T>(
   const [, bump] = useState(0);
   const readRef = useRef<(id: string) => T>(() => undefined as T);
 
-  // The agent changed: drop the last one's value (or park it, when remembering) before reading.
+  // The agent changed: the last one's value is dropped (or parked, when remembering).
   if (shown.current !== agentId) {
     if (!remember) slots.current.clear();
     shown.current = agentId;
   }
-  // A slot is filled once, so an untouched value keeps one identity across renders.
+  // A slot is filled once: an untouched value keeps one identity across renders.
   const read = (id: string): T => {
     if (!slots.current.has(id)) {
       const i = initialRef.current;

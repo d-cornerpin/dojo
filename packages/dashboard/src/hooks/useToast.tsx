@@ -1,33 +1,11 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
 
-// ════════════════════════════════════════
-// Toast Notification System
-// ════════════════════════════════════════
-//
-// Usage: const toast = useToast();
-//   toast.info('Settings saved');          // 10s auto-dismiss, green
-//   toast.success('Image generated');      // 10s auto-dismiss, green (alias of info)
-//   toast.warning('Low memory');           // 15s auto-dismiss, orange
-//   toast.error('Connection failed');      // permanent — must be dismissed, red
-//
-// Three-tier classification (per user spec, 2026-05-05):
-//   INFO  — green  — successful events / harmless notifications  — 10s
-//   WARN  — orange — non-blocking errors or alerts              — 15s
-//   ERROR — red    — blocking errors requiring user interaction — permanent
-//
-// `info` and `success` both render as INFO (green / 10s). Kept as separate
-// methods for caller ergonomics (toast.success reads naturally) but identical
-// in behavior. Choose by what reads best at the call site.
-//
-// Visual: glass-morphism toasts slide in from the top-right with a
-// left-border color matching the level:
-//   info / success → cp-teal  (green)
-//   warning        → cp-amber (orange)
-//   error          → cp-coral (red)
+// Toast notifications, auto-dismissed by level: info/success 10s, warning 15s, error stays until
+// dismissed. `success` is an alias of `info`; they differ only in the name read at the call site.
 
 export type ToastLevel = 'info' | 'success' | 'warning' | 'error';
 
-/** One action button on a decision toast (D-B step 4). */
+/** One action button on a decision toast. */
 export interface ToastAction {
   label: string;
   /** May be async; the rendering surface disables the buttons while it runs. */
@@ -39,19 +17,15 @@ export interface ToastAction {
 export interface ActionToastOptions {
   /** Bold headline, plain language (no jargon, no tool names). */
   title: string;
-  /** Short body line under the headline. */
   message: string;
   actions: ToastAction[];
-  /** Stable external id (e.g. `healer:<proposalId>`). */
   dedupeKey: string;
   /** Card tone; defaults to 'warning' (amber, matching the Vitals pending tone). */
   level?: ToastLevel;
-  /** Called when the person presses the card's X (an owner card tells the server, t138 r3). */
+  /** Called when the person presses the card's X (an owner card tells the server). */
   onDismiss?: () => void;
-  /** v3.5 field fix 3 (#9): does the person have to do something? Default true: the card is sticky and holds the
-   *  orb's red alert until it is acted on. False (an informational owner card): it leaves by itself on its level's
-   *  timer and never reddens the orb ("It shouldn't be a persistent notification if it doesn't require the
-   *  intervention of the user. It also shouldn't be red."). */
+  /** Does the person have to act? Default true: sticky, holds the orb's red alert until acted on.
+   *  False: an informational card, leaves on its level's timer, never reddens the orb. */
   needsAction?: boolean;
 }
 
@@ -61,9 +35,7 @@ export interface Toast {
   message: string;
   level: ToastLevel;
   timestamp: number;
-  // ── D-B step 4: interactive / persistent toast fields. All optional so
-  // every existing toast.info/success/warning/error keeps its exact shape and
-  // behavior (no title, no actions, normal auto-dismiss). ──
+  // Interactive / persistent fields, all optional: plain toasts keep their shape and auto-dismiss.
   /** Bold headline shown above the message. Plain language, no jargon. */
   title?: string;
   /** Action buttons rendered under the message. When present the toast is a
@@ -72,23 +44,20 @@ export interface Toast {
   actions?: ToastAction[];
   /** Never auto-dismiss; stays until acted on or removed by key. */
   sticky?: boolean;
-  /** Hold the orb's red alert tint while this toast is on screen. The orb
-   *  surface reads it and keeps setAlert(1) until no such toast remains. */
+  /** Hold the orb's red alert tint while this toast is on screen; the orb surface reads it. */
   alertOrb?: boolean;
-  /** Stable external id (e.g. a Healer proposal id) so a re-emit updates the
-   *  same toast in place and a later resolved frame can dismiss it by key. */
+  /** Stable external id (e.g. healer:<id>): re-emit updates in place, a resolved frame removes by key. */
   dedupeKey?: string;
-  /** Called when the person presses the X — not when a timer, a sweep or a key removes it. */
+  /** Called when the person presses the X, not when a timer, a sweep or a key removes it. */
   onDismiss?: () => void;
 }
 
-// Auto-dismiss timing per level (ms). Errors stay until dismissed.
-// Per user spec (2026-05-05): INFO 10s, WARN 15s, ERROR permanent.
+// Auto-dismiss timing per level (ms). Errors are blocking: they stay until dismissed.
 const AUTO_DISMISS_MS: Record<ToastLevel, number | null> = {
   info: 10000,
   success: 10000,
   warning: 15000,
-  error: null, // manual dismiss only — blocking, requires user interaction
+  error: null, // blocking: stays until dismissed manually
 };
 
 interface ToastContextValue {
@@ -121,13 +90,9 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
     setToasts(prev => prev.filter(t => t.dedupeKey !== dedupeKey));
   }, []);
 
-  // A persistent decision toast (Approve / Decline). Never auto-dismisses
-  // (sticky) and holds the orb's red alert tint (alertOrb) until it is acted on
-  // or removed by key. Deduped on dedupeKey so a re-emit for the same proposal
-  // refreshes content in place instead of stacking a duplicate, keeping the
-  // same id + slot so the orb doesn't re-startle and the card doesn't jump.
-  // v3.5 field fix 3 (#9): only a card that needs the person is sticky and red. One that does not
-  // (`needsAction: false`) is keyed the same way but leaves on its level's timer, like any toast.
+  // A persistent decision toast (Approve / Decline): deduped on dedupeKey so a re-emit refreshes
+  // the same card in place (same id + slot: no orb re-startle, no jump). Only a card the person
+  // must act on (`needsAction`) stays sticky and red; an informational one leaves on its timer.
   const addActionToast = useCallback((opts: ActionToastOptions) => {
     const needsAction = opts.needsAction ?? true;
     const level = opts.level ?? ('warning' as ToastLevel);
@@ -159,9 +124,8 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
   const addToast = useCallback((message: string, level: ToastLevel) => {
     const id = ++toastIdCounter;
     setToasts(prev => {
-      // Deduplicate: if the same message + level is already showing, don't add again — nor when
-      // a pinned card already carries these words (an owner card supersedes an agent's own chat
-      // copy of the same incident: one card per incident, t138 round 3).
+      // Dedupe by message + level, and against a sticky card carrying the same words: an owner
+      // card supersedes an agent's own copy, one card per incident.
       if (prev.some(t => t.message === message && (t.level === level || t.sticky))) return prev;
       return [...prev, { id, message, level, timestamp: Date.now() }];
     });
@@ -197,21 +161,17 @@ export const useToast = (): ToastContextValue => {
   return ctx;
 };
 
-// ── Toast Display Component ──
-// Render this once at the app root level. It reads from the context
-// and renders the stack of active toasts.
+// Toast stack: render once at the app root, it draws every active toast from the context.
 
 const LEVEL_STYLES: Record<ToastLevel, { cssClass: string; icon: string }> = {
   info:    { cssClass: 'glass-toast-info',    icon: 'ℹ️'  },
   success: { cssClass: 'glass-toast-success', icon: '✓'  },
   warning: { cssClass: 'glass-toast-warning', icon: '⚠'  },
-  // Stop sign instead of ✕ — the ✕ glyph collided visually with the
-  // dismiss-button × in the same toast. (Reported by user, 2026-05-05.)
+  // Stop sign, not ✕: the ✕ glyph reads as the dismiss-button × in the same toast.
   error:   { cssClass: 'glass-toast-error',   icon: '🛑' },
 };
 
-// Button classes reused from the Vitals card (HealerVitals.tsx) so the toast's
-// Approve / Decline match the Healer surface's approve / deny exactly.
+// Button classes reused from the Healer vitals card so Approve / Decline match that surface exactly.
 const ACTION_BTN_CLASS: Record<ToastAction['variant'], string> = {
   primary: 'px-3 py-1 text-xs rounded glass-btn-primary disabled:opacity-50',
   secondary:
@@ -220,8 +180,7 @@ const ACTION_BTN_CLASS: Record<ToastAction['variant'], string> = {
 
 export const ToastContainer = () => {
   const { toasts, removeToast } = useToast();
-  // Per-toast in-flight guard so an async action button can't double-fire and
-  // shows a disabled state while its request runs.
+  // Per-toast in-flight guard: an async action button can't double-fire, disabled while it runs.
   const [busy, setBusy] = useState<Record<number, boolean>>({});
 
   const runAction = useCallback(async (toastId: number, action: ToastAction) => {

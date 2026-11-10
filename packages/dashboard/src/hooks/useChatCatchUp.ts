@@ -35,13 +35,8 @@ interface CatchUp<T extends { id: string; createdAt: string; isStreaming?: boole
   toChat: (m: Message) => T;
 }
 
-/**
- * Catch up after a reconnect. Frames sent while the socket was down never arrive: a finished
- * reply is missing, or the working state is stale (the closing status frame was lost). On a
- * change of the shared reconnect signal (never at mount) ask again, quietly: take the agent's
- * status, and MERGE the newest page into what is on screen. Scroll, pin, `hasMore` and the
- * loading state are not touched. A late answer never overwrites a newer one.
- */
+/** Reconnect catch-up (never at mount): frames lost while the socket was down never arrive, so
+ *  refetch status and merge the newest page in without disturbing scroll, pin or loading state. */
 export function useChatCatchUp<T extends { id: string; createdAt: string; isStreaming?: boolean }>(o: CatchUp<T>): void {
   const seenRef = useRef(o.reconnectCount);
   const latestRef = useRef(0);
@@ -74,8 +69,7 @@ export function useChatCatchUp<T extends { id: string; createdAt: string; isStre
           if (at < 0) { out.push(m); changed = true; }
           else if (out[at].isStreaming) { out[at] = m; changed = true; } // the final message arrived
         }
-        // A streaming bubble whose turn is over (and whose final message was not in the page)
-        // can never finish: it goes. The caught-up answer is the signal, not a timer.
+        // A streaming bubble whose turn ended, final not in the page, can never finish: it goes.
         const kept = turnEnded ? out.filter((x) => !x.isStreaming || fetched.some((f) => f.id === x.id)) : out;
         if (kept.length !== out.length) changed = true;
         return changed ? kept.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : prev;
