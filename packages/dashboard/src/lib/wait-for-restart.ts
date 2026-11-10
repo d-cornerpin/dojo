@@ -1,12 +1,5 @@
-// Waiting for the server after "Update Now" or a rollback.
-//
-// The server answers the request and restarts some time LATER, so the first answer after the
-// request may come from the OLD process. The page may only reload (and the flow may only be
-// called finished) when the server it reconnects to reports the version the request promised,
-// or, when that version is unknown, a different version or proof that the server went away and
-// came back. There is no timer that gives up: the wait ends on real signals only: the version,
-// or the update episode the server reports (a rolled-back or failed update is said out loud).
-// The caller keeps a plain status on screen the whole time and can cancel (unmount).
+// After "Update Now" or a rollback, wait until the update is proven to have arrived: the
+// first answer may still come from the old process, so only real signals end the wait.
 
 import * as api from './api';
 
