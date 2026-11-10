@@ -112,6 +112,7 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
   return { text: raw };
 }
 
+// Default chat hides system rows; only these render. Never add [VALIDATION CHECK]: raw task ids.
 // CONTRACT: each server write site (scheduler/runner.ts, agent/destructive-gate.ts,
 // tracker/tools.ts) prefixes its note with these exact strings; strip any [SOURCE: …] first.
 const OWNER_ALERT_SYSTEM_PREFIXES = [
@@ -257,7 +258,7 @@ const AssistantBubble = ({
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] sm:max-w-[75%]">
-        {/* Outbound channel routing badge — left-aligned mirror of the
+        {/* Outbound channel routing badge, left-aligned mirror of the
             inbound "from X via iMessage" badge on user bubbles. Set when
             the engine auto-routed this reply to iMessage / Teams /
             email. The standalone routing-marker system message is
@@ -268,7 +269,7 @@ const AssistantBubble = ({
             <span>{outboundChannel.label}</span>
           </div>
         )}
-        {/* "via voice" badge — left-aligned mirror of the user-side badge,
+        {/* "via voice" badge, left-aligned mirror of the user-side badge,
             stamped by the server when voice-mode TTS routes this message
             through Kokoro or Hume. */}
         {spokenAloud && (
@@ -280,7 +281,7 @@ const AssistantBubble = ({
             <span>via voice</span>
           </div>
         )}
-        {/* Reasoning / "Thinking…" panel — appears above the answer text.
+        {/* Reasoning / "Thinking…" panel, appears above the answer text.
             The HEADER announces that thinking is happening (pulsing dots while it
             streams); the BODY stays closed until the reader asks for it, and stays
             open once they have. Wordy-mode only: in regular chat we just see the
@@ -431,7 +432,7 @@ const toolChips = (
     (!wordyMode && isBackgroundTurnRow(m) && !(liveCutoff && m.createdAt >= liveCutoff))
       ? []
     : (parseMessageContent(m.content).blocks ?? [])
-      // Args are passed too: `work_open` with a reminder shape is effectful where its siblings are not.
+      // Args are passed too; the @dojo/shared row-tier fold must pass them as well, or the row drops first.
       .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name, b.input) !== 'bookkeeping')
       .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
@@ -448,7 +449,7 @@ const toolChips = (
       }),
   );
 
-// Outbound bubbles share the resolver's outboundBadge, so the two outbound paths cannot drift.
+// Derived, not hand-listed: any real human-channel send except bodiless voice_call (forwards included).
 const isChannelSendBubbleTool = (name: string): boolean =>
   channelOfSendTool(name) !== null && name !== 'voice_call';
 
@@ -921,7 +922,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
       const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
       if (e.agentId !== agentIdRef.current) return;
-      // Same as chat:chunk — inter-agent reasoning must not create a live bubble.
+      // Same as chat:chunk, inter-agent reasoning must not create a live bubble.
       if (suppressStreamForTurn()) return;
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.messageId);
@@ -1168,7 +1169,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setIsWorking(true);
-    setAwaitingUserReply(true); // user is now waiting on a reply — keep the working UI up through any a2a sub-work
+    setAwaitingUserReply(true); // user is now waiting on a reply, keep the working UI up through any a2a sub-work
     // Sending re-pins: the user wants to see their message and the reply.
     pinnedToBottomRef.current = true;
     setPinnedToBottom(true);

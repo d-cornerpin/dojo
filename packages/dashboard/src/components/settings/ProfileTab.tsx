@@ -64,7 +64,8 @@ export const ProfileTab = () => {
   );
 
   return (
-    <div className="space-y-6 max-w-4xl">      <div className="tile space-y-3">
+    <div className="space-y-6 max-w-4xl">
+      <div className="tile space-y-3">
         <div className="scard__title">Your Name</div>
         <div className="scard__desc">Used in memory summaries and agent conversations to identify you.</div>
         {loadingName ? (

@@ -16,8 +16,7 @@ declare const CAPABILITY_BRAND: unique symbol;
 
 export type FsGrantKind = 'fs_read' | 'fs_write' | 'fs_delete';
 
-/** ONE resource this call may touch, as the gate loop resolved it. Both spellings ride at:'path': */
-/** neither name alone can be spoofed by a symlink, nor a legitimate path under a linked parent refused. */
+/** ONE resource this call may touch; at:'path' carries lexical AND real names against symlinks. */
 export type ResourceGrant =
   | { readonly kind: FsGrantKind; readonly at: 'path'; readonly lexical: string; readonly real: string }
   | { readonly kind: FsGrantKind; readonly at: 'tree'; readonly root: string }
@@ -45,6 +44,7 @@ export interface CallCapability {
   readonly [CAPABILITY_BRAND]: true;
 }
 
+// Work started inside a dispatch inherits its capability and stays live; pollers and routes hold none.
 const capabilityContext = new AsyncLocalStorage<CallCapability>();
 
 /** MINT: the ONE writer, called only by the gate loop (a census holds); it computes no permission. */

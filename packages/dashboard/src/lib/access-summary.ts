@@ -49,13 +49,13 @@ export function accessDigest(g: AccessGrants, extra: { runsPrograms: boolean }):
   return parts.join(' · ');
 }
 
-/** Row 1 — what it can do. */
+/** Row 1: what it can do. */
 export const toolsSummary = (g: AccessGrants): string => {
   const n = groupCount(g);
   return n === null ? 'Full tool access' : plural(n, 'tool group');
 };
 
-/** Row 2 — what it can reach. The two folded-in items ride in as booleans. */
+/** Row 2: what it can reach. The two folded-in items ride in as booleans. */
 export function reachSummary(g: AccessGrants, legacy: { web: boolean; programs: boolean }): string {
   const accounts = providerReach(g.integrations.google) + providerReach(g.integrations.microsoft);
   const parts: string[] = [];
@@ -67,7 +67,7 @@ export function reachSummary(g: AccessGrants, legacy: { web: boolean; programs: 
   return parts.length === 0 ? 'Nothing' : parts.join(', ');
 }
 
-/** Row 3 — who it can talk to. */
+/** Row 3: who it can talk to. */
 export function talkSummary(g: AccessGrants): string {
   if (g.channels.master === null) return 'Through your main agent';
   const reach = grantedChannels(g);
@@ -77,7 +77,7 @@ export function talkSummary(g: AccessGrants): string {
   return `${who}, on ${where}`;
 }
 
-/** Row 4 — what it knows. */
+/** Row 4: what it knows. */
 export function knowsSummary(g: AccessGrants, knowsYou: boolean): string {
   const t = techniqueGrantOf(g);
   const head = t === '*' ? 'All techniques' : t.length === 0 ? 'No techniques' : plural(t.length, 'technique');

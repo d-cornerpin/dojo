@@ -80,8 +80,7 @@ function fsKindOf(kind: string): 'fs_read' | 'fs_write' | 'fs_delete' | null {
   return kind === 'fs_read' || kind === 'fs_write' || kind === 'fs_delete' ? kind : null;
 }
 
-/** ONE resolved path becomes ONE grant: a TREE when the declaration covers what is INSIDE (`argTree`), */
-/** else the single file; written once because an argument and an indirection mean the same once resolved. */
+/** ONE resolved path makes ONE grant: a tree if the effect covers its inside (argTree), else a file. */
 function pushResolved(
   grants: ResourceGrant[], kind: 'fs_read' | 'fs_write' | 'fs_delete',
   value: { lexical: string; real: string }, tree: boolean,
@@ -94,8 +93,7 @@ function pushResolved(
   if (value.real !== value.lexical) grants.push({ kind, at: 'tree', root: value.real });
 }
 
-/** THE RESOURCES THIS CALL MAY TOUCH: computed after every gate answered (a refused call never gets */
-/** here), and deciding nothing: every resource was named by the agent or declared on the tool. */
+/** THE RESOURCES THIS CALL MAY TOUCH: built after every gate answered; it decides nothing. */
 export function grantsForCall(
   agentId: string,
   effects: readonly ToolEffect[] | undefined,

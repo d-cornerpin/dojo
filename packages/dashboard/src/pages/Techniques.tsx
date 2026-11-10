@@ -104,7 +104,7 @@ export const Techniques = () => {
 
   // The event handlers below subscribe once (the real `subscribe` never
   // changes), so calling `load` directly would freeze the mount render's
-  // filters — a frame would fetch the unfiltered list and replace what the
+  // filters, a frame would fetch the unfiltered list and replace what the
   // owner is looking at. The ref keeps every handler on the LATEST `load`.
   const loadRef = useRef(load);
   loadRef.current = load;

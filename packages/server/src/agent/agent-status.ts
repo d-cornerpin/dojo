@@ -1,4 +1,4 @@
-// The one owner of the `agents.status` write: every other module calls through here.
+// The engine's owner of the `agents.status` write; gateway and Dreamer sweeps keep their own writes.
 // A leaf module, not in `loop.ts`: there it would close an import cycle and bind test mocks to its path.
 
 import { getDb } from '../db/connection.js';
@@ -34,9 +34,9 @@ export function writeAgentStatus(
   } else {
     db.prepare(`
       UPDATE agents SET status = ?, last_error = CASE WHEN ? = 'paused' AND (instr(COALESCE(last_error, ''), '[budget_stop]') = 1 OR instr(COALESCE(last_error, ''), '[no_model_fits]') = 1) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?
-    `).run(status, status, agentId);   // t148: another pause over a park wins: the park's tag goes with it
+    `).run(status, status, agentId);   // another pause over a park wins: the park's tag goes with it
   }
-  agentStatusMoved(agentId, status); // t138 r4: an owner card whose status this left is over
+  agentStatusMoved(agentId, status); // an owner card whose status this left is over
 }
 
 // Diagnostic-only write; a caller holding both facts passes { lastError } to the status writers instead.
@@ -55,7 +55,8 @@ export function clearAgentLastError(agentId: string): void {
 
 // Boot sweep: a dead process leaves rows 'working'; restart is the only thing that can know that.
 // No updated_at bump (the 75-minute reaper reads it); the read happens BEFORE the update because
-// after it no row reads working and the loop closes nothing. Turn rows close; idle ones never reopen.
+// after it no row reads working and the loop closes nothing. Turn rows are closed here: a row set
+// idle is never revisited by the 75-minute reaper.
 export function resetWorkingAgentsToIdleAtBoot(): number {
   const crashed = getDb()
     .prepare("SELECT id FROM agents WHERE status = 'working'")

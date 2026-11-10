@@ -84,7 +84,7 @@ export const Settings = () => {
       return true;
     };
     if (tryScroll()) return;
-    // The tab content may still be mounting — retry a few times, then give up
+    // The tab content may still be mounting, retry a few times, then give up
     // (tab-level navigation already landed them in the right place).
     const timers = [60, 180, 400].map(d => window.setTimeout(tryScroll, d));
     return () => { timers.forEach(clearTimeout); };
@@ -105,7 +105,7 @@ export const Settings = () => {
         <span className="phead__meta">House rules</span>
       </header>
 
-      {/* Tab bar — prototype .tabs/.tab pill row. Horizontally scrollable
+      {/* Tab bar, prototype .tabs/.tab pill row. Horizontally scrollable
           on narrow viewports (the .tabs primitive handles overflow), so
           the same control works on phones without a separate dropdown. */}
       <div className="toolbar">
@@ -135,7 +135,7 @@ export const Settings = () => {
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'channels' && (
         <>
-          {/* OAuth callbacks land on http://localhost:3001 — connecting from
+          {/* OAuth callbacks land on http://localhost:3001, connecting from
               a Cloudflare-tunneled URL (or any remote host) breaks the
               redirect roundtrip. Surface this once at the top of the page
               so users don't get cryptic "session expired" errors after the

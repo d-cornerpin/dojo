@@ -286,7 +286,7 @@ export const TaskDetailPanel = ({
             </div>
           )}
 
-          {/* Schedule — editable */}
+          {/* Schedule, editable */}
           <ScheduleEditor task={task} onUpdate={onUpdate} />
 
           {/* Run History */}
@@ -654,7 +654,7 @@ export const Tracker = () => {
       }
       // A frame carries the task's own project; the board only shows the
       // selected one. A foreign task already on the board has just been moved
-      // away — it leaves. One not yet held is not this board's news at all.
+      // away, it leaves. One not yet held is not this board's news at all.
       const sel = selectedProjectIdRef.current;
       const belongs = sel === 'all' || e.data.projectId === sel;
       setTasks((prev) => {
@@ -702,7 +702,7 @@ export const Tracker = () => {
 
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : null;
 
-  // Project selector only lists active projects — completed/cancelled
+  // Project selector only lists active projects, completed/cancelled
   // clutter is filtered out so the dropdown reflects "what am I working on,"
   // not project history. Selected-project lookup falls back to the full
   // project list so the action bar still resolves the name even when the
@@ -743,7 +743,7 @@ export const Tracker = () => {
         </select>
       </div>
 
-      {/* Project action bar — shows when a specific project is selected. */}
+      {/* Project action bar, shows when a specific project is selected. */}
       {selectedProjectId !== 'all' && (
         <div className="tile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '11px 16px', margin: '0 2px 16px' }}>
           <div style={{ font: '400 12px/1.4 var(--dojo3-font-body)', color: 'var(--dojo3-ink-2)' }}>
@@ -771,7 +771,7 @@ export const Tracker = () => {
                     const res = await api.deleteProject(selectedProjectId);
                     setConfirmDeleteProject(false);
                     if (!res.ok) {
-                      // Refused (e.g. running tasks) — nothing was deleted, so
+                      // Refused (e.g. running tasks), nothing was deleted, so
                       // the board stays on the project and says why.
                       toast.error(res.error || 'The project could not be deleted.');
                       return;

@@ -265,7 +265,7 @@ export class VoiceClient {
         src.buffer = unlock;
         src.connect(this.audioContext.destination);
         src.start(0);
-      } catch { /* ignore — only iOS strictly needs this */ }
+      } catch { /* ignore, only iOS strictly needs this */ }
       // nextStartTime can sit far in the future from a prior session while a
       // fresh context counts from ~0; without this the first chunk plays late.
       this.nextStartTime = this.audioContext.currentTime;

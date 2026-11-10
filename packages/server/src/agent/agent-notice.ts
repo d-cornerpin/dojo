@@ -24,6 +24,7 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
   if (!toAgentId || !fromName || !brief) return null;
   const trimmed = brief.replace(/\s+/g, ' ').trim();
   const intro = opts.selfIntro === false ? '' : `Hey, this is the ${fromName} agent. `;
+  // The `[SOURCE: AGENT NOTICE` prefix is what platform-noise matches to keep notices out of compaction.
   const content = `[SOURCE: AGENT NOTICE from ${fromName}] ${intro}${trimmed}`;
   const id = uuidv4();
   try {

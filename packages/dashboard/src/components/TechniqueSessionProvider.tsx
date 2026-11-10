@@ -339,7 +339,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       const currentId = createdTechniqueIdRef.current || session.editId;
       const exact = !!currentId && serverId === currentId;
       // In a NEW session right after save_technique, the first technique:updated
-      // is ours even if the server id differs from our provisional slug — adopt
+      // is ours even if the server id differs from our provisional slug, adopt
       // the authoritative id so Save updates the right technique (and we don't
       // PUT/POST a dead slug). Edit mode always has a real editId, so never adopt.
       const adopt = !exact && session.mode !== 'edit' && awaitingTechniqueIdRef.current;

@@ -81,6 +81,7 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
       .prepare('SELECT 1 FROM a2a_replies WHERE assign_message_id = ?')
       .get(row.id);
     if (replied) {
+      // The newest request is already replied: anything older is replied or past the lookback.
       return null;
     }
     return {

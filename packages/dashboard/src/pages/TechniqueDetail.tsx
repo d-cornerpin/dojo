@@ -71,7 +71,7 @@ export const TechniqueDetail = () => {
   }
   if (!technique) {
     // A failed read that is not a not-found must not claim the technique is
-    // missing — same note the Techniques list draws for its own load failure.
+    // missing, same note the Techniques list draws for its own load failure.
     if (loadError) {
       return (
         <div className="stub">
@@ -163,7 +163,7 @@ export const TechniqueDetail = () => {
         </div>
       )}
 
-      {/* Tab strip — same .tabs pill rail as the rest of the redesign. */}
+      {/* Tab strip, same .tabs pill rail as the rest of the redesign. */}
       <div className="toolbar">
         <div className="tabs" role="tablist">
           {tabs.map((tab) => (

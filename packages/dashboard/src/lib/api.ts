@@ -396,7 +396,7 @@ async function uploadFileChunked(
   agentId: string,
   file: File,
 ): Promise<{ ok: true; data: AttachmentInfo } | { ok: false; error: string }> {
-  // 1. Start a session — server allocates uploadId + a .part file.
+  // 1. Start a session, server allocates uploadId + a .part file.
   const start = await requestRaw(`/upload/start/${agentId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -450,7 +450,7 @@ async function uploadFileChunked(
 export const uploadFiles = async (agentId: string, files: File[]): Promise<ApiResponse<AttachmentInfo[]>> => {
   // Route large files through the chunked path so they survive the
   // Cloudflare tunnel's 100 MB per-request body limit. Small files keep
-  // using the one-shot multipart endpoint — fewer round trips.
+  // using the one-shot multipart endpoint, fewer round trips.
   const largeFiles = files.filter(f => f.size >= CHUNKED_UPLOAD_THRESHOLD);
   const smallFiles = files.filter(f => f.size < CHUNKED_UPLOAD_THRESHOLD);
   const results: AttachmentInfo[] = [];
@@ -643,7 +643,7 @@ export const disconnectPlaud = async (): Promise<ApiResponse<{ disconnected: boo
 // Device flow: the user presses Connect, the server asks GitHub for a code,
 // the user types it at github.com/login/device, and the server polls until
 // GitHub answers. No redirect and no callback route, so it works over a
-// tunnel — unlike the Google/Microsoft cards above.
+// tunnel, unlike the Google/Microsoft cards above.
 //
 // `GithubStatus` is declared twice ON PURPOSE: once server-side in
 // `github/status.ts`, once here, because `packages/dashboard` cannot import
@@ -787,7 +787,7 @@ export const deleteContactApi = async (id: string): Promise<ApiResponse<{ delete
 };
 
 
-// Email/Teams watchers — visible health surface for the integrations'
+// Email/Teams watchers, visible health surface for the integrations'
 // background polling. Returned shape mirrors WatcherStatus on the server.
 export interface WatcherStatusDto {
   name: 'gmail' | 'outlook' | 'teams';
@@ -1911,7 +1911,7 @@ export const getVersion = async (): Promise<ApiResponse<VersionInfo>> => request
 
 /**
  * What happened to the DATA backup on the last update that changed the database.
- * Not the same thing as `/update/backups`, which lists copies of the app — putting an
+ * Not the same thing as `/update/backups`, which lists copies of the app, putting an
  * old app back does not undo a database change; only this snapshot does.
  */
 export interface MigrationBackupOutcome {
@@ -2222,7 +2222,9 @@ export const cancelGenerationJob = async (
 // `packages/server`. Same fields, same names, same types; the route serves that shape and
 // this client NEVER re-derives or remaps it. If the two ever disagree the server's is right,
 // and `only-the-card-can-post-a-report.test.ts` drives the real routes, so a field renamed
-// on the wire fails there. `destinationRepo` on the LIST answer is a per-BOX fact served beside the rows — the `owner/name` the poster and the export both resolve to, which the consent sentence names and this client never re-derives.
+// on the wire fails there. `destinationRepo` on the LIST answer is a per-BOX fact served beside the
+// rows: the `owner/name` the poster and the export both resolve to, which the consent sentence names
+// and this client never re-derives.
 export interface ReportBrief {
   title: string; whatHappened: string; whatShouldHaveHappened: string;
   whyItWentWrong: string; fixIdeas: string;

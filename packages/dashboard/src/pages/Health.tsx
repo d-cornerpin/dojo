@@ -252,7 +252,7 @@ export const Health = () => {
       if (watchdogResult?.ok) setWatchdog(watchdogResult.data);
       if (imResult?.ok) {
         setImBridge(imResult.data);
-        // Prefill the test box's To field with the owner's own address — once. A
+        // Prefill the test box's To field with the owner's own address, once. A
         // later poll must not overwrite what the owner typed.
         const ownerAddress = imResult.data.ownerAddress ?? '';
         setTestTo((cur) => cur || ownerAddress);
@@ -395,7 +395,7 @@ export const Health = () => {
         </div>
       </div>
 
-      {/* Tool manuals — shown ONLY when something is missing. A complete set needs no row;
+      {/* Tool manuals, shown ONLY when something is missing. A complete set needs no row;
           the rule itself is silent both when nothing is missing and before boot has measured. */}
       {toolDocsWarning && (
         <div className="note--warn" style={{ marginTop: 14 }}>

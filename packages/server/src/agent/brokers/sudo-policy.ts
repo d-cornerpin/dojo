@@ -52,8 +52,10 @@ export interface ParsedSudo {
   readonly quotedOptionValue: boolean;
 }
 
-/** THE SOUND FLOOR: a privilege token ANYWHERE in the raw line; it may over-report, the walk clears it. */
-/** The set MUST equal PRIVILEGE_PROGRAMS: drift lets a substitution escape return; `sudo` first. */
+/**
+ * THE SOUND FLOOR: a privilege token anywhere in the raw line, case-insensitive; may over-report.
+ * The set MUST equal PRIVILEGE_PROGRAMS or `$(su ...)` escapes; `sudo` precedes `su`.
+ */
 const PRIVILEGE_TOKEN_RE =
   /(^|[\s;|&()<>{}`$'"\\/])\\?['"]?(sudo|doas|osascript|su)['"]?($|[\s;|&()<>=]|['"])/i;
 
@@ -117,7 +119,7 @@ export function osascriptBodyIsUnseeable(operands: readonly string[]): boolean {
   return body === null ? false : body.kind !== 'readable';
 }
 
-/** Default REFUSE: true only when EVERY occurrence is inert, outside program position, no expansion. */
+/** Default REFUSE: true only when every occurrence is proven inert, by program or by the precise walk. */
 const INERT_PROGRAMS: ReadonlySet<string> = new Set([
   'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'comm',
   ':', 'true', 'false',
@@ -171,7 +173,6 @@ export function authorizeAdminPrivilegeRequest(agentId: string): Verdict {
 /** Strip sudo and its options to what it would run; crude by design, recursing on nested `sudo`. */
 export function parseSudo(trimmed: string): ParsedSudo {
   const tokens = commandWords(trimmed);
-  // Start after the privilege word the ONE resolver found, or wrapper words glue to the inner command.
   const at = privilegeWordIndex(tokens);
   let i = (at ?? 0) + 1;
   let nonInteractive = false;
@@ -206,7 +207,7 @@ export function parseSudo(trimmed: string): ParsedSudo {
         : finish(rest, nonInteractive, quotedOptionValue);
     }
     if (t.includes('=')) {
-      // An escaped quote in ANY option spelling defeats the split below; both forms share one check.
+      // A quote in ANY option spelling defeats the whitespace split; both forms share one check.
       if (/['"]/.test(t.slice(t.indexOf('=') + 1))) quotedOptionValue = true;
       i += 1; continue;
     }
@@ -226,7 +227,6 @@ export function parseSudo(trimmed: string): ParsedSudo {
   const rest = tokens.slice(i).join(' ');
   // `su` WITHOUT `-c` IS A ROOT PROMPT; inner keeps the tail so the floor can name the pattern.
   if (isSu) return { inner: rest, interactiveShell: true, nonInteractive, quotedOptionValue };
-  // Nothing left to run: an unbounded root shell, refused under every policy.
   if (rest.length === 0) return { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue };
   return finish(rest, nonInteractive, quotedOptionValue);
 }
@@ -246,8 +246,7 @@ export interface Unwrapped {
   readonly interactive: boolean;
 }
 
-/** ONE walk returning commands AND findings; calls no parser above it, or the recursion never ends. */
-/** EACH OPERAND SEPARATELY: the floor matches a prefix, so `rm -rf x /` defeats it. Privileged only. */
+/** Per operand: a prefix floor misses `rm -rf x /`; privileged only so `echo "rm -rf /"` still works. */
 function operandCandidates(words: readonly string[]): string[] {
   if (words.length === 0) return [];
   const [program, ...rest] = words;
@@ -266,6 +265,7 @@ function perOperandCandidates(command: string): string[] {
   return operandCandidates(commandWords(command)).filter((c) => c !== command.trim());
 }
 
+/** ONE walk returning commands AND findings; calls no parser above it, or the recursion never ends. */
 function unwrapBodies(command: string, depth = 0): Unwrapped {
   const commands: string[] = [];
   let unparseable = false;
@@ -303,7 +303,10 @@ function unwrapBodies(command: string, depth = 0): Unwrapped {
 
 const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash']);
 
-/** Quoted runs in a non-shell body ARE the reach: crude, a missed one can be root. */
+/**
+ * Quoted runs in a non-shell body ARE the reach: crude, a missed one can be root.
+ * Not covered: runtime-built payloads, shell-free language APIs, spellings the floor's 3 patterns lack.
+ */
 const CODE_INTERPRETERS: ReadonlyMap<string, readonly string[]> = new Map([
   ['python', ['-c']], ['python3', ['-c']], ['python2', ['-c']],
   ['perl', ['-e', '-E']], ['ruby', ['-e']], ['node', ['-e', '--eval', '-p', '--print']],
@@ -332,7 +335,6 @@ const INTERPRETER_FILE_OPTS: ReadonlyMap<string, readonly string[]> = new Map([
 ]);
 
 export interface PrivilegedBody {
-  /** `unseeable`: a FILE nobody here can read, but it has a NAME, so the policy governs it. */
   /** `interactive`: a root PROMPT or a STREAM. `unparseable`: what was extracted is not what runs. */
   readonly kind: 'readable' | 'unseeable' | 'interactive' | 'unparseable';
   /** The inline body when there is one, EVEN IF `kind` is not `readable`: the floor still reads it. */
@@ -381,6 +383,7 @@ export function interpreterBody(seg: string): PrivilegedBody | null {
     if (metadata.includes(word)) { w += 1; continue; }                  // a value we do not care about
     if (eq > 0 && metadata.includes(word.slice(0, eq))) continue;
     if (word === '<<<') { inline ??= { language, text: unquoteValue(words[w + 1] ?? '') }; w += 1; continue; }
+    // A lone `<` is a process substitution (`bash <(..)`), a pipe nobody can name; `< file` is a file.
     if (word.startsWith('<')) {
       unreadable = words[w + 1] === undefined ? 'stream' : (unreadable ?? 'file');
       continue;
@@ -394,6 +397,7 @@ export function interpreterBody(seg: string): PrivilegedBody | null {
   if (inline !== null && !quotesBalance(inline.text)) return { kind: 'unparseable', inline };
   if (unreadable === 'stream') return { kind: 'interactive', inline };
   if (unreadable === 'file') return { kind: 'unseeable', inline };
+  // No body at all is a root prompt: `sudo sh` is `sudo -i` by another name.
   return inline === null ? { kind: 'interactive', inline: null } : { kind: 'readable', inline };
 }
 
@@ -421,7 +425,7 @@ const SIMPLE_SPAN_RE = /'([^']*)'|"([^"]*)"|`([^`]*)`/g;
 
 const Q_PAIRED_START_RE = /(?:\b(?:qq|qx|qw|q)|%[qQxXwWiI]?)\s*([{(\[<])/g;
 
-/** And on ANY OTHER delimiter, `qx#...#`: HERE THE LETTER IS REQUIRED; the exclusion is load-bearing. */
+/** And on ANY OTHER delimiter, `qx#...#`: the letter is required, as a bare `%` is usually printf. */
 const Q_FREE_START_RE = /(?:\b(?:qq|qx|qw|q)|%[qQxXwWiI])\s*([^\w\s'"`{(\[<])/g;
 
 interface ScannedText {
@@ -517,12 +521,15 @@ function finish(rest: string, nonInteractive: boolean, quotedOptionValue: boolea
   };
 }
 
-/** THE DECISION; the ORDER is the property: inner re-authorized first, role wall next, policy last. */
-/** The sensitive scan is NOT re-run: it is position-independent and already sees inside a sudo line. */
-/** `gated` ALLOWS: its hold is filed upstream on the owner's card; a deny would refuse the retry. */
+/**
+ * THE DECISION; the ORDER is the property: inner re-authorized first, role wall next, policy last.
+ * The sensitive scan is NOT re-run: it is position-independent and already sees inside a sudo line.
+ * `gated` ALLOWS: its hold is filed upstream on the owner's card; a deny would refuse the retry.
+ */
 export function authorizeSudoLine(
   trimmed: string,
   agentId: string,
+  // `reauthorize` is passed in: the broker imports this module, so importing it back would cycle.
   reauthorize: (inner: string) => Verdict,
 ): Verdict {
   const parsed = parseSudo(trimmed);
@@ -535,6 +542,7 @@ export function authorizeSudoLine(
   }
   const inner = reauthorize(parsed.inner);
   if (!inner.allowed) return inner;
+  // Role wall: a non-primary agent's sudo is refused under every policy; policy governs the primary only.
   if (!isPrimaryAgent(agentId)) {
     return deny('ladder-parity', 'sudo-not-primary', SUDO_NOT_PRIMARY_REASON);
   }
@@ -545,7 +553,7 @@ export function authorizeSudoLine(
 
 /** Approval needed only for `gated` plus a privileged line; `blocked` never reaches this point. */
 export function isSudoHoldRequired(toolName: string, args: Record<string, unknown>): boolean {
-  // Both exec doors and the applescript door carry their text here; keep that in sync with the doors.
+  // String work first: this runs on every tool call; a throwing config read must not down the turn.
   const raw = toolName === 'shell' || toolName === 'applescript_run' ? args.script
     : Array.isArray(args.argv) ? (args.argv as unknown[]).join(' ')
       : args.command;

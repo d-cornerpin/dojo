@@ -88,7 +88,7 @@ export function brokenWords(agentId: string, injury: string): string | null {
 
 // The one status writer moved this agent: incidents whose status it left are over; terminated ends all.
 export function agentStatusMoved(agentId: string, status: string): void {
-  if (['error', 'paused', 'rate_limited', 'terminated'].includes(status)) endJobCarry(agentId); // t143 r6: its job's chain is over
+  if (['error', 'paused', 'rate_limited', 'terminated'].includes(status)) endJobCarry(agentId); // its job's chain is over
   if (status !== 'paused') closePausedCards(agentId);
   if (status !== 'rate_limited') endNotice(agentId, 'rate_limit_notice');
   if (status === 'terminated') {

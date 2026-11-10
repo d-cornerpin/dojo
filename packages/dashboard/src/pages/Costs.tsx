@@ -675,7 +675,7 @@ export const Costs = () => {
         </div>
       </header>
 
-      {/* Pricing-index sync status — boot-time + on-demand LiteLLM refresh */}
+      {/* Pricing-index sync status, boot-time + on-demand LiteLLM refresh */}
       <PricingSyncBadge />
 
       {loadError && <div className="note--warn">Could not load the costs: {loadError}</div>}

@@ -82,7 +82,7 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
     'most_restrictive',
     'Most restrictive',
     'Its own files and its own task list. No people, no accounts, no keys. Every new agent starts here.',
-    () => { /* the constant itself — ruling 2's default, unmodified */ },
+    () => { /* the constant itself, the default, unmodified */ },
   ),
   preset(
     'reader',

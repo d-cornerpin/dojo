@@ -44,7 +44,7 @@ function textOf(content: string): string {
         .join('\n\n')
         .trim();
     }
-  } catch { /* not JSON — plain text */ }
+  } catch { /* not JSON, plain text */ }
   return content.trim();
 }
 

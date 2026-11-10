@@ -59,6 +59,7 @@ export function validateAlwaysLoadedTools(names: unknown, known?: KnownTools): A
 
   // NAMES checked against the caller's registry, never the doc files: a real tool with a missing
   // manual is not unknown. No registry in scope skips this check rather than guessing.
+  // Grants are not checked here: a name the agent may not use is narrowed later by `byName`.
   const unknown = known ? canonicalNames.filter((n) => !known.has(n)) : [];
   if (unknown.length > 0) {
     return {

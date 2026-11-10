@@ -11,6 +11,7 @@ import { identityOfPid, membersOfGroupAsync } from '../../process-identity.js';
 // mid-write deserves its syscall), then SIGKILL to whatever ignored it. The wait is stop-waiters, not the
 // abort registry: a barge-in cuts model calls, never a running command.
 
+// A registry slot would read as live movement, so a wedged command would never count as silent.
 export const KILL_GRACE_MS = 3_000;
 
 /** Every process group this door has started and that may still have members. */
@@ -123,8 +124,7 @@ function writeLedger(): void {
   recordToolboxGroups(dojoDir('data'), entries);
 }
 
-/** The leader exited: what it backgrounded still runs, unvouched; note who is there now (pid + start */
-/** time). So the next boot tells this group from an unrelated one that took the id; listing is off-loop. */
+/** Leader exited: note who remains (pid + start time) so the next boot can tell a reused id apart. */
 function noteSurvivors(pgid: number): void {
   if (!groupIdentity.has(pgid)) return;
   try { process.kill(-pgid, 0); } catch { return; }

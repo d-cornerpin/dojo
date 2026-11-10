@@ -202,7 +202,7 @@ const AppRoutes = () => {
         {/* Setup (no sidebar, no WS needed) */}
         <Route path="/setup" element={<Setup />} />
 
-        {/* Dashboard — WebSocket wraps all pages, single mount */}
+        {/* Dashboard, WebSocket wraps all pages, single mount */}
         <Route element={<WebSocketShell />}>
           <Route element={<SetupGate />}>
             <Route element={<DashboardChrome />}>
