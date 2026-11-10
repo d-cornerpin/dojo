@@ -6,29 +6,16 @@ import { useActiveAgent } from '../components/ActiveAgentProvider';
 import { formatDate } from '../lib/dates';
 import { withoutFence } from '../lib/channel-display';
 
-// ════════════════════════════════════════
-// Inter-Agent lane (D-A step 5)
-//
-// The DEDICATED surface for agent-to-agent (A2A) traffic and engine-origin
-// notices. It is a STRUCTURALLY separate entity from the human chat, not a
-// filtered overlay on it — but the structure changed under it and the old
-// wording became false, so it is corrected here rather than left to rot.
-// Those rows used to live in a SECOND PHYSICAL TABLE, `inter_agent_messages`.
-// PHASE-1 folded them into `messages` on `lane IN ('a2a','events')` and
-// migration 133 dropped the old table; the separation is a CHECK-constrained
-// column now, and the human-facing side reads the fail-closed `chat_messages`
-// view (`WHERE lane='owner'`), which is stronger than a table a reader could
-// forget to exclude. History loads from
-// GET /api/interagent/:agentId; the live path is the `interagent:message` WS
-// event. Scope is the currently-viewed agent (the RECIPIENT), mirroring the
-// chat's per-agent model (each agent's store holds the messages IT received).
-// ════════════════════════════════════════
+// Dedicated surface for agent-to-agent traffic and engine notices; rows ride the
+// lane column on `messages`, and the human side reads the fail-closed
+// chat_messages view (lane='owner'). Scope is the viewed agent as recipient:
+// each agent's store holds the messages IT received. Live: `interagent:message`.
 
 // Drop a leading [A2A: …] / [SOURCE: …] envelope line: the sender and intent
 // render as chips, so the raw marker is noise in the lane. Falls back to the
 // full content when the strip would empty it.
 function cleanContent(content: string): string {
-  // v3.5 K33: a worker's report is shown as it was written, without the agent's fence lines.
+  // A worker's report is shown as it was written, without the agent's fence lines.
   const stripped = withoutFence(content).replace(/^\[(?:A2A:|SOURCE:)[^\]]*\]\s*/i, '').trim();
   return stripped.length > 0 ? stripped : content.trim();
 }

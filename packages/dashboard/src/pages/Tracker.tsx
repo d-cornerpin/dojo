@@ -45,7 +45,7 @@ export const TaskDetailPanel = ({
     setAssignedTo(task.assignedTo || '');
   }, [task]);
 
-  // Phase B.0: load the structured audit log for this task.
+  // Load the structured audit log for this task.
   useEffect(() => {
     let cancelled = false;
     setLogLoading(true);
@@ -72,9 +72,7 @@ export const TaskDetailPanel = ({
   const handleAddNote = async () => {
     if (!noteInput.trim()) return;
     setSaving(true);
-    // Phase B.0: user observations now go into task_log as structured
-    // entries (entry_kind='observation', from_entity='user') instead of
-    // being appended to the legacy tasks.notes column.
+    // User observations go into task_log as entries, not the legacy tasks.notes column.
     const result = await api.addTaskObservation(task.id, noteInput.trim());
     if (result.ok) {
       setNoteInput('');
@@ -310,7 +308,7 @@ export const TaskDetailPanel = ({
             {task.completedAt && <div>Completed: {formatDate(task.completedAt)}</div>}
           </div>
 
-          {/* Activity log (Phase B.0). Renders task_log entries in newest-first order. */}
+          {/* Activity log: task_log entries, newest first. */}
           <div>
             <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-2">Activity log</h3>
             {logLoading ? (
@@ -615,8 +613,8 @@ export const Tracker = () => {
     setLoading(false);
   }, [selectedProjectId]);
 
-  // Re-review 2 (S4): the finished tasks come a page at a time. The page before is asked for with the
-  // oldest finished task the board holds (Chat's "load older" pattern: nothing older is fetched unasked).
+  // Finished tasks come a page at a time; the older page is asked for with the
+  // oldest finished task the board holds, so nothing older is fetched unasked.
   const [closedHasOlder, setClosedHasOlder] = useState(false);
   const loadingOlder = useRef(false);
   const showOlderFinished = useCallback(async () => {

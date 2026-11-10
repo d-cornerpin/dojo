@@ -17,21 +17,14 @@ interface Technique {
   usageCount: number;
   lastUsedAt: string | null;
   version: number;
-  // v2.7.9 — included so the grid can sort newest-first. Already returned
-  // by the server (store.ts:rowToTechnique); just wiring it into the
-  // dashboard type so we can use it.
+  // Already returned by the server (store.ts:rowToTechnique); used for the newest-first grid sort.
   createdAt: string;
 }
 
 const STATE_FILTERS = ['All', 'Published', 'Drafts', 'Disabled'] as const;
 
-/**
- * ⚠ THIS USED TO ANSWER `Technique[]` AND SWALLOW THE FAILURE (BACKLOG line 31).
- * `data.ok ? data.data : []` made "the server is down" and "you have no
- * techniques yet" the same empty grid, and the bare `fetch` it was built on
- * escaped as an UNHANDLED REJECTION when there was no server at all. The
- * envelope is returned whole so `load` can draw the difference.
- */
+// Returns the whole envelope (not just the array) so `load` can tell a failed
+// fetch from a genuinely empty list.
 const fetchTechniques = (
   state?: string,
   tag?: string,
@@ -95,18 +88,15 @@ export const Techniques = () => {
     if (mine !== latestLoad.current) return;
     setLoading(false);
     if (!result.ok) {
-      // SAY SO. An empty grid is what "you have none yet" looks like, so a
-      // failed load that only cleared the list told the owner the opposite of
-      // the truth. The previous list is left on screen rather than blanked —
-      // stale rows beat no rows while the server is coming back.
+      // SAY SO: an empty grid reads as "you have none yet", so a failed load
+      // must not blank the list. Stale rows beat no rows while the server
+      // is coming back.
       setLoadError(result.error);
       return;
     }
     setLoadError(null);
-    // v2.7.9 — newest-first by createdAt. Server sorts by usage_count
-    // for agent-tool consumers (most-used surfaces first), but the
-    // dashboard grid is for the human and they want the freshest
-    // techniques at the top.
+    // Newest-first by createdAt: the grid is for the human, who wants the
+    // freshest on top; the server sorts by usage_count for agent-tool consumers.
     const sorted = [...result.data].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
     setTechniques(sorted);
     setKnownTags(prev => new Set([...prev, ...result.data.flatMap(t => t.tags)]));
@@ -268,14 +258,8 @@ export const Techniques = () => {
           <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)' }}>No techniques match these filters.</p>
         </div>
       ) : techniques.length === 0 && !loadError ? (
-        // ⚠ `&& !loadError` IS THE REST OF THE FIX, and my own new clause caught
-        // that I had missed it. "No techniques yet" is a CLAIM, and on a failed
-        // load it is the same false claim the banner above has just denied — the
-        // owner would read an error and an invitation to create his first
-        // technique, next to each other, while his existing ones were simply
-        // unreachable. It is the identical lie `RemoteAccessSettings` tells with
-        // "cloudflared is not installed", which is gated on the status having
-        // ARRIVED; this is that gate, here.
+        // "No techniques yet" is a claim: on a failed load it would sit next to
+        // the error banner and deny it, so this branch stays gated on !loadError.
         <div className="stub">
           <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)', marginBottom: 8 }}>No techniques yet</p>
           <p className="stub__line">

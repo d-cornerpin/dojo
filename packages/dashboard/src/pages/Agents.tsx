@@ -367,14 +367,8 @@ export const Agents = () => {
 
   const checkOllamaWarning = async () => {
     const result = await api.getOllamaLockStatus();
-    // ⚠ `request` CASTS the parsed JSON to its declared type — it does not verify
-    // it — so `data.warnings` is a promise the SERVER makes, not one TypeScript
-    // keeps. This read used to be `result.data.warnings.length` with nothing but
-    // `result.ok` in front of it, and it is called UN-AWAITED from the load
-    // effect: any `ok` answer without the field (an older server across an
-    // update, a proxy's own envelope) threw a TypeError that escaped as an
-    // unhandled rejection and took the rest of that effect with it. The cost of
-    // being wrong here is the whole page, to say nothing of the warning.
+    // `request` casts the parsed JSON to its type without verifying it, so
+    // `data.warnings` is only a server-side promise; this un-awaited read must tolerate its absence.
     const warnings = result.ok ? result.data?.warnings : undefined;
     setOllamaWarnings(Array.isArray(warnings) ? warnings : []);
   };
@@ -387,7 +381,7 @@ export const Agents = () => {
         api.getProviders(),
       ]);
       if (modelsResult.ok) {
-        setModels(modelsResult.data.filter((m) => m.isEnabled && !m.capabilities.includes('decision')));   // v3.5: never the Dojo's decision model
+        setModels(modelsResult.data.filter((m) => m.isEnabled && !m.capabilities.includes('decision')));   // never the Dojo's decision model
       }
       if (providersResult.ok) {
         const map: Record<string, string> = {};
@@ -422,13 +416,8 @@ export const Agents = () => {
     return () => { unsubCreated(); unsubStatus(); unsubTerminated(); };
   }, [subscribe]);
 
-  // Re-fetch agents on WebSocket reconnect.
-  // Pre-2026-04-30 the page only loaded on mount and trusted live WS events
-  // for updates. If the connection dropped (network blip, sleep/wake, etc.)
-  // any agent:status broadcasts during the disconnect window were missed
-  // and the grid showed stale state — most visibly an agent stuck on 'idle'
-  // when it had actually flipped to 'working' mid-disconnect. Now any
-  // disconnected -> connected transition triggers a fresh fetch.
+  // Re-fetch on WS reconnect: statuses broadcast during a disconnect window are
+  // missed, and the grid would show stale state (an agent stuck on 'idle').
   useEffect(() => {
     const prev = prevConnectionRef.current;
     prevConnectionRef.current = connectionStatus;

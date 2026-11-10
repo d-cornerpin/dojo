@@ -10,11 +10,9 @@ import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
 import { copyTextToClipboard } from '../lib/clipboard';
 
-// FA-DB2: the Health page has no server-pushed health feed. The old
-// 'system:health' / 'provider:status' WS events were never emitted server-
-// side, so a provider going unhealthy or the DB erroring would sit on the
-// mount-time snapshot until a manual reload. We poll on this steady cadence
-// instead (one interval, no per-event reload storm).
+// There is no server-push health feed: 'system:health' / 'provider:status' are
+// never emitted, so a mount-time snapshot would go stale; we poll on this cadence.
+
 const HEALTH_POLL_INTERVAL_MS = 20_000;
 
 const formatBytes = (bytes: number): string => {
@@ -48,10 +46,8 @@ interface ProviderStatus {
   errorCount: number;
 }
 
-// UX-REPAIR T14: both of these are now the wire's own shape, named as the wire names it.
-// They used to be a wish list — `lastCheck` where the route emits `lastHeartbeat`, and two
-// iMessage fields the bridge has never carried — kept upright by a defensive remap in the
-// loader below. A remap that guesses is how a type stops describing anything.
+// Both interfaces below are the wire's own shape, named as the wire names it:
+// a type that guesses at fields stops describing anything.
 interface WatchdogStatus {
   running: boolean;
   lastHeartbeat: string | null;
@@ -69,10 +65,8 @@ interface OllamaLockData {
   slots: Array<{ modelName: string; activeRequests: number }>;
   queuedRequests: number;
   queuedModels: string[];
-  // T81c (NO-DOOMED-DIALS) Fix Round 1, Minor 1: a same-model pileup (two+ requests for the
-  // IDENTICAL model on one provider, serialized behind each other) — the GPU-livelock
-  // incident's own shape, distinct from `queuedRequests`/`queuedModels` above (which mean two
-  // DIFFERENT models contending for one slot).
+  // Same-model pileup: two+ requests for the IDENTICAL model serialized behind
+  // each other; distinct from queuedRequests/queuedModels (different models, one slot).
   sameModelWaiters: number;
   sameModelWaitingModels: Array<{ providerId: string; modelName: string; count: number }>;
 }
@@ -91,7 +85,7 @@ const RemoteAccessCard = () => {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    // Through the one door (BACKLOG line 31). A failure leaves `tunnel` null and
+    // Through the one door. A failure leaves `tunnel` null and
     // the card renders nothing, which is this card's own "not configured" state.
     void api.request<TunnelCardStatus>('/system/tunnel').then((r) => {
       if (r.ok) setTunnel(r.data);
@@ -224,10 +218,8 @@ export const Health = () => {
         [healthResult, logsResult, providerResult, watchdogResult, imResult, resourceResult] =
           await Promise.all([
           api.getHealth(),
-          // The poll must not touch the log list the owner filtered or the live
-          // feed appended, so it fetches no unfiltered table — only the initial
-          // load does. Resolving `undefined` keeps the tuple aligned (index 1),
-          // so the `logsResult?.ok` guard below simply skips setLogs on a poll.
+          // The poll must not touch the log list the owner filtered or the live feed
+          // appended, so only the initial load fetches logs (undefined keeps the tuple aligned).
           withLogs ? api.getLogs(undefined, undefined, 100) : Promise.resolve(undefined),
           api.getProviderHealth(),
           api.getWatchdogStatus(),
@@ -256,8 +248,7 @@ export const Health = () => {
           errorCount: p.errorCount ?? 0,
         })));
       }
-      // UX-REPAIR T14: no remap. `api.ts` declares what these two routes actually emit, so
-      // the payload IS the state — nothing to rename, nothing to guess a default for.
+      // No remap: api.ts declares what these two routes actually emit, so the payload is the state.
       if (watchdogResult?.ok) setWatchdog(watchdogResult.data);
       if (imResult?.ok) {
         setImBridge(imResult.data);
@@ -275,9 +266,8 @@ export const Health = () => {
       setLoading(false);
     };
     load(true);
-    // FA-DB2: re-run the same load() on a steady interval so provider/DB
-    // status stays fresh while the page is mounted (replaces the dead WS
-    // subscriptions removed below). One interval, cleaned up on unmount.
+    // Re-run the same load() on a steady interval so provider/DB status stays
+    // fresh while the page is mounted; one interval, cleaned up on unmount.
     const pollTimer = setInterval(() => load(false), HEALTH_POLL_INTERVAL_MS);
     return () => clearInterval(pollTimer);
   }, []);
@@ -291,15 +281,7 @@ export const Health = () => {
     return unsub;
   }, [subscribe]);
 
-  // FA-DB2: the former 'system:health' and 'provider:status' WS subscriptions
-  // lived here. Neither event is ever emitted server-side, so they never fired
-  // and the page silently showed a stale snapshot. They were removed and the
-  // mount-effect poll above now keeps health + provider status fresh. (The
-  // 'system:health' / 'provider:status' members of the shared WsEvent union are
-  // now unreferenced; union cleanup is owned by FA-G6/FA-DB6, not this fix.)
-
-  // Subscribe to resource warning events. Unlike the two removed above, this
-  // one IS emitted server-side (resource-monitor), so it stays as a live push.
+  // Resource warnings ARE emitted server-side (resource-monitor), so this stays a live push.
   useEffect(() => {
     const unsub = subscribe('resource:warning' as string, async () => {
       const result = await api.getResources();
@@ -359,9 +341,8 @@ export const Health = () => {
   // provider is unhealthy, else nominal.
   const anyProviderDown = providerStatuses.some(p => !p.healthy);
   const dbDown = health?.db === 'error';
-  // INSTALLED-BOX AUDIT: a box that could not write its tool manuals is serving agents the
-  // PREVIOUS version's instructions, silently. `toolDocsShortfall` is the shared rule — the same
-  // one the boot log reads — so this card and that log cannot say different things about it.
+  // A box that could not write its tool manuals is serving agents the PREVIOUS
+  // version's instructions, silently; toolDocsShortfall is the shared rule the boot log reads too.
   const toolDocsWarning = toolDocsShortfall(health?.toolDocs);
   const overallDown = dbDown || anyProviderDown || toolDocsWarning !== null;
   const unreachable = health === null || pollFailed;
@@ -422,7 +403,7 @@ export const Health = () => {
         </div>
       )}
 
-      {/* Healer Vitals (preserved) */}
+      {/* Healer Vitals */}
       <HealerVitals />
 
       {/* Email & Teams Watchers */}
@@ -515,10 +496,10 @@ export const Health = () => {
       {/* Remote Access */}
       <RemoteAccessCard />
 
-      {/* Google Workspace (preserved) */}
+      {/* Google Workspace */}
       <GoogleWorkspaceCard />
 
-      {/* Watchdog + iMessage status (preserved) */}
+      {/* Watchdog + iMessage status */}
       <section className="group">
         <div className="group__head">
           <div><div className="group__title">Watchdog &amp; iMessage</div></div>
@@ -563,12 +544,8 @@ export const Health = () => {
             </div>
             {imBridge ? (
               <>
-                {/* UX-REPAIR T14: "Last received" / "Last sent" used to sit here and read
-                    "Never" on every box forever — `getIMBridgeStatus()` has never carried
-                    either field, and the bridge records no such instant to carry (measured:
-                    zero occurrences of the names in imessage-bridge.ts, pinned by test). Two
-                    rows that can only ever say one thing are worse than no rows. The pill
-                    above is the bridge's real, wired status. */}
+                {/* No "Last received" / "Last sent" rows: getIMBridgeStatus() carries
+                    neither field and the bridge records no such instant; the pill is the real status. */}
                 {imBridge.enabled && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
                     <input
@@ -607,7 +584,7 @@ export const Health = () => {
         </div>
       </section>
 
-      {/* Logs (preserved) */}
+      {/* Logs */}
       <section className="group">
         <div className="group__head">
           <div><div className="group__title">Logs</div></div>

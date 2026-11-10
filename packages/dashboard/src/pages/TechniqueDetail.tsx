@@ -36,13 +36,8 @@ const stateBadge: Record<string, { cls: string; label: string }> = {
   needs_setup: { cls: 'pill--draft', label: 'Needs setup' },
 };
 
-/**
- * This WAS a hand-rolled copy of `lib/api`'s `request` — same token read, same
- * csrf scrape, same conditional headers — on a bare `fetch` with no seam
- * (BACKLOG line 31). It keeps its name, its `/techniques` prefix and its loose
- * return type so the seven call sites below read exactly as they did, and now it
- * is three lines over the real door.
- */
+// Thin wrapper over lib/api's request. Keeps the name, the /techniques prefix
+// and the loose return type so the call sites below read unchanged.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function api(path: string, options?: RequestInit): Promise<any> {
   return request(`/techniques${path}`, options);

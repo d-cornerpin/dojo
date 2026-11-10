@@ -376,8 +376,7 @@ const BudgetConfigTile = ({
   const limit = budgets.global?.limitUsd ?? 0;
   const pct = limit > 0 ? Math.min((spent / limit) * 100, 100) : 0;
 
-  // Agents not yet given an explicit budget still get a row, matching the
-  // prior per-agent editor behaviour.
+  // Agents not yet given an explicit budget still get a row, so every agent is budgetable here.
   const explicitIds = new Set(budgets.agents.map((a) => a.agentId));
   const extraAgents = agents.filter((a) => !explicitIds.has(a.id));
 
@@ -603,14 +602,8 @@ export const Costs = () => {
     loadData();
   }, [loadData]);
 
-  // Refresh on cost-related WS events (FA-DB7). chat:message is the highest-
-  // frequency broadcast; the old handler fired a fresh setTimeout per message,
-  // so a burst kicked off a thundering herd of full triple-reloads (each of
-  // which re-aggregates cost tables). Two changes: (1) gate on assistant
-  // messages, the only role that carries billed token usage, since user text
-  // and other roles can't move the totals; (2) coalesce to ONE trailing timer, so
-  // a burst collapses into a single reload after it settles. Budget alerts reach
-  // the owner as texts and dashboard cards on their own, so no urgency is lost here.
+  // chat:message is the highest-frequency broadcast: gate on the assistant role,
+  // the only one carrying billed usage, and coalesce a burst into one trailing timer.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unsub = subscribe('chat:message', (event: WsEvent) => {

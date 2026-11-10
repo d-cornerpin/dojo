@@ -49,10 +49,8 @@ import { SETTINGS_TABS, isTab, type Tab } from '../lib/settings-tabs';
 export const Settings = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get('tab');
-  // v2.7.24 — iMessage / Google / Microsoft cards moved from 'platform'/
-  // 'integrations' into a new 'channels' tab (they're all communication
-  // channels with safe-sender lists, auto-routing, etc.). Old deep links
-  // map forward so bookmarks don't 404.
+  // The channel cards live under 'channels'; old deep links map forward so
+  // bookmarks don't 404.
   const mappedTab =
     rawTab === 'workspace' || rawTab === 'microsoft' || rawTab === 'imessage'
       ? 'channels'
@@ -168,15 +166,3 @@ export const Settings = () => {
     </div>
   );
 };
-// IMBridgeSettings → components/settings/IMBridgeSettings.tsx (t111-E1)
-// PlatformTab → components/settings/PlatformTab.tsx (t111-E1)
-// ProvidersTab → components/settings/ProvidersTab.tsx (t111-E1)
-// ModelRows → components/settings/ModelRows.tsx (t111-E1)
-// ModelsTab → components/settings/ModelsTab.tsx (t111-E1)
-// ProfileTab → components/settings/ProfileTab.tsx (t111-E1)
-// RouterTab → components/settings/RouterTab.tsx (t111-E1)
-// SecurityTab → components/settings/SecurityTab.tsx (t111-E1)
-// DreamingTab → components/settings/DreamingTab.tsx (t111-E1)
-// CapabilityModelCards → components/settings/CapabilityModelCards.tsx (t111-E1)
-// UpdateTab → components/settings/UpdateTab.tsx (t111-E1)
-// VoiceTab → components/settings/VoiceTab.tsx (t111-E1)

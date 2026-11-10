@@ -10,8 +10,7 @@ import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { formatDate } from '../lib/dates';
-// Whether a demoted note is dimmed, gone, or the reply itself — four rules, driven from the
-// server suite. R4 is OWNER RULING 2026-10-05 #7's acceptance bar: a real reply never collapses.
+// Whether a demoted note is dimmed, gone, or the reply itself: four rules, shared with the server.
 import { renderWorkingNote } from '../lib/working-note-visibility';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
@@ -34,9 +33,7 @@ import { useAgentState } from '../hooks/useAgentScopedState';
 import { useChatCatchUp, toMessage } from '../hooks/useChatCatchUp';
 import { backfillUntilRenderable } from '../lib/chat-history-backfill';
 
-// ── Orb mood ──
 // Map a model-emitted `((mood: NAME))` marker to one of the orb's emotions.
-// Accept the canonical names plus a few natural synonyms; ignore anything else.
 const VALID_EMOTIONS = new Set<OrbEmotionName>([
   'startled', 'joyous', 'working', 'mad', 'calm', 'sleepy', 'confused',
   'success', 'sheepish', 'curious', 'sympathetic', 'excited', 'waiting', 'alert',
@@ -57,8 +54,6 @@ function moodToEmotion(raw: string | null): OrbEmotionName | null {
   if (VALID_EMOTIONS.has(raw as OrbEmotionName)) return raw as OrbEmotionName;
   return EMOTION_SYNONYMS[raw] ?? null;
 }
-
-// ── Types ──
 
 interface ContentBlock {
   type: string;
@@ -87,42 +82,25 @@ interface ChatMessage {
   modelId?: string | null;
   toolCalls?: ToolCallData[];
   isStreaming?: boolean;
-  /** Streamed thinking from providers like DeepSeek v4-pro. Rendered as
-   *  a collapsible panel above the assistant text — auto-expanded while
-   *  streaming, auto-collapsed once the final answer starts arriving. */
+  /** Streamed thinking from providers like DeepSeek. A collapsible panel above the text. */
   reasoningContent?: string | null;
   isReasoningStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string; openInCanvas?: boolean; screenShare?: boolean }>;
-  /** Where this message came from. 'voice' = dictated via voice mode;
-   *  'a2a' = produced on a dedicated inter-agent turn (hidden in regular mode). */
+  /** Where this message came from: 'voice' = dictated, 'a2a' = inter-agent turn (hidden in regular mode). */
   source?: 'voice' | 'a2a' | null;
-  /** Canonical attribution from the server (deriveOrigin). The visibility
-   *  classifier reads this to decide what shows in regular mode. */
+  /** Canonical attribution from the server (deriveOrigin), read by the visibility classifier. */
   origin?: MessageOrigin;
-  inboundMeta?: string | null;   // the stored routing record (v3.5 K33: the Teams badge's name)
-  /** The conversation this turn served, stamped on the agent's own
-   *  assistant/tool rows (migration 076 / loop C15). A human conversation key
-   *  ('owner', 'imessage:…', …) means the user triggered the turn; null means a
-   *  background/engine run (scheduler sync, watcher, tracker-driven surface).
-   *  Regular mode hides background-run tool CHIPS by keying on this; the
-   *  surfaced text of a background turn still renders. Absent on local
-   *  optimistic/streaming bubbles (treated as user-visible). */
+  inboundMeta?: string | null;   // the stored routing record (the Teams badge's name)
+  /** The conversation this turn served: a human key = user trigger, null = a background run. */
   conversationId?: string | null;
-  /** The row's stored display classification (`messages.display_kind`). SWEEP CORE-2 item 7:
-   *  an ASSISTANT row stamped `working-note` is drafting the turn's own ledger key did not
-   *  name as the answer — re-classified at the turn boundary, content untouched. Read here
-   *  rather than re-derived from the text, because the text is deliberately unchanged. */
+  /** Stored display kind (`messages.display_kind`): `working-note` means drafting, not the answer. */
   displayKind?: string | null;
 }
-
-
-// ── Parse DB message content into structured blocks ──
 
 function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock[] } {
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      // Extract plain text from text blocks for display
       const textParts = parsed
         .filter((b: ContentBlock) => b.type === 'text' && b.text)
         .map((b: ContentBlock) => b.text)
@@ -130,39 +108,18 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
       return { text: textParts, blocks: parsed };
     }
   } catch {
-    // Not JSON — plain text
   }
   return { text: raw };
 }
 
-// ── Owner-alert system notes ──
-//
-// Default (non-wordy) chat hides generic role='system' rows by design. A small
-// allowlist is the exception: deliberate, plain-language heads-ups the engine
-// posts into the primary chat FOR THE OWNER (a scheduled item failed for good,
-// an approval request expired, a project fell short). These render even in
-// default mode; everything else non-allowlisted stays hidden.
-//
-// CONTRACT: each server write site prefixes its note with one of these exact
-// strings. Keep the prefix if you reword the note (matching contract comments
-// live at the three write sites: scheduler/runner.ts failed-final-run heads-up,
-// agent/destructive-gate.ts approval-expiry note, tracker/tools.ts fail-open
-// project_needs_attention notice). The tracker notice reaches the feed wrapped
-// by notifyPrimaryAgent's "[SOURCE: TRACKER TASK UPDATE ...]" envelope, so the
-// match strips a leading SOURCE envelope before the start-anchored prefix test.
-// (The validation-escalation "[VALIDATION CHECK]" sweep is intentionally NOT
-// allowlisted: it embeds raw task ids + a "**Primary agent**: call ..." tool
-// instruction, and FA-S3 documents it currently mis-fires on engine-owned
-// pauses. It stays wordy-mode-only until that is fixed and the copy is split.)
+// CONTRACT: each server write site (scheduler/runner.ts, agent/destructive-gate.ts,
+// tracker/tools.ts) prefixes its note with these exact strings; strip any [SOURCE: …] first.
 const OWNER_ALERT_SYSTEM_PREFIXES = [
   'Heads up:',                         // scheduler failed-final-run + approval-expiry notes
   '[tracker:project_needs_attention]', // project fell short (fail-open notice)
 ] as const;
 
-// Strip notifyPrimaryAgent's automated-update envelope so the owner-alert
-// marker is start-anchored. Only tracker system notes carry it; the completion
-// (success) lines it also wraps do not start with an allowlisted prefix, so
-// they still stay hidden.
+// Strip notifyPrimaryAgent's envelope so the alert marker is start-anchored (completion lines stay hidden).
 const stripSourceEnvelope = (content: string): string =>
   content.replace(/^\[SOURCE:[^\]]*\]\s*/, '');
 
@@ -171,26 +128,13 @@ const isOwnerAlertSystemNote = (content: string): boolean => {
   return OWNER_ALERT_SYSTEM_PREFIXES.some((prefix) => body.startsWith(prefix));
 };
 
-// Clean owner-facing text: drop the SOURCE envelope and the internal
-// [tracker:project_needs_attention] tag (jargon a non-technical owner should
-// not see). The plain-language "Heads up:" notes carry no such framing and are
-// returned unchanged.
-// ── Working notes (demoted mid-work narration) ──
-//
-// The two markers and their reader now come FROM `@dojo/shared`, their census-named
-// owner; the client copy this file used to declare is deleted (SWEEP-E's errand for
-// this marker, done because the visibility lane would have been a third reader). Why
-// the demotion exists, and why the internal arm differs, are in
-// `lib/working-note-visibility.ts` beside the rules that act on them.
-
+// Owner-facing text: drop the SOURCE envelope and internal tracker tag; plain notes pass through.
 const ownerAlertDisplayText = (content: string): string =>
   stripSourceEnvelope(content.trim())
     .replace(/^\[tracker:project_needs_attention\]\s*/, '')
     .trim();
 
-// Dimmed, collapsed rendering for a demoted working note. Styling copied from
-// the owner-alert system-note bubble (nearest analog) with quieter text and an
-// expand-on-click, mirroring the tool-chip interaction users already know.
+// Dimmed, collapsed rendering for a demoted note: quieter than the owner-alert bubble, expands on click.
 const WorkingNoteBubble = ({ text }: { text: string }) => {
   const [open, setOpen] = useState(false);
   const oneLine = text.replace(/\s+/g, ' ').trim();
@@ -209,24 +153,17 @@ const WorkingNoteBubble = ({ text }: { text: string }) => {
   );
 };
 
-// ── Message Bubble Renderers ──
-
-// Inbound channel framing (the [SOURCE: IMESSAGE/PHONE/SMS/TEAMS/EMAIL ...] header + the phone Call SID
-// trailer) is parsed and stripped by the canonical helpers in @dojo/shared (parseInboundChannel /
-// stripInboundChannelMarker); the badge wording lives in ../lib/channel-display (inboundBadge), so
-// every channel is handled and the logic cannot drift across chat pages. Attachment pointers: ../lib/attachment-tags.
+// Inbound framing is stripped by the canonical @dojo/shared helpers; badges live in ../lib/channel-display.
 
 const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: boolean }) => {
-  // Inbound channel (iMessage / phone / SMS / Teams / email): ONE clean badge, the [SOURCE: ...] framing
-  // (+ phone trailer) stripped, via the canonical parser (V3). Wordy mode shows the raw content for debug.
+  // ONE clean inbound badge; the canonical parser strips [SOURCE: …] framing, wordy shows raw content.
   const inbound = parseInboundChannel(msg.content);
   const fromVoice = msg.source === 'voice';
   const badge = inbound ? inboundBadge(inbound.channel, inboundSenderName(msg.inboundMeta, inbound.sender)) : null;
 
-  // v3.5 K33: the owner sees other people's text as it arrived, without the agent's fence lines.
+  // The owner sees other people's text as it arrived, without the agent's fence lines.
   let displayContent = withoutFence(msg.content);
-  // Strip injected technique build/edit context (no-op for normal messages) so
-  // the user bubble shows only what they typed during a technique session.
+  // Strip injected technique build/edit context (no-op for normal messages) from the user bubble.
   displayContent = stripBuilderContext(displayContent);
   if (!wordyMode) {
     if (inbound) displayContent = stripInboundChannelMarker(displayContent);
@@ -234,9 +171,8 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
     if (msg.attachments?.length) displayContent = stripAttachmentTags(displayContent);
   }
 
-  // Engine inbox-watcher notifications render as a clean email card in non-wordy
-  // mode (the raw [MAILBOX EVENT] framing + Message ID + tool hint are hidden;
-  // the account header replaces the generic "via email" badge).
+  // Engine inbox-watcher notifications become a clean email card in non-wordy mode: raw
+  // framing hidden, the account header replaces the generic "via email" badge.
   const mailbox = !wordyMode ? parseMailboxEvent(withoutFence(msg.content)) : null;
 
   return (
@@ -293,12 +229,7 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
   );
 };
 
-/**
- * Routing info attached to an assistant message by a follow-on system
- * marker like `[Reply routed via iMessage to NAME]`. The standalone
- * marker is hidden from the feed and the badge renders above the
- * assistant bubble instead (mirror of the user-side "from X" badge).
- */
+/** Routing info from a follow-on system marker like '[Reply routed via iMessage to NAME]'. */
 interface OutboundChannelInfo {
   label: string;  // e.g. "to the owner via iMessage"
   emoji: string;
@@ -312,24 +243,15 @@ const AssistantBubble = ({
 }) => {
   const { text: rawText, blocks } = parseMessageContent(msg.content);
   const text = rawText?.trim() || '';
-  // Hide cloud voice-mode markers ((deliver: ...)), [pause], [long pause]
-  // from regular chat. Wordy mode shows them so you can debug agent output.
+  // Hide cloud voice markers ((deliver: ...), [pause], [long pause]) from regular chat; wordy shows them.
   const displayText = wordyMode
     ? text
     : (msg.isStreaming ? stripVoiceMarkersForStream(text) : stripVoiceMarkers(text));
   const spokenAloud = msg.source === 'voice';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
   const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
-  // ── HL8 (A) — THE PANEL BODY STARTS CLOSED (owner's ruling, 2026-08-15). ──
-  // What he saw — DeepSeek "writes the answer, collapses it, and rewrites it several
-  // times before the final answer lands" — was this, once per HOP: the body auto-OPENED
-  // while reasoning streamed (`reasoningOpenDefault`, deleted) and an effect slammed it
-  // shut on the first answer delta. Flash drafts inside its reasoning, so a five-hop turn
-  // painted five paragraphs of answer-shaped prose that each vanished.
-  // THE AUTO-COLLAPSE EFFECT IS DELETED, not disabled: it existed only to close a panel
-  // that had auto-opened, and with no auto-open its one remaining behaviour would be to
-  // shut a panel the reader deliberately expanded. Header, chevron, pulse dots and
-  // click-to-toggle untouched; regular mode has no panel; live and reloaded views agree.
+  // The panel starts closed and opens only on the reader's click: auto-open plus
+  // collapse-on-first-answer made multi-hop turns paint answer-shaped drafts that vanished.
   const [reasoningOpen, setReasoningOpen] = useState(false);
 
   return (
@@ -433,19 +355,8 @@ const AssistantBubble = ({
           </div>
         )}
 
-        {/* v2.5.23 — Removed the msg.toolCalls render path. Tool_use blocks
-            for an assistant message render via the hasToolUse path above,
-            reading from the canonical JSON content set by chat:message.
-            msg.toolCalls was a leftover live-streaming mechanism that
-            became leaky because chat:tool_call events on the server fire
-            AFTER chat:chunk done — so an iteration's tool calls would
-            accumulate in currentToolCallsRef and then attach themselves
-            to the NEXT iteration's streaming bubble's done event,
-            producing the "tool calls below the final response" duplicate.
-            With this path removed, the chat:tool_call broadcasts still
-            accumulate in the ref but are never rendered; the ref is
-            effectively dead and could be removed entirely (left in place
-            to keep the diff minimal). */}
+        {/* No msg.toolCalls render path: tool_use blocks render via the hasToolUse path
+            above, so live-streamed calls cannot attach to the next bubble (the duplicate). */}
 
         {/* Image / PDF attachments (e.g. Imaginer-generated images). In the
             dojo3 chat these render as prototype .media cards (poster + meta);
@@ -466,13 +377,7 @@ const AssistantBubble = ({
     </div>
   );
 };
-// ── R4 (OWNER RULING 2026-10-05 #7) — A PROMOTED NOTE IS AN ORDINARY REPLY BUBBLE ──
-// The VERDICT is `lib/working-note-visibility.ts`'s and is argued there; this is only the
-// rendering of it, and it deliberately reuses `AssistantBubble` rather than restyling the note
-// one: the owner's complaint is that his reply looked unlike a reply, so anything short of the
-// same component would be a third appearance for the same thing. `role` is overridden because
-// the promoted row may be the `role='system'` prefixed arm, and `content` is the note's own
-// text with the marker already stripped by the caller's parser.
+// The verdict lives in `lib/working-note-visibility.ts`; this renders via `AssistantBubble` whole.
 const NoteAsAnswer = ({ msg, text, wordyMode, modelNames }: {
   msg: ChatMessage; text: string; wordyMode: boolean; modelNames: Record<string, string>;
 }) => (
@@ -482,11 +387,7 @@ const NoteAsAnswer = ({ msg, text, wordyMode, modelNames }: {
   />
 );
 
-// Tool-only assistant turns render as class-aware badges (V2b): effectful action
-// vs retrieval vs hidden bookkeeping. The badge atom + the wrap row live in the
-// shared components/ToolBadge so the style cannot drift across chat pages; this
-// helper turns a run of messages into the {id, summary} items it takes, dropping
-// bookkeeping-only turns (summarizeToolTurn returns null for them).
+// Shared components/ToolBadge renders it (no style drift); this builds its {id, summary} items.
 const toolBadgeItems = (
   msgs: ChatMessage[],
   resultById: Map<string, ToolResultInfo>,
@@ -494,11 +395,8 @@ const toolBadgeItems = (
 ): Array<{ id: string; summary: ToolTurnSummary }> =>
   msgs
     .map((m) => {
-      // Background/engine run: drop its badge in regular mode (chips-only rule;
-      // its surfaced text still renders). Wordy mode keeps everything.
+      // Background/engine run: drop the badge in regular mode (text still renders); wordy keeps everything.
       if (!wordyMode && isBackgroundTurnRow(m)) return null;
-      // UX-REPAIR T54(d): the badge path gets each call's arguments too, so a reminder
-      // turn is not classed hidden here while the row tier calls it user-visible.
       const calls = (parseMessageContent(m.content).blocks ?? [])
         .filter((b) => b.type === 'tool_use')
         .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
@@ -508,51 +406,13 @@ const toolBadgeItems = (
     })
     .filter((x): x is { id: string; summary: ToolTurnSummary } => x !== null);
 
-// dojo3 chat only: turn a run of tool-only turns into one chip-tool pill per
-// visible (non-bookkeeping) tool, carrying its raw input plus any matching
-// tool_result so each chip can expand into the canonical ToolCallCard /
-// ToolResultBlock detail. Bookkeeping tools are dropped to mirror the badge
-// path (summarizeToolTurn hides them); if a group surfaces no visible tool the
-// chips list is empty and ToolBadgeGroup falls back to the summary items.
+// dojo3: tool-only turns become one chip pill per visible tool (input + result); bookkeeping tools drop.
 interface ToolResultInfo { content: string; isError: boolean }
 
-// A tool call whose result errored — the exact same `isError` flag the UI uses
-// to render the chip red. The engine surfaces and recovers from these itself
-// (it typically retries), so outside Wordy mode the failed chip is just noise
-// that makes the agent look like it's repeating itself. Hide it in the clean
-// view; Wordy mode still shows every step. (Replaces an older text-regex that
-// only caught missing-param errors and could over-match a legit "is required".)
+// A tool call whose result errored: the engine self-recovers, so a failed chip is noise outside Wordy mode.
 const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 
-// A tool chip is user-visible in REGULAR mode only when its row was produced
-// serving a HUMAN conversation. The turn's conv_key is the structural signal:
-// a user-triggered turn stamps its own assistant/tool rows with the human
-// conversation (`conversations.id`); a background / engine turn (scheduler sync, watcher,
-// tracker-driven surface) leaves them null because the turn had no waiting human
-// (chosenConversationId null, so the teardown stamp is a no-op). Verified against the live
-// DB: `null` IS the background marker on a chip row.
-// PHASE-2 T4: the 'park:'/'relayed:' sentinels are GONE (a delegated question is parent/child
-// rows in `work` and nothing rewrites conv_key to hold join state), so the clauses testing for
-// them are deleted rather than left reading a dead namespace.
-// This hides only the CHIP; a background turn's surfaced TEXT is a separate assistant row and
-// still renders. Wordy mode shows every chip. Absent conversationId (undefined, e.g. a local
-// optimistic bubble) defaults to user-visible so a live user turn never loses its own chips.
-// NOTE: legacy rows written before conversation stamping are null too, so their chips are
-// hidden in regular mode and only appear in wordy mode (bounded history tradeoff). Migration
-// `147` backfilled the ones whose old `conv_key` named a resolvable conversation, so this
-// tradeoff covers strictly fewer rows than it did.
-// ── PHASE-2 T10I: the signal is `conversationId`, and the sentinel clause is GONE ──
-// The three `'engine…'` values this used to test for were FAKE CONVERSATION KEYS the engine
-// wrote onto the identity column, and the comment above records what they actually were: they
-// only ever landed on a role='user' TRIGGER row, never on the agent's own output — so on a
-// CHIP row (assistant/tool) they were unreachable and the `null` branch was doing all the
-// work. `conversation_id` cannot hold a sentinel at all (an events-lane rider has no
-// conversation), so testing for one would be testing for a value the schema can no longer
-// produce, which is worse than deleting the clause: it would read as a live guard.
-// requirement preserved, unchanged: an own-output row with NO conversation belongs to a
-// background/engine turn and its CHIP is hidden in regular mode; a row that belongs to a real
-// conversation shows. `undefined` still means "no signal" (a local optimistic bubble) and
-// still shows, so a live user turn never loses its own chips.
+// A chip shows in regular mode only when its row served a HUMAN conversation; wordy shows all.
 const isBackgroundTurnRow = (m: ChatMessage): boolean => {
   const cid = m.conversationId;
   if (cid === undefined) return false;     // no signal → show (safety for live user turns)
@@ -564,25 +424,14 @@ const toolChips = (
   msgs: ChatMessage[],
   resultById: Map<string, ToolResultInfo>,
   wordyMode: boolean,
-  // Mid-run in-flight cutoff (2026-07-23, owner report: chips vanish on a
-  // mid-run refresh, return after the run). `conversation_id` is stamped on own output at
-  // turn TEARDOWN, so a REST reload during an active turn sees the turn's own
-  // rows as conversationId null and the background test hides their chips. While
-  // the agent is working, rows created at/after the current trigger are the
-  // live turn's; exempt them. Once the run ends the stamp governs again.
+  // Mid-run cutoff: the stamp lands at teardown; rows at/after the current trigger stay, then it governs.
   liveCutoff: string | null = null,
 ): ToolChipData[] =>
   msgs.flatMap((m) =>
-    // Background/engine run: drop its tool chips in regular mode (only the chips
-    // are hidden; the turn's surfaced text is a separate row that still renders).
     (!wordyMode && isBackgroundTurnRow(m) && !(liveCutoff && m.createdAt >= liveCutoff))
       ? []
     : (parseMessageContent(m.content).blocks ?? [])
-      // UX-REPAIR T54(d): the call's own ARGUMENTS are passed. `classifyTool` has taken them
-      // since PHASE-2 T8V for the one operation whose class they change (`work_open` with a
-      // reminder shape is effectful; its 23 sibling ops are bookkeeping), and this filter never
-      // supplied them, so setting a reminder drew nothing. The @dojo/shared row-tier fold now
-      // passes them too — both sides move together or the row is dropped before this runs.
+      // Args are passed too: `work_open` with a reminder shape is effectful where its siblings are not.
       .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name, b.input) !== 'bookkeeping')
       .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
@@ -599,37 +448,18 @@ const toolChips = (
       }),
   );
 
-// v2.7.23 — render channel-send tool calls as outbound message bubbles with a
-// RECIPIENT-bearing channel pill ("to X via iMessage"), not a generic gear icon
-// and not a bare "sent via iMessage" (the observed defect: with two
-// conversations interleaved in one stream the owner could not tell who a bubble
-// went to). The pill wording is the SAME outboundBadge the resolver-routed
-// replies use, so the two outbound paths cannot drift; the recipient is read
-// cheaply from the tool's own arguments (raw handle/number as the honest
-// fallback when no display name is available client-side).
-//
-// DERIVED, not a hand list (2026-07-08 defect-class sweep): a tool renders a
-// message bubble iff it is a real human-channel send (channelOfSendTool knows
-// them all: iMessage/Teams/SMS/Gmail+Outlook send+reply+FORWARD) AND it carries
-// a body. Only voice_call is bodiless, so it is the single exclusion. The old
-// hand Set had silently dropped gmail_forward / outlook_forward (both carry a
-// note); deriving from the canonical map fixes that and can never fall behind a
-// new send channel again.
+// Outbound bubbles share the resolver's outboundBadge, so the two outbound paths cannot drift.
 const isChannelSendBubbleTool = (name: string): boolean =>
   channelOfSendTool(name) !== null && name !== 'voice_call';
 
-// The recipient the send targeted, pulled from the tool's own arguments. Replies
-// target the inbound thread and carry no explicit recipient, so they return null
-// and the badge falls back to channel-only wording.
+// The recipient the send targeted, from the tool's arguments; replies (no explicit one) return null.
 const sendToolRecipient = (name: string, input: Record<string, unknown>): string | null => {
   const s = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
   switch (name) {
     case 'imessage_send': return s(input.to) ?? s(input.recipient) ?? s(input.handle);
     case 'sms_send': return s(input.to) ?? s(input.number) ?? s(input.recipient);
     case 'teams_send_message': {
-      // A Teams chat id is a long GUID, not a display name, and resolving it to
-      // one needs a network call the dashboard must not make. Show the same
-      // truncated id the resolver's Teams marker uses so the two paths match.
+      // A Teams chat id is a GUID, not a name; resolving it needs a call the dashboard must not make.
       const chat = s(input.chat_id) ?? s(input.chatId);
       return chat ? `${chat.slice(0, 8)}…` : null;
     }
@@ -652,13 +482,7 @@ const ChannelSendBubble = ({ msg, toolUse, serverBadge }: { msg: ChatMessage; to
         ? toolUse.input.text
         : '';
   if (!messageText) return null;
-  // Prefer the server-resolved outbound badge: the engine writes a persisted
-  // routing marker for this send carrying the recipient's display name resolved
-  // from the contacts store / safe-sender registry (parsed into serverBadge by
-  // the outboundChannelByAssistantId walk). Only when no marker is attached
-  // (older messages, or a reply with no explicit recipient) do we fall back to
-  // reading the raw handle from the tool input — the honest handle-only
-  // fallback, never a second label on top of the server one.
+  // Prefer the server-resolved badge (carries the display name); fall back to the raw handle, never both.
   const badge = serverBadge ?? outboundBadge(channel, sendToolRecipient(name, (toolUse.input as Record<string, unknown>) ?? {}));
   return (
     <div className="flex flex-col items-start">
@@ -682,7 +506,6 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
   const { blocks } = parseMessageContent(msg.content);
 
   if (!blocks) {
-    // Fallback for non-JSON tool messages
     return (
       <div className="flex justify-start">
         <div className="max-w-[75%]">
@@ -698,9 +521,6 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
         {blocks
           .filter((b) => b.type === 'tool_result')
           .map((b, i) => {
-            // content can be a string OR an array of content blocks
-            // (e.g., file_read on an image returns [{type:'text',...},{type:'image',...}]).
-            // Extract text for display; images are shown as placeholders.
             let displayContent: string;
             const rawContent = b.content as unknown;
             if (typeof rawContent === 'string') {
@@ -732,7 +552,6 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
-// ── Main Chat Component ──
 
 interface ChatProps {
   panel?: {
@@ -743,14 +562,9 @@ interface ChatProps {
 }
 
 export const Chat = ({ panel = null }: ChatProps) => {
-  // The active agent drives the whole stage. Defaults to the primary
-  // ("dojo master", shown as DOJO); selecting an agent swaps the chat,
-  // composer target, orb, and labels to that agent.
+  // The active agent drives the whole stage; selecting one swaps the chat, composer target, orb, labels.
   const { agentId: activeAgentId, agentName: selectedAgentName } = useActiveAgent();
-  // While a technique-build session is active, the chat BECOMES the trainer
-  // conversation: it targets the trainer agent, prepends build/edit context on
-  // the first message, and the Technique Mat docks on the right. With no
-  // session this is fully inert and the chat behaves exactly as before.
+  // During a technique session the chat becomes the trainer conversation (target, context, docked Mat).
   const techSession = useTechniqueSession();
   const AGENT_ID = techSession.active ? techSession.trainerAgentId : activeAgentId;
   const activeAgentName = techSession.active
@@ -764,28 +578,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const [messages, setMessages] = useAgentState<ChatMessage[]>(AGENT_ID, []);
   const [input, setInput] = useState('');
   const [isWorking, setIsWorking] = useAgentState(AGENT_ID, false);
-  // Kind of the current working turn, from agent:status. 'a2a' = the agent is
-  // only talking to another agent; we keep the composer quiet for those (no
-  // thinking dots / stop button) unless wordy mode is on.
+  // Turn kind from agent:status; 'a2a' turns stay composer-quiet (no dots/stop) unless wordy is on.
   const [turnKind, setTurnKind] = useAgentState<'user' | 'a2a'>(AGENT_ID, 'user');
-  // UX-REPAIR T7. What the LAST working frame said about serving a human, kept as its own
-  // three-state value: `true` / `false` / `undefined` for a bare legacy frame that carried
-  // no such field. It is deliberately NOT folded into `turnKind`: a background scheduler /
-  // PM-poke / watcher turn is `turnKind:'user'` AND `userFacing:false`, so the two facts
-  // disagree on exactly the frames this guard is for.
+  // What the LAST working frame said about serving a human; a background turn is 'user' kind AND false.
   const [turnUserFacing, setTurnUserFacing] = useAgentState<boolean | undefined>(AGENT_ID, undefined);
-  // The user has a request in flight (sent a message, no completion yet). Drives
-  // the working UI (thinking dots + stop button) so it stays visible for the
-  // WHOLE request — even when the agent dips into agent-to-agent (a2a)
-  // coordination to fulfill it. Those a2a sub-turns are turnKind:'a2a', which on
-  // its own would hide the UI and make the agent look dead mid-task (regression:
-  // a user asked the agent to SSH somewhere and saw no dots/stop while it worked
-  // because the work ran over a2a). Set on send, cleared when the agent goes
-  // idle (request done). Background a2a churn never sets this, so the UI still
-  // stays quiet for PURE inter-agent work with no user waiting.
+  // A request is in flight (sent, not completed): drives dots + stop for the whole request, even a2a.
   const [awaitingUserReply, setAwaitingUserReply] = useAgentState(AGENT_ID, false);
-  // A-5b / RULING #9 — work that outlives the turn, which no `agent:status` frame describes.
-  // `stoppable` is the SERVER's answer; this component keeps no tally of its own.
+  // Work that outlives the turn, no `agent:status` frame describes it; `stoppable` is the SERVER's answer.
   const [backgroundStoppable, setBackgroundStoppable] = useAgentState(AGENT_ID, false);
   const [loading, setLoading] = useAgentState(AGENT_ID, true);
   const [loadingMore, setLoadingMore] = useAgentState(AGENT_ID, false);
@@ -796,20 +595,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
     return stored === 'true';
   });
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  // "Stick to bottom" behaviour (Claude-style). Pinned = the view follows new
-  // content. When the user scrolls up to read history we UNPIN: auto-scroll
-  // stops (so agent activity no longer yanks them down) and a "jump to latest"
-  // button appears above the composer. Re-pin only when they click it or scroll
-  // back to the bottom. The ref mirrors the state so the WS handlers + the
-  // messages effect (set up once / not in deps) read the live value.
+  // "Stick to bottom": pinned follows new content; scrolling up unpins (no yanking) and shows a
+  // jump-to-latest button. The ref mirrors it so once-set-up WS handlers read the live value.
   const [pinnedToBottom, setPinnedToBottom] = useAgentState(AGENT_ID, true);
   const pinnedToBottomRef = useRef(true);
-  // True while a "jump to latest" is in flight: the scroll handler must not
-  // un-pin (and re-show the button) on the intermediate positions of a multi-
-  // frame jump, or a deep jump that lands on a partial layout would flip back.
+  // True while a "jump to latest" is in flight: the scroll handler must not un-pin on its intermediate steps.
   const jumpingRef = useRef(false);
-  // Where the page's OWN last scroll put the view: an event reporting exactly that is our echo,
-  // not the owner reading upward, so it never moves the pin however far the layout has grown since.
+  // Where our own last scroll landed: an event reporting exactly that is an echo, not the owner scrolling up.
   const programmaticTopRef = useRef<number | null>(null);
   const NEAR_BOTTOM_PX = 80; // within this of the bottom counts as "at the bottom"
 
@@ -822,19 +614,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
   const statusFrameSeqRef = useRef(0); // frames heard for this agent: lets a load tell if its answer is stale
 
-  // ── Orb mood ──
-  // The active agent can lead a reply with a `((mood: NAME))` marker; we read it
-  // out of its (streaming) text and emote the orb. Scoped to the active agent
-  // because this Chat is bound to it. Per-message accumulator drives a live
-  // reaction as the reply starts; lastMoodRef de-dupes repeat sets.
+  // The agent can lead a reply with a `((mood: NAME))` marker; we read it and emote the orb.
   const dojoOrb = useDojoOrb();
-  // Mirror turnKind / wordyMode into refs so the WS handler closures (set up
-  // once) read the CURRENT value. Used to suppress live streaming bubbles on
-  // inter-agent (a2a) turns: those messages are hidden on reload (source='a2a'),
-  // but a streaming bubble is created with no origin/source, so it bypasses the
-  // render-time visibility filter and flashes the agent-to-agent text, tool
-  // badges, and thinking dots into the user's chat until reconcile. Gating the
-  // bubble creation here is the uniform fix (covers content AND reasoning chunks).
+  // turnKind / wordyMode mirror into refs so once-set-up WS closures read the CURRENT value.
   const turnKindRef = useRef(turnKind);
   turnKindRef.current = turnKind;
   const wordyModeRef = useRef(wordyMode);
@@ -842,15 +624,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // Which conversation (agent + feed mode) is on screen now: a slow older page checks it on return.
   const viewKeyRef = useRef('');
   viewKeyRef.current = `${AGENT_ID}:${wordyMode}`;
-  // True when the current turn's streamed output must NOT render in the user's
-  // chat (inter-agent turn, wordy mode off). Wordy mode deliberately surfaces
-  // inter-agent activity, so it streams normally there.
+  // True when the turn's streamed output must NOT render for the user (inter-agent turn, wordy off).
   const suppressStreamForTurn = () => turnKindRef.current === 'a2a' && !wordyModeRef.current;
   const streamTextRef = useRef<Map<string, string>>(new Map());
-  // De-dupe per (message, emotion): streaming chunks of the SAME message don't
-  // re-fire, but a NEW message re-fires even the same mood (so two angry
-  // replies both flare). Emotions auto-release via their `hold`, so each is a
-  // momentary burst that settles back to rest.
+  // De-dupe per (message, emotion): same-message chunks don't re-fire; a new message re-fires the mood.
   const lastEmotionKeyRef = useRef<string | null>(null);
   const applyMood = useCallback((msgId: string, text: string) => {
     const emotion = moodToEmotion(parseMoodMarker(text));
@@ -861,9 +638,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     dojoOrb.setEmotion(emotion);
   }, [dojoOrb]);
 
-  // Reset mood tracking when the active agent changes (a new agent starts
-  // neutral; its own next reply re-drives the orb).
-  // The same goes for every other per-agent ref (the per-agent STATE is `useAgentState`).
+  // Reset mood tracking and every other per-agent ref when the agent changes (a new agent starts neutral).
   useEffect(() => {
     lastEmotionKeyRef.current = null;
     streamTextRef.current.clear();
@@ -875,15 +650,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
     programmaticTopRef.current = null;
   }, [AGENT_ID]);
 
-  // Auto-scroll — fires on (a) new message appended and (b) the last
-  // message growing during streaming. Streaming-chunk scrolls only fire
-  // when the user is already near the bottom, so we don't yank them
-  // down if they scrolled up to read history. v2.5.45.
+  // Auto-scroll on a new message or a growing last message, only while pinned to the bottom.
   const lastMessageIdRef = useRef<string | null>(null);
   const lastMessageSigRef = useRef<string | null>(null);
-  // Every follow-the-newest scroll is instant and goes through here. The old smooth `scrollIntoView`
-  // reported each animation step to the listener and landed where the bottom WAS when it began, so
-  // growth during it (the next message, a streamed chunk) left the chat un-pinned (#23).
+  // Follows are instant: smooth `scrollIntoView` reports each step and lands where the bottom was.
   const scrollToBottom = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
@@ -891,13 +661,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     programmaticTopRef.current = container.scrollTop; // read back: the browser clamps it
   }, []);
 
-  // Reliable "jump to the true bottom" for the jump-to-latest button. A single
-  // scrollTop=scrollHeight lands on a stale/partial height when the user has
-  // scrolled far up and paginated older messages in — the layout below hasn't
-  // settled yet, so it stops on a random "floor" (worse on mobile). Re-assert the
-  // bottom across several frames + a couple of timeouts (same belt-and-braces the
-  // initial load uses, which is why a refresh always lands at the bottom). The
-  // jumpingRef keeps the scroll handler from un-pinning on the way down.
+  // Jump-to-bottom re-asserts across frames: one write lands on a stale height while layout settles.
   const jumpToBottom = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
@@ -915,22 +679,16 @@ export const Chat = ({ panel = null }: ChatProps) => {
   useEffect(() => {
     const last = messages.length > 0 ? messages[messages.length - 1] : null;
     if (!last) return;
-    // Signature combines id + content length, so a streaming bubble whose
-    // id stays the same but whose content grows still triggers a re-scroll.
+    // Signature combines id + content length: a streaming bubble with a stable id still re-scrolls.
     const sig = `${last.id}:${last.content?.length ?? 0}`;
     if (sig === lastMessageSigRef.current) return;
     const isNewMessage = last.id !== lastMessageIdRef.current;
     lastMessageIdRef.current = last.id;
     lastMessageSigRef.current = sig;
     if (isNewMessage) {
-      // Only follow new messages when pinned. If the user scrolled up to read
-      // history, a new agent message (thinking/work/system) must NOT yank them
-      // back down — that was the annoyance. They stay put; the jump-to-latest
-      // button is already showing.
       if (pinnedToBottomRef.current) scrollToBottom();
     } else {
-      // Same message growing (streaming chunk): follow while pinned (the pin is the one statement
-      // of "at the bottom"; a second 80 px test here stopped following on any bigger chunk).
+      // Same message growing: follow while pinned; a second distance test would miss big chunks.
       if (pinnedToBottomRef.current) scrollToBottom();
     }
   }, [messages, scrollToBottom]);
@@ -943,13 +701,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
     statusFrameSeqRef, setMessages, setIsWorking, setBackgroundStoppable, toChat: toMessage,
   });
 
-  // Load chat history
   useEffect(() => {
-    // During a technique session, wait until the resume-vs-clear decision has
-    // resolved so we don't load a stale trainer conversation that's about to be
-    // wiped (or render before a resumed one is confirmed). Clear the prior
-    // agent's messages immediately so the previous conversation doesn't bleed
-    // through while the trainer history loads.
+    // Before loading, wait for the resume-vs-clear decision so no stale trainer chat bleeds through.
     if (techSession.active && !techSession.ready) {
       setMessages([]);
       setLoading(true);
@@ -958,29 +711,20 @@ export const Chat = ({ panel = null }: ChatProps) => {
     // The cancel token: a load belongs to the agent (and mode) that started it.
     let active = true;
     const loadHistory = async () => {
-      // Ask the server whether this agent is working (e.g. user navigated away and came back),
-      // and take the ANSWER, working or idle: an idle agent sends no frame to say so. A status
-      // frame that arrived while we asked is newer than the answer, so it stands.
+      // Ask the server if this agent is working: an idle agent sends no frame; a newer status frame stands.
       const seq = statusFrameSeqRef.current;
       const agentResult = await api.getAgent(AGENT_ID);
       if (!active) return;
       if (agentResult.ok && statusFrameSeqRef.current === seq) {
         setIsWorking(agentResult.data.status === 'working');
       }
-      // …and the same question, asked once on the way in: a user who comes back mid-render
-      // arrives before the next lifecycle edge. `inFlight` is `live-work.ts`'s own output.
-      //
-      // THE BACKGROUND HALF ONLY. `agent:jobs` is this latch's sole clearing edge and turn
-      // calls deliberately never emit it, so latching on `f.turn` too set a latch nothing
-      // could clear: a page load mid-turn left a "Stop background job" button on a genuinely
-      // idle agent for every turn after, pressing it 400'd silently (review I1). The turn half
-      // is already carried by the `status === 'working'` read above, which HAS a clearing edge.
+      // Ask on the way in too (a returner mid-render beats the next lifecycle edge); background
+      // half only: turns never emit `agent:jobs` (the latch's clearing edge); a turn latch strands Stop.
       if (agentResult.ok) {
         const f = agentResult.data.inFlight;
         setBackgroundStoppable(!!f && f.background > 0);
       }
 
-      // Load model name lookup for wordy mode display
       const modelsResult = await api.getModels();
       if (!active) return;
       if (modelsResult.ok) {
@@ -1002,7 +746,6 @@ export const Chat = ({ panel = null }: ChatProps) => {
           loaded.map(toMessage),
         );
         setHasMore(result.data.length >= 50);
-        // Fresh conversation load starts pinned to the bottom.
         pinnedToBottomRef.current = true;
         setPinnedToBottom(true);
         // Land at the bottom once laid out; later growth is followed by useFollowGrowth while pinned.
@@ -1016,13 +759,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
     };
     loadHistory();
     return () => { active = false; };
-    // wordyMode is a dep: the two modes are now different SERVER queries (wordy
-    // adds the store's own-output rows), so toggling wordy must refetch history
-    // rather than re-filter a single feed client-side.
+    // wordyMode is a dep: wordy adds own-output SERVER rows, so toggling must refetch history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [AGENT_ID, techSession.active, techSession.ready, wordyMode]);
 
-  // Load older messages when scrolling to top
   const loadOlderMessages = useCallback(async () => {
     if (loadingMore || !hasMore || messages.length === 0) return;
     const oldestId = messages[0]?.id;
@@ -1042,7 +782,6 @@ export const Chat = ({ panel = null }: ChatProps) => {
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
 
-      // Maintain scroll position after prepending
       requestAnimationFrame(() => {
         if (container) {
           container.scrollTop = container.scrollHeight - prevScrollHeight;
@@ -1054,21 +793,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
     setLoadingMore(false);
   }, [loadingMore, hasMore, messages, AGENT_ID, wordyMode]);
 
-  // Detect scroll to top
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
 
     const handleScroll = () => {
-      // Track pin state: at/near the bottom → pinned (follow new content);
-      // scrolled up → unpinned (stop following, show the jump-to-latest button).
-      // Only commit a React state change when the value actually flips, so this
-      // hot scroll handler doesn't re-render on every pixel.
+      // Track pin state: near-bottom pins, scrolling up unpins; React state commits only on a flip.
       const nearBottom =
         container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
-      // While a jump-to-latest is settling, don't un-pin on an intermediate
-      // (still-above-bottom) position — that's what made a deep jump bounce to a
-      // partial floor and the button flicker back.
       const ownEcho = programmaticTopRef.current !== null
         && Math.abs(container.scrollTop - programmaticTopRef.current) <= 1;
       programmaticTopRef.current = null; // one scroll, one event: whatever this was, it is spent
@@ -1085,14 +817,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
     return () => container.removeEventListener('scroll', handleScroll);
   }, [hasMore, loadingMore, loadOlderMessages]);
 
-  // Subscribe to WebSocket events
   useEffect(() => {
-    // Hoisted at the top of the effect so every handler below can use it.
-    // See the call sites for the full reasoning — short version: when the
-    // agent reaches a terminal state via any code path, drop empty
-    // streaming bubbles (ghost dots) and stop the dots on bubbles that
-    // already have content. Engine-agnostic backstop for the "agent is
-    // done but the dots are still bouncing" class of bug.
+    // Backstop: on any terminal state, drop empty streaming bubbles, stop dots on ones with content.
     const reconcileStreamingBubbles = () => {
       setMessages((prev) =>
         prev
@@ -1105,14 +831,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const e = event as ChatWorkingNoteEvent;
       if (e.agentId !== agentIdRef.current) return;
       setMessages((prev) => {
-        // ── SWEEP CORE-2 item 7 — THE RE-CLASSIFICATION ARM ──
-        // The turn ended, the ledger named a different bubble as the answer, and THIS row
-        // moved into the working-note lane. It is a real, persisted assistant row: it keeps
-        // its id, its role and every byte of its content (the cache law), and only its stored
-        // `display_kind` changed. So the client must convert IN PLACE by stamping the same
-        // kind — fabricating a `[working-note]`-prefixed system row here would make the live
-        // view disagree with the reload that serves the row as it actually is, which is the
-        // exact divergence this event was built to close.
+        // Re-class arm: only `display_kind` changed, so stamp it in place; live must match reload.
         if (e.reclassified) {
           const at = prev.findIndex((m) => m.id === e.messageId);
           if (at < 0) return prev;
@@ -1120,17 +839,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
           out[at] = { ...out[at], displayKind: 'working-note', isStreaming: false };
           return out;
         }
-        // RC-9: carry the internal flag through the persisted content prefix so the
-        // render-time filter hides an internal note (routed-channel human turn) outside
-        // wordy mode, identically live and on reload.
+        // Carry the internal flag through the persisted prefix: the filter hides it live AND on reload.
         const note: ChatMessage = {
           id: e.noteId,
           role: 'system',
           content: `${e.internal ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX}${e.content}`,
           createdAt: new Date().toISOString(),
         };
-        // Convert the streamed bubble in place so the text never vanishes; if
-        // it was never streamed (or already reconciled away), append instead.
+        // Convert the streamed bubble in place so the text never vanishes; append if never streamed.
         const idx = prev.findIndex((m) => m.id === e.messageId);
         if (idx >= 0) {
           const out = [...prev];
@@ -1144,41 +860,22 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
-      // Inter-agent turn (wordy off): never build a streaming bubble. The bubble
-      // has no origin/source so the render-time visibility filter can't hide it —
-      // it would flash the agent-to-agent reply (text, tool badges, thinking
-      // dots) into the chat until reconcile. The finalized message is hidden on
-      // reload via source='a2a'; this keeps it hidden live too.
+      // Inter-agent turn (wordy off): no bubble; with no origin the filter would flash a2a text.
       if (suppressStreamForTurn()) return;
 
-      // Orb mood: accumulate this message's streamed text and emote the orb as
-      // soon as a `((mood: NAME))` marker appears (it leads the reply).
       const accum = (streamTextRef.current.get(e.messageId) ?? '') + e.content;
       streamTextRef.current.set(e.messageId, accum);
       applyMood(e.messageId, accum);
       if (e.done) streamTextRef.current.delete(e.messageId);
 
-      // v2.5.22 — On every done event, snapshot the tool-call ref and clear
-      // it BEFORE entering the state updater. Previously the clear was only
-      // inside the idx>=0 branch, which meant a tool-only iteration (no
-      // streaming bubble was ever created because the assistant message
-      // had no text) would leave currentToolCallsRef populated. The NEXT
-      // iteration's streaming bubble's done event then picked up those
-      // stale tool calls and attached them as the new bubble's toolCalls.
-      // That triggered the "duplicate tool calls below the response" bug:
-      // the tool_use blocks already render via the JSON content's
-      // hasToolUse path inside iter1's bubble, AND a second time via
-      // msg.toolCalls inside iter2's plain-text bubble (where hasToolUse
-      // is false, so the toolCalls-render branch activates).
+      // Snapshot and clear the tool-call ref on every done event BEFORE the updater, never per-branch.
       const toolCallsSnapshot = e.done && currentToolCallsRef.current.length > 0
         ? [...currentToolCallsRef.current]
         : null;
       if (e.done) currentToolCallsRef.current = [];
 
       setMessages((prev) => {
-        // Look up by messageId rather than just the tail — when a reasoning
-        // bubble was created first, the answer chunks need to update THAT
-        // bubble (not append a new one at the end).
+        // Look up by messageId, not the tail: answer chunks must update the reasoning bubble created first.
         const idx = prev.findIndex((m) => m.id === e.messageId && m.isStreaming);
         if (idx >= 0) {
           const existing = prev[idx];
@@ -1201,7 +898,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
           // Already have this message (finalized) -- skip duplicate from reconnect
           return prev;
         } else {
-          // New streaming message — but skip if it's empty and already done (ghost bubble)
+          // New streaming message; skip if it's empty and already done (ghost bubble)
           if (e.done && (!e.content || e.content.trim().length === 0)) {
             return prev;
           }
@@ -1220,11 +917,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       });
     });
 
-    // Reasoning / thinking deltas (DeepSeek native, OpenRouter unified).
-    // Either updates the existing streaming bubble (if one already exists
-    // for this messageId) or creates a fresh one with reasoning but no
-    // answer text yet — the eventual chat:chunk for the same messageId
-    // will then start filling in the answer.
+    // Reasoning deltas (DeepSeek, OpenRouter): update the streaming bubble or create a shell.
     const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
       const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
       if (e.agentId !== agentIdRef.current) return;
@@ -1242,8 +935,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
           };
           return out;
         }
-        // Reasoning arrived before any chat:chunk — create the bubble shell
-        // with empty content, the answer chunks will populate it later.
+        // Reasoning before any chat:chunk: create the shell with empty content; chunks fill it later.
         return [
           ...prev,
           {
@@ -1262,11 +954,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubToolCall = subscribe('chat:tool_call', (event: WsEvent) => {
       const e = event as ChatToolCallEvent;
       if (e.agentId !== agentIdRef.current) return;
-      // LIVE = RELOAD (incident 2026-07-06): tool badges from an inter-agent turn
-      // must obey the same suppression the text stream does. Without this, an
-      // agent-coordination turn painted a wall of EXEC/FILE_READ pills into
-      // regular-mode chat live, which then vanished on refresh (the persisted
-      // rows are source='a2a' and reload hides them).
+      // LIVE = RELOAD: inter-agent badges follow the text's suppression (else pills flash, reload hides).
       if (suppressStreamForTurn()) return;
       currentToolCallsRef.current.push({
         name: e.tool,
@@ -1287,15 +975,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubError = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== agentIdRef.current) return;
-      // Phase 8 F1 fix: honor the severity field. Was hardcoding "rate limits
-      // are warnings, everything else is a persistent red error" — which left
-      // recovered agents and the engine's info-level events (HEALER_DISPATCHED,
-      // AGENT_RECOVERED, SEMANTIC_DUPLICATE dedup) showing as red errors.
+      // Honor the severity field: the engine's info-level events must not read as red errors.
       const isRateLimit = e.code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
       const declared: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
-      // Rulings audit #7 (owner, M11): "It shouldn't be a persistent notification if it doesn't require the
-      // intervention of the user. It also shouldn't be red." A sticky red card is for a frame that declares the owner
-      // must act (`cardClass: 'action'`); any other error reads as a warning that leaves by itself.
+      // Sticky red means the owner must act (`cardClass: 'action'`); anything else leaves by itself.
       const sev: 'info' | 'warning' | 'error' = declared === 'error' && e.cardClass !== 'action' ? 'warning' : declared;
       if (sev === 'info') {
         toast.success(e.error);
@@ -1314,18 +997,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
       }
     });
 
-    // Subscribe to full message events (tool results, system messages, etc.)
-    // When the canonical assistant message arrives for a streaming bubble we
-    // REPLACE the bubble's content with the JSON payload (which has the
-    // tool_use blocks the chunked plain-text version is missing). Pre-2026-
-    // 04-30 this skipped on id match, so tool-call cards in wordy mode only
-    // appeared after a page reload.
+    // chat:message: the canonical JSON replaces a streaming bubble's content: it carries the tool_use blocks.
     const unsubMessage = subscribe('chat:message', (event: WsEvent) => {
       const e = event as ChatMessageEvent;
       if (e.agentId !== agentIdRef.current) return;
 
-      // Orb mood from the canonical message (covers non-streamed replies and
-      // any marker the stream parse missed).
+      // Orb mood from the canonical message: non-streamed replies, markers the stream parse missed.
       if (e.message.role === 'assistant') applyMood(e.message.id, e.message.content);
 
       setMessages((prev) => {
@@ -1338,44 +1015,22 @@ export const Chat = ({ panel = null }: ChatProps) => {
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
             createdAt: e.message.createdAt ?? existing.createdAt,
-            // Clear the streaming-collected toolCalls — the JSON content is
-            // now the source of truth. If the canonical has tool_use blocks
-            // AssistantBubble renders them via the hasToolUse path; if not,
-            // the live toolCalls were just a streaming artifact.
+            // JSON content is now truth: tool_use renders via hasToolUse, so drop streaming toolCalls.
             toolCalls: undefined,
             isStreaming: false,
-            // Carry the turn's conversation key so a finalized tool-only row's
-            // chips get the same background-vs-user discrimination live as on
-            // reload (null = background run, chips hidden in regular mode).
+            // Carry the turn's conversation key so a finalized tool-only row's chips
+            // read background-vs-user live exactly as on reload (null = background run).
             conversationId: e.message.conversationId ?? existing.conversationId,
           };
-          // v2.5.21 — Removed the v2.5.20 move-to-tail. It fired when
-          // chat:message arrived for a streaming bubble AND the bubble
-          // wasn't at the array tail. The intended trigger: tool messages
-          // got appended after the streaming bubble during the turn, so
-          // move the response to the bottom on finalization. The unintended
-          // trigger: user sends a new message DURING streaming, that user
-          // temp bubble gets appended after the streaming bubble, then
-          // chat:message arrives and the agent's response jumps PAST the
-          // user's new message — which the user sees as "my new message
-          // appears above the agent's previous response." Way worse than
-          // the chronology issue it was trying to fix.
+          // Never tail-move a finalized bubble: a mid-stream user message would sit above its response.
           return updated;
         }
 
-        // For user messages, reconcile with any optimistic temp- bubble that
-        // handleSend pushed locally. Without this the same user message
-        // appears twice — once from the optimistic insert, once from the
-        // server's broadcast — because the temp id never matches the real one.
+        // Reconcile with handleSend's optimistic temp- bubble: temp ids never match, so no doubling.
         if (e.message.role === 'user') {
-          // Compare on the typed-text core, not the full content. The
-          // server appends [File attached: ...] tags to the broadcast
-          // payload but the optimistic temp bubble only has what the
-          // user typed — without normalizing, every message-with-attachment
-          // failed dedup and rendered twice.
-          // Strip injected technique build/edit context too: the broadcast
-          // carries the full wire message (context + marker + typed) but the
-          // optimistic temp bubble only has the typed text.
+          // Compare on the typed-text core: the broadcast carries attachment tags and
+          // injected technique context the optimistic bubble never had, so an un-normalized
+          // compare fails dedup and renders every enriched message twice.
           const broadcastCore = stripBuilderContext(stripAttachmentTags(e.message.content));
           const tempIdx = prev.findIndex(
             (m) => m.role === 'user' && m.id.startsWith('temp-') &&
@@ -1388,11 +1043,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
               id: e.message.id,
               createdAt: e.message.createdAt,
               attachments: e.message.attachments ?? updated[tempIdx].attachments,
-              // t106 — THE LIVE WINDOW. The optimistic bubble `handleSend` pushed has no
-              // conversation (only the server resolves one), so a reconcile that did not carry
-              // the frame's left the anchor row conversation-less for the whole live window and
-              // `lib/working-note-visibility.ts` R4 answered NO — the owner's reply stayed
-              // collapsed until he refreshed, which is the symptom ruling #7 is about.
+              // Carry the frame's conversation: the optimistic bubble has none (only the server
+              // resolves one), and an anchor without it fails the visibility R4 test live, so
+              // the owner's reply stays collapsed until a refresh.
               conversationId: e.message.conversationId ?? updated[tempIdx].conversationId,
             };
             return updated;
@@ -1406,9 +1059,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
             role: e.message.role,
             content: e.message.content,
             createdAt: e.message.createdAt,
-            // Carry attachments through from the WS payload so thumbnails
-            // render immediately for iMessage-sourced messages (previously
-            // only hydrated on page reload via the HTTP GET).
+            // Carry attachments from the WS payload so thumbnails render now,
+            // not only after a reload via the HTTP GET.
             attachments: e.message.attachments,
             source: e.message.source ?? null,
             origin: e.message.origin,
@@ -1419,41 +1071,24 @@ export const Chat = ({ panel = null }: ChatProps) => {
       });
     });
 
-    // PHASE-1 T9 — an explicit retraction replaces the empty-chat:message hack.
-    //
-    // The engine sometimes decides a bubble that already streamed should not become a
-    // message: a bare [no-reply], a redundant closeout, a ghosted work ask. It used to say
-    // so by broadcasting a chat:message with EMPTY content, and the handler above read
-    // "empty" as "delete". Two things were wrong with that. The event named "here is a
-    // message" carried its own opposite, so "every broadcast has a persisted row" could
-    // never be stated (those three deliberately had none). And when NO bubble existed for
-    // the id, the empty message fell through to the append branch and rendered as a bare
-    // timestamp — the stray-blank-bubble bug (research 17 §4 item 1).
-    //
-    // A retraction is its own event now. Dropping a bubble that is not there is a no-op,
-    // which is what it always should have been.
+    // A retraction is its own event: dropping a bubble that isn't there is a no-op.
+    // The old empty-content chat:message carried "delete" inside a "message" event.
     const unsubRetract = subscribe('chat:retract', (event: WsEvent) => {
       const e = event as { agentId: string; messageId: string };
       if (e.agentId !== agentIdRef.current) return;
       setMessages((prev) => prev.filter((m) => m.id !== e.messageId));
     });
 
-    // Track the agent's working state from agent:status events. This
-    // covers external triggers (iMessage, scheduled runs, agent-to-agent
-    // messaging) where the user never called handleSend locally — the
-    // thinking dots and the send→stop button swap need to react live
-    // without requiring a page reload to pick up the backend state.
+    // Track working state from agent:status: externally-triggered turns (iMessage,
+    // scheduled runs, a2a) never ran handleSend, so the dots and stop swap need this.
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
       const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a'; userFacing?: boolean; stopping?: boolean };
       if (e.agentId !== agentIdRef.current) return;
       statusFrameSeqRef.current++;
-      // T83: a `working` frame carrying `stopping: true` is the engine being HONEST — the row
-      // still says working because the run is still unwinding, and it will keep saying so for
-      // as long as that takes (a forced compaction has been measured at 285 s). The composer
-      // must not re-raise the dots and the stop button on a stop the user already pressed, so
-      // this frame reads as "no longer accepting" here while the status field keeps telling
-      // every OTHER reader the truth. Before T83 the engine wrote a cosmetic `idle` to get
-      // this effect, and every busy-guard in the platform believed it.
+      // `working` + `stopping: true` is the engine being honest: the run is still unwinding
+      // (a forced compaction measured at 285 s) and keeps saying so. Read it here as "no
+      // longer accepting" so a stop already pressed doesn't re-raise the dots; the status
+      // field keeps telling every other reader the truth.
       if (e.stopping === true) {
         setIsWorking(false);
         setAwaitingUserReply(false);
@@ -1463,40 +1098,26 @@ export const Chat = ({ panel = null }: ChatProps) => {
         setIsWorking(true);
         const kind = e.turnKind ?? 'user';
         setTurnKind(kind);
-        // UX-REPAIR T7: record the frame's OWN answer, including "it did not say"
-        // (undefined). Since the server stopped fabricating `turnKind`, this is the only
-        // field frame 1 of a background turn has to keep the composer quiet with.
+        // Record the frame's own answer, including "it did not say" (undefined): with no
+        // fabricated turnKind this is all frame 1 of a background turn has to stay quiet on.
         setTurnUserFacing(e.userFacing);
-        // A user-FACING working status means the agent is on a turn serving a human
-        // conversation (dashboard / iMessage / voice). Latch it (the same flag
-        // handleSend sets) so the working UI (dots + stop) stays up for the WHOLE
-        // turn, even during an early phase that only ran tool activity (which renders
-        // nothing in regular mode) and even if the agent later dips into a2a
-        // coordination (which flips turnKind to 'a2a'). handleSend covers dashboard
-        // sends; this covers externally-triggered user turns (iMessage / voice) where
-        // handleSend never ran. userFacing (not just turnKind==='user') is required so
-        // a BACKGROUND engine turn (scheduler / PM poke / watcher, also turnKind
-        // 'user' but userFacing:false) does NOT latch, which would otherwise leave the
-        // latch stuck on after background noise. Pure background a2a is turnKind 'a2a'
-        // and stays quiet regardless.
+        // Latch on a user-facing working status (same flag handleSend sets) so the working
+        // UI stays up for the whole turn, through tool-only phases and a2a dips. This covers
+        // externally-triggered turns where handleSend never ran. userFacing is required so a
+        // background engine turn (scheduler/PM poke, also 'user' kind) never latches it on.
         if (kind === 'user' && e.userFacing === true) setAwaitingUserReply(true);
       } else if (e.status === 'idle' || e.status === 'error' || e.status === 'paused') {   // paused = parked after an honest stop; no idle follows
         setIsWorking(false);
-        // Clear the "a user request is unanswered" latch ONLY when the turn that
-        // just ended was user-facing. A pure background a2a / engine turn's idle
-        // (userFacing:false) must NOT wipe the latch a still-unanswered dashboard
-        // send set: on a busy box the send queues behind the background turn, and
-        // the background idle used to clear the latch before the queued user turn
-        // even started, killing the dots + stop button (the busy-box race). A legacy
-        // / raw status with no userFacing field keeps the old clear-on-idle behavior
-        // (undefined !== false) so unrelated idle broadcasts still resolve the UI.
+        // Clear the unanswered-request latch only for a user-facing turn: a background
+        // idle must not wipe the latch a queued dashboard send set (the busy-box race).
+        // A legacy frame with no userFacing field still clears on idle (undefined !== false).
         if (e.userFacing !== false) setAwaitingUserReply(false);
         reconcileStreamingBubbles();
       }
     });
 
-    // A-5b / L40 — THE NEW EMISSION, and the only frame that speaks AFTER a turn's `idle`,
-    // which is the whole window the defect lived in. Read, never re-derived from the counts.
+    // The only frame that speaks AFTER a turn's `idle`, which is the window the
+    // defect lived in. Read the flag, never re-derive it from the counts.
     const unsubJobs = subscribe('agent:jobs', (event: WsEvent) => {
       const e = event as { agentId: string; stoppable: boolean };
       if (e.agentId !== agentIdRef.current) return;
@@ -1512,10 +1133,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
       reconcileStreamingBubbles();
     });
 
-    // Server stamps assistant messages as voice-delivered when voice mode
-    // routes their content through TTS, then broadcasts this event so the
-    // local bubble can update its source and render the "via voice" badge
-    // without a refetch.
+    // Voice-delivered stamping broadcast: update the local bubble's source and show
+    // the "via voice" badge without a refetch.
     const unsubSource = subscribe('chat:source_updated', (event: WsEvent) => {
       const e = event as { agentId: string; messageId: string; source: 'voice' | null };
       if (e.agentId !== agentIdRef.current) return;
@@ -1584,16 +1203,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
     }
   };
 
-  // v2.7.25 — tool_use_id → is_error lookup so the ChannelSendBubble can
-  // hide itself when its underlying tool was refused. Mirrors the same
-  // logic in AgentDetail.tsx; see that file for the longer rationale.
-  //
-  // v2.7.26 — MUST sit ABOVE the `if (loading) return ...` early exit.
-  // React hook order has to be identical across every render of the
-  // component. Placing the useMemo below the early return meant it
-  // didn't run on the first (loading=true) render but ran once loading
-  // flipped, producing React error #310 ("Rendered more hooks than
-  // during the previous render") and a blank chat page.
+  // tool_use_id → is_error lookup so the ChannelSendBubble hides when its tool
+  // was refused. MUST sit above any early return: hook order must be identical
+  // across renders, and a hook below the exit throws React error #310 on flip.
   const toolResultErrorById = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const msg of messages) {
@@ -1647,32 +1259,21 @@ export const Chat = ({ panel = null }: ChatProps) => {
     return m;
   }, [messages]);
 
-  // Group adjacent tool-only assistant messages so their pills render
-  // in one horizontal flex-wrap row instead of stacking vertically.
-  // role='tool' rows are filtered to null in non-wordy mode, so they
-  // don't break a visual run between two consecutive tool-only
-  // assistant messages - the walk below skips them. Anything else
-  // that renders visibly (user bubble, response bubble, divider,
-  // routing marker) closes the current group.
+  // Group adjacent tool-only assistant messages so their pills share one horizontal
+  // row. Invisible rows (role='tool' in non-wordy mode) don't break a run; anything
+  // that renders visibly (user/response bubble, divider, routing marker) closes a group.
   const toolPillGrouping = useMemo(() => {
     const groupByFirstId = new Map<string, ChatMessage[]>();
     const skipIds = new Set<string>();
     if (wordyMode) return { groupByFirstId, skipIds };
-    // Classify each message for the grouping walk (V2b):
-    //   'visible' = tool-only turn with at least one non-bookkeeping tool
-    //               (renders a badge; group it),
-    //   'hidden'  = tool-only turn that is ALL bookkeeping (hidden in regular
-    //               mode, so skip it like a role='tool' row without breaking a
-    //               run of adjacent visible tool badges),
-    //   null      = anything that renders real content, which closes the group.
-    // A non-errored channel-send renders as a ChannelSendBubble (real content),
-    // so it returns null and breaks the group.
+    // Classify for the walk: 'visible' = tool-only with a non-bookkeeping tool
+    // (renders a badge, group it); 'hidden' = all-bookkeeping (skip without breaking
+    // the run); null = anything rendering real content, which closes the group.
+    // A non-errored channel-send renders a bubble, so it is null and breaks the group.
     const toolOnlyKind = (msg: ChatMessage): 'visible' | 'hidden' | null => {
       if (msg.role !== 'assistant') return null;
-      // A turn carrying delivered files/images (drained pending attachments from
-      // show_to_user / image_create) is a DELIVERABLE bubble, not a tool pill:
-      // it must render via AssistantBubble so the chips show. Keep it out of the
-      // pill grouping (V2d).
+      // A turn carrying delivered files/images is a deliverable bubble, not a tool
+      // pill: it renders via AssistantBubble so the chips show, so it stays out of grouping.
       if (msg.attachments && msg.attachments.length > 0) return null;
       const { text, blocks } = parseMessageContent(msg.content);
       if (text) return null;
@@ -1706,28 +1307,18 @@ export const Chat = ({ panel = null }: ChatProps) => {
     return { groupByFirstId, skipIds };
   }, [messages, wordyMode, toolResultErrorById]);
 
-  // Channel routing markers ([Reply routed via iMessage to NAME], etc.)
-  // arrive as standalone system messages AFTER the assistant reply they
-  // describe. The old rendering left those as their own right-aligned
-  // badge row, which read as a disjoint "to X via iMessage" floating
-  // below and to the right of the agent bubble. The fix: walk the list
-  // once, attach each routing marker to its preceding assistant message,
-  // and hide the standalone marker from the feed. AssistantBubble then
-  // renders the badge LEFT-aligned above the bubble — symmetric with
-  // the inbound "from X via iMessage" badge on user bubbles.
-  // v2.9.23 — `phone call to X` added to the marker family. The engine
-  // emits `[Reply routed via phone call to NAME]` after a TTS reply on
-  // an inbound call so the assistant bubble can show a symmetric
-  // "to NAME via phone call" badge, mirroring the user-side badge.
+  // Channel routing markers arrive as standalone system messages AFTER the assistant
+  // reply they describe. Walk once: attach each marker to its preceding assistant
+  // message and hide the standalone row, so the badge renders left-aligned above the
+  // bubble, symmetric with the inbound "from X via iMessage" badge on user bubbles.
   const { outboundChannelByAssistantId, hiddenRoutingMarkerIds } = useMemo(() => {
     const byAssistant = new Map<string, OutboundChannelInfo>();
     const hidden = new Set<string>();
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (m.role !== 'system') continue;
-      // Outbound routing marker ([Reply routed via X to NAME] / legacy [SENT VIA
-      // IMESSAGE to NAME]) parsed by the canonical helper, so iMessage / phone /
-      // Teams / email all resolve recipient + badge consistently (V3).
+      // Route markers parsed by the canonical helper, so iMessage / phone / Teams /
+      // email all resolve recipient + badge consistently.
       const routed = parseOutboundRouting(m.content);
       if (!routed) continue;
       // Walk backwards through any interleaved tool / system rows to
@@ -1745,44 +1336,23 @@ export const Chat = ({ panel = null }: ChatProps) => {
     return { outboundChannelByAssistantId: byAssistant, hiddenRoutingMarkerIds: hidden };
   }, [messages]);
 
-  // NOTE: no early `if (loading) return` here. Returning a bare loading div
-  // above the main render unmounts the entire Dojo3Stage (orb, composer,
-  // background) on every agent switch — that full blow-away IS the jarring
-  // "cut" between agents. Instead the stage stays mounted and the message
-  // column shows a brief in-stage loader, then scroll-rises the new agent's
-  // chat in (dojo3-agentSwitchIn). (All hooks are declared above this point,
-  // so dropping the early return doesn't change hook order.)
+  // NOTE: no early `if (loading) return` here. A bare loading div unmounts the whole
+  // Dojo3Stage (orb, composer, background) on every agent switch, the jarring "cut".
+  // The stage stays mounted with an in-stage loader. All hooks are declared above.
 
-  // The agent is "working" for the UI's thinking dots + stop button only when
-  // it's a normal user turn — OR any turn while wordy mode is on. On a pure
-  // agent-to-agent (A2A) turn with wordy off, the composer stays calm.
-  // Show the working UI (dots + stop) whenever the agent is working AND either:
-  // it's a user-facing turn, wordy mode is on, OR the user has a request in flight
-  // (awaitingUserReply). The awaitingUserReply latch is set both on a local send
-  // (handleSend) AND on any user-kind agent:status 'working' event, so an
-  // externally-triggered user turn (iMessage / voice) and any a2a sub-turn of a
-  // user-initiated task both keep the UI visible for the whole turn. It hides
-  // ONLY for pure background a2a (another agent working, no user waiting): then
-  // turnKind==='a2a', awaitingUserReply===false, wordy off → hidden.
-  // UX-REPAIR T7 adds ONE clause: a frame that EXPLICITLY says `userFacing:false` never
-  // lights the working UI in regular mode. Before the seam was fixed, frame 1 of a
-  // background turn arrived with a fabricated `turnKind:'user'` and no `userFacing`, so
-  // `turnKind !== 'a2a'` alone let it through. The three shapes the clause is written
-  // against, all preserved:
-  //   · WORDY MODE — exempt, unchanged: wordy shows everything.
-  //   · A REQUEST IN FLIGHT (`awaitingUserReply`) — exempt, and that is `e0acf31`'s
-  //     busy-box race: a queued dashboard send must keep its dots while a BACKGROUND turn
-  //     runs in front of it. Suppressing on that turn's `userFacing:false` would reopen
-  //     exactly the defect the latch exists to close.
-  //   · A BARE LEGACY FRAME (no field at all — `tools/cat/media.ts` holds the dots up during
-  //     image generation) — `undefined !== false`, so it behaves exactly as today.
+  // Working UI (dots + stop) shows when the agent is working AND: user-facing turn,
+  // wordy mode, or a request in flight (awaitingUserReply, set by handleSend and by
+  // user-kind status frames, so external user turns and their a2a sub-turns stay lit).
+  // Only pure background a2a (no user waiting, wordy off) stays calm.
+  // One clause: a frame that explicitly says `userFacing:false` never lights the working
+  // UI in regular mode. Three shapes stay exempt: wordy mode shows everything; a request
+  // in flight keeps its dots while a background turn runs in front (the busy-box race);
+  // a bare legacy frame with no field (undefined !== false) behaves as before.
   const showWorkingUi = isWorking
     && (wordyMode || awaitingUserReply || (turnKind !== 'a2a' && turnUserFacing !== false));
-  // ── A-5b / RULING #9: THE STOP CONTROL AND THE THINKING DOTS COME APART HERE ──
-  // `showWorkingUi` answers "a turn this user is waiting on" and drives the dots, the orb and
-  // the quiet-for-a2a behaviour — all of which must stay FALSE for a background render: the
-  // agent is not thinking and no reply is coming. But there IS something to stop, so the stop
-  // control is offered on the WIDER question. A turn is stoppable either way, so the `||` can
+  // ── The stop control and the thinking dots come apart here ──
+  // showWorkingUi drives the dots/orb and must stay false for a background render, but
+  // there IS something to stop, so the stop control uses the wider question. The `||` can
   // only ADD the background case; `lib/stop-affordance.ts` holds the argument.
   const canStop = showWorkingUi || backgroundStoppable;
   // In-flight turn cutoff for the chip background test (see toolChips): while
@@ -1815,10 +1385,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
     />
   );
 
-  // Jump-to-latest button — shown only when the user has scrolled up off the
-  // bottom. Rendered at the stage level (not inside .dojo3-chat, which is a
-  // z-index:1 stacking context below the composer) so it floats ABOVE the
-  // composer. Clicking re-pins the view to the newest messages.
+  // Jump-to-latest: shown when scrolled up; rendered at stage level (above the
+  // composer's stacking context); clicking re-pins to the newest messages.
   const jumpToLatest = !pinnedToBottom ? (
     <button
       type="button"
@@ -1848,9 +1416,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const startNewSession = async () => {
     const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
     if (res.ok) {
-      // wordyMode rides along: the two modes are different server queries, and
-      // this refetch replaces the whole pane (a wordy-blind fetch here would
-      // drop the store's own-output rows until the next natural reload).
+      // wordyMode rides along: the modes are different server queries and this
+      // refetch replaces the whole pane, so a wordy-blind fetch drops own-output rows.
       const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
       if (result.ok) {
         setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
@@ -1908,40 +1475,19 @@ export const Chat = ({ panel = null }: ChatProps) => {
           // Group-render: subsequent members of a tool-pill group are
           // skipped here; the group renders at the first member below.
           if (toolPillGrouping.skipIds.has(msg.id)) return null;
-          // Hide inter-agent / coordination / engine messages (user role) and
-          // engine fallback text (assistant role) in regular mode. The decision
-          // now comes from the canonical classifier (classifyMessageForDisplay,
-          // @dojo/shared) so every chat surface agrees and the prefix list cannot
-          // drift. Byte-identical to the prior inline pile for real traffic: the
-          // classifier's user-role agent-only set is the same 12 prefixes (the
-          // engine-injection prefixes it also covers are context-only, never
-          // persisted to the feed) and its assistant fallback set is the same
-          // four engine strings. It is start-anchored + trimmed where the old
-          // pile used substring includes; that only diverges on a user message
-          // that quotes a [SOURCE: ...] marker mid-text, which the old code
-          // wrongly hid. Channel-sourced inbound (iMessage / phone / etc.) stays
-          // user-visible and is badged by UserBubble below; system messages keep
-          // their own divider / routing / no-reply handling further down.
+          // Hide inter-agent / coordination / engine content in regular mode via the
+          // canonical classifier (classifyMessageForDisplay, @dojo/shared) so every chat
+          // surface agrees and the prefix list cannot drift. Channel-sourced inbound stays
+          // user-visible (badged by UserBubble); system rows keep their own handling below.
           if (!wordyMode && (msg.role === 'user' || msg.role === 'assistant')
               && classifyMessageForDisplay(msg).tier !== 'user-visible') {
             return null;
           }
-          // ── SWEEP CORE-2 item 7 — DRAFTS ARE NOT ANSWERS ──
-          // An ASSISTANT row the engine re-classified at the turn boundary: the turn's own
-          // ledger key (`turns.answer_message_id`) named a DIFFERENT bubble as the answer, so
-          // this one was the agent drafting on its way there. It renders as the same dimmed,
-          // expandable note the mid-turn demotion has produced since 2026-07-10 — nothing is
-          // suppressed, every byte is still here, and the answer beside it now reads as the
-          // answer instead of as one more box in a stack of identical boxes.
-          //
-          // Keyed on the STORED kind and never on the text: the content is deliberately
-          // byte-unchanged, so there is nothing in it to key on and nothing in it that could
-          // drift. It renders in both modes, exactly as a plain working note does.
-          //
-          // R3 (visibility lane): a re-classified draft whose text is ALREADY on screen as the
-          // turn's answer is the one shape where showing it is pure noise, so that case is
-          // wordy-only. Everything else here is unchanged — the verdict comes from
-          // `working-note-visibility.ts` so both note routes ask one question.
+          // ── Drafts are not answers ──
+          // An assistant row re-classified at the turn boundary: the turn's answer key
+          // named another bubble, so this is the agent drafting; it renders as a dimmed
+          // expandable note (keyed on the stored kind, the text is byte-unchanged). The
+          // visibility lane makes an already-on-screen duplicate wordy-only.
           if (msg.role === 'assistant' && msg.displayKind === 'working-note') {
             const how = renderWorkingNote(messages, msgIndex, wordyMode);
             if (how === 'hide') return null;
@@ -1956,27 +1502,15 @@ export const Chat = ({ panel = null }: ChatProps) => {
           }
           if (msg.role === 'system') {
             const trimmedSys = msg.content.trim();
-            // Suppress the no-reply / silent-turn marker entirely. It's
-            // persisted only so the agent's next turn knows the prior turn
-            // ended silently — there's no user-facing value in showing
-            // "[Agent ended turn without replying — conversation closed]"
-            // as a chat bubble. Hide in both wordy and non-wordy modes.
+            // The no-reply marker persists only so the next turn knows this one ended
+            // silently; showing it as a bubble has no value. Hidden in both modes.
             if (trimmedSys === NO_REPLY_CLOSED_MARKER) {
               return null;
             }
-            // Demoted working note: a plain note renders in BOTH modes (the narration
-            // was visible live in both). RC-9: an INTERNAL note (from a routed-channel
-            // human turn, never delivered to that channel) is hidden outside wordy mode
-            // so it can't read as a second, contradictory reply.
-            //
-            // ⚠ VISIBILITY LANE — RC-9 IS NARROWED, NOT REVERSED, AND THE REASON IS ITS OWN
-            // REASON. "A second, contradictory reply" is a COMPARISON: it needs a first reply to
-            // be second to. When the internal note is the ONLY thing the agent said since the
-            // person last spoke, there is nothing to contradict and hiding it makes the turn
-            // silent — the display twin of the engine's never-silent invariant. So: still hidden
-            // whenever a real answer is on screen beside it (F-22 intact), dimmed when it is all
-            // there is. The measured sting: the owner's own grey sighting was the PLAIN arm, and
-            // this one — which he did not see — vanished completely.
+            // Demoted working note: a plain note renders in BOTH modes. An internal note
+            // (routed-channel turn, never delivered there) hides while a real answer sits
+            // on screen beside it; when it is the only thing said, hiding would make the
+            // turn silent, so it stays dimmed. The verdict lives in `working-note-visibility.ts`.
             const note = parseWorkingNote(trimmedSys);
             if (note) {
               const how = renderWorkingNote(messages, msgIndex, wordyMode);
@@ -1984,11 +1518,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
               if (how === 'answer') return <NoteAsAnswer key={msg.id} msg={msg} text={note.text} wordyMode={wordyMode} modelNames={modelNames} />;
               return <WorkingNoteBubble key={msg.id} text={note.text} />;
             }
-            // Divider-style markers: any system message shaped "── label ──"
-            // renders as a horizontal divider with the label centered.
-            // "Memory Compacted" dividers are wordy-mode-only — they're
-            // diagnostic chrome, not user-facing chronology. "New Session"
-            // and similar markers stay always-visible.
+            // Divider-style markers: any system message shaped "── label ──" renders as a
+            // divider with the label centered. "Memory Compacted" is diagnostic chrome,
+            // wordy-only; "New Session" and the like stay always-visible.
             const dividerMatch = trimmedSys.match(/^──\s*(.+?)\s*──$/);
             if (dividerMatch) {
               const isCompactionDivider = /^Memory Compacted/.test(dividerMatch[1]);
@@ -2001,20 +1533,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
                 </div>
               );
             }
-            // Channel routing markers ([Reply routed via ...]) used to
-            // render as their own right-aligned badge row here. They now
-            // attach to the preceding assistant bubble as a left-aligned
-            // "to X via iMessage" badge above it (see
-            // outboundChannelByAssistantId useMemo). If this marker is
-            // one of those attached ones, skip rendering it. Markers we
-            // couldn't attach (e.g. no preceding assistant) still get
-            // shown so the channel info isn't lost.
+            // Routing markers were attached to their assistant bubble earlier; skip the
+            // standalone row when attached, show it when not, so no channel info is lost.
             if (hiddenRoutingMarkerIds.has(msg.id)) return null;
-            // Standalone routing marker we could not attach to a preceding
-            // assistant bubble: render it as its own badge so the channel info is
-            // not lost. Same canonical parser + badge as the attached path, so
-            // phone / Teams / email resolve correctly (the old inline copy here
-            // had no phone branch and mis-emoji'd it).
+            // Unattached routing marker: render its own badge. Same canonical parser +
+            // badge as the attached path, so phone / Teams / email resolve correctly.
             const routed = parseOutboundRouting(msg.content);
             if (routed) {
               const badge = outboundBadge(routed.channel, routed.recipient);
@@ -2027,11 +1550,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
                 </div>
               );
             }
-            // Owner-alert system notes (see OWNER_ALERT_SYSTEM_PREFIXES) are the
-            // one class of system rows that render in default mode: a muted
-            // system-note bubble so the owner sees the heads-up without turning
-            // on wordy mode. Wordy mode is unchanged (these fall through below to
-            // the same rendering every other system row gets there).
+            // Owner-alert system notes are the one class of system rows that render in
+            // default mode: a muted bubble so the owner sees the heads-up; wordy mode
+            // falls through to the standard system rendering.
             if (!wordyMode && isOwnerAlertSystemNote(trimmedSys)) {
               return (
                 <div key={msg.id} className="flex justify-start my-1">
@@ -2043,29 +1564,24 @@ export const Chat = ({ panel = null }: ChatProps) => {
             }
             if (!wordyMode) return null; // Hide other system messages in non-wordy mode
           }
-          // For assistant messages, replace tool-only turns with a compact pill
-          // in non-wordy mode. Pre-2026-04-30 this returned null which hid the
-          // turn entirely — users saw long silences when the agent was actually
-          // running tools (e.g., building a slide deck). The pill keeps the feed
-          // honest without dumping the full tool-call cards.
+          // Replace tool-only assistant turns with a compact pill in non-wordy mode: the
+          // pill keeps the feed honest without dumping the full tool-call cards.
           if (msg.role === 'assistant' && !wordyMode) {
             const { text, blocks } = parseMessageContent(msg.content);
             const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
-            // v2.7.23 — render channel-send tool calls as outbound bubbles
-            // (the user sees what was sent, not just a "⚙ imessage_send" gear).
+            // Render channel-send tool calls as outbound bubbles: the user sees what
+            // was sent, not just a "⚙ imessage_send" gear.
             const channelSend = blocks?.find(
               (b) => b.type === 'tool_use' && b.name && isChannelSendBubbleTool(b.name),
             );
-            // v2.7.25 — hide the outbound bubble when the underlying tool
-            // call was refused. See AgentDetail.tsx for the longer rationale.
+            // Hide the outbound bubble when the underlying tool call was refused;
+            // `toolResultErrorById` above carries that verdict.
             const channelSendErrored = channelSend?.id
               ? toolResultErrorById.get(channelSend.id) === true
               : false;
             if (channelSend && !channelSendErrored) {
-              // The outbound badge (if any) describes the SEND, so it rides on
-              // the ChannelSendBubble, not the accompanying dashboard-facing
-              // text. Passing it to BOTH would double-label; the text stays a
-              // plain dashboard bubble (outboundChannel=null).
+              // The badge describes the SEND, so it rides on the ChannelSendBubble only:
+              // passing it to the text too would double-label (it stays outboundChannel=null).
               const sendBadge = outboundChannelByAssistantId.get(msg.id) ?? null;
               return (
                 <div key={msg.id} className="flex flex-col gap-2">
@@ -2076,19 +1592,17 @@ export const Chat = ({ panel = null }: ChatProps) => {
                 </div>
               );
             }
-            // v2.7.25 — channel send errored with nothing else in this
-            // message: render nothing so the user doesn't see a blocked
-            // attempt. Recovery text (if any) renders separately.
+            // Errored send with nothing else in this message: render nothing, so the
+            // user doesn't see a blocked attempt; recovery text renders separately.
             if (channelSendErrored && !text) {
               const otherToolUses = (blocks ?? []).filter(
                 (b) => b.type === 'tool_use' && b !== channelSend,
               );
               if (otherToolUses.length === 0) return null;
             }
-            // Tool-only turn with NO delivered attachments: render the compact
-            // class-aware badge (or grouped row). A tool-only turn that DOES
-            // carry attachments is a deliverable: fall through to AssistantBubble
-            // so the image/file chips render in regular mode (V2d).
+            // Tool-only turn with no attachments: compact class-aware badge (or grouped
+            // row). One that carries attachments is a deliverable: fall through to
+            // AssistantBubble so the image/file chips render in regular mode.
             if (!text && hasToolUse && !(msg.attachments && msg.attachments.length > 0)) {
               const group = toolPillGrouping.groupByFirstId.get(msg.id);
               const members = group ?? [msg];

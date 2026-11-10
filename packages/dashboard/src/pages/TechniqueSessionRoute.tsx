@@ -4,13 +4,7 @@ import { useTechniqueSession } from '../components/TechniqueSessionProvider';
 import { useRightDock } from '../components/RightDockProvider';
 import { TechniqueMatDock } from '../components/TechniqueMatDock';
 
-/*
- * Controller for /techniques/new and /techniques/:id/edit.
- *
- * Renders nothing visible: the persistent dojo3 chat is the surface (it becomes
- * the trainer conversation). On mount it starts a technique session and docks
- * the Mat on the right; on unmount it ends the session and closes the dock.
- */
+// New/edit technique controller: chat is the surface; mount starts the session + dock, unmount ends both.
 export function TechniqueSessionRoute() {
   const { id } = useParams<{ id?: string }>();
   const { start, end } = useTechniqueSession();
