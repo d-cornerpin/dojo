@@ -1,22 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApiResponse } from '@dojo/shared';
 
-// ════════════════════════════════════════════════════════════════════════════
-// THE ONE RULE FOR EVERY EDITOR THAT READS A VALUE AND WRITES IT BACK:
-//   it may only save, generate over, or switch modes on top of a value that was
-//   successfully read FOR THE THING ON SCREEN. A failed load, a load still in
-//   flight, and a late answer for a different agent / technique / list are all
-//   "not loaded", and none of them may be the base of a write.
-//
-// `useGuardedLoad(key, loader)` is that rule as a hook. `key` names the thing
-// being edited (an agent id, a technique id, a config key). It reports
-// 'loading' | 'ready' | 'failed', keeps the data only while it belongs to the
-// current key, drops any answer that arrives after the key changed or a newer
-// load started, and offers `canSave(key)`: the one question every save path asks.
-// `useRequestGuard` is the same stale-answer check for flows that already hold
-// their own state (a ticket per start; an answer is dropped if the ticket is old).
-// `the-editors-that-save-consult-the-load-guard.test.ts` lists the editors.
-// ════════════════════════════════════════════════════════════════════════════
+// THE ONE RULE FOR EVERY EDITOR THAT READS A VALUE AND WRITES IT BACK: it may only save,
+// generate over, or switch modes on top of a value that was successfully read for the thing
+// on screen. A failed load, a load still in flight, and a late answer for a different key are
+// all "not loaded", and none of them may be the base of a write.
+// useGuardedLoad is that rule as a hook: it drops any answer that arrives after the key
+// changed or a newer load started, and canSave() is the one question every save path asks.
+// useRequestGuard is the same check for flows with their own state: a counter per start.
 
 export const useRequestGuard = () => {
   const counter = useRef(0);
@@ -30,9 +21,7 @@ export type LoadStatus = 'loading' | 'ready' | 'failed';
 
 export interface GuardedLoad<T> {
   status: LoadStatus;
-  /** The loaded value, only while it belongs to the current key; otherwise null. */
   data: T | null;
-  /** The key the data was loaded for (null until a load succeeds). */
   loadedKey: string | null;
   error: string | null;
   /** Counts every settled read (even one that returns the same value), so an editor can tell "loaded again" from "unchanged". */

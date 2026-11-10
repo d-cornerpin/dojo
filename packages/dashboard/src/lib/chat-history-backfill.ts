@@ -2,19 +2,9 @@ import type { Message } from '@dojo/shared';
 import { classifyMessageForDisplay } from '@dojo/shared';
 
 /**
- * AUTO-BACKFILL (incident 2026-07-06, the blank-chat guarantee): the serving contract stays raw
- * pages + client-side visibility, but a page can legitimately contain ZERO renderable rows when
- * machine traffic (agent coordination) sits on top of the conversation. In that case do exactly
- * what a user scrolling up would do, keep fetching older pages until real conversation renders
- * (or history ends). Wordy mode renders every row, so its first page always satisfies the floor
- * immediately.
- * It ends on a real signal, never a page count (t207, no hard limits): enough renderable rows,
- * the end of history (an empty or failed page), a page that brings nothing new (a server that
- * repeats itself cannot hold the loop), or the load being cancelled. This makes "open the chat,
- * see nothing" impossible: the conversation is always dug up, however deep the machine traffic.
- *
- * Returns the rows to show, or `null` when `stillActive()` went false (the load was cancelled
- * because the agent changed): the caller then drops the result.
+ * A page can hold zero renderable rows when machine traffic sits on top, so keep fetching older
+ * pages as a user scrolling up would until real conversation renders or history ends. It stops
+ * on a real signal, never a page count. Returns null when the load is cancelled; caller drops it.
  */
 export async function backfillUntilRenderable(
   first: Message[],

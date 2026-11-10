@@ -1,12 +1,5 @@
-/**
- * Copy text robustly. The async Clipboard API only works in a secure context (https / localhost)
- * with focus and permission, so over a tunnel or a LAN address it throws. We try it, then fall
- * back to the legacy `execCommand('copy')` through a hidden textarea, which works on plain http.
- * Returns whether anything actually landed on the clipboard.
- *
- * ⚠ CALL IT FROM A CLICK HANDLER with the text already in hand. Safari drops the user gesture
- * across an await on a fetch, so a copy that waits for the network first silently does nothing.
- */
+/** Copy text; the async Clipboard API needs a secure context, so plain http falls back to execCommand. */
+/** Call it from a click handler with the text in hand: Safari drops the gesture across an await. */
 export async function copyTextToClipboard(text: string): Promise<boolean> {
   if (navigator.clipboard && window.isSecureContext) {
     try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }

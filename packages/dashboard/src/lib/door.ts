@@ -1,49 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE DASHBOARD'S ONE NETWORK DOOR (BACKLOG line 31).
-//
-// ── WHY THIS IS ITS OWN FILE, AND NOT THE BOTTOM OF `api.ts` ──
-// `lib/api.ts` is a CATALOGUE: two and a half thousand lines of roughly one
-// function per endpoint. What is in here is a POLICY — how any call to this
-// platform is authenticated, what a 401 does, and the promise that a dead
-// network arrives as a VALUE instead of a throw. Those are different jobs, and
-// the size ratchet on `api.ts` exists precisely to push new code into a leaf file
-// rather than let that catalogue absorb it. `api.ts` re-exports everything below,
-// so every caller still imports from `lib/api` and `vi.mock('../lib/api')` is
-// still the ONE seam that mocks the network for the whole package.
-//
-// ── WHY A DOOR AT ALL ──
-// Sixteen files under `src/` used to call the global `fetch` themselves. Each
-// re-typed the same plumbing — read `dojo_token` out of `localStorage`, scrape
-// the `csrf` cookie, spread two conditional headers — and each got a slightly
-// different subset of it right. Worse, a component whose network call is a bare
-// `fetch` has NO SEAM: a test that mounts it either reaches a LIVE server (and
-// passes because `:3001` happened to be up, proving nothing) or trips the
-// tripwire in `vitest.setup.ts`. That is why `every-major-page-mounts.test.tsx`
-// had to weaken itself to an offline `fetch` stub for the whole suite.
-//
-// So `fetch` is called in exactly ONE place in this package — `throughTheDoor`
-// below — and every other site asks one of the four wrappers.
-// `src/__tests__/the-dashboard-has-one-network-door.test.ts` holds the rule, and
-// it counts BOTH ways: a new direct caller reds it, and so does a second call
-// site in here.
-//
-// ── THE FOUR WRAPPERS, AND WHY FOUR ──
-//   `request`      JSON in, `ApiResponse<T>` out. The overwhelming majority.
-//   `requestRaw`   the caller needs the `Response` itself — a blob to hand the
-//                  browser, or a response HEADER
-//                  (`X-Dojo-Export-Resolutions`, `Content-Disposition`) that no
-//                  JSON envelope carries.
-//   `requestForm`  multipart. The browser must write `Content-Type` itself so the
-//                  boundary matches the body, so this door must NOT set it.
-//   `fetchUrl`     a URL the SERVER handed us (a canvas `inlineUrl`, an office
-//                  `renderUrl`, a voice chime) rather than an `/api` path we built.
-//
-// ── NOTHING ESCAPES AS A REJECTION ──
-// Every wrapper returns its failure as a VALUE. A loader that forgets `.catch` is
-// then a rendering bug its own page can see, not an unhandled rejection that
-// leaves the owner staring at a list which silently never arrives — which is
-// exactly what `pages/Techniques.tsx` and `pages/Settings.tsx` did.
-// ════════════════════════════════════════════════════════════════════════════
+// THE DASHBOARD'S ONE NETWORK DOOR: fetch is called in exactly one place here, in `throughTheDoor`,
+// and `src/__tests__/the-dashboard-has-one-network-door.test.ts` reds on a second site either way.
+// `api.ts` is a catalogue; its size ratchet pushes policy like this into leaf files. It re-exports
+// this, so `lib/api` stays the import and `vi.mock('../lib/api')` the one mock seam for the package.
 
 import type { ApiResponse } from '@dojo/shared';
 
@@ -72,11 +30,8 @@ export type RawResult =
 
 const MUTATING = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
-/**
- * The headers every call to our own API carries. `json` is false for the doors
- * whose body sets its own type (multipart, a raw `File`); a caller may still
- * override any of them, which is how `application/octet-stream` gets through.
- */
+/** The headers every call to our own API carries. `json` is false when the body sets its own type
+ *  (multipart, a raw `File`); a caller may still override any of them. */
 const doorHeaders = (
   method: string,
   extra: Record<string, string> | undefined,
@@ -90,7 +45,6 @@ const doorHeaders = (
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
-  // CSRF token for state-changing requests
   if (MUTATING.includes(method)) {
     const csrfToken = getCsrfToken();
     if (csrfToken) {
@@ -100,10 +54,7 @@ const doorHeaders = (
   return headers;
 };
 
-/**
- * THE ONLY `fetch` CALL IN THE DASHBOARD. A dead network becomes a VALUE here, so
- * no caller can leak it as an unhandled rejection.
- */
+/** THE ONLY `fetch` CALL IN THE DASHBOARD. A dead network becomes a VALUE here, never a rejection. */
 const throughTheDoor = async (url: string, init: RequestInit): Promise<RawResult> => {
   try {
     return { ok: true, response: await fetch(url, init) };
@@ -112,14 +63,9 @@ const throughTheDoor = async (url: string, init: RequestInit): Promise<RawResult
   }
 };
 
-/**
- * An expired session bounces to /login — except when ALREADY there. The login
- * screen renders the orb, which fetches its quality preference via an authed
- * endpoint that 401s pre-login; an unconditional redirect reloads /login,
- * remounts the orb, fetches again → infinite reload loop. Suppressing the
- * redirect there lets such pre-auth background calls fail quietly, and callers
- * fall back to a cached default.
- */
+/** An expired session bounces to /login, except when already there: the login orb's authed
+ *  fetch 401s pre-login, and an unconditional redirect reloads, remounts and refetches forever.
+ *  Suppressing it there lets pre-auth calls fail quietly to their cached default. */
 const isUnauthorized = (response: Response, path: string): boolean => {
   if (response.status !== 401 || path.startsWith('/auth/login')) return false;
   if (window.location.pathname !== '/login') {
@@ -164,11 +110,8 @@ export const request = async <T>(
   return readEnvelope<T>(raw.response);
 };
 
-/**
- * For a caller that must read the `Response` itself. The HTTP status is the
- * caller's to judge; what this door guarantees is the auth/CSRF headers, the 401
- * bounce, and that a dead network arrives as `{ ok: false }` rather than a throw.
- */
+/** For a caller that must read the `Response` itself: status is theirs to judge; the door
+ *  guarantees auth/CSRF headers, the 401 bounce, and no throw on a dead network. */
 export const requestRaw = async (
   path: string,
   options: RequestInit = {},
@@ -184,7 +127,7 @@ export const requestRaw = async (
   return raw;
 };
 
-/** Multipart upload — see the `requestForm` note in the header above. */
+/** Multipart: the browser must write `Content-Type` itself so the boundary matches the body. */
 export const requestForm = async <T>(
   path: string,
   body: FormData,
@@ -195,11 +138,8 @@ export const requestForm = async <T>(
   return readEnvelope<T>(raw.response);
 };
 
-/**
- * A URL THE SERVER HANDED US rather than an `/api` path we built. It still comes
- * through this module so the package keeps ONE mockable network seam;
- * `authorize` adds the bearer token for the endpoints that want it.
- */
+/** A URL THE SERVER HANDED US rather than an `/api` path we built; it still comes through
+ *  this module so the package keeps ONE mockable network seam. `authorize` adds the bearer token. */
 export const fetchUrl = async (
   url: string,
   options: RequestInit & { authorize?: boolean } = {},

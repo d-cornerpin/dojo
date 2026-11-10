@@ -1,13 +1,7 @@
-/**
- * Agent colour. One hue drives BOTH the agent's avatar box (hsl) and the orb
- * tint, so they always match. Resolution order for an agent:
- *   1. primary "dojo master"      -> the signature champagne (fixed)
- *   2. an explicitly chosen colour -> agent.config.orbHue (set via the picker)
- *   3. otherwise                   -> a stable hue derived from the agent id
- */
+/** One hue drives BOTH the agent's avatar box and the orb tint, so they always match. */
+/** Order: primary gets the fixed champagne, then a chosen orbHue, then a stable hue from the id. */
 
-/** The dojo's signature champagne/gold hue. The primary orb never shifts from
- *  it, and it matches the orb engine's CHAMPAGNE_HUE_DEG. */
+/** Signature champagne hue; the primary orb never shifts, it matches the orb engine's CHAMPAGNE_HUE_DEG. */
 export const CHAMPAGNE_HUE = 42;
 
 export interface OrbColor {
@@ -15,8 +9,7 @@ export interface OrbColor {
   hue: number;
 }
 
-/** A curated palette that reads well in the warm champagne scheme — soft, not
- *  neon. The user picks from these for any non-primary agent. */
+/** Curated hues that sit well in the warm champagne scheme; the user picks one per non-primary agent. */
 export const ORB_PALETTE: OrbColor[] = [
   { name: 'Rose', hue: 350 },
   { name: 'Coral', hue: 14 },
@@ -40,7 +33,6 @@ export function agentHue(id: string): number {
   return (h >>> 0) % 360;
 }
 
-/** Read an agent's chosen orb hue from its config, if a valid one is set. */
 export function chosenHue(config: Record<string, unknown> | undefined | null): number | null {
   const v = config?.orbHue;
   return typeof v === 'number' && v >= 0 && v < 360 ? v : null;

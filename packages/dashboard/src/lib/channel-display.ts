@@ -1,22 +1,14 @@
-// Channel badge presentation: maps a ChannelKind (+ sender/recipient) to the
-// emoji + label shown on inbound/outbound channel chips. ONE source so every
-// chat page (Chat, AgentDetail) renders identical badges and the wording cannot
-// drift. The PARSING lives in @dojo/shared (parseInboundChannel /
-// parseOutboundRouting); this is the dashboard-side wording. See
-// DOJO-CHAT-VISIBILITY-PLAN.md §3 and V3 (channel-badge correctness).
+// Channel badge presentation: maps a ChannelKind (+ sender/recipient) to the emoji and label
+// on the inbound/outbound chips. ONE source so every chat page renders identical badges;
+// the parsing lives in @dojo/shared, this is the dashboard-side wording.
 import { unfenceExternal, type ChannelKind } from '@dojo/shared';
 
-/**
- * v3.5 K33 (orchestrator ruling: the fence is model-facing only). The engine fences other
- * people's text (a contact's message, an email, another agent's report) as information for the
- * agent; the owner sees that text exactly as it arrived. The ONE dashboard strip, used by every
- * place that shows a message (Chat's bubble and email card, the inter-agent lane).
- */
+/** The fence is for the agent; the owner sees fenced text as it arrived. The ONE dashboard strip. */
 export function withoutFence(content: string): string {
   return unfenceExternal(content);
 }
 
-export { inboundSenderName } from './inbound-sender-name';   // v3.5 K33 fix round 4: the badge's name
+export { inboundSenderName } from './inbound-sender-name';   // the badge's sender name
 
 const CHANNEL_EMOJI: Record<ChannelKind, string> = {
   imessage: '\u{1F4AC}',     // speech balloon
@@ -39,15 +31,13 @@ export interface ChannelBadge {
   label: string;
 }
 
-// "(unknown)" callers/recipients carry no useful name; drop them so a badge
-// reads "via phone call" rather than "from (unknown) via phone call".
+// Drop a "(unknown)" name so a badge reads "via phone call", not "from (unknown) via phone call".
 function cleanName(name: string | null): string | null {
   if (!name) return null;
   const t = name.trim();
   return t && t !== '(unknown)' ? t : null;
 }
 
-// Inbound: a person reached the agent via this channel ("from X via iMessage").
 export function inboundBadge(channel: ChannelKind, sender: string | null): ChannelBadge {
   const who = cleanName(sender);
   const name = CHANNEL_NAME[channel];
@@ -57,12 +47,8 @@ export function inboundBadge(channel: ChannelKind, sender: string | null): Chann
   };
 }
 
-// Outbound: the agent's reply was routed out via this channel ("to X via
-// iMessage"). Every channel shows the recipient when one is known (including
-// email, whose recipient is the address we replied to). When no recipient is
-// resolvable (an email REPLY badged by thread only, or a suppressed send), fall
-// back to the channel-only wording, "sent via email reply" for email to match
-// the prior UX, "sent via <channel>" otherwise.
+// Outbound: the agent's reply went out via this channel ("to X via iMessage"). With no recipient
+// to show, fall back to the channel alone; an email reply says "sent via email reply".
 export function outboundBadge(channel: ChannelKind, recipient: string | null): ChannelBadge {
   const who = cleanName(recipient);
   const name = CHANNEL_NAME[channel];

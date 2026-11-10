@@ -43,8 +43,8 @@ import type {
 
 // ── THE TRANSPORT LIVES NEXT DOOR ──
 // `lib/door.ts` owns how a call is authenticated, what a 401 does, and the promise
-// that a dead network is a VALUE rather than a throw (BACKLOG line 31). It is a
-// separate file because that is a POLICY and this file is a CATALOGUE — but it is
+// that a dead network is a VALUE rather than a throw. It is a separate file
+// because that is a POLICY and this file is a CATALOGUE, but it is
 // re-exported from here, so every caller keeps importing from `lib/api` and
 // `vi.mock('../lib/api')` stays the one seam that mocks the network.
 import { setToken, request, requestRaw, requestForm } from './door';
@@ -205,7 +205,7 @@ export const updateModelPricing = async (
     outputCostPerM?: number;
     pricingUnit?: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
     costPerUnit?: number | null;
-    /** @deprecated since v2.11.0 - send costPerUnit instead. */
+    /** @deprecated send costPerUnit instead. */
     costPerMegapixel?: number | null;
   },
 ): Promise<ApiResponse<unknown>> => {
@@ -259,7 +259,7 @@ export const updateModelThinking = async (
   });
 };
 
-// t195: how hard the model thinks. The server refuses a level the model's wire does not accept.
+// How hard the model thinks. The server refuses a level the model's wire does not accept.
 export const updateModelThinkingLevel = async (
   modelId: string,
   level: string,
@@ -280,7 +280,7 @@ export const updateModelNumCtx = async (
   });
 };
 
-// T72b/1 — the two numbers that decide how much answer fits. PARTIAL: only the fields passed
+// The two numbers that decide how much answer fits. PARTIAL: only the fields passed
 // are changed, so correcting an output cap cannot silently wipe a context window. `null` is a
 // real value and means "let discovery decide"; omit a field to leave it alone.
 export const updateModelLimits = async (
@@ -293,13 +293,12 @@ export const updateModelLimits = async (
   });
 };
 
-// T66b — edit a provider that already exists. ONLY the fields present are changed, which is
+// Edit a provider that already exists. ONLY the fields present are changed, which is
 // the whole reason this is not `createProvider` over the same id: that door full-replaces the
 // identity fields, so an edit form built on it would clear a dialect declaration or a patience
 // pair for anyone who did not re-send them. `credential` omitted or blank keeps the stored key
 // (it is never sent to the client, so a form cannot round-trip it). The answer carries
-// `revalidationRequired`, which is the caller's cue to run `validateProvider` — the same
-// two-step the add form has always used after a create.
+// `revalidationRequired`, which is the caller's cue to run `validateProvider`.
 export const updateProvider = async (
   providerId: string,
   edit: EditProviderRequest,
@@ -310,7 +309,7 @@ export const updateProvider = async (
   }) as EditProviderResponse;
 };
 
-// T64b — set or clear how long this provider's streaming calls may wait. Null on a field
+// Set or clear how long this provider's streaming calls may wait. Null on a field
 // means "use the standard bound". Its own narrow route rather than a re-POST of the provider:
 // `POST /config/providers` over an existing id full-replaces the identity fields, so editing
 // a timeout through it could rewrite a base URL.
@@ -324,10 +323,10 @@ export const updateProviderResponsePatience = async (
   });
 };
 
-// T81b — set or clear the tokens-per-second this box's owner says it reads a prompt at. `null`
-// leaves it undeclared, which is now "use whatever the engine measured for itself" (owner
-// ruling 2026-09-22) rather than "the feature is off". A declared figure always wins over a
-// measured one. Its own narrow route: the identity door refuses this field by name.
+// Set or clear the tokens-per-second this box's owner says it reads a prompt at. `null`
+// leaves it undeclared, which means "use whatever the engine measured for itself", not
+// "the feature is off". A declared figure always wins over a measured one. Its own narrow
+// route: the identity door refuses this field by name.
 export const updateProviderPrefillThroughput = async (
   providerId: string,
   prefillTokensPerSec: number | null,
@@ -585,7 +584,7 @@ export interface StartCleanupResponse {
   kept: number;
   message: string;
 }
-export const cleanupPlatformBackups = async (keep: number): Promise<ApiResponse<StartCleanupResponse>> => {   // t201: no default; the caller passes the server's keepDefault
+export const cleanupPlatformBackups = async (keep: number): Promise<ApiResponse<StartCleanupResponse>> => {   // no default; the caller passes the server's keepDefault
   return request<StartCleanupResponse>('/update/backups/cleanup', {
     method: 'POST',
     body: JSON.stringify({ keep }),
@@ -614,10 +613,9 @@ export const getCleanupStatus = async (): Promise<ApiResponse<CleanupStatusRespo
 // `plaud:connected`. Dashboard listens to both events.
 export interface PlaudStatus {
   connected: boolean;
-  /** UX-REPAIR T38: was connected, the login expired — a third state, and the
-   *  only one that is an instruction to the user. Served by the route; NOT
-   *  re-derived here (the `.26` Health-page lesson: a client that guesses the
-   *  wire shape is a lie held together by a remap). */
+  /** Was connected, the login expired: a third state, and the only one that is an
+   *  instruction to the user. Served by the route; NOT re-derived here: a client
+   *  that guesses the wire shape is a lie held together by a remap. */
   reauthRequired: boolean;
   email: string | null;
   connectedAt: string | null;
@@ -641,7 +639,7 @@ export const disconnectPlaud = async (): Promise<ApiResponse<{ disconnected: boo
 };
 
 
-// ── GitHub integration (DOJO-REPORT T5) ──
+// ── GitHub integration ──
 // Device flow: the user presses Connect, the server asks GitHub for a code,
 // the user types it at github.com/login/device, and the server polls until
 // GitHub answers. No redirect and no callback route, so it works over a
@@ -650,9 +648,9 @@ export const disconnectPlaud = async (): Promise<ApiResponse<{ disconnected: boo
 // `GithubStatus` is declared twice ON PURPOSE: once server-side in
 // `github/status.ts`, once here, because `packages/dashboard` cannot import
 // from `packages/server`. Same eleven fields, same names, same types; the
-// route serves that shape and this client NEVER re-derives or remaps it (the
-// `.26` Health-page lesson: a client that guesses the wire shape is a lie held
-// together by a remap). If the two ever disagree, the server's is right — and
+// route serves that shape and this client NEVER re-derives or remaps it: a client
+// that guesses the wire shape is a lie held together by a remap. If the two ever
+// disagree, the server's is right;
 // `the-github-card-reports-connection-truth.test.ts` fails from both sides.
 export interface GithubStatus {
   connected: boolean;
@@ -718,7 +716,7 @@ export const deleteCredential = async (id: string): Promise<ApiResponse<{ delete
   return request<{ deleted: boolean }>(`/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
-// Contacts (v2.9.16): DOJO-native people store.
+// Contacts: DOJO-native people store.
 export interface ContactDto {
   id: string;
   display_name: string;
@@ -900,7 +898,7 @@ export interface VoiceModelsResponse {
   // so an older server build that hasn't shipped it still parses cleanly.
   moonshine?: VoiceModelInfo | null;
   defaultWhisper: string;
-  // Canonical default STT engine key ('moonshine-base' on v2.9+). Optional
+  // Canonical default STT engine key ('moonshine-base'). Optional
   // so an older server build that lacks the key still parses; the dashboard
   // falls back to defaultWhisper.
   defaultSttModel?: string;
@@ -1283,7 +1281,7 @@ export const getAgentSystemPrompt = async (id: string): Promise<ApiResponse<{ co
   return request<{ content: string }>(`/agents/${id}/system-prompt`);
 };
 
-// UX-ACCESS A3: the Access panel's catalog — the tool groups it draws
+// The Access panel's catalog: the tool groups it draws
 // checkboxes for, the four presets, and which tool group each channel's send
 // tool lives in (so the panel can say when a channel grant would be inert).
 // Served from the server's own index; a copy in the dashboard would be a second
@@ -1292,7 +1290,7 @@ export interface AccessCatalog {
   categories: Array<{ label: string; tools: number }>;
   presets: Array<{ id: string; label: string; description: string; grants: AccessGrants }>;
   channelGroups: Record<string, string[]>;
-  /** UX-ACCESS A4: the published techniques the grant section draws from. */
+  /** The published techniques the grant section draws from. */
   techniques: Array<{ id: string; name: string }>;
 }
 
@@ -1333,7 +1331,7 @@ export const getRouterConfig = async (): Promise<ApiResponse<{
     models: Array<{ modelId: string; modelName: string; priority: number }>;
   }>;
   dimensions: Array<{ id: string; name: string; weight: number; isEnabled: boolean }>;
-  /** v3.5 N42: the one window every automatic pick runs at; null with no model on light/standard/heavy. */
+  /** The one window every automatic pick runs at; null with no model on light/standard/heavy. */
   window: { tokens: number; floorTokens: number; floorModelName: string; minTokens: number; minAgentName: string | null; unmeasuredAgentNames: string[] } | null;
 }>> => {
   return request('/router/config');
@@ -1501,12 +1499,10 @@ export const setAgentBudget = async (
 
 // ── Services ──
 
-// UX-REPAIR T14: both shapes below are the WIRE's, field for field. They used to declare
-// `lastCheck` (the route emits `lastHeartbeat`) and two iMessage fields nothing has ever
-// emitted, with a defensive remap in `Health.tsx` keeping the mismatch quiet; a conformance
-// test now compares each shape against the payload its route actually returns. The iMessage
-// route also serves `approvedSenders`/`safeSenders`/`lastSeenRowId`, which no page reads —
-// a declared SUBSET is honest; a declared field that does not exist is not.
+// Both shapes below are the WIRE's, field for field; a conformance test compares
+// each against the payload its route actually returns. The iMessage route also
+// serves `approvedSenders`/`safeSenders`/`lastSeenRowId`, which no page reads: a
+// declared SUBSET is honest; a declared field that does not exist is not.
 export const getWatchdogStatus = async (): Promise<ApiResponse<{
   running: boolean;
   lastHeartbeat: string | null;
@@ -1731,7 +1727,7 @@ export interface VaultEntry {
   lastRetrievedAt: string | null;
   sourceConversationId: string | null;
   source: string;
-  // FU-2: compact JSON citation of the fact's original source, or null. Shape:
+  // Compact JSON citation of the fact's original source, or null. Shape:
   // { "kind": "url"|"file", "ref": "<url-or-path>", "page": 3, "section": "..." }
   citation: string | null;
   createdAt: string;
@@ -1862,7 +1858,7 @@ export const updateDreamingConfig = async (config: Partial<DreamingConfig>): Pro
 export type UpdateChannel = 'stable' | 'preflight';
 
 /**
- * SWEEP CORE-2 item 3 — the update's disk-space pre-flight, measured server-side at check
+ * The update's disk-space pre-flight, measured server-side at check
  * time. Rides the check result so the tab can warn BEFORE the owner commits, with no second
  * round-trip. `measured: false` means the volume could not be read, which is reported and
  * never treated as a refusal.
@@ -1971,7 +1967,7 @@ export interface HealerConfig {
   modelId: string | null;
   healerTime: string;
   healerMode: 'active' | 'monitor';
-  // v2.3.19 — provider-isolation surface. true when the Healer and the
+  // Provider-isolation surface: true when the Healer and the
   // primary agent are on the same provider, which defeats the cross-
   // provider safety net (if that provider goes down both go down).
   providerSharedWithPrimary?: boolean;
@@ -1995,7 +1991,7 @@ export interface HealerProposal {
   agent_id: string | null;
   created_at: string;
   resolved_at: string | null;
-  // v2.3.19 — set when the Healer calls healer_mark_applied AFTER an
+  // Set when the Healer calls healer_mark_applied AFTER an
   // approved proposal has been carried out. Distinguishes "approved
   // (waiting for Healer to execute)" from "applied (done)".
   applied_at?: string | null;
@@ -2070,7 +2066,7 @@ export const sendHealerReport = async (): Promise<ApiResponse<{ message: string 
   return request<{ message: string }>('/healer/report/send', { method: 'POST' });
 };
 
-// ── Twilio (v2.9.18) ──
+// ── Twilio ──
 
 export interface TwilioNumberDto {
   number: string;
@@ -2220,7 +2216,7 @@ export const cancelGenerationJob = async (
   });
 };
 
-// ── Problem reports (DOJO-REPORT T6) ──
+// ── Problem reports ──
 // `ReportBrief`/`ReportRow` are declared twice ON PURPOSE: once server-side in
 // `report/store.ts`, once here, because `packages/dashboard` cannot import from
 // `packages/server`. Same fields, same names, same types; the route serves that shape and
@@ -2240,7 +2236,10 @@ export interface ReportRow {
   approvedAt: string | null; postedAt: string | null;
   issueUrl: string | null; issueNumber: number | null; exportPath: string | null;
 }
-/** What the ONE door answers: `issueUrl` connected, `exportPath` not, `duplicate` = ask first (T7). `labelsDropped` = the issue landed, but the labels are not on it — GitHub either refused them or accepted them and saved the issue without them (measured by a read-back, T8 + T8 LIVE D-B) — and only write access can add them now. */
+/** What the ONE door answers: `issueUrl` connected, `exportPath` not, `duplicate` =
+ *  ask first. `labelsDropped` = the issue landed but the labels are not on it: GitHub
+ *  either refused them or accepted them and saved the issue without them (measured by
+ *  a read-back), and only write access can add them. */
 export interface ReportDelivery {
   status: string; issueUrl: string | null; issueNumber: number | null;
   exportPath: string | null; newIssueUrl?: string; bodyWasTrimmed?: boolean; reportText?: string;
@@ -2253,7 +2252,7 @@ export const listOpenReports = async (): Promise<ApiResponse<ReportRow[]> & { de
 /** Only the fields the owner actually changed. An empty patch is refused by the door. */
 export const editReportBrief = async (id: string, edits: Partial<ReportBrief>): Promise<ApiResponse<ReportRow>> =>
   request<ReportRow>(`/reports/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(edits) });
-/** THE ONE DOOR (owner ruling D4). Nothing else in this file can publish a report. */
+/** THE ONE DOOR. Nothing else in this file can publish a report. */
 export const approveReport = async (id: string, choice?: PostChoice): Promise<ApiResponse<ReportDelivery>> =>
   request<ReportDelivery>(`/reports/${encodeURIComponent(id)}/approve`,
     { method: 'POST', body: JSON.stringify(choice ?? {}) });

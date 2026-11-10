@@ -1,27 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE ACCESS PANEL'S GRANT MATH (UX-ACCESS A3) — pure, no React.
-//
-// Split out of `AccessPanel.tsx` on the same seam `authorize.ts` and
-// `gate-eval.ts` use on the server: what a change MEANS is a pure function of
-// two objects, and the component is only allowed to render and to ask.
-//
-// The rules encoded here, each of which the panel would otherwise have to
-// remember at half a dozen call sites:
-//
-//   · `'*'` is a PROMISE ABOUT THE FUTURE, not a full list. Unticking one group
-//     under `'*'` expands to every group that exists today MINUS that one, so
-//     the owner never silently keeps a grant for a category invented next month.
-//   · A PATCH carries only what moved. `PUT /agents/:id {grants}` merges over the
-//     agent's current object (A2), so sending the whole thing would make every
-//     save look like a change in the audit log.
-//   · An agent whose master is `null` HAS NO CHANNEL SECTION — owner ruling 1,
-//     "sensei agents other than the primary have no such toggle; they
-//     communicate through the main agent". The patch never names `channels` for
-//     one, which is stronger than disabling a control.
-//   · The KIND level follows the ACCOUNTS. The surface strip reads the per-KIND
-//     level (A1 §6.6) while the door reads the per-ACCOUNT override, so unticking
-//     every account of a kind has to narrow the kind too or the tools stay
-//     advertised for an agent that can no longer use them.
+// The access panel's grant math: pure, no React, so a change's meaning is not re-derived at call sites.
+// '*' is a promise about the future: unticking one item under it expands to today's list minus that one,
+//  so no grant is silently kept for a category invented next month.
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { AccessChannel, AccessGrants, ChannelTier, IntegrationLevel } from '@dojo/shared';
@@ -38,12 +18,8 @@ export interface AccountRow {
 
 export const clone = (g: AccessGrants): AccessGrants => cloneGrants(g);
 
-// ── Tool groups (UX-ACCESS A5: a MODE, not a checkbox) ──
-//
-// Owner order: the section offers "Full tool access" or "Individual tool
-// access", and the 38 group checkboxes render only under the second. The model
-// is unchanged and the mapping is exact — `'*'` IS the full mode, which is why
-// all 111 migrated agents read "Full" and the capability diff stays empty.
+// Tool groups are a MODE, not a checkbox: "Full" is exactly '*'; individual shows the group boxes.
+// The model is unchanged and the mapping exact, so the capability diff stays empty.
 
 export type ToolMode = 'full' | 'individual';
 
@@ -53,18 +29,10 @@ export const toolMode = (g: AccessGrants): ToolMode =>
 export const categoryChecked = (g: AccessGrants, label: string): boolean =>
   g.tools.categories === '*' || g.tools.categories.includes(label);
 
-/**
- * Switch the mode.
- *
- * FULL → INDIVIDUAL EXPANDS, it does not blank. `'*'` means "every group,
- * including ones added later", so the honest starting point for a bounded list
- * is today's whole list — and writing `[]` here would strip every tool the agent
- * holds the moment the owner so much as looked at the control. Nothing is saved
- * until Save either way, so a mode flip the owner reverses costs nothing.
- */
+/** Switching Full to individual EXPANDS, it does not blank: the honest start for a bounded list
+ *  is today's whole list; writing `[]` here would strip every tool the agent holds. */
 export function setToolMode(g: AccessGrants, mode: ToolMode, allLabels: string[]): AccessGrants {
-  // With no label list there is nothing to expand "every group" into; going Individual would write an
-  // empty list and strip every tool. Refuse (the panel also says why).
+  // With no label list, going Individual would write an empty list and strip every tool. Refuse.
   if (mode === 'individual' && g.tools.categories === '*' && allLabels.length === 0) return clone(g);
   const next = clone(g);
   next.tools.categories = mode === 'full'
@@ -73,17 +41,8 @@ export function setToolMode(g: AccessGrants, mode: ToolMode, allLabels: string[]
   return next;
 }
 
-// ── Techniques (UX-ACCESS A4; A5 makes it a switch over a list) ──
-//
-// The SAME `'*'`-is-a-promise rule as the tool groups, and for the same reason:
-// unticking one technique under `'*'` must not silently keep a grant for a
-// technique the Trainer publishes next week. `techniqueGrantOf` is what makes a
-// row written before A4 (no `techniques` key) read as the `'*'` it means.
-//
-// A5, owner order: a "Technique access" switch, with the list beneath it and all
-// of it checked when the switch goes on. "On" is therefore exactly "holds any
-// grant", and turning it on writes `'*'` — the promise, which is what "all
-// checked, including ones published later" means in this model.
+// Techniques: the same '*' promise as the tool groups, for the same reason. techniqueGrantOf
+//  makes a row written without the key read as the '*' it means. On = holds any grant.
 
 export const techniqueAccessOn = (g: AccessGrants): boolean => {
   const t = techniqueGrantOf(g);
@@ -123,14 +82,7 @@ export function setCategory(g: AccessGrants, label: string, on: boolean, allLabe
   return next;
 }
 
-// ── Credentials (UX-ACCESS A5) ──
-//
-// ⚰ THE PER-CREDENTIAL ROWS ARE GONE, and so is the math behind them
-// (`grantsEveryCredential` / `credentialChecked` / `setCredential` /
-// `setEveryCredential`). Owner order: one toggle, "Access to stored
-// credentials". The MODEL moved with it — `integrations.credentials` is a
-// boolean now — so this is two lines rather than four functions, and there is no
-// finer reading of the field left anywhere for the toggle to be lying about.
+// One toggle for stored credentials: the field is a boolean, so there is no finer reading to lie about.
 
 export const credentialsGranted = (g: AccessGrants): boolean => g.integrations.credentials;
 
@@ -140,7 +92,6 @@ export function setCredentials(g: AccessGrants, on: boolean): AccessGrants {
   return next;
 }
 
-// ── Integrations ──
 
 export function setPlaud(g: AccessGrants, on: boolean): AccessGrants {
   const next = clone(g);
@@ -156,16 +107,8 @@ const WIDEST: IntegrationLevel[] = ['none', 'read', 'full'];
 const widest = (levels: IntegrationLevel[]): IntegrationLevel =>
   levels.reduce<IntegrationLevel>((a, b) => (WIDEST.indexOf(b) > WIDEST.indexOf(a) ? b : a), 'none');
 
-/**
- * Set one account's level, and keep the KIND level equal to the widest account
- * of that kind.
- *
- * The second half is not tidiness: the advertised surface filters on the KIND
- * level and the door reads the per-account override, so an account-only edit
- * would leave `gmail_*` on the model's tool list for an agent that is refused at
- * the door — the exact "advertised but not permitted" drift this phase exists to
- * end.
- */
+/** Sets one account's level and keeps the KIND level at the widest account of that kind: the
+ *  strip reads the kind, the door the account; a drift is advertised but refused at the door. */
 export function setAccountLevel(
   g: AccessGrants,
   provider: Provider,
@@ -191,28 +134,13 @@ export function setKindLevel(g: AccessGrants, provider: Provider, kind: 'agent' 
   return next;
 }
 
-// ── Channels ──
 
 export const hasMaster = (g: AccessGrants): boolean => g.channels.master !== null;
 export const masterOn = (g: AccessGrants): boolean => g.channels.master === true;
 
-/**
- * The über toggle, which now REVEALS its children rather than dimming them
- * (owner order, UX-ACCESS A5).
- *
- * TURNING IT ON DEFAULTS EVERY CHANNEL TO `'owner'` — "Only me" — and never to
- * `'all'`. The master is a statement that this agent may talk to people; it is
- * not a statement about WHICH people, and owner ruling 1's me-vs-other-people
- * tier is the place that second decision lives. So reaching anyone other than
- * the owner stays a deliberate extra click, per channel.
- *
- * THE DEFAULT ONLY FIRES WHEN THERE IS NOTHING TO RESTORE. A3 made the
- * per-channel value survive a `false` master on purpose (`channelTierOf` applies
- * the master, so a stored tier is inert rather than erased); this is what that
- * property buys. An owner who narrows the children, flips the master off to look
- * at something and flips it back gets HIS set back, not a fresh sweep of
- * defaults over it. Turning the master OFF never touches a child.
- */
+/** The master reveals its children; turning it ON defaults every channel to 'owner', never
+ *  'all': it says this agent may talk to people, not which people. The default only fires when
+ *  every child is 'none', so a stored set survives a flip off and back. OFF never touches one. */
 export function setMaster(g: AccessGrants, on: boolean): AccessGrants {
   const next = clone(g);
   next.channels.master = on;
@@ -228,16 +156,8 @@ export function setChannelTier(g: AccessGrants, channel: AccessChannel, tier: Ch
   return next;
 }
 
-/**
- * Channels this draft grants whose TOOL GROUP it does not — the grant that looks
- * set and does nothing.
- *
- * A2 §6.2 handed this to A3 as a thing the panel must "refuse to let the owner
- * set, or say so on screen". A3 says so on screen, because refusing would mean
- * the panel silently ticking a tool group the owner did not choose. Since the A3
- * rider the call is not merely inert — it is REFUSED at the executor — so the
- * warning names the group to tick.
- */
+/** Channels the draft grants whose TOOL GROUP it does not: the grant that looks set and does
+ *  nothing. Said on screen rather than refused, since refusing would silently tick a group. */
 export function inertChannels(
   g: AccessGrants,
   channelGroups: Record<string, string[]>,
@@ -254,27 +174,10 @@ export function inertChannels(
   return out;
 }
 
-/**
- * Mail accounts this draft grants WRITE on, whose send path is shut — the grant whose
- * widest word promises more than it buys.
- *
- * `inertChannels` above warns at a granted channel with no tool group. This is the same
- * treatment pointed the other way: the grant that looks set is the WRITE LEVEL, and the
- * fix is a channel switch. "Read & write" is the widest word on that control and an owner
- * reasonably reads it as "it can send mail now". It cannot: sending is a human channel and
- * needs "Can talk to people" → Email. What the write grant DOES buy without that switch is
- * reading, filing — and, since T77b, DRAFTING: `gmail_draft` / `outlook_draft` put a
- * finished message in the Drafts folder and send nothing.
- *
- * TWO REASONS, NOT ONE, because the fix differs and a sentence that names the wrong control
- * is worse than none: the master is off (turn it on, then pick Email), or the master is on
- * and Email alone is off (turn Email on). `channelTierOf` collapses both into `'none'`, so
- * the two fields are read separately here exactly as `inertChannels` reads them.
- *
- * A HELPER AGENT (`master === null`) IS NEVER WARNED. It has no switch of its own — it
- * talks through the main agent — so there is nothing on screen to point at, and the panel
- * already says so in its own words.
- */
+/** Write-granted mail accounts whose send path is shut: "Read & write" reads as "it can send
+ *  now", but sending is a human channel needing master then Email; without it write buys reading,
+ *  filing, drafting. Two reasons, read separately: master off, or master on with Email off.
+ *  A helper agent (master null) is never warned: it has no switch of its own to point at. */
 export function mailWriteWithoutSend(
   g: AccessGrants,
 ): Array<{ provider: Provider; missing: 'master' | 'email' }> {
@@ -285,8 +188,6 @@ export function mailWriteWithoutSend(
   const out: Array<{ provider: Provider; missing: 'master' | 'email' }> = [];
   for (const provider of ['google', 'microsoft'] as const) {
     const p = g.integrations[provider];
-    // `setAccountLevel` keeps the kind level at the widest account, so the kind level is
-    // the authoritative answer; the per-account scan is the belt on a hand-edited object.
     const writes = p.agent === 'full' || p.user === 'full'
       || Object.values(p.accounts ?? {}).some((level) => level === 'full');
     if (writes) out.push({ provider, missing });
@@ -294,17 +195,11 @@ export function mailWriteWithoutSend(
   return out;
 }
 
-// ── The patch ──
 
 type Patch = Record<string, unknown>;
 
-/**
- * Only what moved, in `grantsPatchSchema`'s shape.
- *
- * An empty object means "nothing to save", which is what the Save button reads.
- * `channels` is omitted entirely for an agent with no master switch, so the
- * ruling holds at the wire and not only in the rendering.
- */
+/** Only what moved, in grantsPatchSchema's shape; an empty object is what the Save button reads.
+ *  channels is omitted entirely for an agent with no master, so the rule holds at the wire. */
 export function grantsPatch(original: AccessGrants, draft: AccessGrants): Patch {
   const patch: Patch = {};
   const moved = (a: unknown, b: unknown): boolean => stableGrantsText(a) !== stableGrantsText(b);
@@ -317,7 +212,6 @@ export function grantsPatch(original: AccessGrants, draft: AccessGrants): Patch 
 
   const integrations: Patch = {};
   if (original.integrations.plaud !== draft.integrations.plaud) integrations.plaud = draft.integrations.plaud;
-  // A5: a boolean, compared exactly like the Plaud switch above it.
   if (original.integrations.credentials !== draft.integrations.credentials) {
     integrations.credentials = draft.integrations.credentials;
   }
@@ -332,8 +226,6 @@ export function grantsPatch(original: AccessGrants, draft: AccessGrants): Patch 
   }
   if (Object.keys(integrations).length > 0) patch.integrations = integrations;
 
-  // Owner ruling 1: an agent with no master toggle gets no channel section, on
-  // the wire as well as on the screen.
   if (hasMaster(draft)) {
     const channels: Patch = {};
     if (original.channels.master !== draft.channels.master) channels.master = draft.channels.master;
@@ -343,9 +235,6 @@ export function grantsPatch(original: AccessGrants, draft: AccessGrants): Patch 
     if (Object.keys(channels).length > 0) patch.channels = channels;
   }
 
-  // A4: compared through `techniqueGrantOf` on BOTH sides, so opening the panel
-  // on a pre-A4 row and pressing Save without touching the section sends
-  // nothing — the absence and the `'*'` it means are the same value here.
   if (moved(techniqueGrantOf(original), techniqueGrantOf(draft))) {
     patch.techniques = techniqueGrantOf(draft);
   }

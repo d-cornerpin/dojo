@@ -1,5 +1,4 @@
-// Money is formatted in one place so a negative balance keeps its sign, a
-// thousand keeps its comma, and a sub-cent spend isn't shown as zero.
+// One money formatter: negatives keep their sign, thousands keep commas, a sub-cent spend isn't zero.
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
 export const formatUsd = (v: number | null | undefined): string => {

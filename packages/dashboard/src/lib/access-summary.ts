@@ -1,32 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE WORDS THE PANEL SAYS ABOUT THE OBJECT (UX-ACCESS A6) — pure, no React.
-//
-// The owner's design asks the folded card to carry a one-line plain-English
-// digest of the agent's setup, and each of the five folded rows to carry its own
-// state line. All of it is DERIVED from the stored object on every render: there
-// is no summary field anywhere, because a stored summary is a second copy of a
-// fact and this overhaul exists to end those.
-//
-// ── WHY IT IS ITS OWN FILE ──
-// `access-edits.ts` is the panel's grant ARITHMETIC and its ratchet entry says,
-// in three separate raises, "from here this file may only shrink". Reading the
-// object and WRITING it back are different jobs: nothing here returns an
-// `AccessGrants`, and nothing in there produces a sentence. So the words live
-// beside the arithmetic rather than inside it, and neither file grows to hold
-// the other's work.
-//
-// ── THE ONE INPUT THAT IS NOT A GRANT ──
-// `runsPrograms` is the permission manifest's `exec_allow`, passed in rather
-// than read here, because this module may not learn a second model. It earns its
-// place in the digest by being the most consequential thing an agent can hold,
-// and a count it disappeared into would be a quieter line than the truth
-// deserves.
-// ════════════════════════════════════════════════════════════════════════════
+// Plain-English digest lines for the access panel, derived from the stored object on every render:
+// there is no stored summary, because a stored summary would be a second copy of a fact.
 
 import type { AccessChannel, AccessGrants, ProviderGrants } from '@dojo/shared';
 import { ACCESS_CHANNELS, channelTierOf, techniqueGrantOf } from '@dojo/shared';
 
-/** The one place a channel has an owner-facing name. */
 export const CHANNEL_LABEL: Record<AccessChannel, string> = {
   imessage: 'iMessage', sms: 'Text message (SMS)', voice: 'Phone calls', email: 'Email', teams: 'Microsoft Teams',
 };
@@ -37,13 +14,10 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
 const groupCount = (g: AccessGrants): number | null =>
   g.tools.categories === '*' ? null : g.tools.categories.length;
 
-/** Kinds of one provider's accounts this agent may touch. The panel keeps the
- *  KIND level equal to the widest account of that kind (`setAccountLevel`), so
- *  counting kinds is exact for anything the panel has written. */
+/** Kinds of one provider's accounts touched; counting kinds is exact for what the panel produces. */
 const providerReach = (p: ProviderGrants): number =>
   (p.agent !== 'none' ? 1 : 0) + (p.user !== 'none' ? 1 : 0);
 
-/** Everything in "What it can reach" that comes from the grants object. */
 const connectionCount = (g: AccessGrants): number =>
   (g.integrations.plaud ? 1 : 0)
   + (g.integrations.credentials ? 1 : 0)
@@ -53,15 +27,13 @@ const connectionCount = (g: AccessGrants): number =>
 const grantedChannels = (g: AccessGrants): AccessChannel[] =>
   ACCESS_CHANNELS.filter((c) => channelTierOf(g, c) !== 'none');
 
-/** "you only" / "you and approved contacts" — owner ruling 1's me-vs-others tier
- *  said the way the person reading it would say it. */
+/** "you only" or "you and approved contacts": the tier phrased the way the reader would say it. */
 const whoPhrase = (g: AccessGrants): string =>
   grantedChannels(g).every((c) => channelTierOf(g, c) === 'owner')
     ? 'you only'
     : 'you and approved contacts';
 
-/** THE FOLDED CARD'S ONE LINE. Built from the STORED object, never the draft, so
- *  a shut card never reports an unsaved edit as if it had been saved. */
+/** Folded card's line, from the STORED object, never the draft: a shut card can't show an unsaved edit. */
 export function accessDigest(g: AccessGrants, extra: { runsPrograms: boolean }): string {
   const groups = groupCount(g);
   const reach = grantedChannels(g);

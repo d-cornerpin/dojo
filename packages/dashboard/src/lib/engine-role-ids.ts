@@ -1,6 +1,4 @@
-// Which agents are the Dreamer and the Healer is a setting (dreamer_agent_id / healer_agent_id), never a
-// fixed name. The orb and the jobs list ask here. A failed read is not cached, so the next ask retries
-// (the callers ask again on every socket reconnect).
+// Which agents are the Dreamer and the Healer is a setting, never a fixed name.
 import { getSetting } from './api';
 
 export type EngineRole = 'dreamer' | 'healer';
@@ -23,7 +21,6 @@ export const loadEngineRoleIds = (): Promise<void> => {
   return inflight;
 };
 
-/** The engine role an agent id plays, or null (also null while the ids are not yet known). */
 export const engineRoleOf = (agentId: string): EngineRole | null => {
   if (!known) return null;
   if (known.dreamer && agentId === known.dreamer) return 'dreamer';
