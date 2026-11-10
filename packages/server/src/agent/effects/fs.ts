@@ -1,25 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE FILESYSTEM FACADE (PHASE-5 T8 Step 2) — the entry that PERFORMS the work.
-//
-// `agent/brokers/fs.ts` answers *may this agent touch this path?*. This module
-// is what touches it. The two are deliberately different files with different
-// jobs: **the broker DECIDES, the facade CARRIES**, and nothing here holds an
-// allow list, a deny list or a rule of its own — every entry asks
-// `requireAuthorized`, which is set membership over resources the gate loop
-// already resolved and the brokers already decided about.
-//
-// ── THE SHAPE IS 1:1 WITH `node:fs`, ON PURPOSE ──
-// Every entry takes the same arguments as the `node:fs` call it replaces and
-// returns the same value, so a conversion is a rename plus an `await` where the
-// original was already async — never a rewrite. Relocation purity is what let
-// PHASE-5 catch three would-be capability losses; a facade whose signatures
-// "improved" on the ones it replaces would hide the fourth.
-//
-// ── WHY THE OPERATION SET IS SMALL AND GROWS BY CATEGORY ──
-// Only the operations a converted call site actually uses live here. An entry
-// nothing calls is unexercised code pretending to be a lock, and this project
-// deletes those. Categories that convert later bring their own operations with
-// them, each with a test that drives it.
+// THE FILESYSTEM FACADE: the entry that PERFORMS the work the broker decided.
+// `agent/brokers/fs.ts` answers *may this agent touch this path?*, this module is
+// what touches it: the broker DECIDES, the facade CARRIES, nothing here holds an
+// allow list or a rule of its own, every entry asks `requireAuthorized`. The
+// shape is deliberately 1:1 with `node:fs`, so a conversion is a rename plus an
+// `await`, never a rewrite. Only operations a converted call site uses live
+// here: an entry nothing calls is unexercised code pretending to be a lock, and
+// categories that convert later bring their own, each with a test that drives it.
 // ════════════════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs';
@@ -100,7 +87,7 @@ export function mkdirSync(target: fs.PathLike, options?: fs.MakeDirectoryOptions
   fs.mkdirSync(target, options);
 }
 
-/** A copy is a read of the source AND a write of the destination — both asked. */
+/** A copy is a read of the source AND a write of the destination: both asked. */
 export function copyFileSync(src: fs.PathLike, dest: fs.PathLike): void {
   check('fs_read', src);
   check('fs_write', dest);
@@ -126,22 +113,9 @@ export function rmSync(target: fs.PathLike, options?: fs.RmOptions): void {
   fs.rmSync(target, options);
 }
 
-/**
- * WRITE A FILE ATOMICALLY — RULING P5-R15 ADDENDUM mechanic 6.
- *
- * The temp-sibling-then-rename mechanism moved here WHOLE out of `file_patch`:
- * same temp naming, same rename, same best-effort cleanup, and the error is
- * rethrown unchanged so the caller's own message is byte-for-byte what it was.
- * `fs.rename` is atomic on the same filesystem, so a crash mid-write either
- * leaves the original intact or commits the new content, never a half file.
- *
- * **The declared resource is the TARGET.** The temp sibling is this layer's own
- * implementation detail — its name is derived from the target and it lives in
- * the target's directory, so it cannot be aimed anywhere the target is not —
- * and it is deliberately NOT a second grant. Requiring one would mean every
- * declaration had to describe a file the tool does not name and the user never
- * sees, which is a declaration about the mechanism instead of the effect.
- */
+// WRITE A FILE ATOMICALLY: temp sibling then rename (atomic on one filesystem), so a
+// crash never leaves a half file. The error is rethrown unchanged so the caller's own
+// message survives; the declared resource is the TARGET, never the temp sibling.
 export async function atomicWriteFile(
   target: string,
   data: string,
@@ -159,21 +133,9 @@ export async function atomicWriteFile(
   }
 }
 
-/**
- * WRITE A FILE THROUGH A `<target>.tmp` SIBLING — mechanic 6's PRINCIPLE applied
- * to a SECOND, DIFFERENT mechanism (PHASE-5 T8 Step 3).
- *
- * The slides style store's own writer moved here WHOLE: same `mkdir -p` of the
- * parent, same `<target>.tmp` name, same rename, same synchronous shape. It is a
- * separate entry rather than a call into `atomicWriteFile` on purpose — that one
- * names its temp `.<base>.patch-<ts>-<rand>.tmp` and is async, and blending two
- * mechanisms into one entry would change one caller's behaviour to match the
- * other's, which a relocation may never do.
- *
- * **The declared resource is the TARGET**, for the same reason as the async
- * entry: the sibling's name is derived from the target and lives in the target's
- * directory, so it cannot be aimed anywhere the target is not.
- */
+// WRITE THROUGH A `<target>.tmp` SIBLING: the second writer, kept separate from
+// `atomicWriteFile` on purpose: blending two mechanisms would change one caller's
+// behaviour to match the other's, which a relocation may never do.
 export function writeFileViaTmpSiblingSync(
   target: string,
   data: string,
@@ -187,11 +149,8 @@ export function writeFileViaTmpSiblingSync(
 }
 
 // ── The promises surface, same rules ────────────────────────────────────────
-//
-// The two overloaded entries are declared as functions rather than object
-// methods because an object literal cannot carry overload signatures — and the
-// overloads are what keep the shape 1:1 with `node:fs`, so a conversion stays a
-// rename instead of a rewrite.
+// The two overloaded entries are declared as functions because an object literal
+// cannot carry overload signatures, and the overloads keep the 1:1 shape.
 
 async function readFileAsync(target: fs.PathLike, encoding: BufferEncoding): Promise<string>;
 async function readFileAsync(target: fs.PathLike): Promise<Buffer>;
@@ -217,11 +176,7 @@ export const promises = {
   },
   readFile: readFileAsync,
   readdir: readdirAsync,
-  /**
-   * Open a handle. The AUTHORIZATION IS ON THE OPEN, which is where it belongs:
-   * a handle is a capability over one already-named file, and every read or
-   * write it can perform is a read or write of that same path.
-   */
+  /** Open a handle: the authorization is on the OPEN, a handle only touches that path. */
   async open(target: fs.PathLike, flags: string): Promise<fs.promises.FileHandle> {
     check(flags.startsWith('r') && !flags.includes('+') ? 'fs_read' : 'fs_write', target);
     return fs.promises.open(target, flags);

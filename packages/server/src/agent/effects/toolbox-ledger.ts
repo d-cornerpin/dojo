@@ -1,15 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE LEDGER OF PROCESS GROUPS THE TOOLBOX STARTED (v3.5 P6c).
-//
-// A graceful exit signals every group the toolbox started (`proc-tree.ts`). A hard kill of
-// the server runs no exit hook, so a process an agent backgrounded kept running with nobody
-// holding it. The groups are therefore written to a small file as they start, and the next
-// boot ends whatever that file still names and is still alive.
-//
-// A group id can be reused by an unrelated process once the machine has rebooted, so the file
-// carries the machine's boot time and is ignored when that differs. It holds no `child_process`
-// import: it only signals groups somebody else was authorized to start.
-// ════════════════════════════════════════════════════════════════════════════
+// THE LEDGER OF PROCESS GROUPS THE TOOLBOX STARTED: a graceful exit signals every group; a hard
+// kill runs no exit hook, so groups are written as they start and the next boot ends what it names.
+// A group id can be reused after a reboot, so the file carries the boot time and ignores itself when
+// that differs. No child_process import here: it signals only groups somebody else authorized.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,10 +17,9 @@ const FILE = TOOLBOX_LEDGER_FILE;
 /** Boot times read at two moments differ by clock rounding; a reboot differs by far more. */
 const BOOT_SLACK_MS = 5_000;
 
-/** A group's leader as it was when started (`ps` start time, then command): a reused id never matches both. */
 export interface GroupEntry {
   pgid: number; identity: string;
-  /** Members ("pid lstart") seen in the group when its leader exited: how a leaderless group is recognised. */
+  /** Members ("pid lstart") seen when its leader exited: how a leaderless group is recognised. */
   members?: string[];
 }
 
@@ -48,13 +39,9 @@ export function recordToolboxGroups(dir: string, groups: GroupEntry[], bootMs: n
   } catch { /* the ledger is a safety net; losing it must not break a tool call */ }
 }
 
-/**
- * The one test for "this group is provably one the toolbox started", used by the boot reap and by the
- * graceful-exit hook. Leader alive: it must be the very process recorded (same start time AND command),
- * else the id was reused. Leader gone: a one-shot script exits at once and leaves what it backgrounded
- * running in the group, so the toolbox noted the members it saw (pid + start time) when the leader
- * exited; the group is ours only while one of THOSE is still in it. A reused id never matches.
- */
+/** THE ONE TEST that a group is provably one the toolbox started (boot reap and the exit hook). */
+/** Leader alive: it must be the very process recorded (start time AND command), else the id was reused. */
+/** Leader gone: ours only while a member noted at exit (pid + start time) remains; reuse never matches. */
 export function groupIsOurs(
   pgid: number, identity: string, noted: string[] | undefined,
   identityOf: (pid: number) => string | null = identityOfPid,
