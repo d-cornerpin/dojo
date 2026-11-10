@@ -1,24 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════
-// COMMANDS HANDED TO THE BACKGROUND, ON RECORD (field fix 3, re-review 3 M2; re-review 4).
-//
-// When a person's message arrives during a long command, the exec door hands the call back and the
-// command keeps running as the agent's background job (`effects/proc-tree.ts` handToBackground). The
-// hand-back text promises the agent the result. A Dojo restart ends every command the toolbox started
-// (`proc-tree.ts` endToolboxGroups on exit, `toolbox-ledger.ts` at the next boot), so that promise
-// cannot be kept. Each hand-off is therefore a row of `background_commands` (migration 213) while it
-// runs, removed only after its result is saved for the agent; whatever is still there at boot was cut
-// by the restart, and its agent is told that fact on its next turn.
-//
-// Re-review 4: this was a JSON file in the data folder. SQLite is the only datastore (architecture
-// rule 5), and a row write is atomic where a file rewrite was not. A file left by the build before is
-// read once at boot, told, and deleted (after its notices are saved, re-review 5).
-//
-// Re-review 5 (P1): the row is also the task ledger's link (migration 214). It carries the call id
-// that was handed back; the ledger writes that call's command "still running", and when the command
-// ends the row's own completion settles the ledger row by call id. A command that ended before the
-// ledger write keeps its status here until that write takes it. At boot, every ledger row still
-// running is settled as ended by the restart, in the same transaction as its notice.
-// ════════════════════════════════════════════════════════════════════════════
+// Commands handed to the background are on record in `background_commands` while they run,
+// removed only after the result is saved. A Dojo restart ends every toolbox command, so
+// whatever is still on record at boot was cut by it, and its agent is told on its next turn.
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -27,7 +9,7 @@ import { createLogger } from '../logger.js';
 import { ENDED_BY_RESTART, settleLedgerCommandByCall, ledgerHasCall, settleEveryStillRunningAsRestart } from '../work/command-status.js';
 
 const logger = createLogger('background-commands');
-/** The file the record used to be (re-review 3); read once at boot if a box still has it. */
+/** The file this record used to live in; read once at boot if a box still has it. */
 export const LEGACY_BACKGROUND_COMMANDS_FILE = 'background-commands.json';
 
 export interface HandedOff { agentId: string; pid: number; what: string; startedAt: number; callId?: string | null }
@@ -74,8 +56,7 @@ export function endHandOff(id: string): void {
   } catch { /* the boot notice then over-tells, never under-tells */ }
 }
 
-/** The hand-off of tool call `callId`, for the ledger write (`work/ledger-store.ts`): its exit status
- *  (null while it runs). Null when the call was not handed back. */
+/** The hand-off of tool call `callId` for the ledger write: its exit status (null while running). */
 export function handOffForCall(callId: string): { id: string; exitStatus: string | null } | null {
   try {
     const r = getDb().prepare('SELECT id, exit_status AS exitStatus FROM background_commands WHERE call_id = ? LIMIT 1').get(callId) as { id: string; exitStatus: string | null } | undefined;
@@ -94,7 +75,6 @@ export function cutByRestartText(r: HandedOff): string {
     + 'was ended by a Dojo restart before it finished. Its result will not come. If the work still matters, run it again.';
 }
 
-/** The file the build before kept, read once. Deleted by the caller only after its notices are saved. */
 function legacyRows(): { rows: HandedOff[]; remove(): void } {
   const file = dojoDir('data', LEGACY_BACKGROUND_COMMANDS_FILE);
   const none = { rows: [], remove: () => {} };
@@ -107,9 +87,8 @@ function legacyRows(): { rows: HandedOff[]; remove(): void } {
   return { rows, remove: () => { try { fs.rmSync(file, { force: true }); } catch { /* read again next boot */ } } };
 }
 
-/** At boot: every hand-off still running on record was cut by the restart. Tell each agent, settle its
- *  ledger row as ended by the restart, and clear it, in one transaction. Then no ledger row is left
- *  "still running": after a restart, no command the toolbox started is. */
+// At boot: every hand-off still running was cut by the restart. Tell each agent, settle its
+// ledger row as ended by the restart, and clear it, in one transaction.
 export async function tellAgentsOfCommandsCutByRestart(): Promise<number> {
   const db = getDb();
   const rows = db.prepare(`SELECT id, agent_id AS agentId, pid, what, started_at AS startedAt, call_id AS callId,
@@ -147,7 +126,7 @@ export async function tellAgentsOfCommandsCutByRestart(): Promise<number> {
       logger.warn('could not tell an agent its background command was cut', { agentId: r.agentId, error: err instanceof Error ? err.message : String(err) });
     }
   }
-  // Re-review 5 (LOW): the old file goes only once every one of its notices is saved.
+  // The old file goes only once every one of its notices is saved.
   if (legacyAllTold) legacy.remove();
   // Any ledger row still running has no hand-off left to settle it (its record failed, or the file era).
   settleEveryStillRunningAsRestart(db);

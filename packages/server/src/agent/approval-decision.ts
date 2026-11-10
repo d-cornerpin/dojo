@@ -1,22 +1,6 @@
-// ════════════════════════════════════════
-// The primary's decision on a held destructive call, and the wake that carries it back (t232).
-//
-// Split out of `destructive-gate.ts` (which files the request and sweeps the stale ones) because this
-// half has one more thing to know than that one: WHICH WORK the held call belonged to.
-//
-// A decision is not a job of its own. It serves the ask, task or run that was waiting on the held call,
-// and the approval row recorded that lineage when the call was held (migration 117: root_kind, root_id,
-// task_id). So the decision asks the work ledger what became of that work:
-//   * still open        -> wake the requester as before, but INTO that work: the wake carries the row's
-//                          lineage through the A2A door (`work`), so the turn it starts is rooted in the
-//                          ask or task and not in a fresh engine event with nothing to serve;
-//   * finished          -> record the decision and wake nobody. Nothing is left for it to serve: a grant
-//                          expires unused, a denial retries nothing. (Waking an agent with no open work and
-//                          the words "find a non-destructive approach" made it redo finished work and answer
-//                          the owner a second time.)
-//   * no lineage at all -> an old row, or a call made outside any turn: nothing says the work is finished,
-//                          so wake as before.
-// ════════════════════════════════════════
+// The primary's decision on a held destructive call, and the wake that carries it back.
+// The approval row records which work the held call belonged to, and the decision serves that work.
+// Open work: wake the requester rooted in it. Finished work: record, wake nobody. No lineage: wake.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -27,13 +11,8 @@ const logger = createLogger('destructive-gate');
 
 export const APPROVAL_TTL_MINUTES = 60;
 
-/**
- * Deliver an engine wake over A2A and report whether it actually LANDED.
- * The transport returns { delivered:false } for its common drop reasons (target
- * not found, hop limit, semantic dedup) and only THROWS on unexpected errors, so
- * the pre-FA-P1 bare try/catch treated a dropped wake as a success. This gate
- * cannot: an undelivered approval wake is the exact failure it must survive.
- */
+// Deliver an engine wake and report whether it LANDED: the transport returns delivered:false
+// for its common drop reasons, so a try/catch alone would treat a dropped wake as a success.
 export async function deliverGateWake(envelope: {
   intent: 'QUESTION' | 'ANSWER';
   payload: string;
@@ -101,8 +80,7 @@ export async function decideApproval(input: {
 
   const reqName = (db.prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined)?.name ?? row.agent_id;
 
-  // The work this held call belonged to. A row with nothing the ledger can answer for is `judged: false`, which
-  // falls through to the wake exactly as every row did before this existed.
+  // A row the ledger cannot answer for is judged:false and falls through to the wake.
   const verdict = lineageVerdict({ rootKind: row.root_kind, rootId: row.root_id, taskId: row.task_id });
   if (verdict.finished) {
     logger.info('destructive-gate: decision recorded; the work it belonged to is finished, so no wake', {
@@ -113,11 +91,8 @@ export async function decideApproval(input: {
       : `Denied. No wake was needed: the work ${reqName} asked this for is already finished, so there is nothing to retry or stop.`;
   }
 
-  // FA-A3 (anchor fix): the one-shot approval's consume-TTL anchors at decided_at
-  // (see consumeApproval), but the worker's reap timeout was anchored back at
-  // REQUEST time. A slow approval would therefore leave the worker almost no life
-  // to wake and consume its approval before being reaped. On GRANT, re-anchor the
-  // worker's reap timeout from NOW so both windows are coincident and usable.
+  // On GRANT, re-anchor the worker's reap timeout from now: the approval's consume-TTL anchors
+  // at decided_at, and a slow approval would leave the worker no life to wake and consume it.
   if (input.decision === 'approve') {
     try {
       const { extendAgentTimeout } = await import('./spawner.js');
@@ -143,9 +118,8 @@ export async function decideApproval(input: {
     token: input.token, decision: input.decision, decidedBy: input.deciderAgentId, wakeDelivered: delivered,
   });
 
-  // Only claim the requester was woken when the wake actually resolved; otherwise
-  // say plainly it will pick the decision up on its own next turn (the message is
-  // persisted regardless, so it is waiting for them).
+  // Only claim the requester was woken when the wake resolved; the message is persisted
+  // regardless, so an undelivered one still waits for their next turn.
   if (input.decision === 'approve') {
     return delivered
       ? `Approved. ${reqName} has been woken to retry the call (one-shot approval, ${APPROVAL_TTL_MINUTES} min expiry).`

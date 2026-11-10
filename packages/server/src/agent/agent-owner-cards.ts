@@ -1,10 +1,4 @@
-// THE OWNER'S CARDS FOR AN AGENT'S OWN TROUBLE, and the records that are their truth (`healer/owner-notice-kinds.ts`):
-//   paused after repeated errors (`paused:<id>`): the error loop's latest open `paused` row while the agent is paused;
-//     `owner_card_closed_at` is stamped when the agent leaves `paused` by any road, so the trip is over;
-//   rate-limit retries exhausted (`ratelimit:<id>`): `agents.rate_limit_notice` while the agent stays rate limited;
-//   broken and silent (`broken:<id>`, `silent:<id>`): `agents.broken_notice` / `silent_notice`, cleared by the
-//     condition's own end. The record IS the incident: the text goes once, when it is first written.
-// "Leaves" is observed at the one status writer (`agent-status.ts` calls `agentStatusMoved`).
+// The owner's cards for an agent's own trouble: the record IS the incident, the text goes once.
 
 import { endJobCarry } from '../work/task-freshness.js';
 import { getDb } from '../db/connection.js';
@@ -12,7 +6,7 @@ import { ownerConditionCleared, ownerConditionsOnAgentGone, tellOwner } from '..
 import { formatErrorForHuman, type ErrorKind } from './v2/error-format.js';
 
 type Notice = { at: number; words: string; since?: number };
-/** The three per-agent incident records an owner text writes (193, 191). */
+/** The three per-agent incident records an owner text writes. */
 export type NoticeColumn = 'rate_limit_notice' | 'broken_notice' | 'silent_notice';
 const KIND: Record<NoticeColumn, string> = { rate_limit_notice: 'ratelimit', broken_notice: 'broken', silent_notice: 'silent' };
 
@@ -74,12 +68,10 @@ export function endNotice(agentId: string, col: NoticeColumn): void {
   } catch { /* best-effort, as above */ }
 }
 
-/** The Tier D platform kinds (`agent/v2/classifiers/provider.ts`), as `recovery.ts` tags them on
- *  the injury it hands the Healer and on `agents.last_error`: `[<kind>] …`. */
+// The tag `recovery.ts` puts on a platform-kind injury: `[<kind>] ...`. It must match that.
 const BROKEN_TAG = /^\[(auth_invalid|access_denied|quota_exhausted|dns_failure)\]/;
 
-/** BROKEN (t143): the words for an injury only the owner can fix, or null for any other injury.
- *  Composed from the kind and the agent's own names, never from the provider's raw text. */
+// Words for an owner-only injury, composed from the kind and the agent's names, never raw provider text.
 export function brokenWords(agentId: string, injury: string): string | null {
   const kind = BROKEN_TAG.exec(injury)?.[1] as ErrorKind | undefined;
   if (!kind) return null;
@@ -94,8 +86,7 @@ export function brokenWords(agentId: string, injury: string): string | null {
   return words.includes(names.agent) ? words : `${names.agent} has stopped: ${words}`;
 }
 
-/** The one status writer moved this agent: an incident whose status it left is over, and a
- *  terminated agent is the subject of nothing any more (t138 r6, review I3; t143 BROKEN/SILENT). */
+// The one status writer moved this agent: incidents whose status it left are over; terminated ends all.
 export function agentStatusMoved(agentId: string, status: string): void {
   if (['error', 'paused', 'rate_limited', 'terminated'].includes(status)) endJobCarry(agentId); // t143 r6: its job's chain is over
   if (status !== 'paused') closePausedCards(agentId);
@@ -107,8 +98,7 @@ export function agentStatusMoved(agentId: string, status: string): void {
   }
 }
 
-/** The purge door is about to delete this agent: every card it is the subject of ends, live,
- *  while its name can still be read (never a raw id on a card). */
+// The purge is about to delete this agent: every card ends live, while its name can still be read.
 export function agentPurgedForOwner(agentId: string): void {
   agentStatusMoved(agentId, 'terminated');
 }

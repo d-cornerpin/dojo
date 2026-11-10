@@ -1,23 +1,5 @@
-// ── PHASE-1 T4 (2026-07-27): the THIRD message store folds in. ─────────────────
-//
-// `agent_messages` was the platform's third place to keep a message — a notification bus
-// (a sub-agent's result to its parent, PM status, scheduler notices). Research 04 row 6:
-// REPLACE, fold into the unified `messages`. REKEY; requirement preserved: an agent can
-// send another agent a typed notification and the recipient's dashboard can list it, both
-// directions. Mapping, each onto a column that already meant this: to_agent -> agent_id
-// (the recipient owns the row, as for every inbound A2A row) · from_agent ->
-// source_agent_id · message_type -> a2a_intent · metadata -> inbound_meta · lane 'a2a' ·
-// role 'user'. `origin_intent='agent_bus'` keeps the bus distinguishable from ordinary
-// peer traffic — the job the separate table used to do for free.
-//
-// Two consequences, deliberate: (1) these rows now reach the recipient's assembled
-// history, which they did not (one dashboard route was the only reader) — the direction
-// this phase exists for, bounded to three low-frequency producers, and the fail-closed
-// view keeps them off the human surface; (2) `readByRecipient` becomes true once a turn
-// picks the row up, where the old column was written 0 and updated by nothing.
-//
-// The old table is NOT dropped here (T10's) and still holds its rows; the Stable Bridge
-// addendum carries the mapping for lived-in boxes.
+// The agent-to-agent notification bus: an agent sends another a typed notification, stored
+// as a `messages` row scoped by `origin_intent='agent_bus'` to keep it apart from peer traffic.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -50,7 +32,6 @@ function toAgentMessage(row: BusRow): AgentMessage {
   };
 }
 
-// ── Send Message ──
 
 export function sendAgentMessage(
   fromId: string,
@@ -83,8 +64,7 @@ export function sendAgentMessage(
     contentLength: content.length,
   }, fromId);
 
-  // Build the event data. Read back rather than assembled from the arguments, exactly
-  // as before: the row's persisted created_at is what the dashboard must show.
+  // Read back rather than assemble from arguments: the persisted created_at is what the dashboard shows.
   const row = db.prepare(`SELECT ${BUS_COLS} FROM messages WHERE id = ?`).get(id) as BusRow;
   const agentMessage: AgentMessage = row
     ? toAgentMessage(row)
@@ -103,7 +83,6 @@ export function sendAgentMessage(
   return id;
 }
 
-// ── Get Messages ──
 
 export function getAgentMessages(
   agentId: string,
@@ -113,8 +92,7 @@ export function getAgentMessages(
   const direction = options?.direction ?? 'both';
   const limit = options?.limit ?? 50;
 
-  // `origin_intent` scopes every arm to the BUS. Without it these reads would start
-  // returning ordinary peer A2A conversation, which the old table could not contain.
+  // `origin_intent` scopes every arm to the bus; without it these reads return ordinary peer A2A traffic.
   const scope = `origin_intent = '${AGENT_BUS_INTENT}'`;
   let where: string;
   let params: unknown[];

@@ -1,5 +1,5 @@
-// The task a spawned agent owns (moved out of `completeAgent`, v3.5): asked by `completeAgent` and
-// by `complete_task`'s door, which judges that task's measure before the agent is ended.
+// The task a spawned agent owns: its explicit link, else its one assigned candidate.
+// Several candidates resolve nothing and are logged: refusing to guess is the point.
 import { getDb } from '../db/connection.js';
 import { taskScope } from '../work/tracker-view.js';
 import { createLogger } from '../logger.js';
@@ -7,9 +7,6 @@ import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('spawner');
 
-/** The task a spawned agent owns: its explicit `task_id` link, else its ONE assigned candidate
- *  (several resolve nothing, and are logged). Asked by `completeAgent` and by `complete_task`'s door,
- *  which judges that task's measure before the agent is ended (v3.5). */
 export function resolveAgentTaskId(agentId: string, link?: string | null): string | null {
   const db = getDb();
   let resolvedTaskId: string | null = link !== undefined ? link
