@@ -1,27 +1,5 @@
-// ════════════════════════════════════════
-// A2A reply tracking — durable per-ASSIGN reply persistence.
-// ════════════════════════════════════════
-//
-// Backs migration 044_a2a_replies.sql. Two callers:
-//
-//   1. send_to_agent dispatcher: after a successful delivery, calls
-//      `recordA2AReply` if the calling agent has an open ASSIGN/QUESTION/
-//      BLOCK on the same thread. This locks in "this ASSIGN has been
-//      replied to" so subsequent handleMessage invocations don't re-trigger
-//      the missed-reply enforcer for it.
-//
-//   2. v2 loop preflight: calls `findUnrepliedAssignForAgent` to determine
-//      whether the agent's most recent inbound A2A trigger is still
-//      outstanding. If it's already in the a2a_replies table, the loop
-//      treats it as "no A2A reply owed" and the enforcer is a no-op.
-//
-// Together these close the loop captured in loop.txt on 2026-05-13 — the
-// 30-nudge spiral where every fresh handleMessage call re-derived "you
-// owe a reply" from "most recent user message is an ASSIGN" without any
-// memory of the agent already having replied.
-
-// PHASE-3 T5: the envelope regex was inlined TWICE here, hex-only, so every named-thread
-// A2A fell out of both reply readers.
+// Durable per-ASSIGN A2A reply persistence: the dispatcher records replies (`recordA2AReply`);
+// the v2 loop preflight reads `findUnrepliedAssignForAgent` to see if an inbound trigger is owed.
 import {
   A2A_ENVELOPE_RE, A2A_THREAD_SHORT_LENGTH,
   a2aThreadShortLegacy, a2aThreadTokenMatches, a2aThreadTokenMatchesSql,
@@ -37,10 +15,8 @@ const REPLY_NEEDED_INTENTS = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
 export interface UnrepliedAssign {
   messageId: string;
   threadShort: string;   // 8-char prefix from the [A2A:... thread:XXXXXXXX ...] tag
-  // FA-C2: the FULL thread id when it is known (structural a2a_thread_id column),
-  // null for legacy prose-parsed rows that only carry the 8-char short token. Callers
-  // that need to disambiguate colliding-prefix threads (hasPriorReplyOnThread) use this
-  // full id for an authoritative match and fall back to the short token only when null.
+  // The full thread id when the structural column is known; null for legacy prose-parsed rows.
+  // Use the full id for an authoritative match and fall back to the short token only when null.
   threadId: string | null;
   intent: string;
   fromName: string;
@@ -48,42 +24,18 @@ export interface UnrepliedAssign {
   createdAt: string;
 }
 
-/**
- * Find the most recent inbound A2A reply-needed message (ASSIGN, QUESTION,
- * BLOCK) for this agent that does NOT yet have a recorded reply in
- * a2a_replies. Returns null if the agent has no outstanding ASSIGN.
- *
- * Scans the most recent N user-role messages and checks each one's
- * `[A2A:...]` header. Stops at the first one that's not in the replies
- * table — that's the open ASSIGN.
- *
- * v2.11.0 — Scoped to the current session. Before this fix the
- * lookback walked across session boundaries, so a QUESTION from a
- * prior session (or weeks ago) would resurface as "unreplied" forever,
- * firing the missed-reply nudge on every turn. The session-reset code
- * already stamps agents.session_started_at when the user resets; we
- * use that as the lower bound. Threads that genuinely span sessions
- * (rare — most A2A questions resolve within a single session) get a
- * graceful "no longer owed" outcome from the user's perspective, which
- * matches the user expectation of "session reset = clean slate."
- */
-// `maxAgeMinutes` (optional): ignore assigns older than this. The boot re-drain passes 30
-// so a weeks-old inter-agent assign can't force-wake an agent into stale backlog on restart
-// (incident 2026-07-02) — the same staleness cutoff as the boot message sweep. Omitted by
-// every other caller (in-turn A2A detection), which keeps the full-session behavior.
+// The newest inbound QUESTION/ASSIGN/BLOCK with no entry in `a2a_replies`; null if none is owed.
+// Lower bound `agents.session_started_at`: a pre-reset request never resurfaces as owed.
+// Optional `maxAgeMinutes`: a boot cutoff so a weeks-old assign cannot force-wake an agent on restart.
 export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 20, maxAgeMinutes?: number): UnrepliedAssign | null {
   const db = getDb();
 
-  // Look up the session boundary. If null (never reset), there's no
-  // floor and we fall back to the old all-time behavior.
   const sessionRow = db
     .prepare('SELECT session_started_at FROM agents WHERE id = ?')
     .get(agentId) as { session_started_at: string | null } | undefined;
   const sessionStartedAt = sessionRow?.session_started_at ?? null;
 
-  // T6: one table, so "most recent" is the insertion key — causally correct by
-  // construction rather than reconstructed from a second-granular clock plus a
-  // cross-table tiebreak.
+  // One table: "most recent" is the insertion key (rowid), causally correct by construction.
   const clauses: string[] = [`agent_id = @agentId`, `role = 'user'`];
   const params: Record<string, unknown> = { agentId, lookback };
   if (sessionStartedAt) { clauses.push(`created_at >= (unixepoch(@boundary) * 1000)`); params.boundary = sessionStartedAt; }
@@ -101,20 +53,11 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     .all(params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; lane: string }>;
 
   for (const row of rows) {
-    // Engine-origin rows (Healer/PM/gate/distillation via fromAgent='system') are
-    // NOT peer A2A: the receiver responds by acting on the directive (the tool the
-    // payload names), never by send_to_agent back to a non-existent "system" agent.
-    // Excluding them here disarms the missed-reply enforcer for those messages (it
-    // would otherwise nag the receiver to send_to_agent 'system') and lets them be
-    // classified as an engine turn instead of a mis-framed peer A2A turn. A genuine
-    // peer A2A row is on the a2a lane and is still detected.
+    // Engine-origin rows (lane 'events') are directives, not peer A2A: the receiver acts on
+    // them, never replies to a non-existent system agent, so they must not arm the enforcer.
     if (row.lane === 'events') continue;
-    // F7 (harness finding, wave 2): trust the STRUCTURAL columns first. The
-    // prose regex required an 8-hex thread id, so any envelope/thread-format
-    // drift made this return null and an unreplied QUESTION was silently
-    // dropped (no dedicated A2A retry turn ever fired). The columns are the
-    // authoritative store; the prose parse stays only for legacy rows that
-    // predate them.
+    // The structural columns are the authoritative store; the prose regex is only for legacy
+    // rows and demands an 8-hex thread id, so format drift silently drops an owed request.
     let intent: string;
     let threadShort: string;
     let threadIdFull: string | null;
@@ -122,7 +65,7 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     if (row.a2a_intent && row.a2a_thread_id && row.source_agent_id) {
       intent = row.a2a_intent;
       threadShort = row.a2a_thread_id.slice(0, A2A_THREAD_SHORT_LENGTH);
-      threadIdFull = row.a2a_thread_id;   // FA-C2: full id available from the structural column
+      threadIdFull = row.a2a_thread_id;   // full id available from the structural column
       const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(row.source_agent_id) as { name?: string } | undefined;
       fromName = senderRow?.name ?? row.source_agent_id;
     } else {
@@ -130,17 +73,14 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
       if (!match) continue;
       intent = match[1];
       threadShort = match[2];
-      threadIdFull = null;   // FA-C2: legacy prose row carries only the 8-char short token
+      threadIdFull = null;   // legacy prose row carries only the 8-char short token
       fromName = match[3].trim();
     }
     if (!REPLY_NEEDED_INTENTS.has(intent)) continue;
-    // Is it already replied to?
     const replied = db
       .prepare('SELECT 1 FROM a2a_replies WHERE assign_message_id = ?')
       .get(row.id);
     if (replied) {
-      // Found a replied ASSIGN — anything older has either been replied
-      // to or fell off our lookback window. Treat as "no open ASSIGN."
       return null;
     }
     return {
@@ -156,13 +96,8 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
   return null;
 }
 
-/**
- * t239 — every request (QUESTION / ASSIGN / BLOCK) this agent holds FROM ONE SENDER that is still
- * unreplied, newest first, one entry per thread. The same facts `findUnrepliedAssignForAgent` reads
- * (the structural columns, the session floor, `a2a_replies` as the record of a reply), widened from
- * "the newest one" to "all of them from this sender" so a threadless reply to that sender can be put
- * on the request it answers. A thread is judged by its NEWEST request, as the reply recorder does.
- */
+// All unreplied requests from ONE sender (newest first, one entry per thread), for routing a
+// threadless reply. A thread is judged by its newest request, as the reply recorder does.
 export function findUnrepliedRequestsFrom(agentId: string, fromAgentId: string): Array<{ messageId: string; threadId: string }> {
   const db = getDb();
   const floor = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?')
@@ -187,39 +122,17 @@ export function findUnrepliedRequestsFrom(agentId: string, fromAgentId: string):
   return out;
 }
 
-/**
- * Find the inbound A2A message id that corresponds to a thread the agent
- * is now sending on. Used by the send_to_agent dispatcher to mark the
- * inbound ASSIGN as replied. Returns null if there's no open inbound
- * message on this thread for this agent.
- */
+// The inbound reply-needed message id on this thread, so the dispatcher can mark it replied;
+// null when there is no open inbound message on the thread for this agent.
 export function findInboundAssignByThread(agentId: string, threadId: string): { messageId: string; intent: string } | null {
   if (!threadId || threadId.length < 8) return null;
-  // t113 A2: NAMED, not hand-rolled. This token keys the genuinely-short legacy row query
-  // below (`length(a2a_thread_id) = 8`), whose rows predate `makeThreadId` and so carry the
-  // front-slice spelling — byte-identical to what was here, from the vocabulary's one home, so
-  // a reader can tell at a glance WHICH era's token this is.
+  // `a2aThreadShortLegacy` is the legacy-era token the length-8 row query below matches.
   const threadShort = a2aThreadShortLegacy(threadId);
   const db = getDb();
-  // F13 (harness finding, wave 2): STRUCTURAL columns first, matching the F7
-  // fix on the detection side. This was the other prose-bound end of the pipe:
-  // the reply was SENT but never recorded (the hex-only regex missed the
-  // thread), so the engine thought the reply was still owed, fired retry turns,
-  // and the send-dedup guard refused each one (observed: 26 "already sent"
-  // refusals in one scenario run). Detection and recording must read the SAME
-  // store or the loop never closes.
-  //
-  // FA-C2: the EXACT full-id match is AUTHORITATIVE. The prior single query OR'd in
-  // `substr(a2a_thread_id, 1, 8) = ?`, but for makeThreadId ids ('thread-<base36>-<seed>')
-  // the first 8 chars are almost all the shared 'thread-' prefix (plus one hash char), so
-  // that broad prefix match collides across unrelated threads, and under ORDER BY
-  // created_at DESC a NEWER colliding-prefix row could beat the exact match and bind the
-  // reply to the WRONG thread. Same collision class already fixed in conversationKey (C-2).
-  // The wire footer and send_to_agent both carry the full id, so a modern reply always has
-  // the full thread id in hand and hits this exact match.
-  // T6: one table, so detection and recording read the same rows by construction —
-  // the F13 defect (detection reading one store while recording read the other, so the
-  // reply loop never closed) cannot recur. Newest-first by the insertion key.
+  // Detection and recording must read the SAME store (one table, newest-first by the insertion
+  // key) or the reply loop never closes. The EXACT full-id match is authoritative: for
+  // `makeThreadId` ids the first 8 chars are nearly all the shared 'thread-' prefix, so a broad
+  // prefix match collides across threads and can bind a reply to the WRONG thread.
   const exact = db
     .prepare(
       `SELECT id, a2a_intent FROM messages
@@ -232,12 +145,7 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
     return { messageId: exact.id, intent: exact.a2a_intent };
   }
 
-  // Fall back to a legacy short-token row ONLY when no full-id row exists. Legacy
-  // predicate: a stored a2a_thread_id that is itself a pre-makeThreadId 8-char token
-  // (length = 8), matched EXACTLY to the thread's 8-char short form, never a prefix over
-  // modern full ids (which are all longer than 8 chars and start with 'thread-'). This is
-  // the same authoritative-then-short shape as parkThreadCondition; it preserves resolution
-  // for genuinely-short legacy rows (the reason the substr existed) without the collision.
+  // Authoritative-then-short like parkThreadCondition: exact length-8 legacy row only, never a prefix.
   const legacyShort = db
     .prepare(
       `SELECT id, a2a_intent FROM messages
@@ -264,11 +172,7 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   for (const row of rows) {
     const match = row.content?.match(A2A_ENVELOPE_RE);
     if (!match) continue;
-    // t113 A2: the marker's token identifies the thread in EITHER era's spelling. This was
-    // `match[2] !== threadShort` against `threadId.slice(0, 8)` — the legacy front slice —
-    // which for a named id is `thread-` plus one hash character, so it was a false-positive
-    // magnet for pre-t109 markers and, since t109 moved the producer to the varying region, a
-    // false NEGATIVE for every marker written after it. One matcher answers both.
+    // One matcher accepts EITHER era's spelling of the thread token; a bare front slice misfires.
     if (!a2aThreadTokenMatches(match[2], threadId)) continue;
     if (!REPLY_NEEDED_INTENTS.has(match[1])) continue;
     return { messageId: row.id, intent: match[1] };
@@ -276,11 +180,7 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   return null;
 }
 
-/**
- * Record that an agent has replied to a specific inbound ASSIGN. Idempotent —
- * uses INSERT OR IGNORE so duplicate calls (e.g. agent sends two messages
- * on the same thread) are no-ops on the schema.
- */
+// Records the reply; INSERT OR IGNORE, so a second send on the same thread is a no-op.
 export function recordA2AReply(params: {
   assignMessageId: string;
   agentId: string;
@@ -303,38 +203,24 @@ export function recordA2AReply(params: {
   }
 }
 
-/**
- * For the missed-reply enforcer: did this agent ever send_to_agent on the
- * given thread? Used to decide which nudge text to show — "you replied
- * earlier, just end your turn" vs. "the receiver got nothing, retry now."
- */
+// For the missed-reply enforcer: did this agent ever send_to_agent here? Picks the nudge text.
 export function hasPriorReplyOnThread(agentId: string, threadShort: string, fullThreadId: string | null = null): boolean {
   if (!threadShort || threadShort.length < 8) return false;
   const db = getDb();
-  // FA-C2: a2a_replies.thread_id stores the FULL thread id (recordA2AReply writes the
-  // send_to_agent thread id verbatim). When the caller knows that full id, an EXACT match
-  // is AUTHORITATIVE, the leading-8 substr below is a broad collision magnet for
-  // makeThreadId ids (first 8 chars are almost all the shared 'thread-' prefix), so a reply
-  // on a DIFFERENT colliding thread would otherwise falsely soften THIS thread's nudge.
+  // Stored ids are FULL thread ids: exact match authoritative; leading-8 collides for `makeThreadId` ids.
   if (fullThreadId) {
     const exact = db
       .prepare('SELECT 1 FROM a2a_replies WHERE agent_id = ? AND thread_id = ? LIMIT 1')
       .get(agentId, fullThreadId);
     if (exact) return true;
-    // Only when no full-id row exists, accept a genuinely-short legacy row (thread_id
-    // exactly 8 chars) matched exactly to the short form, never a prefix over full ids.
+    // No full-id row: accept a length-8 legacy row matched exactly, never a prefix over full ids.
     const legacy = db
       .prepare('SELECT 1 FROM a2a_replies WHERE agent_id = ? AND length(thread_id) = 8 AND thread_id = ? LIMIT 1')
       .get(agentId, threadShort);
     return !!legacy;
   }
-  // Legacy caller path: only the 8-char short token is available (prose-parsed wire
-  // header, no structural full id). Prefix match against the stored full id is the only
-  // resolution possible here; accepted residual, same as parkThreadCondition's short case.
-  // t113 A2: BOTH eras' spellings of the token, from the one home (`a2aThreadTokenMatchesSql`
-  // in `@dojo/shared`, the SQL twin of `a2aThreadTokenMatches` and clause-bound to it). The
-  // bare front slice alone matched nothing for a marker written since t109 moved the producer
-  // to the varying region — a false negative that drops the nudge the agent is owed.
+  // Legacy caller path: only the 8-char token exists, so prefix match is the only resolution.
+  // `a2aThreadTokenMatchesSql` (SQL twin of `a2aThreadTokenMatches`, clause-bound) covers both eras.
   const row = db
     .prepare(
       `SELECT 1 FROM a2a_replies

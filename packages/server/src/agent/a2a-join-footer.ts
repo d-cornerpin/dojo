@@ -1,9 +1,6 @@
-// t196 (A1.2): what the woken delegating agent is told about a single-piece answer the ENGINE owns delivery of.
-// Before: the footer said "notify the user" while the engine had already sent the answer (or was about to), and the
-// woken turn cannot see the relay row, so the news was told again on the owner's next turn. Now it states the fact:
-//   - the engine has sent it: to whom, on which channel, when (the `deliveries` receipt); do not tell them again;
-//   - the engine will send it when the delegating turn ends (the relay is held while that turn speaks): do not send it.
-// Null (the ordinary footer stands) for a fan-out, a FAIL with no receipt, or a piece that has not completed the join.
+// Footer for a woken delegating agent when the engine owns delivery of a single-piece answer.
+// The woken turn cannot see the relay row, so the footer itself states what was or will be sent;
+// otherwise the agent tells the user the same news a second time. Null keeps the ordinary footer.
 import type { A2AIntent } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { joinState } from '../work/store.js';
