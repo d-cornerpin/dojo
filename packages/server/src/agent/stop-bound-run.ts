@@ -1,45 +1,29 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE ONE RUNNER FOR A PLATFORM PROGRAM THE OWNER'S STOP CAN CUT (v3.5 E19 + E19b).
-//
-// The screen-control tools (`agent/system-control.ts`: cliclick, screencapture, osascript) and the
-// iMessage sends (`services/imessage-run.ts`: imsg, osascript) used to run their programs
-// synchronously, which held the server's event loop for the whole call: the stop race could not
-// see the owner's Stop until the child returned, and nothing ended the child. Each lane moved its
-// calls onto an async runner; the two runners were near copies and had drifted. This is the one.
-//
-//   • `spawn`, detached: execFile cannot make the child a group leader, and without it the Stop's
-//     group kill misses whatever the program started (an AppleScript's `do shell script` job).
-//   • Bound to the Stop through the toolbox's existing door (`effects/proc-tree.ts`) when an agent id is
-//     given; a platform run (an owner notice, the auto-route) passes none and no Stop cuts it.
-//   • A Stop already standing: the program NEVER STARTS (rejects `neverStarted`) — nothing was
-//     clicked, typed or sent, and the caller can say so.
-//   • The bound keeps execFile's semantics (SIGTERM to the tree at `timeout`), then escalates like
-//     the Stop does: SIGKILL after the same grace, so a program that ignores SIGTERM cannot leave
-//     the call pending. Output is capped per stream at Node's documented 1 MiB `maxBuffer` default.
-//   • A run the Stop cut rejects `cutByTheStop`, so a caller does not mistake it for a broken
-//     program (the bridge would otherwise retry the send another way).
-//   • The error names the program, never its argv: an argv carries what an agent typed or sent.
-// ════════════════════════════════════════════════════════════════════════════
+// THE ONE RUNNER for a platform program the owner's Stop can cut (screen control, iMessage):
+// spawn detached, so the Stop's group kill reaches whatever the program started (an
+// AppleScript's `do shell script` job). Bound through the toolbox's proc-tree door when an
+// agent id is given; a platform run (owner notice, auto-route) is bound to nothing.
+// A Stop already standing: the program NEVER STARTS (rejects neverStarted): nothing was
+// clicked, typed or sent. The bound keeps execFile's semantics (SIGTERM at `timeout`) and
+// escalates SIGKILL after the same grace, so a program ignoring SIGTERM cannot hang the call.
+// A run the Stop cut rejects cutByTheStop, so a caller does not mistake it for a broken
+// program. Errors name the program, never its argv: argv carries what an agent typed or sent.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { endsWithTheStop, signalProcessTree, KILL_GRACE_MS } from './effects/proc-tree.js';
 import { untilUserStop } from './stop-waiters.js';
 
-/** The rejection of a run the owner's Stop ended. */
 export type CutByTheStop = Error & { readonly cutByTheStop: true };
 
 export function wasCutByTheStop(err: unknown): err is CutByTheStop {
   return err instanceof Error && (err as Partial<CutByTheStop>).cutByTheStop === true;
 }
 
-/** The rejection of a run that never started, because the owner's Stop was already standing. */
 export function wasNeverStarted(err: unknown): boolean {
   return err instanceof Error && (err as { neverStarted?: boolean }).neverStarted === true;
 }
 
 export interface BoundRunOptions {
   readonly timeout: number;
-  /** The agent whose Stop ends the run; none for a platform run. */
   readonly agentId?: string;
   /** Written to the program's stdin (then closed); without it stdin is not opened. */
   readonly input?: string;

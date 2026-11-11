@@ -45,13 +45,10 @@ function broadcastMessage(agentId: string, msg: { id: string; role: string; cont
   });
 }
 
-// ── Config (reads from DB config table, falls back to defaults) ──
+// Config (reads from the DB config table, falls back to defaults)
 
-// P3 (spawn contract): there is NO default timeout. A timeout is a decision the
-// CREATOR owns, so it MUST be set explicitly at spawn (the spawn_agent tool
-// requires timeout_minutes for non-ronin spawns; ronin has none). The old 900s
-// `defaultTimeout` / `spawn_default_timeout` config is gone: silently defaulting
-// a lifetime is exactly the ownership the owner moved to the creator.
+// There is NO default timeout: a lifetime is the creator's decision, so a non-ronin spawn MUST
+// carry an explicit one (the spawn_agent tool requires it at the surface; ronin has none).
 const SPAWN_DEFAULTS = {
   maxChildrenPerAgent: 3,
   maxConcurrent: 5,
@@ -79,10 +76,8 @@ function getSpawnConfig() {
   }
 }
 
-// Track active timeout timers
 const timeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// ── Spawn Agent ──
 
 export interface SpawnParams {
   parentId: string;
@@ -92,11 +87,9 @@ export interface SpawnParams {
   permissions?: PermissionManifest;
   toolsPolicy?: { allow: string[]; deny: string[] };
   /**
-   * UX-ACCESS A2 (owner ruling 4): the ACCESS grants this spawn asks for —
-   * categories, integrations, credentials, channels. Unvalidated on purpose:
-   * `resolveSpawnGrants` is the one place it is judged, exactly as `permissions`
-   * is judged by `resolveChildScope`, so every caller of this function gets the
-   * same schema check and the same no-escalation rule.
+   * The ACCESS grants this spawn asks for (categories, integrations, credentials, channels).
+   * Unvalidated on purpose: `resolveSpawnGrants` is the one place it is judged, so every caller
+   * gets the same schema check and the same no-escalation rule.
    */
   grants?: unknown;
   timeout?: number;
@@ -106,22 +99,14 @@ export interface SpawnParams {
   classification?: 'ronin' | 'apprentice' | 'sensei';
   shareUserProfile?: boolean;
   groupId?: string;
-  /** Custom initial message to send instead of the default. If set, replaces the entire task message including complete_task instructions. */
+  /** When set, replaces the ENTIRE initial task message, complete_task instructions included. */
   initialMessage?: string;
   /** Technique IDs to equip on this agent (pre-loaded into context) */
   equippedTechniques?: string[];
-  /** Custom always-loaded tools for this agent (overrides role defaults). RAW: `validateAlwaysLoadedTools` owns the typing (W1). */
+  /** Custom always-loaded tools for this agent (overrides role defaults); the floor validates. */
   alwaysLoadedTools?: unknown;
-  /**
-   * If false, skip the initial wakeup. The agent is spawned but stays idle
-   * until it gets a real message (a task assignment, an A2A poke, etc.). Use
-   * this when the parent wants to set up state before the apprentice runs, 
-   * for example, building a squad and customising each member before any of
-   * them start working.
-   *
-   * Default: true (preserves the existing auto-start behaviour, including the
-   * initial task message that injects complete_task instructions).
-   */
+  /** If false the agent is created but stays idle until something real wakes it (a task
+   *  assignment, an A2A poke), so the parent can set up its state first. Default: true. */
   autoStart?: boolean;
 }
 
@@ -146,12 +131,8 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     autoStart = true,
   } = params;
 
-  // Validate the contract early so the failure message tells the caller what
-  // they actually got wrong. The tool schema marks both fields as required
-  // but the dispatcher doesn't enforce that, so a missing systemPrompt used
-  // to crash deep inside the prompt-assembly path (line ~318:
-  // `systemPrompt.toLowerCase()`) with the cryptic "Cannot read properties
-  // of undefined (reading 'toLowerCase')".
+  // Validate the contract up front so the failure names the field that was missed: the schema
+  // marks these required but the dispatcher does not enforce it.
   if (!name || typeof name !== 'string' || !name.trim()) {
     throw new Error('spawn_agent: `name` is required (a non-empty string).');
   }
@@ -161,52 +142,26 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   const db = getDb();
 
-  // E21 parked minor: a name that differs from a live agent's name only by capital letters would
-  // mint a second agent the case-insensitive lookup cannot tell apart (the newest wins, silently).
-  // Refuse it here — at the row-writing door — before any permission or resource work. The bare
-  // message is thrown; `friendlyDbError` adds the `spawn_agent: ` prefix at the tool boundary.
+  // A name differing from a live agent's only by letter case would mint a second agent the
+  // case-insensitive lookup cannot tell apart (the newest silently wins), so refuse it at
+  // the row-writing door, before any permission or resource work.
   const clash = caseVariantClash(name);
   if (clash) throw new Error(caseVariantClashMessage(clash.name));
 
-  // ── THE AUTHORITATIVE SPAWN GATE (PHASE-5 T5, RULING P5-R2) ──
-  // Spawn permission is asked in two places and the ruling required T5 to say
-  // which one is the authority rather than leave both standing unexplained.
-  //
-  // THIS ONE IS IT, for a structural reason: `spawnAgent()` is the function that
-  // writes the row, and it has callers that never enter the executor at all
-  // (`vault/maintenance.ts` spawns with no model in the loop). A gate that is
-  // not on every path cannot be the authority; this one is on every path by
-  // construction.
-  //
-  // The executor's gate (`tools/gates.ts` row 4 → `tools/gate-eval.ts`) is NOT
-  // redundant and is NOT dead. It does a different job: it turns this same
-  // answer into something a MODEL can read and the audit can count — the
-  // ladder's `PERMISSION_DENIED` code, its row-4 wording, an audit row filed as
-  // `spawn` — at the tool boundary, before any handler runs. Delete it and the
-  // protection still holds here, but the model receives a raw thrown Error
-  // instead of a classified refusal.
-  //
-  // They cannot disagree: both answer from `authorizeSpawn` against the same
-  // manifest. This path reaches it through `grantForManifest` (the pure
-  // projection), the executor through `grantFor` (the `grant_rule` rows), and
-  // `grantFor` re-projects the moment a stored fingerprint stops matching — so
-  // the two are equal by construction, not by anybody remembering.
-  //
-  // Held end to end by `__tests__/spawn-gate-reconciliation.test.ts`, whose
-  // refusal clauses were proven load-bearing by removing this block and watching
-  // exactly those three go red.
+  // THE AUTHORITATIVE SPAWN GATE: spawnAgent writes the row, and callers that never enter the
+  // executor exist, so this gate is on every path by construction. The executor's gate is NOT
+  // redundant: it turns the same `authorizeSpawn` answer into a model-readable classified refusal
+  // plus an audit row at the tool boundary. Both answer from one manifest; they cannot disagree.
   const spawnCheck = checkPermission(parentId, { type: 'spawn' });
   if (!spawnCheck.allowed) {
     throw new Error(`Spawn denied: ${spawnCheck.reason}`);
   }
 
-  // Resource gating: check if we have enough memory to spawn
   const resourceCheck = canSpawnAgent();
   if (!resourceCheck.allowed) {
     throw new Error(`Spawn denied: ${resourceCheck.reason}`);
   }
 
-  // Get parent agent info
   const parent = db.prepare('SELECT * FROM agents WHERE id = ?').get(parentId) as {
     id: string;
     name: string;
@@ -239,16 +194,14 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     }
   }
 
-  // Resolve model: "auto" means use the router
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
-  // 32K floor (dec 13) then the memory fit (v3.5): a NAMED model only. Loaded on demand (agent/model.ts is a heavy graph).
+  // The fit checks apply to a NAMED model only. Loaded on demand (agent/model.ts is a heavy graph).
   const refused = modelId && modelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => await f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent', () => f.refuseSmallMainModel(modelId, parent.model_id))) : null;
   if (refused) throw new Error(refused);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');
   }
 
-  // Build enhanced system prompt with context hints
   let enhancedPrompt = systemPrompt;
 
   if (contextHints && contextHints.length > 0) {
@@ -277,48 +230,24 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     }
   }
 
-  // Create agent record
   const agentId = uuidv4();
-  // Ronin agents don't get a timeout -- they persist until the user dismisses them.
-  // P3: there is no engine default; a non-ronin spawn only gets a timeout when the
-  // caller passes one explicitly (the spawn_agent tool enforces this at the surface).
+  // Ronin agents persist until the user dismisses them, so no timeout; there is no engine default,
+  // a non-ronin spawn has one only when the caller passes it (the tool enforces at the surface).
   const timeoutSeconds = classification === 'ronin' ? null : (timeout ?? null);
   const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
-  // ── THE CHILD'S SCOPE (PHASE-5 T5) ──
-  // What stood here was `permissions ?? getAgentPermissions(parentId)`: a child
-  // received its parent's manifest VERBATIM, and anything the caller passed was
-  // stored unread. Two consequences, both measured on the live body: a child of
-  // the primary inherited `system_control:['*']` (two such sub-agents exist), and
-  // a malformed `permissions` argument was written to the row as-is, to be
-  // silently downgraded to the default by the next reader.
-  //
-  // `resolveChildScope` answers both. No manifest named → the owner's DECIDED
-  // default (parent minus danger, plus the child's own artifact directory). A
-  // manifest named → schema-validated and bounded by child ⊆ parent, and a
-  // malformed or escalating one REFUSES THE SPAWN rather than downgrading it.
+  // THE CHILD'S SCOPE: no manifest named, the child gets the owner's DECIDED default (parent minus
+  // danger, plus its own artifact directory). A named manifest is schema-validated and bounded by
+  // child inside the parent; a malformed or escalating one REFUSES the spawn, never a silent downgrade.
   const scope = resolveChildScope(permissions, getAgentPermissions(parentId), agentId);
   if (!scope.ok) {
     throw new Error(`Spawn denied: ${scope.reason}`);
   }
 
-  // ── THE CHILD'S ACCESS (UX-ACCESS A2, owner rulings 2 + 4) ──
-  // The manifest above says what the child may do to the BOX. This says what it
-  // may REACH: categories, integrations, credentials, channels.
-  //
-  // Ruling 2 lands here and only here: a spawn that names no grants gets
-  // `MOST_RESTRICTIVE_GRANTS`, not the A1 snapshot. Until A2 there was no way to
-  // grant access back, so applying it would have been a narrowing with no door —
-  // which is exactly why A1 shipped the constant unused (§6.1).
-  //
-  // PROSPECTIVE, NEVER RETROSPECTIVE, the same way `defaultChildScope` is: this
-  // decides what a NEW child receives. No agent alive today is re-scoped, and
-  // the A1 materializer still answers for every row that predates this.
-  //
-  // Here rather than at the tool, for the structural reason the spawn gate is
-  // here: `spawnAgent` writes the row and has callers that never enter the
-  // executor (`vault/maintenance.ts`). A default that is not on every path is
-  // not a default.
+  // THE CHILD'S ACCESS: the manifest says what the child may do to the BOX; this says what it may
+  // REACH (categories, integrations, credentials, channels). A spawn naming no grants gets
+  // MOST_RESTRICTIVE_GRANTS. Prospective, never retrospective: no living agent is re-scoped here.
+  // Here, not at the tool, for the same structural reason as the spawn gate: every path writes here.
   const grantResolution = resolveSpawnGrants(
     grants,
     getAccessGrants(parentId),
@@ -328,7 +257,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   if (!grantResolution.ok) {
     throw new GrantRefusedError(grantResolution.reason);
   }
-  // v3.5: dojo_inspect is granted by the owner or the main agent only, never inherited (`inspect/grant.ts`).
+  // dojo_inspect is granted by the owner or the main agent only, never inherited (inspect/grant.ts).
   const inspectRefused = inspectGrantRefusal(parentId, (grants as { tools?: { allow?: unknown } } | undefined)?.tools?.allow, toolsPolicy?.allow);
   const childAllow = withoutInheritedInspect(parentId, grantResolution.grants.tools.allow);
   if (inspectRefused || !childAllow) throw new GrantRefusedError(inspectRefused ?? 'tools.allow: this child would inherit only dojo_inspect, which only the owner or the main agent can grant; name the tools it needs.');
@@ -349,9 +278,8 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     resolvedModelId,
     JSON.stringify({ persist, shareUserProfile: shareUserProfile || undefined }),
     parentId,
-    // T11 Step 1b: a spawned child inherits its parent's kind, so a harness fixture's
-    // worker is disposable for the same structural reason its parent is; anything else
-    // an agent spawns is 'agent'.
+    // A spawned child inherits its parent's creator kind, so a harness fixture's worker is
+    // disposable for the same structural reason its parent is; anything else is 'agent'.
     inheritedCreatorKind(parentId),
     parentId,
     newDepth,
@@ -365,8 +293,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     taskId ?? null,
   );
 
-  // W1 THE FLOOR for all three callers (the handler owns the good message and refuses before any
-  // row exists). The swallowed `catch` went with it: see `always-loaded-tools.ts`'s header.
+  // THE FLOOR for all three callers: the handler owns the good message and refuses before any row.
   const declared = validateAlwaysLoadedTools(alwaysLoadedTools);
   if (!declared.ok) throw new Error(declared.error);
   if (declared.names.length > 0) db.prepare('UPDATE agents SET always_loaded_tools = ? WHERE id = ?').run(JSON.stringify(declared.names), agentId);
@@ -384,15 +311,12 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   // Store the system prompt as the first system message
   insertMessageIfAbsent({ id: uuidv4(), agentId, role: 'system', content: enhancedPrompt });
 
-  // FA-PT6: persist the charter durably so getSoulContent reads it directly
-  // (migration 096), instead of sniffing the earliest role='system' row (which
-  // false-rejected terse / bracket-prefixed charters). Same content as the
-  // system row above.
+  // Persist the charter durably so getSoulContent reads it directly, not by sniffing the earliest
+  // role='system' row (which false-rejected terse or bracket-prefixed charters). Same content.
   try {
     db.prepare('UPDATE agents SET charter = ? WHERE id = ?').run(enhancedPrompt, agentId);
   } catch { /* charter column may not exist on a very old database */ }
 
-  // Build the Agent data for broadcast
   const agentData: Agent = {
     id: agentId,
     name,
@@ -421,10 +345,9 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     data: agentData,
   });
 
-  // Set timeout timer -- ronin agents never timeout, persist agents get cleared,
-  // apprentices reach a CREATOR DECISION (P3): the timer no longer terminates,
-  // it fires fireSpawnTimeoutDecision (notify the creator, keep the sub-agent
-  // running until an authorized hand extends or ends it).
+  // Set timeout timer: ronin never timeouts, persist agents get their timeout cleared, and an
+  // apprentice's expiry is a CREATOR DECISION: the timer does not terminate, it fires
+  // fireSpawnTimeoutDecision (notify the creator; it runs until an authorized hand extends or ends).
   if (timeoutSeconds && classification !== 'ronin') {
     if (persist) {
       const timer = setTimeout(() => {
@@ -441,7 +364,6 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     }
   }
 
-  // Start the agent runtime with an initial task message
   const runtime = getAgentRuntime();
   let taskMessage: string;
 
@@ -473,26 +395,16 @@ IMPORTANT INSTRUCTIONS:
   }
 
   if (autoStart === false) {
-    // Caller wants the agent spawned but not poked. Skip both the initial
-    // message and the runtime trigger. The agent will run when something
-    // else wakes it (an A2A message, a task assignment, send_to_agent, etc.).
+    // Spawned but not poked: skip the initial message and the runtime trigger. Something else
+    // (an A2A message, a task assignment, send_to_agent) will wake it.
     logger.info('Spawned with auto_start=false, agent stays idle until externally poked', { agentId, name });
     return { agentId, name, status: 'idle', persist };
   }
 
-  // ── PHASE-2 T8c item 1 — THE KICKOFF IS THE ENGINE, NOT THE OWNER (T6 §11.4) ──
-  //
-  // This row was `role='user'` on the owner lane with no channel. Read it: "Your task: …
-  // Begin working immediately … you MUST call complete_task". That is the ENGINE composing an
-  // instruction, and it is never a person talking — even when a parent agent supplied
-  // `initialMessage`, the sender is that agent and the engine appends its own instructions
-  // around it. Left as an owner-lane user row it made the spawned agent's very first turn
-  // render "You are responding to <owner> … your reply goes back to them on dashboard",
-  // which is how a worker ends up chatting at the owner instead of reporting through
-  // `complete_task` / `send_to_agent`.
-  // requirement preserved: the kickoff still wakes the agent (`handleMessage` ignores its
-  // content argument and reads the persisted rows), still carries the identical text, and
-  // still broadcasts to the dashboard below.
+  // THE KICKOFF IS THE ENGINE, NOT THE OWNER: this text is the engine composing an instruction,
+  // never a person talking, so it is an engine event, not an owner-lane user row: an owner-lane
+  // row makes the worker chat AT the owner instead of reporting through its report tools. The
+  // kickoff still wakes the agent (handleMessage reads the persisted rows), with identical text.
   const initMsgId = uuidv4();
   insertEngineEventIfAbsent({
     id: initMsgId, agentId, content: taskMessage,
@@ -501,7 +413,6 @@ IMPORTANT INSTRUCTIONS:
   });
   broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });
 
-  // Start the agent loop asynchronously
   runtime.handleMessage(agentId, taskMessage).catch(err => {
     logger.error('Spawned agent initial run failed', {
       agentId,
@@ -512,7 +423,6 @@ IMPORTANT INSTRUCTIONS:
   return { agentId, name, status: 'idle', persist };
 }
 
-// ── Terminate Agent ──
 
 export function terminateAgent(agentId: string, reason?: string): void {
   const db = getDb();
@@ -541,14 +451,12 @@ export function terminateAgent(agentId: string, reason?: string): void {
     return;
   }
 
-  // t166: ending an agent stops its run in flight, through the owner's own Stop; BEFORE the status write below.
+  // Ending an agent stops its run in flight, through the owner's own Stop; BEFORE the status write.
   if (runIsLive(agentId)) stopAgent(agentId);
 
-  // Archive conversation for the Dreamer before terminating.
-  // force=true: this agent is being torn down, so its final tail (usually the
-  // conclusions/deliverables) must be archived even if an earlier unprocessed
-  // archive exists, or the Dreamer never sees it (FA-V1). The rowid high-water
-  // still bounds the archive to the genuinely-new tail, so no re-copy bloat.
+  // Archive conversation for the Dreamer before terminating. force=true: a torn-down agent's final
+  // tail must be archived even if an earlier unprocessed archive exists, or the Dreamer never sees
+  // it; the rowid high-water still bounds the archive to the genuinely-new tail, so no re-copy bloat.
   try {
     archiveAgentConversation(agentId, true);
   } catch (err) {
@@ -558,7 +466,6 @@ export function terminateAgent(agentId: string, reason?: string): void {
     }, agentId);
   }
 
-  // Update status
   writeAgentStatus(agentId, 'terminated');
 
   // Its Working tasks are held paused (never closed) so the owner can reassign or close them.
@@ -579,7 +486,6 @@ export function terminateAgent(agentId: string, reason?: string): void {
     }, agentId);
   }
 
-  // Clear timeout timer
   const timer = timeoutTimers.get(agentId);
   if (timer) {
     clearTimeout(timer);
@@ -598,7 +504,6 @@ export function terminateAgent(agentId: string, reason?: string): void {
     reason: reason ?? 'manual termination',
   });
 
-  // Close browser session if open
   import('./browser.js').then(({ closeSession }) => {
     closeSession(agentId).catch(() => {});
   }).catch(() => {});
@@ -613,11 +518,9 @@ export function terminateAgent(agentId: string, reason?: string): void {
   }
 }
 
-// ── Complete Agent ──
 
-// SQLite writes created_at via datetime('now'): UTC wall-clock text with no zone,
-// which bare `new Date(text)` reads as LOCAL time. Read it as an instant the way
-// the timeout_at comparisons do; 0 when the text does not parse.
+// SQLite writes created_at via datetime('now'): UTC wall-clock text with no zone, which bare
+// `new Date(text)` reads as LOCAL time. Read it as an instant, the timeout_at way; 0 when unparseable.
 export function runtimeSecondsSince(createdAt: string, nowMs: number = Date.now()): number {
   const iso = createdAt.replace(' ', 'T');
   const zoned = createdAt.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(createdAt) ? iso : `${iso}Z`;
@@ -650,7 +553,6 @@ export async function completeAgent(
     return;
   }
 
-  // Gather stats
   const messageStats = db.prepare(`
     SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as total_tokens
     FROM messages WHERE agent_id = ?
@@ -668,12 +570,8 @@ export async function completeAgent(
 
   const durationSeconds = runtimeSecondsSince(agent.created_at);
 
-  // Sensei agents and anything explicitly marked `agent_type='persistent'`
-  // are treated as persistent regardless of the config JSON. Pre-fix,
-  // this branch only honored `config.persist`, which silently terminated
-  // sensei agents (e.g. the Trainer) whose config row didn't carry that
-  // field, the sensei guard in terminateAgent didn't help because
-  // completeAgent does its own raw UPDATE.
+  // Sensei agents and anything marked `agent_type='persistent'` are persistent regardless of the
+  // config JSON: completeAgent does its own raw status write, so the terminateAgent guard cannot help.
   let isPersistent = agent.classification === 'sensei' || agent.agent_type === 'persistent';
   if (!isPersistent) {
     try {
@@ -682,11 +580,9 @@ export async function completeAgent(
     } catch {}
   }
 
-  // Archive conversation for the Dreamer before changing status.
-  // force=!isPersistent (FA-V1): a NON-persistent agent terminates below, so its
-  // final tail must be archived even if an earlier unprocessed archive exists.
-  // A persistent agent (sensei / agent_type='persistent') stays alive and idle,
-  // so keep force=false there to dedup repeated archives for a chatty resident.
+  // Archive before changing status. force=!isPersistent: a NON-persistent agent terminates below, so
+  // its final tail must survive an earlier unprocessed archive; a resident stays alive and idle, so
+  // force=false there dedups repeated archives for a chatty resident.
   try {
     archiveAgentConversation(agentId, !isPersistent);
   } catch (err) {
@@ -710,14 +606,12 @@ export async function completeAgent(
     }).catch(() => {});
   }
 
-  // Clear timeout timer
   const timer = timeoutTimers.get(agentId);
   if (timer) {
     clearTimeout(timer);
     timeoutTimers.delete(agentId);
   }
 
-  // Send result message to parent via agent bus
   if (agent.parent_agent) {
     const completionText = [
       `Agent "${agent.name}" completed with status: ${status}`,
@@ -740,27 +634,16 @@ export async function completeAgent(
       },
     });
 
-    // Notify the parent, but as a BRIEF, first-person, self-attributed note in the
-    // parent's awareness lane, NOT the full result dumped into its conversation.
-    // Pre-fix this injected the ENTIRE completion summary as a role='system' row, which
-    // live compaction then folded into the parent's context summaries, and the parent
-    // model read another agent's work out of its own history and narrated it back to the
-    // user, repeatedly (the owner's "Dreamer batch" summaries). Now:
-    //   • The FULL result stays in the agent bus (sendAgentMessage above), the record /
-    //     lane the parent can pull from deliberately if it needs the detail.
-    //   • The parent sees only a brief self-attributed one-liner, structurally tagged
-    //     origin_kind='engine' so it lands in the EVENTS/awareness lane (never the live
-    //     user conversation), and marked platform-noise so compaction never folds it into
-    //     a summary. The parent may CHOOSE to surface it to the user in its own voice; the
-    //     raw exchange never enters the user's chat.
+    // The parent learns of the completion as a BRIEF, self-attributed note in its awareness lane,
+    // never the full result in its conversation: an engine-tagged, platform-noise row compaction
+    // cannot fold into its context, so the parent never reads another agent's work out of its own
+    // history. The FULL result stays on the agent bus (above) for the parent to pull deliberately.
     const firstSentence = (summary ?? '').split(/(?<=[.!?])\s/)[0] ?? '';
     const brief = firstSentence.length > 180 ? `${firstSentence.slice(0, 177)}...` : firstSentence;
-    // The Dreamer is a persistent PER-BATCH agent: it calls complete_task once per batch,
-    // so notifying the parent here would drip N notices per nightly cycle. It posts ONE
-    // consolidated notice at cycle END instead (spawnNextDreamerBatch). Skip the per-batch
-    // note for it; every other agent still gets its normal per-completion note.
+    // The Dreamer is a per-batch agent: a notice per completion would drip N notices per nightly
+    // cycle, so it posts ONE consolidated notice at cycle end; every other agent gets its note.
     const { isDreamerAgent: isDreamer } = await import('../config/platform.js');
-    if (!isDreamer(agentId)) {   // name arm dropped 2026-09-26: an agent CALLED "Dreamer" lost its notice
+    if (!isDreamer(agentId)) {   // identity by agent id, never by display name
       postAgentNotice({
         toAgentId: agent.parent_agent,
         fromName: agent.name ?? 'sub-agent',
@@ -769,14 +652,8 @@ export async function completeAgent(
     }
   }
 
-  // Resolve the task this agent owns. The explicit agent.task_id link (set at
-  // spawn, required by the spawn contract) is the identity. P6b SHRINK of the
-  // fallback: when the link is missing, an assigned task resolves ONLY when it
-  // is unambiguous (exactly one candidate). The old newest-first LIMIT 1 was a
-  // guess that could close the WRONG task when several were assigned; zero
-  // candidates resolves nothing, several logs the ambiguity and resolves
-  // nothing (their disposition is handled by the dangler sweep below, which
-  // never falsely inherits 'complete').
+  // The explicit agent.task_id link (set at spawn) is the identity. Without it, an assigned task
+  // resolves ONLY when unambiguous (exactly one candidate): several must not guess the wrong task.
   const resolvedTaskId = resolveAgentTaskId(agentId, agent.task_id);   // `agent/agent-task.ts`
 
   // The task was handed in by complete_task before this ran (`completeTaskHandIn`); a block holds it.
@@ -786,11 +663,8 @@ export async function completeAgent(
       if (!held.ok) logger.warn('completeAgent: block refused', { agentId, taskId: resolvedTaskId, why: held.why }, agentId);
     }
 
-    // Phase 7 (Part X), fire onTaskComplete hook so the parent agent gets
-    // a structured note containing the original ask + completion summary.
-    // The existing parent notification at line ~506-536 stays for v1
-    // continuity; this hook adds the original-ask context that the v1 note
-    // doesn't carry.
+    // Fire onTaskComplete so the parent also gets a structured note carrying the original ask; the
+    // parent notification above still fires, this one only adds what it does not carry.
     try {
       const { onTaskComplete } = await import('./v2/hooks/task-complete.js');
       await onTaskComplete(resolvedTaskId, agentId);
@@ -828,17 +702,12 @@ export async function completeAgent(
     logger.warn('completeAgent: dangler hand-in failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
   }
 
-  // If this is the Dreamer ending a batch, advance the dream chain.
-  // FA-V4: fire on ANY terminal status, not just 'complete'. On 'complete' the
-  // batch's archives are marked processed; on 'blocked'/'fallen' they are NOT
-  // (never mark an archive the Dreamer did not distill), instead the archive's
-  // bounded attempt counter is bumped and it is poisoned after repeated
-  // failures. Either way the cycle continues instead of stalling on a
-  // non-complete batch (pre-fix it advanced only on 'complete').
-  // Pre-2026-04-30 the catch here swallowed all errors silently, hiding the
-  // v1.15.100 json_set bug for who-knows-how-long. Log them instead.
+  // If this is the Dreamer ending a batch, advance the dream chain on ANY terminal status. On
+  // 'complete' the batch's archives are marked processed; on 'blocked'/'fallen' they are NOT (never
+  // mark an archive the Dreamer did not distill), the attempt counter is bumped, poisoned after
+  // repeated failures; either way the cycle continues instead of stalling on a non-complete batch.
   const { isDreamerAgent } = await import('../config/platform.js');
-  if (isDreamerAgent(agentId)) {   // same drop: an agent CALLED "Dreamer" had its archives marked
+  if (isDreamerAgent(agentId)) {   // identity by agent id, never by display name
     try {
       const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
       markDreamerArchivesProcessed(agentId, status);
@@ -855,11 +724,8 @@ export async function completeAgent(
     name: agent.name,
     status,
     summary: summary.slice(0, 200),
-    // The queries above are unbounded (WHERE agent_id only), so these are the
-    // agent's LIFETIME totals. For a one-shot apprentice that equals the job;
-    // for a RESIDENT (the memory-cycle agent completes hundreds of batches)
-    // they accumulate across months. Labeled accordingly after a production
-    // trace read a resident's lifetime cost as one night's bill (2026-07-18).
+    // The queries above are unbounded (WHERE agent_id only), so these are LIFETIME totals: for a
+    // RESIDENT (hundreds of batches) they accumulate across months; label them as such.
     lifetimeStats: {
       messages: messageStats.count,
       tokens: messageStats.total_tokens,
@@ -894,22 +760,11 @@ export async function completeAgent(
   });
 }
 
-// ── Extend a held agent's timeout (destructive-gate FA-A3) ──
-//
-// The destructive-gate HOLDS a non-primary worker's call pending the primary's
-// approval, then wakes the worker to retry. That wait must not let the reaper
-// kill the worker mid-approval. Extending only the DB row (the pre-fix raw
-// UPDATE in destructive-gate) was INERT: apprentice reaping is driven by the
-// per-agent in-memory setTimeout armed at spawn, which the DB write never
-// rescheduled, so the worker still died at its ORIGINAL timeout. This reschedules
-// BOTH the in-memory timer AND the DB row, keeping them coherent with the
-// checkTimeouts DB sweep.
-//
-// Preserves normal reaping for everyone else: only stretches the specific held
-// worker's life, never shortens a longer timeout, leaves ronin (timeout_at NULL,
-// never reaped) untouched, and re-arms with the SAME semantics the worker had at
-// spawn (persist agents clear their timeout and stay alive; everyone else is
-// terminated).
+// ── Extend a held agent's timeout ──
+// The destructive gate HOLDS a non-primary worker's call pending the primary's approval, then wakes
+// it to retry; the reaper must not kill the worker mid-approval. Extending only the DB row is INERT:
+// reaping is driven by the per-agent in-memory setTimeout armed at spawn, which the DB write never
+// rescheduled. This reschedules BOTH the timer AND the row, as checkTimeouts' DB sweep expects.
 export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): void {
   const db = getDb();
   const agent = db.prepare('SELECT id, name, status, config, timeout_at FROM agents WHERE id = ?').get(agentId) as {
@@ -934,9 +789,8 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
   const currentMs = new Date(agent.timeout_at.replace(' ', 'T') + (agent.timeout_at.includes('Z') ? '' : 'Z')).getTime();
   if (!Number.isNaN(currentMs) && currentMs >= newAtMs) return;
 
-  // Same shape spawnAgent writes (space-separated, no Z) so the DB sweep compares cleanly.
-  // Extending also clears any pending timeout decision: this worker's life was just
-  // stretched, so it is no longer waiting on a creator verdict.
+  // Same shape spawnAgent writes (space-separated, no Z) so the DB sweep compares cleanly. The
+  // stretched life is no longer waiting on a verdict, so a pending decision is cleared too.
   const dbTimeoutAt = newTimeoutAtIso.replace('T', ' ').replace('Z', '');
   db.prepare(`UPDATE agents SET timeout_at = ?, timeout_decision_pending = 0, updated_at = datetime('now') WHERE id = ?`).run(dbTimeoutAt, agentId);
 
@@ -959,7 +813,7 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
     timeoutTimers.set(agentId, timer);
   } else {
     const timer = setTimeout(() => {
-      // P3: reaching the extended timeout is a creator DECISION, not a kill.
+      // Reaching the extended timeout is a creator DECISION, not a kill.
       fireSpawnTimeoutDecision(agentId);
     }, delayMs);
     timeoutTimers.set(agentId, timer);
@@ -970,17 +824,11 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
   }, agentId);
 }
 
-// ── Spawn timeout: creator-owned decision (P3) ──
-//
-// Owner contract: "the timeout MUST be set by the agent who creates the sub
-// agent. When the timeout is reached, the creating agent is notified and MUST
-// respond with an extension or allow the timeout to kill the sub agent." So
-// expiry is a DECISION POINT, never an execution. At timeout_at the engine
-// posts an awareness notice to the CREATOR (or the primary if the creator is
-// gone) and the sub-agent KEEPS RUNNING until spawn_timeout_decision resolves
-// it. timeout_decision_pending (migration 109) makes this reboot-safe:
-//   0 = nothing pending   1 = creator notified, awaiting   2 = escalated to
-// the primary once (undecided ladder), never notified again.
+// ── Spawn timeout: creator-owned decision ──
+// The timeout is set by the creating agent, and reaching it is a DECISION POINT, never an execution:
+// the engine posts an awareness notice to the CREATOR (or the primary if the creator is gone) and
+// the sub-agent KEEPS RUNNING until spawn_timeout_decision resolves it. timeout_decision_pending is
+// the reboot-safe ledger: 0 nothing pending, 1 creator notified, 2 escalated to the primary once.
 
 // If no decision lands within this window after the creator notice, escalate
 // once to the primary so the owner hears about it in-voice. Never auto-kill.
@@ -988,10 +836,8 @@ const SPAWN_TIMEOUT_UNDECIDED_GRACE_MS = 15 * 60 * 1000;
 
 /**
  * The timeout fired: request the creator's decision. Idempotent (guards on
- * timeout_decision_pending) so the in-memory timer, the 30s DB sweep, and the
- * boot re-arm can all reach it and notify exactly once. The sub-agent stays
- * running; the fired timer slot is re-used for the undecided ladder.
- */
+ * timeout_decision_pending) so the in-memory timer, the 30s DB sweep, and the boot re-arm all reach
+ * it and notify exactly once; the sub-agent stays running. */
 export function fireSpawnTimeoutDecision(agentId: string): void {
   const db = getDb();
   const agent = db.prepare(`
@@ -1062,11 +908,8 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
   }, agentId);
 }
 
-/**
- * The creator still hasn't decided a grace window after being notified: escalate
- * ONCE to the primary so the owner hears about it in-voice. Never auto-kills,
- * never fires twice (guards on timeout_decision_pending === 1 -> 2).
- */
+/** The grace passed with no decision: escalate ONCE to the primary so the owner hears it in-voice.
+ *  Never auto-kills, never fires twice (guards on timeout_decision_pending === 1 -> 2). */
 export function fireSpawnTimeoutUndecided(agentId: string): void {
   const db = getDb();
   const agent = db.prepare(`SELECT id, name, status, timeout_decision_pending FROM agents WHERE id = ?`).get(agentId) as {
@@ -1097,11 +940,8 @@ export function fireSpawnTimeoutUndecided(agentId: string): void {
 
 export interface SpawnTimeoutDecisionResult { ok: boolean; message: string }
 
-/**
- * Apply the creator's decision. Creator-only (the user path is the dashboard).
- * extend: new timeout_at + re-armed decision timer + decision recorded.
- * terminate: flows through terminateAgent (its danglers land unvalidated for PM).
- */
+/** Apply the creator's decision (creator-only; the user path is the dashboard). extend: new
+ *  timeout_at + re-armed decision timer. terminate: flows through terminateAgent. */
 export async function applySpawnTimeoutDecision(opts: {
   callerAgentId: string;
   agentId: string;
@@ -1139,7 +979,6 @@ export async function applySpawnTimeoutDecision(opts: {
     return { ok: true, message: `Sub-agent "${agent.name}" (${agentId.slice(0, 8)}) stopped, as you decided. Any in-progress tasks it held were auto-paused for reassignment.` };
   }
 
-  // extend
   const minutes = typeof extendMinutes === 'number' && Number.isFinite(extendMinutes) ? Math.round(extendMinutes) : 0;
   if (minutes <= 0) {
     return { ok: false, message: `To extend "${agent.name}", pass extend_minutes as a positive number of minutes (e.g. extend_minutes=15). To stop it instead, call action="terminate".` };
@@ -1190,13 +1029,9 @@ async function recordTimeoutDecision(
   logger.info('Spawn timeout decision recorded', { subAgentId, subAgentName, action, minutes, callerAgentId });
 }
 
-/**
- * Boot re-arm (P3 item 5). In-memory timers vanish on restart. Rebuild them from
- * the DB for live non-ronin spawned agents: overdue-and-undecided fires the
- * decision now; a future timeout re-arms the decision timer; an agent already
- * awaiting a decision (pending===1) re-arms only the undecided ladder; a fully
- * escalated one (pending===2) is left running. Idempotent with the 30s sweep.
- */
+/** Boot re-arm: in-memory timers vanish on restart, so rebuild them from the DB for live non-ronin
+ *  agents: overdue-and-undecided fires the decision now; a future timeout re-arms it; pending 1
+ *  re-arms only the undecided ladder; a fully escalated one (pending 2) is left running. */
 export function reArmSpawnTimeouts(): void {
   const db = getDb();
   type ReArmRow = {
@@ -1252,7 +1087,6 @@ export function reArmSpawnTimeouts(): void {
   }
 }
 
-// ── Timeout Checker ──
 
 export function checkTimeouts(): void {
   const db = getDb();
@@ -1270,19 +1104,16 @@ export function checkTimeouts(): void {
   `).all() as Array<{ id: string; name: string; timeout_at: string; config: string; classification: string }>;
 
   for (const agent of expiredAgents) {
-    // D14: sensei agents cannot be terminated by the reaper, terminateAgent
-    // refuses them (classification==='sensei') and returns WITHOUT clearing
-    // timeout_at, so the 30s reaper re-picked the same stray sensei on every
-    // tick forever (one orphaned duplicate Dreamer produced 1,713 "Cannot
-    // terminate sensei" log lines). Clear its timeout so it is not re-reaped; a
-    // genuinely stray/duplicate sensei is cleaned up out-of-band, not here.
+    // Sensei agents cannot be terminated by the reaper; terminateAgent refuses them and returns
+    // WITHOUT clearing timeout_at, so the 30s sweep would re-pick the same stray sensei every tick
+    // forever. Clear its timeout so it is not re-reaped; a genuinely stray sensei is cleaned up
+    // out-of-band, not here.
     if (agent.classification === 'sensei') {
       db.prepare("UPDATE agents SET timeout_at = NULL, updated_at = datetime('now') WHERE id = ?").run(agent.id);
       logger.info('Sensei timeout cleared (senseis are not reaped by the timeout checker)', { agentId: agent.id, name: agent.name }, agent.id);
       continue;
     }
 
-    // Skip agents with persist: true, they should stay alive
     try {
       const config = JSON.parse(agent.config || '{}');
       if (config.persist) {
@@ -1293,7 +1124,7 @@ export function checkTimeouts(): void {
       }
     } catch { /* ignore parse errors */ }
 
-    // P3: a non-ronin, non-persist apprentice reaching its timeout is a CREATOR
+    // A non-ronin, non-persist apprentice reaching its timeout is a CREATOR
     // DECISION, not a kill. This is the restart-safe backstop for the in-memory
     // timer (lost on reboot): fire the decision notice; the sub-agent keeps
     // running. Idempotent (guards on timeout_decision_pending), so a concurrent

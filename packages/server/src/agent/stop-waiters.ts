@@ -1,26 +1,6 @@
-// ════════════════════════════════════════
-// t203 (B6) — THE STOP WAITERS: something that WAITS on the owner's stop, as opposed to a
-// call the stop ABORTS.
-//
-// The abort registry (`shared-state.ts`, opened through `abortable-call.ts`) holds calls the
-// stop cuts. The executor needs the other thing: to stop WAITING on a tool call the moment the
-// owner presses the button, whatever that tool did or did not register. It cannot sit in the
-// registry as a controller, and the reason is in `runtime.ts`'s `preemptAgentForUrgentMessage`:
-// that door counts the TURN-scoped entries to decide whether a barge-in has anything to cut,
-// and an entry per running tool call would make every tool call count — the preempt would burn
-// its cool-down and arm `preemptedAgents` over work it was never meant to touch. Nor is it
-// `background`: that scope means "outlives the turn" and drives the live-work indicator. So it
-// is a separate, plain set, notified by the ONE door that means "the owner pressed stop"
-// (`stopAgent`) and by nothing else.
-//
-// t224: the other waiter is every child process the toolbox spawns (`effects/proc-tree.ts`). It
-// sat in the registry for a while and made a running command read as a model request to liveness
-// and to the preempt above; it waits here instead.
-//
-// THE SAME RACE `registerAbortable` CLOSES IS CLOSED HERE: a waiter opened while a stop is
-// already standing is born stopped. There is no window in which a wait can begin after the
-// press and miss it.
-// ════════════════════════════════════════
+// THE STOP WAITERS: waits ON the owner's stop, not calls the stop aborts. Only `stopAgent` notifies
+// them; a wait opened while a stop stands is born stopped. Not the abort registry: the barge-in
+// counts turn-scoped entries, so a tool-call entry burns its cool-down; and not `background` (live-work).
 
 import { isStopFenced } from './shared-state.js';
 
@@ -53,7 +33,6 @@ export function untilUserStop(agentId: string): StopWait {
   };
 }
 
-/** The owner pressed stop: every wait on this agent ends now. Called by `stopAgent` only. */
 export function notifyUserStop(agentId: string): number {
   const set = stopWaiters.get(agentId);
   if (!set) return 0;
