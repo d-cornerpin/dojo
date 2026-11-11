@@ -1,7 +1,4 @@
-// Most of the v1 imports were removed in Phase 9 Stage 2 along with the
-// 2055-line runAgentLoop they fed. What stays serves the v2 dispatch shell,
-// the helpers re-exported via getAgentRuntime (notifyPrimaryOfInjury,
-// stopAgent, preempt, etc.), and shared module-level state.
+// The v2 dispatch shell, helpers re-exported via getAgentRuntime, and run lifecycle state shared with v2.
 import { orphanedModelRepairText } from './engine-lines.js';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { beginContinuationRun, beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
@@ -23,26 +20,13 @@ import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
-// PHASE-6 T10 Step 1d: the storm law's own predicate, read from the spine.
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
 
-// One-shot dedup so the "model does not support tools" banner only fires once
-// per (agent, model) pair for the lifetime of the server process. Without
-// this we'd broadcast the same banner on every single turn.
+// Dedup: the "model does not support tools" banner fires once per (agent, model) pair per process.
 const toolsUnavailableNotified = new Set<string>();
 
-// ── Recoverable provider 4xx classifier ──
-//
-// Some provider errors aren't "the agent broke", they're "the request was
-// wrong for this model". The agent can adapt and retry differently if we
-// just tell them what went wrong instead of injuring them and waiting for
-// a human to intervene.
-//
-// Provider 4xx classification used to live here as
-// `classifyRecoverableProviderError`. It moved to agent/v2/recovery.ts in
-// Phase 6 (and was removed from runtime.ts in Phase 9 Stage 2 along with
-// the v1 catch path that called it).
+// Recoverable provider 4xx classification lives in agent/v2/recovery.ts: telling beats injuring.
 
 export async function enforceModelCapabilities(
   agentId: string,
@@ -51,54 +35,27 @@ export async function enforceModelCapabilities(
 ): Promise<{ useTools: boolean }> {
   const caps = getModelCapabilities(modelId);
 
-  // Unknown capability set → don't gate. We'd rather optimistically try and
-  // let the provider error out than lock users out of a working model whose
-  // probe failed or simply returned nothing.
+  // Unknown capability set must not gate: better a provider error than locking out a working model.
   if (caps.length === 0) {
     return { useTools: true };
   }
 
-  // ── Vision gate ──
-  // If the assembled messages contain image blocks and the model has no
-  // vision capability, two paths are possible:
-  //   (a) If the platform has a fallback vision model configured
-  //       (Settings → Models → Fallback Vision Model), route each image through the fallback for a
-  //       text description and inline that description in place of the
-  //       image. The agent gets to respond intelligently to what the
-  //       user actually sent.
-  //   (b) Otherwise strip the images (keeping any text) and warn the
-  //       agent so the turn can still proceed on the text alone.
-  //
-  // PDFs (`document` blocks) are NOT stripped here, every provider translator
-  // handles them: Anthropic passes them through natively, the openai-compatible
-  // and Ollama paths in model.ts extract text via pdf-extract.ts and inline it
-  // into the user message. Stripping documents at this layer was overzealous
-  // and broke PDF-on-non-vision-model entirely (fixed 2026-05-04).
+  // No vision: describe each image via the configured fallback model; with none, strip and keep text.
+  // PDF document blocks are NOT stripped here: every provider translator extracts or passes through.
   if (!caps.includes('vision')) {
-    // Resolve fallback vision model up front. We only need one resolution
-    // per call; the helper does its own validity check.
+    // Resolve the fallback vision model once per call; the helper checks validity itself.
     const { getEffectiveVisionModel } = await import('../services/vision-model.js');
     const fallback = getEffectiveVisionModel(agentId);
-    // The agent's own model already lacks vision (we wouldn't be in this
-    // branch otherwise), so the helper can only return source='fallback'
-    // or null, but be defensive.
+    // The agent's model lacks vision in this branch, so only 'fallback' or null returns; be defensive.
     const fallbackUsable = !!fallback && fallback.source === 'fallback';
 
     let imagesStripped = 0;
     let imagesCaptioned = 0;
-    // ── UX-REPAIR ROUND 6 T27 — WHAT THE GATE ALREADY DECIDED ──
-    // These two count images resolved from the STORE rather than from a fresh attempt. They
-    // are separate counters on purpose: they must still cause the message array to be
-    // rewritten (an image block may never reach a non-vision provider), and they must NOT
-    // reach the toast or the "just sent" nudge, which are statements about THIS turn.
+    // imagesRecalled counts STORE-resolved images: they force the rewrite, never the toast or nudge.
     let imagesRecalled = 0;
     const { imageFingerprint, lookupVisionCaption, recordVisionCaption, UNCAPTIONED_IMAGE_STUB } =
       await import('../services/vision-captions.js');
 
-    // Pull the data URL / base64 out of an Anthropic-shape image block.
-    // We support the two common shapes we ourselves emit upstream:
-    //   { type: 'image', source: { type: 'base64', media_type, data } }
-    //   { type: 'image', source: { type: 'url', url } }
     function extractImageSource(block: Record<string, unknown>): {
       base64?: string; mediaType?: string; url?: string;
     } | null {
@@ -116,20 +73,13 @@ export async function enforceModelCapabilities(
       return null;
     }
 
-    // Run one image through the fallback model and get a short text
-    // description back. Returns null on any failure, caller treats that
-    // as "fall through to strip" so a captioning glitch never blocks the
-    // turn entirely.
+    // One image through the fallback for a short description; null means fall through to strip.
     async function captionOne(block: Record<string, unknown>): Promise<string | null> {
       if (!fallbackUsable || !fallback) return null;
       const src = extractImageSource(block);
       if (!src) return null;
       try {
-        // Mutual recursion: callModel calls enforceModelCapabilities for
-        // its own gating, but with the fallback's own modelId, the
-        // fallback IS vision-capable so the vision branch won't re-enter.
-        // Keep the prompt short and focused, the calling agent will use
-        // this text to talk about the image to the user.
+        // Mutual recursion is safe: callModel re-enters with the fallback's own (vision-capable) modelId.
         const { callModel } = await import('./model.js');
         const captionMsg = [{
           role: 'user' as const,
@@ -175,29 +125,11 @@ export async function enforceModelCapabilities(
       }
     }
 
-    // Walk a block array. For each image block, try to caption via the
-    // fallback; if that returns null, strip it. Recurses into tool_result
-    // content the same way the pre-fallback strip used to. Returns the
-    // new block array.
     async function processBlocks(blocks: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
       const kept: Array<Record<string, unknown>> = [];
       for (const b of blocks) {
         if (b.type === 'image') {
-          // ── UX-REPAIR ROUND 6 T27 — ASK THE STORE BEFORE ASKING THE MODEL ──
-          //
-          // This gate walks the ASSEMBLED HISTORY on every model call and used to remember
-          // nothing, so ONE image row re-tripped it for ever: re-sent to the fallback model,
-          // re-failed, re-toasted (11 amber `chat:error` toasts in 15 minutes, dev body
-          // 2026-08-10) and re-followed by a "the user just sent N images … respond ONLY
-          // about the image" splice that was false from the second turn and hijacked whatever
-          // the user was actually asking.
-          //
-          // A stored verdict is REPLAYED, never re-litigated: a caption is inlined again (so
-          // the model can still discuss an image it saw described last turn — this is why the
-          // store exists rather than a bare "historical images become stubs" rule), a failure
-          // becomes its durable stub. Neither touches the fresh counters, so neither speaks to
-          // the user. First sighting means "no row", which is the only definition of "this
-          // turn" available here — no message id reaches this function.
+          // Store first: a stored verdict is REPLAYED, never re-litigated; first sighting is 'this turn'.
           const fp = imageFingerprint(b);
           const prior = fp ? lookupVisionCaption(fp) : null;
           if (prior) {
@@ -219,14 +151,7 @@ export async function enforceModelCapabilities(
             });
             imagesCaptioned++;
           } else {
-            // Model-VISIBLE residue for a stripped image (2026-07-18 incident):
-            // a silent strip left the model with a photo-edit request and no
-            // photo, so it invented false platform limits ("iMessage attachments
-            // don't come through to me"). Same invisible-engine-action disease as
-            // the rest of that wave: the engine changed the model's context and
-            // told the model nothing. Leave an honest note in the image's place
-            // instead of removing it silently. Counters/banner/nudge are unchanged;
-            // only the residue goes from nothing to this note.
+            // Never strip silently: the model would invent limits; leave the honest stub in its place.
             if (fp) recordVisionCaption(fp, 'failed', null, fallback?.apiModelId ?? null);
             kept.push({ type: 'text', text: UNCAPTIONED_IMAGE_STUB });
             imagesStripped++;
@@ -255,10 +180,7 @@ export async function enforceModelCapabilities(
       return kept;
     }
 
-    // Track the index of the LAST user message that had images touched, so
-    // we can inject a system-role nudge right after it. Without the nudge,
-    // weak models often hallucinate about prior topics instead of telling
-    // the user the image couldn't be processed.
+    // Track the LAST user message with touched images: the nudge goes after it; weak models else invent.
     let lastTouchedUserIdx = -1;
 
     for (let i = 0; i < messages.length; i++) {
@@ -269,15 +191,12 @@ export async function enforceModelCapabilities(
       const beforeTouches = imagesStripped + imagesCaptioned;
       const beforeAny = beforeTouches + imagesRecalled;
       const kept = await processBlocks(blocks);
-      // T27: the ARRAY is rewritten whenever ANY image was resolved — a recalled one still
-      // must not reach a provider that cannot see it — but `lastTouchedUserIdx`, which is
-      // what places the nudge, moves only for a FRESH decision.
+      // The array is rewritten whenever ANY image resolved; the nudge index moves only for a fresh one.
       const changed = (imagesStripped + imagesCaptioned + imagesRecalled) !== beforeAny;
       const fresh = (imagesStripped + imagesCaptioned) !== beforeTouches;
       if (!changed) continue;
 
-      // If nothing but text remains, collapse to a plain string so older call
-      // paths that prefer strings don't choke. Otherwise preserve the array.
+      // All-text result collapses to a plain string: older call paths choke on arrays.
       if (kept.length === 0) {
         messages[i] = { role: 'user', content: '(image attached, see system note)' };
       } else if (kept.every(b => b.type === 'text')) {
@@ -293,9 +212,7 @@ export async function enforceModelCapabilities(
       if (lastTouchedUserIdx >= 0) {
         let nudge: string;
         if (imagesCaptioned > 0 && imagesStripped === 0) {
-          // Pure success: every image was captioned. Tell the agent how
-          // to use the captions, the description text is authoritative
-          // about what the image shows; don't go beyond it.
+          // Pure success: captions are the authoritative account; tell the agent not to go beyond them.
           nudge = (
             `[System: Your current model can't see images directly, but ${userWords(currentAddress(agentId))} sent ${imagesCaptioned} image${imagesCaptioned === 1 ? '' : 's'} and the platform's fallback vision model (` +
             `${fallback?.apiModelId}` +
@@ -304,13 +221,11 @@ export async function enforceModelCapabilities(
             `If ${userWords(currentAddress(agentId))} asks something the description doesn't cover, say so and offer to ask the fallback for a more specific look (re-uploading helps).]`
           );
         } else if (imagesCaptioned > 0 && imagesStripped > 0) {
-          // Mixed: some captioned, some failed.
           nudge = (
             `[System: Your current model can't see images directly. The platform's fallback vision model (${fallback?.apiModelId}) described ${imagesCaptioned} of ${userWords(currentAddress(agentId))}'s image${imagesCaptioned === 1 ? '' : 's'} (you can see those descriptions in the messages above), but ${imagesStripped} other image${imagesStripped === 1 ? '' : 's'} could not be captioned (network or model error). ` +
             `Respond based on the descriptions you DO have. For the missing one${imagesStripped === 1 ? '' : 's'}, tell ${userWords(currentAddress(agentId))} you couldn't read ${imagesStripped === 1 ? 'it' : 'them'} and suggest they re-upload.]`
           );
         } else {
-          // Pure strip (no fallback configured or every caption failed).
           nudge = (
             `[System: ${userWords(currentAddress(agentId), true)} just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +
             `The image${imagesStripped === 1 ? '' : 's'} ${imagesStripped === 1 ? 'was' : 'were'} dropped, you literally cannot see ${imagesStripped === 1 ? 'it' : 'them'}. ` +
@@ -321,10 +236,8 @@ export async function enforceModelCapabilities(
             `Do NOT try to describe the image. Do NOT continue any prior topic, respond ONLY about the image${imagesStripped === 1 ? '' : 's'} they just sent.]`
           );
         }
-        // HL3: the tree's ONE raw model-array insertion, and the only injection that reached
-        // a model with neither a lane tag nor a durable row. Fixed here rather than through
-        // `pushEngineMessage` because this one is POSITIONAL and that channel only appends.
-        // Zero prompt bytes: the tag is a symbol `JSON.stringify` drops, the row is stripped.
+        // Raw positional splice, not pushEngineMessage (that channel only appends). The lane tag is a symbol
+        // JSON.stringify drops, so no prompt bytes carry it, and the stored row is stripped.
         const sysMsg = tagMessageLane({ role: 'user' as const, content: nudge }, 'engine.vision-gate');
         messages.splice(lastTouchedUserIdx + 1, 0, sysMsg);
         try { insertMessageIfAbsent({ id: uuidv4(), agentId, role: 'system', content: nudge, turnNumber: null }); } catch { /* best effort */ }
@@ -346,10 +259,7 @@ export async function enforceModelCapabilities(
     }
   }
 
-  // ── Tools gate ──
-  // If the model is known not to support tools, tell callModel to skip
-  // sending the tool definitions entirely (so we don't waste tokens or
-  // trigger a provider-side 400), and surface a one-time banner.
+  // Tools gate: no tools capability, so skip the definitions: wasted tokens or a provider 400.
   let useTools = true;
   if (!caps.includes('tools')) {
     useTools = false;
@@ -366,17 +276,9 @@ export async function enforceModelCapabilities(
   return { useTools };
 }
 
-// canonicalToolSignature lived here for v1's loop-detector. v2 has its own
-// loop classifier in agent/v2/classifiers/loop.ts. Removed in Phase 9 Stage 2.
-// broadcastMessage was a v1-internal helper; the runtime no longer broadcasts
-// chat:message directly, v2/loop.ts owns that.
-
 const logger = createLogger('runtime');
 
-// Module-level state shared with the v2 runtime, see agent/shared-state.ts
-// for the canonical definitions. Even though runtime.ts no longer runs the
-// inner loop, it still owns the run lifecycle (stop flags, abort handles,
-// wakeup queue, status heartbeats) used by spawner / iMessage bridge / etc.
+// Shared with v2; canonical defs live in agent/shared-state.ts; runtime still owns the run lifecycle.
 import {
   activeRuns,
   pendingWakeups,
@@ -384,31 +286,20 @@ import {
   preemptedAgents,
   agentStartTimes,
   statusHeartbeats,
-  // T83 — the run-scoped stop fence and the abort registry's three doors. The fence is raised
-  // by `stopAgent` and retired by the run's own `finally` below (the same ONE owner that
-  // retires `stoppedAgents`); the registry is never written except through these.
+  // Run-scoped stop fence + the registry's ONLY THREE doors; raised by stopAgent, retired by its finally.
   stopFencedRuns,
   isStopFenced,
-  // t116 E2 — the unwind stamp. Written by the run-exit `finally` below and by nothing else,
-  // for the same reason the two facts above have one owner each.
+  // The unwind stamp: written by the run-exit finally below and by nothing else.
   lastRunEndedAt,
   abortInFlight,
-  // A-5 fix round (review CRITICAL C1): the turn-scoped count the preempt asks before it
-  // decides anything — a background media job is not something a barge-in may tear down.
+  // The count preempt checks first: a background media job is not something a barge-in may tear down.
   countAbortable,
-  // UX-REPAIR T37: the ONE door every self-wake goes through. It refuses while
-  // the user's stop is live, which is what stops a stopped run from restarting
-  // itself out of its own end-of-run drains.
+  // The ONE self-wake door: refuses while the user's stop is live, so a stopped run cannot self-restart.
   queueSelfWake,
-  // T81c (NO-DOOMED-DIALS, census row 21): the retired per-agent preempt cool-down —
-  // added for inbound A2A preempts, which stopped calling `preemptAgentForUrgentMessage`
-  // entirely before this Map ever got a second caller (see the doc on both exports in
-  // `shared-state.ts`). Revived below for the function itself, whose only caller today
-  // (voice barge-in) never had a governor at all.
+  // Per-agent preempt cool-down: the voice barge-in path's only governor.
   lastA2APreemptAt,
   A2A_PREEMPT_MIN_INTERVAL_MS,
-  // T81c FIX ROUND 1 (NO-DOOMED-DIALS): the turn-scoped marker that replaced the first cut's
-  // unscoped `agents.last_error` read (see the marker's own doc for the reproduced defect).
+  // Turn-scoped marker: patience is decided per turn, never by a stale agents.last_error read.
   declaredPatienceHonestFailTurn,
   noteArrivalWhileBusy,
 } from './shared-state.js';
@@ -427,29 +318,16 @@ import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/in
 import { userWords, currentAddress } from './v2/turn-address.js';
 import { workingExpr } from '../work/done/hold.js';
 
-// Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
-// so v2/recovery.ts and v1 catch share the same per-agent streak tracking.
-// Imported below alongside the other shared state symbols.
 
-// Heartbeat timers, re-broadcast agent:status='working' every 30s while
-// the runAgentLoop is active. Used by v1 and v2 alike. The Map lives in
-// shared-state; the start/stop helpers below are exported so v2 can reuse.
 const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
 
 export function startStatusHeartbeat(agentId: string): void {
-  // Clear any prior timer for this agent (defensive, shouldn't normally happen)
   const existing = statusHeartbeats.get(agentId);
   if (existing) clearInterval(existing);
   const timer = setInterval(() => {
     try {
       broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: turnContext(agentId)?.kind ?? 'user' });
-      // D18: heartbeat updated_at while the turn runs. updated_at is otherwise
-      // written only at turn START, so recoverStuckAgents (which reaps
-      // status='working' rows whose updated_at is stale) would flip a legitimately
-      // long turn (budget is 15 min x up to 4 continuations) to idle and DELETE
-      // its activeRuns entry mid-turn, letting a new inbound start a SECOND
-      // concurrent turn on the same agent's context. Keeping updated_at fresh
-      // means only a genuinely dead turn goes stale.
+      // Keep updated_at fresh mid-turn: else the reaper idles the row and spawns a second concurrent turn.
       getDb().prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ? AND status = 'working'").run(agentId);
     } catch { /* best effort */ }
   }, STATUS_HEARTBEAT_INTERVAL_MS);
@@ -464,52 +342,21 @@ export function stopStatusHeartbeat(agentId: string): void {
   }
 }
 
-/** Stop a running agent, aborts in-flight API calls and halts the loop.
- *
- * Sets a `stopMarkerPending` flag on the agent's `config` JSON so the next
- * context assembly will inject a one-shot stop marker into the user's next
- * turn, telling the model its prior plan is cancelled. The marker is
- * injected in-memory at assembly time only; it is NEVER persisted to the
- * messages table or broadcast to the dashboard, so the user does not see
- * it in the chat feed. The flag survives server restarts because it lives
- * in the DB. */
+// Stop a running agent: abort in-flight calls, halt the loop, and set stopMarkerPending so the
+// next assembly injects a one-shot marker: in memory only, never persisted; the flag lives in the DB.
 export function stopAgent(agentId: string): void {
   stoppedAgents.add(agentId);
-  // T83 — RAISE THE RUN'S OWN FENCE. `stoppedAgents` can be lifted from outside by the two
-  // human-intent doors (a fresh user message; reset-session), and on 2026-09-21 reset-session
-  // lifted it 2m41s into a stopped run, after which that run's turn-budget checkpoint queued
-  // its own continuation unrefused. The fence is scoped to the run in flight NOW and is
-  // lowered only by that run's own exit path below. See `shared-state.ts` for the full shape.
+  // RAISE THE FENCE: stoppedAgents can be lifted by outside doors; only this run's exit lowers the fence.
   const runInFlight = activeRuns.has(agentId);
   if (runInFlight) stopFencedRuns.set(agentId, Date.now());
   // Clear any queued wakeup so the agent doesn't immediately restart after stopping
-  pendingWakeups.delete(agentId); endJobCarry(agentId); // t143 r5: a stopped agent's job has no continuation coming
-  // Abort EVERY in-flight API call — not just the turn's own. With the abortSignal threaded
-  // through `model.ts`'s one dial door, this actually cancels the underlying fetch (vs. v1's
-  // pre-fix behavior where the call kept running until natural completion), and it now reaches
-  // the calls a turn makes BESIDE its main one: the turn-budget checkpoint's forced compaction,
-  // the continuity brief, the classifiers. It was exactly one of those (a 285-second summariser
-  // dial) that the 04:22:42 stop found nothing to abort.
-  //
-  // A-5: and it now reaches the MEDIA dials too — image, TTS/music, the video submit and every
-  // leg of the video poll loop, all of which went straight to a provider endpoint registered in
-  // nothing. See `shared-state.ts`'s `openAgentCall`.
-  //
-  // A-5 FIX ROUND (review CRITICAL C1): `scope: 'all'`, and this is ONE OF ONLY TWO places that
-  // may say it. The user's stop is the whole reason `background` work is in the registry at all
-  // — it is what the owner's instruction is about. The other three callers of `abortInFlight`
-  // are the engine's own aborts and are narrowed to `turn`, so a voice barge-in or a thrown
-  // turn can no longer reach a thirty-minute render and file it as something the owner did.
+  pendingWakeups.delete(agentId); endJobCarry(agentId); // a stopped agent's job has no continuation coming
+  // Abort EVERY in-flight call: model.ts's one dial door (openAgentCall) covers compaction, brief, media.
+  // scope:'all' is said in ONLY TWO places; the engine narrows to 'turn' so a barge-in spares a render.
   const cut = abortInFlight(agentId, 'user-stop', { scope: 'all' });
-  notifyUserStop(agentId); // t203: and every WAIT on a tool call ends now (`stop-waiters.ts`)
+  notifyUserStop(agentId); // and every WAIT on a tool call ends now (stop-waiters.ts)
 
-  // A-5 — AND THE RUN-ONCE MEDIA JOBS THIS AGENT HAS OPEN, which the registry alone cannot
-  // reach. `image_create`'s delivery IIFE waits for the turn to END before it dials, so at the
-  // moment it finally goes to the wire there is nothing registered to abort and no fence left
-  // standing (this run's `finally` lowered it on the way out). The job ROW is the fact that
-  // outlives the run; cancelling it here is what makes "the button stops ALL of an agent's
-  // activity" true of a generation that had not started yet. Video keeps its own cancel —
-  // its poll loop registers for its whole life and writes its own row.
+  // Run-once media jobs need explicit cancel: the registry can't reach them; video keeps its own cancel.
   try {
     cancelAgentGenerationJobs(agentId);
   } catch (err) {
@@ -519,25 +366,8 @@ export function stopAgent(agentId: string): void {
     }, agentId);
   }
 
-  // ── T83 — THE STATUS DOES NOT LIE (replaces a "Cosmetic safety net", 2026-05-04) ──
-  //
-  // What stood here wrote `status='idle'` and broadcast idle the instant the button was
-  // pressed, while the loop kept unwinding — the code called it cosmetic itself. It is not:
-  // `agents.status` is the fact every other subsystem reads to decide whether this agent is
-  // available, and on 2026-09-21 that false idle is exactly why three `resetSession()` calls
-  // sailed through a genuinely busy agent (04:25:23, 04:25:56, 04:26:30) where the same guard
-  // had correctly refused for 390 s on a run whose status told the truth.
-  //
-  // Idle is now written ONLY when idle is TRUE — no run in flight. While a run unwinds the row
-  // keeps saying `working`, because it is, and the run's own stop checkpoints (pre-call gates,
-  // the model-call catch, the executor) write idle when the turn ends. The dashboard is not
-  // left guessing: the broadcast carries the truthful status plus `stopping: true`, the
-  // truthful stopping state readers needed, with no `agents.status` CHECK constraint widened.
-  //
-  // THE HEARTBEAT STAYS UP while the run does. Killing it was part of the same cosmetic
-  // bargain and is actively unsafe now the row stays `working`: the heartbeat keeps
-  // `updated_at` fresh, and `recoverStuckAgents` reaps stale `working` rows by flipping them
-  // to idle and DELETING their `activeRuns` entry mid-turn (`startStatusHeartbeat`'s D18 note).
+  // THE STATUS DOES NOT LIE: idle only when nothing is in flight; stopping: true is broadcast-only,
+  // the CHECK stays unwidened; the unwinding run keeps 'working' plus heartbeat, safe from the reaper.
   try {
     if (runInFlight) {
       const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?')
@@ -550,10 +380,7 @@ export function stopAgent(agentId: string): void {
     }
   } catch { /* best effort */ }
 
-  // Mark stopMarkerPending in the agent's config. The memory assembler READS it on the
-  // next turn and injects the marker text into the last user message (in-memory only);
-  // the TURN then clears it via clearConsumedOneShotFlags below. (PHASE-3 T3 / S3: the
-  // assembler used to clear it from its own read path, so any probe or retry consumed it.)
+  // The assembler reads it next turn; the delivering turn clears it (see clearConsumedOneShotFlags).
   try {
     const db = getDb();
     const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
@@ -569,20 +396,8 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/**
- * Clear the one-shot `agents.config` markers an assembly reported consuming (PHASE-3 T3,
- * S3). ONE OWNER PER JOB: `stopAgent` above sets `stopMarkerPending`, `a2a-transport.ts`
- * sets `a2aPreemptPending`, and this clears whichever the turn actually delivered.
- *
- * WHY IT IS NOT IN THE ASSEMBLER, which is where it used to live: assembly is a READ, and
- * it happens more than once per turn (every tool iteration re-assembles) and in places that
- * are not turns at all (the dev cache-prefix probe, the assembled-context golden). A clear
- * on that path means the marker is consumed by whoever assembled first, which is not
- * necessarily the call that showed it to the model. Read-many, write-once is the shape.
- *
- * The write is a read-modify-write of one JSON column, so it is done in a transaction: two
- * markers cleared by two iterations of one turn must not lose each other's edit.
- */
+// Clear one-shot markers (stopAgent, a2a-transport); the DELIVERING turn clears, never the assembler,
+// assembly is an outside-turn read; the two clears are ONE transaction, so neither edit is lost.
 export function clearConsumedOneShotFlags(
   agentId: string,
   consumed?: { a2aPreemptPending?: boolean; stopMarkerPending?: boolean },
@@ -615,30 +430,9 @@ export function clearConsumedOneShotFlags(
   }
 }
 
-/**
- * Preempt an agent's current turn so a queued urgent wakeup fires now,
- * not whenever the current run happens to end. Aborts the in-flight model
- * call (if any) and marks the agent as preempted so the runtime catch
- * treats the abort as a clean end rather than an error/injury. The next
- * tick of handleMessage's finally block fires the queued wakeup.
- *
- * Returns true if there was an in-flight model call to abort.
- *
- * Use sparingly, every preempt costs whatever in-flight model work was
- * mid-stream. Call it for genuinely urgent traffic only: PM pokes,
- * Healer alerts, direct user messages.
- *
- * T81c (NO-DOOMED-DIALS, census row 21) — GPU livelock incident, Leg B: this function used to
- * carry ZERO governor. Combined with the 500ms queued-wakeup restart (below), a repeated
- * urgent-preempt signal (a flaky VAD, a reconnect loop) could abort a fresh in-flight call
- * every ~1s forever — no counter, no backoff, the fastest concretely-provable cold-redial loop
- * in the census. A per-agent cool-down now bounds it to at most one real abort per window: the
- * FIRST preempt in a window still fires immediately (voice barge-in must work on the first
- * press); any MORE within the window are coalesced — the caller is told nothing new happened
- * because, from the caller's perspective, nothing needs to: the in-flight call this preempt
- * would have aborted is the SAME call the first preempt already tore down, still unwinding
- * toward the queued wakeup that will serve everyone waiting.
- */
+// Preempt the current turn so a queued urgent wakeup fires now: abort, mark preempted (catch reads
+// a clean end, finally fires the wake). Urgent only; every preempt costs in-flight work. The first
+// cool-down fire is immediate (voice barge-in), later ones coalesce onto the unwinding call.
 export function preemptAgentForUrgentMessage(agentId: string): boolean {
   const now = Date.now();
   const lastPreemptAt = lastA2APreemptAt.get(agentId);
@@ -648,19 +442,9 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
     }, agentId);
     return false;
   }
-  // T83: the registry holds a SET per agent now (a turn can have its own dial and a mid-turn
-  // compaction dial up at the same time), so "is there anything to abort" is a size question
-  // and the abort is `abortInFlight`. The cool-down, the flag order and the return contract
-  // are byte-for-byte the decisions T81c made — only the registry shape underneath changed.
-  //
-  // A-5 FIX ROUND (review CRITICAL C1): the size question is asked of the TURN-SCOPED entries
-  // only, and the abort is narrowed to match. A background media job is not something a
-  // barge-in may tear down — and counting one here was worse than harmless: this function
-  // would return `true` (its contract is "there WAS an in-flight model call to abort"), burn
-  // the 30 s cool-down on a poller, so a genuine barge-in in the next thirty seconds would be
-  // coalesced and never abort the real model call; and it would leave `preemptedAgents` armed,
-  // where the next unrelated model failure reads as `preempted-mid-call` and the turn is
-  // abandoned silently. All three follow from counting the wrong set.
+  // The registry holds a SET per agent: size it from TURN-scoped entries only, and the abort matches.
+  // Counting a poller returns true on a lie: it burns the cool-down, coalesces the next barge-in,
+  // and leaves preemptedAgents armed to read a later unrelated failure as a silent preempt.
   if (countAbortable(agentId, 'turn') === 0) return false;
   lastA2APreemptAt.set(agentId, now);
   preemptedAgents.add(agentId);
@@ -669,40 +453,13 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
   return true;
 }
 
-// MAX_TOOL_LOOPS, TURN_TIME_BUDGET_MS, MAX_TURN_AUTO_CONTINUATIONS were
-// v1-only constants. v2's loop has its own equivalent constants. Removed
-// in Phase 9 Stage 2.
-
-// FA-A2: explicit stop states. 'terminated' is a hard end; 'paused' (error-loop)
-// and 'error' (Tier-D) are "stop and let a human or the Healer look" states. The
-// self-triggered re-run paths (the post-turn drain and the queued self-wakeup)
-// must NOT auto-resume any of these. A genuinely NEW inbound (handleMessage, which
-// only blocks 'terminated') and an explicit dashboard resume/reset still wake the
-// agent, and transient recovery still flows through the injury-recovery auto-wake,
-// all of which enter via handleMessage rather than these gates.
+// Self re-runs must NOT resume 'terminated'/'paused'/'error'; inbound, dashboard resume and injury-wake may.
 function isSelfResumeBlockedStatus(status: string | undefined): boolean {
   return status === 'terminated' || status === 'paused' || status === 'error';
 }
 
-/**
- * T81c FIX ROUND 1 (NO-DOOMED-DIALS, census row 22) — REPLACES the first cut's `agents.last_error`
- * text read, which the review round reproduced as unsafe: `last_error` survives a `working`
- * transition by design (FA-A2), so a stale declared-patience phrase from an EARLIER, already-
- * resolved injury could still be sitting there when a LATER, unrelated turn's legitimate
- * recovery arm (context-overflow, the pre-dial compaction retry, output-truncation, Tier-B —
- * none of which touch `last_error`) queued its own self-wake. The old check could not tell
- * "this turn's own failure" from "some other turn's diagnostic that never got cleared", and
- * silently declined a real retry — the exact silent-hang class P3 forbids. See
- * `declaredPatienceHonestFailTurn`'s own doc in `shared-state.ts` for the full defect and the
- * reproduction shape.
- *
- * Declines ONLY when the marker names the EXACT turn `v2/turn-record.ts`'s `currentTurnNumber`
- * reports as this agent's latest — i.e. the marked turn is still the most recent one and
- * nothing has run since `recordInjury` set it — and CONSUMES (deletes) the marker as the one
- * action that acts on it. `recordInjury` is the only writer, so a marker whose turn number does
- * not match the agent's current latest is stale by construction (a later turn already ran,
- * whether or not it also cleared the marker at its own start).
- */
+// Declines only when the marker names the agent's latest turn (recordInjury is the only writer, so any
+// other turn number is stale); acting on the marker consumes it.
 function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
   const markedTurn = declaredPatienceHonestFailTurn.get(agentId);
   if (markedTurn === undefined) return false;
@@ -711,26 +468,20 @@ function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
   return true;
 }
 
-/** What `handleMessage` did with the call: ran a turn now, queued a wakeup behind the run already in
- *  flight, or ran nothing (a terminated agent). A caller that judges the turn's outcome (the PM review's
- *  coverage check) must know which, because a queued call returns before any turn has happened. */
+// What handleMessage did (ran/queued/none): a queued call returns before its turn, so judges must know.
 export type RunOutcome = 'ran' | 'queued' | 'not-run';
 
-/** Callers waiting for the turn their queued call will be served by (review M5): resolved at the end of
- *  the next run that STARTS after they asked, never the run already in flight; 'not-run' if the agent is
- *  found terminated first. */
+// Waiters resolve at the end of the run that STARTS next after asking; 'not-run' if terminated first.
 const queuedRunWaiters = new Map<string, Array<(o: RunOutcome) => void>>();
 
-/** The queued turn will not run (the agent is terminated, stopped, or in a stop state): every caller waiting
- *  for it is answered 'not-run' now, so no promise is left pending (review round 2, R5). */
+// Queued turn dead (terminated/stopped): waiters get 'not-run' now, so no promise stays pending.
 function declineQueuedWaiters(agentId: string): void {
   for (const w of queuedRunWaiters.get(agentId) ?? []) w('not-run');
   queuedRunWaiters.delete(agentId);
 }
 
 class AgentRuntime {
-  /** After `handleMessage` answered 'queued': resolves when the queued turn has run (its outcome), so a
-   *  caller that judges that turn (the PM review's coverage check) judges a turn that happened. */
+  // Resolves when the queued turn has run, with its outcome: judges only a turn that actually happened.
   whenQueuedRunEnds(agentId: string): Promise<RunOutcome> {
     return new Promise<RunOutcome>((resolve) => {
       const list = queuedRunWaiters.get(agentId) ?? [];
@@ -739,50 +490,34 @@ class AgentRuntime {
     });
   }
 
-  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<RunOutcome> {   // t143 r6: opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
-    // C20: never run a terminated agent (defense-in-depth for every entry path: the boot re-drain /
-    // an A2A kick could otherwise run a dead agent and emit a zombie reply). Mirrors the wakeup path below.
+  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<RunOutcome> {   // opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
+    // Never run a terminated agent: boot re-drain or an A2A kick could otherwise emit a zombie reply.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
       logger.info('Skipping run, agent is terminated', { agentId }, agentId);
       declineQueuedWaiters(agentId);
       return 'not-run';
     }
-    if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // t148: a message to a parked agent is answered on arrival
-    // If agent is already running, queue a wakeup so we re-run after current loop finishes.
-    //
-    // UX-REPAIR T37 — THE ONE DIRECT ADD IN THE TREE, and the census in
-    // `the-stop-button-stops-the-agent.test.ts` pins it at one. This is not a
-    // self-wake: something ARRIVED (a message, a peer, a scheduled event) while
-    // the agent was busy, and parking it here is how it gets served at all.
-    // A user stop is about the work the agent was already doing; it must not
-    // silently eat somebody else's inbound. Every wake the RUN queues for
-    // ITSELF goes through `queueSelfWake` instead.
+    if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // a message to a parked agent is answered on arrival
+    // Busy: the ONE direct add. A user stop must not eat an inbound; self-wakes use queueSelfWake only.
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
-      noteArrivalWhileBusy(agentId);   // field fix 3 re-review 3: a command waiting on "your messages come first" is told
+      noteArrivalWhileBusy(agentId);   // a command waiting on "your messages come first" is told
       return 'queued';
     }
 
     activeRuns.add(agentId);
-    // Review M5: the callers that queued behind an earlier run are served by THIS one.
     const servedWaiters = queuedRunWaiters.get(agentId) ?? [];
     queuedRunWaiters.delete(agentId);
     agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
-    if (opts?.drained && !opts.job) beginContinuationRun(agentId, () => getWaitingHumanConversations(agentId).slice(0, 1).map((w) => w.oldest.id));   // t158 E
+    if (opts?.drained && !opts.job) beginContinuationRun(agentId, () => getWaitingHumanConversations(agentId).slice(0, 1).map((w) => w.oldest.id));   // one waiting human conversation is drained as a continuation
 
     try {
-      // v2 is the only runtime. The v1 dispatch + 2055-line runAgentLoop
-      // method below were deleted in Phase 9 Stage 2 (2026-05-06). v2 owns
-      // its own recovery cascade (agent/v2/recovery.ts), anything that
-      // escapes runV2Turn into this catch is a bug in the cascade itself.
+      // v2 is the only runtime; it owns its recovery cascade, so escaping here is a cascade bug.
       await runV2Turn(agentId);
     } catch (err) {
-      // Safety-net only. v2/recovery.ts is the primary error handler and is
-      // wrapped in v2/loop.ts's own try/catch, escapes here mean recovery
-      // itself failed OR the error fired BEFORE the cascade got control
-      // (e.g. preflight throws like NO_MODEL / AGENT_NOT_FOUND).
+      // Safety net: recovery.ts is primary (wrapped in v2/loop.ts), so an escape means recovery failed.
       const errMsg = err instanceof Error ? err.message : String(err);
       const errCode = (err as { code?: string } | null | undefined)?.code;
       logger.error('v2 runtime escaped its own recovery cascade', {
@@ -794,20 +529,14 @@ class AgentRuntime {
       try {
         const db = getDb();
         const row = db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
-        // Don't clobber 'terminated', an agent that called complete_task and
-        // hit a post-completion error should stay terminated.
+        // Don't clobber 'terminated': an agent that hit a post-completion error stays terminated.
         if (row?.status && row.status !== 'terminated') {
-          // The don't-clobber-'terminated' decision stays HERE; the writer owns the
-          // statement, not the policy. Same columns, same 400-char slice.
+          // The policy stays HERE, the writer owns the statement: same columns, same 400-char slice.
           writeAgentStatus(agentId, 'error', { lastError: `recovery cascade escape: ${errMsg.slice(0, 400)}` });
         }
       } catch { /* best effort */ }
 
-      // v2.3.19, when the escape is a known preflight error code, use a
-      // specific plain-English message instead of the generic fallback.
-      // These are the cases where the cascade couldn't even RUN because
-      // preflight validation threw first. Each one points the user at
-      // the actual fix, config, restart, or Settings.
+      // Known preflight codes point at the actual fix: preflight threw before the cascade could run.
       let toastError: string;
       let toastCode: 'NO_MODEL' | 'AGENT_NOT_FOUND' | 'MODEL_FAILED';
       if (errCode === 'NO_MODEL' || /no model configured/i.test(errMsg)) {
@@ -827,7 +556,7 @@ class AgentRuntime {
           agentId,
           error: toastError,
           code: toastCode,
-          // Audit #7 (M11): only a model he must pick is sticky and red; a deleted agent or an unhandled error is not his to act on.
+          // Only a model the user must pick is sticky and red; other codes are not theirs to act on.
           severity: toastCode === 'NO_MODEL' ? 'error' : 'warning',
           cardClass: toastCode === 'NO_MODEL' ? 'action' : 'informational',
           retryable: false,
@@ -835,32 +564,19 @@ class AgentRuntime {
       } catch { /* best effort */ }
     } finally {
       activeRuns.delete(agentId);
-      // t116 E2: and STAMP the moment it went, because this `finally` releases the fact above
-      // at its top and then runs a long awaited tail. A stop press arriving inside that tail
-      // reads no `activeRuns` entry, no `working` status and no live work, and the stop door
-      // used to answer it with "nothing is happening". The stamp is what makes the tail
-      // visible to that door; `isRunUnwinding` in `shared-state.ts` carries the argument.
-      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId, pendingWakeups.has(agentId)); // t143 r7: the carrying run ends; a wake of its own queued becomes the job's continuation
-      replacePlaceholdersInBackground(agentId);   // field fix Y: the background folder yielded to this turn; it resumes now
-      // Safety net for any path that broke out of runAgentLoop without
-      // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
-      // Idempotent, no-op if the heartbeat was already stopped.
+      // STAMP it: this finally releases activeRuns, then awaits a long tail; isRunUnwinding reads it.
+      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId, pendingWakeups.has(agentId)); // the carrying run ends; a wake of its own queued becomes the job's continuation
+      replacePlaceholdersInBackground(agentId);   // the background folder yielded to this turn; it resumes now
+      // Safety net: any throwing or early-return path still stops the heartbeat; the stop is idempotent.
       stopStatusHeartbeat(agentId);
 
-      // t163: a delegated answer that arrived while this turn ran goes to the owner NOW, after the turn's own reply (every exit lands here).
+      // A delegated answer that arrived mid-turn goes out now: this finally is where every exit lands.
       try { await (await import('./a2a-transport.js')).releaseDeferredJoinRelays(agentId); } catch (err) {
         logger.warn('deferred join relay not released; the join reaper and boot re-drain still find it', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
       }
 
-      // ── A2A re-trigger (v3.1.10) ──
-      // If a wake-intent A2A is still unreplied after this turn, give it its
-      // OWN dedicated turn rather than letting it bleed into the next user
-      // reply. This is what makes "strip A2A from user turns" safe: a deferred
-      // A2A is reintroduced as an isolated A2A turn, never ignored. Bounded by
-      // `a2aRetryBudgetFor` so a model that never produces a clean reply can't
-      // spin, after the cap we record a synthetic reply (stops the enforcer)
-      // and log it, accepting that the sender gets no answer over an infinite
-      // loop or a polluted user turn.
+      // An unreplied wake-intent A2A gets its OWN turn, never a fold into a user reply (that makes
+      // stripping safe); past a2aRetryBudgetFor a synthetic reply settles the enforcer, no infinite spin.
       try {
         const status = (getDb()
           .prepare('SELECT status FROM agents WHERE id = ?')
@@ -871,14 +587,9 @@ class AgentRuntime {
           lastTurnWasA2A.delete(agentId);
           if (owed) {
             if (wasA2ATurn) {
-              // A dedicated A2A turn ran and STILL didn't clear the reply, 
-              // a genuinely failed attempt. Count it against the cap.
+              // A dedicated A2A turn ran and cleared nothing: a genuine failure, counted against the cap.
               const tries = (a2aTurnRetries.get(agentId) ?? 0) + 1;
-              // t103 B (OWNER RULING 2026-10-05 #1): the cap is this RECIPIENT's, floored by
-              // one legitimate call on its own provider — `agent/a2a-patience.ts` carries the
-              // arithmetic and the reuse argument. An undeclared provider resolves to
-              // MAX_A2A_TURN_RETRIES exactly, so this line is today's behaviour for every row
-              // that does not declare a patience.
+              // Cap is the RECIPIENT's, floored by one call on its provider (a2a-patience.ts); else plain max.
               const budget = a2aRetryBudgetFor(agentId);
               if (tries <= budget.turns) {
                 a2aTurnRetries.set(agentId, tries);
@@ -890,18 +601,13 @@ class AgentRuntime {
               } else {
                 logger.warn('A2A reply gave up after max dedicated turns, recording synthetic reply', {
                   agentId, intent: owed.intent, thread: owed.threadShort, from: owed.fromName,
-                  // The budget that was actually spent, and what set it — a log line that said
-                  // "max" while the max was a constant could not tell a slow box from a dead one.
+                  // The spent budget and its basis: a bare "max" could not tell a slow box from a dead one.
                   turnsAllowed: budget.turns, patienceFloorSeconds: budget.floorSeconds,
                   patienceBasis: budget.basis,
                 }, agentId);
                 recordA2AReply({ assignMessageId: owed.messageId, agentId, threadId: owed.threadShort, replyIntent: 'ABANDONED' });
-                // D13: the synthetic ABANDONED silences the missed-reply enforcer on THIS
-                // agent, but the asker may hold a delegated PIECE on this thread. Settle it
-                // ABANDONED now — the countdown moves like any other landing — so a join left
-                // with nothing to compile tells the owner immediately instead of leaving them
-                // in permanent silence. Fire-and-forget; the TTL reaper is the backstop.
-                // (Dynamic import: a2a-transport statically imports this module.)
+                // ABANDONED frees only this agent's enforcer; settle the asker's join piece now so an empty
+                // join tells the owner at once. Fire-and-forget, TTL backstops; dynamic: a2a-transport imports us.
                 import('./a2a-transport.js')
                   .then((m) => m.failJoinPieceForAbandonedAsk(owed.messageId, owed.threadShort, agentId))
                   .catch(() => { /* best effort, TTL sweep backstops */ });
@@ -909,9 +615,7 @@ class AgentRuntime {
                 forceA2ATurn.delete(agentId);
               }
             } else {
-              // A user/normal turn deferred the A2A (user took priority, or the
-              // A2A just arrived), give it its own turn next. No penalty: it
-              // hasn't actually had a turn to fail yet.
+              // A deferred A2A gets its own turn, no penalty: it has not yet had a turn it could fail.
               forceA2ATurn.add(agentId);
               queueSelfWake(agentId, 'a2a-retrigger-deferred');
               logger.info('Queuing dedicated A2A turn for deferred inbound', {
@@ -919,7 +623,6 @@ class AgentRuntime {
               }, agentId);
             }
           } else {
-            // Handled (or none owed), clear bookkeeping.
             a2aTurnRetries.delete(agentId);
             forceA2ATurn.delete(agentId);
           }
@@ -930,30 +633,16 @@ class AgentRuntime {
         }, agentId);
       }
 
-      // v2.3.19 (finding #195), clear any stale preempt flag so the
-      // next run (the queued wakeup we're about to fire) starts with a
-      // clean slate. Pre-spec, when a preempted in-flight model call
-      // returned "successfully" with partial content (race: abort
-      // landed during the response stream so the SDK returned what it
-      // had instead of throwing), the v2 loop took the natural "no tool
-      // calls, exit" path and never hit the preempt check at the top
-      // of its outer iteration. The flag stayed set across the
-      // handleMessage boundary, and the NEXT (queued-wakeup) run exited
-      // immediately on entering the loop, stalling the queued user
-      // message. Cleared here as a hard guarantee.
+      // Clear a stale preempt flag: a mid-stream abort can skip the loop's own check, and a left-over
+      // flag would end the next queued run on entry and stall its message.
       preemptedAgents.delete(agentId);
 
-      // Compile-pending fan-out joins: close the loop no matter what the
-      // model did with the compile steer (see resolveCompilePendingJoins).
+      // Compile-pending joins: close the loop whatever the model did with the compile steer.
       try {
         const { resolveCompilePendingJoins } = await import('./a2a-transport.js');
         const drive = await resolveCompilePendingJoins(agentId);
-        // SWEEP-A TB2 — A RE-DRIVE IS A REAL DRIVE. The compile order (and, once the drives
-        // are spent, the "tell the owner it is stuck" steer) is a RIDER: it can never be the
-        // reason for a turn of its own, so without a wakeup it is written and never seen —
-        // the exact shape T3 deleted. This queues one through the mechanism the two drains
-        // below already use, so it collapses with theirs and obeys the same guards; the drive
-        // itself has already consulted the storm law, and the ladder bounds it at three.
+        // The compile order is only a rider, never a turn's own reason, so without a wakeup it is never seen:
+        // queue one like the drains below (same guards; the storm law and a ladder of three bound it).
         if (drive.wakeWanted) {
           queueSelfWake(agentId, 'compile-drive');
           logger.info('compile drive: queued a wakeup so the re-driven agent actually sees the owed step', {
@@ -962,48 +651,17 @@ class AgentRuntime {
         }
       } catch { /* best effort; the TTL sweep backstops */ }
 
-      // ── Unserved-wake drain (2026-07-23) ── pendingWakeups is a SET, so N
-      // queued causes collapse into ONE wakeup, that wakeup serves ONE
-      // trigger, and a still-unserved terminal wake (a deliverable answering
-      // the owner's parked ask) or pending engine event then waited for a
-      // slow periodic (observed 5m20s join->compile gap). If either remains
-      // after this turn, re-queue immediately. Bounded: if the same head row
-      // fails to advance twice, stop self-spinning and let the periodics own
-      // it (mirrors the human-drain MAX_DRAIN_STUCK discipline).
+      // Unserved-wake drain: N causes collapse into ONE wakeup serving ONE trigger; a still-unserved
+      // terminal wake or engine event would wait on a slow periodic: re-queue now, bounded like the drains.
       try {
         const wdStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
         if (!isSelfResumeBlockedStatus(wdStatus)) {
-          // OWNER FIRST, ALWAYS (2026-07-23 production storm, the owner
-          // pleaded "stop" and the self-wake machinery kept the agent busy):
-          // when ANY human conversation is waiting, the drain queues NOTHING.
-          // The human's own trigger runs the next turn; leftover wakes get
-          // re-checked at THAT turn's end. Self-wakes never compete with a
-          // waiting human, full stop.
-          //
-          // PHASE-2 T9 — THE LAW IS MEASURED, NOT ONLY OBEYED. The count is taken ONCE and
-          // carried onto every log line this block writes, because the storm invariant
-          // cannot tell a healthy drain from a violation unless the firing itself says how
-          // many people were waiting when it fired. Taking it once also means a future edit
-          // that deletes the stand-down branch still leaves the number on the record — the
-          // clause bites on the fault instead of going quiet with it.
-          //
-          // PHASE-6 T10 Step 1d — AND IT IS NOW THE RIGHT NUMBER. This read was
-          // `getWaitingHumanConversations(agentId).length`: CONVERSATIONS, deduped by
-          // conversation key, logged under a field called `humanAsksOpen`. Fifteen open asks
-          // in one thread were `1`, and PHASE-5's exit battery caught it stamping `0` against
-          // a spine holding fifteen — the first thing the `calm` property ever measured.
-          // `selfWakeStandDown` reads the spine directly (`work` rows, kind='ask',
-          // state='open'), which is the count the field name has always claimed and the count
-          // the battery cross-checks against. It also stands down on an UNREADABLE spine
-          // (`-1`), which a conversation count could not express: not knowing whether somebody
-          // is waiting must never read as "nobody is". `getWaitingHumanConversations` keeps
-          // every other caller — it answers WHICH conversations, which no count can.
-          //
-          // SWEEP CORE-2 item 5 — AND IT NOW SAYS WHO. The number alone could not distinguish
-          // "the owner is waiting" from "a stranger the platform is required to ignore filed a
-          // ticket nobody will ever serve", which is precisely the confound that stood nine
-          // agents down on this box for weeks. `tiers` carries the owner's decided precedence
-          // — main user, safe senders, other agents — onto the same log line as the count.
+          // OWNER FIRST: while ANY human conversation waits this drain queues NOTHING; the human's
+          // own trigger runs the next turn, where leftover wakes are re-checked. Never compete.
+          // The count is taken ONCE and carried on every log line: the storm invariant needs a
+          // number on the record, and it must match selfWakeStandDown's own read (work rows,
+          // kind='ask', state='open'). An unreadable spine (-1) stands down: not knowing is never
+          // nobody waiting. tiers says WHO waits (user, safe senders, agents), a count cannot.
           const { standDown, humanAsksOpen: openAsks, tiers } = selfWakeStandDown(agentId);
           if (standDown) {
             clearDrainLadder(agentId, 'unserved_wake');
@@ -1017,24 +675,9 @@ class AgentRuntime {
           const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
           const head = leftoverWake ? `w:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.rowid}` : null);
           if (head) {
-            // ⚠ PHASE-2 T9 TRIED TO DERIVE THIS FROM `turns` AND THE BATTERY REFUSED IT.
-            //
-            // The counter is "how many CONSECUTIVE drain passes have seen this same head",
-            // and a drain pass is a turn end — so `endedTurnsSince(headArrival) - 1` looks
-            // equivalent, and is not. A deliverable arrives MID-ORCHESTRATION: the primary
-            // then runs several legitimate turns (serving the human, who takes priority and
-            // during whom the drain stands down entirely) before the drain ever looks at the
-            // head. The derived count is already >= 2 by then, so the drain stood down on
-            // its FIRST look and the wake turn never ran.
-            //
-            // Measured, not reasoned about: `multi-agent-project` went 0/3 with every other
-            // clause of its target passing — assign created, peer delivered, deliverable
-            // arrived during orchestration — and only "final owner answer integrates
-            // codeword" false. The consecutive-pass ladder is what stands.
-            //
-            // PHASE-2 T10 (RULING 5): the ladder is unchanged and its STORAGE moved. It was a
-            // module-scope Map, so a crash loop reset this bound to zero on every boot; it is
-            // now `drain_state` (migration 140), one UPSERT, same semantics, durable.
+            // Counts CONSECUTIVE passes seeing the same head; endedTurnsSince would start past
+            // the bound (human turns run before the drain's first look). The ladder is durable
+            // drain_state, not a Map: a Map resets on boot, so a crash loop self-spins a stuck head.
             const stuck = bumpDrainLadder(agentId, 'unserved_wake', head);
             if (stuck < 2) {
               queueSelfWake(agentId, 'unserved-wake-drain');
@@ -1058,38 +701,26 @@ class AgentRuntime {
         }
       }
 
-      // ── Human conversation drain (turn continuity) ──
-      // A turn serves ONE counterparty. If other human conversations are still
-      // waiting (their messages arrived during a long turn and got no reply yet),
-      // queue a wakeup so the agent works through them instead of going idle with
-      // messages stranded, the failure the realistic battery exposed, where a
-      // big first task ate every wakeup and the other senders were never
-      // answered. Bounded by MAX_DRAIN_STUCK: if the head (oldest-waiting)
-      // conversation doesn't advance across re-triggers, the agent can't serve it
-      // (no terminal reply), so we stop self-spinning and idle until a new inbound.
+      // Human drain: a turn serves ONE counterparty, so other conversations get a wakeup, not stranding.
+      // Bounded by MAX_DRAIN_STUCK: a head that cannot advance stops the self-spin and idles till inbound.
       try {
         const drainStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        // FA-A2: honor the stop states. Do not self-re-queue a wakeup for a
-        // paused/errored agent just because conversations are waiting; those
-        // messages are persisted and served on the next real inbound or resume.
+        // Stop states hold: waiting messages are persisted and served on the next inbound or resume.
         if (!isSelfResumeBlockedStatus(drainStatus)) {
           const waiting = getWaitingHumanConversations(agentId);
           if (waiting.length > 0) {
             const head = waiting[0].oldestWaitingRowid;
-            // PHASE-2 T9/T10: the consecutive-pass ladder, durable (`drain_state`, 140); see the drain above.
-            // t194 (D4, owner decision 12): a run that needed a FORCED pass failed on its window, not on this message:
-            // not counted. An unreadable ladder used to read as "past the bound" and wrote the ask off on first
-            // sight. Both stand down: no count, no self-wake (an overflow door's park re-drives), no quarantine.
+            // A FORCED-pass run failed on its window, not this message, so it is not counted; an unreadable
+            // ladder stands down too: no count, no self-wake (the overflow park re-drives), no quarantine.
             const overflowed = contextOverflowSince(agentId, agentStartTimes.get(agentId) ?? Date.now());
             const stuck = overflowed ? DRAIN_LADDER_UNREADABLE : bumpDrainLadder(agentId, 'human_conversation', String(head));
             if (stuck === DRAIN_LADDER_UNREADABLE) {
               logger.warn('drain: standing down; this pass does not count against the waiting message', { agentId, headRowid: head, cause: overflowed ? 'context-overflow' : 'ladder-unreadable' }, agentId);
             } else if (stuck < MAX_DRAIN_STUCK) {
-              // D2: cap self-re-triggers; a real new inbound still wakes it.
+              // Cap self-re-triggers; a real new inbound still wakes it.
               if (underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain');
             } else {
-              // D9: the head failed MAX_DRAIN_STUCK serves with room in the window — the message itself (bad attachment,
-              // per-thread 400). Quarantine it (never dropped), tell the owner, serve the next; log the serves' exits (t194).
+              // The head failed every serve with room left: the message is bad; quarantine, never drop.
               const poisoned = waiting[0];
               const quarantined = quarantineWaitingConversation(agentId, poisoned.key);
               const exitReasons = (getDb().prepare('SELECT exit_reason AS r FROM turns WHERE agent_id = ? AND conv_key = ? ORDER BY turn_number DESC LIMIT ?')
@@ -1103,21 +734,14 @@ class AgentRuntime {
               if (remaining.length > 0 && underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain-after-quarantine');
             }
           } else if (getPendingEngineEvent(agentId)) {
-            // E-A2: a human is no longer waiting but an engine event (scheduler/
-            // reminder/tracker/healer) is still UNPROCESSED, it was out-raced by a
-            // human and would otherwise be silently starved. Give it its own turn.
-            // It is stamped served at pickup, so this fires at most once per event
-            // (no spin), and only when no human is owed.
+            // No human waits but an engine event (scheduler/reminder/tracker/healer) is unprocessed:
+            // out-raced by a human it would starve. Served-stamped at pickup: once per event, no spin.
             clearDrainLadder(agentId, 'human_conversation');
             if (underWakeBudget(agentId)) queueSelfWake(agentId, 'pending-engine-event');
           } else {
             clearDrainLadder(agentId, 'human_conversation');
-            // D8: nothing is due NOW, but an engine event may be parked on a retry
-            // backoff (its delivery aborted and the claim was reverted with
-            // next_attempt_at in the future). On an otherwise-idle box nothing
-            // would re-fire the drain when the backoff clears, so arm a one-shot
-            // timer for the earliest retry. Crash-durable via the boot re-drain,
-            // which consults the same eligibility.
+            // An engine event on backoff is null at pickup; nothing re-fires when it clears: arm a
+            // one-shot for the earliest retry; the crash-durable boot re-drain backstops a crash before it.
             scheduleEngineEventRetryWake(agentId, (id) => {
               this.handleMessage(id, '').catch((err) => {
                 logger.error('Engine-event retry wake failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);
@@ -1129,106 +753,57 @@ class AgentRuntime {
         logger.warn('drain re-trigger check failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
       }
 
-      // If a message arrived while we were busy, re-trigger the loop.
-      // Don't clear turnBoundary yet, clear it AFTER the wakeup starts
-      // so messages arriving during the delay window are handled correctly.
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
         // Clear turnBoundary BEFORE the wakeup so the new run sees all messages
         turnBoundary.delete(agentId);
         // Use a short delay to let any in-flight DB writes finish
         setTimeout(() => {
-          // T81c (NO-DOOMED-DIALS, census row 22) — checked FIRST, before the status read
-          // below: consult WHY the prior turn ended, not just what status it left behind. A
-          // declared-patience exhaustion is a cold-redial of an identical un-finishable request
-          // no matter what status the row currently carries. T81a's own injury path already
-          // told the human (a persisted system note + Healer dispatch) — duplicating that note
-          // here would just be noise, so this restart ONLY declines. The wake is re-queued
-          // through `queueSelfWake` (never a raw `pendingWakeups.add` — UX-REPAIR T37 pins
-          // runtime.ts at exactly one direct add, the busy-path arrival) so a live user stop is
-          // still honoured. A genuinely NEW human message is unaffected either way — it arrives
-          // through `handleMessage`'s own top-of-function door, which this timer never gates.
-          //
-          // FIX ROUND 1: `turnJustEndedOnDeclaredPatience` — not a `last_error` text read. See
-          // that function's own doc, and `declaredPatienceHonestFailTurn`'s in `shared-state.ts`,
-          // for the review round's reproduced defect (an unscoped string read silently declined
-          // an UNRELATED turn's legitimate recovery retry) and why a turn-scoped marker replaces
-          // it entirely rather than patching the string match.
+          // Consult WHY the prior turn ended before the status read: re-driving a declared-patience
+          // exhaustion is a cold redial; the injury path already told the human, so this only declines.
+          // Requeue via queueSelfWake, never a raw add: this file holds exactly one direct add, so a
+          // live stop is honoured. Turn-scoped test: an unscoped read declines an unrelated turn's retry.
           if (turnJustEndedOnDeclaredPatience(agentId)) {
             queueSelfWake(agentId, 'declared-patience-decline-requeue');
             logger.info('Queued wakeup declined: the prior turn ended on a declared-patience exhaustion, not auto-redialing the identical request', { agentId }, agentId);
             return;
           }
-          // T83 — A STOP THAT LANDED WHILE THIS TIMER WAS ARMED IS STILL A STOP. The timer is
-          // armed before the flag/fence are retired and fires 500 ms after they are, so a stop
-          // arriving in that gap used to find `pendingWakeups` already consumed (nothing left
-          // for `stopAgent` to clear) and a restart it had no say over. The gate is the same
-          // OR the drains use, so the two human-intent clears still let a genuinely fresh
-          // run through: a NEW user message arrives via `handleMessage`'s own door, which
-          // this timer never gates.
+          // A stop landing while this timer is armed is still a stop: it fires 500 ms later, finds
+          // pendingWakeups already consumed, nothing left for stopAgent to clear. Same gate the
+          // drains use; a NEW message arrives via handleMessage's own door, ungated.
           if (isStopFenced(agentId)) {
             logger.info('Queued wakeup declined: the user stopped this agent', { agentId }, agentId);
             declineQueuedWaiters(agentId);
             return;
           }
-          // Skip the wakeup if the agent has been terminated since the
-          // wakeup was queued. Without this guard, an agent that called
-          // complete_task could be resurrected by a wakeup queued in the
-          // moments around termination, observed in W29VerifyAlpha during
-          // the v2 self-test (status flipped terminated → idle).
+          // Skip a wake queued before termination: complete_task then a stale wake would revive it.
           const status = (getDb()
             .prepare('SELECT status FROM agents WHERE id = ?')
             .get(agentId) as { status?: string } | undefined)?.status;
-          // FA-A2: a wakeup queued before the agent stopped (e.g. a new inbound
-          // arrived during a turn that then errored) must not self-resume a
-          // paused/errored/terminated agent. The message stays persisted and is
-          // served on the next real inbound or an explicit resume.
+          // Never self-resume a blocked status: the message stays persisted for the next inbound or resume.
           if (isSelfResumeBlockedStatus(status)) {
             logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
             declineQueuedWaiters(agentId);
             dropDrainJobWake(agentId); return; // the park's continuation will never run: its job is over
           }
           logger.info('Processing queued wakeup', { agentId }, agentId);
-          // Don't pass empty content, the wakeup will pick up all new
-          // messages from the DB via context assembly. The content param
-          // is unused by runAgentLoop (it reads from DB).
+          // Empty content: the wake picks up new messages via context assembly; the param is unused.
           this.handleMessage(agentId, '', { drained: true }).catch(err => {
             logger.error('Queued wakeup failed', {
               agentId,
               error: err instanceof Error ? err.message : String(err),
             }, agentId);
           });
-        }, 500); // Reduced from 1500ms, 500ms is enough for DB writes
+        }, 500); // 500ms is enough for in-flight DB writes to land
       } else {
-        // No wakeup pending, safe to clear turnBoundary immediately
         turnBoundary.delete(agentId);
       }
 
-      // ── UX-REPAIR T37 — THE ONE OWNER OF THE STOP FLAG'S CLEAR ──
-      //
-      // The stop is honoured by whichever checkpoint sees it (the pre-call
-      // gate, the model-call catch, the executor between serial calls); it is
-      // RETIRED here, at the end of the run it stopped, and nowhere else. Every
-      // one of those checkpoints used to delete it itself, which meant the flag
-      // was already gone by the time this `finally` — and its four self-wake
-      // drains — ran. The drains then saw an unanswered human ask (unanswered
-      // BECAUSE of the stop), queued a wakeup, and the agent restarted 500 ms
-      // later on the very request the user had stopped. Measured on the dev box
-      // 2026-08-11: stop 07:24:30.475 → "Processing queued wakeup" 07:24:31.571
-      // → `work_open` 07:24:38.718. The drains are stop-aware now
-      // (`queueSelfWake`), and they can only stay that way if the flag is still
-      // standing when they run.
-      //
-      // Requirement preserved from the deletes this replaces (chat.ts's
-      // 2026-06-02 note: a stale flag must never kill the NEXT turn): the flag
-      // dies with the run that honoured it, which is strictly tighter than
-      // "whichever checkpoint noticed first". The two human-intent clears
-      // (a fresh user message; reset-session) are untouched.
-      //
-      // T83 — AND THE FENCE RETIRES HERE TOO, for the same reason and in the same breath.
-      // The two human-intent doors can lift the FLAG (they are about the next run, and that
-      // is correct); nothing outside this line lifts the FENCE, so the run that was stopped
-      // stays stopped all the way down, even across a reset-session that landed mid-unwind.
+      // THE ONE OWNER OF THE STOP FLAG'S CLEAR: a checkpoint that sees the stop honours it (pre-call
+      // gate, model-call catch, executor); only this finally retires it, at the end of the run it stopped.
+      // The drains below stand down only while the flag stands; cleared early they would restart the
+      // very request the user stopped. The two human-intent clears may lift the FLAG; nothing lifts the
+      // FENCE elsewhere.
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
     }
@@ -1237,18 +812,10 @@ class AgentRuntime {
   }
 
 
-  // When a sub-agent transitions into 'error' or 'paused' (injured/paused),
-  // make the primary agent AWARE that its delegate stalled. Delivered via
-  // postAgentNotice (role='user' origin_kind='engine', the awareness lane), so the
-  // primary's model actually sees it on its next turn and may act or surface it,
-  // but is not forced to reply. (This site formerly dropped a bare role='system'
-  // row, which the model-message builder strips, so the alert was invisible to the
-  // model; see the comms-audit note on the postAgentNotice call below.)
-  //
-  // This is now called from injury-recovery's notifyHealerOfInjury AFTER
-  // the engine auto-wake + grace period have run, so the primary is only
-  // told about agents that genuinely need help, transient rate-limit /
-  // network errors that self-resolve never trigger this alert.
+  // When a sub-agent enters 'error'/'paused', make the primary AWARE via postAgentNotice, the
+  // awareness lane (role='user'): a role='system' row is stripped by the model-message builder,
+  // so it could not reach the model at all. The model may act or surface it, never forced to reply.
+  // Called only after the auto-wake grace period: errors that self-resolve never alert the primary.
   public async notifyPrimaryOfInjury(
     injuredAgentId: string,
     errorMessage: string,
@@ -1256,8 +823,7 @@ class AgentRuntime {
   ): Promise<void> {
     const { isPrimaryAgent, getPrimaryAgentId } = await import('../config/platform.js');
 
-    // Don't notify the primary about itself, the user sees the error
-    // banner for the primary agent directly.
+    // The user sees the primary's own error banner; never notify the primary about itself.
     if (isPrimaryAgent(injuredAgentId)) return;
 
     const primaryId = getPrimaryAgentId();
@@ -1270,8 +836,6 @@ class AgentRuntime {
         | undefined;
       if (!injured) return;
 
-      // Find any tracker tasks currently assigned to this agent, those are
-      // the ones that just stalled.
       interface StalledTaskRow { id: string; title: string; status: string }
       const stalledTasks = db.prepare(`
         SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
@@ -1287,16 +851,7 @@ class AgentRuntime {
         ? ` ${stalledTasks.length} of its task${stalledTasks.length === 1 ? '' : 's'} stalled.`
         : '';
 
-      // comms-audit rank 6: this used to dump a role='system' multi-item report (state +
-      // raw error + a bulleted stalled-task list with IDs + a 3-option recovery paragraph)
-      // into the primary's messages + the owner's dashboard chat. Two problems: (1) a
-      // firehose the primary does not need verbatim; (2) role='system' is SKIPPED by the
-      // model-context builder, so the primary's MODEL never saw the alert and could never
-      // take the reset/reassign action it was being told to take, a real correctness bug.
-      // Now a brief, self-attributed note in the awareness lane (role='user'
-      // origin_kind='engine'), so the primary actually sees it and can act or surface it.
-      // The full error + stalled-task list + recovery options live on the Healer's A2A
-      // thread (injury-recovery) for deliberate pull.
+      // Brief, self-attributed, never the firehose: full error, task list and options stay on the Healer.
       postAgentNotice({
         toAgentId: primaryId,
         fromName: 'Healer',
@@ -1325,25 +880,17 @@ class AgentRuntime {
   }
 }
 
-/**
- * One attachment the engine rectified at injection time (downscaled
- * image, dropped oversized PDF, etc.). Returned to the caller so it can
- * persist a one-shot system note for the user. v2.3.19 (Phase 4): now
- * carries the rectifier's agent-facing `note` directly, older callers
- * formatted from originalSize/finalSize, which only made sense for the
- * image-downscale case.
- */
+// One attachment the engine rectified at injection time (downscaled image, dropped oversized PDF).
+// Returned so the caller persists a one-shot note; it carries the rectifier's own `note` verbatim.
 export interface AttachmentResizeEvent {
   filename: string;
-  /** Plain-language note from the rectifier. Persisted as a `[System: …]`
-   *  message so the agent can mention what changed to the user. */
+  /** Plain-language note from the rectifier, persisted as a `[System: …]` message for the agent. */
   note: string;
-  /** Legacy fields, preserved for back-compat with v2.3.18 callers. */
+  /** Back-compat only: notes are formatted from `note`, not from these sizes. */
   originalSize?: number;
   finalSize?: number;
 }
 
-// Transform messages with image/PDF attachments into content block arrays for the model
 export function injectAttachmentBlocks(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
   agentId: string,
@@ -1351,20 +898,10 @@ export function injectAttachmentBlocks(
   const db = getDb();
   const freshResizes: AttachmentResizeEvent[] = [];
 
-  // Pre-fetch recent user messages with attachments. We can't reliably
-  // match by exact content because the assembler prepends framing
-  // ([New Session] notice, stop-marker, etc.) AFTER the user message
-  // is persisted but BEFORE this function runs. Instead, we look up
-  // the recent attachment-bearing rows and match the assembled
-  // message by content suffix (the original DB content is the END of
-  // the wrapped message). Bug fix 2026-05-04, was matching by
-  // strict equality and missing every post-reset / post-stop case.
-  // A-4 (comms-audit): fetch the recent 10, then order OLDEST-first. The assembled
-  // `messages` are processed oldest-first below, so with a newest-first db list the
-  // `.find` for two BYTE-IDENTICAL user messages (same text, DIFFERENT attachments)
-  // returned the NEWEST unused row for the OLDEST message, swapping their
-  // attachments. Oldest-first here makes identical-content matches resolve in
-  // chronological order (oldest message → oldest row), so the right files attach.
+  // Exact-content matching is unreliable: framing is prepended after the row is stored, so match by
+  // content SUFFIX (the DB content is the END of the wrapped message), which also covers rows from
+  // before resets and stops. Fetch recent 10, reverse: processing is oldest-first, so two
+  // byte-identical texts with DIFFERENT attachments pair oldest-message to oldest-row: no file swap.
   const recentDbMsgs = (db.prepare(`
     SELECT id, content, attachments, inbound_meta FROM messages
     WHERE agent_id = ? AND role = 'user' AND attachments IS NOT NULL
@@ -1373,23 +910,13 @@ export function injectAttachmentBlocks(
 
   if (recentDbMsgs.length === 0) return freshResizes;
 
-  // Track which DB rows we've already injected to avoid duplicating
-  // the attachment if the same row matches twice (shouldn't happen
-  // with current assembly but cheap defense).
+  // Rows already injected: a cheap defense against the same row's files attaching twice.
   const usedDbIds = new Set<string>();
 
-  // Determine the index of the earliest message that's still part of THIS
-  // turn. A turn boundary is an assistant message that ended cleanly (text
-  // only, no tool_use). An assistant message containing tool_use blocks is
-  // mid-loop, the conversation continues into a tool_result and another
-  // model call, so anything before it is still in-turn.
-  //
-  // Scoping by turn (rather than the prior 2026-05-05 heuristic of "any
-  // assistant after = stale") fixes v2.3.16: an iMessage user sending an
-  // image where the agent calls a tool on iter 1 lost the image on iter 2,
-  // because injectAttachmentBlocks treated iter 1's text+tool_use assistant
-  // message as a turn boundary. The model on iter 2 then hallucinated "no
-  // image came through" and that text leaked back via iMessage.
+  // Index of the earliest message still in THIS turn: a clean text-only assistant ends a turn;
+  // an assistant holding tool_use is mid-loop (a tool_result and another model call follow), so
+  // anything before it is in-turn. Scoping by "next assistant" instead is the bug: it reads a
+  // mid-loop assistant as a boundary and drops the image, so the model answers that none came.
   let turnStartIndex = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -1398,8 +925,7 @@ export function injectAttachmentBlocks(
     const hasToolUse = Array.isArray(content)
       && content.some((b) => (b as { type?: string }).type === 'tool_use');
     if (!hasToolUse) {
-      // Plain assistant text → previous turn ended here. Anything after
-      // index i belongs to the current turn.
+      // Plain assistant text: the prior turn ended here; anything after index i is the current turn.
       turnStartIndex = i + 1;
       break;
     }
@@ -1409,17 +935,10 @@ export function injectAttachmentBlocks(
     const msg = messages[i];
     if (msg.role !== 'user' || typeof msg.content !== 'string') continue;
 
-    // Only inject attachments for user messages in the current turn. Older
-    // user messages already shaped a prior model reply; re-injecting their
-    // images/PDFs floods context (the v2.3.5-era "Kimi keeps seeing the
-    // PDF" bug). Within the current turn, every user message, including
-    // the trigger message that's now followed by an in-turn tool loop, 
-    // keeps its attachments visible to the model.
+    // Only this turn's user messages get attachments: older ones shaped a prior reply, re-injecting
+    // floods context. Within the turn every message keeps its files, the trigger message included.
     if (i < turnStartIndex) continue;
 
-    // Find a DB row whose content is the suffix of (or equal to) the
-    // assembled message content. Prefer exact-equality matches first,
-    // then fall back to suffix.
     const exact = recentDbMsgs.find(
       (r) => !usedDbIds.has(r.id) && r.content === msg.content,
     );
@@ -1446,19 +965,13 @@ export function injectAttachmentBlocks(
     if (imageAttachments.length === 0 && pdfAttachments.length === 0) continue;
     const fence = attachmentFenceOf(dbMsg.inbound_meta, dbMsg.id);   // a contact's file is fenced (tools/inbound-fences.ts)
 
-    // Convert to content block array
     const blocks: Anthropic.ContentBlockParam[] = [];
 
-    // Add text content first
     if (msg.content) {
       blocks.push({ type: 'text', text: msg.content });
     }
 
-    // Add image blocks. v2.3.19 (error-handling-spec Phase 4): route
-    // through the input-rectification registry. Today the only registered
-    // rectifier is the v2.3.18 image-downscale flow (sips → cache →
-    // re-encode), but new rectifiers (PDF size, HEIC fallback, etc.)
-    // plug in without touching this call site.
+    // Image blocks go through the rectification registry: a new rectifier plugs in without a call-site edit.
     for (const img of imageAttachments) {
       try {
         if (!fs.existsSync(img.path)) {
@@ -1479,9 +992,8 @@ export function injectAttachmentBlocks(
           },
         }));
         if (result.freshlyApplied && result.agentNote) {
-          // Surface fresh rectifications so the loop can persist a
-          // one-shot system note for the user. The rectifier already
-          // formatted the message; the loop just wraps + broadcasts.
+          // Surface fresh rectifications so the caller persists a one-shot note for the user;
+          // the rectifier formatted the message, the caller only wraps and broadcasts it.
           freshResizes.push({
             filename: img.filename,
             note: result.agentNote,
@@ -1492,10 +1004,7 @@ export function injectAttachmentBlocks(
       }
     }
 
-    // Add PDF blocks. Anthropic's `document` type supports an optional
-    // `title` field (used by the UI + for model grounding); we also use it
-    // downstream by the Ollama translator to label extracted-text sections
-    // so the model knows which file a passage belongs to.
+    // PDF blocks; `title` labels extracted-text sections so the model knows which file a passage is from.
     for (const pdf of pdfAttachments) {
       try {
         if (!fs.existsSync(pdf.path)) {
@@ -1523,17 +1032,8 @@ export function injectAttachmentBlocks(
   return freshResizes;
 }
 
-// ── D2: per-agent self-wake budget ──
-// The human-conversation drain re-queues a wakeup while ANY conversation is
-// "waiting". A turn's assembled context contains (and its reply answers) the
-// whole backlog, but the pickup stamp claims only ONE row served (per-message
-// claim, OPEN-12), so N trivial waiting rows become N full-context turns ~500ms
-// apart. Measured: ~450 calls/hr peaks overnight, $110 in a week on the cheapest
-// model. This is a deterministic circuit breaker independent of any single
-// counter: at most WAKE_BUDGET_MAX self-re-triggers per WAKE_BUDGET_WINDOW_MS
-// per agent, then trip (loud log + agent:status) until the rolling window clears.
-// A genuine NEW inbound still wakes the agent via handleMessage, this caps only
-// the engine's SELF re-trigger, never real user messages.
+// Circuit breaker on the engine's SELF re-trigger only (never a real inbound): a turn answers the
+// whole backlog but the pickup stamp claims one row served, so N waiting rows each take a full turn.
 const WAKE_BUDGET_WINDOW_MS = 10 * 60 * 1000;
 const WAKE_BUDGET_MAX = 30;
 const wakeupTimes = new Map<string, number[]>();
@@ -1551,10 +1051,7 @@ function underWakeBudget(agentId: string): boolean {
         agentId, wakeupsInWindow: arr.length, windowMinutes: WAKE_BUDGET_WINDOW_MS / 60000,
       }, agentId);
       try { broadcast({ type: 'agent:status', agentId, status: 'idle' }); } catch { /* best effort */ }
-      // AUDIT-FIX: on an otherwise-idle box nothing re-fires the drain when the
-      // window clears, so a durable backlog would stall until the next inbound or
-      // a restart. Schedule a one-shot resume for when the oldest wakeup ages out;
-      // re-queue only if work is still owed (no empty wake turns).
+      // Idle: nothing re-fires; one-shot resume at the oldest wakeup's age-out; queue only if work is owed.
       const resumeInMs = Math.max((arr[0] ?? now) + WAKE_BUDGET_WINDOW_MS - now, 5_000);
       const t = setTimeout(() => {
         try {
@@ -1574,18 +1071,9 @@ function underWakeBudget(agentId: string): boolean {
   return true;
 }
 
-// ── D8: engine-event retry timer ──
-// A failed engine-event delivery reverts the claim and parks the event on a
-// backoff (next_attempt_at, migration 084). The drain only re-triggers when an
-// event is due NOW, so on an otherwise-idle agent nothing would fire when the
-// backoff clears; this one-shot timer covers that gap. One timer per agent
-// (re-armed on every drain pass, newest schedule wins), unref'd so it never
-// holds the process open, and every fire re-checks the DB truth: terminated
-// agents are skipped, the D2 wake budget is respected (the budget breaker's own
-// resume timer re-checks pending engine events, so a budget-blocked retry is
-// not lost), and getPendingEngineEvent re-validates eligibility at fire time.
-// Timers are in-memory only by design: a crash loses them, and the boot
-// re-drain (index.ts 4b2) consults the same eligibility to rescue the event.
+// Failed engine-event delivery parks on backoff; nothing re-fires it on an idle agent, so arm ONE
+// unref'd timer per agent, re-armed each drain pass (newest schedule wins), each fire re-checking
+// DB truth (terminated skip, wake budget, eligibility). In-memory by design: boot re-drain rescues a crash.
 const engineRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) => void): void {
@@ -1597,8 +1085,7 @@ function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) =
     }
     const at = getNextEngineEventRetryAt(agentId);
     if (at == null) return;
-    // +1s grace so next_attempt_at has strictly passed at fire time; floor 5s
-    // against clock skew; ceiling just above the max (60m) backoff.
+    // +1s grace so next_attempt_at has strictly passed; floor 5s for clock skew, ceiling above max backoff.
     const delay = Math.min(Math.max(at - Date.now() + 1_000, 5_000), 61 * 60_000);
     const t = setTimeout(() => {
       engineRetryTimers.delete(agentId);
@@ -1616,11 +1103,8 @@ function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) =
   } catch { /* best effort */ }
 }
 
-// ── Stuck-Agent Recovery ──
-// A run that set 'working' and never cleared it leaves the agent stuck; this periodic check
-// resets rows 'working' past STUCK_AGENT_THRESHOLD_MINUTES (`agent/stuck-thresholds.ts`, PHASE-6
-// T10: the table declares, the site decides). It returns the agents it reaped.
-const STUCK_AGENT_CHECK_MS = 5 * 60 * 1000; // Check every 5 minutes
+// Stuck-agent recovery: resets 'working' rows past the threshold (agent/stuck-thresholds.ts owns it).
+const STUCK_AGENT_CHECK_MS = 5 * 60 * 1000;
 
 function recoverStuckAgents(): string[] {
   const reaped: string[] = [];
@@ -1633,23 +1117,18 @@ function recoverStuckAgents(): string[] {
     `).all() as Array<{ id: string; name: string }>;
 
     for (const agent of stuck) {
-      // D18: never reap a run THIS process knows is live. activeRuns is the
-      // in-memory concurrency guard; deleting it out from under a running turn
-      // let a new inbound start a second concurrent turn on the same context.
-      // A row can be stale in the DB (>75 min) yet still be an active run here
-      // only if the heartbeat also stalled, which means the turn really is wedged
-      // in THIS process, so skip it and let the process-level watchdog handle it.
+      // Never reap a run live in THIS process: activeRuns is the concurrency guard; deleting it
+      // starts a second concurrent turn. A stalled heartbeat means wedged in-process: that watchdog's.
       if (activeRuns.has(agent.id)) {
         logger.warn('Stuck-agent check: row is stale but run is live in-process, not reaping', { agentId: agent.id, agentName: agent.name });
         continue;
       }
       writeAgentStatus(agent.id, 'idle');
       activeRuns.delete(agent.id);
-      pendingWakeups.delete(agent.id); endJobCarry(agent.id); // a reaped run's job is dead (t143 r7)
+      pendingWakeups.delete(agent.id); endJobCarry(agent.id); // a reaped run's job is dead
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
-      // t93 — AND THE TURN THIS BLOCK'S VERDICT ABANDONED IS CLOSED, AS `terminated` (the write
-      // is `turn-record.ts`'s, the one module that owns `turns`). The >75-MINUTE-STALE CASE ONLY:
-      // the common crash, restarted inside the hour, is `agent-status.ts`'s boot sweep's.
+      // The turn this verdict abandons is CLOSED as `terminated`, by `turn-record.ts` (the module owning
+      // `turns`). The stale-row case only; a crash restarted inside the hour is agent-status.ts's boot sweep.
       const closedTurns = markTurnsTerminated(agent.id);
       reaped.push(agent.id);
       logger.warn('Recovered stuck agent from permanent working state', {
@@ -1657,35 +1136,18 @@ function recoverStuckAgents(): string[] {
       });
     }
 
-    // ── T83 FIX ROUND (review IMPORTANT A-4) — THE STOPPED-THEN-WEDGED RUN ──
-    //
-    // The first cut of this ticket created a state this reaper was structurally blind to. It
-    // made two deliberate choices — the row honestly keeps saying `working` while a stopped run
-    // unwinds, and the heartbeat is kept alive so a long unwind is not mistaken for a dead turn
-    // — and together they mean a stopped run that genuinely WEDGES can never be reaped: the
-    // fresh `updated_at` keeps it out of the stale query above, and D18's guard (`activeRuns`,
-    // directly above) would skip it even if it got there. Before this ticket a stop at least
-    // forced the row to idle. That regression is closed here and nowhere else.
-    //
-    // The carve-out is deliberately the narrowest one that closes it: not "a live run may be
-    // reaped" — D18's guard is untouched for every ordinary long turn, which is the concurrency
-    // hazard it exists for — but "a run the owner EXPLICITLY STOPPED, whose teardown has still
-    // not completed after the same threshold this reaper already trusts, is wedged." A stop is
-    // an instruction to wind down in seconds; an hour later there is nothing left to protect.
-    //
-    // THE RESIDUAL, STATED: if such a run is not wedged but merely catatonic and later resumes,
-    // it can now overlap a new turn — the exact hazard D18 names. It is bounded three ways:
-    // every provider call the zombie had in flight is aborted before the entry is released, so
-    // it has nothing live to finish; the run's own `finally` is idempotent against everything
-    // cleared here; and the window opens only after a full threshold of a stop going unhonoured,
-    // which is already a broken engine.
+    // THE STOPPED-THEN-WEDGED RUN. A stopped run keeps its `working` row and heartbeat alive so a
+    // long unwind is not mistaken for a dead turn; the cost: a teardown that genuinely WEDGES is
+    // invisible to the stale query and to the activeRuns guard, so nothing else can reap it. Reap
+    // the narrowest case: an EXPLICITLY stopped run past this reaper's own threshold. A stop means
+    // wind down in seconds; hours later nothing is left to protect. Ordinary turns keep the guard.
+    // Residual: a merely-catatonic run that resumes can overlap a new turn, bounded because its
+    // in-flight calls abort before the entry releases (nothing live to finish) and `finally` is idempotent.
     const fenceThresholdMs = STUCK_AGENT_THRESHOLD_MINUTES * 60_000;
     for (const [agentId, stoppedAt] of stopFencedRuns) {
       const fencedForMs = Date.now() - stoppedAt;
       if (fencedForMs < fenceThresholdMs) continue;
-      // A-5 FIX ROUND: `'all'` — the SECOND and last site that may say it. This reaper fires
-      // only on a run the owner EXPLICITLY stopped whose teardown then wedged, so the user
-      // stop it is finishing is the same stop that should have cut this work already.
+      // `'all'` at two sites only; this is the second and last: the user's own stop should have cut this.
       abortInFlight(agentId, 'stuck-stopped-run-reap', { scope: 'all' });
       stopStatusHeartbeat(agentId);
       stopFencedRuns.delete(agentId);
@@ -1705,12 +1167,8 @@ function recoverStuckAgents(): string[] {
     logger.error('recoverStuckAgents failed', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // RC-15 follow-up (owner ruled 2026-07-16): piggyback the Dreamer health
-  // sweep on this same recovery tick so a mid-day dream-cycle stall (stuck
-  // 'working' corpse or a dropped batch continuation) recovers within minutes
-  // instead of waiting for the nightly window. The sweep is idempotent and
-  // guards against live batches itself; dynamic import keeps this module free
-  // of a static vault dependency.
+  // Piggyback the Dreamer sweep on this tick: a mid-day stall recovers in minutes, not nightly.
+  // The sweep is idempotent, guards live batches, and the dynamic import keeps vault off this module.
   void import('../vault/maintenance.js')
     .then(m => m.sweepDreamerHealth())
     .catch(err => {
@@ -1719,18 +1177,8 @@ function recoverStuckAgents(): string[] {
   return reaped;
 }
 
-// ── Orphaned model_id repair (v2.3.19) ──
-//
-// If an agent's model_id points at a row that no longer exists in the
-// models table (e.g. because the user re-created the provider, or
-// because some upstream code path nuked the model row), the agent will
-// throw "Agent has no model configured" on the very next message, and
-// that error fires BEFORE the v2 recovery cascade can do anything,
-// landing in the safety-net catch.
-//
-// Best fix: detect orphans on startup AND every 5 minutes, repair by
-// setting them to 'auto' so the auto-router picks a working model at
-// runtime. Logged loudly so the user can see what was repaired.
+// Orphaned model_id: its row is gone from the models table, so the next message throws before
+// any recovery cascade can act. Detected on startup and every 5 min; repaired to 'auto'.
 function repairOrphanedModelPointers(): void {
   try {
     const db = getDb();
@@ -1752,14 +1200,12 @@ function repairOrphanedModelPointers(): void {
         agentName: agent.name,
         deadModelId: agent.model_id,
       });
-      // Broadcast a chat:error so the user knows what happened in plain
-      // English. severity:warning so it surfaces in the dashboard but
-      // doesn't iMessage them.
+      // chat:error card, severity warning: visible in the dashboard, never iMessages the owner.
       try {
         broadcast({
           type: 'chat:error', cardClass: 'informational',
           agentId: agent.id,
-          // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the Dojo speaking, never "I"; the agent is told.
+          // The Dojo speaks, never "I"; the agent is told what went out and why.
           error: orphanedModelRepairText(agent.name),
           code: 'MODEL_FAILED',
           severity: 'warning',
@@ -1775,45 +1221,21 @@ function repairOrphanedModelPointers(): void {
   }
 }
 
-// Start the stuck-agent recovery check + the orphaned model_id repair (v2.3.19,
-// catches a provider re-create nuking a model row and leaving agents on a dead
-// UUID). Both run on the same cadence.
-//
-// ⚠ BOTH ARE UNREF'D, for the same reason the two timers above are (`:1503`, `:1550`, argued at
-// `:1518`), and this pair is the one that had to learn it the hard way. A ref'd handle armed at
-// MODULE SCOPE holds an event loop open for the life of whatever imported the module. Production
-// never notices: the server's own listening socket holds the loop, so an unref'd interval fires on
-// exactly the same five-minute cadence it always did. A vitest WORKER does notice — importing this
-// module armed two ref'd intervals that nothing ever cleared, so every worker that reached
-// `agent/runtime.ts` kept a live event loop through its own teardown and the rest of the run.
-// MEASURED (t90 fix round 3b): a test file importing this module held 2 more `Timeout` entries in
-// `process.getActiveResourcesInfo()` than a control file that does not, and the merge gate's
-// full-suite run minted `[vitest-worker]: Timeout calling "onTaskUpdate"` — a worker→main RPC
-// unanswered inside vitest's 60 s birpc deadline. Pinned by
-// `__tests__/the-runtime-arms-no-refd-timer-at-import.test.ts`, which measures its own control.
-// While the server stays up the reaped agents' orphaned asks go back to them at once (at boot index.ts 4b1 does it).
+// BOTH SWEEPS UNREF'D: a ref'd module-scope handle holds the importing process's event loop
+// open forever; production never notices (the listening socket holds it) but a test worker
+// importing this stalls the suite; pinned by __tests__/the-runtime-arms-no-refd-timer-at-import.test.ts.
 const stuckAgentSweep = setInterval(() => handBackOrphansOf(recoverStuckAgents(), (id) => getAgentRuntime().handleMessage(id, '')), STUCK_AGENT_CHECK_MS);
 stuckAgentSweep.unref?.();
 const orphanedModelSweep = setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
 orphanedModelSweep.unref?.();
 
-// Also run once at startup to clean up after a crash. main() calls this after
-// the port is bound and the migrations have run.
-//
-// PHASE-0 T12c: it used to run HERE, at module scope, which is during import and
-// therefore before main() — so it ran before the port bind no matter where the
-// bind went. On a box that was already serving, starting a second instance
-// flipped the RUNNING box's live agents from 'working' to 'idle', broadcast the
-// change to every connected dashboard, and kicked off a Dreamer health sweep,
-// all before discovering the port was taken. Running it from main() also retires
-// the "only if the agents table exists" guard: that existed solely because this
-// ran ahead of the migrations that create the table, and it now runs after them.
+// Runs once at startup after the port bind and migrations (main() calls it there).
+// Never module-scope: it would run before the bind and flip a serving box's live agents to idle.
 export function runStartupRecoverySweep(): void {
   recoverStuckAgents();
   repairOrphanedModelPointers();
 }
 
-// Singleton
 let runtimeInstance: AgentRuntime | null = null;
 
 export function getAgentRuntime(): AgentRuntime {

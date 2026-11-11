@@ -1,98 +1,20 @@
-// ════════════════════════════════════════════════════════════════════════════
-// SCOPE — VALIDATED, SUBSET-OF-PARENT, READABLE (PHASE-5 T5).
-//
-// `manifest.ts` holds what a grant IS and how a stored one is read. This module
-// holds the three things T5 owes on top of it, and they are deliberately in one
-// file because they are one job — deciding what a manifest is allowed to say:
-//
-//   VALIDATED       a stored or supplied manifest is checked against a schema,
-//                   and a MALFORMED one REFUSES the spawn rather than silently
-//                   downgrading to the default. A silent downgrade is how an
-//                   agent ends up with a scope nobody chose.
-//   SUBSET          a child cannot exceed its parent, structurally.
-//                   `can_assign_permissions` gates DELEGATION — handing a child
-//                   some of what you hold — never ESCALATION.
-//   READABLE        the effective scope is derivable on demand, so
-//                   `GET /api/agents/:id` can answer "what can this agent
-//                   actually do" without anybody reconstructing it.
-//
-// ── THE DEFAULT: INHERIT PARENT MINUS DANGER (owner, DECIDED 2026-07-26) ──
-// A spawned worker's default scope is its parent's effective scope MINUS the
-// danger set — destructive tools, system control, messaging/outbound-send —
-// each of which needs an explicit parent grant per spawn. That decision is the
-// owner's and is executed here, not re-asked.
-//
-// ⚠ WHAT THE DANGER SET MAPS ONTO WAS MEASURED, AND TWO OF ITS THREE MEMBERS
-// TURNED OUT TO BE ALREADY WITHHELD FROM EVERY SUB-AGENT. This matters, because
-// the alternative was inventing a gate:
-//
-//   system control        THE ONE THAT ACTUALLY CHANGES. Today a child inherits
-//                         its parent's manifest verbatim, so a child of the
-//                         primary receives `system_control:['*']` — and two live
-//                         sub-agents on the dev body hold exactly that, by
-//                         inheritance. This is what `system_control: []` below
-//                         stops, for NEW spawns.
-//   destructive tools     already held: `destructive-gate.ts` routes EVERY
-//                         non-primary agent's destructive call to the primary
-//                         for approval, and `file_delete` is the only
-//                         destructive thing a manifest can say. Set to 'none'
-//                         here so the manifest states what is already true.
-//   messaging / outbound  already held, at four walls: `imessage_send` by gate
-//                         row 7, and `sms_send` / `voice_call` /
-//                         `voice_call_end` / `voice_call_status` by their own
-//                         handler-body primary-only checks. There is NO manifest
-//                         field for it and this module does not invent one —
-//                         building a new gate would newly refuse calls that work
-//                         today, which is the owner's decision and not a
-//                         worker's (RULING P5-R5). `__tests__/child-scope.test.ts`
-//                         holds the four walls instead, so the class stays
-//                         withheld by something that can fail.
-//
-// ⚠ AND WHAT IS DELIBERATELY *NOT* STRIPPED, each with its reason:
-//   exec / shell          shell and pipes are NOT in the danger set the owner
-//                         named (plan T5 INBOUND (c)). A default sub-agent
-//                         already runs `ls | wc -l` and `for f in *; …` today,
-//                         and withholding `shell_allow` by default would be a
-//                         narrowing this task's own ruling does not authorize.
-//   network               not in the danger set, and the plan calls the old
-//                         `network:'none'` default a FALSE STATEMENT — workers
-//                         must browse. A child inherits the parent's reach.
-//   can_spawn_agents      not named as danger, and a child of the primary holds
-//                         it today. Stripping it would narrow.
-//   can_assign_permissions  same, and it is now bounded by the subset rule
-//                         below, which is what makes leaving it safe.
-// ════════════════════════════════════════════════════════════════════════════
+// SCOPE: VALIDATED, SUBSET-OF-PARENT, READABLE (effective scope derivable on demand for the API).
+// VALIDATED: a malformed manifest REFUSES the spawn; a silent downgrade writes a scope nobody chose.
+// SUBSET: a child cannot exceed its parent. can_assign_permissions gates delegation, never escalation.
+// Default: the parent's effective scope MINUS the danger set (destructive, system_control, outbound).
+// Destructive and outbound are already withheld elsewhere; system_control is what changes here.
+// Not stripped (outside the danger set; stripping would narrow today's behavior): exec/shell, network,
+// can_spawn_agents. No outbound manifest field: a new gate would refuse working calls; child-scope.test.ts
+// holds the walls. can_assign_permissions is bounded by subset.
 
 import { z } from 'zod';
 import type { PermissionManifest } from '@dojo/shared';
 import { DEFAULT_SUBAGENT_PERMISSIONS, withArtifactPaths, artifactPathFor } from './manifest.js';
 
-// ── The schema ──
-
-// `'none'` is accepted on the READ/WRITE fields as well as on `file_delete`,
-// because live manifests use it: the dev body's PM agent stores
-// `file_write:"none"` and the projection has always honoured it (neither `'*'`
-// nor an array yields any allow row, so it means deny-all). Refusing it here
-// would have made the validator reject a manifest the platform wrote itself —
-// a capability loss wearing a schema's clothes, caught by this module's own
-// positive test rather than in production.
+// 'none' is valid on read/write fields: the validator must not refuse a manifest the platform wrote itself.
 const pathList = z.union([z.literal('*'), z.literal('none'), z.array(z.string())]);
 
-/**
- * The manifest schema, mirroring `PermissionManifest` in `@dojo/shared`.
- *
- * `system_control` accepts the scalar `'*'` as well as a list because a stored
- * manifest legitimately holds either — the ladder's branch 14/15 read it both
- * ways and `projectManifestToRules` still does. Accepting only the array here
- * would make the validator REFUSE manifests the platform has always honoured,
- * which is a capability loss wearing a schema's clothes.
- *
- * Everything is `.optional()` except nothing: a partial manifest is a legitimate
- * stored shape (`getAgentPermissions` fills each missing field from the default,
- * and 40 of 56 agents on the dev body store `'{}'`). What this schema refuses is
- * a field of the WRONG TYPE — `file_read: 42`, `exec_allow: "ls"` — which is the
- * shape that produces a silent downgrade today.
- */
+// Mirrors PermissionManifest; system_control takes the scalar '*' too, since stored manifests hold either.
 export const manifestSchema = z.object({
   file_read: pathList.optional(),
   file_write: pathList.optional(),
@@ -114,12 +36,7 @@ export type ParseResult =
   | { readonly ok: true; readonly manifest: ManifestInput }
   | { readonly ok: false; readonly reason: string };
 
-/**
- * Validate a manifest that arrived as an OBJECT (a spawn argument, an API body).
- *
- * Returns the reason rather than throwing, so each caller decides what a refusal
- * looks like on its own surface — a thrown spawn error, a 400, a log line.
- */
+// Validate an object manifest; return the reason instead of throwing so callers shape their own refusal.
 export function validateManifest(raw: unknown): ParseResult {
   if (raw === null || raw === undefined) return { ok: false, reason: 'manifest is missing' };
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -135,17 +52,8 @@ export function validateManifest(raw: unknown): ParseResult {
   return { ok: true, manifest: parsed.data };
 }
 
-/**
- * Validate a manifest that arrived as STORED TEXT.
- *
- * ⚠ A MALFORMED MANIFEST IS A REFUSAL, NEVER A SILENT DOWNGRADE — that is the
- * whole point of this function existing beside `getAgentPermissions`. The reader
- * in `manifest.ts` catches a JSON error and falls back to the default, which is
- * right for a READ (refusing every tool call because a blob is corrupt would take
- * an agent off the air). It is wrong for a SPAWN: writing a child a scope nobody
- * chose, and calling it the default, is how an agent silently ends up with more
- * or less than its creator asked for.
- */
+// A malformed stored manifest is a REFUSAL here, never a silent downgrade.
+// The manifest.ts reader may default on a READ; a spawn must not inherit an unchosen scope.
 export function parseStoredManifest(raw: string | null | undefined): ParseResult {
   if (raw === null || raw === undefined || raw === '') return { ok: false, reason: 'manifest is empty' };
   let value: unknown;
@@ -157,87 +65,27 @@ export function parseStoredManifest(raw: string | null | undefined): ParseResult
   return validateManifest(value);
 }
 
-// ── The default child scope ──
-
 export { artifactPathFor };
 
-/**
- * THE DECIDED DEFAULT (owner, 2026-07-26): a spawned worker's scope is its
- * parent's effective scope MINUS the danger set.
- *
- * Applied ONLY when the spawn does not name a manifest. A spawn that names one
- * gets what it named, bounded by the subset rule.
- *
- * ⚠ PROSPECTIVE, NEVER RETROSPECTIVE. This decides what a NEW child receives. It
- * is not applied to agents that already exist, and migration 155 deliberately
- * does not re-scope anybody: an agent alive today keeps exactly the scope it has.
- * The owner decided the default for future spawns; re-scoping the living was not
- * on the table and would be a narrowing nobody asked for.
- */
+// Decided default: the parent's scope MINUS the danger set, applied only when the spawn names no manifest.
+// Prospective only: existing agents keep exactly their current scope.
 export function defaultChildScope(parent: PermissionManifest, childId: string): PermissionManifest {
   return {
-    // Inherited, plus the child's own artifact directory — the missing path that
-    // T2's staging window was opened for in the first place.
+    // Inherited, plus the child's own artifact directory.
     ...withArtifactPaths(parent, childId),
-    // DANGER: destructive. `file_delete` is the only destructive thing a manifest
-    // can say, and every non-primary destructive call is already held for the
-    // primary's approval by `destructive-gate.ts`.
+    // DANGER destructive: file_delete is all a manifest can say; the gate already holds it.
     file_delete: 'none',
-    // DANGER: system control — the one member of the set that actually changes
-    // what a new child receives. It carries AppleScript with it, because after
-    // this task's projection flip an AppleScript grant must be NAMED and an
-    // empty list names nothing.
+    // DANGER system_control: the member that changes; empty names nothing, AppleScript included.
     system_control: [],
   };
 }
 
-/**
- * The stock default for an agent with no stored manifest, with its own artifact
- * directory filled in. `DEFAULT_SUBAGENT_PERMISSIONS` cannot carry it as a
- * constant because the path contains the agent's id.
- */
 export function defaultScopeFor(agentId: string): PermissionManifest {
   return withArtifactPaths(DEFAULT_SUBAGENT_PERMISSIONS, agentId);
 }
 
-// ── Child ⊆ parent ──
-
-/**
- * Does `child` stay inside `parent` for one path- or command-shaped field?
- *
- * ⚠ `'*'` IS ALSO A LIST MEMBER, and forgetting that was a real defect this
- * module's own positive control caught: `PRIMARY_AGENT_PERMISSIONS.exec_allow`
- * is `['*']`, not the scalar `'*'`, so a naive `parent.includes(entry)` refused
- * the primary's own children the right to run `ls`. A parent list holding `'*'`
- * holds everything, exactly as `matchCommandPattern` reads it at the broker.
- *
- * ── `'none'` AND `[]` ARE THE SAME ANSWER, AND NOW THEY ARE TREATED LIKE IT ──
- * (t111-C2, BACKLOG wave-1A's "deliberate but unargued" line.)
- *
- * Both values grant NOTHING. That is not a reading of the names, it is what the
- * broker does: `evaluateRules` walks the projected rules, an empty grant has no
- * rule to match, it returns `{decided:false}`, and `brokers/fs.ts` falls through
- * to `deny`. So `[]` is deny-all, exactly as `'none'` is.
- *
- * The two were nevertheless answered by DIFFERENT branches on either side of the
- * `parent === 'none'` line, so the empty list was refused where the scalar passed:
- *
- *       child     parent     before      now
- *       'none'    'none'     true        true
- *       []        'none'     FALSE       true
- *
- * That `false` was a FALSE REFUSAL — a child asking for nothing, denied for
- * asking it with the wrong one of two spellings of nothing. It cannot be a
- * security property: there is no path in `[]` to escalate to, and the cases
- * that must stay refused (`'*'`, or a NON-EMPTY list, inside `'none'`) are
- * refused by the two lines below, unmoved.
- *
- * It is also a live trap rather than a theoretical one, because normalising
- * `'none'` to `[]` is the obvious thing for a caller to do — and doing it used
- * to flip a passing subset check to a failing one. The emptiness test now sits
- * with its twin at the top, where "the child requests nothing" is answered once
- * for both spellings, before any question about the parent is asked.
- */
+// A parent list holding '*' holds everything, exactly as the broker's matchCommandPattern reads it.
+// 'none' and [] both deny all: emptiness is tested once, at the top, before any parent question.
 function pathSubset(child: string[] | '*' | 'none', parent: string[] | '*' | 'none'): boolean {
   if (requestsNothing(child)) return true;    // nothing is always inside anything
   if (parent === '*') return true;            // everything contains everything
@@ -270,26 +118,14 @@ function controlSubset(child: unknown, parent: unknown): boolean {
   if (p === '*') return true;
   if (c === '*') return false;
   if (!Array.isArray(p)) return false;
-  // A parent holding `'*'` inside its list holds every category, which is what
-  // `'*'` has always meant — except AppleScript, which since this task must be
-  // named. So `'*'` in the parent covers any child entry EXCEPT applescript.
+  // A parent '*' in its list covers every category except applescript, which must be named.
   const parentHasStar = p.includes('*');
   return c.every((entry) =>
     p.includes(entry) || (parentHasStar && entry !== 'applescript' && entry !== 'applescript_run'));
 }
 
-/**
- * EVERY WAY `child` EXCEEDS `parent`, named.
- *
- * A list rather than a boolean because the refusal has to tell the caller which
- * field to fix; "permission denied" with no field is a message a model cannot
- * act on, and this is the same lesson T3C's validator messages landed.
- *
- * `can_assign_permissions` is NOT consulted as a bypass. It gates DELEGATION —
- * whether an agent may hand a child a manifest at all — and the plan is explicit
- * that it "gates delegation, not escalation". An agent holding it can give away
- * any subset of what it has; it can never mint more.
- */
+// Every way child exceeds parent, named: a refusal must say which field to fix, or a model can't act.
+// can_assign_permissions is no bypass: it gates delegation, never escalation.
 export function scopeExcesses(child: ManifestInput, parent: PermissionManifest): string[] {
   const out: string[] = [];
   const check = (ok: boolean, field: string, detail: string): void => {
@@ -330,12 +166,8 @@ export function scopeExcesses(child: ManifestInput, parent: PermissionManifest):
   return out;
 }
 
-/**
- * THE ONE ENTRY POINT A SPAWN USES.
- *
- * Given what the caller asked for (or nothing) and the parent's effective scope,
- * answer with the manifest to store — or with the reason to refuse.
- */
+// THE ONE ENTRY POINT A SPAWN USES:
+// given what was asked and the parent's scope, the manifest to store, or the reason to refuse.
 export function resolveChildScope(
   requested: unknown,
   parent: PermissionManifest,
@@ -355,8 +187,6 @@ export function resolveChildScope(
       reason: `a sub-agent cannot exceed its parent's scope — ${excesses.join('; ')}`,
     };
   }
-  // What the caller named, over the default it did not. Fields the caller left
-  // out fall back to the minus-danger default rather than to the parent's own
-  // manifest, so omitting a field can never be a way to inherit danger.
+  // Omitted fields take the minus-danger default, not the parent's, so omission cannot inherit danger.
   return { ok: true, manifest: { ...defaultChildScope(parent, childId), ...validated.manifest } as PermissionManifest };
 }
