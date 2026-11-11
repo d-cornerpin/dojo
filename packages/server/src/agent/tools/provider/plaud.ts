@@ -1,13 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════
-// PLAUD (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// Eight recorder tools on one case body. §T0-PINS P3 records the boundary fact
-// worth knowing here: every one of these runs `npx -y @plaud-ai/cli@latest`,
-// i.e. a network-fetched package executed as a subprocess. That is declared on
-// the definitions as an effect (T1) and it is not this module's to change.
-//
-// RELOCATION, NOT REWRITE.
-// ════════════════════════════════════════════════════════════════════════════
+// PLAUD: eight recorder tools on one case body, each running
+// `npx -y @plaud-ai/cli@latest`: a network-fetched package as a subprocess,
+// declared as an effect on the tool definitions, not this module's to change.
 
 import { isPlaudConnected } from '../../../plaud/auth.js';
 import { executePlaudTool } from '../../../plaud/tools-read.js';
@@ -22,17 +15,13 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
-    // UX-REPAIR T38: the agent id rides along so an expiry noticed inside the
-    // CLI call is told to THIS conversation — the toast lane is per-agent.
+    // The agent id rides along: expiry notices surface in THIS conversation.
     content = await executePlaudTool(name, args, agentId);
     isError = content.startsWith('Error') || content.startsWith('Plaud is no longer connected');
     return { content, isError };
   },
 } satisfies Record<string, ToolHandler>;
 
-// The switch reached these bodies through fall-through labels; the table is
-// keyed on the dispatch key, so every label is a key pointing at the same
-// function. One line per tool, so `git grep <tool>` still lands here.
 export const plaudHandlers: ToolHandlerMap = {
   ...handlers,
   plaud_recent_recordings: handlers.plaud_list_recordings,

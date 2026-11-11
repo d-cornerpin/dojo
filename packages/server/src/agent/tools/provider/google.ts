@@ -1,31 +1,16 @@
-// ════════════════════════════════════════════════════════════════════════════
-// GOOGLE WORKSPACE (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// Forty-one dispatch keys on TWO case bodies: one for every Gmail / Calendar /
-// Drive / Docs / Sheets READ (plus the `user_*` slot variants of each), and one
-// for every WRITE. The bodies branch on `name`; `executeGoogleReadTool` and
-// `executeGoogleWriteTool` strip the `user_` prefix and route through that
-// slot's credentials.
-//
-// ⚠ THE READ BODY APPLIES THE USER-MAILBOX BANNER AND THAT IS A CAPABILITY, NOT
-// A FORMATTING DETAIL. `prependUserMailboxBanner` moved to
-// `provider/mailbox-banner.ts` with its own test, because the plan flagged this
-// region as a trap: the default membership branch banners Google reads and not
-// Microsoft ones, so dropping an explicit `user_*` label routes that tool
-// through the branch and silently removes the banner. Read that module's header
-// before touching either read body.
-//
-// RELOCATION, NOT REWRITE.
-// ════════════════════════════════════════════════════════════════════════════
+// GOOGLE WORKSPACE: forty-one dispatch keys on two case bodies, reads plus
+// `user_*` slot variants on one, every write on the other. The executors strip
+// the `user_` prefix and route through that slot's credentials.
+// The read body applies the user-mailbox banner: the executor's default branch
+// banners Google reads but not Microsoft ones, so a `user_*` key dropped there
+// silently loses its banner. See `provider/mailbox-banner.ts`.
 
 import { getDb } from '../../../db/connection.js';
 import { executeGoogleReadTool } from '../../../google/tools-read.js';
 import { executeGoogleWriteTool } from '../../../google/tools-write.js';
 import { prependMailboxOwnerHeader } from './mailbox-banner.js';
-// UX-ACCESS A1: the walls below kept their position, message and audit row; the
-// PREDICATE moved off `isPrimaryAgent` onto this agent's own per-ACCOUNT
-// Workspace grant (plus, for a send, its channel grant). Post-migration every
-// agent is refused exactly what it was refused before — see `access/workspace.ts`.
+// The predicate is this agent's own per-ACCOUNT grant; a send needs its channel
+// grant too. See `access/workspace.ts`.
 import { mayReadWorkspace, mayWriteWorkspace } from '../../access/workspace.js';
 import { auditLog } from '../util.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
@@ -34,12 +19,8 @@ const handlers = {
   async "gmail_search"({ agentId, name, args }) {
     let content = '';
     let isError = false;
-    // Required-field validation happens at the ONE boundary above, from
-    // each tool's real input_schema. A hand-maintained readReqs map used to
-    // sit here; it was pure duplication of that check and a drift risk, so
-    // it was removed — and PHASE-5 T3 Step 3 finished the same job for the
-    // per-dispatcher copy that replaced it. The schema is the single source
-    // of truth, and base + user_ variants take the same validated path.
+    // Required-field validation lives at the schema boundary above: base and
+    // user_ variants take the same validated path.
     if (!mayReadWorkspace(agentId, name, 'google')) {
       auditLog(agentId, name, null, 'denied', 'Google account not in this agent\'s grants');
       return { content: 'Permission denied: that Google account is not in this agent\'s grants.', isError: true, errorCode: 'PERMISSION_DENIED' as const };
@@ -54,23 +35,14 @@ const handlers = {
   async "gmail_send"({ agentId, name, args }) {
     let content = '';
     let isError = false;
-    // Double-check: only primary agent can use write tools (belt + suspenders)
     if (!mayWriteWorkspace(agentId, name, 'google')) {
       content = 'Permission denied: only the primary agent can use Google Workspace write tools.';
       isError = true;
       auditLog(agentId, name, null, 'denied', 'Google write tool restricted to primary agent');
       return { content, isError };
     }
-    // Required-field validation happens at the ONE boundary above, from
-    // each tool's real input_schema. THIS IS THE INCIDENT THAT ARGUES FOR
-    // ONE OWNER, so it stays written down: a hand-maintained writeReqs map
-    // used to sit here; it duplicated that check and had DRIFTED (it
-    // demanded a non-existent `content` field on drive_upload and an array
-    // `values` on sheets_append whose schema and executor actually take a
-    // comma-separated string), so every base call died at dispatch while the
-    // user_ variants, which skip this case via the default membership
-    // dispatch, worked. The map is gone; the schema is the single source of
-    // truth and base + user_ variants now take the same validated path.
+    // No writeReqs map here: a hand-maintained one duplicates the schema
+    // check and drifts from it.
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
     isError = content.startsWith('Error');
@@ -78,9 +50,8 @@ const handlers = {
   },
 } satisfies Record<string, ToolHandler>;
 
-// The switch reached these bodies through fall-through labels; the table is
-// keyed on the dispatch key, so every label is a key pointing at the same
-// function. One line per tool, so `git grep <tool>` still lands here.
+// The switch reached these bodies through fall-through labels; every label is
+// its own key here, one line per tool, so `git grep <tool>` still lands on it.
 export const googleHandlers: ToolHandlerMap = {
   ...handlers,
   gmail_read: handlers.gmail_search,
