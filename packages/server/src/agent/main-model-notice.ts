@@ -1,6 +1,5 @@
-// The once-only notice for an agent already on a small main model (t202 D10). Split from
-// main-model-floor.ts (t209) so the spawn door can use the floor without loading the websocket
-// layer: this file is the only part of the floor that broadcasts.
+// The once-only notice for an agent already on a small main model. Split from `main-model-floor.ts`
+// so the spawn door can use the floor without loading the ws layer: this is the floor's only broadcaster.
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -8,12 +7,9 @@ import { MAIN_MODEL_MIN_WINDOW, smallMainModelMessage, windowOf } from './main-m
 
 const logger = createLogger('main-model-floor');
 
-/**
- * An agent that is already on a small main model is told ONCE (per model it has been on), by the
- * existing `chat:error` card at warning severity — nothing is changed or stopped. "Once" is a
- * stored fact (a `config` key naming the model already noticed), so a restart does not repeat it.
- * Returns true when this call is the one that spoke.
- */
+/** Told ONCE per model the agent has been on: "once" is a stored `config` fact, so a restart
+ *  does not repeat it. Nothing is changed or stopped; it rides the existing `chat:error` card
+ *  at warning severity. */
 export function noteSmallMainModelOnce(agentId: string, modelId: string | null | undefined): boolean {
   if (!modelId) return false;
   try {

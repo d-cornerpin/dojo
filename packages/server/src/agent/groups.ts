@@ -1,7 +1,3 @@
-// ════════════════════════════════════════
-// Agent Groups (Phase 6)
-// Group CRUD, membership, context injection
-// ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -21,7 +17,7 @@ const GROUP_COLORS = [
   '#ec4899', '#6366f1', '#ef4444', '#8b5cf6',
 ];
 
-// ── Types ──
+// Types
 
 export interface AgentGroup {
   id: string;
@@ -31,7 +27,7 @@ export interface AgentGroup {
   color: string;
   memberCount: number;
   /** When true, every member of this group has its conversations skipped
-   * by the vault archive layer — Dreamer never sees any of them. */
+   * by the vault archive layer: Dreamer never sees any of them. */
   dreamerIgnore?: boolean;
   createdAt: string;
   updatedAt: string;
@@ -41,12 +37,12 @@ export interface AgentGroupDetail extends AgentGroup {
   members: Array<{ id: string; name: string; status: string; classification: string }>;
 }
 
-// ── CRUD ──
+// CRUD
 
 export function createGroup(name: string, description: string | null, createdBy: string, color?: string): AgentGroup {
   const db = getDb();
 
-  // Check if a group with this name already exists — return it instead of creating a duplicate
+  // A group with this name already exists: return it instead of creating a duplicate
   const existing = db.prepare('SELECT * FROM agent_groups WHERE name = ?').get(name) as Record<string, unknown> | undefined;
   if (existing) {
     return {
@@ -154,14 +150,13 @@ export function deleteGroup(id: string): boolean {
   if (id === SYSTEM_GROUP_ID) return false; // System group cannot be deleted
 
   const db = getDb();
-  // T2: three tables, ONE unit. A failure part-way through left agents pointing at a
-  // group that had been deleted, or work rows assigned to one — a dangling group id is
-  // the shape a reader cannot distinguish from "never had a group".
+  // Three tables, ONE unit. A dangling group id is the shape a reader cannot
+  // distinguish from "never had a group".
   const result = withUnit(() => {
     // Move agents to ungrouped
     db.prepare("UPDATE agents SET group_id = NULL, updated_at = datetime('now') WHERE group_id = ?").run(id);
-    // Remove group task assignments. PHASE-2 T8b: the tracker's rows are `work` rows, and a
-    // write to `work` lives under `work/` — the single-writer walk's directory clause.
+    // Remove group task assignments. The tracker's rows are `work` rows, and a write
+    // to `work` lives under `work/`: the single-writer walk's directory clause.
     patchWorkWhere({ column: 'assigned_to_group', equals: id }, { assigned_to_group: null });
     return db.prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
   });
@@ -174,7 +169,7 @@ export function deleteGroup(id: string): boolean {
   return result.changes > 0;
 }
 
-// ── Membership ──
+// Membership
 
 export function assignAgentToGroup(agentId: string, groupId: string | null): { ok: boolean; error?: string } {
   const primaryId = getPrimaryAgentId();
@@ -200,7 +195,7 @@ export function assignAgentToGroup(agentId: string, groupId: string | null): { o
   return { ok: true };
 }
 
-// ── Group context injection for agent prompts ──
+// Group context injection for agent prompts
 
 export function assembleGroupContext(agentId: string): string {
   const db = getDb();
@@ -215,13 +210,8 @@ export function assembleGroupContext(agentId: string): string {
     WHERE group_id = ? AND id != ? AND status != 'terminated'
   `).all(agent.group_id, agentId) as Array<{ id: string; name: string }>;
 
-  // Cache discipline (2026-07-16 finding, DOJO-ISSUES-LOG): this block renders
-  // into the CACHED system prefix, so it must contain only STABLE facts. Live
-  // member status used to be inlined here ("- Name (working)"), which meant any
-  // peer's status flip (each Dreamer batch start/end, for example) invalidated
-  // the primary's entire prompt cache mid-conversation. Names/roster only now;
-  // live status rides in the volatile tail via renderPeerStatusLine below
-  // (msg.peer-status), the same relocation the clock got (msg.current-time).
+  // This block renders into the CACHED system prefix, so it holds only STABLE facts.
+  // Live status rides in the volatile tail via renderPeerStatusLine below (msg.peer-status).
   return `
 === Group: ${group.name} ===
 ${group.description ?? ''}
@@ -235,12 +225,8 @@ Each member's live status (idle/working) appears in the [Peer status: ...] line 
 `;
 }
 
-/**
- * Live peer statuses for the volatile tail (msg.peer-status). The stable
- * roster above names the members; this line says what they are doing RIGHT
- * NOW. It changes freely per call at zero cache cost, exactly like the
- * current-time line. Returns '' when the agent has no group peers.
- */
+/** Live peer statuses for the volatile tail (msg.peer-status): the stable roster above
+ *  names the members, this says what they are doing RIGHT NOW, at zero cache cost. */
 export function renderPeerStatusLine(agentId: string): string {
   const db = getDb();
   const agent = db.prepare('SELECT group_id FROM agents WHERE id = ?').get(agentId) as { group_id: string | null } | undefined;
@@ -256,7 +242,7 @@ export function renderPeerStatusLine(agentId: string): string {
   return `[Peer status: ${members.map(m => `${m.name} ${m.status}`).join(', ')}]`;
 }
 
-// ── Ensure System Group exists and permanent agents are in it ──
+// Ensure System Group exists and permanent agents are in it
 
 export function ensureSystemGroup(): void {
   const db = getDb();

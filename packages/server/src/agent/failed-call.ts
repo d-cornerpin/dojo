@@ -1,5 +1,5 @@
-// t220 — settle one failed model call. The "did its caller stop it?" question is `caller-stop.ts`'s;
-// this is the transports' shared catch-side bookkeeping, kept apart so that question stays import-free.
+// The transports' shared catch-side bookkeeping for a failed model call, kept apart from
+// `caller-stop.ts` so that module's caller-stopped question stays import-free.
 
 import { createLogger } from '../logger.js';
 import { recordProviderError } from '../gateway/routes/services.js';
@@ -8,13 +8,10 @@ import type { ProviderErrorFacts } from './provider-error.js';
 import { callerStopped, stopReason } from './caller-stop.js';
 
 const logger = createLogger('model');
-const summarizeLog = createLogger('memory-summarize');   // the tag the summary call's own lines have always carried
+const summarizeLog = createLogger('memory-summarize');   // the same tag the summary call's own lines carry
 
-/**
- * A transport's generic catch: settle one failed call. A genuine failure marks the provider
- * unhealthy and logs `<what> failed` (WARN for best-effort utility calls, ERROR otherwise). A call
- * its caller stopped marks nothing and logs one INFO line naming the reason.
- */
+/** A genuine failure marks the provider unhealthy and logs `<what> failed`; best-effort utility
+ *  calls WARN, others ERROR. A call its caller stopped marks nothing: a stop is not a failure. */
 export function settleFailedCall(
   what: string, message: string, detail: Record<string, unknown>,
   o: { providerId: string; agentId: string; signal?: AbortSignal; bestEffort?: boolean },
@@ -27,12 +24,7 @@ export function settleFailedCall(
   logger[o.bestEffort ? 'warn' : 'error'](`${what} failed: ${message}`, { ...detail, bestEffort: o.bestEffort ?? false }, o.agentId);
 }
 
-/**
- * A summary model call threw (`summarize.ts`'s catch). A call its caller stopped (the fold's patience,
- * Stop) is the caller's decision, not the writer's failure: one INFO line naming why, no breaker note.
- * Otherwise the provider's facts go to the billing breaker (a permanent wall opens it) and the failure
- * is logged at ERROR.
- */
+/** A caller-stopped summary is the caller's decision, not the writer's failure: no breaker note. */
 export function noteSummaryCallFailed(o: {
   modelId: string; message: string; agentId: string; facts?: ProviderErrorFacts;
   depth: number; targetTokens: number; abortSignal?: AbortSignal;

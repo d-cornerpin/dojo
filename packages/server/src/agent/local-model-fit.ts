@@ -1,31 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════
-// v3.5 — A LOCAL MODEL THAT WILL NOT FIT IN THIS BOX'S MEMORY CANNOT BE SELECTED.
-//
-// OWNER RULING 2026-10-19: "if a user tries to select a local model for an agent or anything else
-// that will not fit on the system's ram, don't let them select it. Pop up an error letting them know
-// why. We already detect the system ram so let's use that info. If the user has enough ram open to
-// fit the local model they are selecting then they can."
-//
-// The sibling of `main-model-floor.ts` (t202 D10), asked at the same doors. ASYNC because the sizes
-// live in Ollama, not in this database: the weights from `/api/tags`, the per-token KV cost from
-// `/api/show` — the same two reads the window recommendation makes (`services/num-ctx-calculator.ts`).
-//
-// open = total − the desktop reserve − the engine − (on the Dojo's own box) the embedder, the Dojo's two
-//        models and the WRITER'S WORKING MEMORY (the KV of its largest job, `writerWorkingBytes`: fix
-//        round 1 ruling, that room is set aside and never handed to an agent model). Total is
-//        `os.totalmem()` locally and the owner's figure for a remote Ollama (`resolveOllamaTotalRamBytes`).
-// need = the weights + the KV cache at the context the model will ACTUALLY run (fix round 1 ruling): for an
-//        agent, its model window (`effectiveContextWindow`), never less than the 32K main-agent floor; for
-//        an engine job (the summary writer, the voice opener, the vision fallback), the writer's largest
-//        job window. Other agents' local models are not subtracted: they take turns through the lock.
-//
-// NEVER A CHOICE: the Dojo's DECISION model — it answers yes/no questions and cannot run an agent or a job.
-// NOT JUDGED: a cloud model, `auto`, re-saving the model already in place, a remote Ollama with no RAM
-// entered. CHECKED LATER (owner ruling, fix round 1; 29b adds the unreadable architecture): when Ollama is
-// not answering, the model is not downloaded yet, or `/api/show` cannot say what its working memory costs,
-// the selection is ALLOWED, the owner is told in a plain sentence that the fit will be checked when the
-// model first loads, and it IS checked then (`refuseUncheckedAtFirstLoad`).
-// ════════════════════════════════════════════════════════════════════════════
+// A local model that cannot fit this box's memory cannot be selected: the doors refuse it with a
+// plain error. Sibling of `main-model-floor.ts`; ASYNC because the sizes live in Ollama, not here.
+// open = total minus desktop/engine reserves and, on the Dojo's own box, the embedder, its two
+// models and the writer's working memory; need = weights + KV at the window it actually runs.
+// Never a choice: the decision model. Unsizable now: allowed, told, and checked at its first load.
 
 import { getDb } from '../db/connection.js';
 import {
@@ -39,7 +16,6 @@ import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { MAIN_MODEL_MIN_WINDOW } from './main-model-floor.js';
 import { tellOwner, ownerConditionCleared, wordsOf, uncheckedFitWords } from '../healer/owner-notices.js';
 
-/** What the model is being picked FOR: an agent's conversations, or one of the engine's own jobs. */
 export type ModelUse = 'agent' | 'job';
 export interface FitVerdict {
   fits: boolean; message: string | null; openBytes: number; needBytes: number; contextTokens: number;
@@ -68,15 +44,14 @@ function embedderName(): string {
   }
 }
 
-/** `/api/tags` (each model's file size), or (t268 N-C) `/api/ps` (each LOADED model and what it really holds now:
- *  weights plus the KV cache of the window it was loaded at, Ollama's own figure). Both list `{ name, size }`; bounded
- *  like every other Ollama read of the Dojo's (5 s, `services/local-standard.ts`). */
+/** `/api/tags` lists each model's file size; `/api/ps` each LOADED model and what it really
+ *  holds now (weights plus its load-window KV, Ollama's figure). Both list `{ name, size }`. */
 async function installedSizes(baseUrl: string, list: '/api/tags' | '/api/ps' = '/api/tags'): Promise<Map<string, number> | null> {
   try {
     const resp = await fetch(`${baseUrl}${list}`, { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return null;
     const data = await resp.json() as { models?: Array<{ name: string; size?: number }> };
-    if (list === '/api/ps' && (data.models ?? []).some((m) => typeof m.size !== 'number')) return null;   // t268 (c): a loaded size unread is unknown, never 0
+    if (list === '/api/ps' && (data.models ?? []).some((m) => typeof m.size !== 'number')) return null;   // a loaded size unread is unknown, never 0
     return new Map((data.models ?? []).filter((m) => typeof m.size === 'number').map((m) => [m.name, m.size as number]));
   } catch {
     return null;
@@ -87,17 +62,16 @@ async function installedSizes(baseUrl: string, list: '/api/tags' | '/api/ps' = '
 const sizeOf = (sizes: Map<string, number>, name: string): number | undefined =>
   sizes.get(name) ?? (name.includes(':') ? undefined : sizes.get(`${name}:latest`));
 
-/** The context it will actually run at, in tokens. */
 async function contextFor(row: Row, use: ModelUse): Promise<number> {
   const configured = resolveNumCtx({ numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended }).effective;
   if (use === 'job') return writerJobWindowTokens(configured ?? null);
-  // The window the engine sends as `num_ctx` (override, else the recommendation), capped by the model's own; with
-  // none, Ollama allocates its default and the agent still needs the 32K floor, so the floor is what it costs.
+  // The engine sends `num_ctx` = override, else the recommendation, capped by the model's own window;
+  // with none configured, Ollama's default still owes the 32K floor, so the floor is what it costs.
   const window = configured && row.context_window && row.context_window > 0 ? effectiveContextWindow(row.context_window, configured) : configured ?? 0;
   return Math.max(MAIN_MODEL_MIN_WINDOW, window);
 }
 
-/** The verdict for a local model, or null when it is not one this gate judges (see the header). */
+/** The verdict, or null when this gate does not judge it: cloud, `auto`, unknown row, no RAM entered. */
 export async function localModelFit(modelId: string, use: ModelUse = 'agent'): Promise<FitVerdict | null> {
   if (!modelId || modelId === 'auto' || modelId === '__auto__') return null;
   let row: Row | undefined;
@@ -107,7 +81,7 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
       FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?`).get(modelId) as Row | undefined;
   } catch { return null; }
   if (!row) return null;
-  if (row.capabilities.includes('"decision"') || row.api_model_id === STANDARD_DECISION_MODEL.windowTag) {   // t268 (I-1): its window tag too
+  if (row.capabilities.includes('"decision"') || row.api_model_id === STANDARD_DECISION_MODEL.windowTag) {   // its window tag too
     return { fits: false, message: decisionModelWords(row.name), openBytes: 0, needBytes: 0, contextTokens: 0 };
   }
   if (row.type !== 'ollama') return null;
@@ -124,17 +98,14 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
 
   const arch = await fetchModelArchInfo(baseUrl, row.api_model_id);
   const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
-  // 29b: a third case Ollama cannot size — `/api/show` unreadable, or missing the fields the KV cost needs.
-  // Unknown working memory is never charged as 0 (the writer's row included): checked when it first loads.
+  // Unknown working memory (unread `/api/show`, missing fields) is never charged as 0: unchecked.
   if (typeof kv !== 'number') return unchecked();
   const kvBytes = kv * contextTokens;
   // The Dojo's own models live on the LOCAL Ollama: they are charged to that box only, measured when listed.
   const dojoBox = isLocalOllamaBaseUrl(row.base_url) && localOllamaProvider()?.id === row.provider_id;
   const pair = (sizes.get(STANDARD_DECISION_MODEL.tag) ?? STANDARD_DECISION_MODEL.bytes) + (sizes.get(STANDARD_WRITER_MODEL.tag) ?? STANDARD_WRITER_MODEL.bytes);
-  // N1 (fix round 2): the Dojo's writer is never charged twice — its weights are counted in the pair and its
-  // job's KV is the room set aside below, so its fit is only the KV it would need BEYOND that room.
+  // The writer is never charged twice: its weights are in the pair, its job KV is the room set aside.
   const isWriter = dojoBox && row.api_model_id === STANDARD_WRITER_MODEL.tag;
-  // t268 (I-2): as an agent, beyond the room its jobs reserve now; as a job (the Summarization pick), beyond the room that pick reserves.
   const configured = resolveNumCtx({ numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended }).effective ?? null;
   const writerJob = !isWriter ? 0 : use === 'job' ? await writerJobWindowTokens(configured) : await writerReservedWindowTokens(configured);
   const chargedKv = isWriter ? kv * Math.max(0, contextTokens - writerJob) : kvBytes;
@@ -154,9 +125,8 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
   };
 }
 
-// ── CHECKED LATER: an unsized selection is marked, told once, and judged at its first load ──
-// The mark is `healer_state` (scope `local_fit_unchecked`, key `<use>:<model id>`). Fix round 2: the owner's
-// card is the informational owner notice `fitunchecked:<model id>`, and it ends when the fit is checked.
+// CHECKED LATER: an unsized selection is marked in `healer_state` (scope `local_fit_unchecked`,
+// key `<use>:<model id>`); the owner's card is `fitunchecked:<model id>`, ended when the fit is checked.
 const UNCHECKED_SCOPE = 'local_fit_unchecked';
 export const fitUncheckedKey = (modelId: string): string => `fitunchecked:${modelId}`;
 
@@ -168,12 +138,9 @@ function markUnchecked(modelId: string, use: ModelUse): void {
   } catch { /* best-effort: the first-load check still runs whenever the mark was written */ }
 }
 
-/**
- * The refusal for SELECTING `modelId`, or null when it may be saved. `currentModelId` is what the door
- * holds now: re-saving that same model is not a change and is never refused. `otherRefusal` is the door's
- * own next check (the 32K floor): asked AFTER the memory fit, so a refusal names the true reason, and
- * BEFORE an unsized model is marked, so nothing is told about a pick that is then refused (N7).
- */
+/** The refusal for SELECTING `modelId`, or null when it may be saved: re-saving what the door
+ *  already holds is not a change. `otherRefusal` (the 32K floor) comes AFTER the fit and BEFORE
+ *  marking: the refusal names the true reason, nothing is told about a pick that is refused. */
 export async function refuseUnfitLocalModel(
   modelId: string | null | undefined,
   currentModelId?: string | null,
@@ -189,13 +156,9 @@ export async function refuseUnfitLocalModel(
   return null;
 }
 
-/**
- * Called before a local model's call is dialled (`agent/model.ts`). A model selected while it could not be
- * sized is judged now, at the strictest use it was picked for (an agent pick is judged as an agent even
- * when the first call is a utility job: N8): it fits → the marks and the card go; it does not → the call
- * is refused with the plain sentence (and keeps being refused until another model is picked); still
- * unsizeable → it runs, still marked.
- */
+/** Called before a local model's call is dialled (`agent/model.ts`): a model picked while unsized
+ *  is judged now at its strictest picked use. Fits: marks and card go; unfit: the call is refused;
+ *  still unsizable: it runs, still marked. */
 export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void> {
   let uses: ModelUse[] = [];
   try {
@@ -210,14 +173,9 @@ export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void>
   throw new Error(v.message ?? 'This model does not fit in this box\'s memory.');
 }
 
-/**
- * t268 fix round 2 (ruling): the window a job of the Dojo's writer that NO reserve holds (a fallback summary, when an
- * agent's own model cannot be reached) can have NOW on this box's Ollama — its reserved room plus the open memory the
- * fit computes, less what the other models loaded there really hold (fix round 4, N-C: Ollama's loaded size, their KV
- * cache included — never their weights alone), at the writer's KV per token. The Dojo's own models and the embedder
- * are already counted in the open memory, so they are not charged again. Null when it cannot be sized: UNKNOWN, and
- * the caller does not admit the writer on it (t268 breaker fix; it read null as "nothing refused" before).
- */
+/** The window a reserve-less writer job (a fallback summary when the agent's model is unreachable)
+ *  can have now: its reserved room plus the open memory, less what other loaded models really hold
+ *  (loaded size, their KV included, never weights alone). Null: UNKNOWN, writer never admitted. */
 export async function freeWriterWindowTokens(): Promise<number | null> {
   const provider = localOllamaProvider();
   const sizes = provider ? await installedSizes(provider.baseUrl) : null;

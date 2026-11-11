@@ -1,32 +1,8 @@
-// ════════════════════════════════════════
-// Image preparation for vision-capable models (v2.3.18; v2.9.20 vision-
-// context optimization)
-//
-// Two failure modes this module guards against:
-//
-//   1. **Anthropic 5 MB cap** (v2.3.18 — original purpose). The API
-//      rejects any image whose base64 payload exceeds 5 MB
-//      (5,242,880 bytes), and a single rejected request injures the
-//      agent. Phone photos (HEIC/JPEG from modern iPhones) routinely
-//      land at 6-12 MB raw, which after base64 inflation blows the cap.
-//
-//   2. **Vision-token context blowup** (v2.9.20 addition). Even when
-//      the byte payload fits, an unshrunk 4032×3024 iPhone photo
-//      consumes ~6,000 vision tokens per turn. A handful of those
-//      in a conversation pushes the agent into compaction silently,
-//      eating context the agent needs to track its task. Anthropic
-//      explicitly says images larger than 1568 px on the long side
-//      get server-side resized anyway, so doing it on our end loses
-//      nothing for them and saves tokens on every subsequent retrieval.
-//      a contact's 2026-06-06 vision-delegate incident traced back to this.
-//
-// Strategy: probe dimensions cheaply with `sips -g`. If either the
-// byte budget is overshot OR the longest edge exceeds 1568 px, resize
-// + JPEG-recompress via macOS's built-in `sips` (no native npm dep).
-// Cache the variant on disk next to the original so we only do the
-// work once per upload — not on every turn. If sips fails or isn't
-// available (non-macOS), fall back to the raw bytes.
-// ════════════════════════════════════════
+// Image preparation for vision-capable models. The API rejects a base64 payload over 5 MB
+// and one rejected request injures the agent; past 1568 px on the long side Anthropic
+// resizes server-side anyway, so a big photo costs vision tokens for nothing.
+// Probe with `sips -g`, resize only when a bound is overshot, cache the variant beside the
+// original, fall back to raw bytes where `sips` is missing.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -34,23 +10,15 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('image-prep');
 
-// Anthropic's hard cap is 5MB for the base64 payload. Base64 inflates by
-// ~33%, so the raw-byte budget is ~3.93MB. Use 3.7MB as the trigger to
-// leave headroom for JSON envelope overhead.
+// Anthropic caps the base64 payload at 5 MB and base64 inflates ~33%, so the raw budget
+// is ~3.93 MB; 3.7 MB leaves headroom for the JSON envelope.
 export const SAFE_RAW_BYTES = Math.floor(3.7 * 1024 * 1024);
 
-// v2.9.20: Vision-context target. Anthropic's docs say images larger
-// than this get resized server-side anyway. By shrinking BEFORE we
-// send, we save ~75% of vision tokens per turn on a typical iPhone
-// photo (4032 px → 1568 px is a 6.6x area reduction). For receipts
-// or screenshots where small text matters, the original stays on
-// disk and the agent can call file_read for the full-res bytes.
+// Past 1568 px long side: Anthropic resizes server-side anyway; shrinking here saves vision tokens.
 const VISION_LONG_SIDE = 1568;
 const VISION_QUALITY = 80;
 
-// Larger-than-VISION cascade for the byte-budget safety case. Used
-// when 1568/q80 isn't enough to fit under the Anthropic 5 MB cap
-// (rare; only triggers on huge panoramas or already-mangled JPEGs).
+// Cascade for the rare case where 1568/q80 still misses the byte cap (huge panoramas).
 const FALLBACK_LONG_SIDE = 1400;
 const FALLBACK_QUALITY = 70;
 const LAST_RESORT_LONG_SIDE = 1024;
@@ -73,14 +41,9 @@ export interface PreparedImage {
   finalSize: number;
 }
 
-/**
- * Read an image and return a model-safe variant (under the 5MB base64 cap).
- * Returns null if the file can't be read or sips fails irrecoverably.
- *
- * Caches the resized variant as `<filePath>.modelsafe.jpg` so subsequent
- * reads are zero-cost. The cache is invalidated when the source file's
- * mtime advances past the cache's mtime.
- */
+/** Read an image and return a model-safe variant under the 5 MB base64 cap; null if the
+ *  file can't be read or sips fails irrecoverably. The resized variant is cached as
+ *  `<filePath>.modelsafe.jpg`; the cache goes stale when the source's mtime passes it. */
 export function prepareImageForModel(
   filePath: string,
   mediaType: string,
@@ -98,10 +61,7 @@ export function prepareImageForModel(
   const originalSize = stat.size;
   const declaredType = normalizeMediaType(mediaType);
 
-  // v2.9.20: probe dimensions. If longest edge ≤ VISION_LONG_SIDE AND
-  // bytes ≤ SAFE_RAW_BYTES, the image is already context-friendly —
-  // passthrough with no work to do. Probe failure (non-macOS, broken
-  // file) skips the dimension check and falls back to byte-only logic.
+  // Within both bounds: passthrough, no work. A probe failure skips the dimension check.
   const dims = probeImageDimensions(filePath);
   const longSidePx = dims ? Math.max(dims.width, dims.height) : null;
   const needsResizeForBytes = originalSize > SAFE_RAW_BYTES;
@@ -121,10 +81,7 @@ export function prepareImageForModel(
     };
   }
 
-  // Cache check: if we've already resized this exact file, reuse it.
-  // Accept the cache as long as it was built AFTER the source's last
-  // modification AND fits under the byte cap. (The cache is always
-  // ≤ VISION_LONG_SIDE because we set that as the first cascade target.)
+  // Accept a cache built AFTER the source's last edit that still fits the byte cap.
   const cachePath = `${filePath}.modelsafe.jpg`;
   let cacheStat: fs.Stats | null = null;
   try { cacheStat = fs.statSync(cachePath); } catch { /* no cache yet */ }
@@ -142,9 +99,7 @@ export function prepareImageForModel(
     };
   }
 
-  // Need to (re)build the cache. First attempt targets the
-  // vision-context budget; subsequent attempts cascade more
-  // aggressively in case we're still over the byte cap.
+  // Rebuild: the first attempt targets the vision budget; later ones cascade harder.
   const attempts: Array<{ longSide: number; quality: number }> = [
     { longSide: VISION_LONG_SIDE, quality: VISION_QUALITY },
     { longSide: FALLBACK_LONG_SIDE, quality: FALLBACK_QUALITY },
@@ -153,7 +108,7 @@ export function prepareImageForModel(
 
   for (const attempt of attempts) {
     if (!runSips(filePath, cachePath, attempt.longSide, attempt.quality)) {
-      // sips errored — abort the loop, no point retrying.
+      // sips errored: abort the loop, no point retrying.
       break;
     }
     let resizedStat: fs.Stats;
@@ -180,10 +135,8 @@ export function prepareImageForModel(
     }
   }
 
-  // Even the most aggressive attempt didn't get under budget. Hand back
-  // the raw bytes anyway — the API will reject and the user will see the
-  // existing "image too large" error path. This is preferable to silently
-  // skipping the image (the model would then hallucinate content).
+  // Still over budget: hand back the raw bytes. The API rejects and the user sees the
+  // existing "image too large" path, which beats silently dropping the image.
   logger.warn('image-prep: could not resize image under budget — returning raw bytes', {
     filePath, originalSize,
   });
@@ -200,11 +153,8 @@ export function prepareImageForModel(
   };
 }
 
-/**
- * Probe an image's pixel dimensions via sips. Returns null on failure
- * (non-macOS, broken file, unsupported format). Cheap (~50-100 ms);
- * we only call this once per source path per turn.
- */
+/** Pixel dimensions via sips; null on failure (non-macOS, broken file, bad format).
+ *  Cheap, so it is probed once per source path per turn. */
 function probeImageDimensions(src: string): { width: number; height: number } | null {
   try {
     const out = execFileSync(
@@ -221,9 +171,8 @@ function probeImageDimensions(src: string): { width: number; height: number } | 
   }
 }
 
-// t114 (census U21): two minutes for a format conversion. The 10s probe above is untouched —
-// reading two dimension fields really is instant, and a bound that matches the work is not a
-// flat-timer defect.
+// A conversion gets two minutes: a 100-megapixel source on a busy box legitimately needs
+// minutes; the probe reads two fields, so its own short bound is not a flat timer.
 const SIPS_CONVERT_CEILING_MS = 2 * 60_000;
 
 function runSips(src: string, dest: string, longSide: number, quality: number): boolean {
@@ -233,16 +182,12 @@ function runSips(src: string, dest: string, longSide: number, quality: number): 
       [
         '-s', 'format', 'jpeg',
         '-s', 'formatOptions', String(quality),
-        '-Z', String(longSide), // resampleHeightWidthMax — preserves aspect ratio
+        '-Z', String(longSide), // resampleHeightWidthMax: preserves aspect ratio
         src,
         '--out', dest,
       ],
-      // t114 (census U21): raised from a flat 30s, and argued for the same reason as the
-      // AppleScript site — `sips` prints nothing until it is done, so there is no progress to
-      // re-arm on. A 100-megapixel source on a busy box legitimately exceeds half a minute, and
-      // the failure mode was a silently un-attached image. The conversion is idempotent and
-      // writes to a temp `dest`, so a ceiling here costs a retry rather than a half-applied
-      // change; that is why it can be generous where the AppleScript ceiling cannot be reckless.
+      // `sips` prints nothing until it is done: no progress to re-arm on, so a slow run is
+      // invisible; the work is idempotent, so a generous ceiling costs a retry, not damage.
       { encoding: 'utf-8', stdio: 'pipe', timeout: SIPS_CONVERT_CEILING_MS },
     );
     return true;
@@ -261,8 +206,8 @@ function normalizeMediaType(mt: string): ModelSafeMediaType {
   if (lower === 'image/png') return 'image/png';
   if (lower === 'image/gif') return 'image/gif';
   if (lower === 'image/webp') return 'image/webp';
-  // HEIC, etc. — declare as JPEG since the bridge already converts those
-  // on the way in (imessage-bridge.fetchImessageAttachments).
+  // HEIC etc.: declare as JPEG, the bridge already converts those on the way in
+  // (imessage-bridge.fetchImessageAttachments).
   return 'image/jpeg';
 }
 

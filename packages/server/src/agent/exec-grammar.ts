@@ -1,59 +1,25 @@
-// ════════════════════════════════════════
-// Shell control-flow grammar, for the exec permission check (EXEC-LOOP).
-//
-// Owner ruling 2026-07-28, verbatim: "yes an agent should be able to do
-// commands. Why wouldn't we allow an agent to do commands if they have shell
-// access?" — asked about the permission system refusing
-//     for i in $(seq -w 1 20); do echo "=== note-$i.md ==="; cat "…"; done
-// with *"Command 'for' is not allowed"*.
-//
-// The exec check classifies a command line by its FIRST WORD, so the shell's
-// own grammar read as a program name. exec runs the line through /bin/zsh
-// (the pre-PHASE-5-T3 string-exec entry point in agent/tools.ts), so the
-// construct was always EXECUTABLE; only
-// the classifier disagreed. This module answers one question for that
-// classifier: which COMMANDS does a control-flow line actually run? The caller
-// then checks each of them exactly as it checks a plain line — grammar widens,
-// authority does not.
-//
-// ════ WHAT THIS IS NOT ════
-// It is NOT a shell parser and must never be read as one. It knows quoting,
-// command substitution, separators and the control-flow keywords, and that is
-// all. Everything it cannot name it reports conservatively:
-//   · a line with NO control-flow keyword returns null — the caller keeps the
-//     first-word behavior it has always had, so nothing about a plain command
-//     line moves;
-//   · a construct it can find no command inside (grammar plus a substitution,
-//     `for i in $(x); do :; done`) returns an EMPTY list, and the caller falls
-//     back to the whole line, i.e. the pre-ruling refusal. Deny-by-default for
-//     an agent with no shell access survives that way.
-// It deliberately does NOT look inside `$( )` / backticks: the check has never
-// looked inside a substitution (`echo $(anything)` passes on `echo` today), and
-// this ruling is about grammar, not about closing that older hole. Phase 5
-// rebuilds exec wholesale and inherits both the ruling and that limitation.
-// ════════════════════════════════════════
+// Shell control-flow grammar, for the exec permission check: it classifies a command
+// line by its FIRST WORD, so the shell's own grammar reads as a program name, yet exec
+// runs the line through /bin/zsh, so the construct was always EXECUTABLE. This answers
+// which COMMANDS a control-flow line actually runs; each is checked exactly as a plain
+// line. Grammar widens, authority does not. NOT a shell parser: null when no keyword
+// (plain behavior), EMPTY when a construct hides no command (the caller re-checks the
+// whole line, deny-by-default survives), and never inside `$( )` or backticks.
 
 interface Tok { text: string; op: boolean }
 
-// The words that make a line a CONSTRUCT. Detection uses this set alone, so a
-// bare `in` or `!` in an ordinary command line cannot flip the classifier.
+// Detection uses these words alone, so a bare `in` or `!` in a plain line flips nothing.
 const CONSTRUCT_WORDS = new Set([
   'for', 'while', 'until', 'if', 'then', 'elif', 'else', 'fi', 'do', 'done', 'case', 'esac', 'select',
 ]);
 
-// Grammar words that are skipped when they LEAD a segment. Supersets the above:
-// `in`, `time`, `!` and the block braces are grammar too, they just never make a
-// line a construct on their own.
 const GRAMMAR_WORDS = new Set([...CONSTRUCT_WORDS, 'in', 'time', '!', '{', '}']);
 
-// A segment opening with one of these is a HEADER (`for i in $(seq 1 20)`,
-// `case $x in`) — a word list, not a command list. It contributes no command.
+// A segment opening with these is a HEADER (a word list): it contributes no command.
 const HEADER_WORDS = new Set(['for', 'select', 'case']);
 
-// Builtins that execute no program: conditionals, no-ops, loop plumbing. Without
-// them `while [ ... ]` and `if [ ... ]` stay unusable, which would leave the
-// ruling half-applied. Deliberately ABSENT: eval, exec, source, `.`, export —
-// those run or re-point real code and must be checked like any other command.
+// Builtins that execute no program; without them `while [ ... ]` is unusable.
+// ABSENT on purpose: eval, exec, source, `.`, export run or re-point real code.
 const NO_AUTHORITY_WORDS = new Set([
   '[', '[[', ']', ']]', 'test', 'true', 'false', ':', 'break', 'continue', 'read',
 ]);
@@ -61,7 +27,6 @@ const NO_AUTHORITY_WORDS = new Set([
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=/;
 const REDIRECT_RE = /^\d*(&)?[<>]/;
 
-/** Index just past a quoted span opened at `i` (', " or `). Unterminated → EOL. */
 function scanQuoted(line: string, i: number): number {
   const quote = line[i];
   let j = i + 1;
@@ -73,7 +38,6 @@ function scanQuoted(line: string, i: number): number {
   return line.length;
 }
 
-/** Index just past a `(`-opened span at `i`, counting nesting and skipping quotes. */
 function scanParens(line: string, i: number): number {
   let depth = 0;
   let j = i;
@@ -88,11 +52,7 @@ function scanParens(line: string, i: number): number {
   return line.length;
 }
 
-/**
- * Split a command line into word tokens and separator operators. Quoted spans,
- * `$(...)`, `$((...))`, `((...))` and backticks ride inside their word verbatim,
- * so a `;` or a keyword inside a string can never be mistaken for grammar.
- */
+/** Words and separators; quoted spans ride verbatim, so grammar inside a string is never grammar. */
 function tokenize(line: string): Tok[] {
   const toks: Tok[] = [];
   let cur = '';
@@ -103,8 +63,6 @@ function tokenize(line: string): Tok[] {
     const c = line[i];
     if (c === '\\' && i + 1 < line.length) { cur += line.slice(i, i + 2); i += 2; continue; }
     if (c === "'" || c === '"' || c === '`') { const end = scanQuoted(line, i); cur += line.slice(i, end); i = end; continue; }
-    // `$(...)` / `$((...))` command + arithmetic substitution, and bare `((...))`
-    // arithmetic (the C-style `for ((i=0;i<5;i++))` header) — opaque words.
     if (c === '$' && (line[i + 1] === '(' || line[i + 1] === '{')) {
       const end = line[i + 1] === '(' ? scanParens(line, i + 1) : line.indexOf('}', i) + 1 || line.length;
       cur += line.slice(i, end); i = end; continue;
@@ -126,27 +84,21 @@ function tokenize(line: string): Tok[] {
   return toks;
 }
 
-/**
- * The command a segment runs, or null when the segment is pure grammar (a loop
- * header, a `then`, a `done`, a bare condition, an assignment, a redirect).
- */
+/** The command a segment runs, or null when it is pure grammar: a loop header, a
+ *  `then`, a `done`, a bare condition, an assignment, a redirect. */
 function segmentCommand(seg: Tok[]): string | null {
   let k = 0;
   while (k < seg.length && GRAMMAR_WORDS.has(seg[k].text)) {
     if (HEADER_WORDS.has(seg[k].text)) return null;
     k++;
   }
-  // Leading redirections (`done > out.txt`, `2>&1 cmd`): the operator and, when
-  // no target is glued to it, the word after it.
   while (k < seg.length && REDIRECT_RE.test(seg[k].text)) {
     const bare = /[<>]$/.test(seg[k].text);
     k += bare ? 2 : 1;
   }
   if (k >= seg.length) return null;
-  // Assignments: `i=0` alone is grammar (a counter). Assignments FOLLOWED by a
-  // command are left exactly as the classifier saw them before this module
-  // existed — the head word is `PATH=/tmp/x`, which no allowlist holds — so a
-  // one-shot environment override cannot be used to re-point a permitted name.
+  // `i=0` alone is grammar. An assignment FOLLOWED by a command keeps its head word
+  // (`PATH=/tmp/x`), which no allowlist holds: an override cannot re-point a name.
   let a = k;
   while (a < seg.length && ASSIGNMENT_RE.test(seg[a].text)) a++;
   if (a >= seg.length) return null;
@@ -154,40 +106,14 @@ function segmentCommand(seg: Tok[]): string | null {
   return seg.slice(k).map((t) => t.text).join(' ');
 }
 
-/**
- * The WORDS of one simple command, with quoted spans, `$( )` and backticks kept whole.
- *
- * Exported because `agent/brokers/sudo-policy.ts` was splitting on `/\s+/` and a quoted `-e` body then
- * looked like several words — so `osascript -e 'display dialog "hi"'` read as having a FILE OPERAND
- * (`dialog`) and was refused. One tokenizer, one answer to "what are this command's words".
- */
+/** Words of one simple command, quoted spans whole. Shared with sudo-policy: never split on whitespace. */
 export function commandWords(command: string): string[] {
   return tokenize(command).filter((t) => !t.op).map((t) => t.text);
 }
 
-/**
- * EVERY SIMPLE COMMAND THE LINE CONTAINS — the v3.2.2 security review's S1 view.
- *
- * ── WHY THIS EXISTS BESIDE `execInnerCommands` RATHER THAN REPLACING IT ──────────────────────
- * ONE GRAMMAR, TWO VIEWS, and the difference is a CONTRACT and not a second parser: the tokenizer and
- * the segmenter below are shared, byte for byte. What differs is what the caller is promised.
- *
- *   `execInnerCommands`  construct-gated, returns `null` for a plain line. Its caller uses the list as
- *                        THE GRANT QUESTION, so widening it would change which commands an agent may
- *                        run — and that is a capability decision.
- *   `execSimpleCommands` ALWAYS decomposes. Its caller uses the list for THE FLOOR and for SUDO
- *                        RECOGNITION only, which can refuse a catastrophic or privileged command and
- *                        can never take away a legitimate one.
- *
- * ⚠ THAT SPLIT IS MEASURED, NOT STYLISTIC. The first cut of the S1 fix simply deleted the construct
- * gate, so every segment became the grant question too — and `exec-argv-corpus.test.ts` §D caught it
- * immediately: an agent granted `['ls','cat','echo','git *','node']` could pipe into `grep`
- * yesterday and could not today. `ls -la | grep notes` is the clause's own example, and its promise is
- * "NO capability is lost". Closing a sudo hole is this task's remit; re-scoping every agent's pipes is
- * the owner's decision under RULING P5-R5, so the floor got the new view and the allowlist kept the old.
- *
- * Returns a single-element list for a plain line, so the caller needs no null branch.
- */
+/** EVERY SIMPLE COMMAND THE LINE CONTAINS: the FLOOR and sudo view, unlike
+ *  `execInnerCommands`' GRANT QUESTION. Widening that one changes what an agent may run;
+ *  this one can only refuse, never take away a legitimate capability. */
 export function execSimpleCommands(command: string): string[] {
   const toks = tokenize(command);
   const commands: string[] = [];
@@ -205,14 +131,7 @@ export function execSimpleCommands(command: string): string[] {
   return commands.length > 0 ? commands : [command.trim()];
 }
 
-/**
- * The commands a shell control-flow line actually runs.
- *
- * Returns null when the line uses no control-flow construct — the caller then
- * classifies the line exactly as it always has. Returns an empty array when a
- * construct contains no nameable command; the caller treats that as "fall back
- * to the whole line" rather than "nothing to check".
- */
+/** The commands a control-flow line runs; null with no construct, empty when it names none. */
 export function execInnerCommands(command: string): string[] | null {
   const toks = tokenize(command);
   if (!toks.some((t) => !t.op && CONSTRUCT_WORDS.has(t.text))) return null;

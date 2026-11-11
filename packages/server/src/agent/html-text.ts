@@ -1,30 +1,24 @@
-// HTML to readable text: strip markup, decode character references, keep paragraph breaks. A pure string
-// transform with no network, no clock and no agent in it.
+// HTML to readable text: a pure string transform, no network, no clock and no agent in it.
 
 /** Strip markup, decode the common entities, and leave paragraph breaks intact. */
 export function stripHtmlTags(html: string): string {
-  // Remove script and style blocks entirely
   let text = html.replace(/<script[\s\S]*?<\/script>/gi, '');
   text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
-  // Remove HTML comments
   text = text.replace(/<!--[\s\S]*?-->/g, '');
-  // Replace br and p tags with newlines
   text = text.replace(/<br\b[^>]*>/gi, '\n');
   text = text.replace(/<\/p>/gi, '\n\n');
   text = text.replace(/<\/div>/gi, '\n');
   text = text.replace(/<\/h[1-6]>/gi, '\n\n');
   text = text.replace(/<li\b[^>]*>/gi, '- ');
   text = text.replace(/<\/li>/gi, '\n');
-  // Strip remaining tags
   text = text.replace(/<[^>]+>/g, '');
   text = decodeHtmlEntities(text);
-  // Clean up whitespace
   text = text.replace(/\n{3,}/g, '\n\n');
   text = text.replace(/[ \t]+/g, ' ');
   return text.trim();
 }
 
-// ── HTML character references to text ──
+// HTML character references to text
 
 const LATIN1 = ('nbsp iexcl cent pound curren yen brvbar sect uml copy ordf laquo not shy reg macr deg plusmn sup2 sup3 acute micro para middot cedil sup1 ordm raquo frac14 frac12 frac34 iquest ' +
   'Agrave Aacute Acirc Atilde Auml Aring AElig Ccedil Egrave Eacute Ecirc Euml Igrave Iacute Icirc Iuml ETH Ntilde Ograve Oacute Ocirc Otilde Ouml times Oslash Ugrave Uacute Ucirc Uuml Yacute THORN szlig ' +
@@ -33,7 +27,7 @@ const GREEK_UPPER = 'Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa La
 const GREEK_UPPER_2 = 'Sigma Tau Upsilon Phi Chi Psi Omega'.split(' ');                                                   // U+03A3..U+03A9
 const GREEK_LOWER = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigmaf sigma tau upsilon phi chi psi omega'.split(' '); // U+03B1..U+03C9
 
-/** The HTML 4 named entities (the set mail and web pages actually use), by name. `nbsp` is a plain space, not U+00A0, so the whitespace clean-up that follows can collapse it. */
+/** `nbsp` maps to a plain space, not U+00A0, so stripHtmlTags' whitespace clean-up can collapse it. */
 const NAMED_ENTITIES: Record<string, string> = (() => {
   const t: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
   LATIN1.forEach((n, i) => { t[n] = String.fromCodePoint(160 + i); });
@@ -58,19 +52,17 @@ const NAMED_ENTITIES: Record<string, string> = (() => {
   return t;
 })();
 
-/** Numeric references 128-159 mean the Windows-1252 characters, as browsers read them (old Outlook/Word HTML writes `&#146;` for an apostrophe). The five slots 1252 leaves undefined are not listed. */
+/** Numeric references 128-159 mean the Windows-1252 characters, as browsers read them
+ *  (old Outlook/Word HTML writes `&#146;` for an apostrophe). Five slots stay undefined. */
 const WINDOWS_1252: Record<number, number> = {
   128: 0x20ac, 130: 0x201a, 131: 0x192, 132: 0x201e, 133: 0x2026, 134: 0x2020, 135: 0x2021, 136: 0x2c6, 137: 0x2030, 138: 0x160,
   139: 0x2039, 140: 0x152, 142: 0x17d, 145: 0x2018, 146: 0x2019, 147: 0x201c, 148: 0x201d, 149: 0x2022, 150: 0x2013, 151: 0x2014,
   152: 0x2dc, 153: 0x2122, 154: 0x161, 155: 0x203a, 156: 0x153, 158: 0x17e, 159: 0x178,
 };
 
-/**
- * Decode HTML character references in ONE pass, so a decoded value is never decoded again
- * (`&amp;lt;` stays `&lt;`). Handles every decimal (`&#39;`) and hex (`&#x27;`) reference that names a real
- * character (128-159 as Windows-1252), and the HTML 4 named set. An unknown name, a control character other than tab, newline
- * and carriage return, or a number that is not a character, is left as written.
- */
+/** Decode HTML character references in ONE pass, so a decoded value is never decoded again
+ *  (`&amp;lt;` stays `&lt;`). Decimal, hex and the HTML 4 named set; 128-159 as Windows-1252.
+ *  Unknown names and non-character numbers are left as written. */
 export function decodeHtmlEntities(text: string): string {
   return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,9}));/g, (match, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
     if (name !== undefined) return NAMED_ENTITIES[name] ?? match;
