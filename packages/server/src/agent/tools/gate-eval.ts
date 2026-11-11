@@ -1,19 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ANSWERING A GATE (PHASE-5 T2 Steps 3 and 4).
-//
-// `gates.ts` DECLARES what each of the ladder's fifteen rows required; this file
-// ANSWERS one. The split is the 400-line cap doing its job and it landed on a
-// real seam: the declaration is a pure function of `(name, args)` that a test
-// can enumerate without a database, and the evaluation is where the brokers, the
-// grant rows and the platform's identity predicates get involved.
-//
-// The `errorCode` and `auditAs` fields on the outcome exist because parity is
-// per ROW, not per family: six branches returned `PERMISSION_DENIED` and six
-// returned a bare `isError`, one audited itself as `spawn` rather than
-// `spawn_agent`, and `web_fetch`'s unparseable-URL arm was never a permission
-// refusal at all. PHASE-4 T1 cluster 3 made `errorCode` the thing the outcome
-// classifier reads, so flattening any of that would silently re-classify half
-// the platform's refusals — a behaviour change wearing a tidy-up's clothes.
+// ANSWERING A GATE: `gates.ts` DECLARES each ladder row's requirement; this
+// file ANSWERS one. Declaration is pure
+// and testable without a database; evaluation touches brokers, grant rows and
+// identity predicates. `errorCode` and `auditAs` are per ROW, not per family:
+// the outcome classifier reads `errorCode`, so flattening the mix of codes and
+// bare refusals would silently re-classify refusals. Keep both fields exact.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { isPrimaryAgent, isHealerAgent, isPMAgent } from '../../config/platform.js';
@@ -29,7 +20,7 @@ import {
   mayUseChannel, holdsCredentialGrant,
   toolCategoryGranted, toolCategoryLabels,
 } from '../access/read.js';
-import { heldGroupsClause } from './held-groups.js';   // t90 D3
+import { heldGroupsClause } from './held-groups.js';
 import { holdsDojoInspect, DOJO_INSPECT_REFUSAL } from '../../inspect/grant.js';
 import type { ToolGate } from './gates.js';
 
@@ -39,18 +30,10 @@ export interface GateOutcome {
   readonly verdict: Verdict;
   /** The resource the gate looked at, for the audit row. Null for identity gates. */
   readonly resource: string | null;
-  /**
-   * The `errorCode` the LADDER's own branch returned, preserved per row.
-   *
-   * It is not uniform and it must not become uniform here: six branches returned
-   * `PERMISSION_DENIED` and six returned `isError: true` with no code at all,
-   * and PHASE-4 T1 cluster 3 made that code the thing the outcome classifier
-   * reads. Flattening it would silently re-classify half the platform's
-   * refusals, which is a behaviour change wearing a tidy-up's clothes.
-   */
+  /** Ladder-row-specific `errorCode`; the outcome classifier reads it, so the
+   *  mix of codes and bare refusals must not be flattened or rows re-classify. */
   readonly errorCode: 'PERMISSION_DENIED' | null;
-  /** The action name the ladder's own `auditLog` call used, where it differed
-   *  from the tool name (branch 4 audited `spawn`, not `spawn_agent`). */
+  /** The action name the ladder's `auditLog` used where it differs (one row audits `spawn`). */
   readonly auditAs: string;
 }
 
@@ -65,7 +48,6 @@ export interface GateContext {
 
 const allowed: Verdict = { allowed: true, rule: 'gate-not-applicable' };
 
-/** This gate does not apply to this call. */
 function skip(gate: ToolGate): GateOutcome {
   return { gate, verdict: allowed, resource: null, errorCode: null, auditAs: '' };
 }
@@ -74,12 +56,9 @@ function denied(rule: string, reason: string, blockedMessage: string | null = nu
   return { allowed: false, basis: 'ladder-parity', rule, reason, blockedMessage };
 }
 
-/**
- * Where a declared effect's resource comes from. `args.<dotted>` walks the
- * argument object; `fixed:<host>` is a constant the tool always touches.
- * `derived:*` cannot be resolved before the handler runs and is therefore never
- * a gate — which is a fact about the tool, recorded rather than papered over.
- */
+/** Resource source for a declared effect: `args.<dotted>` walks the argument
+ *  object, `fixed:<host>` is a constant; `derived:*` cannot resolve before the
+ *  handler runs, so it is never a gate. */
 function declaredFrom(name: string, kind: EffectKind): string | null {
   const effect = effectsFor(name)?.find((e) => e.kind === kind);
   return effect?.from ?? null;
@@ -94,7 +73,6 @@ function readArgPath(args: Record<string, unknown>, dotted: string): unknown {
   return cursor;
 }
 
-/** ONE gate, answered. */
 export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<GateOutcome> {
   const { agentId, name, args } = ctx;
 
@@ -105,9 +83,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       const raw = readArgPath(args, from.slice(EFFECT_FROM_ARGS.length));
       const resolved = resolvePathArg(raw);
       if (!resolved.ok) {
-        // ABSENT → the gate does not apply, which is exactly what `if (filePath)`
-        // did; the handler produces its own friendlier error. PRESENT-but-not-a-
-        // string → refused, replacing a `path.resolve` crash.
+        // Absent: the gate does not apply. Present but not a string: refused, never coerced.
         if (resolved.code === 'not_present') return skip(gate);
         return { gate, verdict: denied('arg-not-a-string', resolved.reason), resource: null, errorCode: 'PERMISSION_DENIED', auditAs: name };
       }
@@ -120,12 +96,8 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       };
     }
 
-    // ── Row 3 / 3s: the two exec doors, through the ONE seam (RULING P5-R3) ──
-    // `authorizeExecShapedCall` is literally the function `destructive-gate.ts`
-    // calls for its pre-hold check, which is what makes its comment — *"the
-    // EXACT call executeTool makes"* — a fact rather than a hope. An absent
-    // argument still SKIPS (the `if (filePath)` parity T2 preserved); a present
-    // but malformed one is REFUSED and never coerced to empty.
+    // Both exec doors share ONE seam: `authorizeExecShapedCall`, the same call
+    // `destructive-gate.ts` uses. Absent arg skips; malformed arg is refused.
     case 'proc':
     case 'shell': {
       const from = declaredFrom(name, gate.kind);
@@ -142,7 +114,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       };
     }
 
-    // ── Row 15's applescript half: the SCRIPT is what gets authorized ──
+    // The applescript row: the SCRIPT itself is what gets authorized.
     case 'applescript': {
       const from = declaredFrom(name, 'applescript');
       if (!from || !from.startsWith(EFFECT_FROM_ARGS)) return skip(gate);
@@ -162,14 +134,12 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
     }
 
     case 'net': {
-      // 14b applies to SUB-AGENTS only — the primary browses freely, and that is
-      // the branch's own comment, not an inference.
+      // A sub-agent-only net gate: the primary agent browses freely.
       if (gate.subAgentsOnly && isPrimaryAgent(agentId)) return skip(gate);
       const from = declaredFrom(name, 'net');
       if (!from) return skip(gate);
       if (from.startsWith(EFFECT_FROM_FIXED)) {
-        // Branch 6: `web_search` has NO url argument and reaches one fixed host.
-        // §T0-PINS P1 names it as one of the two gates easiest to lose.
+        // `web_search` has NO url argument and reaches one fixed host: easy to lose.
         const host = from.slice(EFFECT_FROM_FIXED.length);
         return {
           gate,
@@ -184,9 +154,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       const resolved = resolveUrlArg(raw);
       if (!resolved.ok) {
         if (resolved.code === 'not_present') return skip(gate);
-        // The ladder answered an unparseable url with `Invalid URL: <url>` and a
-        // bare `isError` — NOT a permission refusal, and NOT an audit row. Kept
-        // byte-for-byte, `errorCode` absence included.
+        // An unparseable url is not a permission refusal: bare `isError`, no audit row.
         return {
           gate,
           verdict: denied('invalid-url', resolved.reason, `Invalid URL: ${String(raw)}`),
@@ -215,18 +183,13 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             gate,
             verdict: denied(`primary-only:${name}`, `${name} is restricted to the primary agent only`, gate.message),
             resource: null,
-            // Rows 7 and 13 carried PERMISSION_DENIED; row 9 (PRIMARY_ONLY_TOOLS)
-            // did not. Not a tidy distinction, and not this task's to tidy.
+            // Keep per-row: row 9 refuses with no code, rows 7 and 13 with PERMISSION_DENIED.
             errorCode: gate.row === '9' ? null : 'PERMISSION_DENIED',
             auditAs: name,
           };
 
-    // ── Row 7: THE CHANNEL DOOR TAKES AGENT IDENTITY (UX-ACCESS A1) ──
-    // Where this used to read `isPrimaryAgent(agentId)` it now reads the agent's
-    // own channel grant. Post-migration the primary is the only holder, so the
-    // set of agents refused here is identical; what changed is that the set can
-    // now be CHANGED — owner ruling 1's master switch and per-channel tiers are
-    // beneath `mayUseChannel`, not beside it.
+    // The channel row asks `mayUseChannel`, not `isPrimaryAgent`: the refused
+    // set is the same (the primary holds it) but the owner can now change it.
     case 'channel':
       return mayUseChannel(agentId, gate.channel)
         ? skip(gate)
@@ -238,13 +201,9 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             auditAs: name,
           };
 
-    // ── Row 16: the credential store, ONE question (UX-ACCESS A5) ──
-    // A1 asked two — "may it see the vault" for `credential_list`, and "may it
-    // touch THIS name" for the other four. The owner's ruling collapses the
-    // grant to a single switch, so the row asks the single question and the
-    // sentence stops describing a per-credential rule that no longer exists.
-    // `gate.service` survives as the AUDIT resource: the message lost detail on
-    // purpose, the ledger row did not.
+    // The credential row asks ONE question, a single grant switch. `gate.service`
+    // survives as the AUDIT resource: the message lost detail on purpose, the
+    // ledger row did not.
     case 'credential':
       return holdsCredentialGrant(agentId) ? skip(gate) : {
         gate,
@@ -258,11 +217,9 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
         auditAs: name,
       };
 
-    // ── Row 17: the positive category grant, AT THE EXECUTOR (A3 rider) ──
-    // The same predicate `surface.ts` filters the advertised list with. The strip
-    // is advice; this is the wall. A tool in more than one group passes on any
-    // one of them, and a tool in none is never refused here — both rules live in
-    // `toolCategoryGranted`, asked rather than re-implemented.
+    // The category row is the wall behind `surface.ts`'s advertised-list strip:
+    // same predicate, asked not re-implemented. Any group passes, no group never
+    // refuses; `toolCategoryGranted` owns both rules.
     case 'category': {
       if (toolCategoryGranted(agentId, name)) return skip(gate);
       const labels = toolCategoryLabels(name);
@@ -274,7 +231,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
           `${name} is in the ${named} tool group, which is not in this agent's grants`,
           `Permission denied: ${name} is in the ${named} tool group, which is not in this agent's grants.`
             + ' The request was not performed. Ask the primary agent to grant that group if this needs to happen.'
-            + heldGroupsClause(agentId),   // t90 D3: what this agent DOES hold, so the next call can be the right one
+            + heldGroupsClause(agentId),   // what this agent DOES hold, so the next call picks a held group
         ),
         resource: labels[0],
         errorCode: 'PERMISSION_DENIED',
@@ -320,8 +277,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
 
     case 'creator_only': {
       const target = ctx.resolveRef(gate.entity, gate.ref);
-      // An unresolved ref falls through to the handler's own not-found error —
-      // the ladder's behaviour, and the friendlier message.
+      // An unresolved ref falls through to the handler's own friendlier not-found error.
       if (!target || target.createdBy === agentId) return skip(gate);
       const byUser = target.createdBy === 'dashboard' || target.createdBy === 'user' || target.createdBy === 'system';
       const noun = gate.entity === 'agent' ? 'sub-agents you created' : 'squads you created';
@@ -351,27 +307,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⚰ ENFORCEMENT STAGING — DELETED (PHASE-5 T7). The predicate this file
-// carried is gone by NAME, so its identifier greps to zero across production
-// source and the exit gate is a command anyone can re-run.
-//
-// T2 Step 4 shipped a staged-enablement branch: for a sub-agent, a refusal whose
-// basis was `bypass-hardening` and whose rule was not a global deny could be
-// RECORDED instead of APPLIED. RULING P5-R6 narrowed it twice after the live box
-// showed what the literal wording cost, and what was left was a window that was
-// EMPTY — held empty, not merely believed empty, by
-// `brokers/__tests__/staged-set.test.ts`'s census over the broker sources.
-//
-// T7 deletes the branch by name because that is this phase's own exit gate: a
-// staging flag that survives its stage is the band-aid this phase exists to
-// kill, and the check is honest in both directions only because the identifier
-// was grep-zero before T2 created it (§T0-PINS P9).
-//
-// **requirement preserved:** every refusal the brokers compute is APPLIED, to
-// every agent, and none is recorded-but-not-applied. It is now STRUCTURAL rather
-// than predicated — the executor has one refusal path and it does not ask who
-// the agent is (`tools/__tests__/ladder-rows.test.ts`, three clauses). The other
-// half — that no refusal the brokers actually produce would have been staged on
-// the day this died, i.e. that the deletion changed no behaviour — stays with
-// the census in `staged-set.test.ts`.
+// Every refusal the brokers compute is APPLIED, to every agent; nothing is
+// recorded-but-not-applied. That is structural: the executor has one refusal
+// path and it asks no identity; `tools/__tests__/ladder-rows` pins that shape.
 // ════════════════════════════════════════════════════════════════════════════

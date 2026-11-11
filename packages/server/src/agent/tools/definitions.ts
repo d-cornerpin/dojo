@@ -1,46 +1,16 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE WIRE ARRAY (PHASE-5 T4 — relocated verbatim from `agent/tools.ts`)
-//
-// `toolDefinitions` is not a list of things the platform can do. It IS the
-// payload: `agent/model.ts` projects `{name, description, input_schema}` out of
-// it straight onto the provider request, and BOTH prompt goldens
-// (the PRIMARY-AGENT cache-prefix golden, and `assembled-context.json`) hash
-// exactly that projection. So this module is governed by the cache-prefix law (roadmap
-// non-negotiable #10, OR7, research 25) rather than by ordinary refactoring
-// taste:
-//
-//   • THE ARRAY MOVED BYTE-IDENTICAL. Not one definition, description, schema
-//     property, `required` entry, `effects` declaration or trailing comma was
-//     touched in the relocation. The proof is not this sentence — it is
-//     `registry-order.test.ts`'s byte-identity clause (the registry's emission
-//     must equal `getAllToolDefinitions()`'s projection, stringified) plus both
-//     golden hashes, re-hashed at the relocating commit before anything else.
-//   • ORDER IS THE CACHE BREAKPOINT. Anthropic's prefix cache sits on the LAST
-//     always-loaded tool, so re-ordering this array silently multiplies token
-//     cost without failing any behavioural test. `getAllToolDefinitions()`
-//     below is the ONE declared emission order, and `registry.ts` preserves it
-//     rather than inventing a second authority.
-//
-// ── WHY THIS IS ITS OWN MODULE AND NOT PART OF THE EXECUTOR ──
-// The executor (`agent/tools/index.ts`) reads the array for two small things —
-// the unknown-argument warning and the per-tool result cap — while `model.ts`,
-// `prompt/assembler.ts`, `surface.ts` and `registry.ts` read it for the wire.
-// Keeping the payload in the dispatcher would have meant every consumer of the
-// wire importing the dispatcher, which is the cycle the split exists to undo.
-//
-// ── THE MODULE-LOAD SIDE EFFECT CAME WITH IT, DELIBERATELY ──
-// The `registerConcurrency` / `registerMaxResultTokens` loop at the bottom runs
-// at module load, exactly as it did in `agent/tools.ts`. It travels WITH the
-// array because it is a projection OF the array: separating them is how the
-// registry silently stops covering a tool somebody adds here.
+// `toolDefinitions` IS the wire payload: `agent/model.ts` projects {name,
+// description, input_schema} out of it onto the provider request, and BOTH
+// prompt goldens hash exactly that projection. ORDER IS THE CACHE BREAKPOINT:
+// the prefix cache sits on the last always-loaded tool, so re-ordering this
+// array silently multiplies token cost without failing any behavioural test.
+// `getAllToolDefinitions()` below is the one declared emission order and
+// `registry.ts` preserves it. The register loop at the bottom is a projection
+// OF the array and travels with it at module load, so the registry cannot
+// silently stop covering a tool somebody adds here.
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { ToolDefinition } from './types.js';
-// S2 (PHASE-3 T3): the 17 property schemas `work_open` and `work_update` both declare,
-// declared ONCE. N1 (post-exit, owner-approved 2026-08-01): the seven fields whose two
-// descriptions were paraphrases of each other now have ONE canonical wording, said once on
-// the wire — `WORK_FIELD_TEXT`. The other ten pairs are NOT paraphrases and are untouched;
-// work-verb-schema.ts enumerates them and says why.
 import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_MEASURE_REF_PROP } from '../work-verb-schema.js';
 import { WORK_PLAN_PROP } from '../work-plan-schema.js';
 import { PER_TOOL_VALIDATED_AT_BOUNDARY } from './validate-args.js';
@@ -55,17 +25,14 @@ import { microsoftReadToolDefinitions } from '../../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions } from '../../microsoft/tools-write.js';
 import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions } from '../../microsoft/tools-office.js';
 import { unifiedToolDefinitions } from '../../tools/unified-read.js';
-import { dojoInspectDefinition } from '../../inspect/definition.js';   // v3.5: the eight inspect views, one schema
+import { dojoInspectDefinition } from '../../inspect/definition.js';   // the eight inspect views, one schema
 import { V2_MAX_TOOL_RESULT_TOKENS } from '../../memory/tool-result-view.js';
 
 
 /**
- * Every tool definition the platform can expose to any agent, across all
- * families. Single source of truth for the doc generator: a new family must
- * be added HERE, never to a side list, so "described" and "loadable via
- * load_tool_docs" cannot drift apart (pre-v2.11 drift left forms/pdf/
- * credentials/plaud advertised in the prompt index but absent from the
- * generated docs, so loading them reported "Tools not found").
+ * Every tool definition the platform can expose, across all families. Single
+ * source of truth for the doc generator: add a new family HERE, never to a
+ * side list, so "described" and "loadable via load_tool_docs" cannot drift.
  */
 export function getAllToolDefinitions(): ToolDefinition[] {
   return [
@@ -87,7 +54,6 @@ export function getAllToolDefinitions(): ToolDefinition[] {
   ];
 }
 
-// ── THE SCHEMA-VALIDATION BOUNDARY'S SCOPE (PHASE-5 T3 Step 3, RULING P5-R8) ──
 // Two lookups, both memoized because `executeToolInner` asks on every call.
 
 let toolDefsByName: Map<string, ToolDefinition> | null = null;
@@ -104,21 +70,13 @@ export function toolDefinitionsByName(): ReadonlyMap<string, ToolDefinition> {
 let boundaryValidatedNames: Set<string> | null = null;
 
 /**
- * IS THIS TOOL'S `input_schema.required` ENFORCED AT THE ONE BOUNDARY?
- *
- * True for exactly what the two deleted mechanisms already covered:
- *   • the 57 tools that carried a per-tool `checkRequired([...])` array in
- *     `executeToolInner`'s dispatch (`PER_TOOL_VALIDATED_AT_BOUNDARY`), and
- *   • every tool defined in the eight provider modules that ran
- *     `validateAgainstSchema` at the head of their own dispatcher — taken from
- *     the definition arrays themselves, so a new provider tool is covered the
- *     moment it is declared and no list can drift away from them.
- *
- * False for the six work verbs, whose requiredness is per-OPERATION and stays
- * in their own operation cases, and for the tools that have never had a
- * required-field check on any path — those would be NEW refusals, which RULING
- * P5-R5 reserves to the owner rather than to a refactor. Exported so the
- * conformance test can assert both halves.
+ * True when this tool's `input_schema.required` is enforced at the one
+ * validation boundary: the per-tool validated set, plus every tool of the
+ * provider modules, read off the definition arrays themselves so a new one is
+ * covered the moment it is declared. False for the six work verbs (requiredness
+ * is per-operation there) and for tools that never had a required-field check:
+ * adding one would be a new refusal, which is owner-reserved. Exported for the
+ * conformance test.
  */
 export function isBoundaryValidated(name: string): boolean {
   if (!boundaryValidatedNames) {
@@ -161,11 +119,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'load_tool_docs',
     description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
-    // DECLARATION CORRECTED AT THE SITE (PHASE-5 T8 Step 3, RULING P5-R14). The
-    // docs are markdown files written to disk at boot and this said `effects:[]`.
-    // The directory is the WHOLE reach: the handler intersects every requested
-    // name with the agent's own accessible tools before reading, so no other
-    // path can be named.
+    // The docs are markdown files written to disk at boot. The directory is the
+    // whole reach: the handler intersects names with the agent's accessible tools.
     effects: [
       { kind: 'fs_read', from: 'derived:the generated tool documentation directory', scope: { at: 'tree', template: '~/.dojo/tools' } },
     ],
@@ -270,7 +225,8 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['path'],
     },
     concurrency: 'safe',
-    // The cap is the model's own per-result view (`memory/tool-result-view.ts`); the handler sizes each page to it.
+    // The cap is the model's own per-result view (`memory/tool-result-view.ts`);
+    // the handler sizes each page to it.
     maxResultTokens: V2_MAX_TOOL_RESULT_TOKENS,
   },
   {
@@ -298,14 +254,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_append',
     description: 'Append content to the end of a file at the given absolute path. Creates the file (and parent directories) if they do not exist. Use this for incremental writes, accumulating output across multiple turns, building a long doc one section at a time, logging progress to a scratchpad, instead of `file_write` (which overwrites everything) or the read-modify-rewrite cycle. The latter fills your context with the file\'s existing contents every time you want to add to it; `file_append` does not. Returns bytes appended, total file size, and a download URL.\n\nExample: file_append({ path: "/Users/me/notes.md", content: "\\n## Section 5\\nNew content here." }).\n\nBy default a leading newline is added if the existing file doesn\'t already end in one (so appended sections don\'t smush into the prior line). Set ensure_newline=false to append the exact bytes verbatim.',
-    // PHASE-5 T12 — THE SEPARATOR PEEK, DECLARED (RULING P5-R14).
-    // At `ensure_newline`'s DEFAULT against a non-empty file, `executeFileAppend`
-    // (`cat/fs.ts`) OPENS THIS SAME PATH FOR READING to inspect the last byte
-    // before appending; the write line alone never covered it, so the facade
-    // refused the tool on the path its own description recommends. It adds NO
-    // refusal — gate rows are declared in `tools/gates.ts`, never derived from
-    // `effects[]` (P5-R5) — and it is one file in both directions, so nothing
-    // widens. Held by `agent/__tests__/file-append.test.ts`'s default-path clause.
+    // The `ensure_newline` default opens this path for reading to peek the last
+    // byte before appending, so the read is declared; nothing here adds a refusal.
     effects: [{ kind: 'fs_write', from: 'args.path' }, { kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
@@ -396,14 +346,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_list',
     description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
-    // PHASE-5 T8 Step 3 — THE TREE IS THE EFFECT (RULING P5-R15 part 1). This
-    // tool is handed a directory and stats every entry IN it to report sizes, so
-    // a grant on the directory alone is not what it does. Converted without this,
-    // the handler's own `catch` would have turned every per-entry refusal into a
-    // `-` in the size column — a SILENT NARROWING, which is the failure mode this
-    // task exists to prevent. The root is still the argument the brokers resolved
-    // and authorized, so this can never reach outside the directory the agent
-    // named. `file_read`'s identical `from` deliberately does NOT carry it.
+    // Stats every entry IN the directory, so the tree is the effect; without it per-entry refusals
+    // show as `-`. `file_read`'s identical `from` deliberately carries no tree.
     effects: [{ kind: 'fs_read', from: 'args.path', scope: { at: 'argTree' } }],
     input_schema: {
       type: 'object',
@@ -488,11 +432,8 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'The search string. Canonical, preferred arg.',
         },
-        // `query` is a declared alias for `pattern`, not a stray arg: the
-        // executor honors it via `args.pattern ?? args.query` (case
-        // 'history_search'). Declaring it here is what keeps the unknown-arg
-        // detector from warning "silently ignored" about an arg we actually
-        // honor, so schema and behavior tell the same story.
+        // `query` is a declared alias for `pattern`: the executor honors
+        // `args.pattern ?? args.query`, so it is not a stray arg to warn about.
         query: {
           type: 'string',
           description: 'Alias for `pattern` (accepted for convenience; prefer `pattern`). Pass exactly one of the two.',
@@ -520,10 +461,8 @@ export const toolDefinitions: ToolDefinition[] = [
           description: 'Maximum number of results to return (default: 20)',
         },
       },
-      // Not ['pattern']: `pattern` is canonical but `query` is an accepted
-      // alternate, so requiring pattern at the schema level would contradict the
-      // executor, which accepts pattern-or-query and enforces "at least one
-      // non-empty" itself (case 'history_search').
+      // Not ['pattern']: the executor accepts pattern or query and enforces
+      // "at least one non-empty" itself, so the schema must not contradict it.
       required: [],
     },
     concurrency: 'safe',
@@ -532,11 +471,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'history_get',
     description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER history_search when a snippet is truncated and you need the full message. history_search emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call history_get(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
-    // DECLARATION CORRECTED AT THE SITE (PHASE-5 T8 Step 3, RULING P5-R14). A
-    // `file_*` id has always been served by reading the stored body off disk and
-    // this said `effects: []`. The scope is the store's own tree because the row
-    // names the file, not the agent: the per-agent ownership check stays exactly
-    // where it is, after the read, so nothing the owner sees changes.
+    // `file_*` ids are served by reading the stored body off disk, so the read
+    // is declared; the per-agent ownership check still runs after the read.
     effects: [
       { kind: 'fs_read', from: 'derived:the large-file store a file_* row points into', scope: { at: 'tree', template: '~/.dojo/data/files' } },
     ],
@@ -575,9 +511,6 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['prompt'],
     },
   },
-  // C27: memory_search (a self-described convenience wrapper around
-  // history_search / former memory_grep) was DELETED; it is now a hidden alias
-  // that routes to history_search with {query} -> {pattern}. See tools/aliases.ts.
   // ── Web Tools ──
   {
     name: 'web_search',
@@ -636,8 +569,8 @@ export const toolDefinitions: ToolDefinition[] = [
     description:
       'Open a canvas in the user\'s right dock, a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it, writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call canvas_render at all. Use canvas_render to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path`, the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/<agent-id>/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call canvas_render({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas, you do NOT need to call canvas_render again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html`, inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files, embed images as data: URIs or write a file with the image beside it instead.\n  • `url`, content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • canvas_render({ title: "Spec", path: "/Users/me/uploads/<agent-id>/spec.md" })\n  • canvas_render({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
     effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'net', from: 'args.url' }],
-    // PHASE-6 T0C: `src` is an HTML attribute inside the worked example
-    // (`<img src="photo.png">`), not a parameter of this tool.
+    // `src` is an HTML attribute in the worked example (`<img src="photo.png">`),
+    // not a parameter of this tool.
     advertisedNotDeclared: {
       src: 'an HTML attribute in the inline example markup, not a parameter of this tool',
     },
@@ -686,11 +619,8 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'open_browser',
     description:
       'Open a live website in the user\'s right dock so you and the user can view it together. The dojo interface slides left and the page loads in a resizable frame on the right with refresh and close controls. Use this for showing a real, working website at a URL (not your own generated markup, for that use canvas_render). Note: some sites refuse to load inside a frame; if a page comes up blank the site has blocked embedding. Example: open_browser({ url: "https://example.com", title: "Example" }).',
-    // PHASE-5 T8 Step 3 — THE UNDECLARED WRITE, DECLARED (RULING P5-R14): the
-    // screenshot fallback has always written a PNG here and the tool declared no
-    // fs effect, so a converted call site would refuse. It adds NO refusal —
-    // gate rows are declared in `tools/gates.ts`, never derived from `effects[]`
-    // (P5-R5) — it states what the tool already does so the facade can carry it.
+    // The screenshot fallback writes a PNG here, so the write is declared.
+    // It adds no refusal: gate rows live in `tools/gates.ts`, not `effects[]`.
     effects: [
       { kind: 'net', from: 'args.url' },
       { kind: 'fs_write', from: 'derived:the canvas screenshot directory', scope: { at: 'tree', template: '~/.dojo/data/canvas-shots' } },
@@ -715,11 +645,9 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'canvas_read',
     description:
       'Look at what is currently shown in the user\'s right-dock canvas, use this when the user asks you to look at / read / check / review what is on the canvas. It views whatever you most recently opened there (with canvas_render or open_browser): an HTML page or website is screenshotted and described, an image is examined directly, and a markdown/text/code file is returned as text. Works even if your own model cannot see images (it falls back to the configured vision model). Pass an optional `prompt` to ask something specific (e.g. "does the chart axis start at zero?", "summarize the page", "is the header centered?"). To read a specific file/URL/HTML, open it first with canvas_render (or open_browser), then call canvas_read.',
-    // It has always probed, stat-ed and read the file on this agent's canvas and
-    // declared nothing (RULING P5-R14: corrected at the site). No path argument
-    // exists to name — the schema has none and the call site passes none — so the
-    // CALL'S OWN AGENT IDENTITY resolves it, through the handler's own reader
-    // (RULING P5-R15 ADDENDUM 3(1)(b)).
+    // It probes, stats and reads the file on this agent's canvas; no path
+    // argument exists, so the call's own agent identity resolves it through
+    // the handler's own reader.
     effects: [{ kind: 'fs_read', from: 'derived:the file currently shown on this agent\'s canvas', scope: { at: 'agentResolved', via: 'agent_canvas_file' } }],
     input_schema: {
       type: 'object',
@@ -988,14 +916,9 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['status', 'summary'],
     },
   },
-  // ── Work Tools (PHASE-2 T8V: 24 verbs collapsed onto six) ──
-  // Every operation the retired twenty-four performed is still reachable; each
-  // verb selects one by a discriminator, and `tools/work-verbs.ts` is the single
-  // place a (name, args) pair is turned back into that operation. The weak-model
-  // training the retired defs carried — status synonyms, 8-char-prefix AND title
-  // resolution, same-status NO-OP, absorb-don't-refuse, the status list (re-ordered, keep going first, by the v3.5
-  // text wave), and the recurring-schedule integrity gate — is LIFTED here, otherwise
-  // not rewritten. Old names still route (tools/aliases.ts) for one release.
+  // ── Work Tools ──
+  // Every operation is reachable; each verb selects one by a discriminator, and
+  // `tools/work-verbs.ts` is the single place a (name, args) pair becomes it.
   {
     name: 'work_open',
     description: 'Open a new piece of work. `kind` picks what: "project" (multi-step work with tasks), "task" (a single piece of work, optionally scheduled or recurring), "reminder" (something to tell the user at a time), "commitment" (a promise you just made).\n\n**Open a project or task BEFORE starting any work that has a deliverable, requires multiple steps, or takes more than ~3 tool calls.** The work board is your durable plan, it survives compaction, session resets, and agent restarts; your context does not. Source files you read get summarized; work rows do not. For anything beyond a one-shot Q&A, this is your safety net against losing the plan halfway through.\n\nDon\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss followed by writing the deliverable from your own summarized memory (i.e. confabulating). The cost of opening an entry you didn\'t end up needing is zero. The cost of NOT opening one for work that turns out to be multi-step is 30+ minutes of stalled work, PM pokes, and lost context.\n\nA project opens with its plan: write the approach and the steps (what, how at scale, how you know it is done) in `plan`; the engine makes the tasks from the steps. Think before you start: count first, work in pages, use a tool\'s batch form when it has one (the scale facts are in this tool\'s result).\n\nASSIGNMENT MATTERS (read once, internalize): nested tasks default `assigned_to=YOU` (the calling agent) when not specified. If apprentices will do the work, either spawn them FIRST and pass their agent_id in each task\'s `assigned_to`, or spawn them with `task_id` pointing at tasks already created here. If neither happens, the apprentices\' work is not recorded on the tasks.\n\n**kind="task"** can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.\n\n**kind="reminder"** sets a reminder for the user. When the scheduled time arrives, you (the agent) will be woken with the reminder text and should deliver it to the user as a single short chat message in your normal voice, no preamble like "Reminder:" or "Here\'s your reminder", just say the thing. **If the user did not specify a time, call this WITHOUT `when`.** The tool will return an instruction telling you to ask the user. Get their answer, then call `get_current_time` to resolve relative phrases ("in 5 minutes", "tomorrow at 8am"), and re-call with `when` set to the resolved ISO 8601 datetime. Do not invent a time, always ask. Use kind="reminder" whenever the user asks to be reminded of something, NOT kind="task": reminders get a lighter scheduler prompt that produces a natural one-line message instead of the generic "[Scheduled Task, Run #1]" boilerplate.\n\n**kind="commitment"** records a promise you just made, at the moment you make it. When you tell someone "I\'ll do X", "I\'ll send that after Y", or "I\'ll get back to you on this", call this straight away with what you promised in `description`, in your own words. It becomes a tracked item you still owe, shown back to you in the "OPEN WORK" block until it is delivered or dropped. This is bookkeeping, do NOT write a user-facing message about it, and do NOT use it for work you have already finished this turn. Use kind="task" instead when the promise is a piece of project work that belongs on the board.',
@@ -1003,10 +926,8 @@ export const toolDefinitions: ToolDefinition[] = [
     nonEffects: {
       'tasks[].measure.args.path': 'v3.5 field fix 3 (audit #5): the file-set measure\'s folder. Inert at this door: the measure is never read here; the measure door (agent/tools/cat/measure-door.ts refusalFor) authorizes it with file_list\'s own gates for the agent before every count, which is where the read is decided',
     },
-    // PHASE-6 T0C: `task_id` is `spawn_agent`'s parameter, named here because
-    // the sentence is about how a spawned apprentice picks up work created by
-    // this call. A true cross-tool reference, and the tool that owns it is not
-    // named close enough to the token for the walk's own rule to see it.
+    // `task_id` is `spawn_agent`'s parameter, named in this sentence about a
+    // spawned apprentice; the owning tool is not near enough for the walk's rule.
     advertisedNotDeclared: {
       task_id: "`spawn_agent`'s parameter, referenced because this description explains how a spawned agent picks up work opened here",
     },
@@ -1044,10 +965,8 @@ export const toolDefinitions: ToolDefinition[] = [
         project_id: workProp('project_id', 'Task only. Optional project ID to attach this task to.'),
         assigned_to: workProp('assigned_to', 'Task only. Agent ID or name to assign this task to.'),
         assigned_to_group: workProp('assigned_to_group', `Task only. ${WORK_FIELD_TEXT.assigned_to_group.canonical}`),
-        // The one structural divergence of the 17 (see work-verb-schema.ts): work_open
-        // constrains priority to an enum and work_update does not. Applied HERE, named
-        // rather than harmonised — closing it would add a constraint work_update's wire
-        // does not carry today.
+        // The one structural divergence of the 17 (see work-verb-schema.ts):
+        // work_open enum-constrains priority, work_update does not. Named, not harmonised.
         priority: workProp('priority', 'Task priority (default: normal).', { enum: [...WORK_PRIORITY_ENUM] }),
         step_number: workProp('step_number', 'Step number for ordered execution.'),
         depends_on: workProp('depends_on', 'Task IDs that must complete before this task can start.'),
@@ -1069,12 +988,8 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_type: workProp('repeat_end_type', 'When to stop repeating. For repeating work that should stop after N runs, set repeat_end_type="after_count" and repeat_end_value="N". If omitted, it repeats forever.'),
         repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.canonical),
         anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.canonical),
-        // ── PHASE-6 T0C-W — the wall-clock pair, declared (owner-decided) ──────────────
-        // Inline rather than in `WORK_SHARED_PROPERTIES` on purpose: that module holds the
-        // SEVENTEEN structurally-identical properties and its byte test exists to prove
-        // S2/N1 moved no wire bytes, so growing it blurs the measurement it was built for.
-        // These two also differ across the verbs (work_open introduces the mechanic,
-        // work_update routes it) — the same reason `what`/`when`/`filter` are inline.
+        // Inline on purpose: `WORK_SHARED_PROPERTIES` and its byte test pin the
+        // 17 shared props; these two differ across the verbs, like `what`/`when`.
         local_time: {
           type: 'string',
           description: 'Task/Reminder only. The wall-clock time you MEAN, with NO timezone offset: "YYYY-MM-DDThh:mm" (24-hour), e.g. "2026-07-16T21:00" for 9 PM. Use this INSTEAD of scheduled_start whenever the user names a clock time — the engine converts it with the scheduler\'s own timezone rules, so doing UTC arithmetic yourself (the single most common scheduling error) is never your job. scheduled_start wins if you pass both.',
@@ -1107,25 +1022,12 @@ export const toolDefinitions: ToolDefinition[] = [
           enum: ['status', 'hand_in', 'edit', 'reassign', 'list', 'get'],
           description: 'Which update to perform. Omit and the engine infers it from the fields you passed (`proof` or `outcome` → hand_in, `status` → status, `assigned_to` → reassign, editable fields → edit, a bare id → get, nothing → list).',
         },
-        // UX-REPAIR T5 (2026-08-09) — the EXISTENCE CONTRACT. This field demanded an id and
-        // said nothing about where one comes from, so under the END-OF-TURN decision matrix
-        // above a weak model with no task in hand supplied a word: the UX review's S1 turn
-        // called this tool with `task_id:"placeholder"` moments after `action="list"` had
-        // told it "No active tasks." The declaration now names the only two sources of a
-        // real id and refuses invention outright. Prompt-surface edit, on the phase's
-        // re-blessing register; static text, so the cached prefix stays byte-stable.
+        // Existence contract: `task_id` must come from a `work_open` or a
+        // `work_update(action="list")` answer; a placeholder after an empty list happened.
         task_id: { type: 'string', description: 'The task ID (full UUID or 8+ char prefix) of a task that ALREADY EXISTS, either an id `work_open` returned to you, or one listed by `work_update(action="list")`. NEVER invent an id or pass a placeholder: if the task does not exist yet, call `work_open` to create it and use the id it returns.' },
         project_id: workProp('project_id', 'The project ID (full UUID or 8+ char prefix). Used by action="edit" (rename a project), "hand_in" (hand in a whole project), and "get".'),
         id: { type: 'string', description: 'Alias for task_id / project_id on action="get".' },
-        // UX-REPAIR ROUND 3 T18 — the two terminal outcomes finally read as two. `cancelled`
-        // was ALREADY in this enum and was already schema-legal for action="status"; what
-        // happened to it was a silent rewrite into `fallen` at the tool boundary, so the
-        // description below said "fallen = abandoned/dropped" while `PM-SOUL.md:25` said
-        // "fatally failed". One word, two meanings, and a user's cancellation landing in the
-        // one the board paints red. The value now reaches the spine's `abandoned` terminal
-        // and the board renders it with its own word, so the description states which is
-        // which. Prompt-surface edit, on this phase's re-blessing register; static text, so
-        // the cached prefix stays byte-stable.
+        // `cancelled` = stopped by the user and reaches the `abandoned` terminal; `fallen` = fatally failed.
         status: {
           type: 'string',
           enum: ['on_deck', 'in_progress', 'blocked', 'paused'],
@@ -1165,9 +1067,8 @@ export const toolDefinitions: ToolDefinition[] = [
         depends_on: workProp('depends_on', 'action="edit": replace the dependency list with these task IDs. Pass [] to clear all dependencies.'),
         step_number: workProp('step_number', 'action="edit": new step number within the project (1-indexed).'),
         phase: workProp('phase', 'action="edit": new phase number within the project.'),
-        // No enum here, deliberately — see work-verb-schema.ts. work_open constrains this
-        // field and work_update never has; adding the enum would change what the wire
-        // carries and what a strict provider accepts, which is not S2's scope.
+        // No enum here deliberately (see work-verb-schema.ts): adding one changes
+        // what the wire carries and what a strict provider accepts.
         priority: workProp('priority', 'Priority: "high" | "normal" | "low".'),
         scheduled_start: workProp('scheduled_start', WORK_FIELD_TEXT.scheduled_start.onUpdate),
         repeat_interval: workProp('repeat_interval', WORK_FIELD_TEXT.repeat_interval.onUpdate),
@@ -1177,10 +1078,8 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.onUpdate),
         anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.onUpdate),
         measure: WORK_MEASURE_PROP,
-        // ── PHASE-6 T0C-W — the wall-clock pair and the revert acknowledgement ─────────
-        // See work_open for why these are inline. Each line is this verb's ROUTING plus a
-        // pointer, never a restatement of work_open's wording — N1's shape, applied to
-        // three new properties rather than paid twice.
+        // Inline as in work_open; each line is this verb's ROUTING plus a pointer,
+        // never a restatement of work_open's wording.
         local_time: {
           type: 'string',
           description: 'action="edit": set the schedule from a wall-clock time instead of an ISO instant (see work_open). Counts as an editable field on its own.',
@@ -1195,30 +1094,16 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         filter: { type: 'string', enum: ['all', 'mine', 'blocked', 'overdue'], description: 'action="list": filter to apply (default: all). "overdue" = scheduled to have run by now and still waiting (not paused).' },
         verbose: { type: 'boolean', description: 'action="list": if true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
-        // ── UX-REPAIR ROUND 14 T65 — THE ACTIVITY WINDOW, ON THE WIRE ─────────────────
-        // THE ONE PROPERTY OF THIS ROUND'S REGISTERED PREFIX RE-BLESSING (OR7). T60 built
-        // the activity door with its window as a RENDERER argument and recorded why:
-        // declaring it would move the cached tools prefix, and reading it UNDECLARED would
-        // have the engine's own unknown-argument census tell the model the arg "was silently
-        // ignored" while the function acted on it. Its own words were "widening it to the
-        // wire is one declared property on the next affordable prefix re-bless".
-        //
-        // Round-14 S2 measured the deferral's cost: the owner asked what had happened "since
-        // yesterday morning", the door covered since-local-midnight only, 61 ledger rows were
-        // invisible to it and the reply disclosed none of them. This is that one property.
-        //
-        // `hours` AND NOT `since`, and the reason is smallness: a number needs no parsing, no
-        // timezone resolution and no ruling about which day a bare date means, and the model
-        // already holds the current instant (`msg.current-time`) to count back from. The
-        // action enum is NOT touched — `activity` stays advertised where T60 put it, in the
-        // list door's own result — so the golden delta is exactly this property and nothing
-        // else. Static text: the prefix stays byte-stable after the re-bless.
+        // The activity window, on the wire: extends the activity door's reach
+        // backward from now. `hours`, not `since`: a number needs no parsing and no
+        // timezone resolution, and the model already holds the current instant.
+        // The action enum is untouched, so the golden delta is this property alone.
         hours: { type: 'number', description: 'action="activity": how many hours back the window covers, e.g. 36 for "since yesterday morning", 168 for the past week. Omit for today so far (since local midnight). The result always states the window it actually measured, so check that line rather than assuming.' },
         offset: { type: 'number', description: 'action="get" on a task: the first note to show (0-based) when its notes run past one result; a page\'s closing line gives the offset to continue at.' },
       },
       required: [],
     },
-    maxResultTokens: V2_MAX_TOOL_RESULT_TOKENS,   // t169: `get` pages the task's notes to the model's view (memory/tool-result-view.ts), so its footer survives this cap
+    maxResultTokens: V2_MAX_TOOL_RESULT_TOKENS,   // `get` pages notes to the view; footer survives the cap
   },
   {
     name: 'work_note',
@@ -1421,8 +1306,8 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'tunnel',
     description: 'Manage the Cloudflare tunnel for remote access. Pass `action`:\n  - "status": get the current tunnel status + public URL (use when the user asks for the dojo URL or whether remote access is running). The `url` field is what to share; `mode` tells you quick (trycloudflare.com) vs named (custom domain).\n  - "start": start the tunnel (only when the user explicitly asks to start/enable it). Optional `mode`: "quick" for a random URL, "named" for the configured persistent tunnel; defaults to the saved config.\n  - "stop": stop the tunnel (only when the user explicitly asks to stop/disable remote access).\n  - "restart": restart it (useful when stuck or the user wants a fresh URL).',
     effects: [{ kind: 'proc', from: 'derived:cloudflared (spawn; brew install on first use)' }],
-    // PHASE-6 T0C: `url` is a field of this tool's RESULT ("the `url` field is
-    // what to share"), which is the opposite direction from an input parameter.
+    // `url` is a field of this tool's RESULT ("the `url` field is what to
+    // share"), the opposite direction from an input parameter.
     advertisedNotDeclared: {
       url: "a field of this tool's RESULT, not an input — the description tells the agent which returned value to share",
     },
@@ -1507,7 +1392,7 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
     maxResultTokens: 4000,
   },
-  // ── Group Tools (Phase 6) ──
+  // ── Group Tools ──
   {
     name: 'create_agent_group',
     description: 'Create a new group of sub-agents around a shared purpose (a team, a squad, a project crew). This is THE tool for making a new agent group, do NOT try to insert rows into the database. The group description is injected into every member agent\'s system prompt as shared context.',
@@ -1625,7 +1510,6 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
     maxResultTokens: 2000,
   },
-  // C27: update_agent_permissions merged into update_agent({permissions}) above.
   // ── Public file sharing ──
   {
     name: 'share_publicly',
@@ -1656,13 +1540,9 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'show_to_user',
     description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
-    // PHASE-5 T8 Step 3 — THE COPY-IN, DECLARED (RULING P5-R14). The last line
-    // of the description above has always been true: "Files outside the uploads
-    // dir are copied in", so the dashboard's serve route can find them. That
-    // write was never declared. Corrected at the site with its reason; it adds
-    // no refusal, because gate rows are declared in `tools/gates.ts` and are
-    // never derived from `effects[]` (P5-R5). The scope is the CALLING agent's
-    // own uploads directory, so one agent still cannot write into another's.
+    // Files outside the uploads dir are copied in so the dashboard's serve
+    // route finds them: the write is declared, and the scope is the CALLING
+    // agent's own uploads dir, so no agent writes into another's.
     effects: [
       { kind: 'fs_read', from: 'args.file_paths[]' },
       { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
@@ -1863,19 +1743,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'image_create',
     description: 'Generate an image from a text description. The engine delivers the image itself: 10-60 s later it posts the image alone, with no caption, and you are told it was delivered. The engine writes no acknowledgement or caption for you: you may say ONE short line of your own before you end your turn (if a person is waiting and you say nothing, the engine asks you to). You do NOT need a second turn; do not describe the image or announce it a second time. Do NOT mention the image generation model or any internal system to the user.',
-    // PHASE-5 T8 Step 3 — THE GENERATOR'S OWN WRITE, DECLARED (RULING P5-R14).
-    // The provider's bytes land in `~/.dojo/uploads/generated` before anything
-    // is copied to the caller: a SIBLING of the calling agent's uploads
-    // directory, not inside it, so the line below never covered it. Corrected
-    // at the site; it adds no refusal (gate rows are declared in
-    // `tools/gates.ts`, never derived from `effects[]` — P5-R5). The prose
-    // declaration keeps its line: the delivery copy is a second, later write.
-    // PHASE-5 T8 Step 3 (T8E) — THE DELIVERY COPY, DECLARED IN BOTH DIRECTIONS.
-    // The media door copies the generated file into the CALLER's uploads dir so
-    // the chat has a stable path for it. That is a READ of the generated
-    // directory (which declared only the write) and a WRITE of the caller's own
-    // uploads tree (which had prose and no machine-checkable scope). Both
-    // corrected at the site; neither adds a refusal (P5-R5).
+    // The generator's bytes land in `~/.dojo/uploads/generated`, a SIBLING of
+    // the calling agent's uploads dir, before anything is copied to the caller.
+    // The delivery copy reads that directory and writes the caller's uploads
+    // tree. Neither declaration adds a refusal.
     effects: [
       { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
       { kind: 'fs_write', from: 'derived:the generated-images directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
@@ -1909,21 +1780,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'transcribe_audio',
     description: 'Convert speech in an audio file to text. Pass ONE of: attachment_id (the fileId from a recent chat attachment, preferred when the user just shared the file), path (an absolute local path inside ~/.dojo/uploads/), or url (https only). Common input formats: mp3, wav, m4a, opus, webm, ogg, aac. Returns the transcribed text inline (no new attachment is created). The platform posts a short acknowledgment automatically; you do not need to announce that you are transcribing.',
-    // PHASE-5 T8 Step 3 — THE THIRD SOURCE, DECLARED (RULING P5-R15 ADDENDUM
-    // mechanic 5). The tool takes ONE of `attachment_id`, `path` or `url` and
-    // only two of the three were declared. `attachment_id` names its file
-    // INDIRECTLY: the resource is whatever path the platform recorded for that
-    // id, and those sit under several distinct roots, so there is no tree to
-    // declare. `via` names the indirection instead, and the gate loop resolves
-    // it with the same reader the handler uses. A stale id resolves to nothing,
-    // grants nothing, and the handler keeps its own error.
-    // PHASE-5 T8 Step 3 (T8H) — THE TRANSCODER, DECLARED (RULING P5-R15
-    // ADDENDUM 4(1), branch (B)). Every source this tool accepts is decoded or
-    // demuxed through ffmpeg before an engine ever sees it, and that spawn was
-    // declared nowhere. Its argv is two paths the platform generates in its own
-    // temp directory, which no scope template can name — so the PROGRAM is what
-    // the declaration honestly carries, out of the named `CARRIED_PROGRAMS`
-    // list, and the temp pair belongs to the carrying layer.
+    // `attachment_id` names its file INDIRECTLY, so `via` declares the
+    // indirection and the gate loop resolves it with the handler's own reader;
+    // a stale id resolves to nothing, grants nothing. Every source is
+    // transcoded through ffmpeg, whose argv is a temp pair no scope names.
     effects: [
       { kind: 'fs_read', from: 'args.attachment_id', via: 'attachment_row' },
       { kind: 'fs_read', from: 'args.path' },
@@ -1954,17 +1814,11 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   // ── Text-to-Speech Tool ──
-  // (Music / sound-effect generation is a different operation and will
-  // get its own `music_create` tool when implemented.)
   {
     name: 'tts_create',
     description: 'Generate spoken audio from text, text-to-speech (TTS). The engine handles delivery, DO NOT write any user-facing text around this tool. When you call it, the engine posts a short acknowledgment immediately. ~2-10 s later the engine delivers the audio file directly to the chat with an inline player. Just call this tool and end your turn. Do NOT mention the TTS model or any internal system to the user. This tool reads text aloud verbatim, it does NOT compose music or sound effects.',
-    // PHASE-5 T8 Step 3 (T8E) — THE WHOLE ASYNC DELIVERY PATH, DECLARED.
-    // The spoken-audio bytes land in the shared generated-assets directory, are read
-    // back from there, and are copied into the CALLING agent's uploads dir so the
-    // chat has a stable path. Only the last of those three was declared, and it
-    // was prose with no machine-checkable scope. All three corrected at the site
-    // (RULING P5-R14); none adds a refusal (P5-R5).
+    // The audio bytes land in the shared generated-assets directory, are read
+    // back, and are copied into the caller's uploads dir: all three legs declared.
     effects: [
       { kind: 'fs_write', from: 'derived:the generated-assets directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
       { kind: 'fs_read', from: 'derived:the generated asset read back for the delivery copy', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
@@ -1993,12 +1847,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'music_create',
     description: 'Compose original music or a sound piece from a text description. This is NOT text-to-speech (use tts_create to read words aloud). music_create generates an instrumental/musical composition from a creative brief. The engine handles the ENTIRE flow: when you call it, the engine posts a brief acknowledgment to the user and returns immediately. ~10-40 s later when the track is ready, the engine posts the audio file directly to the chat with an inline player. You do NOT get a second turn, just call this tool once and end your turn. Do NOT call it again to check progress. Do NOT mention the music model or any internal system to the user.',
-    // PHASE-5 T8 Step 3 (T8E) — THE WHOLE ASYNC DELIVERY PATH, DECLARED.
-    // The composed-track bytes land in the shared generated-assets directory, are read
-    // back from there, and are copied into the CALLING agent's uploads dir so the
-    // chat has a stable path. Only the last of those three was declared, and it
-    // was prose with no machine-checkable scope. All three corrected at the site
-    // (RULING P5-R14); none adds a refusal (P5-R5).
+    // The track bytes land in the shared generated-assets directory, are read
+    // back, and are copied into the caller's uploads dir: all three legs declared.
     effects: [
       { kind: 'fs_write', from: 'derived:the generated-assets directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
       { kind: 'fs_read', from: 'derived:the generated asset read back for the delivery copy', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
@@ -2057,7 +1907,7 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['description', 'duration_seconds', 'aspect_ratio', 'resolution'],
     },
   },
-  // ── System Control Tools (Phase 5A) ──
+  // ── System Control Tools ──
   {
     name: 'mouse_click',
     description: 'Move the mouse to coordinates and click. Use after screen_screenshot to identify target positions.',
@@ -2139,7 +1989,7 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'serial',
     maxResultTokens: 4000,
   },
-  // ── Headless Browser Tool (Phase 5B) ──
+  // ── Headless Browser Tool ──
   {
     name: 'web_browse',
     description:
@@ -2386,11 +2236,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_set_placeholder',
     description: 'Fill in a {{NEEDS_FROM_USER:LABEL}} placeholder across an imported technique\'s files with a value the user provided. Use this during the setup conversation that follows a technique import: read the IMPORT_MANIFEST.json + README.md in the technique\'s directory, ask the user for each placeholder one at a time, then call this tool with the answer. After every placeholder is filled, call technique_finalize.',
-    // It READS the staged manifest and every file the placeholder appears in
-    // before it substitutes, and declared only the write (RULING P5-R14: the
-    // declaration is corrected at the site). The reference resolves to the
-    // technique's recorded directory through the same read the handler performs
-    // — RULING P5-R15 ADDENDUM 3(1)(a); no template can name that directory.
+    // Reads the staged manifest and every file the placeholder appears in before
+    // substituting; the technique dir resolves through the handler's own reader.
     effects: [
       { kind: 'fs_read', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
       { kind: 'fs_write', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
@@ -2411,12 +2258,9 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_finalize',
     description: 'Finalize an imported technique once every placeholder has been filled in. Removes the staged IMPORT_MANIFEST.json and flips the technique\'s state from needs_setup → draft so it can be published. Only valid after every technique_set_placeholder call has been made; will refuse if any markers remain.',
-    // What it really does: READS the technique's files to confirm no placeholder
-    // remains, then DELETES the staged IMPORT_MANIFEST.json. The `fs_write` it
-    // used to declare was never performed by any of its paths — the state flip is
-    // a database update — so that entry named an effect that did not exist. The
-    // tree is the tightest scope the authorized mechanics can express for a file
-    // inside a resolved directory, and it is recorded rather than widened quietly.
+    // Reads the technique's files to confirm no placeholder remains, then
+    // DELETES the staged IMPORT_MANIFEST.json; the state flip is a database
+    // update, so the tree is the tightest scope that fits a resolved directory.
     effects: [
       { kind: 'fs_read', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
       { kind: 'fs_delete', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
@@ -2499,8 +2343,8 @@ export const toolDefinitions: ToolDefinition[] = [
     description:
       'Re-load the session-start vault snapshot mid-conversation: pinned entries + entries tagged `session_context`. Use when the long-term memory has changed (you or the user just added/edited an important entry) and you want it reflected immediately without waiting for the next session reset. Returns the freshly-loaded entries as a snapshot.',
     effects: [],
-    // PHASE-6 T0C: `session_context` is a vault TAG value this tool selects on,
-    // not a parameter the caller passes.
+    // `session_context` is a vault TAG value this tool selects on, not a
+    // parameter the caller passes.
     advertisedNotDeclared: {
       session_context: 'a vault entry TAG this tool selects on, not a parameter',
     },
@@ -2585,7 +2429,7 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
 
-  // ── DOJO Contacts (v2.9.16) ──
+  // ── DOJO Contacts ──
   // DOJO-native person records, separate from Microsoft/Google contact
   // directories. Agents write to this store as they learn about people
   // the owner interacts with; the owner can read and edit through the
@@ -2692,7 +2536,7 @@ export const toolDefinitions: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {}, required: [] },
   },
 
-  // ── Squad Coordination (Phase 7 / Part X) ──
+  // ── Squad Coordination ──
   // Shared memory for agents in the same group_id. Faster than A2A messages
   // for handing structured context between squad members.
   {
@@ -2907,15 +2751,8 @@ export const toolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// Phase 3 (2026-05-04), register definition-level concurrency overrides
-// with the v2 partitioner. Tools that omit `concurrency` fall through to
-// the hardcoded TOOL_CATEGORY map in concurrency.ts (no behavior change
-// for tools that haven't been migrated).
-//
-// Phase 3.5 (2026-05-04), also register `maxResultTokens` so the cross-file
-// registry covers tools beyond agent/tools.ts (Google, MS, Slides, Office).
-// `resultViewChars` (agent/tools/index.ts) consults the registry first, then
-// this file's `toolDefinitions` array as a backup.
+// Module-load registration of per-tool concurrency and maxResultTokens for the
+// concurrency classifiers; tools omitting `concurrency` fall through to the TOOL_CATEGORY map.
 import { registerConcurrency, registerMaxResultTokens } from '../v2/classifiers/concurrency.js';
 for (const def of toolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);

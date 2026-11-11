@@ -1,35 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE GATES, DECLARED (PHASE-5 T2 Step 3) — what replaced the 15-branch ladder.
-//
-// `executeToolInner` carried a run of fifteen `if (name === …)` branches of FOUR
-// different kinds between the FU-4 deny gate and the dispatch switch. Only six
-// of them called `checkPermission` at all (§T0-PINS P1 measured it); the rest
-// were identity tests, `created_by` lookups and manifest reads written in place.
-// Fifteen branches is fifteen places to forget one, and the survey found exactly
-// that: `web_browse` holds TWO gates in one branch and `web_search`'s gate has
-// no argument to key on, so both are invisible to any "scan the args" approach.
-//
-// This module is the DECLARATION of what each of those branches required.
-// `gatesForCall(name, args)` answers with a list; `evaluateGate` answers each
-// one; `executeToolInner` runs ONE loop. The requirement is now a value you can
-// print, diff and test, instead of control flow you have to read.
-//
-// ── THE RESOURCE GATES COME FROM THE REGISTRY, NOT FROM THIS FILE ──
-// A gate of kind `fs`/`shell`/`net` names only the EFFECT KIND. Where the
-// resource comes from is read off the tool's own declared `effects[]` (T1), so
-// renaming `args.path` breaks the declaration — which the conformance walk
-// already fails on — rather than silently un-gating the tool. That is the whole
-// reason T1 landed before T2.
-//
-// ── RULING P5-R5: PARITY, AND WHAT THAT FORBIDS ──
-// The table below has exactly the fifteen ladder rows in it and nothing else.
-// 104 definitions declare an effect; the ladder gated 15 branches. Wiring
-// "declared effect ⇒ requires a grant" would refuse things the owner's agents do
-// today — `image_create` writing into its own uploads directory, `plaud_*`
-// running `npx`, `calendar_create` sending — and that is an OWNER decision, not
-// a worker's. Declared-but-ungated effects are RECORDED (`ungatedEffects()`
-// below, which is what the telemetry line names) and refused by nothing.
-// ════════════════════════════════════════════════════════════════════════════
+// THE GATES, DECLARED. `gatesForCall` returns the gates for a call; the
+// dispatcher runs ONE loop in order and the FIRST failing message is what the
+// agent sees (scenarios assert on it). Resources come from each tool's declared
+// `effects[]`, so a renamed arg fails the conformance walk, never un-gates.
 
 import { PM_ONLY_WORK_OPS } from '../../tracker/pm-agent.js';
 import { workOperation } from '../../tools/work-verbs.js';
@@ -39,84 +11,39 @@ import { toolCategoryLabels } from '../access/read.js';
 import type { EffectKind } from './types.js';
 import type { AccessChannel } from '@dojo/shared';
 
-/**
- * OWNER-FACING PLATFORM / SESSION / GROUP CONTROLS.
- *
- * Moved here from `agent/tools.ts` in the same change that deleted the ladder,
- * because the set and the gate that enforces it belong together — this is the
- * SAME constant `getFilteredTools` uses to strip the advertised surface, and the
- * two must never become two lists. `agent/tools.ts` imports it back.
- *
- * (`reset_session` is intentionally absent: the Healer legitimately executes it
- * to clear a wedged agent, so it gets its own primary-OR-Healer gate below and
- * stays surface-stripped rather than set-listed.)
- */
+/** OWNER-FACING CONTROLS: the SAME set `getFilteredTools` strips the surface
+ *  with (`agent/tools.ts` imports it back); never let the two become two
+ *  lists. `reset_session` is absent on purpose: the Healer needs it. */
 export const PRIMARY_ONLY_TOOLS = new Set<string>([
-  // Platform / update control
   'apply_update', 'check_for_update',
-  // Capability, channel, voice, and presence configuration
   'set_capability_model', 'set_channel', 'set_voice', 'set_user_presence',
-  // Dashboard drive
   'open_settings', 'dashboard_navigate',
-  // Agent identity + group management
   'update_agent', 'get_agent_profile',
   'create_agent_group', 'update_group', 'assign_to_group', 'delete_group',
 ]);
 
-/** Every gate kind, and the ladder row each one carries. */
+/** Every gate kind; `row` names the old ladder row it carries. */
 export type ToolGate =
-  /** Branches 1, 2 — the fs broker on the declared `fs_read`/`fs_write` resource. */
   | { readonly kind: 'fs'; readonly effect: 'fs_read' | 'fs_write' | 'fs_delete'; readonly row: string }
-  /**
-   * Branch 3, now TWO DOORS (PHASE-5 T3 Step 1). Row 3 encoded one requirement
-   * — *"exec allow/deny + sensitive-file command scan"* — and T3 splits the tool
-   * it guarded into `exec({argv})` and `shell({script})`. Both carry row 3's
-   * requirement; they differ in which grant answers it and in whether the
-   * resource is a vector or a script.
-   */
+  /** Two doors, argv on `proc` and script on `shell`; `exec_allow` covers both unless withheld. */
   | { readonly kind: 'proc'; readonly row: string }
   | { readonly kind: 'shell'; readonly row: string }
-  /** T3 Step 2 — `applescript` as its own class, out of `system_control`. */
   | { readonly kind: 'applescript'; readonly row: string }
-  /** Branches 5, 6, 14b — the net broker. `subAgentsOnly` is branch 14b exactly. */
   | { readonly kind: 'net'; readonly subAgentsOnly?: true; readonly row: string }
-  /** Branch 4 — `can_spawn_agents`. */
   | { readonly kind: 'spawn'; readonly row: string }
-  /** Branches 8p, 9, 13 — the primary-only wall. */
   | { readonly kind: 'primary_only'; readonly message: string; readonly row: string }
-  /**
-   * Row 7, RE-KEYED (UX-ACCESS A1). It was `primary_only`, which is the census's
-   * §0 finding stated as code: exactly one agent on the box could reach a human.
-   * It now names the CHANNEL and asks that agent's grant. Post-migration only the
-   * primary holds one, so it refuses exactly who it refused — with the same
-   * message, which is deliberately unchanged here (A3 owns the wording once the
-   * owner has a panel that can make the sentence false).
-   */
+  /** Asks the CHANNEL for its grant, not a role; sentence byte-identical by design. */
   | { readonly kind: 'channel'; readonly channel: AccessChannel; readonly message: string; readonly row: string }
-  /**
-   * Row 16 — the credential store. NEW, and the one refusal A1 adds: the five
-   * credential tools declare `secrets` and `gatesForCall` minted nothing, so the
-   * effect landed in `ungatedEffectKinds` and any agent could delete any row
-   * (census C3). `service` is null for `credential_list`, which names none and
-   * therefore gates on holding ANY grant.
-   */
+  /** `service: null` (credential_list) gates on holding ANY `secrets` grant. */
   | { readonly kind: 'credential'; readonly service: string | null; readonly row: string }
-  /** Row 17 — the positive CATEGORY grant, at the executor (UX-ACCESS A3 rider).
-   *  Why, the order, and the migration proof: `the-category-gate.test.ts`. */
+  /** The positive CATEGORY grant, checked LAST; proof: `the-category-gate.test.ts`. */
   | { readonly kind: 'category'; readonly row: string }
-  /** Branch 10 — primary OR the Healer. */
   | { readonly kind: 'primary_or_healer'; readonly row: string }
-  /** v3.5 — dojo_inspect: the main agent, the Healer, or an agent whose grant names it (`inspect/grant.ts`). */
   | { readonly kind: 'inspect_grant'; readonly row: string }
-  /** Branch 8 — the PM allowlist, keyed on the OPERATION not the name. */
   | { readonly kind: 'pm_only_operation'; readonly operation: string; readonly row: string }
-  /** Branches 11, 12 — only the creator dismisses. */
   | { readonly kind: 'creator_only'; readonly entity: 'agent' | 'group'; readonly ref: string; readonly row: string }
-  /** Branches 14a, 15 — the manifest's `system_control`, category-derived. */
   | { readonly kind: 'system_control'; readonly category: string; readonly row: string };
 
-/** Branch 15's category derivation, verbatim. T3 Step 2 decomposes the GRANT;
- *  the mapping from tool to category is already here and already honoured. */
 const SYSTEM_CONTROL_CATEGORY: Readonly<Record<string, string>> = {
   mouse_click: 'mouse',
   mouse_move: 'mouse',
@@ -131,47 +58,17 @@ const OWNER_FACING_TOOLS = new Set(['dreamer_run_now', 'cost_summary']);
 const IMESSAGE_PRIMARY_ONLY = new Set(['imessage_send', 'imessage_list_contacts']);
 const CREDENTIAL_TOOLS = new Set(['credential_list', 'credential_get', 'credential_add', 'credential_update', 'credential_delete']);
 
-/**
- * THE FIFTEEN ROWS, as a list of gates for THIS call.
- *
- * Ordered exactly as the ladder was, because order is observable: an agent that
- * fails two gates has always seen the first one's message, and a scenario that
- * asserts on that message is asserting on the order.
- */
 export function gatesForCall(name: string, args: Record<string, unknown>): ToolGate[] {
   const gates: ToolGate[] = [];
 
-  // 1 — file_read / file_list
   if (FS_READ_TOOLS.has(name)) gates.push({ kind: 'fs', effect: 'fs_read', row: '1' });
-  // 2 — file_write / file_append / file_patch
   if (FS_WRITE_TOOLS.has(name)) gates.push({ kind: 'fs', effect: 'fs_write', row: '2' });
-  // 3 — the exec family, two doors since PHASE-5 T3. `3` is `exec({argv})`
-  // against the `proc` grant; `3s` is `shell({script})` against the `shell`
-  // grant. Both are ladder row 3's requirement; neither is a new refusal class
-  // (an agent's `exec_allow` projects to both kinds unless its manifest
-  // explicitly withholds the shell one — `brokers/grants.ts`).
   if (name === 'exec') gates.push({ kind: 'proc', row: '3' });
   if (name === 'shell') gates.push({ kind: 'shell', row: '3s' });
-  // 4 — spawn_agent
   if (name === 'spawn_agent') gates.push({ kind: 'spawn', row: '4' });
-  // 5 — web_fetch (hostname of args.url) · 6 — web_search (a FIXED host, no arg)
+  // web_search's net gate has no argument to key on: it is a fixed host.
   if (name === 'web_fetch' || name === 'web_search') gates.push({ kind: 'net', row: name === 'web_fetch' ? '5' : '6' });
-  // 7 — the iMessage primary-only wall
-  //
-  // UX-REPAIR ROUND 7 T29: the WALL is unchanged and correct — only its guidance is. In
-  // round-7 S3 a sub-agent was told to escalate and nothing else, so it escalated about the
-  // wrong channel: iMessage was disabled on that box while SMS was enabled with the owner's
-  // number approved. The refusal now names the channel that IS live, read from config at the
-  // moment of refusal, so the escalation the sub-agent is being sent on can be about the door
-  // that would actually open. `sms_send` is primary-only too (`cat/comms.ts`), so this is not
-  // an offer of a tool it may call — it is the fact the primary needs to hear. Nothing live:
-  // the sentence is the one that has always been here, byte for byte.
-  //
-  // UX-ACCESS A1: the KIND is `channel` now — the requirement is "holds the
-  // iMessage grant", not "is the role singleton". The sentence below is
-  // unchanged byte for byte, because post-migration the only agent holding that
-  // grant IS the primary and a refusal that started describing a grant nobody
-  // can see yet would be worse guidance, not better.
+  // Guidance only: when SMS is live the refusal names it, so escalation targets a door that can open.
   if (IMESSAGE_PRIMARY_ONLY.has(name)) {
     const sms = getSmsReachability();
     gates.push({
@@ -186,14 +83,11 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
           : ' Escalate to the primary agent instead.'),
     });
   }
-  // 8 — PM_ONLY_WORK_OPS, keyed on the OPERATION (PHASE-2 T8V): after the verb
-  // collapse these are three ACTIONS on one verb, so a name-keyed gate would
-  // either lock nothing or start refusing the day a non-PM action is added.
+  // Keyed on the OPERATION: three actions on one verb, so name-keying locks nothing.
   const pmOnlyOp = workOperation(name, args);
   if (pmOnlyOp !== null && PM_ONLY_WORK_OPS.has(pmOnlyOp)) {
     gates.push({ kind: 'pm_only_operation', operation: pmOnlyOp, row: '8' });
   }
-  // 9 — PRIMARY_ONLY_TOOLS
   if (PRIMARY_ONLY_TOOLS.has(name)) {
     gates.push({
       kind: 'primary_only',
@@ -201,15 +95,10 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
       message: `Permission denied: ${name} is an owner-facing control reserved for the primary agent. The request was not performed. Escalate to the primary agent if this needs to happen.`,
     });
   }
-  // 10 — reset_session: primary OR the Healer, and deliberately not in the set
-  // above (the Healer legitimately calls it to clear a wedged agent).
   if (name === 'reset_session') gates.push({ kind: 'primary_or_healer', row: '10' });
   if (name === 'dojo_inspect') gates.push({ kind: 'inspect_grant', row: '10i' });
-  // 11, 12 — only the creator dismisses. An unresolved ref falls through to the
-  // handler's friendlier not-found error, exactly as before.
   if (name === 'kill_agent') gates.push({ kind: 'creator_only', entity: 'agent', ref: String(args.agent_id ?? ''), row: '11' });
   if (name === 'delete_group') gates.push({ kind: 'creator_only', entity: 'group', ref: String(args.group_id ?? ''), row: '12' });
-  // 13 — owner-facing
   if (OWNER_FACING_TOOLS.has(name)) {
     gates.push({
       kind: 'primary_only',
@@ -217,48 +106,27 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
       message: `Permission denied: only the primary agent can call ${name}.`,
     });
   }
-  // 14 — web_browse holds TWO gates and one `authorize()` call cannot express
-  // it: the manifest's `system_control`, AND — for a SUB-AGENT navigating to a
-  // url — `network_domains` on that url. §T0-PINS P1 flags this as one of the
-  // two easiest to lose; here it is two rows in a list rather than a nested if.
+  // Two gates on one tool: system_control always, plus net on the url for a sub-agent navigating.
   if (name === 'web_browse') {
     gates.push({ kind: 'system_control', category: 'web_browse', row: '14a' });
     if (args.action === 'navigate' && args.url) gates.push({ kind: 'net', subAgentsOnly: true, row: '14b' });
   }
-  // 15 — the HID / screen family, category-derived. PHASE-5 T3 Step 2 lifts
-  // `applescript` OUT of this row into its own gate: osascript is a second
-  // interpreter, and the thing that has to be authorized about it is the SCRIPT,
-  // which `system_control`'s category compare never looked at. The grant
-  // derivation is parity-preserving (a `'*'` manifest still covers it, a LIST
-  // must name it — exactly what the category compare already required), so no
-  // live manifest changes meaning; what is new is that the script text is now
-  // audited, which is the `system_control:'*'` bypass closing.
+  // applescript leaves this row to its own kind so the script text is audited.
   const controlCategory = SYSTEM_CONTROL_CATEGORY[name];
   if (controlCategory === 'applescript') gates.push({ kind: 'applescript', row: '15' });
   else if (controlCategory) gates.push({ kind: 'system_control', category: controlCategory, row: '15' });
-  // 16 — the credential store (UX-ACCESS A1). The sixteenth row, and the first
-  // added since the ladder was declared: `ungatedEffectKinds` has been RECORDING
-  // `secrets` on every one of these calls since T2, which is the enumeration
-  // RULING P5-R5 said to decide from. The owner decided.
   if (CREDENTIAL_TOOLS.has(name)) {
     const service = typeof args.service_name === 'string' ? args.service_name : null;
     gates.push({ kind: 'credential', service, row: '16' });
   }
-  // 17 — LAST (an earlier row's sentence stays the one the agent reads); a tool the index does not name mints nothing. dojo_inspect's grant is row 10i's.
+  // LAST so earlier sentences win; a tool the index does not name mints nothing.
   if (name !== 'dojo_inspect' && toolCategoryLabels(name).length > 0) gates.push({ kind: 'category', row: '17' });
 
   return gates;
 }
 
-/**
- * EFFECTS A TOOL DECLARES THAT NOTHING GATES, for this call.
- *
- * RULING P5-R5 says a declared-but-ungated effect gets NO new refusal and IS
- * recorded. This is the recording: the dispatcher logs it, nothing refuses on
- * it, and when the owner or a later task decides one of these should gate,
- * this list is the enumeration to decide FROM — derived from the registry at
- * the moment of the call rather than from anybody's memory of the toolbox.
- */
+/** EFFECTS A TOOL DECLARES THAT NOTHING GATES: recorded by the dispatcher,
+ *  refused by nothing; the enumeration an owner decides FROM to gate one. */
 export function ungatedEffectKinds(name: string, gates: readonly ToolGate[]): EffectKind[] {
   const declared = effectsFor(name);
   if (!declared || declared.length === 0) return [];

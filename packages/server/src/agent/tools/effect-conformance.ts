@@ -1,29 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE EFFECTS-DECLARATION WALK (PHASE-5 T1)
-//
-// One module, two readers: the conformance test that refuses an undeclared
-// definition, and T7's effect-coverage exit gate, which the plan requires to
-// report FROM THE REGISTRY and never from historical usage (research 19 §3.3).
-//
-// ── THE INVERSION, AND WHY IT HAD TO HAPPEN ──
-// The plan's Step 1 asked for the opposite of what this module does: it named
-// six field names (`path|file_path|paths|url|command|script`) and asked every
-// definition whose schema mentioned one to declare an effect. Measured over all
-// 320 definitions at `d0b3320`, that list matches 39 of them; it misses
-// `file_paths`, which is `show_to_user`'s own field, and it cannot see
-// `save_technique.dependencies.repos[].url` ("Git repos to clone") two levels
-// down. Worse, a scan of ANY depth is structurally blind to the effects with no
-// resource argument at all: `web_search` only ever reaches a fixed Brave host,
-// `spawn_agent` creates a whole new effect surface, the four HID tools shell out
-// to `cliclick`/`screencapture`, and all eight Plaud tools run
-// `npx -y @plaud-ai/cli@latest` per call.
-//
-// So the DECLARATION on the definition is the source of truth, and this scan is
-// a TRIPWIRE in the other direction: it asserts that no path/url/command-shaped
-// field sits on a definition that says nothing about it. A field is "covered"
-// by an effect that names it, or by a `nonEffects` ruling that says why it is
-// inert. Silence is the only thing that fails.
-// ════════════════════════════════════════════════════════════════════════════
+// THE EFFECTS-DECLARATION WALK, read by the conformance test and the effect-coverage gate.
+// The declaration is the source of truth; this scan is the tripwire the other way: silence fails.
+// Coverage is reported from the registry, never from usage; a field scan alone misses fixed-host and
+// no-argument effects (web_search) and nested fields (repos[].url), so the declaration is the truth.
 
 import {
   EFFECT_FROM_ARGS,
@@ -34,43 +12,26 @@ import {
 } from './types.js';
 
 /**
- * FIELD NAMES THAT LOOK LIKE A RESOURCE. Every one was derived by reading all
- * 320 definitions at `d0b3320` — the plan's original six are the first row, the
- * rest are what a recursive walk of the real schemas turned up. The set is
- * deliberately generous: a false positive costs one `nonEffects` line with a
- * reason, a false negative costs an undeclared effect, and only one of those is
- * an incident.
+ * FIELD NAMES THAT LOOK LIKE A RESOURCE (paths, urls, commands, at any depth). Deliberately
+ * generous: a false positive costs one `nonEffects` line, a false negative an undeclared effect.
  */
 export const EFFECTFUL_FIELD_NAMES: ReadonlySet<string> = new Set([
-  // the plan's own list
   'path', 'file_path', 'paths', 'url', 'command', 'script',
-  // filesystem paths the plan's list misses
   'file_paths', 'attach_paths', 'input_paths', 'save_path', 'source_path',
   'image_path', 'install_to', 'install_in', 'destination', 'file', 'files',
   'output_filename', 'filename', 'entry_filename', 'attachments',
-  // urls the plan's list misses
   'image_url', 'background_image_url', 'link_url', 'video_url', 'source_url',
 ]);
 
-/** One property of a tool's input schema, at any depth. */
 export interface SchemaField {
   /** Dotted path with `[]` for array elements: `dependencies.repos[].url`. */
   path: string;
-  /** The declared JSON-schema type, or `?` when the property declares none. */
   type: string;
 }
 
 /**
- * Every property of a tool's input schema, recursively. Objects recurse through
- * `properties`; arrays yield their ELEMENT as `<path>[]` and then recurse into
- * it (whether or not the item declares `type: 'object'` — several schemas in
- * this tree declare `properties` on an item with no type, and a walk that
- * trusted `type` would have skipped `save_technique`'s repo clones).
- *
- * The element entry matters as much as the container: `imessage_send`'s
- * `attachments` is an array of absolute paths, and the thing a broker resolves
- * is each ELEMENT, so the declaration says `args.attachments[]` and this walk is
- * what makes that path real.
+ * Every schema property, recursively, through `properties` and array `items`. Arrays yield the
+ * ELEMENT as `<path>[]`: brokers resolve elements, and untyped items with `properties` recurse.
  */
 export function walkSchemaFields(def: Pick<ToolDefinition, 'input_schema'>): SchemaField[] {
   const out: SchemaField[] = [];
@@ -98,13 +59,11 @@ export function walkSchemaFields(def: Pick<ToolDefinition, 'input_schema'>): Sch
   return out;
 }
 
-/** The leaf name of a dotted path: `dependencies.repos[].url` → `url`. */
 export function leafFieldName(path: string): string {
   const last = path.split('.').pop() ?? path;
   return last.replace(/\[\]$/, '');
 }
 
-/** Does this definition's schema really contain this dotted path? */
 export function schemaHasPath(def: Pick<ToolDefinition, 'input_schema'>, path: string): boolean {
   return walkSchemaFields(def).some((f) => f.path === path);
 }
@@ -117,41 +76,26 @@ export function declaredSecretFields(def: Pick<ToolDefinition, 'fields'>): strin
     .map(([path]) => path);
 }
 
-/** Problems found on one definition, each already phrased as a failure line. */
 export interface ConformanceProblem {
   tool: string;
   clause: string;
   detail: string;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// THE ADVERTISED-VS-DECLARED WALK (PHASE-6 T0C)
-//
-// The owner's report, in his words: "descriptions and hints not matching actual
-// parameters." A tool's description is a PROMISE to the model in exactly the way
-// its `input_schema` is, and nothing checked the two against each other. This
-// walk rides the same 438-definition runtime census the effects walk already
-// runs, because the two surfaces it compares live on the same object: a static
-// scan cannot see the 117 `user_` twins (spread-generated at module load) and
-// under-reports the declared surface by one property on 234 definitions (the
-// `account` parameter is injected at module load by four family modules). A
-// census that greps is a census that lies, in the direction of "no mismatch".
-// ════════════════════════════════════════════════════════════════════════════
+// THE ADVERTISED-VS-DECLARED WALK: a description is a PROMISE to the model exactly as
+// `input_schema` is, so every advertised parameter token must resolve to the declared surface
+// or a ruling. Runtime defs only: a static scan cannot see the spread twins or injected props.
 
-/** What the walk needs about the REST of the surface to judge one definition. */
 export interface AdvertisementContext {
-  /** Every live tool name — a description may legitimately name another tool. */
+  /** Every live tool name: a description may legitimately name another tool. */
   toolNames: ReadonlySet<string>;
   /** Tool name -> its declared property names, so a cross-tool reference resolves. */
   declaredByTool: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /**
- * A token being ADVERTISED as a parameter. Two shapes, both derived from reading
- * the real corpus rather than invented: a backticked identifier (`` `anchor_time` ``)
- * and a named argument with a value (`local_time="2026-08-05T13:00"`). Bare words
- * in prose are deliberately NOT a shape — "pass the title" names no parameter, and
- * a scan that flagged it would drown its own findings.
+ * A token ADVERTISED as a parameter: a backticked identifier, or `name=<value>` (both shapes
+ * from the real corpus). Bare prose is NOT a shape: it names no parameter, drowns the findings.
  */
 const ADVERTISED_TOKEN =
   /`([a-z][a-z0-9]*(?:_[a-z0-9]+)*)`|\b([a-z][a-z0-9]*(?:_[a-z0-9]+)*)\s*=\s*(?:["'“]|true\b|false\b|\d)/g;
@@ -159,7 +103,6 @@ const ADVERTISED_TOKEN =
 /** How far back a tool name may sit and still own the token after it. */
 const CROSS_TOOL_WINDOW = 70;
 
-/** Every description string this definition carries, with where it lives. */
 export function describedStrings(def: Pick<ToolDefinition, 'description' | 'input_schema'>): Array<{ where: string; text: string }> {
   const out: Array<{ where: string; text: string }> = [];
   if (typeof def.description === 'string' && def.description) out.push({ where: 'description', text: def.description });
@@ -180,7 +123,6 @@ export function describedStrings(def: Pick<ToolDefinition, 'description' | 'inpu
   return out;
 }
 
-/** Every enum value declared anywhere on this definition's schema. */
 export function declaredEnumValues(def: Pick<ToolDefinition, 'input_schema'>): Set<string> {
   const out = new Set<string>();
   const recurse = (node: unknown): void => {
@@ -198,18 +140,10 @@ export function declaredEnumValues(def: Pick<ToolDefinition, 'input_schema'>): S
 }
 
 /**
- * THE WALK. Every parameter-shaped token this definition's own text advertises
- * resolves to something real, or carries a ruling with a reason.
- *
- * Clause 9  every advertised token is (a) a property of THIS tool's schema at any
- *           depth, (b) an enum VALUE this tool declares, (c) another live tool's
- *           name, (d) a parameter of another live tool NAMED within the preceding
- *           70 characters — `work_update(action="get")` in `send_to_agent`'s
- *           description is a true cross-reference, not a false promise — or (e) a
- *           ruling in `advertisedNotDeclared` with a non-empty reason.
- * Clause 9b every ruling still describes the tree: a ruling for a token this
- *           definition no longer advertises, or that it now declares, is STALE.
- *           The same anti-rot rule `nonEffects` and the door census already carry.
+ * THE WALK. Clause 9: every advertised token is a property of this schema at any depth, an
+ * enum VALUE declared, another live tool's name, that tool's parameter named within
+ * CROSS_TOOL_WINDOW characters, or a ruling with a reason. Clause 9b: stale rulings (token
+ * no longer advertised, or now declared) fail, as `nonEffects` rulings already do.
  */
 export function checkAdvertisedParameters(def: ToolDefinition, ctx: AdvertisementContext): ConformanceProblem[] {
   const problems: ConformanceProblem[] = [];
@@ -231,7 +165,6 @@ export function checkAdvertisedParameters(def: ToolDefinition, ctx: Advertisemen
       advertised.add(token);
       if (declared.has(token) || enums.has(token) || ctx.toolNames.has(token)) continue;
 
-      // (d) a parameter of another tool this sentence has just named.
       const before = text.slice(Math.max(0, m.index - CROSS_TOOL_WINDOW), m.index);
       let crossReferenced = false;
       for (const [other, otherProps] of ctx.declaredByTool) {
@@ -272,29 +205,13 @@ export function checkAdvertisedParameters(def: ToolDefinition, ctx: Advertisemen
 }
 
 /**
- * THE WALK. Returns every problem on one definition; an empty array is a pass.
- *
- * Clause 1  a definition with NO `effects` array at all is a refusal — this is
- *           the one the plan's Step 1 is really about, and it is what a spread
- *           that drops the field or an `as ToolDefinition` cast would trip.
- * Clause 2  every declared `kind` is one of the declared kinds.
- * Clause 3  every `from` carries one of the three prefixes.
- * Clause 4  every `args.<path>` resolves to a real property of THIS tool's own
- *           schema — a renamed field then fails the build instead of quietly
- *           un-declaring an effect.
- * Clause 5  every `nonEffects` key resolves to a real property too, and carries
- *           a non-empty reason.
- * Clause 6  THE TRIPWIRE. Every resource-shaped field is covered by an effect
- *           that names it or by a ruling that explains it.
- * Clause 7  every declared secret field resolves to a real property.
- * Clause 7b every `fields` key resolves to a real property, and every
- *           `requiredNotEnforced` carries a reason AND names a genuinely
- *           required field (PHASE-5 T3 Step 3 — the validation boundary reads
- *           this map by field name, so a rename must fail the build).
- * Clause 8  the declarations stay OFF the wire: no `effects`, `nonEffects`,
- *           `fields` or `secret` key anywhere inside `input_schema`, because
- *           `input_schema` is passed to the provider verbatim and the
- *           cache-prefix golden hashes it (OR7 / roadmap #10).
+ * THE WALK; empty array passes. Clause 1: a missing `effects` is a refusal (a spread that drops
+ * it trips here). 2-5: kinds, `from` prefixes with non-empty targets, `args.<path>` and
+ * `nonEffects` keys resolve, each ruling with a reason; a renamed field fails the build instead
+ * of quietly un-declaring an effect.
+ * 6 (tripwire): every resource-shaped field covered by an effect or a ruling. 7/7b: `fields`
+ * keys resolve; `requiredNotEnforced` needs a reason and a truly required field. 8: no
+ * declaration key inside `input_schema`, which goes to the provider verbatim, golden-hashed.
  */
 export function checkEffectDeclarations(def: ToolDefinition): ConformanceProblem[] {
   const problems: ConformanceProblem[] = [];
@@ -349,10 +266,8 @@ export function checkEffectDeclarations(def: ToolDefinition): ConformanceProblem
       .map((f) => f.slice(EFFECT_FROM_ARGS.length)),
   );
   const ruled = new Set(Object.keys(def.nonEffects ?? {}));
-  // A container is covered by a declaration on anything INSIDE it: declaring
-  // `args.files[].path` says what `files` is for, and declaring
-  // `args.attachments[]` says what `attachments` is for. Anything else would
-  // force a second, redundant declaration per array and per nested object.
+  // A container is covered by a declaration on anything INSIDE it (`args.files[].path`
+  // covers `files`); anything else forces a redundant declaration per array/object.
   const coveredBySelfOrDescendant = (path: string): boolean => {
     for (const declared of [...declaredArgPaths, ...ruled]) {
       if (declared === path) return true;
@@ -372,14 +287,8 @@ export function checkEffectDeclarations(def: ToolDefinition): ConformanceProblem
     }
   }
 
-  // Clause 7b, PHASE-5 T3 Step 3: EVERY `fields` key resolves, not only the
-  // secret ones. The validation boundary reads `allowEmpty` and
-  // `requiredNotEnforced` off this map by field name, so a renamed property
-  // would silently drop the declaration — and dropping `allowEmpty` turns a
-  // working call into a refusal (`file_write({content: ""})`), which is the
-  // exact class of silent capability loss this phase exists to prevent. A
-  // `requiredNotEnforced` on a field that is not actually required is dead
-  // paperwork claiming to be a decision, so it is caught here too.
+  // Clause 7b covers EVERY `fields` key (not only secret ones): the validation boundary reads
+  // `allowEmpty`/`requiredNotEnforced` off this map by name, so a rename fails here, not a silent drop.
   for (const [path, decl] of Object.entries(def.fields ?? {})) {
     if (!paths.has(path)) {
       push('7b field resolves', `fields["${path}"] is declared but is not a property of this tool's input_schema`);
