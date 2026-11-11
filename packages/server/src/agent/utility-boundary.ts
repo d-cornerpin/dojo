@@ -1,11 +1,6 @@
 import { utilityDial, utilityOutputCap } from './utility-dial.js';
 
-/**
- * t283: the output a utility call can EMIT, which is all the boundary may reserve for it. The agent's
- * everyday reserve (min(4096, model max)) is room for a conversational answer; a title call that is
- * capped at 64 tokens and charged 4,096 has a budget of 0 on any window under ~4.3K. `null` for a
- * call that is not a declared utility dial: it keeps the everyday reserve, untouched.
- */
+// Reserve only what the declared dial may emit (cap, or an ask up to model max); null = reserve untouched.
 export function utilityBoundaryOutputTokens(
   purpose: string | null | undefined,
   modelMaxOutputTokens: number,
