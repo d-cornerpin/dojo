@@ -1,30 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════
-// HEALER (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// The five tools `tools/categories.ts` files under "Healer (self-repair)". The
-// two clock tools that sat immediately after them in the switch went to
-// `cat/clock.ts` — they are pure functions with no effect and no gate, and
-// filing them here would have been convenience, not category.
-//
-// RELOCATION, NOT REWRITE, AND THREE PLACES WHERE THAT IS LOAD BEARING:
-//   • `healer_recent_actions`'s empty result, `healer_action_detail`'s
-//     not-found and `healer_mark_applied`'s already-applied all set `content`
-//     and DELIBERATELY DO NOT SET `isError` — they are answers, not failures.
-//     Each returns `isError: false` here. Grading them would be a new refusal.
-//   • `healer_propose`'s evidence gate keeps its full worked-example message
-//     verbatim: T3C declared `healer_propose.evidence` `requiredNotEnforced`
-//     precisely because this message TEACHES and the boundary's generic one
-//     would have flattened it.
-//   • Every `friendlyDbError(err, '<tool>')` keeps its own tool name, so the
-//     operator-facing DB error still names the call that failed.
-//
-// ── THE LAZY LOADS THAT DIED, EACH MEASURED FIRST ──
-// `../config/platform.js` (×3 — `isHealerAgent`, already a static import in
-// `agent/tools.ts`), `../healer/diagnostic.js`, and `../gateway/ws.js` (a
-// second route to the `broadcast` that file already imported statically — the
-// same redundant shape §T0-PINS P8 found at `v2/loop.ts:7583`). None is on the
-// sanctioned list; none of the three modules imports anything from the
-// toolbox, so none broke a cycle.
+// HEALER (self-repair) tools: `healer_log_action`, `healer_propose`, `healer_recent_actions`,
+// `healer_action_detail`, `healer_mark_applied`. Three invariants that must not drift:
+// - empty, not-found and already-applied answers keep `isError: false`: they are answers, not
+//   failures, and grading them would be a new refusal.
+// - `healer_propose`'s evidence gate keeps its full worked-example message: it teaches, and the
+//   boundary's generic message would flatten that.
+// - every `friendlyDbError(err, '<tool>')` keeps its own tool name, so the operator-facing DB
+//   error still names the call that failed.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -51,10 +33,8 @@ export const healerHandlers: ToolHandlerMap = {
   },
 
   async healer_propose({ args }) {
-    // Evidence gate. Each bullet must be a non-empty string and the
-    // list itself must be non-empty. The point is to make it
-    // impossible for the healer to propose a fix backed by nothing
-    // (see migration 055 for the why).
+    // Evidence gate: every bullet a non-empty string and the list non-empty, so a fix backed by
+    // nothing cannot be proposed.
     const rawEvidence = args.evidence;
     let evidenceList: string[] = [];
     if (Array.isArray(rawEvidence)) {
@@ -74,14 +54,9 @@ export const healerHandlers: ToolHandlerMap = {
       };
     }
 
-    // Provenance capture. The stale-proposal sweep matches a pending
-    // proposal back to the diagnostic anomaly that produced it, so it
-    // needs a stable key: the agent it concerns (agent_id) and/or the
-    // diagnostic code. The model supplies these when it can; we also
-    // auto-fill the diagnostic_id and (when the model left it blank)
-    // the diagnostic_code from the current run's snapshot, matching on
-    // the agent. Without any of this, the proposal is only ever closed
-    // by the age-cap backstop, never by issue-matching.
+    // Provenance: the stale-proposal sweep re-finds the diagnostic that produced a proposal, so it
+    // needs a stable key (agent_id, diagnostic_code), filled from the model when it can; without
+    // the key the proposal only ever closes via the age-cap backstop, never by issue-matching.
     const proposalAgentId = (args.agent_id as string) ?? null;
     let diagnosticCode = typeof args.diagnostic_code === 'string' && args.diagnostic_code.trim().length > 0
       ? (args.diagnostic_code as string).trim()
@@ -92,10 +67,8 @@ export const healerHandlers: ToolHandlerMap = {
       if (snapshot) {
         diagnosticId = snapshot.id;
         if (!diagnosticCode && proposalAgentId) {
-          // Auto-fill the code from the current run: if the agent this
-          // proposal targets has exactly one anomaly code open, adopt
-          // it. If it has several, leave the code blank (the sweep
-          // will fall back to agent-scope matching, which is correct).
+          // Auto-fill the code only when this agent has exactly one code open; with several, leave
+          // it blank so the sweep falls back to agent-scope matching.
           const codesForAgent = [...new Set(
             snapshot.items.filter((it) => it.agentId === proposalAgentId).map((it) => it.code),
           )];
@@ -103,9 +76,7 @@ export const healerHandlers: ToolHandlerMap = {
         }
       }
     } catch {
-      // Snapshot unavailable (e.g. no cycle has run this process).
-      // Fall back to whatever the model supplied; provenance may be
-      // partial, which is fine, the sweep degrades safely.
+      // No snapshot this process: fall back to model-supplied keys; the sweep degrades safely.
     }
 
     const propDb = getDb();
@@ -127,9 +98,8 @@ export const healerHandlers: ToolHandlerMap = {
         proposalAgentId,
         JSON.stringify(evidenceList),
       );
-      // FA-DB4: typed via HealerProposalEvent (shared ws.ts) so the cast is gone;
-      // title/severity are validated strings above (the boundary's required check
-      // + the DB insert casts them as string), so the same cast is faithful here.
+      // Typed via HealerProposalEvent (shared ws.ts): title and severity are validated strings
+      // above, so the casts here are faithful.
       broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title as string, severity: args.severity as string } });
       return {
         content: `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`,
@@ -141,10 +111,8 @@ export const healerHandlers: ToolHandlerMap = {
   },
 
   async healer_recent_actions({ agentId, args }) {
-    // v2.3.19 (error-handling-spec Phase 3, Dreamer-style log
-    // discipline). Returns ONLY (timestamp, category, agent, result)
-    //, no descriptions. Capped to keep the Healer's prompt from
-    // growing unbounded.
+    // Returns only (timestamp, category, agent, result), no descriptions, capped: the Healer's
+    // prompt must not grow unbounded.
     if (!isHealerAgent(agentId)) {
       return { content: 'This tool is only available to the Healer agent.', isError: true };
     }
@@ -232,9 +200,7 @@ export const healerHandlers: ToolHandlerMap = {
   },
 
   async healer_mark_applied({ agentId, args }) {
-    // v2.3.19 (error-handling-spec Phase 3), close the loop on
-    // approved proposals so the Vitals dashboard can show pending →
-    // approved → applied as three distinct states.
+    // Closes the loop so the Vitals dashboard shows pending, approved and applied as three states.
     if (!isHealerAgent(agentId)) {
       return { content: 'This tool is only available to the Healer agent.', isError: true };
     }
@@ -271,10 +237,8 @@ export const healerHandlers: ToolHandlerMap = {
             result_summary = COALESCE(?, result_summary)
         WHERE id = ?
       `).run(notes, row.id);
-      // Broadcast so the dashboard updates the Vitals card from
-      // "approved" to "applied" in real time.
+      // Broadcast so the Vitals card moves from "approved" to "applied" in real time.
       try {
-        // FA-DB4: typed via HealerProposalEvent (shared ws.ts); cast removed.
         broadcast({
           type: 'healer:proposal',
           data: { id: row.id, status: 'applied' },

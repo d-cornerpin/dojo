@@ -1,36 +1,15 @@
-// ════════════════════════════════════════════════════════════════════════════
-// FILES, THE SCRATCHPAD AND THE TWO EXEC DOORS (PHASE-5 T4 — relocated from
-// `agent/tools.ts`)
-//
-// Nine dispatch keys — `file_read`, `file_write`, `file_append`, `file_patch`,
-// `file_list`, `scratchpad_set`, `scratchpad_clear`, and PHASE-5 T3's two exec
-// doors `exec` (argv, no shell) and `shell` (an audited script under /bin/zsh
-// behind its own grant class) — together with the implementations they call.
-// Research 05 §1 calls "File & System" the worst-mixed category in the tree;
-// HID, the clock tools and the web verbs already left, and this is what the
-// label actually meant.
-//
-// RELOCATION, NOT REWRITE, and five things here are load bearing:
-//
-// 1. **`executeFilePatch` stays EXPORTED** — `agent/__tests__/file-patch.test.ts`
-//    imported it via a re-export in `agent/tools.ts`; that file is DELETED and
-//    the test imports HERE, which exposed the cycle `tools/handlers.ts` records.
-// 2. **T3's exec seam is untouched.** `executeArgv` and `executeShellScript`
-//    call `runProcess` with an argv and with `/bin/zsh -c <script>`
-//    respectively; the approval gate and the dispatcher answer the destructive
-//    question from ONE function (`brokers/exec-seam.ts`) which is NOT here, so
-//    "the EXACT call executeTool makes" stays a fact rather than a coincidence.
-// 3. **`file_write(content:"")` writes an empty file.** T3C's `allowEmpty`
-//    declaration exists because a schema-only validator would have refused a
-//    call that works today; nothing in these bodies re-validates.
-// 4. **`coerceNumberArg` is arg REPAIR, not validation** — `"5"` -> `5` on
-//    OPTIONAL fields, message-less, and it runs INSIDE the handler, after the
-//    boundary. That ordering is T3C's and it is unchanged.
-// 5. **The canvas sync after every write** (`syncCanvasAfterWrite`) is what
-//    refreshes a document the user is watching; it lives in
-//    `agent/tools/util.ts` so this module, the office block and the pdf
-//    interceptor all call the SAME copy.
-// ════════════════════════════════════════════════════════════════════════════
+// Files, the scratchpad and the two exec doors (`exec`: argv, no shell;
+// `shell`: an audited /bin/zsh script behind its own grant), plus file and
+// scratchpad keys. Five things here are load bearing:
+// 1. `executeFilePatch` stays EXPORTED, `agent/__tests__/file-patch.test.ts`
+//    imports it from HERE.
+// 2. The destructive-question authority is ONE function in
+//    `brokers/exec-seam.ts`, NOT here.
+// 3. `file_write(content:"")` writes an empty file; nothing here re-validates.
+// 4. `coerceNumberArg` is arg REPAIR, not validation, and runs INSIDE the
+//    handler, after the boundary. Keep that ordering.
+// 5. `syncCanvasAfterWrite` lives in `agent/tools/util.ts` so the office block
+//    and the pdf interceptor call the SAME copy as this module.
 
 import * as effectFs from '../../effects/fs.js';
 import path from 'node:path';
@@ -52,12 +31,8 @@ function processAuditFor(agentId: string): ProcessAudit {
 }
 
 /**
- * `exec({argv})` — ONE program, literal arguments, NO shell.
- *
- * The authority question was already answered at the door (`gates.ts` row 3 →
- * `authorizeExecShapedCall` → `authorizeArgv`), including the global denies, the
- * shell-interpreter refusal and the tokenized sensitive-read scan. What is left
- * here is running it, which is the shape a handler should have.
+ * `exec({argv})`: ONE program, literal args, NO shell; authority was already
+ * answered at the door (gates.ts, authorizeArgv), this just runs it.
  */
 async function executeArgv(agentId: string, args: Record<string, unknown>): Promise<string> {
   const resolved = resolveArgvArg(args.argv);
@@ -78,12 +53,9 @@ async function executeArgv(agentId: string, args: Record<string, unknown>): Prom
 }
 
 /**
- * `shell({script})` — `/bin/zsh -c <script>`, the pipe/loop/redirect door.
- *
- * `execFile('/bin/zsh', ['-c', script])` is what `execAsync(cmd,{shell:'/bin/zsh'})`
- * did internally, so the SEMANTICS an agent depends on are unchanged to the byte.
- * The difference is that the script arrives as one named argument at a door whose
- * grant is named `shell`, and the audit row carries the whole of it.
+ * `shell({script})`: `/bin/zsh -c <script>`, the pipe/loop/redirect door.
+ * Semantics match `execFile('/bin/zsh', ['-c', script])` byte for byte; the
+ * script arrives as one named argument and the audit row carries it all.
  */
 async function executeShellScript(agentId: string, args: Record<string, unknown>): Promise<string> {
   const script = typeof args.script === 'string' ? args.script : '';
@@ -92,8 +64,7 @@ async function executeShellScript(agentId: string, args: Record<string, unknown>
   }
   const { cwd, note } = resolveProcessCwd(args.cwd);
   const timeout = processTimeout(args.timeout, agentId);
-  // The FULL script text, not a base command — auditing what the shell was
-  // actually handed is the point of giving it its own door.
+  // Audit the FULL script text, not a base command; the own door is for this.
   logger.info('Executing shell script', { script, timeout, cwd }, agentId);
   return runProcess({
     auditTarget: script,
@@ -114,9 +85,8 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
 // Max file size for vision injection (20MB)
 const MAX_VISION_FILE_SIZE = 20 * 1024 * 1024;
 
-// Shape of a persisted attachment row (messages.attachments JSON array).
-// See db/migrations/011_attachments.sql. All fields optional here because the
-// column is model/route-fed and we parse it defensively.
+// A persisted attachment row (messages.attachments JSON array), see
+// db/migrations/011_attachments.sql. All fields optional: model/route-fed.
 interface StoredAttachment {
   fileId?: string;
   filename?: string;
@@ -125,16 +95,11 @@ interface StoredAttachment {
   path?: string;
 }
 
-// FN-5 assist for a known model-floor miss. With an image attached, the
-// correctness-floor model sometimes calls file_read on a FABRICATED path, the
-// original filename WITHOUT the stored timestamp prefix, and hits a dead-end
-// "File not found". This looks back over the agent's recent attachments and,
-// on a name match, hands back the exact stored Path so the retry can correct
-// itself. It returns ONLY a path string that was already disclosed to the
-// model in the attachment pointer (chat.ts), never file content; a retry with
-// the corrected path still runs every permission check (absolute-path,
-// sensitive-path block, etc.). Uploads are stored as
-// <timestamp>_<sanitizedOriginalName> (gateway/routes/upload.ts).
+// Assist for a model-floor miss: with an image attached the model sometimes
+// calls file_read on a FABRICATED path, the original name WITHOUT the stored
+// timestamp prefix (uploads are <timestamp>_<sanitized>, upload.ts). On a
+// name match return the exact stored path already disclosed to the model,
+// never content; a corrected retry still runs every permission check.
 function findAttachmentByName(agentId: string, requested: string): StoredAttachment | null {
   const wantBase = path.basename(requested).toLowerCase();
   // Mirror the upload sanitizer (gateway/routes/upload.ts:100).
@@ -180,10 +145,8 @@ function findAttachmentByName(agentId: string, requested: string): StoredAttachm
   return null;
 }
 
-// Tail appended to a file_read miss when findAttachmentByName hits. Carries the
-// already-disclosed stored Path plus the timestamp-prefix reminder; the vision
-// note discourages redundant re-reads of image attachments already provided
-// via vision or caption.
+// Tail for a file_read miss: the already-disclosed stored path plus the
+// timestamp-prefix reminder; images already arrive via vision or caption.
 function attachmentPathHint(att: StoredAttachment): string {
   return ` A recent attachment matches this name. Its stored path is: ${att.path}. Attachments are stored with a timestamp prefix; use the exact Path from the attachment pointer. Note: image attachments are already provided to you via vision or caption; re-reading the image file is usually unnecessary.`;
 }
@@ -195,9 +158,8 @@ async function executeFileRead(
   const filePath = resolvePath(args.path as string);
 
   if (!path.isAbsolute(filePath)) {
-    // The absolute-path requirement stays. But a non-absolute path is exactly
-    // the shape of the fabricated-filename miss (bare original name, no stored
-    // prefix), so try the attachment assist before the plain refusal.
+    // A non-absolute path is the shape of the fabricated-filename miss, so
+    // try the attachment assist before the plain refusal.
     const att = findAttachmentByName(agentId, filePath);
     if (att) {
       auditLog(agentId, 'file_read', filePath, 'error', 'Path must be absolute; attachment-name hint returned');
@@ -207,9 +169,8 @@ async function executeFileRead(
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
 
-  // Block reads of secrets / SSH keys / cloud credentials. See isSensitivePath
-  // up top for the full list. The result must never enter messages, the
-  // CLAUDE.md secrets-out-of-memory rule applies at every entry point.
+  // Block secrets / SSH keys / cloud credentials (see isSensitivePath); the
+  // result must NEVER enter messages, secrets stay out of memory everywhere.
   if (isSensitivePath(filePath)) {
     auditLog(agentId, 'file_read', filePath, 'denied', 'sensitive path block list');
     return `[BLOCKED] file_read refused: ${filePath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials). The DOJO never echoes secret files into the conversation. If you need a value from this file, ask the user, those values live in process memory only.`;
@@ -218,10 +179,8 @@ async function executeFileRead(
   try {
     const stat = await effectFs.promises.stat(filePath).catch(() => null);
     if (!stat) {
-      // Self-correcting assist: the model may have dropped the stored timestamp
-      // prefix off an attachment name. Hand back the exact stored Path if a
-      // recent attachment matches (the sensitive-path block above already ran;
-      // a retry with the corrected path re-runs every check).
+      // Assist: the model may have dropped the timestamp prefix off an
+      // attachment name; the sensitive-path block ran and a retry re-checks.
       const att = findAttachmentByName(agentId, filePath);
       if (att) {
         auditLog(agentId, 'file_read', filePath, 'error', 'File not found; attachment-name hint returned');
@@ -238,9 +197,7 @@ async function executeFileRead(
 
     const ext = path.extname(filePath).toLowerCase();
 
-    // ── Image files: return as vision content block ──
-    // The model sees the actual image via its vision capabilities,
-    // same as when a user attaches an image to a chat message.
+    // Image files: return as a vision content block, as with chat attachments.
     if (IMAGE_EXTENSIONS.has(ext)) {
       if (stat.size > MAX_VISION_FILE_SIZE) {
         auditLog(agentId, 'file_read', filePath, 'error', `Image too large: ${stat.size} bytes`);
@@ -286,46 +243,32 @@ async function executeFileRead(
     const allLines = content.split('\n');
     const totalLines = allLines.length;
 
-    // Phase 3.5 offset/limit support, when an agent explicitly paginates,
-    // we return exactly the requested range with line numbers and a stub
-    // telling them how to read more. This is also the path that bypasses
-    // the v1 large-files interception (so an agent can ALWAYS get raw
-    // content of a large file by paginating, even on v1).
-    // Phase 3.5 fix, defensive coerce. DeepSeek emits these as strings even
-    // when schema says number; without coerce pagination silently no-ops.
+    // Pagination returns exactly the requested range with line numbers. coerce is needed
+    // because some models emit offset/limit as strings despite the number schema.
     const offsetNum = coerceNumberArg(args.offset);
     const limitNum = coerceNumberArg(args.limit);
     const offset = offsetNum !== null ? Math.max(0, Math.floor(offsetNum)) : null;
     const limit = limitNum !== null ? Math.max(1, Math.floor(limitNum)) : null;
 
-    // Pagination path with line numbers + clear stub on truncation. The v1
-    // raw-string fallback (with large-files.ts interception) was removed in
-    // Phase 9 Stage 2, paginated read is now the only path.
+    // Paginated read is the only path, the old raw-string fallback is gone.
     {
       const startLine = offset ?? 0;
-      // v2.7.2, default line count bumped 2000 → 5000 to match the
-      // expanded cap below. Most documents the agent reads (briefs,
-      // transcripts, code files) fit in a single call now.
       const requestedCount = limit ?? 5000;
       const endLine = Math.min(startLine + requestedCount, totalLines);
 
-      // The page is sized to what the model's VIEW will show of one tool result (`memory/tool-result-view.ts`):
-      // the page, line-number gutters and footer included, fits whole, so the "continue at offset N" footer
-      // at its end is always seen. (It was 240_000 chars against a view of ~60_000; run 7, S4.)
-      // Per-line cap: protects against files where a single line is huge, 
-      // e.g. an HTML file with embedded `<img src="data:image/png;base64,...">`.
-      // Without this, the whole-file cap below was bypassed via the
-      // `slice.length > 0` clause (we always included the first line, no
-      // matter how big), and a 5.9MB single-line file blew the entire model
-      // context window.
+      // The page is sized to what the model's VIEW shows of one tool result
+      // (`memory/tool-result-view.ts`), gutters and footer included, so the
+      // "continue at offset N" footer at its end is always seen.
+      // Per-line cap: one huge line (e.g. embedded base64) must not blow the
+      // model context through `slice.length > 0`, which always admits row one.
       const MAX_LINE_CHARS = 4_000;
       const truncateLine = (line: string): string =>
         line.length > MAX_LINE_CHARS
           ? `${line.slice(0, MAX_LINE_CHARS)} … [line truncated; original ${line.length} chars, likely contains base64/binary data. Use grep/exec to inspect specific patterns.]`
           : line;
       const lineWidth = String(endLine).length;   // gutter width: the widest line number this page can hold
-      // The footer is worst-cased up front (this page ends at the file's last line) and reserved out of the budget.
-      // Line numbers in the footer are the gutter's (1-based, inclusive); `offset` stays a count of lines to skip.
+      // Footer worst-cased up front (page may end at the last line) and reserved from budget.
+      // Footer line numbers are the gutter's (1-based inclusive); offset stays lines-to-skip.
       const footerFor = (end: number): string => {
         const remaining = totalLines - end;
         return `\n\n[Read lines ${startLine + 1}-${end} of ${totalLines} total. ${remaining} more lines remain.\n` +
@@ -344,7 +287,7 @@ async function executeFileRead(
         actualEnd = i + 1;
       }
 
-      let result = outsideSpan(slice.join('\n'));   // v3.5 K33: the file's lines; the footers are the platform's
+      let result = outsideSpan(slice.join('\n'));   // the file's lines; the footers are the platform's
       if (actualEnd < totalLines) {
         result += footerFor(actualEnd);
       } else if (startLine > 0) {
@@ -361,11 +304,8 @@ async function executeFileRead(
   }
 }
 
-// Correctness-floor: the weak model sometimes hands file_write a DIRECTORY path
-// where a file path is expected (the workspace folder, no filename). Writing to
-// a directory throws EISDIR. Build the corrective, NON-crashing guidance that
-// tells the model to include a filename, used both by the up-front check and
-// the EISDIR catch fallback so a raw EISDIR is never surfaced as an is_error.
+// Corrective, NON-crashing guidance for file_write/file_append aimed at a
+// DIRECTORY; used by both the up-front check and the catch, no raw EISDIR.
 function directoryTargetGuidance(dirPath: string): string {
   const base = dirPath.replace(/[/\\]+$/, '');
   const example = path.join(base, 'brief.md');
@@ -385,10 +325,8 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
 
-  // Directory target detection: an existing directory, or a trailing-separator
-  // path that signals directory intent before the folder even exists. Return
-  // corrective guidance (not an is_error) rather than letting writeFile throw
-  // EISDIR at the weak model.
+  // Directory target: an existing directory, or trailing-separator intent
+  // before the folder exists. Guidance, not is_error; never let EISDIR throw.
   const trailingSep = /[/\\]\s*$/.test(String(args.path ?? '')) || /[/\\]$/.test(filePath);
   let existingDir = false;
   try { existingDir = (await effectFs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
@@ -404,8 +342,7 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
-    // P6b-2: record the minted link as a keyed artifact row so the
-    // never-drop-the-link backstop reads rows, not result prose.
+    // The never-drop-the-link backstop reads artifact rows, not result prose.
     if (downloadUrl) queueLinkArtifact(agentId, downloadUrl, filePath);
     // Auto-open documents (html/markdown/text) in the canvas; refresh if already shown.
     const canvas = syncCanvasAfterWrite(agentId, filePath, downloadUrl);
@@ -416,9 +353,7 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
-    // Belt-and-suspenders: if a directory (or dir-valued path component) slipped
-    // past the pre-check, translate the raw EISDIR into the same corrective
-    // guidance instead of a bare is_error crash the weak model can't recover from.
+    // A slipped EISDIR becomes the same guidance, not an is_error crash.
     if ((err as NodeJS.ErrnoException)?.code === 'EISDIR') {
       return directoryTargetGuidance(filePath);
     }
@@ -436,8 +371,7 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
 
-  // Same directory-target guard as file_write: a directory path has no filename
-  // to append to and would throw EISDIR. Return corrective guidance, not a crash.
+  // Same directory-target guard as file_write: guidance, not an EISDIR crash.
   const trailingSep = /[/\\]\s*$/.test(String(args.path ?? '')) || /[/\\]$/.test(filePath);
   let existingDir = false;
   try { existingDir = (await effectFs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
@@ -452,8 +386,8 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
 
     let leading = '';
     if (ensureNewline) {
-      // Peek at the existing trailing byte (if any) to decide whether we
-      // need a separator. fs.stat is cheaper than reading the file.
+      // Peek the trailing byte (stat + 1-byte read, cheaper than a full read)
+      // to decide whether a separator newline is needed.
       let existingSize = 0;
       try {
         const stat = await effectFs.promises.stat(filePath);
@@ -478,11 +412,8 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
 
     const downloadUrl = registerSharedFile(agentId, filePath);
     if (downloadUrl) queueLinkArtifact(agentId, downloadUrl, filePath);
-    // W3 fix loop (run bmr5bymntm5): same refresh-or-AUTO-OPEN treatment as
-    // file_write. Pre-fix this only pinged an already-open canvas, so "edit
-    // this doc and show me" surfaced or not depending on whether the model
-    // happened to pick file_write (auto-open) or file_append (nothing), the
-    // canvas outcome must not hinge on the model's tool choice.
+    // The canvas refreshes or auto-opens after this write too, exactly as after `file_write`:
+    // the outcome must not hinge on which write tool the model picked.
     const canvas = syncCanvasAfterWrite(agentId, filePath, downloadUrl);
     const canvasNote = canvas.opened
       ? '\nThis document is now open in the canvas, the user can see it. No need to call canvas_render; just tell them what you did.'
@@ -498,13 +429,8 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
   }
 }
 
-// ── file_patch ──
-//
-// Surgical in-place edit. Reads the file, applies every patch in sequence
-// against the in-memory copy, refuses to write if any search string isn't
-// found, writes via temp-file + rename for atomicity. Binary files are
-// rejected (we only deal with text). Sensitive paths (secrets.yaml, .env,
-// SSH keys, cloud credentials) are blocked the same way file_read is.
+// file_patch: the in-place edit is atomic and all or nothing: no write when any search
+// string is missing; temp+rename, text only, sensitive paths blocked as in file_read.
 
 interface FilePatch {
   search: string;
@@ -558,8 +484,8 @@ export async function executeFilePatch(
   let original: string;
   try {
     const buf = await effectFs.promises.readFile(filePath);
-    // Binary detection: text files don't contain NUL bytes. Sample first
-    // 8KB so we don't scan a 20MB HTML for every patch call.
+    // Binary detection: NUL bytes mark it; only the first 8KB is sampled so
+    // a 20MB file isn't scanned per patch call.
     const sample = buf.subarray(0, Math.min(8192, buf.length));
     if (sample.includes(0)) {
       auditLog(agentId, 'file_patch', filePath, 'error', 'binary file');
@@ -572,9 +498,8 @@ export async function executeFilePatch(
     return `Error reading file: ${msg}`;
   }
 
-  // Apply each patch in sequence. Track replacement counts. If ANY patch
-  // fails to find its search string, abort with a clear error, never a
-  // silent zero-replacement success.
+  // Apply patches in sequence, tracking counts; if ANY search is missing,
+  // abort, never a silent zero-replacement success.
   let working = original;
   const counts: number[] = [];
   for (let i = 0; i < patches.length; i++) {
@@ -589,9 +514,8 @@ export async function executeFilePatch(
       );
     }
     if (p.replace_all) {
-      // Use split/join to count and replace every occurrence safely (no regex
-      // escaping pitfalls with `.replaceAll`'s string overload? It uses
-      // string-mode but we'd need a stable count anyway).
+      // split/join: replaces every occurrence and gives a stable count with
+      // no regex-escaping pitfalls.
       const parts = working.split(p.search);
       counts.push(parts.length - 1);
       working = parts.join(p.replace);
@@ -620,12 +544,10 @@ export async function executeFilePatch(
     );
   }
 
-  // Atomic write (temp sibling, then rename): the mechanism moved WHOLE into
-  // `effects/fs.ts` at PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM mechanic 6 —
-  // same naming, same rename, same best-effort cleanup, error rethrown
-  // unchanged so the message below is byte-for-byte what it was. The tmp
-  // sibling is not a resource this tool NAMES: `args.path` names the target,
-  // and declaring the sibling would describe the mechanism, not the effect.
+  // Atomic write (temp sibling, then rename) lives WHOLE in `effects/fs.ts`,
+  // same rename and best-effort cleanup, the error rethrown unchanged. The
+  // tmp sibling is not a resource this tool NAMES: declaring it would
+  // describe the mechanism, not the effect.
   try {
     await effectFs.atomicWriteFile(filePath, working, 'utf-8');
   } catch (err) {
@@ -639,8 +561,7 @@ export async function executeFilePatch(
   const totalReplacements = counts.reduce((a, b) => a + b, 0);
   auditLog(agentId, 'file_patch', filePath, 'success', `${totalReplacements} replacements across ${patches.length} patches`);
   const patchDownloadUrl = registerSharedFile(agentId, filePath);
-  // W3 fix loop: refresh-or-AUTO-OPEN, same rationale as file_append above,
-  // the canvas outcome must not depend on which write tool the model picked.
+  // The canvas refreshes or auto-opens after this write too, as after `file_append`.
   const patchCanvas = syncCanvasAfterWrite(agentId, filePath, patchDownloadUrl);
   const patchCanvasNote = patchCanvas.opened
     ? '\nThis document is now open in the canvas, the user can see it. No need to call canvas_render; just tell them what you did.'
@@ -699,20 +620,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}G`;
 }
 
-// ── Public API ──
 
-// User-mailbox banner. Whenever the agent reads from the user's own
-// email account (via the user_* variants of gmail / outlook read tools),
-// prepend a framing line that names the mailbox owner and reminds the
-// model: this is the USER's mailbox, the emails inside it were not
-// addressed to you, and you should not act on their contents unless
-// the user explicitly tells you to in chat.
-//
-// Background: agents with user-mailbox access were observed taking
-// action on emails the user had sent to themselves (e.g. self-sent
-// instructions for a side project), treating them as direct prompts.
-// The engine framing here makes the audience explicit at every read
-// so the model doesn't infer a directive from inbox content alone.
 
 export const fsHandlers: ToolHandlerMap = {
   async "exec"({ agentId, args }) {
@@ -739,10 +647,8 @@ export const fsHandlers: ToolHandlerMap = {
       content = fileResult;
       isError = content.startsWith('Error');
     } else {
-      // Structured result with content blocks (images, PDFs)
       content = fileResult.text;
-      // Attach the content blocks to the tool result so the runtime
-      // can include them in the tool_result sent to the model
+      // The runtime reads __contentBlocks to build the model's tool_result.
       (toolCall as unknown as Record<string, unknown>).__contentBlocks = fileResult.contentBlocks;
     }
     return { content, isError };
@@ -774,14 +680,10 @@ export const fsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // Refuse to stash technique content in the scratchpad.
-    // Scratchpad survives across turns and gets re-injected at
-    // every assembly, exactly the staleness the v2.7.4 freshness
-    // enforcement was built to prevent. If the agent wants to
-    // remember WHAT THEY DECIDED while following a technique
-    // (parameters chosen, paths produced, errors hit), they can
-    //, they just can't paste the technique body itself.
-    if (newContent.includes(TECHNIQUE_FRESH_SENTINEL)) {   // PHASE-3 T5: was the inline literal
+    // Refuse to stash technique bodies: the scratchpad is re-injected every
+    // turn, reintroducing the staleness the freshness enforcement prevents.
+    // Storing WHAT THEY DECIDED (parameters, paths, errors hit) is fine.
+    if (newContent.includes(TECHNIQUE_FRESH_SENTINEL)) {   // the fresh-read banner string, from @dojo/shared
       content =
         'Refused: scratchpad content contains a technique fresh-read banner, looks like a copy-paste of technique_read / use_technique output. Scratchpad is re-injected on every turn, which would re-introduce the staleness the engine prevents on the tool-result side. Vault decisions ("chose path X for reason Y") or step-state ("step 3: writing yaml") in the scratchpad, re-call technique_read whenever you need the actual technique body.';
       isError = true;

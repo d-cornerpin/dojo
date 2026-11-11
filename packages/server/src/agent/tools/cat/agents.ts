@@ -1,33 +1,14 @@
-// ════════════════════════════════════════════════════════════════════════════
-// MANAGING OTHER AGENTS (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// Seventeen dispatch keys: the spawn/terminate lifecycle (`spawn_agent`,
-// `kill_agent`, `spawn_timeout_decision`, `complete_task`), agent-to-agent
-// traffic (`send_to_agent`, `broadcast_to_group`), the destructive-action
-// approval a sub-agent asks its primary for, the identity/profile verbs
-// (`update_agent`, `get_agent_profile`, `list_agents`, `list_models`) and the
-// squad verbs (`create_agent_group`, `update_group`, `assign_to_group`,
-// `list_groups`, `get_group_detail`, `delete_group`).
-//
-// RELOCATION, NOT REWRITE. Four things are load bearing and byte-faithful:
-//
-// 1. **`complete_task`'s `agentCanSelfCompleteById` re-check.** FN-8: the tool
-//    ends a SPAWNED agent's lifecycle, and the surface filter is only advice
-//    (Architecture Rule 1). The handler re-reads the agent row FRESH rather
-//    than trusting a filter-time snapshot, which is why the predicate lives in
-//    `tools/util.ts` and is called here.
-// 2. **`send_to_agent`/`broadcast_to_group`'s argument ALIASES.** T3C declared
-//    them `requiredNotEnforced` WITH THE REASON: a broadcast that passes
-//    `payload` instead of `message` works today and the schema cannot say so.
-//    The body's own argument handling is what makes that true; it is unchanged.
-// 3. **`kill_agent` / `delete_group`'s `created_by` checks are NOT here.** Both
-//    are DECLARED gates (T2 rows) that resolve their target through the same
-//    resolvers these handlers use, evaluated in the executor ahead of dispatch.
-// 4. **`resolveSpawnSquad` moved WITH `spawn_agent`**, its only caller
-//    (re-derived at this HEAD). P4's rule that every agent-spawned agent lands
-//    in a squad is its whole content, including the fallback that logs rather
-//    than refusing when project-squad resolution fails.
-// ════════════════════════════════════════════════════════════════════════════
+// MANAGING OTHER AGENTS: the spawn/terminate lifecycle, agent-to-agent traffic,
+// destructive-action approval, identity/profile verbs, and squad verbs.
+// Four load-bearing facts:
+// 1. complete_task re-reads the agent row FRESH for agentCanSelfCompleteById;
+//    the surface filter is only advice.
+// 2. The send/broadcast `payload`/`message` aliases are required-not-enforced on
+//    purpose; the handlers' own argument handling makes a `payload` broadcast work.
+// 3. kill_agent and delete_group `created_by` gates are NOT here: they resolve their
+//    target through these same resolvers but run in the executor ahead of dispatch.
+// 4. resolveSpawnSquad moved with its only caller, spawn_agent; its whole content is
+//    that every agent-spawned agent lands in a squad, fallback included.
 
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
@@ -55,8 +36,7 @@ import { turnContext } from '../../turn-context.js';
 import { decideApproval } from '../../approval-decision.js';
 import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
 import { requestOnThreadForAnotherTurn } from '../../a2a-own-turn.js';
-// t116 E3: the ONE delivery-ledger writer every send door goes through. `send_to_agent` is
-// one of PINNED §8's unrecorded paths and this import is that closure — see the call site.
+// Every send door goes through this ONE delivery-ledger writer, see the call sites below.
 import { recordAtDoor } from '../../v2/outbound.js';
 import { recordedId } from '../../v2/delivery-outcome.js';
 import { getAgentPermissions } from '../../permissions.js';
@@ -67,14 +47,12 @@ import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/r
 import { sanitizeMessagesOnModelChange } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
-// T43a: the two EXISTING authorities the capability clause is derived from — the advertised
-// per-agent tool grant (`surface.ts`, a leaf `cat/` may import; `cat/meta.ts` already does)
-// and the declared tool-name grouping that backs the prompt's tool index.
+// The capability clause derives from these two EXISTING authorities: the advertised
+// per-agent tool grant (a leaf `cat/` may import `surface.ts`) and the declared tool names.
 import { getFilteredTools } from '../surface.js';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
-// UX-ACCESS A2: the grant door. `authorize.ts` owns the schema, the
-// no-escalation rule and the one write; this module owns the wording a model
-// reads and the audit row ruling 4 requires.
+// The grant door: `authorize.ts` owns the schema, the no-escalation rule and the
+// one write; this module owns the wording a model reads and the audit row.
 import { resolveUpdateGrants, grantsDelta, GrantRefusedError } from '../../access/authorize.js';
 import { inspectGainRefusal } from '../../../inspect/grant.js';
 import { getAccessGrants, readStoredGrants, mayUseChannel, channelTierFor } from '../../access/read.js';
@@ -85,17 +63,15 @@ import type { ToolHandlerMap } from '../handler.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../main-model-floor.js';
 import { workingExpr } from '../../../work/terminal-states.js';
 
-// ── P4: mandatory squad resolution for agent spawns ──
-// Every agent-spawned agent lands in a squad so the owner can see which spawned
-// agents belong to which work. Resolution order:
-//   1. explicit group_id  -> must exist AND be creator-owned or already stamped
-//      on a project (an existing project squad the caller is joining)
-//   2. linked task's project already has a squad -> reuse it
-//   3. linked task's project has no squad -> auto-create one NAMED AFTER THE
-//      PROJECT and stamp projects.group_id (migration 109) so later spawns join
-//   4. no project linkage -> auto-create a squad named after the caller
-// Returns the resolved group id + a user-facing squad name, or an error string.
-// (Only the spawn_agent TOOL path calls this; internal engine spawns do not.)
+// Mandatory squad resolution for agent spawns: every agent-spawned agent lands in
+// a squad so the owner sees which spawns belong to which work. Resolution order:
+//   1. explicit group_id, must exist AND be creator-owned or project-stamped
+//   2. the linked task's project already has a squad, reuse it
+//   3. the project has no squad, auto-create one named after the project and stamp
+//      projects.group_id so later spawns join
+//   4. no project linkage, auto-create a squad named after the caller
+// Returns the resolved group id + a squad name, or an error. Only the spawn_agent
+// TOOL path calls this; internal engine spawns do not.
 async function resolveSpawnSquad(opts: {
   callerAgentId: string;
   rawTaskId?: string;
@@ -103,7 +79,6 @@ async function resolveSpawnSquad(opts: {
 }): Promise<{ groupId: string; squadName: string; note: string } | { error: string }> {
   const db = getDb();
 
-  // 1. Explicit group_id: must exist and be creator-owned or project-stamped.
   if (opts.explicitGroupId) {
     const ref = resolveGroupRef(opts.explicitGroupId, 'spawn_agent');
     if (!ref.ok) return { error: ref.error };
@@ -117,7 +92,6 @@ async function resolveSpawnSquad(opts: {
     return { groupId: grp.id, squadName: grp.name, note: '' };
   }
 
-  // 2/3. Linked task -> project -> squad.
   if (opts.rawTaskId) {
     try {
       const rt = resolveTaskId(opts.rawTaskId);
@@ -144,68 +118,24 @@ async function resolveSpawnSquad(opts: {
     }
   }
 
-  // 4. No project linkage: a squad named after the caller groups its ad-hoc spawns.
   const caller = db.prepare('SELECT name FROM agents WHERE id = ?').get(opts.callerAgentId) as { name: string } | undefined;
   const callerName = caller?.name ?? 'Agent';
   const group = createGroup(`${callerName}'s squad`, `Ad-hoc squad for agents spawned by ${callerName}.`, opts.callerAgentId);
   return { groupId: group.id, squadName: group.name, note: '' };
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR ROUND 11 T43a — CAPABILITY TRUTH AT THE DELEGATION DOOR
-// ════════════════════════════════════════════════════════════════════════════
-//
-// THE INCIDENT (round-11 S5-A). The harness bot called `list_agents` before delegating. The door
-// answered name / status / classification / group / activity and NOTHING about what any of
-// them can DO, so it handed a WEB RESEARCH assignment to the PM, who holds no web tools. The PM
-// could only punt it to the primary agent, and the punt then satisfied her piece of the join
-// (that half is T43b/c). The one fact the choice needed was the one fact the door withheld.
-//
-// SAME FAMILY AS T29's CHANNEL-DOOR TRUTH: the surface the agent reads AT the decision moment
-// states what the platform already knows, and the agent stops guessing. Nothing is added to
-// the prompt; this is a tool RESULT.
-//
-// STEP-0 (the task's own STOP gate: "derive from the REAL tool-grant source, do not
-// hard-code; STOP if per-agent grants are not derivable") — PASSED, measured through that
-// measured on a worn-in body 2026-08-15, granted-tool counts per agent: 407, 242, 241, 240,
-// 168, 156 and 47 — and the lowest of them holds nothing from `Web`,
-// `Communication`, `Gmail`, `Google Calendar` or `Google Drive / Docs / Sheets`. The
-// incident's premise is a property of the grants, and the grants are readable.
-//
-// THE TWO SOURCES, BOTH EXISTING, NEITHER RETYPED:
-//   * `getFilteredTools(agentId)` — `agent/tools/surface.ts`, THE advertised-surface
-//     authority: the permissions manifest, `tools_policy` allow/deny, account connectivity
-//     and the FA-TS2 strip, i.e. exactly the list that agent is told it has. It is memoized
-//     per agent behind a generation + row fingerprint, so this door pays a real recompute at
-//     most once per agent per policy change, and `list_agents` is a deliberate, rare call.
-//   * `TOOL_CATEGORIES` — `tools/categories.ts`, the DECLARED grouping of tool names that
-//     already backs the prompt's tool index. No tool name is typed here.
-//
-// CENSUS / COLLISION (the mission rule). The one new declaration is the five-row table below:
-// which capabilities a delegator actually chooses an assignee FOR, each defined by pointing
-// at existing category labels. Collisions examined: `TOOL_CATEGORIES` itself answers "how is
-// the tool index grouped for MY prompt", not "what can THAT agent be asked to do";
-// `sensei-policy`'s SEND_TO_PEOPLE is a security domain; `RECEIPT_TOOLS` is a verification
-// tier. None of the three answers the delegation question, and none is displaced. The list is
-// bounded on purpose: the plan asks for ONE line per agent, and dumping all 38 categories
-// would bury the fact that made the incident.
-//
-// ── UX-ACCESS A2: `channels`, AND WHY ONLY ONE ROW CARRIES IT ──
-// The advertised surface `getFilteredTools` answers with is ALREADY grant-aware
-// after A1: the category grant, the Plaud grant, the credential grant and the
-// per-kind Workspace tier all filter it, so four of the five rows below read the
-// grants simply by reading that list. The fifth does not, and A1 says why in its
-// own words (§6.5): *"Every agent is still ADVERTISED `imessage_send` and refused
-// at the door, as at HEAD. Stripping it by grant would move ~110 agents' tool
-// indexes — a prompt change A1 is committed to not making."*
-//
-// So the surface still advertises `imessage_send` to an agent that holds no
-// channel, and a clause derived from the surface alone would tell a delegator
-// "can: messaging people" about an agent the door refuses. That is the T43a
-// incident with the sign flipped — a capability line that is confidently wrong
-// instead of silently absent — and it is what "the capability truth helpers see
-// must match the walls A1 enforces" means. `channels` names the grant the wall
-// actually reads, and the clause requires BOTH: an advertised tool AND the grant.
+// Capability truth at the delegation door. `list_agents` once answered names and
+// status with nothing about what agents can DO, so work went to agents holding no
+// tool for it, and silence read as capability. So the clause always states can and
+// cannot, never neither.
+// Both sources are existing authorities, nothing retyped here: `getFilteredTools` is
+// the advertised per-agent surface (memoized per agent, so this door recomputes at
+// most once per agent per policy change; `list_agents` is a rare call), and
+// `TOOL_CATEGORIES` is the declared grouping that already backs the prompt's index.
+// Only `messaging people` carries `channels`: the surface still advertises
+// `imessage_send` to agents with no channel grant, because stripping it by grant
+// would move ~110 agents' tool indexes, a prompt change this code must not cause.
+// So the clause requires BOTH: an advertised tool AND the grant via `mayUseChannel`.
 const DELEGABLE_CAPABILITIES: ReadonlyArray<{
   label: string;
   categories: readonly string[];
@@ -222,10 +152,9 @@ const DELEGABLE_CAPABILITIES: ReadonlyArray<{
   },
 ];
 
-/** capability label -> the tool names that provide it, resolved from the declared categories.
- *  A referenced label that no longer exists resolves to NO tools, which would read as "this
- *  agent cannot" for everyone — so the conformance clause in
- *  `__tests__/the-delegation-door-states-capability.test.ts` asserts every label resolves. */
+/** Capability label -> the tool names that provide it, from the declared categories.
+ *  A label that no longer exists resolves to NO tools, reading as "cannot" for every
+ *  agent, so `__tests__/the-delegation-door-states-capability.test.ts` asserts each resolves. */
 const capabilityToolSets = (): Map<string, Set<string>> => {
   const byLabel = new Map(TOOL_CATEGORIES.map((c) => [c.label, c.tools] as const));
   return new Map(DELEGABLE_CAPABILITIES.map((cap) => [
@@ -234,13 +163,8 @@ const capabilityToolSets = (): Map<string, Set<string>> => {
   ]));
 };
 
-/**
- * ONE LINE of capability truth for an agent, both directions, always stated.
- *
- * Silence-means-capable was the shape that produced the incident: a reader cannot tell "this
- * agent can" from "the platform did not say". So the clause always names what the agent CAN
- * be asked for and what it CANNOT, and never omits both.
- */
+/** ONE LINE of capability truth, both directions, always stated: silence cannot tell
+ *  "this agent can" from "the platform did not say", so can and cannot are never both omitted. */
 export function capabilityClause(agentId: string): string {
   let granted: Set<string>;
   try {
@@ -257,9 +181,8 @@ export function capabilityClause(agentId: string): string {
   for (const { label, channels } of DELEGABLE_CAPABILITIES) {
     const tools = sets.get(label);
     const hasTool = [...(tools ?? [])].some((t) => granted.has(t));
-    // A2: a capability the door gates on a CHANNEL needs the grant as well as
-    // the tool. `mayUseChannel` is the same predicate `comms.ts` and gate row 7
-    // ask, so this line cannot drift from the wall it describes.
+    // A capability the door gates on a CHANNEL needs the grant as well as the tool.
+    // `mayUseChannel` is the same predicate the wall enforces, so this cannot drift.
     const hasChannel = !channels || channels.some((c) => mayUseChannel(agentId, c));
     (hasTool && hasChannel ? can : cannot).push(label);
   }
@@ -268,14 +191,9 @@ export function capabilityClause(agentId: string): string {
   return `can: ${can.join(', ')}; no: ${cannot.join(', ')}`;
 }
 
-/**
- * ONE LINE of ACCESS truth: what this agent may reach beyond its own files.
- *
- * Rendered from the grants object rather than from the surface, because that is
- * the thing an owner and a granting agent now edit. `spawn_agent` appends it so
- * a caller sees what the most-restrictive default actually produced — ruling 2's
- * narrowing is only humane if the narrowing is visible at the moment it happens.
- */
+/** ONE LINE of access truth, rendered from the grants object (what an owner and a
+ *  granting agent edit), not from the advertised surface. `spawn_agent` appends it so
+ *  the most-restrictive default is visible at the moment it is applied. */
 export function accessLine(agentId: string): string {
   let g: AccessGrants;
   try {
@@ -299,51 +217,21 @@ export function accessLine(agentId: string): string {
     if (p.agent !== 'none' || p.user !== 'none') integrations.push(`${which} ${p.agent}/${p.user}`);
   }
   parts.push(`integrations: ${integrations.length ? integrations.join(', ') : 'none'}`);
-  // UX-ACCESS A5: one switch, and the two words it produces are the two the
-  // `'*'` / `[]` branches produced before it — so no live agent's line moves.
+  // The all/none words must match the pre-switch '*' / [] words so no live agent's line moves.
   parts.push(`credentials: ${g.integrations.credentials ? 'all' : 'none'}`);
-  // UX-ACCESS A4. Through `techniqueGrantOf`, so a row written before A4 reads
-  // as the `'*'` it means rather than as an empty section.
+  // Read via techniqueGrantOf so an older row still reads as the '*' it means, not empty.
   const techs = techniqueGrantOf(g);
   parts.push(`techniques: ${techs === '*' ? 'all' : techs.length === 0 ? 'none' : techs.join(', ')}`);
   return `\nAccess: ${parts.join(' | ')}`;
 }
 
-/**
- * t116 E3 FIX ROUND (verifier's defect) — WHICH A2A DROPS ARE POLICY, AND WHICH ARE LOSSES.
- *
- * THE DEFECT THIS REPLACES, and it was mine: the outcome was an inline ternary that allowlisted
- * `failed` for `AGENT_NOT_FOUND` and defaulted *everything else* to `suppressed` — the exact
- * inverse of the sentence written above it, which promised that "any reason this handler does not
- * recognise" is a failed send. The reason union has seven members and that ternary recognised two,
- * so `MALFORMED_ENVELOPE` and `PERSIST_SKIPPED` were both filed as the platform working as
- * designed. `PERSIST_SKIPPED` is the sharpest case: its own doc says the receiver's row persisted
- * nothing, so there is no message to deliver — a message that VANISHED, recorded as a protocol
- * decision. Nothing false ever reached `delivered`, so no reader was told a hand-off happened that
- * did not; the lie was about WHY nothing arrived, which is the question this ledger exists to
- * answer honestly.
- *
- * THE SET IS NOW THE ALLOWLIST AND `failed` IS THE DEFAULT, which is the safe direction and the
- * one the transport already chose for the same vocabulary: `DROPS_THE_SENDER_IS_TOLD_ABOUT`
- * (`a2a-transport.ts`) says in as many words that "an unrecognised future reason lands at warn BY
- * DEFAULT rather than being quietly added to the quiet set". Same rule here — a reason added to the
- * union later is a loss until somebody argues otherwise, rather than silently becoming policy.
- *
- * THESE THREE ARE THE WHOLE OF POLICY: two the sender is already holding the explanation for
- * (`SEMANTIC_DUPLICATE`, `AWAITING_REPLY`) and one that is the protocol's own bound
- * (`HOP_LIMIT_EXCEEDED`). Each is a live refusal the transport makes on purpose.
- *
- * ⚠ `TERMINAL_THREAD_CLOSED` IS DELIBERATELY NOT HERE (ruled 2026-10-06). It reads like a
- * protocol bound and is not one: v2.5.34 removed the rejection that raised it, and PHASE-2 T10
- * (migration `143`) then deleted the `is_terminal` flag it was derived from. Positive enumeration
- * over this tree finds NO EMIT SITE — the surviving mentions are this union member, two historical
- * comments and the handler's own switch case, which tells the agent in as many words that a stale
- * closure marker is an "engine bug, the transport should have auto-cleared it". A reason the
- * transport can no longer raise on purpose cannot be the platform working as designed; if it ever
- * surfaces it is evidence of an uncleared marker and the message is a LOSS. Filing it as
- * `suppressed` would record a transport bug as intended behaviour, which is the same class of
- * untruth as the inverted fall-through this set replaced.
- */
+/** Which A2A drops are policy: this set files `suppressed`, everything else (including
+ *  unknown or future reasons) files `failed`, mirroring `DROPS_THE_SENDER_IS_TOLD_ABOUT`
+ *  in `a2a-transport.ts`. `SEMANTIC_DUPLICATE` and `AWAITING_REPLY` are explanations the
+ *  sender already holds; `HOP_LIMIT_EXCEEDED` is the protocol's own bound.
+ *  `TERMINAL_THREAD_CLOSED` is deliberately NOT here: it has no emit site, so if it ever
+ *  surfaces it marks an uncleared closure flag, i.e. a bug and a loss, never policy.
+ *  Keep this set and the handler's switch case in step, see `a2aDropOutcome` below. */
 const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set([
   'SEMANTIC_DUPLICATE', 'AWAITING_REPLY', 'HOP_LIMIT_EXCEEDED',
 ]);
@@ -357,7 +245,6 @@ export const agentsHandlers: ToolHandlerMap = {
   async "spawn_agent"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // If the agent is passing custom permissions, check can_assign_permissions
     if (args.permissions) {
       const parentPerms = getAgentPermissions(agentId);
       if (!parentPerms.can_assign_permissions) {
@@ -367,10 +254,8 @@ export const agentsHandlers: ToolHandlerMap = {
         return { content, isError };
       }
     }
-    // P3 (spawn contract): the creator owns the timeout. A non-ronin spawn
-    // REQUIRES timeout_minutes, there is no engine default. Reject a missing/
-    // invalid value with a teaching error naming the parameter and pointing
-    // at ronin for open-ended work.
+    // The creator owns the timeout: a non-ronin spawn REQUIRES timeout_minutes, no engine
+    // default; a missing or invalid value is refused with a teaching error.
     const spawnClassification: 'ronin' | 'apprentice' = args.classification === 'ronin' ? 'ronin' : 'apprentice';
     let timeoutSecondsArg: number | undefined;
     if (spawnClassification !== 'ronin') {
@@ -384,8 +269,8 @@ export const agentsHandlers: ToolHandlerMap = {
       timeoutSecondsArg = Math.round(tm * 60);
     }
 
-    // t193 (owner decision 4): with a task, keep-or-transfer is an explicit choice, decided by the
-    // row-authority gate BEFORE anything is created (`planSpawnTask`); no silent default.
+    // With a task, the handling is an explicit keep or transfer: `planSpawnTask` gates it
+    // before anything is created; there is no silent default.
     let taskPlan: SpawnTaskPlan | null = null;
     if (args.task_id !== undefined && args.task_id !== null && args.task_id !== '') {
       const rt = resolveTaskId(args.task_id as string);
@@ -397,9 +282,7 @@ export const agentsHandlers: ToolHandlerMap = {
       taskPlan = planned.plan;
     }
 
-    // P4 (mandatory squads): resolve the squad this spawn lands in before
-    // creating the agent, so its group_id is set at insert and the tool
-    // result can name the squad.
+    // Resolve the squad BEFORE the insert so group_id is set at insert time.
     const squad = await resolveSpawnSquad({
       callerAgentId: agentId,
       rawTaskId: args.task_id as string | undefined,
@@ -412,13 +295,12 @@ export const agentsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // W1 (always-loaded-tools.ts): capped + name-checked ahead of the insert, so a refusal leaves no half-built agent. INVALID_ARGS, never PERMISSION_DENIED — T80a, one field over.
+    // The always-loaded list is capped and name-checked before the insert, so a refusal
+    // leaves no half-built agent, and files INVALID_ARGS, never PERMISSION_DENIED.
     const declared = validateAlwaysLoadedTools(args.always_loaded_tools, toolDefinitionsByName());
     if (!declared.ok) { auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', declared.error.slice(0, 200)); return { content: declared.error, isError: true, errorCode: 'INVALID_ARGS' as const }; }
-    // v2.3.19 (Scenario 7 finding), wrap in try/catch so raw SQLite
-    // errors ("FOREIGN KEY constraint failed", etc.) don't leak to
-    // the agent. friendlyDbError translates them into actionable
-    // plain language.
+    // Wrap so raw SQLite errors ("FOREIGN KEY constraint failed", etc.) don't reach the
+    // agent; `friendlyDbError` translates them into actionable plain language.
     try {
       const result = await spawnAgent({
         parentId: agentId,
@@ -433,10 +315,8 @@ export const agentsHandlers: ToolHandlerMap = {
         persist: args.persist as boolean | undefined,
         classification: spawnClassification,
         shareUserProfile: args.share_user_profile as boolean | undefined,
-        // UX-ACCESS A2 (ruling 4): forwarded RAW. `resolveSpawnGrants` inside
-        // `spawnAgent` is the one place it is validated and bounded, so the
-        // dashboard's create route and the engine's own spawns get the same
-        // rule without this handler owning a copy of it.
+        // Grants are forwarded RAW: `resolveSpawnGrants` inside `spawnAgent` is the one
+        // place they are validated and bounded, shared with the dashboard and the engine.
         grants: args.grants,
         groupId: squad.groupId,
         initialMessage: args.initial_message as string | undefined,
@@ -444,48 +324,40 @@ export const agentsHandlers: ToolHandlerMap = {
         alwaysLoadedTools: declared.names,
         autoStart: args.auto_start as boolean | undefined,
       });
-      // t193: the task half of the choice, now the agent exists. A transfer is `moveAssignee` (cause,
-      // who, from, to on the task's log); a failure is SAID, never swallowed. A keep logs the helper.
+      // The task half of the choice, now the agent exists: a transfer logs cause and actor
+      // on the task's log; a failed transfer is SAID, never swallowed. A keep logs the helper.
       let reassignNote = '';
       if (taskPlan?.handling === 'transfer') {
         const moved = moveAssignee({ taskId: taskPlan.taskId, by: 'agent', actorId: agentId, cause: taskPlan.cause, to: { agentId: result.agentId }, door: 'spawn_agent(task_handling="transfer")' });
         const freshTask = getTask(taskPlan.taskId);
         if (freshTask) broadcast({ type: 'tracker:task_updated', data: freshTask });
         reassignNote = moved.ok
-          ? `\nTask ${taskPlan.taskId.slice(0, 8)} transferred to ${result.name} (cause: ${moved.cause}).${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [freshTask?.title, freshTask?.description] })}`   // t90 D3: the delegated TASK's own words, read off the row rather than an undeclared arg (the effects-conformance walk is right to refuse one)
+          ? `\nTask ${taskPlan.taskId.slice(0, 8)} transferred to ${result.name} (cause: ${moved.cause}).${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [freshTask?.title, freshTask?.description] })}`   // the delegated task's own words, read off the row, not an undeclared arg
           : `\nThe agent was created, but task ${taskPlan.taskId.slice(0, 8)} was NOT transferred: ${moved.text.replace(/^Error: /, '')}`;
       } else if (taskPlan) {
         writeTaskLog({ taskId: taskPlan.taskId, fromEntity: `agent:${agentId}`, entryKind: 'observation', actionTaken: 'helper linked (spawn_agent with task_handling="keep")', reason: `agent ${result.agentId} spawned to help; the task stays with its current holder` });
         reassignNote = `\nTask ${taskPlan.taskId.slice(0, 8)} stays with its current holder; ${result.name} is linked to it as a helper.`;
       }
-      // ── UX-ACCESS A2 (ruling 4): every model-made grant change is AUDITED ──
-      // Actor, target, delta. The delta is measured against the most restrictive
-      // object every new agent now starts from, so the row says what this spawn
-      // ADDED rather than restating the whole grant; a spawn that named nothing
-      // extra produces an empty delta and no row, which is what makes "a grant
-      // change wrote a row" a fact rather than a habit.
+      // Every model-made grant change is audited: actor, target, and a delta measured
+      // against the most-restrictive start, so the row says what this spawn ADDED; nothing
+      // extra named means an empty delta and no row, keeping the audit honest.
       const spawnedGrants = readStoredGrants(result.agentId);
       if (spawnedGrants) {
         const delta = grantsDelta(MOST_RESTRICTIVE_GRANTS, spawnedGrants);
         if (delta) auditLog(agentId, 'spawn_agent', result.agentId, 'success', `grants: ${delta}`);
       }
-      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [args.system_prompt as string] })}`;   // t90 D3: tools the INSTRUCTIONS name that the assignee cannot call, surfaced to the SPAWNER before the run
+      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [args.system_prompt as string] })}`;   // tools the instructions name that the assignee cannot call, surfaced to the spawner
     } catch (err) {
-      // A refused GRANT is not a database error and must not be translated as
-      // one: the reason names the field the caller has to fix, and ruling 4
-      // requires the attempt itself to land in the audit log.
+      // A refused GRANT is not a database error and must not be translated as one: the
+      // reason names the field the caller has to fix, and the attempt itself is audited.
       if (err instanceof GrantRefusedError) {
         auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', err.plainReason.slice(0, 400));
-        // PERMISSION_DENIED, not a bare error: `classifyToolResult` reads the
-        // CODE, never the prose, and an access refusal that arrives as `failed`
-        // tells the engine the tool CRASHED — so the loop treats a settled "no"
-        // as worth retrying. Measured on the dev box before this line existed.
+        // PERMISSION_DENIED, not a bare error: `classifyToolResult` reads the CODE, not
+        // the prose, and a refusal arriving as `failed` reads as a crash worth retrying.
         return { content: err.plainReason, isError: true, errorCode: 'PERMISSION_DENIED' as const };
       }
       const msg = err instanceof Error ? err.message : String(err);
-      // FK constraint failure usually means a bad model_id, group_id,
-      // or task_id reference. Make that explicit instead of leaking
-      // the raw SQLite message.
+      // A FK failure usually means a bad model_id, group_id, or task_id; say so plainly.
       if (msg.includes('FOREIGN KEY constraint failed')) {
         content = `Could not spawn agent, one of the references you passed (model_id, group_id, task_id, or parent_agent) points at something that doesn't exist. Double-check the IDs. Use list_models to find a valid model_id.`;
       } else {
@@ -500,11 +372,9 @@ export const agentsHandlers: ToolHandlerMap = {
   async "kill_agent"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // Resolve via the standard helper so names + sensei ids work too.
     const killResolved = resolveAgentRef(args.agent_id as string, 'kill_agent');
     if (!killResolved.ok) { content = killResolved.error; isError = true; return { content, isError }; }
     const targetId = killResolved.id;
-    // Check classification before terminating
     const killDb = getDb();
     const targetAgent = killDb.prepare('SELECT classification, status FROM agents WHERE id = ?').get(targetId) as { classification: string; status: string } | undefined;
     if (targetAgent?.classification === 'sensei') {
@@ -553,13 +423,9 @@ export const agentsHandlers: ToolHandlerMap = {
   async "send_to_agent"({ agentId, args }) {
     let content = '';
     let isError = false;
-            // ── A2A Protocol: Structured inter-agent messaging ──
-            // All agent-to-agent communication goes through the A2A transport
-            // which enforces thread tracking, hop limits, semantic dedup, and
-            // requires_response routing.
+            // All A2A traffic goes through the transport: threads, hop limits, dedup, routing.
             const agentRef = args.agent as string;
-            // Normalize case/whitespace so a valid intent in the wrong case (a
-            // weak-model habit) is accepted, not rejected into a re-call loop.
+            // Normalize case/whitespace so a case slip is not a re-call loop.
             const intent = (args.intent as string | undefined)?.trim().toUpperCase();
             const payload = (args.payload as string) ?? (args.message as string) ?? '';
             if (!payload || !payload.trim()) {
@@ -568,11 +434,8 @@ export const agentsHandlers: ToolHandlerMap = {
               return { content, isError };
             }
 
-            // Intent is REQUIRED, no silent default. Previously this fell back
-            // to 'FYI', which is a no-wake intent. Agents that didn't specify
-            // an intent for a wake-needing message (deliver work, ask the primary agent to
-            // iMessage, etc.) had their messages silently dead-on-arrival.
-            // Force a deliberate choice every call by erroring on missing intent.
+            // Intent is REQUIRED, no silent default: the old FYI fallback made a
+            // wake-needing message dead-on-arrival, so every call chooses deliberately.
             const VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
             if (!intent || !VALID_INTENTS.includes(intent)) {
               content = `Error: \`intent\` is required for send_to_agent. Default to a wake intent unless you are CERTAIN the receiver has nothing to do with this message:
@@ -592,33 +455,27 @@ export const agentsHandlers: ToolHandlerMap = {
               return { content, isError };
             }
             const threadId = args.thread_id as string | undefined;
-            // t165 (owner, 2026-10-14: "Keep it separate"): a send ON a thread whose inbound request awaits
-            // its OWN turn belongs to that turn; from any other turn it is refused before anything is
-            // delivered (a delivered send would also mark it replied and cancel the turn queued for it).
+            // A send ON a thread whose inbound request awaits its own turn belongs to that
+            // turn; from any other turn it is refused, since delivery would cancel that turn.
             const keepSeparate = requestOnThreadForAnotherTurn(agentId, threadId);
             if (keepSeparate) {
               auditLog(agentId, 'tool_call', 'send_to_agent', 'denied', `thread:${keepSeparate.threadShort} request awaits its own turn`);
               return { content: keepSeparate.refusal, isError: true, errorCode: 'PERMISSION_DENIED' as const };
             }
-            // ROUND-11 T43 leg (c): the assignee's DECLARED hand-off. Read here and forwarded
-            // verbatim; the transport owns what it means, and the spine owns whether the
-            // sender is entitled to it. Declared on the tool, so a model that passes it is
-            // not met with the engine's unknown-argument warning.
+            // The assignee's declared hand-off is forwarded verbatim; the transport owns its
+            // meaning. Declared on the tool so a caller is not met with an unknown-arg warning.
             const handsOffThread = (args.hands_off_thread as string | undefined)?.trim() || undefined;
             const rawAttachPaths = args.attach_paths;
             const attachPaths: string[] = Array.isArray(rawAttachPaths)
               ? rawAttachPaths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
               : [];
 
-            // Determine requires_response from explicit arg, or default by intent.
-            // ANSWER and DELIVERABLE default to true (receiver is waiting for
-            // the content) even though they close the thread. FYI, STATUS,
-            // COMPLETE, FAIL default to false (no one is waiting).
+            // requires_response: the explicit arg wins, else the intent default. ANSWER and
+            // DELIVERABLE default to true (the receiver waits) even though they close the thread.
             let requiresResponse: boolean;
             if (args.requires_response !== undefined) {
               requiresResponse = !!args.requires_response;
             } else {
-              // Default: no-wake intents don't wake; everything else does
               requiresResponse = !isNoWakeIntent(intent as import('../../a2a-transport.js').A2AIntent);
             }
             // No-wake intents ALWAYS force false (transport also enforces this)
@@ -629,23 +486,13 @@ export const agentsHandlers: ToolHandlerMap = {
             // Check if target is injured, healer bypass
             const sendDb = getDb();
             let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
-            let named: LiveAgentByName[] = [];   // E21: names ignore case; the newest of several wins
+            let named: LiveAgentByName[] = [];   // names ignore case; the newest of several wins
             if (!targetCheck) { named = liveAgentsNamed(agentRef); targetCheck = named[0]; }
             if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
-              // v2.9.20, spawn-race auto-recover. When a newly-spawned
-              // sub-agent's initial turn fails (any preflight error: model
-              // not ready, network blip, rate limit, etc.), its status
-              // flips to 'error' before the parent's first send_to_agent
-              // arrives. The parent would then see "Agent INJURED, Message
-              // NOT delivered" and be forced to chain spawn → kill →
-              // spawn → reset_session manually. The 2026-06-06 vision-
-              // delegate workflow hit this on ~80% of spawn attempts.
-              //
-              // Detect by: agent in error, created in the last 60 seconds.
-              // Auto-heal back to idle and let delivery proceed. If the
-              // agent had time to do real work and crash (created > 60s
-              // ago), this isn't a spawn race - keep the existing
-              // rejection so the parent intervenes.
+              // Spawn-race auto-recover: a fresh sub-agent's first turn can fail (model not
+              // ready, network blip) before the parent's first send lands, leaving it 'error'.
+              // Error + created under 60 seconds = the race: heal to idle and deliver. An agent
+              // that lived past 60s crashed after real work, so keep refusing and let parents heal.
               if (targetCheck.status === 'error') {
                 const createdAtMs = new Date(
                   targetCheck.created_at + (targetCheck.created_at.includes('Z') ? '' : 'Z'),
@@ -682,7 +529,7 @@ export const agentsHandlers: ToolHandlerMap = {
               }
             }
 
-            // 983: send_to_agent reaches OTHER agents. Naming yourself would store the message in your own inbox and wake you with it.
+            // send_to_agent reaches OTHER agents; naming yourself stores and wakes your own inbox.
             if (targetCheck && targetCheck.id === agentId) {
               content = `Message not sent: "${targetCheck.name}" is you. send_to_agent reaches OTHER agents. If you need to remember something or plan your next step, do it in your own turn or with your own tools; to reach someone else, call list_agents and pick them.`;
               isError = true;
@@ -703,12 +550,8 @@ export const agentsHandlers: ToolHandlerMap = {
 
               if (result.delivered) {
                 const effectiveIntent = result.autoPromotedFromFyi ? 'DELIVERABLE' : intent;
-                // v2.5.31, Mark any open inbound ASSIGN/QUESTION/BLOCK on this
-                // thread as replied. Without this, the v2 loop's preflight
-                // re-derives "you owe a reply" from the most-recent-user-message
-                // on every handleMessage invocation; the missed-reply enforcer
-                // then fires repeatedly for an ASSIGN the agent already handled.
-                // See loop.txt 2026-05-13 for the 30-nudge spiral this prevents.
+                // Mark any open inbound ASSIGN/QUESTION/BLOCK on this thread as replied; else
+                // the missed-reply enforcer re-derives the debt and re-fires on every turn.
                 try {
                   const inbound = findInboundAssignByThread(agentId, result.threadId);
                   if (inbound) {
@@ -723,33 +566,15 @@ export const agentsHandlers: ToolHandlerMap = {
                 auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
                   `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
                 );
-                // RC-12: a delivered inter-agent send is a real delivery; record a receipt
-                // so the grounding ledger recognizes "I told <agent>" as grounded across
-                // turns (recipient = target agent name; the A2A thread id is the provider
-                // id). skipAudit: the auditLog row above is the provenance row.
+                // A delivered send is a real delivery: the receipt grounds "I told <agent>"
+                // across turns. skipAudit because the auditLog row above is the provenance row.
                 const sendReceiptId = writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
-                // ── t116 E3 — THE DOOR THE SOURCE HAS BEEN NAMING FOR ITSELF ──
-                //
-                // `send_to_agent` wrote THREE bookkeeping rows here — the A2A reply mark, the
-                // audit row, the tool receipt — and no `deliveries` row at all. The ledger is
-                // the platform's one answer to "what did this agent actually deliver", every
-                // other send door writes it, and `git log -S recordAtDoor` over this file
-                // returned zero commits: the receipt was never here to lose. The gap is named
-                // in-source by `a2a-transport.ts`'s `recordPieceDelivery` — "PINNED §8 names
-                // `send_to_agent` as one of the ten unrecorded paths T5 closes AT THE DOOR" —
-                // and this is that door, so the row is written where the send is KNOWN rather
-                // than inferred later from a reply spine.
-                //
-                // THROUGH `recordAtDoor`, NOT a second writer. Attribution is the reason: the
-                // only existing producer of `tool='send_to_agent'` is that reply-spine call,
-                // and it credits the REPLYING PEER, so a delegator's own hand-off appeared
-                // nowhere. This row is the delegator's. Inside an outbound scope `recordAtDoor`
-                // folds into that scope's single row rather than standing beside it, so closing
-                // the door here cannot double-count the piece delivery it supersedes.
-                //
-                // Channel `a2a`, which mints no `conversations` row by construction — peer
-                // coordination is not a human conversation. Same channel, same vocabulary and
-                // same shape as the existing a2a producer; no new class of row is introduced.
+                // This door wrote only the reply mark, audit row and receipt, never a
+                // `deliveries` row. It is written THROUGH `recordAtDoor`, the one ledger
+                // writer, so inside an outbound scope it folds into that scope's single row
+                // instead of double-counting the piece delivery it supersedes. Channel `a2a`
+                // mints no `conversations` row by construction: peer coordination is not a
+                // human conversation; same shape as the other a2a producer, no new row class.
                 const replyDeliveryId = recordedId(recordAtDoor({
                   outcome: 'delivered', channel: 'a2a',
                   agentId, tool: 'send_to_agent',
@@ -757,7 +582,7 @@ export const agentsHandlers: ToolHandlerMap = {
                   recipientDisplay: targetCheck?.name ?? agentRef,
                   provider: result.threadId, threadRoot: result.threadId,
                   messageId: result.messageId ?? null,
-                  receiptId: sendReceiptId,   // C6: the receipt names the delivery, so the peer message is findable from the send
+                  receiptId: sendReceiptId,   // the receipt names the delivery, so the peer message is findable from the send
                   detail: `A2A ${effectiveIntent}`,
                 }), 'send_to_agent: hand-off to a peer', {
                   from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
@@ -775,11 +600,9 @@ export const agentsHandlers: ToolHandlerMap = {
                       `actually received. Do not message "${agentRef}" again about this (re-sending does not speed it up). ` +
                       `End your turn now; you will be woken when they answer.`
                     : ' No response expected (read-only context).');
-                content += sameNameNote(agentRef, named);   // E21
-                // A2A busy signal (owner request 2026-07-23): the transport knows the
-                // recipient's live state; telling the SENDER prevents the weak-model
-                // re-send/escalate reflex when a queued-behind-busy reply reads as
-                // being ignored. Purely informational, delivery is unchanged.
+                content += sameNameNote(agentRef, named);   // case-variant name collision note
+                // The busy signal is informational: telling the sender prevents the
+                // re-send/escalate reflex when a queued-behind-busy reply reads as ignored.
                 try {
                   if (targetCheck && activeRuns.has(targetCheck.id)) {
                     const humanBusy = turnContext(targetCheck.id)?.kind === 'user';
@@ -792,36 +615,24 @@ export const agentsHandlers: ToolHandlerMap = {
                   content +=
                     `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;
                 }
-                // Engine-driven task discipline (Phase 7+): ASSIGN intent
-                // auto-creates a tracker task. Surface the ID so the sender
-                // knows where to track progress without having to call
-                // work_open(kind="task") themselves.
+                // ASSIGN auto-creates a tracker task; surface the ID so the sender can track
+                // progress without calling work_open(kind="task") themselves.
                 if (result.autoCreatedTaskId) {
                   const taskShort = result.autoCreatedTaskId.slice(0, 8);
                   content += result.autoTaskIsNew
                     ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with work_update(action="get", task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
                     : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
                 }
-                // ROUND-11 T43 leg (c): whether the declared hand-off took, at the decision
-                // moment. Composed by the transport (which owns the join facts) and only
-                // relayed here, beside every other outcome this tool reports.
+                // The hand-off outcome is composed by the transport; only relayed here.
                 if (result.handOff) content += `\n${result.handOff.message}`;
               } else {
-                // Message was dropped by the protocol, log the reason but don't error
-                // (the protocol is doing its job, this is expected behavior)
+                // A protocol drop is expected behavior: log the reason, do not error.
                 auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
                   `to:${agentRef} intent:${intent} reason:${result.reason}`,
                 );
-                // t116 E3, THE OTHER DIRECTION. A door that records only its successes is a
-                // ledger that cannot be asked "did this hand-off happen?" — the absence of a
-                // row would mean both "it was refused" and "nobody wrote one", which is the
-                // exact ambiguity that let the missing receipt sit here unnoticed. So the
-                // refusal is recorded too, in the vocabulary's own words. WHICH word is
-                // `a2aDropOutcome`'s to decide, not this call site's — it is a named set with a
-                // `failed` default, and it lives at module scope precisely because the inline
-                // ternary that stood here contradicted this comment and filed two real losses
-                // as policy. Readers of this table filter `outcome='delivered'`, so no refusal
-                // row of either word can be mistaken for a delivery.
+                // Refusals are recorded too: a ledger of only successes cannot answer "did
+                // this hand-off happen?". WHICH word is `a2aDropOutcome`'s to decide, not this
+                // call site's; readers of this table filter outcome='delivered' either way.
                 recordedId(recordAtDoor({
                   outcome: a2aDropOutcome(result.reason),
                   channel: 'a2a',
@@ -835,36 +646,24 @@ export const agentsHandlers: ToolHandlerMap = {
                 });
                 switch (result.reason) {
                   case 'TERMINAL_THREAD_CLOSED':
-                    // v2.5.34 removed the rejection that raised this, and PHASE-2 T10
-                    // (migration 143) deleted the `is_terminal` flag behind it, so the
-                    // transport has NO EMIT SITE left: if it surfaces it is a stale
-                    // uncleared marker, i.e. a transport bug. The agent is told something
-                    // useful instead of "the thread is closed", and the LEDGER agrees with
-                    // this sentence — `a2aDropOutcome` files it `failed`, not `suppressed`,
-                    // because a bug is a lost message and never policy (ruled 2026-10-06).
+                    // No emit site: the rejection and the flag behind it were both removed, so
+                    // if this surfaces it is a stale uncleared marker, i.e. a transport bug.
+                    // The ledger agrees: `a2aDropOutcome` files a bug as `failed`, never policy.
                     content = `Thread ${result.threadId.slice(0, 8)} reported a stale closure marker (engine bug, the transport should have auto-cleared it). Try again, or omit thread_id to start a fresh thread.`;
                     break;
                   case 'HOP_LIMIT_EXCEEDED':
                     content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
                     break;
                   case 'SEMANTIC_DUPLICATE':
-                    // W3-4 follow-up: an ASSIGN dropped as a duplicate means the
-                    // work is ALREADY assigned (possibly via cross-thread reuse of
-                    // an omitted thread_id). Re-sending spawns nothing and does
-                    // not speed the reply up; say so instead of the generic copy,
-                    // and do NOT advise starting a fresh thread (that is the
-                    // duplicate-task vector this guard exists to close).
+                    // A duplicate-dropped ASSIGN means the work is ALREADY assigned; re-sending
+                    // spawns nothing. Do NOT advise a fresh thread: that is the duplicate-task vector.
                     content = intent === 'ASSIGN'
                       ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
                       : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
                     break;
                   case 'AWAITING_REPLY':
-                    // RC-14: the receiver still owes a reply to this sender's last
-                    // wake-intent on this thread and we are inside the cooldown.
-                    // Re-sending does not speed the reply up; it is dropped
-                    // deterministically. Rendered like the ASSIGN-duplicate refusal:
-                    // do NOT advise a fresh thread for the re-ask (that just spawns
-                    // a parallel open loop).
+                    // The receiver still owes a reply on this thread and the cooldown is active;
+                    // re-sending is dropped deterministically. Do NOT advise a new thread here.
                     content = intent === 'ASSIGN'
                       ? `Assignment not re-sent: you already assigned this to "${agentRef}" on thread ${result.threadId.slice(0, 8)} and they have not replied yet. The engine tracks it as a tracker task and will wake you when they reply or complete it. Do not re-assign; end your turn and wait.`
                       : `Message not sent: you already have an open ${intent} awaiting a reply from "${agentRef}" on thread ${result.threadId.slice(0, 8)}, and they have not answered yet. Re-asking does not speed it up. End your turn; you will be woken when they reply. (If this is genuinely new, unrelated work, start a fresh thread by omitting thread_id.)`;
@@ -880,26 +679,17 @@ export const agentsHandlers: ToolHandlerMap = {
               }
             }
 
-            // NOTE: do NOT clear the pending iMessage-reply flag here. This is
-            // send_to_agent, delegating work to ANOTHER AGENT, never a reply to
-            // the user. The earlier code cleared it (with a copy-pasted "if the
-            // agent explicitly sent an iMessage" comment that never matched what
-            // this handler does), which silently wiped the user's reply recipient
-            // mid-turn. Canonical failure: user iMessages "pause Nora", the agent
-            // delegates the pause to Nora via send_to_agent, the clear nukes the
-            // pending sender, and the end-of-turn auto-route has no one to deliver
-            // to, so the reply falls into dashboard chat the user never sees.
-            // The only legitimate "the agent handled the reply itself" clear lives
-            // in imessage_send (double-send guard); stale flags are swept at
-            // end-of-turn by the `if (imFlagSetAtRunStart)` cleanup in loop.ts.
+            // Do NOT clear the pending iMessage-reply flag here: this delegates to ANOTHER
+            // AGENT, it is never a reply to the user, and clearing it mid-turn silently wipes
+            // the user's reply recipient. The only legitimate clear lives in imessage_send;
+            // stale flags are swept at end-of-turn by the cleanup in loop.ts.
             return { content, isError };
   },
 
   async "approve_destructive_action"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // Primary-only: the gate routes requests here, and only the primary
-    // decides (open question 6 hierarchy).
+    // Primary-only: the gate routes these requests, and only the primary decides.
     if (!isPrimaryAgent(agentId)) {
       content = 'Only the primary agent can decide destructive-action approvals. If you need one approved, the engine has already routed your request to the primary.';
       isError = true;
@@ -930,7 +720,6 @@ export const agentsHandlers: ToolHandlerMap = {
     const bcIntent = (args.intent as string | undefined)?.trim().toUpperCase();
     if (!broadcastPayload || !broadcastPayload.trim()) { content = 'Error: `payload` (or `message`) is required, what to send to the group.'; isError = true; return { content, isError }; }
 
-    // Intent is REQUIRED, same rationale as send_to_agent.
     const BC_VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
     if (!bcIntent || !BC_VALID_INTENTS.includes(bcIntent)) {
       content = `Error: \`intent\` is required for broadcast_to_group. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) wake EVERY group member, use sparingly. Most broadcasts should be FYI (informational) or STATUS (progress update). Re-call with an explicit intent.`;
@@ -940,7 +729,6 @@ export const agentsHandlers: ToolHandlerMap = {
 
     const bcDb = getDb();
 
-    // Get all non-terminated agents in the group (excluding the sender)
     const groupMembers = bcDb.prepare(`
       SELECT id, name, status FROM agents
       WHERE group_id = ? AND status != 'terminated' AND id != ?
@@ -955,18 +743,13 @@ export const agentsHandlers: ToolHandlerMap = {
     const sent: string[] = [];
     const sentIds = new Set<string>();
 
-    // Filter out injured/paused agents, don't try to wake broken agents
     const healthyMembers = groupMembers.filter(m => m.status !== 'error' && m.status !== 'paused');
 
     for (const member of healthyMembers) {
       const bcResult = await deliverBc({
         intent: bcIntent as import('../../a2a-transport.js').A2AIntent,
-        // A-1/A-2 (comms-audit): each recipient gets a FRESH thread (empty →
-        // auto-generated per member in the transport). A SHARED thread_id across
-        // recipients collided the per-thread semantic-dedup, hop counter, and
-        // ASSIGN-task lookup, so an identical broadcast to N members silently
-        // dropped members 2+ as duplicates / mis-assigned the task to member 1.
-        // Broadcasts are one-to-many fan-out with no shared-thread semantics.
+        // Fresh thread per member (empty, auto-generated in transport): a SHARED
+        // thread_id collided the per-thread dedupe, hop counter and ASSIGN lookup.
         threadId: '',
         requiresResponse: ['QUESTION', 'ASSIGN', 'BLOCK'].includes(bcIntent),
         payload: broadcastPayload,
@@ -976,21 +759,12 @@ export const agentsHandlers: ToolHandlerMap = {
       if (bcResult.delivered) {
         sent.push(member.name);
         sentIds.add(member.id);
-        // RC-12: one receipt per delivered recipient (recipient = that agent's
-        // name) so the grounding ledger recognizes the broadcast as a real
-        // cross-turn delivery. skipAudit: the fan-out audit is handled by the
-        // transport / the summary content below.
+        // One receipt per delivered recipient grounds the broadcast as a real
+        // cross-turn delivery; skipAudit since the transport handles fan-out audit.
         writeToolReceipt({ agentId, tool: 'broadcast_to_group', tier: 1, verified: true, basis: 'provider-id', providerId: bcResult.threadId, threadId: bcResult.threadId, recipient: member.name, sentText: broadcastPayload, detail: { intent: bcIntent, groupId }, skipAudit: true });
-        // t116 E3, FOUND BY THE CENSUS THAT CLOSED `send_to_agent`. This door had the exact
-        // same gap and for the same reason: a tool receipt claiming a send to a named
-        // recipient, and no `deliveries` row behind it. It is the "next receiptless sender"
-        // the census exists to catch, it is in the same handler and the same two lines, so it
-        // is closed here rather than carved out of the clause — a census with an exemption
-        // for the case it just found is not a census.
-        //
-        // ONE ROW PER DELIVERED MEMBER, matching the receipt above one-for-one. Each recipient
-        // gets a FRESH thread (A-1/A-2: a shared thread id collided the per-thread dedupe and
-        // dropped members 2+), so a fan-out to N members is genuinely N deliveries, not one.
+        // Same ledger closure as `send_to_agent`: a receipt and no `deliveries` row was
+        // the same gap. ONE ROW PER DELIVERED MEMBER, one-for-one with the receipts: each
+        // member gets a fresh thread, so a fan-out to N members is genuinely N deliveries.
         recordedId(recordAtDoor({
           outcome: 'delivered', channel: 'a2a',
           agentId, tool: 'broadcast_to_group',
@@ -1020,14 +794,9 @@ export const agentsHandlers: ToolHandlerMap = {
     let isError = false;
     const completeStatus = args.status as string | undefined;
     const completeSummary = args.summary as string | undefined;
-    // Normalize case/synonyms at the tool boundary (mirrors the
-    // work_update(action="status") STATUS_SYNONYMS fix). A weak floor model saying
-    // "done"/"failed"/"stuck" previously hard-errored here even though the
-    // intent was unambiguous. Map ONLY words whose intent is unambiguous so
-    // the divergent side effects are preserved: complete fires the dependency
-    // cascade, fallen archives silently, blocked notifies the owner. Anything
-    // that isn't clearly one of the three (e.g. "paused"/"waiting", which are
-    // not terminal completion states) is still rejected with guidance.
+    // Map only words whose intent is unambiguous (mirrors the work_update status fix);
+    // the divergent side effects are preserved: complete fires the dependency cascade,
+    // fallen archives silently, blocked notifies the owner. Anything else is rejected.
     const COMPLETE_STATUSES = ['complete', 'fallen', 'blocked'];
     const COMPLETE_SYNONYMS: Record<string, string> = {
       complete: 'complete', completed: 'complete', done: 'complete', finished: 'complete',
@@ -1045,22 +814,16 @@ export const agentsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // Idempotency: if the agent is already terminated, don't re-run the
-    // termination path. Return a clean no-op message instead of mutating
-    // state again or sending a duplicate parent notification.
+    // Idempotent no-op: an already-terminated agent does not re-run the termination path.
     const agentDb = getDb();
     const completeAgentRow = agentDb.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
     if (completeAgentRow?.status === 'terminated') {
       content = `Task completion was already recorded, you are terminated. No action taken.`;
       return { content, isError };
     }
-    // FN-8: ENGINE ENFORCEMENT. complete_task terminates the calling agent,
-    // so it is gated to spawned agents (and the persistent per-cycle Dreamer
-    // and Healer, whose batch filing keys off complete_task).
-    // getFilteredTools already removes the tool for anyone else, but the model
-    // can still emit an unfiltered call, so re-check against fresh DB state
-    // here. Never rely on the model not calling it. A persistent agent that
-    // reaches this point must NOT be terminated.
+    // ENGINE ENFORCEMENT: complete_task terminates the calling agent, gated to spawned agents
+    // (plus the per-cycle Dreamer and Healer). The surface filter is advice and the model can
+    // emit an unfiltered call, so re-check FRESH state here; a persistent agent must NOT end.
     if (!agentCanSelfCompleteById(agentId)) {
       content =
         `complete_task ends a spawned agent's lifecycle and is not available to a persistent agent. ` +
@@ -1110,13 +873,11 @@ export const agentsHandlers: ToolHandlerMap = {
       const changes: string[] = [];
       let finalName = target.name;
 
-      // Model resolved + 32K-floor checked (dec 13) FIRST, so a refusal leaves the edit unwritten.
+      // Model resolved and the 32K floor checked FIRST, so a refusal leaves the edit unwritten.
       let resolvedModel: { id: string; name: string; is_enabled: number } | undefined;
       if (typeof newModelId === 'string' && newModelId !== 'auto') {
-        // Resolve forgivingly: id, then case-insensitive name/api_model_id,
-        // then a unique name substring. The tool primes model NAMES, so a
-        // weak model passes a name where a uuid id is expected and an
-        // exact-id lookup misses.
+        // Resolve forgivingly: id, then case-insensitive name/api_model_id, then a unique
+        // name substring; the schema primes names, so an exact-id lookup often misses.
         let model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
         if (!model) {
           const exact = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) = LOWER(?) OR LOWER(api_model_id) = LOWER(?)').all(newModelId, newModelId) as Array<{ id: string; name: string; is_enabled: number }>;
@@ -1133,14 +894,10 @@ export const agentsHandlers: ToolHandlerMap = {
         if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
       }
 
-      // ── UX-ACCESS A2 (ruling 4): THE EDIT DOOR FOR ACCESS ──
-      // Separate from the manifest block below on purpose. `can_assign_permissions`
-      // gates handing out MANIFEST scope; the no-escalation rule is what bounds a
-      // GRANT, and it bounds it against the caller's own holdings rather than
-      // against a boolean — which is the whole content of ruling 4. A caller
-      // holding `can_assign_permissions` still cannot grant a channel it does not
-      // hold, and a caller without it can still be refused for the same reason.
-      // THE ACCESS WRITES, ONE STEP — first run as a dry run, judged on what it leaves (v3.5 fix round 4).
+      // THE EDIT DOOR FOR ACCESS, separate from the manifest block below on purpose:
+      // `can_assign_permissions` gates MANIFEST scope, while no-escalation bounds a GRANT
+      // against the caller's own holdings, so even a permission holder cannot grant a
+      // channel it lacks. The writes run first as a dry run via `inspectGainRefusal`.
       const applyAccess = (changes: string[]): { content: string; isError: true; errorCode?: 'PERMISSION_DENIED' } | null => {
         if (newGrants !== undefined) {
           const targetGrants = getAccessGrants(target.id);
@@ -1191,26 +948,22 @@ export const agentsHandlers: ToolHandlerMap = {
         }
         if (typeof newName === 'string' && newName.trim() && newName.trim() !== target.name) {
           const trimmedName = newName.trim();
-          // UX-REPAIR T50: ONE RENAME DOOR. This was an inline `UPDATE agents SET name`, one of
-          // three in the tree, and none of them touched the stored soul that had the old name
-          // baked into it. `renameAgent` writes the row, carries the platform role name with it,
-          // and re-fills the souls. The reported `changes` line is unchanged.
+          // ONE RENAME DOOR: the inline `UPDATE agents SET name` this replaced left the old
+          // name baked into stored souls; `renameAgent` updates the row, role name, and souls.
           const renameOutcome = renameAgent(target.id, trimmedName);
-          // E21 parked minor: the rename door refused a case-variant clash with another live agent.
-          // Surface the plain refusal in this door's own style — an error, not a changes line.
+          // The rename door's refusal surfaces here as an error, not a changes line.
           if (renameOutcome.refusal) { content = renameOutcome.refusal; isError = true; return { content, isError }; }
           changes.push(`name: "${target.name}" → "${trimmedName}"`);
           finalName = trimmedName;
         }
         if (typeof newPrompt === 'string') {
-          // UX-REPAIR T40: one write door — the store the runtime reads.
+          // One write door: the store the runtime reads.
           writeAgentPromptSurface(target.id, newPrompt);
           db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
           changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
         }
       }
 
-      // Model.
       if (typeof newModelId === 'string') {
         if (newModelId === 'auto') {
           db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(target.id);
@@ -1265,14 +1018,12 @@ export const agentsHandlers: ToolHandlerMap = {
         FROM agents WHERE id = ?
       `).get(gapResolved.id) as AgentProfileRow;
 
-      // UX-REPAIR T40: the agent's STORED identity, through the one surface the Settings
-      // card and the runtime both use. This used to be its own copy of the first-system-row
-      // SELECT, which on a worn body returns an engine marker.
+      // The agent's STORED identity through the one surface the Settings card and the
+      // runtime both use; a raw first-system-row SELECT can return an engine marker.
       let systemPrompt: string;
       try { systemPrompt = readAgentPromptSurface(target.id); }
       catch { systemPrompt = '(the saved prompt could not be read just now)'; }
 
-      // Resolve model name if a model is configured
       let modelLabel = '(none / auto-routed)';
       if (target.model_id && target.model_id !== 'auto') {
         const modelRow = db.prepare('SELECT name, api_model_id FROM models WHERE id = ?').get(target.model_id) as { name: string; api_model_id: string } | undefined;
@@ -1281,14 +1032,12 @@ export const agentsHandlers: ToolHandlerMap = {
         modelLabel = 'auto-routed';
       }
 
-      // Resolve group name
       let groupLabel = '(none)';
       if (target.group_id) {
         const groupRow = db.prepare('SELECT name FROM agent_groups WHERE id = ?').get(target.group_id) as { name: string } | undefined;
         groupLabel = groupRow ? `${groupRow.name} (id=${target.group_id})` : `id=${target.group_id}`;
       }
 
-      // Pretty-print tools_policy and permissions JSON, but degrade gracefully on bad JSON
       const formatJson = (raw: string | null, fallback: string): string => {
         if (!raw) return fallback;
         try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
@@ -1317,14 +1066,8 @@ export const agentsHandlers: ToolHandlerMap = {
         '── Permissions ──',
         permissionsText,
         '',
-        // UX-ACCESS A2: the profile printed the stored `permissions` blob, which
-        // since A1 CONTAINS the grants — as raw JSON, and only for an agent whose
-        // row had already been materialized. Both halves were wrong for the one
-        // question this door is read for before `update_agent`: what does this
-        // agent actually hold. `getAccessGrants` answers for every agent
-        // (declared or derived), the capability clause is the same line
-        // `list_agents` prints, and the access line is the same one `spawn_agent`
-        // reports — one wording, three doors.
+        // `getAccessGrants` answers for every agent, declared or derived, and these
+        // two lines reuse the same wording `list_agents` and `spawn_agent` print.
         '── Access ──',
         `Capability: ${capabilityClause(target.id) || '(unavailable)'}`,
         accessLine(target.id).trim() || 'Access: (unavailable)',
@@ -1415,10 +1158,8 @@ export const agentsHandlers: ToolHandlerMap = {
     let isError = false;
     const atgAgent = resolveAgentRef(args.agent_id as string, 'assign_to_group');
     if (!atgAgent.ok) { content = atgAgent.error; isError = true; return { content, isError }; }
-    // `group_id` is handler-judged (see the `fields` declaration): the description
-    // tells the model to pass null to ungroup, so null must reach the writer. The
-    // three refusals below are byte-identical to the generic boundary's messages
-    // for every other bad value — the model reads and retries on those strings.
+    // `group_id` is handler-judged (see the `fields` declaration): null must reach the
+    // writer so the model can ungroup, and the refusals match the generic boundary's.
     const atgGroupArg = args.group_id;
     if (atgGroupArg === undefined) {
       content = 'Error: `group_id` is required.';
@@ -1474,9 +1215,8 @@ export const agentsHandlers: ToolHandlerMap = {
       ORDER BY a.name ASC
     `).all() as Array<Record<string, unknown>>;
 
-    // Status labels, INJURED / PAUSED stay ALL-CAPS in both modes because
-    // a calling agent that misses these will keep waiting on a dead peer.
-    // This is operational signal, not decoration.
+    // INJURED / PAUSED stay ALL-CAPS in both modes: a caller that misses them keeps
+    // waiting on a dead peer. Operational signal, not decoration.
     const labelForStatus = (s: string, brief: boolean): string => {
       switch (s) {
         case 'idle': return brief ? 'ready' : 'ready';
@@ -1490,8 +1230,7 @@ export const agentsHandlers: ToolHandlerMap = {
 
     let lines: string[];
     if (verbose) {
-      // Verbose: full v1 behavior, activity timestamps, dormant detection,
-      // group names, last_error snippets.
+      // Verbose mode: activity timestamps, dormant detection, group names, last_error.
       const nowMs = Date.now();
       const DORMANT_DAYS = 7;
       lines = agentRows.map(a => {
@@ -1522,7 +1261,6 @@ export const agentsHandlers: ToolHandlerMap = {
           activityStr = ', no activity';
           dormant = true;
         }
-        // T43a: capability truth, at the door the delegator actually reads.
         const caps = capabilityClause(a.id as string);
         let line = `- ${a.name} (ID: ${a.id}), ${labelForStatus(a.status as string, false)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}${activityStr}${caps ? ` — ${caps}` : ''}`;
         if ((a.status === 'error' || a.status === 'paused') && a.last_error) {
@@ -1540,15 +1278,13 @@ export const agentsHandlers: ToolHandlerMap = {
       // still flagged loudly because that's load-bearing operational info.
       lines = agentRows.map(a => {
         const groupSuffix = a.group_name ? `, group: ${a.group_name}` : '';
-        // T43a: capability truth in BOTH modes — the compact mode is the one an agent
-        // reaches for before delegating, which is the call the incident was made from.
+        // Capability truth in BOTH modes: compact is what an agent reads before delegating.
         const caps = capabilityClause(a.id as string);
         return `- ${a.name} (${a.id}), ${labelForStatus(a.status as string, true)}, ${a.classification}${groupSuffix}${caps ? ` — ${caps}` : ''}`;
       });
     }
 
-    // Injured/paused warning fires in BOTH modes, it's a safety signal,
-    // not a decoration.
+    // The injured/paused warning fires in BOTH modes: it is a safety signal.
     const injuredCount = agentRows.filter(a => a.status === 'error' || a.status === 'paused').length;
     if (injuredCount > 0) {
       lines.push('');
@@ -1577,7 +1313,7 @@ export const agentsHandlers: ToolHandlerMap = {
       JOIN providers p ON p.id = m.provider_id
       WHERE m.is_enabled = 1 AND m.capabilities NOT LIKE '%"decision"%'
       ORDER BY COALESCE(m.input_cost_per_m, 0) ASC
-    `).all() as Array<Record<string, unknown>>;   // v3.5: the Dojo's decision model is no agent's model
+    `).all() as Array<Record<string, unknown>>;   // the Dojo's decision model is no agent's model
     content = modelRows.map(m => {
       const inputCost = (m.input_cost_per_m as number) ?? 0;
       const outputCost = (m.output_cost_per_m as number) ?? 0;
@@ -1586,14 +1322,12 @@ export const agentsHandlers: ToolHandlerMap = {
         : `$${inputCost}/M in, $${outputCost}/M out`;
       const ctx = m.context_window ? `${Math.round((m.context_window as number) / 1000)}k ctx` : '';
       const maxOut = m.max_output_tokens ? `${Math.round((m.max_output_tokens as number) / 1000)}k max out` : '';
-      // Parse capabilities
       let caps: string[] = [];
       if (m.capabilities) {
         try { caps = JSON.parse(m.capabilities as string); } catch { /* ignore */ }
       }
       const capStr = caps.length > 0 ? caps.join(', ') : 'text';
       const thinking = m.thinking_enabled ? 'thinking' : '';
-      // Build feature tags
       const features = [capStr, thinking, ctx, maxOut].filter(Boolean).join(', ');
       return `- ${m.name} (ID: ${m.id}), ${m.provider_name} (${m.provider_type}), ${costStr} | ${features}`;
     }).join('\n') || 'No enabled models found.';
@@ -1697,7 +1431,6 @@ export const agentsHandlers: ToolHandlerMap = {
       }
     }
 
-    // Now delete the group (ungroups any remaining agents)
     const deleted = doDeleteGroup(groupId);
     if (deleted) {
       const parts = [`Group ${groupId} deleted.`];

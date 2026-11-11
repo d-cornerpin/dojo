@@ -1,14 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// AGENT CREDENTIALS (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// `credential_list` / `_get` / `_add` / `_update` / `_delete` on one case body.
-//
-// The declared SECRET fields on these definitions (PHASE-4 T5b / PHASE-5 T1's
-// `secret: true`) are what keeps a stored key out of the persisted `tool_use`
-// arguments; that machinery lives in `credentials/secret-fields.ts` and on the
-// definitions, never in this body, so the move cannot disturb it.
-//
-// RELOCATION, NOT REWRITE.
+// Five credential tools; `credentials/secret-fields.ts` (not this body) keeps keys out of persisted args.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { executeCredentialTool } from '../../../credentials/tools.js';
@@ -24,9 +15,6 @@ const handlers = {
   },
 } satisfies Record<string, ToolHandler>;
 
-// The switch reached these bodies through fall-through labels; the table is
-// keyed on the dispatch key, so every label is a key pointing at the same
-// function. One line per tool, so `git grep <tool>` still lands here.
 export const credentialsHandlers: ToolHandlerMap = {
   ...handlers,
   credential_get: handlers.credential_list,

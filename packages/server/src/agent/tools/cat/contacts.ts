@@ -1,25 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
-// DOJO CONTACTS + SQUAD COORDINATION (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// The seven "DOJO Contacts (v2.9.16)" tools and the two "Squad Coordination"
-// tools. They share a module because they shared a run of the switch and
-// because splitting two handlers into their own file would be a design decision
-// this task is not licensed to make: relocation moves what was there.
-//
-// ── THE `contacts/tools.js` LAZY LOADS ARE KEPT, DELIBERATELY ──
-// §T0-PINS P8 pins these as SANCTIONED and says they MOVE WITH THEIR HANDLERS,
-// which is what happens here — seven `await import('../contacts/tools.js')`
-// calls, unchanged. RE-DERIVED at this HEAD as the brief requires: measured,
-// `contacts/tools.ts` imports NOTHING from the toolbox, so there is no cycle
-// left for these to break and they could be static. That measurement is handed
-// up rather than acted on — converting them would be an improvement taken
-// during a move, which relocation purity forbids, and the pinned list sanctions
-// them as they stand.
-//
-// ── THE `vault/namespaces.js` LAZY LOADS DIED ──
-// The two squad bodies fetched it through `await import(…)`. It is not on the
-// sanctioned list, and `vault/namespaces.ts` imports nothing from the toolbox,
-// so there was no cycle to break: static now.
+// DOJO Contacts (7 tools) + Squad Coordination (2 tools), one module because they shared
+// a run of the switch.
+// The `await import('../contacts/tools.js')` calls are kept on purpose: pinned sanctioned,
+// moving with their handlers. `contacts/tools.js` imports nothing from the toolbox, so they
+// could also be static; the squad vault calls are static.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../../../db/connection.js';
@@ -69,7 +53,7 @@ export const contactsHandlers: ToolHandlerMap = {
     return { content: executeContactDescribe(), isError: false };
   },
 
-  // ── Squad Coordination (Phase 7 / Part X) ──
+  // Squad Coordination
 
   async squad_share({ agentId, args }) {
     const namespace = resolveAgentNamespace(agentId);

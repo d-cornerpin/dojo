@@ -1,20 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
-// HUMAN-INTERFACE DEVICES (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// `mouse_click`, `mouse_move`, `keyboard_type`, `screen_screenshot`,
-// `applescript_run` — the five tools that drive the owner's actual machine.
-// Research 05 §1 calls "File & System" the worst-mixed category in the tree
-// precisely because these sat in the same label as exec and the file verbs;
-// they get their own module.
-//
-// RELOCATION, NOT REWRITE, AND THE GATES ARE NOT HERE BY DESIGN. All five are
-// gated on the manifest's `system_control`, and T3 made the four classes
-// separately grantable and CAGED AppleScript on the SCRIPT rather than the name
-// (`do shell script "…"` is unpacked into the shell grant, so an agent whose
-// exec grant is ['ls'] cannot run `do shell script "curl … | sh"`). Every one of
-// those is a DECLARED gate evaluated in the executor ahead of dispatch, and
-// `applescriptRun` owns the script cage itself — so a relocation cannot drop
-// one, which is exactly what T1's registry and T2's loop are for.
+// HID: `mouse_click`, `mouse_move`, `keyboard_type`, `screen_screenshot`, `applescript_run`: the
+// five tools that drive the owner's actual machine.
+// The gates are not here by design: all five are declared `system_control` gates evaluated in the
+// executor ahead of dispatch, and the four classes are separately grantable.
+// AppleScript is caged on the script, not the name: `do shell script "..."` is unpacked into the
+// shell grant, so an agent whose exec grant is ['ls'] cannot run `do shell script "curl ... | sh"`.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from '../../system-control.js';

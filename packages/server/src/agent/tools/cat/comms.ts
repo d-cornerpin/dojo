@@ -1,47 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════
-// COMMUNICATION (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// Everything that reaches a PERSON: the chat attachment surface
-// (`show_to_user`), the two file-publishing verbs (`share_file`,
-// `share_publicly`), iMessage (`imessage_send`, `imessage_list_contacts`,
-// `add_safe_sender`), SMS (`sms_send`) and the three voice-call verbs.
-//
-// RELOCATION, NOT REWRITE. Every body is the body that stood in the switch,
-// byte for byte; the only edit a move requires is that `content = …; break;`
-// became `return { content, isError }`, so the executor's tail (the per-tool
-// result admission (t200), the unknown-args warning, the crash-to-message catch,
-// the audit row) still applies to every one of them identically.
-//
-// ── THE HANDLER-BODY `checkPermission` THAT MOVED WITH ITS HANDLER ──
-// `show_to_user` calls `checkPermission(agentId, { type: 'file_read', … })` on
-// every path it is asked to show. That is one of the exactly TWO permission
-// checks §T0-PINS P6 found buried inside handler bodies rather than declared as
-// gates, and T7's demolition list owns it BY NAME. It is preserved here
-// verbatim: a relocation that dropped it would remove a live protection, and
-// converting it into a declared gate is a change of mechanism, which is T7's
-// call and not a move's. The same is true of `share_file`/`share_publicly`'s
-// `sharePathGuard` calls — the broker T2 installed, called from the body.
-//
-// ── WHAT DID *NOT* MOVE ──
-// `imessage_send`'s primary-only wall and `sms_send`'s gates are DECLARED gates
-// evaluated by T2's gate loop in the executor, ahead of dispatch. They were
-// never in these bodies, so this move cannot take them with it — which is the
-// point of the registry and the loop.
-//
-// ── TEN LAZY LOADS DIED; THE THREE `voice-outbound` ONES STAYED, MEASURED ──
-// RULING P5-R9: an unsanctioned `await import(…)` in the toolbox dies UNLESS it
-// defers a module-load side effect, and the unit suite is the arbiter. Ten were
-// converted (none of their targets imports anything from the toolbox, so none
-// broke a cycle). The three `twilio/voice-outbound.js` loads were converted
-// too, and the suite went RED: that module statically imports
-// `twilio/call-session.ts`, whose module TOP LEVEL runs `void getOwnerName;`
-// (`call-session.ts:882-884`, a deliberate unused-import suppression), so a
-// static import pulls that read of `config/platform.js` into the toolbox's
-// graph ahead of the partial `vi.mock` in `spawn-contract.test.ts` and
-// `squad-coordination.test.ts` — `No "getOwnerName" export is defined on the
-// "../../config/platform.js" mock`. Reverted WITH the measurement rather than
-// by editing the mock. This is the second member of P5-R9's class and it is a
-// different module from the first (`services/agent-controls.js`).
+// COMMUNICATION verbs: chat attachments (show_to_user), publishing (share_file,
+// share_publicly), iMessage, SMS, and voice calls. Bodies relocated from the
+// executor switch unchanged; handler-body permission checks (show_to_user's
+// checkPermission, share_*'s sharePathGuard) moved with their bodies, not re-declared.
+// The three dynamic `await import('.../twilio/voice-outbound.js')` calls MUST stay
+// dynamic: that module's top level reads config/platform.js, which lands in the toolbox
+// graph ahead of the partial vi.mock in the suites. The checkPermission and sharePathGuard
+// body calls are live protections; do not drop or re-gate them.
 // ════════════════════════════════════════════════════════════════════════════
 
 import * as effectFs from '../../effects/fs.js';
@@ -49,12 +14,8 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolErrorCode } from '@dojo/shared';
 import { getDb } from '../../../db/connection.js';
-// UX-ACCESS A1: the four outbound-send walls below (`sms_send`, `voice_call`,
-// `voice_call_end`, `voice_call_status`) kept their position, their message and
-// their audit row; only the PREDICATE moved, from `isPrimaryAgent(agentId)` to
-// this agent's own channel grant. Post-migration the primary is the only holder,
-// so the same agents are refused — but the answer is now a row an owner can
-// edit rather than the identity of one agent on the box (census C1).
+// The four outbound-send walls below keep position, message, and audit row; only
+// the predicate moved to this agent's own channel grant, an owner-editable row.
 import { mayUseChannel, mayReachOthersOn } from '../../access/read.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { turnContext } from '../../turn-context.js';
@@ -81,8 +42,8 @@ export const commsHandlers: ToolHandlerMap = {
     let content = '';
     let isError = false;
     let errorCode: ToolErrorCode | undefined;
-    // T10: minting a public URL is a read that leaves the box. Same
-    // sensitive-path list and file_read permission every read tool uses.
+    // Minting a public URL is a read that leaves the box: same sensitive-path list
+    // and file_read permission every read tool uses.
     const shareGuard = await sharePathGuard(agentId, 'share_file', args.path as string);
     if (!shareGuard.allowed) {
       auditLog(agentId, 'share_file', shareGuard.absPath, 'denied', shareGuard.reason);
@@ -124,15 +85,8 @@ export const commsHandlers: ToolHandlerMap = {
     let isError = false;
     const filePaths = args.file_paths as string[] | undefined;
     const caption = (args.caption as string | undefined) ?? '';
-    // v2.9.20: caption is now captured alongside the queued
-    // attachments. If the model writes terminal text after this
-    // call (the documented happy path), that text becomes the
-    // bubble caption and this one is ignored. If the model
-    // finishes the turn WITHOUT writing terminal text (the
-    // failure mode that lost JJ's report in the 2026-06-06
-    // incident), the engine's end-of-turn safety net surfaces
-    // the captured caption as the bubble text so the files
-    // don't vanish silently.
+    // The caption is captured as an end-of-turn safety net: if the model writes no
+    // terminal text after this call, the engine surfaces it so files don't vanish silently.
     if (!Array.isArray(filePaths) || filePaths.length === 0) {
       content = 'Error: file_paths is required and must be a non-empty array of absolute file paths.';
       isError = true;
@@ -199,21 +153,16 @@ export const commsHandlers: ToolHandlerMap = {
         const mimeType = guessMime(filename);
         const category = categorize(mimeType, filename);
 
-        // show_to_user is for IMAGES (and short audio/video clips) shown
-        // inline in the chat. DOCUMENTS, PDF, Word/Excel/PowerPoint,
-        // Markdown/text/code, belong in the CANVAS, where they render as a
-        // real formatted preview instead of a dead download chip. The two
-        // surfaces are routinely confused by weaker models; reject documents
-        // here and point at the canvas so the agent can't pick the wrong one.
+        // show_to_user is for inline chat media; documents belong in the CANVAS.
+        // Reject them here so weaker models get pointed at the right surface.
         if (category === 'pdf' || category === 'text' || category === 'office' || category === 'unknown') {
           content = `Error: "${filename}" is a document, not an image, show_to_user is for images (and short audio/video clips) shown inline in the chat. Documents render in the CANVAS: a canvas-renderable file auto-opens the moment you write it (file_write, or creating a Word/Excel/PDF), or call canvas_render({ path: "${srcPath}" }) to (re)open it. Using show_to_user here would give the user a useless download chip instead of a readable preview.`;
           isError = true;
           break;
         }
 
-        // If file is already in this agent's uploads dir, use it directly.
-        // Otherwise copy in so the dashboard's /api/upload/file/<agentId>/<name>
-        // serve route can find it.
+        // Use the source directly if it is already in this agent's uploads dir; else
+        // copy it in so the dashboard /api/upload/file/<agentId>/<name> route serves it.
         let destPath = srcPath;
         if (path.dirname(path.resolve(srcPath)) !== path.resolve(uploadsDir)) {
           const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -238,12 +187,9 @@ export const commsHandlers: ToolHandlerMap = {
     }
     if (isError) return { content, isError };
 
-    // Queue the attachments for the agent's NEXT assistant message rather
-    // than inserting a synthetic message here. Inserting mid-tool-loop
-    // broke the alternation invariant and confused the model into
-    // re-calling show_to_user repeatedly. The runtime drains this queue
-    // when it persists the agent's next assistant write, the user sees
-    // a single bubble with the agent's text reply AND the thumbnails.
+    // Queue for the agent's NEXT assistant message instead of inserting a synthetic
+    // message: mid-loop insertion broke the alternation invariant; the runtime drains
+    // this queue when it persists that message.
     queuePendingAttachments(agentId, attachments, caption);
 
     const fileList = attachments.map(a => {
@@ -272,8 +218,7 @@ export const commsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // Minimum length guard, a one-word "ok" isn't a request to add a
-    // sender. Forces the agent to commit to specific evidence.
+    // Minimum length guard: a one-word "ok" is not a request to add a sender.
     if (userRequestQuote.length < 8) {
       content = 'Error: `user_request_quote` is too short to be a real user request. Quote the full sentence where the user asked you to start this conversation.';
       isError = true;
@@ -306,9 +251,7 @@ export const commsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // Truncate the quote for the audit log so a giant paste doesn't
-    // flood the log row; full quote stays in the tool-call args for
-    // forensic review.
+    // Audit gets a truncated quote; the full quote stays in the tool-call args.
     const auditQuote = userRequestQuote.length > 200
       ? userRequestQuote.slice(0, 200) + '…'
       : userRequestQuote;
@@ -324,14 +267,13 @@ export const commsHandlers: ToolHandlerMap = {
 
     try {
       if (channelArg === 'imessage') {
-        // iMessage list lives in its own config key with a bridge cache.
-        // Read, dedup, write, then hot-reload the bridge so it picks up
-        // the new sender immediately (matches the Settings.tsx flow).
+        // Own config key with a bridge cache: read, dedup, write, hot-reload so the
+        // bridge picks up the sender at once (same flow as the Settings.tsx write path).
         const db = getDb();
         const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
         const existing = parseSafeSenders(row?.value ?? null);
-        // The agent never creates or changes the owner. With no owner in the list the human set,
-        // refuse: the entry would sit alone and the owner rights must come only from Settings.
+        // The agent never creates or changes the owner: with no human owner set the
+        // entry would sit alone, and owner rights come only from Settings.
         if (!iMessageListHasHumanOwner()) {
           content = 'I cannot add this person yet: no owner is set for iMessage. Ask the owner to set their own number in Settings → Channels → iMessage Bridge first, then I can add others.';
           isError = true;
@@ -378,10 +320,8 @@ export const commsHandlers: ToolHandlerMap = {
         isError = false;
         auditLog(agentId, 'add_safe_sender', `teams:${address}`, 'success', `level=${sharingLevel}; quote: "${auditQuote}"`);
       } else {
-        // gmail / outlook, per-slot. Require the slot arg AND verify
-        // the slot has "Allow sending email" enabled before adding.
-        // Adding a safe sender to a slot whose sending is disabled would
-        // be useless (auto-reply wouldn't fire) and confusing.
+        // gmail / outlook are per-slot: require the slot arg and that the slot can
+        // send, since a safe sender on a send-disabled slot could never auto-reply.
         const slot = args.slot as string | undefined;
         if (slot !== 'agent' && slot !== 'user') {
           content = `Error: \`slot\` is required for ${channelArg} (must be "agent" or "user"). The slot identifies which mailbox\'s list to add to, the agent\'s own ${channelArg} account or the user\'s personal ${channelArg} account.`;
@@ -389,11 +329,8 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'error', `missing slot arg; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        // Check sending capability on the target slot. Also read the
-        // account email so error/success messages can name the actual
-        // mailbox (e.g., "user@example.com (user slot)") rather than
-        // just "user slot" which is opaque. Both providers read through
-        // their table-backed config getters (Path B).
+        // Read sending capability AND the account email, so the messages below can
+        // name the real mailbox; both providers read table-backed config getters.
         let sendingEnabled = false;
         let accountEmail: string | null = null;
         if (channelArg === 'gmail') {
@@ -415,7 +352,6 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'denied', `slot=${slot} sendEmail=off; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        // OK to add.
         const result = channelArg === 'gmail'
           ? appendGmailSafeSender(slot, sender)
           : appendOutlookSafeSender(slot, sender);
@@ -477,12 +413,8 @@ export const commsHandlers: ToolHandlerMap = {
       : [];
 
 
-    // ── Recipient resolution + allowlist gate ────────────────────
-    // Two-stage. First, figure out the intended recipient (explicit
-    // arg, else inbound-trigger sender, else starred primary). Then
-    // confirm that recipient is in the safe-sender allowlist - this
-    // prevents the model from sending to a number it invented or
-    // copied from a different conversation context.
+    // Recipient resolution is two-stage: find the intended recipient, then confirm
+    // it is on the safe-sender allowlist, so the model cannot text a number it invented.
     const safeRecords = getSafeSenders();
     if (safeRecords.length === 0) {
       content = 'iMessage was NOT sent - no safe senders are configured on this server. Add one in Settings → Channels → iMessage Bridge, then try again.';
@@ -491,11 +423,10 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // 3.5: a send with no recipient NEVER falls back to this turn's counterparty. (The
-    // omitted-recipient default of FA-C1 went with this; the old default could send owner-meant
-    // words to a contact.) The executor refuses it before it gets here; this guard keeps a
-    // direct call honest too. The result names who the turn is talking to and asks who the
-    // message is for, so the agent always picks the person knowingly.
+    // A send with no recipient NEVER falls back to this turn's counterparty (a wrong
+    // fallback sends owner-meant words to a contact). The executor refuses first; this
+    // guard keeps a direct call honest and names the turn addressee so the agent picks
+    // the person knowingly.
     if (!recipient) {
       const refused = refuseSendWithNoRecipient(agentId, 'imessage_send', args, '');
       auditLog(agentId, 'imessage_send', '(no recipient)', 'error', 'no recipient named');
@@ -520,30 +451,12 @@ export const commsHandlers: ToolHandlerMap = {
 
     const recipientRecord = findSafeSenderByAddress(safeRecords, recipient);
 
-    // ── THE ME-VS-OTHERS TIER, AT ITS FIRST READER (UX-ACCESS A4) ──
-    //
-    // Owner ruling 1 asks for *"granular per-channel grants (and me-vs-other-
-    // people tiers)"*. A1 declared the tier, A2 taught the no-escalation ladder
-    // to compare it, A3 drew it in the panel — and `mayReachOthersOn` had ZERO
-    // callers whole-tree. A declared field with no reader is the disease this
-    // overhaul exists to cure, and it was the owner's own "Operator: exec +
-    // iMessage-ME" exemplar that had no wall.
-    //
-    // HERE and not at a declared gate, because the question needs the RESOLVED
-    // recipient: `owner` vs `all` is a fact about WHO, and the ladder evaluates
-    // before dispatch with only `args`, where the recipient may be absent (the
-    // turn-scoped default) or an un-canonicalized alias. It is the same class as
-    // the four A1 walls above it and it sits at the same place they do — after
-    // the allowlist gate, before any byte leaves — so a refusal here means the
-    // recipient was real, approved, and still not this agent's to reach.
-    //
-    // THE OWNER IS `is_primary` on the safe-sender list, which is the same flag
-    // the bridge's own owner-bound redirect reads; there is no second notion of
-    // "the owner" being invented here. A record we cannot resolve is treated as
-    // NOT the owner: at a tier wall the unknown case must be the narrow one.
-    //
-    // EMPTY-DIFF: post-migration the only agent holding any channel is the
-    // primary, at tier `all`, so this refuses nobody alive today.
+    // The me-vs-others tier (mayReachOthersOn) sits here, not at a declared gate,
+    // because the question needs the RESOLVED recipient: the executor's gate loop
+    // runs before dispatch with only `args`, where the recipient may be absent or
+    // an un-canonicalized alias. The owner is `is_primary` on the safe-sender list,
+    // the same flag the bridge's owner-bound redirect reads; an unresolvable record
+    // counts as NOT the owner, so the unknown case stays narrow.
     if (!mayReachOthersOn(agentId, 'imessage') && recipientRecord?.is_primary !== true) {
       const ownerRecord = safeRecords.find((s) => s.is_primary);
       content =
@@ -555,40 +468,15 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError, errorCode: 'PERMISSION_DENIED' as ToolErrorCode };
     }
 
-    // ── THE TRANSPORT CHECK COMES AFTER THE PERMISSION CHECKS (UX-ACCESS A4) ──
-    //
-    // It used to be FIRST, and the exemplar acceptance is what found that: driven on
-    // the owner's box with the bridge off, the Operator's "message the owner" and its
-    // "message someone else" attempts came back IDENTICAL — both stopped at the bridge,
-    // so the me-vs-others tier could not be observed to work at all, and an agent that
-    // was not permitted to reach that person was handed guidance to reach them on SMS
-    // instead. A fact about the BOX was masking a fact about PERMISSION, and answering
-    // "the transport is down" to a request that was never allowed is the wrong answer
-    // in the one direction that matters.
-    //
-    // Nothing between here and the top reads bridge state — the safe-sender list, the
-    // turn-scoped default and the allowlist gate are all config reads — so the move is
-    // an ordering change and not a rewrite. What it costs is stated rather than hidden:
-    // with the bridge off, a call that named NO recipient (and has no inbound to default
-    // to) or named someone off the allowlist now reads that more specific error instead
-    // of the bridge one, and the audit target is the canonicalized address rather than
-    // the raw argument. Both are the more useful answer; neither is silent.
-    // v2.3.19 - fail loudly when the iMessage bridge is OFF. Pre-spec
-    // the tool returned "iMessage sent to X" regardless of bridge
-    // state, which left the agent confidently claiming delivery to
-    // the user when nothing was actually sent. Now the agent gets a
-    // clear error so it can tell the user the bridge is disabled
-    // and use the dashboard chat instead.
-    // UX-REPAIR ROUND 7 T29 — the door was right about iMessage and wrong about the
-    // alternative. Round-7 S3: it prescribed the dashboard while SMS was enabled and approved
-    // on the same box, and the user's text was never sent on any channel. The alternative is
-    // now READ from live config at the moment of refusal; when nothing else is live the
-    // sentence below is the one that has always been here, byte for byte.
+    // The transport check MUST come after the permission checks: a dead bridge would
+    // answer "transport down" to a request that was never allowed, masking the permission.
+    // Fail loudly when the bridge is OFF: never let the agent claim delivery that failed.
+    // The fallback alternative is READ from live config at the moment of refusal; never
+    // prescribe the dashboard chat while SMS is live and approved on the same box.
     const bridgeStatus = getIMBridgeStatus();
     if (!bridgeStatus.running) {
       const sms = getSmsReachability();
-      // 3.5: on a routed turn the written reply goes to that person on their channel; the
-      // dashboard-chat wording stays for a turn whose reply really does stay there.
+      // On a routed turn the written reply goes to that person on their own channel.
       const route = routedReplyWords(agentId);
       content =
         'iMessage bridge is currently disabled, so this message was NOT sent. ' +
@@ -605,26 +493,11 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // v2.9.15, removed the "dashboard-active" channel-context guard
-    // that used to refuse imessage_send when the most recent user-role
-    // message lacked the iMessage source tag and was less than 60s
-    // old. The guard's intent was to prevent the model from texting
-    // the user while they were typing in dashboard, but in practice
-    // it (a) treated every non-iMessage inbound (email, Teams, A2A,
-    // task wake-ups stored as user-role) as "dashboard activity" and
-    // refused legitimate sends, (b) blocked explicit user requests
-    // like "iMessage me X" issued from the dashboard, and (c) blocked
-    // task-directed sends ("when work completes, iMessage the user
-    // with the result") whenever those tasks finished within 60s of
-    // any other inbound. The default-channel hint stays in the tool
-    // description (HARD RULE), but the engine no longer second-
-    // guesses an explicit imessage_send call.
+    // No channel-context guard by design: the engine must not second-guess an explicit
+    // imessage_send. The default-channel hint is a HARD RULE in the tool description.
 
-    // ── Attachment pre-flight ────────────────────────────────────
-    // Fail-fast on any missing file before any bytes go over the
-    // wire. Partial sends (some attachments delivered, some not)
-    // are worse than no send because the recipient sees a fragment
-    // and the agent can't tell which.
+    // Pre-flight: fail fast on any missing file before bytes go over the wire;
+    // a partial send leaves the recipient a fragment the agent can't account for.
     if (attachmentPaths.length > 0) {
       for (const p of attachmentPaths) {
         if (!p.startsWith('/')) {
@@ -647,9 +520,7 @@ export const commsHandlers: ToolHandlerMap = {
             auditLog(agentId, 'imessage_send', recipient, 'error', `non-file attachment: ${p}`);
             break;
           }
-          // iMessage tops out around 100MB per attachment. Pre-check
-          // size and refuse cleanly rather than handing a too-large
-          // file to imsg and waiting for it to time out.
+          // iMessage tops out near 100MB per file; refuse cleanly, don't let imsg time out.
           const MAX_IMESSAGE_BYTES = 100 * 1024 * 1024;
           if (stat.size > MAX_IMESSAGE_BYTES) {
             const mb = (stat.size / 1024 / 1024).toFixed(1);
@@ -668,7 +539,7 @@ export const commsHandlers: ToolHandlerMap = {
       if (isError) return { content, isError };
     }
 
-    // ── Send (v3.5 E19b: the agent's own send, bound to its Stop) ──
+    // The agent's own send, bound to its Stop.
     const result = await sendIMessageWithAttachments(recipient, message, attachmentPaths, { agentId });
     if (!result.ok && result.sentFiles.length === 0 && !result.textSent) {
       const route = routedReplyWords(agentId);
@@ -681,37 +552,23 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // Double-send prevention is turn-state now (P5c): the executor records
-    // this send in repliedToCounterpartyThisTurn (D16) and the end-of-turn
-    // auto-route checks it, so an explicit reply to the counterparty
-    // suppresses the engine's own.
+    // Double-send prevention is turn-state: the executor records this send and the
+    // end-of-turn auto-route checks it, so an explicit reply suppresses the engine's.
 
 
-    // ── Success string (with recipient-switching warning) ────────
-    // If the agent receives an iMessage from sender A and then sends
-    // to sender B's address explicitly, the success string makes
-    // that switch loud so the user sees it in the chat log.
+    // Loud recipient-switch note: an inbound-from-A, send-to-B switch must show in the log.
     const recipientLabel = recipientRecord
       ? `${recipientRecord.name} (${recipientRecord.address})`
       : recipient;
-    // A "0/N" inside "sent … with 0/N attachment(s)" reads as a send that
-    // happened. When every file failed and only the words were re-sent alone,
-    // say the files did not go and what to do about it. And the mirror case: a
-    // file that went out while its caption failed comes back ok=true with
-    // textSent=false (the bridge already retried the words once), so
-    // "with 1/1 attachment(s)" alone would tell the agent the whole message
-    // landed while the person got a picture with none of its words.
+    // "0/N attachment(s)" reads as a successful send, so say plainly when files did not
+    // go; mirror case, files sent but text lost, must not read as a clean whole-message send.
     const wordsLost = message.trim() !== '' && result.textSent === false && result.sentFiles.length > 0;
     const attachSummary = attachmentPaths.length > 0
       ? result.sentFiles.length === 0
         ? ` as text only - NONE of the ${attachmentPaths.length} attachment(s) went out${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}. Tell the recipient the files did not arrive, or try again`
         : ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}${wordsLost ? ' - the file(s) went out but your message text did NOT arrive. Tell the recipient or send the words again' : ''}`
       : '';
-    // Audit detail captures the full sharing context so a later review
-    // can answer "did the primary agent over-share with sender X?" without
-    // reconstructing from chat history. We log the recipient's
-    // sharing_level, whether this was a reply or a switch, and the
-    // inbound sender (when applicable).
+    // Audit captures the sharing context (level, reply vs switch) for later review.
     const auditDetailParts: string[] = [
       `Sent ${message.length} chars`,
     ];
@@ -724,15 +581,11 @@ export const commsHandlers: ToolHandlerMap = {
     if (recipientRecord) {
       auditDetailParts.push(`recipientLevel=${recipientRecord.sharing_level}`);
     }
-    // 3.5: the recipient note (who it went to, and whether that is the person this turn is
-    // talking to) is added to the result by the executor, for every channel.
+    // The executor adds the recipient note to the tool result, for every channel.
     auditDetailParts.push(turnContext(agentId)?.address?.kind === 'person' ? 'turn-has-addressee' : 'proactive');
     auditLog(agentId, 'imessage_send', recipient, 'success', auditDetailParts.join(' | '));
-    // C26 tier 3: iMessage is honestly UNVERIFIABLE (only an AppleScript /
-    // imsg exit code, no provider id exists). Write an exit-code receipt so
-    // PM and the user-facing story never pretend it was confirmed. This
-    // imposes NO new gate requirement (tier-3-only turns are unchanged).
-    // skipAudit: the rich over-share audit row above is the provenance row.
+    // iMessage is unverifiable (no provider id exists): write a tier-3 exit-code receipt
+    // so nothing pretends delivery was confirmed. skipAudit: the rich audit row above is it.
     writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient, sentText: message, detail: { textSent: result.textSent, attachmentsSent: result.sentFiles.length }, skipAudit: true });
     content = `iMessage sent to ${recipientLabel}${attachSummary}.`;
     return { content, isError };
@@ -748,7 +601,7 @@ export const commsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // T10: share_publicly mints an unauthenticated URL — gate it first.
+    // share_publicly mints an unauthenticated URL, so guard the path before publishing.
     const publishGuard = await sharePathGuard(agentId, 'share_publicly', sourcePath);
     if (!publishGuard.allowed) {
       auditLog(agentId, 'share_publicly', publishGuard.absPath, 'denied', publishGuard.reason);
@@ -757,8 +610,8 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     try {
-      // The path the guard approved is the path that gets published — the guard
-      // expanded `~` into absPath, and createPublicShare only accepts absolutes.
+      // Publish the guard-approved absPath (the guard expanded `~`; createPublicShare
+      // only accepts absolutes), never the raw source_path.
       const result = createPublicShare({ sourcePath: publishGuard.absPath, entryFilename });
       auditLog(agentId, 'share_publicly', publishGuard.absPath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
       const tunnelLine = result.baseSource === 'tunnel'
@@ -814,10 +667,8 @@ export const commsHandlers: ToolHandlerMap = {
     // Mark explicit sms send so the auto-route at end-of-turn
     // doesn't ALSO send the agent's terminal text.
     if (result.ok) {
-      // C26: the receipt writer emits the single provenance audit row
-      // (target=sms_send, detail=receipt=<id>) and captures the Twilio
-      // SID as the provider id, so we no longer double-write an audit row.
-      // A 2xx with no SID cannot be confirmed: fail the turn.
+      // The receipt writer emits the single provenance audit row (SID as provider id),
+      // so don't double-write an audit row here. A 2xx with no SID cannot be confirmed.
       if (!result.sid) {
         writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: false, basis: 'http-status', recipient: args.to as string, sentText: args.body as string, detail: { anomaly: 'sms send ok but no Twilio SID' } });
         content = `Error: the SMS to ${args.to} was accepted but Twilio returned no message SID, so it could not be verified. It may still have been delivered: verify whether it went out (check the thread/recipient) BEFORE any re-send; do not blindly retry.`;
@@ -845,13 +696,12 @@ export const commsHandlers: ToolHandlerMap = {
       to: args.to as string,
       opening_message: args.opening_message as string | undefined,
       purpose: args.purpose as string | undefined,
-      from: args.from as string | undefined, agentId, // t203: so the owner's Stop can abort it
+      from: args.from as string | undefined, agentId, // so the owner's Stop can abort it
     });
     content = result.message;
     isError = !result.ok;
     if (result.ok) {
-      // C26: fold the audit row into the receipt writer and capture the
-      // Twilio call SID as the provider id. No SID = unverifiable, fail.
+      // The receipt row is the audit row; no call SID means unverifiable, so fail.
       if (!result.callSid) {
         writeToolReceipt({ agentId, tool: 'voice_call', tier: 1, verified: false, basis: 'http-status', recipient: args.to as string, detail: { anomaly: 'voice call ok but no Twilio call SID' } });
         content = `Error: the call to ${args.to} was accepted but Twilio returned no call SID, so it could not be verified. The call may still have been placed: verify it did not go through BEFORE dialing again; do not blindly retry.`;

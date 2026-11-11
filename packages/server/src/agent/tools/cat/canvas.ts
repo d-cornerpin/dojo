@@ -1,23 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════
-// CANVAS & SHARED WORKSPACE (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// `canvas_render` (put a file or URL on the user's canvas), `canvas_read` (read
-// back what is on it), `open_browser` (an embeddable site, else a screenshot)
-// and `screen_broadcast`.
-//
-// RELOCATION, NOT REWRITE. Two details are load bearing and are byte-faithful:
-//
-// 1. **`toDashboardPath` is applied to every canvas URL and NOT to a share
-//    link.** `getDownloadUrl` bakes in an absolute host (the tunnel, else
-//    localhost:3001), which is only correct on the server's own machine — a
-//    dashboard loaded from a LAN IP or the tunnel would 404 the asset. The
-//    canvas renders INSIDE the dashboard, so it gets the bare path.
-// 2. **An external `args.url` is passed through untouched.** Only a URL this
-//    platform minted is rewritten; rewriting a third-party URL would break it.
-//
-// The canvas-open cluster these bodies call (`queueCanvasDocAttachment`,
-// `registerSharedFile`, `toDashboardPath`) lives in `agent/tools/util.ts`, one
-// copy, shared with the fs verbs and the office block.
+// CANVAS & SHARED WORKSPACE: `canvas_render`, `canvas_read`, `open_browser`, `screen_broadcast`.
+// `toDashboardPath` rewrites canvas URLs only: never a share link (a person needs its absolute host)
+// and never an external `args.url`. The download URL bakes in a host that only fits the server's own
+// machine, and the canvas renders inside the dashboard. The canvas-open cluster lives, one copy, in `../util.ts`.
 // ════════════════════════════════════════════════════════════════════════════
 
 import * as effectFs from '../../effects/fs.js';
@@ -42,17 +27,11 @@ export const canvasHandlers: ToolHandlerMap = {
     let url = typeof args.url === 'string' ? args.url : undefined;
     const rawPath = typeof args.path === 'string' ? args.path : undefined;
     let canvasPath: string | undefined;
-    // `path`: register the on-disk file so the canvas can fetch it (and
-    // remember the path so later edits to it auto-refresh the canvas).
+    // `path`: register the on-disk file so the canvas can fetch it, and remember it so edits auto-refresh.
     if (rawPath) {
-      // PHASE-5 T8 Step 7 — THE GUARD ITS SIBLINGS RUN. `registerSharedFile`
-      // below mints the SAME unauthenticated download URL `share_file` mints,
-      // so the same question has to be asked first: the sensitive tier of the
-      // merged deny list, then the agent's own file_read permission. This was
-      // the one member of the publish family that never asked it; the family's
-      // completeness is now held by
-      // `agent/tools/__tests__/publish-path-guards.test.ts` so a future member
-      // cannot be added without one. Owner-authorised 2026-08-03.
+      // THE GUARD ITS SIBLINGS RUN: `registerSharedFile` mints the same unauthenticated URL
+      // `share_file` mints, so `sharePathGuard` is asked first: the deny-list sensitive tier,
+      // then the file_read permission. Family completeness: `publish-path-guards.test.ts`.
       const canvasGuard = await sharePathGuard(agentId, 'canvas_render', rawPath);
       if (!canvasGuard.allowed) {
         auditLog(agentId, 'canvas_render', canvasGuard.absPath, 'denied', canvasGuard.reason);
@@ -67,9 +46,7 @@ export const canvasHandlers: ToolHandlerMap = {
         isError = true;
         return { content, isError };
       }
-      // Same-origin path so the canvas resolves over localhost, a LAN IP,
-      // or the tunnel (see toDashboardPath). External `args.url` values are
-      // left untouched; only our own download URL is rewritten here.
+      // Same-origin path via toDashboardPath so the canvas resolves over localhost, a LAN IP or the tunnel.
       url = toDashboardPath(registered);
     }
     if (!html && !url) {
@@ -77,17 +54,14 @@ export const canvasHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // A file_write download URL serves Content-Disposition: attachment by
-    // default, which makes the canvas iframe download the file instead of
-    // rendering it. Flip our own download URLs to inline so the content
-    // renders in the canvas. (Leaves external URLs untouched.)
+    // Our own download URLs serve Content-Disposition: attachment, which makes the canvas iframe
+    // download instead of render; flip them to inline. External URLs are left alone.
     if (url && /\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
       url += (url.includes('?') ? '&' : '?') + 'inline=1';
     }
     const title = typeof args.title === 'string' ? args.title : undefined;
     broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', html, url, title, path: canvasPath } });
     setCurrentCanvas(agentId, { kind: 'canvas', html, url, path: canvasPath, title });
-    // Drop an "Open in canvas" chip on this reply for file-backed canvases.
     if (canvasPath) queueCanvasDocAttachment(agentId, canvasPath, url ?? null);
     content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call canvas_read if you need to look at it yourself.`;
     return { content, isError };
@@ -105,12 +79,9 @@ export const canvasHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     const screenTitle = typeof args.title === 'string' ? args.title : undefined;
-    // A live screen share has NO persisted per-agent slot (it's a transient
-    // real-time view, not a canvas). Still stamp agentId so the dashboard's
-    // per-agent filter opens it only for whoever is viewing this agent.
+    // A live screen share has no persisted per-agent slot: it is a transient view, not a canvas.
+    // Still stamp agentId so the dashboard's per-agent filter opens it only for this agent's viewer.
     broadcast({ type: 'dock:open', agentId, data: { kind: 'screen', title: screenTitle } });
-    // Drop an "Open screen" chip on this reply so the user can re-open the
-    // viewer after closing the canvas.
     queueScreenChip(agentId);
     content = "A LIVE view of this Mac's screen is now open in the user's canvas. This is NOT a file, document, or attachment, it is your actual screen, streaming in real time. When you reply, say something like \"I've put my screen up for you\" or \"my screen is open, go ahead and take control to click what you need.\" Do NOT call it files/a document, and do NOT say things like \"here are the files.\"\n\nThe user enters the screen-sharing (VNC) password to start it (their second factor) and clicks \"Take control\" to use the mouse and keyboard. This all happens on the user's end, you will NOT get any confirmation here that it connected, and you cannot see the screen yourself this way. Do NOT call screen_broadcast again (it's already open) and do NOT use screen_screenshot to 'check', just tell the user it's open and wait for them to say what they see or need.";
     return { content, isError };
@@ -121,9 +92,8 @@ export const canvasHandlers: ToolHandlerMap = {
     const isError = false;
     const targetUrl = args.url as string;
     const title = typeof args.title === 'string' ? args.title : undefined;
-    // Hybrid: many sites refuse iframe embedding (X-Frame-Options / CSP
-    // frame-ancestors). Try a live iframe when allowed; otherwise render a
-    // full-page screenshot server-side so SOMETHING always shows.
+    // Hybrid: many sites refuse iframe embedding (X-Frame-Options / CSP frame-ancestors); try a live
+    // iframe when allowed, else a full-page screenshot so something always shows.
     const embeddable = await isEmbeddable(targetUrl, agentId);
     if (embeddable) {
       broadcast({ type: 'dock:open', agentId, data: { kind: 'iframe', url: targetUrl, title } });
@@ -139,8 +109,7 @@ export const canvasHandlers: ToolHandlerMap = {
       effectFs.writeFileSync(pngPath, png);
       let pngUrl = registerSharedFile(agentId, pngPath);
       if (!pngUrl) throw new Error('could not serve the screenshot file');
-      // Render same-origin so the <img> resolves over localhost, a LAN IP,
-      // or the tunnel, not just on the server's own machine.
+      // Same-origin so the <img> resolves over localhost, a LAN IP or the tunnel.
       pngUrl = toDashboardPath(pngUrl);
       pngUrl += (pngUrl.includes('?') ? '&' : '?') + 'inline=1';
       broadcast({ type: 'dock:open', agentId, data: { kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title } });
@@ -148,7 +117,6 @@ export const canvasHandlers: ToolHandlerMap = {
       content = `Note for you (relay this to the user): ${targetUrl} blocks being embedded in the dock (X-Frame-Options / CSP frame-ancestors), so a live, interactive view inside the canvas is not possible. Instead the tool captured a full-page screenshot and opened it in the user's right dock. That screenshot is a STATIC snapshot (links and buttons in it are not clickable), but the dock has an "Open in new window" button that opens the real, interactive site in a new browser tab. Tell the user it is a snapshot because the site can't be embedded, and that they can click "Open in new window" to use the live site.`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Last resort: still hand the iframe over (may render partially).
       broadcast({ type: 'dock:open', agentId, data: { kind: 'iframe', url: targetUrl, title } });
       setCurrentCanvas(agentId, { kind: 'iframe', url: targetUrl, title });
       content = `Note for you (relay this to the user): ${targetUrl} blocks being embedded in the dock, and the screenshot fallback also failed (${msg}). The dock may show little or nothing. Tell the user the site can't be embedded and offer to open it directly in their browser instead.`;
@@ -159,8 +127,7 @@ export const canvasHandlers: ToolHandlerMap = {
   async "canvas_read"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // C27: canvas_read reads ONLY the current canvas; the path/url/html
-    // targets were dropped (open it first with canvas_render/open_browser).
+    // canvas_read reads ONLY the current canvas: no path/url/html targets; open it first.
     content = await viewCanvas(agentId, { prompt: args.prompt });
     isError = content.startsWith('Error');
     return { content, isError };

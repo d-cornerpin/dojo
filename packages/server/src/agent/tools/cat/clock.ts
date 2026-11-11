@@ -1,26 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
-// CLOCK (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// `get_current_time` and `convert_time`. `tools/categories.ts` files both under
-// "File & System", which research 05 §1 already calls out as the worst-mixed
-// category in the tree — *"exec + 5 file verbs + scratchpad + screenshot +
-// keyboard/mouse + applescript + 2 time tools = 3 brokers + HID in one label"*.
-// They are two pure functions with no effect, no gate and no filesystem, so
-// they get their own module rather than riding along with the file verbs.
-//
-// The CATEGORY LABEL IS NOT CHANGED — `tools/categories.ts` still files them
-// under "File & System" and that string is on the wire in the tool index, so
-// touching it would move the cache prefix. This is a module boundary, not a
-// re-categorisation.
-//
-// RELOCATION, NOT REWRITE. Both bodies are byte-faithful, including
-// `get_current_time`'s JSON shape (the `note` field the scheduler depends on)
-// and `convert_time`'s parse-failure message with its full format list.
-//
-// ── THE LAZY LOAD THAT DIED ──
-// `convert_time` fetched `../services/format-time.js` through `await import(…)`.
-// Not on §T0-PINS P8's sanctioned list, and that module imports nothing from
-// the toolbox, so there was no cycle to break.
+// CLOCK: `get_current_time` and `convert_time`, two pure functions with no effect, no gate and
+// no filesystem, so their own module. The category label is NOT changed: `tools/categories.ts`
+// still files them under "File & System", a string on the wire in the tool index, so touching it
+// would move the cache prefix. Module boundary, not a re-categorisation.
+// Byte-faithful, including the scheduler's `note` dependency and the full parse-failure format list.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { parseFlexibleTime, formatTimeForAgent } from '../../../services/format-time.js';
@@ -33,7 +16,6 @@ export const clockHandlers: ToolHandlerMap = {
     const utcIso = now.toISOString();
     const localStr = now.toLocaleString('en-US', { timeZone: tz, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
 
-    // Calculate UTC offset string (e.g., "-06:00") and conversion hint
     const offsetMin = now.getTimezoneOffset();
     const offsetSign = offsetMin <= 0 ? '+' : '-';
     const absMin = Math.abs(offsetMin);
