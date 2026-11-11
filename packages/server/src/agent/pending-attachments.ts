@@ -1,26 +1,10 @@
-// ════════════════════════════════════════
-// Pending Attachments (P6b-2c: durable turn_artifacts rows, migrations 121/122)
-//
-// Files queued via show_to_user (plus canvas-doc and screen chips) that should
-// ride the agent's next persisted assistant message. Why a queue instead of
-// inserting an assistant message during the tool call: persisting an extra
-// assistant row mid-tool-loop breaks the strict assistant→tool→assistant
-// alternation the model expects, confuses the model into re-calling
-// show_to_user, and inflates the chat with synthetic bubbles.
-//
-// P6b-2c rekey: the queue is turn_artifacts ROWS, not an in-memory map. The
-// map could strand its contents on a crash/reload (the 2026-06-06 lost-report
-// incident class); rows survive, carry the queueing turn + payload, and a
-// drain is an UPDATE of delivered_at, so "was this surfaced" is durable state
-// instead of process memory. The end-of-turn surfacing paths in the loop stop
-// being safety nets over fragile state and become plain consumers of the
-// undelivered set. The old per-session filename dedup died with the rekey:
-// delivered_at itself is the once-only guarantee, and a re-generated file in
-// a later turn is a new artifact that legitimately surfaces again.
-//
-// clearPendingAttachments / peekPendingAttachmentCount had no callers left
-// and were dropped in the rekey.
-// ════════════════════════════════════════
+// Files queued via show_to_user (plus canvas-doc and screen chips) that ride the
+// agent's next persisted assistant message. A queue, not an assistant row inserted
+// mid-tool-loop: that breaks the strict assistant/tool/assistant alternation the
+// model expects, invites re-calls of show_to_user, and inflates the chat. The queue
+// is durable turn_artifacts ROWS; a drain is an UPDATE of delivered_at, so
+// "was this surfaced" is exactly-once durable state. No filename dedup on purpose: delivered_at is the
+// once-only guarantee, and a file re-generated in a later turn surfaces again.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -72,8 +56,7 @@ export function queuePendingAttachments(
   if (attachments.length === 0) return;
   try {
     const cap = caption && caption.trim().length > 0 ? caption.trim() : null;
-    // The caption belongs to the queue CALL; carry it on the first row of the
-    // batch so drains reproduce the old parallel-captions ordering.
+    // The caption belongs to the queue CALL: carry it on the batch's first row.
     attachments.forEach((att, i) => insertArtifact(agentId, 'attachment', att, i === 0 ? cap : null));
   } catch (err) {
     logger.warn('queuePendingAttachments failed (files will not surface this turn)', {
@@ -82,10 +65,8 @@ export function queuePendingAttachments(
   }
 }
 
-/**
- * Queue an "open in canvas" document reference onto the agent's next assistant
- * message, deduped by path so repeated edits in one turn don't stack chips.
- */
+/** Queue an "open in canvas" document reference onto the next assistant message,
+ *  deduped by path so repeated edits in one turn don't stack chips. */
 export function queueCanvasDoc(agentId: string, att: PendingAttachment): void {
   try {
     const dup = getDb().prepare(
@@ -101,11 +82,8 @@ export function queueCanvasDoc(agentId: string, att: PendingAttachment): void {
   }
 }
 
-/**
- * Queue a single "Open screen" chip onto the agent's next assistant message
- * (deduped, one undelivered at a time) so the user can re-open the live screen
- * viewer after closing the canvas. Carries no file; just the screenShare flag.
- */
+/** Queue one "Open screen" chip (deduped, one undelivered at a time) so the user
+ *  can re-open the live viewer after closing. No file; just the screenShare flag. */
 export function queueScreenChip(agentId: string): void {
   try {
     const dup = getDb().prepare(
@@ -163,11 +141,8 @@ export function drainPendingAttachments(agentId: string): PendingAttachment[] {
   }
 }
 
-/**
- * Drain attachments AND any captions captured from show_to_user calls. Used by
- * the end-of-turn surfacing paths when the model finished without terminal
- * text; the captions become the bubble text.
- */
+/** Drain attachments AND captions captured from show_to_user; the end-of-turn
+ *  surfacing paths call this when the model finished without terminal text. */
 export function drainPendingAttachmentsWithCaptions(
   agentId: string,
 ): { attachments: PendingAttachment[]; captions: string[] } {
@@ -186,11 +161,9 @@ export function drainPendingAttachmentsWithCaptions(
 }
 
 
-// ── Download-link artifacts (P6b-2 final batch) ──
-// file_write / file_append record the download URL they minted as a keyed row
-// at the SOURCE (they hold url + path as variables), so the loop's
-// never-drop-the-link backstop reads rows instead of regex-mining tool-result
-// prose. kind='link' rows are excluded from the attachment drains above.
+// Download-link artifacts: file_write / file_append record the URL they minted at
+// the SOURCE, so the loop's never-drop-the-link backstop reads rows instead of
+// regex-mining tool-result prose. kind='link' rows are excluded from the drains.
 
 export function queueLinkArtifact(agentId: string, url: string, filePath: string): void {
   try {

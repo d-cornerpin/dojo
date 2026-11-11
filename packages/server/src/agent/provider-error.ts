@@ -1,69 +1,29 @@
-// PHASE-4 T5 Step 2 — WHAT THE PROVIDER ACTUALLY SAID.
-//
-// Every provider-error decision in this tree was made by searching the error's PROSE for
-// digits: `message.includes('429')`, `lower.includes('401')`, `lower.includes('503')`. Five
-// copies of that table lived in five files and they did not agree with each other.
-//
-// It is the banned class (receipt-keyed, never prose-keyed) wearing a number, and it is
-// wrong in both directions:
-//
-//   FALSE POSITIVE — Anthropic's over-length error is a 400 that reads
-//       "prompt is too long: 204015 tokens > 200000 maximum"
-//     and the token count CONTAINS "401". `classifyPlatformError` returned `auth_invalid`,
-//     the platform's most drastic verdict: agent locked, owner bannered and told his API key
-//     is invalid, because his prompt was too long. Change the count to 250316 and the same
-//     string contains "503", so `isServerError` marked a permanently-fatal 400 retryable.
-//
-//   FALSE NEGATIVE — a genuine 429 whose body reads "You exceeded your current quota, please
-//     check your plan and billing details" contains neither "429" nor "rate_limit". The rate
-//     limit went unrecognised: no background retry scheduled, the agent injured instead.
-//
-// THE RULE. When the provider ANSWERED, its HTTP STATUS decides and its structured body
-// (`error.type` / `code`) refines. When the request never got an answer, the transport's own
-// error CODE decides (`ECONNREFUSED`, `ENOTFOUND`, …). Prose is the LAST resort — reached
-// only when there is neither — and even there a status is matched as a TOKEN with boundaries
-// on both sides, so a digit run inside a token count can never be read as an HTTP status.
-//
-// `basis` is on the result on purpose: a caller (and a log line) can always see WHICH of
-// those three the verdict came from, so "we guessed from the words" never looks like "the
-// provider told us".
+// WHAT THE PROVIDER ACTUALLY SAID. When it ANSWERED, the HTTP status decides and
+// the structured body (error.type / code) refines; no answer means the transport
+// code decides; prose is LAST and matches a status only as a boundary-edged TOKEN.
+// basis records which answered, so "we guessed from words" never reads as fact.
 
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from './stream-patience.js';
 
-/** What the provider's answer means for what we should do next. */
 export type ProviderErrorClass =
-  /** 401 — the credential is invalid, expired or revoked. The owner must act. */
   | 'auth'
-  /** 403 — the credential is fine; this account may not use this thing. */
   | 'access_denied'
-  /** Billing/quota exhausted — distinct from a per-minute rate limit. */
+  /** Billing/quota exhausted: distinct from a per-minute rate limit. */
   | 'quota'
-  /** 429 — slow down and come back. */
   | 'rate_limit'
-  /** 529/503 — the provider is up but has no capacity right now. */
   | 'overloaded'
-  /** 5xx — the provider broke. */
   | 'server'
-  /** A 4xx that is OUR request's fault: too long, malformed, unsupported. Retrying it
-   *  unchanged will fail forever. */
+  /** Our request's fault (4xx): too long, malformed, unsupported. Retrying unchanged fails forever. */
   | 'bad_request'
   /** The request never got an HTTP answer at all. */
   | 'network'
-  /**
-   * T81a — a stream watchdog cut the call before the FIRST token, on a provider that DECLARED
-   * how long it needed. Distinct from 'network' on purpose: the request did not fail to
-   * connect, it failed to finish inside a bound its own owner set, and a declared bound this
-   * large usually means the PROMPT was too big for the box, not that the box is offline. The
-   * GPU livelock incident this class exists to prevent was exactly this case folding into
-   * 'network' — indistinguishable from a dropped TCP connection — and collecting the same
-   * blind auto-wake a dropped connection legitimately earns. Never retryable: re-dialing
-   * restarts the whole prefill it was most of the way through, to fail at the same bound again.
-   */
+  /** A watchdog cut the call before the FIRST token on a provider that DECLARED its bound.
+   *  Never retryable: re-dialing restarts the whole prefill only to fail at the same bound. */
   | 'declared_patience_exceeded'
   /** We genuinely do not know. Never guessed at. */
   | 'unknown';
 
-/** Where the verdict came from — never inferred, always recorded. */
+/** Where the verdict came from: never inferred, always recorded. */
 export type ProviderErrorBasis = 'status' | 'body' | 'transport' | 'text' | 'none';
 
 export interface ProviderErrorFacts {
@@ -79,8 +39,7 @@ export interface ProviderErrorFacts {
   basis: ProviderErrorBasis;
 }
 
-/** The classes a caller may retry as-is. A `bad_request` is NOT one of them: the same bytes
- *  will be refused the same way forever, and retrying it is how a fatal 400 became a loop. */
+/** bad_request is NOT retryable: the same bytes are refused the same way forever. */
 export const RETRYABLE_PROVIDER_CLASSES: ReadonlySet<ProviderErrorClass> =
   new Set<ProviderErrorClass>(['rate_limit', 'overloaded', 'server', 'network']);
 
@@ -95,48 +54,17 @@ const TRANSPORT_CODES = new Set([
   'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET', 'ERR_SOCKET_CONNECTION_TIMEOUT',
 ]);
 
-/**
- * An HTTP status matched as a TOKEN.
- *
- * `\b401\b` cannot match inside `204015` — every neighbour of the `401` there is a word
- * character, so there is no boundary — and the lookarounds additionally refuse a decimal
- * (`1.401`) and a version-like run. This is the entire reason the prose fallback is safe to
- * keep at all.
- */
+/** Statuses match as boundary-edged tokens, never digit runs: the reason prose is safe at all. */
 function hasStatusToken(text: string, status: number): boolean {
   return new RegExp(`(?<![\\w.])${status}(?![\\w.])`).test(text);
 }
 
-/**
- * The same number, but only where a STATUS can actually live. (v3.2.3 review, H2)
- *
- * `hasStatusToken` above refuses `204015` and `1.401` — but a HYPHEN and a SPACE are both
- * boundaries, so it says yes to `gpt-402-turbo`, to `completed 402 of 500 tokens`, and to another
- * hop's status quoted inside a message (`upstream 401 logged … failed with 503`). That was
- * tolerable while a mis-parse only cost a retry classification. It stopped being tolerable when
- * v3.2.3 gave a permanent class the power to latch a provider off the board: the review measured
- * **5 of 5** innocent status-shaped strings pausing a WORKING provider.
- *
- * So permanence asks a stricter question — not *does this number appear?* but *does it appear
- * where a status is announced?* Two positions qualify, and nothing else does:
- *
- *   1. LEADING — the message OPENS with it, optionally behind an HTTP version:
- *      `402 Payment Required`, `HTTP/1.1 402 …`.
- *   2. INTRODUCED — a word whose only job is to name a status sits immediately before it, with
- *      at most a few punctuation characters between: `API error 402:`, `status code 402`,
- *      `{"status": 402}`, `http 402`.
- *
- * Everything else is a number that happens to be in the sentence. The caller treats that as no
- * evidence at all, which is this module's documented default direction.
- *
- * ⚠ NARROWED TWICE MORE (t87b, after the H2 re-review anchored 8 of 10 fresh shapes): LEADING now
- * tolerates only whitespace, not any bracket or quote (`[402] cache …` is a log prefix); and `code`
- * is no longer BARE (`exit code 402` is a process exit code), only `error code` / `status code` —
- * which `status code 402` used to reach THROUGH the bare `code`, so dropping it alone would have
- * cost a true positive. `err`/`error` stay bare on purpose: the incident's string is `API error
- * 402: …`. Every shape, both directions and that residual are the `STILL_ANCHORED` and
- * `INNOCENT_SHAPES` tables in `memory/__tests__/the-freeze-cannot-happen-again.test.ts`.
- */
+/** Permanence asks the stricter question: does the number appear WHERE A STATUS IS
+ *  ANNOUNCED? Only LEADING (the message opens with it, optional HTTP version prefix) or
+ *  INTRODUCED (a status-word sits just before: `status code 402`, `API error 402:`).
+ *  LEADING takes whitespace only; bare `code` is no introducer. Else: no evidence. A token alone matches
+ *  `gpt-402-turbo` and `completed 402 of 500 tokens`; a permanent verdict must not. `err`/`error` stay bare
+ *  on purpose (`API error 402:`); the test tables STILL_ANCHORED / INNOCENT_SHAPES hold the shapes. */
 export function statusIsAnchored(text: string, status: number): boolean {
   const s = String(status);
   const sep = '[\\s:=>"\'\\-]{0,4}';
@@ -150,10 +78,8 @@ export function statusIsAnchored(text: string, status: number): boolean {
   ).test(text ?? '');
 }
 
-/** t151 round 2: "quota" names two facts. OUT OF CREDIT (money words) is the owner's to fix; a per-minute or
- *  per-day limit that happens to say "quota exceeded" is a wait. Only the money words make `quota`. `billing`
- *  and OpenAI's "exceeded your current quota" count unless the text names a window (`per minute`,
- *  `RESOURCE_EXHAUSTED`): free tiers say "check your plan and billing details" about a per-minute limit. */
+/** "quota" names two facts: OUT OF CREDIT (owner's to fix) and a per-minute limit (a wait).
+ *  Only money words return `quota`: `billing` counts unless the text names a window. */
 export function namesMoney(lower: string): boolean {
   if (lower.includes('insufficient_quota') || lower.includes('insufficient balance') || lower.includes('insufficient_balance')
     || lower.includes('insufficient funds') || lower.includes('insufficient credit')
@@ -168,8 +94,7 @@ function statusToClass(status: number, providerType: string | null): ProviderErr
   if (status === 403) return 'access_denied';
   if (status === 402) return 'quota';
   if (status === 429) {
-    // A 429 is a rate limit unless the provider says the money ran out, which is a different
-    // fact with a different remedy: waiting fixes one and never fixes the other.
+    // A 429 is a rate limit unless the provider names the money: waiting fixes one, never the other.
     return t.includes('billing') || t.includes('insufficient') ? 'quota' : 'rate_limit';
   }
   if (status === 408) return 'overloaded';
@@ -238,14 +163,8 @@ function readRetryAfter(err: Record<string, unknown>): number | null {
   return Number.isNaN(secs) ? null : secs;
 }
 
-/**
- * The prose fallback — ONE table, in one place, for the callers that hold nothing but a
- * string (a persisted `last_error`, a message crossing a process boundary).
- *
- * Every status here is matched as a token, so the adversarial token counts cannot reach any
- * branch. Vocabulary matches stay substring matches because a provider's own words for
- * "rate_limit_error" carry no numeric ambiguity.
- */
+/** The prose fallback: ONE table in one place for callers holding only a string (a persisted
+ *  `last_error`, text crossing a process boundary). Statuses match as tokens, words as substrings. */
 export function classifyProviderErrorText(text: string): ProviderErrorFacts {
   const none: ProviderErrorFacts = {
     class: 'unknown', status: null, providerType: null,
@@ -258,16 +177,8 @@ export function classifyProviderErrorText(text: string): ProviderErrorFacts {
     retryAfterSeconds: null, basis: 'text',
   });
 
-  // Order is the precedence: the most specific remedy first. A quota message and a rate limit
-  // both arrive as 429s but only one of them is fixed by waiting.
-  // ⚠ v3.2.3: this path probed 429/401/403/503/500 and NOT 402, and its quota branch wanted
-  // `insufficient_quota` — so `API error 402: {"message":"Insufficient Balance"}` (a real box's
-  // words) came out `unknown` and was retried for 27 hours, 3,604 times. `statusToClass` gets 402
-  // right; a thrown error carrying its status as TEXT never reaches it. Hence the token + spellings.
-  // ⚠ ANCHORED, not merely present (review H2): `completed 402 of 500 tokens` must not become a
-  // quota verdict, because `quota` is what `classifyPlatformError` turns into a Tier-D
-  // QUOTA_EXHAUSTED lock. A 402 that is not announced as a status falls through to the arms below
-  // and is read on its other evidence, which is how a transient stays transient.
+  // Order IS the precedence: quota before rate_limit (only one is fixed by waiting);
+  // 402 ANCHORED, so an innocent count cannot latch the QUOTA_EXHAUSTED lock.
   const anchored402 = statusIsAnchored(lower, 402);
   if (anchored402 || namesMoney(lower)) {
     return decided('quota', anchored402 ? 402 : null);
@@ -310,11 +221,7 @@ export function classifyProviderErrorText(text: string): ProviderErrorFacts {
   return none;
 }
 
-/**
- * Classify a thrown provider error from what it actually carries.
- *
- * Reading order — status, then body, then transport code, then (last) prose.
- */
+/** Reading order: status, then body, then transport code, then (last) prose. */
 export function classifyProviderError(err: unknown): ProviderErrorFacts {
   if (!err || (typeof err !== 'object' && typeof err !== 'string')) {
     return classifyProviderErrorText(String(err ?? ''));
@@ -330,8 +237,7 @@ export function classifyProviderError(err: unknown): ProviderErrorFacts {
 
   if (status !== null) {
     let cls = statusToClass(status, providerType);
-    // A 400 that names the money is not our request's fault: Anthropic reports an empty
-    // account as a 400 whose message says the credit balance is too low.
+    // A 400 naming the money is not our request's fault: Anthropic bills an empty account as a 400.
     if (cls === 'bad_request' && status === 400 && namesMoney(message.toLowerCase())) cls = 'quota';
     return {
       class: cls,
@@ -350,19 +256,11 @@ export function classifyProviderError(err: unknown): ProviderErrorFacts {
     };
   }
 
-  // No status and no transport code. The provider may still have named itself in a structured
-  // body (an SDK that wrapped a parsed error without a status), so that is tried before prose.
+  // No status and no transport code: a structured body may still name the provider, tried before prose.
   if (providerType) {
     const t = providerType.toLowerCase();
-    // T81a — the model layer's OWN identity for a declared-patience exhaustion, carried on
-    // `AgentError.code` and read here exactly as every other provider `type`/`code` already is
-    // (`readProviderType` above). Checked first and returned immediately rather than folded
-    // into the `byType` ternary below: it is not host to any of that ternary's remedies
-    // (waiting, re-authenticating, upgrading a plan), and reaching the ternary at all would put
-    // it one edit away from being swept into whichever branch runs last. This is also the exact
-    // point the GPU livelock incident's root cause lived: before this check, `t` fell through
-    // to the prose table below, which matches the word "timeout" in this error's own message
-    // and returns the generic 'network' class — indistinguishable from a dropped connection.
+    // Checked BEFORE byType: the prose table matches "timeout" in this error's own message
+    // and would misclassify it 'network'; it earns none of the ternary's remedies.
     if (t === DECLARED_PATIENCE_EXCEEDED_CODE) {
       return {
         class: 'declared_patience_exceeded', status: null, providerType, transportCode: null,
@@ -390,15 +288,8 @@ export function classifyProviderError(err: unknown): ProviderErrorFacts {
   return { ...fromText, providerType, retryAfterSeconds };
 }
 
-/**
- * The provider class behind a thrown error: the facts it CARRIES when it has them (the model
- * layer attaches them to every `AgentError` it raises), and its own status/code/words when it
- * does not. One question, one answer, at every call site downstream of a failed model call.
- *
- * The carried facts are read structurally rather than through `instanceof AgentError` on
- * purpose: `agent/errors.ts` imports this module, so naming the class here would close an
- * import cycle for a check that a shape test does exactly as well.
- */
+/** Carried facts first, classification second: one question, one answer, after any failed model call.
+ *  Never `instanceof AgentError`: errors.ts imports this module; naming the class closes a cycle. */
 export function providerFactsOf(err: unknown): ProviderErrorFacts {
   const carried = (err as { provider?: unknown } | null | undefined)?.provider;
   if (carried && typeof carried === 'object' && typeof (carried as { class?: unknown }).class === 'string') {

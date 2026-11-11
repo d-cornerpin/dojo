@@ -1,30 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════
-// `checkPermission` — NOW A READER OF THE BROKERS (PHASE-5 T2 Step 2).
-//
-// This module used to hold 687 lines: four deny lists, a glob engine, a symlink
-// canonicalizer, a manifest reader, a squad fallback, and six `check*` functions
-// with a hand-written order of operations. T2 did not add a second copy of any
-// of it — it MOVED each piece to the place that owns it and left this file as
-// the adapter its nine remaining callers still speak to:
-//
-//   the deny lists ....... `agent/brokers/deny.ts`      (all four, merged, ONE table)
-//   the glob engine ...... `agent/path-resolve.ts`      (leaf)
-//   the canonicalizer .... `agent/path-resolve.ts`      (leaf)
-//   the manifest ......... `agent/manifest.ts`          (leaf)
-//   the squad fallback ... `agent/squad-workspace.ts`   (leaf)
-//   the decisions ........ `agent/brokers/{fs,proc,net}.ts` + `grants.ts`
-//
-// EVERY NAME THIS MODULE EXPORTED IS STILL EXPORTED FROM HERE, so not one of the
-// nine callers moved: `destructive-gate.ts:126` (the EXACT call the approval
-// seam records — RULING P5-R3 makes that coupling T3's to move, and this task
-// must not disturb its shape), `spawner.ts:150` (the OTHER spawn gate — RULING
-// P5-R2 leaves it STANDING and T5 owns the reconciliation), `path-guards.ts`'s
-// share gate, `web-tools.ts` ×3, and the tests.
-//
-// THE ANSWERS ARE UNCHANGED. That is not an aspiration, it is the acceptance
-// criterion: `permissions-log-deny`, `share-guards`, `exec-shell-grammar` and
-// `net-guard` all assert against this function and none of them was touched.
-// ════════════════════════════════════════════════════════════════════════════
+// The legacy adapter its nine remaining callers still speak to, answering from the
+// brokers. destructive-gate.ts records this call as the EXACT one executeTool
+// makes, so its shape stays; spawner.ts keeps its own separate spawn gate.
 
 import { createLogger } from '../logger.js';
 import { getAgentPermissions } from './manifest.js';
@@ -37,7 +13,6 @@ import { resolvePathArg, resolveCommandArg } from './brokers/resolve.js';
 
 const logger = createLogger('permissions');
 
-// ── Re-exports: this module's published surface, unchanged ──
 export { getAgentPermissions, PRIMARY_AGENT_PERMISSIONS, DEFAULT_SUBAGENT_PERMISSIONS } from './manifest.js';
 export {
   resolveRealPathHardened,
@@ -49,7 +24,6 @@ export {
 } from './path-resolve.js';
 export { hasSquadWorkspaceAccess } from './squad-workspace.js';
 
-// ── Types ──
 
 export interface PermissionAction {
   type: 'file_read' | 'file_write' | 'file_delete' | 'exec' | 'spawn' | 'network';
@@ -63,18 +37,9 @@ export interface PermissionResult {
   reason?: string;
 }
 
-// ── Main Entry Point ──
 
-/**
- * THE LEGACY SHAPE, answered by the brokers.
- *
- * One behaviour is worth naming because it is the shape of the old code rather
- * than a decision: a MISSING argument is a refusal here (`No path specified for
- * file_read`), because that is what this function has always answered. The
- * LADDER never asked in that case — `if (filePath)` skipped it — so the
- * dispatcher preserves the skip and this adapter preserves the refusal. They are
- * two different questions and each keeps its own old answer.
- */
+/** A MISSING argument is a REFUSAL here: callers depend on this legacy shape. The
+ *  ladder never asked in that case: two different questions, each keeps its answer. */
 export function checkPermission(agentId: string, action: PermissionAction): PermissionResult {
   const grant = grantForManifest(agentId, getAgentPermissions(agentId));
 
@@ -101,10 +66,8 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
         result = { allowed: false, reason: 'No command specified for exec' };
         break;
       }
-      // `scanSensitiveReads` stays OFF here: this is the shape `destructive-gate`
-      // records as *"the EXACT call executeTool makes"*, and the tokenized scan
-      // was never part of it — it lived in the exec HANDLER. The dispatcher asks
-      // with the scan ON, at the point the handler used to.
+      // `scanSensitiveReads` stays OFF here: this is the exact call destructive-gate records;
+      // the tokenized scan belongs to the dispatcher, which asks with the scan ON.
       const verdict = authorizeProc(grant, resolved.value, false);
       result = verdict.allowed ? { allowed: true } : { allowed: false, reason: verdict.reason };
       break;

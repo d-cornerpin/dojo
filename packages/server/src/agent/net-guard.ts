@@ -1,38 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════
-// Outbound network guard — the ONE owner of "may the server fetch this URL?"
-// (PHASE-0 T11)
-//
-// The agent's outbound web tools take whatever URL the model produces, and the
-// model's input includes untrusted text (inbound email, iMessage, web pages,
-// peer agents). Without this check a prompt-injected or merely confused agent
-// can make the SERVER — which sits inside the trust boundary — reach:
-//
-//   • `http://127.0.0.1:3001/api/...`  the platform's own API
-//   • `http://169.254.169.254/latest/` cloud instance metadata (credentials)
-//   • `http://192.168.x.x/`            anything on the owner's LAN
-//
-// This module was extracted from the copy that already lived inline in
-// `gateway/routes/system.ts` (the og-preview route, added when the dashboard
-// began auto-previewing every link in every inbound message). That route now
-// imports from here: one address-class judgement on the platform, not two that
-// drift. The extraction also fixed two real holes in the original — it string-
-// matched `::ffff:127.` for IPv4-mapped IPv6, which Node's URL parser rewrites
-// to the hex form `::ffff:7f00:1`, and it covered only fe80 of fe80::/10.
-//
-// SCOPE, stated honestly:
-//   • This is an address-class refusal, not a capability grant. There is no
-//     allowlist bypass in Phase 0 — Phase 5's net broker owns grants.
-//   • `assertPublicHttpTarget` returns the RESOLVED address so a caller CAN
-//     pin it. Callers that hand the URL to `fetch` or Playwright do NOT pin:
-//     those stacks resolve DNS again themselves, so a hostile DNS server can
-//     answer public here and private there (DNS rebinding). Closing that needs
-//     connect-to-IP-with-Host-header (or a proxy), which is Phase 5's broker.
-// ════════════════════════════════════════════════════════════════════════
+// The ONE owner of "may the server fetch this URL?" for the agent's web tools.
+// A prompt-injected agent could otherwise reach the platform API, cloud metadata, the LAN.
 
 import dns from 'node:dns/promises';
 import net from 'node:net';
 
-/** Thrown when a URL is refused. Carries what was asked for and what it hit. */
 export class NetGuardError extends Error {
   readonly url: string;
   readonly address: string | null;
@@ -45,7 +16,6 @@ export class NetGuardError extends Error {
   }
 }
 
-// ── IPv4 ──
 
 /** The class name if `ip` (a valid dotted quad) is non-public, else null. */
 function ipv4Class(ip: string): string | null {
@@ -63,21 +33,15 @@ function ipv4Class(ip: string): string | null {
   return null;
 }
 
-// ── IPv6 ──
 
-/**
- * Expand an IPv6 literal to its eight 16-bit groups, or null if unparseable.
- * Handles `::` compression, a trailing dotted-quad (`::ffff:127.0.0.1`) and a
- * zone id (`fe80::1%en0`). Parsing rather than string-matching is the point:
- * the same address has several spellings and only one of them is obvious.
- */
+/** Expand an IPv6 literal to eight 16-bit groups, or null if unparseable. Parsing beats
+ *  string-matching: the same address has several spellings and only one is obvious. */
 function ipv6Groups(ip: string): number[] | null {
   let s = ip.trim().toLowerCase();
   const zone = s.indexOf('%');
   if (zone !== -1) s = s.slice(0, zone);
   if (s.length === 0) return null;
 
-  // Rewrite a trailing dotted quad into the two hex groups it stands for.
   if (s.includes('.')) {
     const cut = s.lastIndexOf(':');
     if (cut === -1) return null;
@@ -121,7 +85,7 @@ function ipv6Class(ip: string): string | null {
 
   const zeroTo4 = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0;
 
-  // IPv4-mapped ::ffff:0:0/96 — the classic bypass, in either spelling.
+  // IPv4-mapped ::ffff:0:0/96, the classic bypass, in either spelling.
   if (zeroTo4 && g[5] === 0xffff) {
     const inner = ipv4Class(embeddedV4(g));
     return inner ? `IPv4-mapped ${inner}` : null;
@@ -147,14 +111,9 @@ function ipv6Class(ip: string): string | null {
   return null;
 }
 
-// ── Public API ──
 
-/**
- * Name the non-public address class `ip` belongs to, or null if it is a public
- * internet address. Anything that is not a valid IP literal returns a class
- * (fail closed) — the caller asked "is this safe to reach", and "I cannot tell"
- * is never yes.
- */
+/** Name the non-public class `ip` belongs to, or null for a public internet address.
+ *  Not a valid IP literal returns a class: "I cannot tell" is never a yes (fail closed). */
 export function privateAddressClass(ip: string): string | null {
   const version = net.isIP(ip);
   if (version === 4) return ipv4Class(ip);
@@ -169,17 +128,12 @@ export function isPrivateAddress(ip: string): boolean {
   return privateAddressClass(ip) !== null;
 }
 
-/**
- * Refuse `raw` unless it is an http(s) URL whose host resolves entirely to
- * public internet addresses. Returns the normalised href and the resolved
- * address so a caller can pin it.
- *
- * Throws `NetGuardError` on a bad scheme, an unparseable URL, an empty answer
- * set, or any non-public address. A genuine DNS failure (ENOTFOUND, SERVFAIL)
- * is re-thrown UNCHANGED: nothing was reached either way, and web_fetch has a
- * friendly "that domain does not resolve" branch keyed on the DNS error text
- * that wrapping would silently kill.
- */
+/** Refuse `raw` unless it is an http(s) URL whose host resolves entirely to public
+ *  addresses. Returns the normalised href and the RESOLVED address so a caller can
+ *  pin it: `fetch` alone re-resolves DNS, so a hostile server can answer public here
+ *  and private there (DNS rebinding). Throws NetGuardError on a bad scheme, an
+ *  unparseable URL, an empty answer set, or any non-public address. A genuine DNS
+ *  failure re-throws UNCHANGED: web_fetch keys a friendly message on that error text. */
 export async function assertPublicHttpTarget(raw: string): Promise<{ href: string; address: string }> {
   let u: URL;
   try {
@@ -210,9 +164,8 @@ export async function assertPublicHttpTarget(raw: string): Promise<{ href: strin
     return { href: u.href, address: host };
   }
 
-  // dns.lookup (getaddrinfo) rather than dns.resolve on purpose: it applies the
-  // same resolution the OS will apply to the real connection, including
-  // /etc/hosts and the numeric spellings (`http://2130706433/` → 127.0.0.1).
+  // dns.lookup (getaddrinfo) not dns.resolve: the OS applies the same resolution as the
+  // real connection, including /etc/hosts and numeric spellings (`http://2130706433/`).
   const resolved = await dns.lookup(host, { all: true });
 
   if (resolved.length === 0) {

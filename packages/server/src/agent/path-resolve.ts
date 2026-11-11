@@ -1,15 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════
-// PATH CANONICALIZATION AND GLOB MATCHING — a leaf (PHASE-5 T2).
-//
-// Extracted verbatim from `agent/permissions.ts` so the brokers can resolve a
-// path without importing the module that is about to become their reader. Every
-// function below is byte-for-byte what it was at `16bd0b8`; `permissions.ts`
-// re-exports the three names that were already public (`matchGlob`,
-// `resolveRealPathHardened`, `isProtectedIdentityPath`) so no consumer moved.
-//
-// The comments are the originals, because they are the record of WHY each of
-// these is shaped the way it is — every one of them is a fixed incident.
-// ════════════════════════════════════════════════════════════════════════════
+// The path leaf: brokers resolve paths here without importing permissions.ts, which re-exports them.
 
 import path from 'node:path';
 import fs from 'node:fs';
@@ -17,10 +6,7 @@ import { PROTECTED_IDENTITY_PATHS } from './sensei-policy.js';
 import { foldPath } from './fs-case.js';
 import { homeDir } from '../home.js';
 
-/** Expand `~` / `~/…` / `~user` to a home-relative path. Everything else passes
- *  through unchanged (callers check `path.isAbsolute` themselves). Moved here
- *  from `path-guards.ts`, which re-exports it as `resolvePath`, so the process
- *  broker can expand a token without importing the share gate. */
+/** Expand `~` / `~/…` / `~user` to a home-relative path; anything else passes through unchanged. */
 export function resolveHomePath(inputPath: string): string {
   if (inputPath === '~') return homeDir();
   if (inputPath.startsWith('~/')) return path.join(homeDir(), inputPath.slice(2));
@@ -35,44 +21,23 @@ export function expandTilde(pattern: string): string {
   return pattern;
 }
 
-// Canonicalize a FILE PATH (not a glob pattern) before any allow/deny match.
-// expandTilde only handles '~'; it does NOT collapse '..'. Without normalizing,
-// a traversal like '~/Projects/../.dojo/secrets.yaml' string-matches a
-// '~/Projects/**' allowlist yet the executor's own path.join resolves it to the
-// real protected target, so the check and the write disagree and the sandbox is
-// escaped. path.resolve expands to an absolute, normalized path with every '..'
-// collapsed, so the allowlist and every global-deny match the ACTUAL target.
+// expandTilde does NOT collapse '..': '~/Projects/../.dojo/secrets.yaml' string-matches an
+// allowlist yet resolves to the protected target. path.resolve folds '..' so checks see the real file.
 export function canonicalizeAgentPath(filePath: string): string {
   return path.resolve(expandTilde(filePath));
 }
 
-// N3: canonicalizeAgentPath (path.resolve) is LEXICAL, it does not follow
-// symlinks. The Trainer now holds exec + file_write '*', so it could plant a
-// symlink under an allowed dir that points INTO a protected file and defeat the
-// lexical prefix match. Resolve the DEEPEST EXISTING ancestor's real path
-// (fs.realpathSync follows symlinks; fs.existsSync also follows them, so the
-// walk stops at the nearest node that truly resolves), then re-append the
-// non-existent tail. A symlinked file resolves in full; a symlinked directory in
-// the middle resolves and the remaining tail rides on the real target. Never
-// throws: realpath errors return { resolved:false } so callers pick their own
-// posture (fail-closed for the identity tier, best-effort-additive for the
-// globals). Cheap enough for the file-write path (a few stat syscalls, no I/O on
-// the common lexical-hit fast path).
+// path.resolve is LEXICAL: a planted symlink under an allowed dir can point INTO a protected
+// file and defeat the prefix match. Resolve the deepest EXISTING ancestor's real path (both
+// realpathSync and existsSync follow links), re-append the tail. Errors return { resolved:false }.
 function realResolveDeepest(lexicalAbs: string, depth = 0): { path: string; resolved: boolean } {
   // Link-loop guard: a chain of broken links re-enters this function per hop.
   if (depth > 8) return { path: lexicalAbs, resolved: false };
   let existing = lexicalAbs;
   const tail: string[] = [];
   while (!fs.existsSync(existing)) {
-    // existsSync FOLLOWS symlinks, so a BROKEN link (target does not exist yet)
-    // reads as non-existent and the walk would otherwise step past it, resolving
-    // the link's own path instead of its target. A write through that link CREATES
-    // the target, so a planted broken link pointing at a not-yet-existing file
-    // under a protected dir would slip the prefix match, and the link itself can
-    // live anywhere writable, so failing closed on the link's own path is not
-    // enough. lstat (no follow) detects the link; follow its TARGET (relative
-    // targets resolve against the link's dir) and continue resolving from there
-    // with the remaining tail. readlink errors report unresolvable.
+    // existsSync FOLLOWS links, so a BROKEN one reads as missing and the walk would step past it;
+    // a write through it creates its target under a protected dir. lstat finds it; resolve its target.
     try {
       if (fs.lstatSync(existing, { throwIfNoEntry: false })?.isSymbolicLink()) {
         const target = path.resolve(path.dirname(existing), fs.readlinkSync(existing));
@@ -94,21 +59,7 @@ function realResolveDeepest(lexicalAbs: string, depth = 0): { path: string; reso
   }
 }
 
-// Hardened canonicalizer for callers OUTSIDE this module (the Healer scratch-zone
-// auto-approve gate): expandTilde + collapse '..' (canonicalizeAgentPath) THEN
-// resolve symlinks / broken links (realResolveDeepest), the exact pipeline
-// isProtectedIdentityPath uses. { resolved:false } means resolution failed and the
-// caller MUST fail closed (treat the target as out-of-zone / protected).
-/**
- * Does this tilde-expanded path name an existing DIRECTORY?
- *
- * Lives here rather than in its one caller (`tools/process-run.ts`, the exec
- * doors' `cwd` check) for one reason: this module is already an fs leaf and the
- * toolbox is not. `no-restricted-imports` is advisory today and T7's exit gate
- * flips it to ENFORCED once nothing outside the brokers and these leaves reaches
- * `node:fs`, so a NEW direct `node:fs` import in the toolbox would be a step
- * away from that gate on the exact task that is meant to move toward it.
- */
+/** Existing DIRECTORY? Lives in the fs leaf: its one caller must not import node:fs itself. */
 export function isExistingDirectory(inputPath: string): boolean {
   try {
     return fs.statSync(resolveHomePath(inputPath)).isDirectory();
@@ -117,6 +68,7 @@ export function isExistingDirectory(inputPath: string): boolean {
   }
 }
 
+// For outside callers: canonicalize, THEN resolve links. { resolved:false } means the caller MUST fail closed.
 export function resolveRealPathHardened(filePath: string): { path: string; resolved: boolean } {
   return realResolveDeepest(canonicalizeAgentPath(filePath));
 }
@@ -129,14 +81,8 @@ function isUnderProtectedRoot(lexicalAbs: string): boolean {
   return candidate === root || candidate.startsWith(root + path.sep);
 }
 
-// FU-4 + N3: is this write target one of the owner's identity/config files
-// (PROTECTED_IDENTITY_PATHS)? Canonicalize FIRST (collapse '..') so a traversal
-// such as '~/.dojo/techniques/../prompts/USER.md' resolves before the prefix
-// match, then re-check through symlinks so a planted link into a protected path is
-// caught (see realResolveDeepest). FAIL-CLOSED: if symlink resolution errors for a
-// candidate under the protected root, treat it as protected. Consumed two ways: a
-// hard write-deny for the Trainer (the fs broker) and a destructive-classify
-// signal for the Healer (destructive-gate.ts).
+// Identity/config file check: canonicalize FIRST (collapse '..') so a traversal resolves before
+// the prefix match, then re-check through symlinks; FAIL-CLOSED: unresolvable under ~/.dojo = protected.
 export function isProtectedIdentityPath(filePath: string): boolean {
   const lexical = canonicalizeAgentPath(filePath);
   if (PROTECTED_IDENTITY_PATHS.some(pattern => matchAgentPathGlob(pattern, lexical))) return true;
@@ -145,17 +91,11 @@ export function isProtectedIdentityPath(filePath: string): boolean {
   return PROTECTED_IDENTITY_PATHS.some(pattern => matchAgentPathGlob(pattern, real));
 }
 
-/**
- * Simple glob matcher supporting:
- * - * matches any characters within a single path segment (no /)
- * - ** matches any number of path segments (including zero)
- * - ? matches a single character
- */
+/** Glob matcher: * = within one segment, ** = any number of segments, ? = one character. */
 export function matchAgentGlob(pattern: string, value: string): boolean {
   const expandedPattern = expandTilde(pattern);
   const expandedValue = expandTilde(value);
 
-  // Convert glob to regex
   let regex = '';
   let i = 0;
   while (i < expandedPattern.length) {
@@ -163,18 +103,14 @@ export function matchAgentGlob(pattern: string, value: string): boolean {
 
     if (ch === '*') {
       if (i + 1 < expandedPattern.length && expandedPattern[i + 1] === '*') {
-        // ** — match anything including /
         i += 2;
         if (i < expandedPattern.length && expandedPattern[i] === '/') {
-          // **/ — match zero or more path segments
           regex += '(?:.*/)?';
           i++;
         } else {
-          // ** at end — match everything
           regex += '.*';
         }
       } else {
-        // * — match anything except /
         regex += '[^/]*';
         i++;
       }
@@ -196,16 +132,12 @@ export function matchAgentGlob(pattern: string, value: string): boolean {
   try {
     return new RegExp('^' + regex + '$').test(expandedValue);
   } catch {
-    // If regex compilation fails, fall back to exact match
     return expandedPattern === expandedValue;
   }
 }
 
-// PHASE-0 T10 (see agent/fs-case.ts): matchAgentGlob's regex is case-SENSITIVE,
-// so on APFS '~/.dojo/Secrets.yaml' slipped every deny pattern while opening the
-// same bytes. Expand '~' on BOTH sides first — matchAgentGlob would otherwise
-// re-expand a folded pattern back into a mixed-case absolute — then fold. Paths
-// only; the exec global-deny still matches command shapes case-sensitively.
+// The glob regex is case-SENSITIVE, so on APFS '~/.dojo/Secrets.yaml' slips every deny pattern
+// while opening the same bytes. Expand '~' on BOTH sides first, then fold; exec deny stays strict.
 export function matchAgentPathGlob(pattern: string, value: string): boolean {
   return matchAgentGlob(foldPath(expandTilde(pattern)), foldPath(expandTilde(value)));
 }

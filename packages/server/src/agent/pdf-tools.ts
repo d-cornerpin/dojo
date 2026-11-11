@@ -1,29 +1,8 @@
-// ════════════════════════════════════════
-// agent/pdf-tools.ts — PDF creation and manipulation
-//
-// We had PDF *reading* (file_read returns vision blocks or pdf-extract
-// inlined text) but no creation or editing. This module fills that gap
-// with pdf-lib (pure JS, no system dependencies). Every tool accepts
-// local file paths for inputs and writes outputs to
-// ~/.dojo/uploads/<agentId>/<filename>, matching the pattern used by
-// other tools that produce files.
-//
-// Surface:
-//   pdf_create               — Generate a new PDF from a content-blocks schema
-//   pdf_get_info             — Page count, dimensions, metadata, form fields
-//   pdf_merge                — Combine multiple PDFs into one
-//   pdf_extract_pages        — Pull a page range into a new file (also covers split)
-//   pdf_rotate_pages         — Rotate specific pages
-//   pdf_reorder_pages        — Rearrange pages
-//   pdf_delete_pages         — Remove pages
-//   pdf_watermark            — Stamp text across all (or selected) pages
-//   pdf_fill_form            — Set AcroForm field values, optionally flatten
-// ════════════════════════════════════════
+// PDF creation and manipulation with pdf-lib (pure JS, no system deps).
+// Outputs always land in ~/.dojo/uploads/<agentId>; inputs are caller paths.
 
-// PHASE-5 T8 Step 3: every path this module touches now goes through the
-// facade, which performs the work only on a resource the call's own
-// declaration named. Same primitives, same arguments — a rename, not a
-// rewrite.
+// Every path goes through the effect facade: it acts only on a resource the
+// call's own effect declaration named.
 import * as effectFs from './effects/fs.js';
 import path from 'node:path';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
@@ -50,9 +29,7 @@ function resolveOutputPath(agentId: string, filename: string): string {
 
 // ── Content schema ──
 //
-// Mirrors the docx tool's vocabulary where possible so an agent that
-// just produced a Word doc can produce the same outline as a PDF
-// without re-learning everything.
+// Mirrors the docx tool's vocabulary so a Word-doc outline renders unchanged here.
 
 type Align = 'left' | 'center' | 'right';
 
@@ -526,7 +503,7 @@ async function loadPdf(filePath: string): Promise<unknown> {
 
 export function normalizePageList(input: number[] | undefined, total: number): number[] {
   if (!input || input.length === 0) return [];
-  // Accept either 0-based or 1-based — if any index is >= total, assume
+  // Accept either 0-based or 1-based: if any index is >= total, assume
   // the agent passed 1-based. Both forms are common in tool callers.
   const oneBased = input.some((p) => p === total);
   return input.map((p) => oneBased ? p - 1 : p).filter((p) => p >= 0 && p < total);
@@ -716,13 +693,8 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_create',
     description: 'Create a new PDF (.pdf) from a content-blocks schema and save it under your agent uploads dir. Returns the absolute output path. Mirrors the docx schema where possible — paragraph / heading / table / bullet_list / numbered_list / image / page_break / horizontal_rule — so an outline that worked for a Word doc can be re-used here.\n\nKey defaults applied automatically: US Letter, 1" margins, Helvetica 11pt, tables get borders + light-blue header shading, page numbers in the footer only when explicitly requested.',
-    // DECLARATIONS CORRECTED AT THE SITE (PHASE-5 T8 Step 3, RULING P5-R15
-    // ADDENDUM 2). `filename` is a BARE NAME: resolved as a path it named a
-    // file relative to the server's working directory, which this tool never
-    // touches, while the real write — the agent's uploads dir — went
-    // undeclared. The `image` content blocks read a path off disk and were not
-    // declared at all; `args.content[].path` is mechanic 7, and a block without
-    // a `path` grants nothing.
+    // The effects below must name every resource touched: the uploads tree the
+    // write lands in, and each `content[].path` an image block reads.
     effects: [
       { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
       { kind: 'fs_read', from: 'args.content[].path' },
@@ -952,7 +924,7 @@ export async function executePdfTool(
         if (!p) return 'Error: path is required.';
         if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const info = await getPdfInfo(p);
-        return outsideSpan(JSON.stringify(info, null, 2));   // v3.5 K33: the PDF's own metadata
+        return outsideSpan(JSON.stringify(info, null, 2));   // the PDF's own metadata: untrusted
       }
       case 'pdf_read': {
         const p = args.path as string;
@@ -967,7 +939,7 @@ export async function executePdfTool(
             return `This PDF (${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}) has no extractable text layer — it is almost certainly scanned or image-only. There is nothing to read as text; tell the user it looks image-based.`;
           }
           const header = `[PDF text — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}, ${extracted.charCount} chars${extracted.truncated ? `, truncated to the first ${extracted.pagesExtracted} page(s)` : ''}]`;
-          return `${header}\n${outsideSpan(trimmed)}`;   // v3.5 K33: the header and the image-only remedy are the platform's
+          return `${header}\n${outsideSpan(trimmed)}`;   // header + image-only note are platform text
         } catch (err) {
           const reason = err instanceof PdfExtractError ? err.message : (err instanceof Error ? err.message : String(err));
           return `Error reading PDF text: ${reason}`;

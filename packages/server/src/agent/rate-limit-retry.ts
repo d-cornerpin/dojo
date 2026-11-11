@@ -1,15 +1,5 @@
-// ════════════════════════════════════════
-// Rate Limit Retry Manager
-//
-// Three-strike approach:
-//   Strike 1: Transient blip. Retry silently after 10 seconds. No alert.
-//   Strike 2: Might be real. Retry after 30 seconds. Still no alert.
-//   Strike 3: It's real. Alert the owner, set status to rate_limited,
-//             start the decay schedule: 1m, 5m, 30m, 1h, 2h, 3h, 4h, 5h
-//   After 5h: Critical alert — something else is probably wrong.
-//
-// If a retry-after header is present, use its exact value instead.
-// ════════════════════════════════════════
+// Three-strike rate-limit recovery: two silent retries (10s, 30s), then an alert and a
+// decay schedule. A retry-after header, when present, overrides every listed wait.
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
@@ -26,10 +16,8 @@ import { registerRetryWake, registerTimerWake } from '../work/task-freshness.js'
 
 const logger = createLogger('rate-limit-retry');
 
-// Silent retry delays for strikes 1 and 2 (seconds)
 const SILENT_RETRIES = [10, 30];
 
-// Decay schedule for strike 3+ (seconds)
 const DECAY_SCHEDULE_SECONDS = [
   60,       // 1 minute
   300,      // 5 minutes
@@ -52,16 +40,12 @@ interface RetryState {
 
 const retryStates = new Map<string, RetryState>();
 
-/**
- * Handle a rate limit or overloaded error for an agent.
- * Called from the model layer when the API returns 429/529.
- */
+/** Handle a rate-limit or overloaded error for an agent; the model layer calls this on 429/529. */
 export function scheduleRateLimitRetry(
   agentId: string,
   retryAfterSeconds: number | null,
   lastMessageContent: string | null,
 ): void {
-  // If already retrying, don't stack
   if (retryStates.has(agentId)) {
     logger.debug('Rate limit retry already active, ignoring duplicate', { agentId });
     return;
@@ -70,7 +54,6 @@ export function scheduleRateLimitRetry(
   const strike = 0;
   const startedAt = Date.now();
 
-  // If we have an exact retry-after, use it (skip silent retries)
   const waitSeconds = retryAfterSeconds !== null && retryAfterSeconds > 0
     ? retryAfterSeconds
     : SILENT_RETRIES[0];
@@ -89,27 +72,24 @@ function scheduleNextAttempt(
   waitSeconds: number,
   lastMessageContent: string | null,
   alerted: boolean,
-  carried: boolean,   // t143 r7: the retry is a carrying run's own wake; it restarts the run as the job's continuation
+  carried: boolean,   // a carrying run's own wake: the retry restarts the run as the job's continuation
 ): void {
   if (carried && strike > 0) registerTimerWake(agentId);
   const timer = setTimeout(async () => {
     logger.info(`Rate limit retry firing for ${agentName} (strike ${strike + 1})`, { agentId, strike });
 
     try {
-      // Try replaying the last message
       if (lastMessageContent) {
         const { getAgentRuntime } = await import('./runtime.js');
         const runtime = getAgentRuntime();
         await runtime.handleMessage(agentId, lastMessageContent, carried ? { job: true } : undefined);
       }
 
-      // Success — clean up and notify agent
+      // Success: clean up and notify the agent
       const downtime = formatDuration(Math.round((Date.now() - startedAt) / 1000));
       cleanupRetry(agentId);
 
-      // Only notify the agent if they were in the alerted state (strike 3+)
       if (alerted) {
-        // Restore agent status
         try {
           writeAgentStatus(agentId, 'idle');
           broadcast({ type: 'agent:status', agentId, status: 'idle' });
@@ -133,23 +113,23 @@ function scheduleNextAttempt(
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // PHASE-4 T5: the retry manager asks the provider's status, not the message's digits.
+      // Ask the provider's status, not the message's digits.
       const cls = providerClassOf(err);
-      const isStillLimited = cls === 'rate_limit' || cls === 'overloaded';   // t151: out of credit is not a wait
+      const isStillLimited = cls === 'rate_limit' || cls === 'overloaded';   // out of credit is not a wait
 
       if (!isStillLimited) {
-        // Different error — not a rate limit anymore, let normal error handling take over
+        // Different error: not rate-limited anymore, normal error handling takes over
         logger.error('Rate limit retry got non-rate-limit error', { agentId, error: msg });
         cleanupRetry(agentId);
         return;
       }
 
-      // Still rate-limited — advance to next strike
+      // Still rate-limited: advance to next strike
       const nextStrike = strike + 1;
       const elapsedMs = Date.now() - startedAt;
       const elapsedHours = elapsedMs / (1000 * 60 * 60);
 
-      // Strike 1 failed → try strike 2 (still silent)
+      // Strike 1 failed: try strike 2, still silent
       if (nextStrike < SILENT_RETRIES.length) {
         const nextWait = SILENT_RETRIES[nextStrike];
         logger.info(`Still rate-limited, silent retry ${nextStrike + 1} in ${nextWait}s`, { agentId });
@@ -158,12 +138,12 @@ function scheduleNextAttempt(
         return;
       }
 
-      // Strike 3+ — this is real. Alert the owner (once) and start decay schedule.
+      // Strike 3+: this is real, alert the owner once, start the decay schedule
       const decayIndex = nextStrike - SILENT_RETRIES.length;
 
       if (decayIndex >= DECAY_SCHEDULE_SECONDS.length || elapsedHours >= 5) {
         // Exhausted the entire schedule
-        // t138 r4: the words wait on the owner's dashboard until he dismisses them or it gets through.
+        // The words wait on the owner's dashboard until dismissed or the alert gets through.
         const words = `${agentName} has been rate-limited for ${formatDuration(Math.round(elapsedMs / 1000))}. The window should have reset by now. Check your API account.`;
         void sendAlert(noteRateLimitExhausted(agentId, words), 'critical', { kind: 'broken-agent', agentId });
         logger.error('Rate limit retry fully exhausted', { agentId, elapsedHours: elapsedHours.toFixed(1) });
@@ -171,26 +151,14 @@ function scheduleNextAttempt(
         return;
       }
 
-      // First time hitting strike 3 — alert the owner and set status
+      // First strike 3: alert the owner and set status
       let nowAlerted = alerted;
       if (!alerted) {
         notifyRateLimitHit(agentId, 'rate_limit');
 
-        // The alert proper. This used to be a hand-rolled UPDATE plus a
-        // broadcast plus an optional auto-router hint, all under ONE bare
-        // `catch { /* best effort */ }`. The UPDATE violated the day-0 CHECK on
-        // agents.status (which never listed 'rate_limited'), the throw was
-        // swallowed, and it took the broadcast and the hint down with it — so
-        // the alert never fired once and the dashboard showed a silently stuck
-        // agent as idle. Migration 126 widens the constraint; the write now goes
-        // through setAgentStatus, the ONE status writer, which reports its own
-        // failures (loop.ts:899) instead of dropping them, and the optional hint
-        // below keeps its own narrow best-effort catch so it can never again
-        // decide whether the owner hears about a rate limit.
-        //
-        // PHASE-6 T10: this used to be `await import('./v2/loop.js')`, because model.ts
-        // imports this module and loop.ts imports model.ts, so a static edge to the engine
-        // closed a cycle. The writer is a leaf now and the edge is static.
+        // The write goes through setAgentStatus, the ONE status writer, which reports its own
+        // failures instead of dropping them. The optional hint below keeps its own narrow
+        // best-effort catch so it can never decide whether the owner hears about a rate limit.
         setAgentStatus(agentId, 'rate_limited');
 
         // For auto-routed agents, suggest switching models. Genuinely optional:
@@ -226,20 +194,12 @@ function scheduleNextAttempt(
   retryStates.set(agentId, { agentId, timer, strike, startedAt, lastMessageContent, alerted });
 }
 
-/**
- * True when a background decay retry currently owns this agent's rate-limit
- * recovery. The v2 recovery cascade (recoverFromError) reads this to skip its
- * injury path for a 429/529 that scheduleRateLimitRetry is already handling on
- * a pinned-model agent, so the same rate limit is not handled twice (FA-A1).
- * A state exists from the moment scheduleRateLimitRetry arms the first timer
- * (synchronously, before the model layer re-throws) until cleanupRetry clears
- * it on success, exhaustion, or a non-rate-limit error during a retry.
- */
+/** True when a background decay retry owns this agent's rate-limit recovery: the v2
+ *  recovery cascade skips its injury path while one is active, so a 429/529 is not
+ *  handled twice. A state exists from arming until cleanupRetry clears it. */
 export function hasActiveRateLimitRetry(agentId: string): boolean {
   return retryStates.has(agentId);
 }
-
-// ── Helpers ──
 
 function cleanupRetry(agentId: string): void {
   const state = retryStates.get(agentId);
