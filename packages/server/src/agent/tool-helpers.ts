@@ -1,26 +1,9 @@
 // Shared bulletproofing helpers for tool implementations.
-//
-// The point of this file: most tool defects are patterns, not unique bugs.
-// Centralising the patterns here lets the audit fix one helper and have it
-// apply across many tools, instead of fixing the same shape of bug 80 times.
-//
-// Conventions:
-//  - Helpers return either a friendly string error OR null/ok-object on success.
-//  - Errors are written for the calling agent (model) to read. They tell the
-//    caller what went wrong AND what to do next, in plain language.
-//  - Never expose raw SQLite errors. Translate via `friendlyDbError`.
+// Most tool defects are patterns: fix one helper, fix many tools.
+// Helpers return a friendly string error or null/ok on success; errors are
+// written for the calling agent to read, and raw DB errors go via `friendlyDbError`.
 import { getDb } from '../db/connection.js';
 import { editDistance } from '../tools/name-help.js';
-
-// ── checkRequired ─────────────────────────────────────────────────────────
-//
-// Validates that required fields are present, of the right type, and (by
-// default) non-empty. Returns a single friendly error string on the first
-// failure, or null on success.
-//
-// Use at the top of every tool handler. Without this, undefined fields blow
-// up deep inside the implementation with cryptic messages like "Cannot read
-// properties of undefined (reading 'toLowerCase')".
 
 export type FieldSpec = {
   name: string;          // user-visible field name (snake_case for agent-facing tools)
@@ -56,30 +39,12 @@ export function checkRequired(fields: FieldSpec[]): string | null {
   return null;
 }
 
-// ── pickArg ───────────────────────────────────────────────────────────────
-//
-// Returns the first non-undefined value from an args bag, checking each key
-// in order. Used to handle snake/camel and well-known aliases without
-// scattering ?? chains across every tool.
-//
-// Example:
-//   const taskId = pickArg<string>(args, 'task_id', 'taskId');
-//   const pattern = pickArg<string>(args, 'pattern', 'query');
-
 export function pickArg<T>(args: Record<string, unknown>, ...keys: string[]): T | undefined {
   for (const k of keys) {
     if (args[k] !== undefined) return args[k] as T;
   }
   return undefined;
 }
-
-// ── friendlyDbError ───────────────────────────────────────────────────────
-//
-// Translates SQLite error messages into agent-readable form. Raw errors like
-// `FOREIGN KEY constraint failed: agents.name` are useless to a model — it
-// can't act on them. This produces actionable strings.
-//
-// Use in catch blocks: `return friendlyDbError(err, 'work_open(kind="task")');`
 
 export function friendlyDbError(err: unknown, context?: string): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -110,28 +75,18 @@ export function friendlyDbError(err: unknown, context?: string): string {
   if (msg.includes('database is locked')) {
     return `${prefix}Database busy — another operation is in progress. Retry in a moment.`;
   }
-  // Unknown DB error — surface the raw message but still prefix it for context.
+  // Unknown DB error: surface the raw message, still prefixed for context.
   return `${prefix}${msg}`;
 }
-
-// ── resolveAgentRef ───────────────────────────────────────────────────────
-//
-// Accepts either an agent UUID, a sensei id ("primary", "dreamer", …), or an
-// agent name (case-insensitive). Returns the canonical id or a friendly error.
-//
-// This is the cross-tool version of the resolver previously inlined into
-// trackerCreateTask + trackerReassignTask. Any tool that takes an agent
-// reference should use this.
 
 export type ResolveResult = { ok: true; id: string } | { ok: false; error: string };
 
 export function resolveAgentRef(value: string | undefined | null, context?: string): ResolveResult {
   if (!value) return { ok: false, error: `Error: agent ID or name is required${context ? ` for ${context}` : ''}.` };
   if (typeof value !== 'string') return { ok: false, error: `Error: agent reference must be a string (got ${typeof value}).` };
-  // UUID — trust it. If the UUID is stale/deleted, the FK will catch it and
-  // friendlyDbError will translate.
+  // UUID-shaped: trusted; if it is stale the FK catches it and `friendlyDbError`
+  // translates.
   if (value.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) return { ok: true, id: value };
-  // Sensei id (lowercase plain string) OR name (case-insensitive).
   const db = getDb();
   const row = db.prepare(
     `SELECT id FROM agents
@@ -146,16 +101,9 @@ export function resolveAgentRef(value: string | undefined | null, context?: stri
   };
 }
 
-// ── Finding a live agent by NAME, without regard to case ──
-//
-// A name is a name: "Worker-B", "worker-b" and "WORKER-B" are one agent to a person. `agents.name`
-// has no UNIQUE constraint and no collation, so two live rows can differ only by case; the newest
-// is the one a name means (the same rule `resolveAgentRef` applies). `rowid` breaks a tie between
-// two rows created in the same second, so the tool and the transport can never pick differently.
-
 export interface LiveAgentByName { id: string; name: string; status: string; created_at: string }
 
-/** Every non-terminated agent whose name matches `name` ignoring case, newest first. */
+/** Live agents named `name`, any case, newest first; rowid breaks ties so tool and transport pick alike. */
 export function liveAgentsNamed(name: string): LiveAgentByName[] {
   return getDb().prepare(
     `SELECT id, name, status, created_at FROM agents
@@ -165,12 +113,10 @@ export function liveAgentsNamed(name: string): LiveAgentByName[] {
 }
 
 /**
- * The live agent the create/rename doors must refuse, when `name` would mint a
- * second agent the case-insensitive lookup cannot tell apart. Returns the existing row when a
- * live agent's name differs from `name` only by capital letters; null for an exact byte-identical
- * duplicate (pre-existing behaviour, still allowed), for an agent's own name (`selfId` is
- * skipped: renaming "Helper" to "helper" is fine), and for terminated agents (never found by name).
- */
+ * The live agent the create/rename doors must refuse: a live agent whose name differs
+ * from `name` only by capital letters, which the case-insensitive lookup cannot tell
+ * apart. Null for a byte-identical duplicate, for `selfId` (renaming "Helper" to
+ * "helper" is fine), and for terminated agents (never found by name). */
 export function caseVariantClash(name: string, selfId?: string): LiveAgentByName | null {
   const wanted = name.trim();
   for (const row of liveAgentsNamed(wanted)) {
@@ -191,11 +137,6 @@ export function sameNameNote(ref: string, named: ReadonlyArray<{ id: string; nam
   return ` NOTE: ${named.length} live agents are named "${ref}" (differing only by capital letters): ${named.map((a) => `"${a.name}" (${a.id})`).join(', ')}. The message went to the newest, "${named[0].name}" (${named[0].id}); pass an agent id to reach a different one.`;
 }
 
-/**
- * The live agents' names a failed lookup of `requested` most plausibly meant: the ones that contain it
- * or are contained by it, or are within two edits of it (ignoring case). When none is close the answer
- * is every live name, so the sender always has the real choices in front of it.
- */
 export function liveAgentNamesNear(requested: string): string[] {
   const names = (getDb().prepare(
     `SELECT name FROM agents WHERE status != 'terminated' AND name IS NOT NULL ORDER BY name COLLATE NOCASE`,
@@ -207,10 +148,6 @@ export function liveAgentNamesNear(requested: string): string[] {
   });
   return [...new Set(close.length > 0 ? close : names)];
 }
-
-// ── resolveGroupRef ───────────────────────────────────────────────────────
-//
-// Same shape as resolveAgentRef, for agent_groups.
 
 export function resolveGroupRef(value: string | undefined | null, context?: string): ResolveResult {
   if (!value) return { ok: false, error: `Error: group ID or name is required${context ? ` for ${context}` : ''}.` };
@@ -229,41 +166,20 @@ export function resolveGroupRef(value: string | undefined | null, context?: stri
   };
 }
 
-// ── isTerminalAgentStatus ────────────────────────────────────────────────
-//
-// True when an agent is in a state from which it can't transition further
-// (terminated). Used by tools that should be no-ops on dead agents instead
-// of failing or resurrecting them.
-
 export function isTerminalAgentStatus(status: string | null | undefined): boolean {
   return status === 'terminated';
 }
 
-// ── isTerminalTaskStatus ─────────────────────────────────────────────────
-
 export function isTerminalTaskStatus(status: string | null | undefined): boolean {
-  // T18: `cancelled` is the THIRD terminal tracker status (spine `abandoned`). It is not a
-  // synonym of `fallen` any more, and every reader of this predicate treats a terminal task
-  // as one that can no longer be worked — which is as true of a cancellation as of a failure.
+  // A cancelled task can no longer be worked, so it reads terminal like the other two.
   return status === 'complete' || status === 'fallen' || status === 'cancelled';
 }
 
 
-// ── compactListTrailer ───────────────────────────────────────────────────
-//
-// Standard footer line appended to compact list-tool responses. Tells the
-// agent how to escape into full detail — either by drilling into one item via
-// the per-item expand tool, or by re-calling the list tool with verbose=true.
-//
-// The compress-by-default-expand-on-request pattern keeps the per-turn
-// context budget tight while leaving the full data one tool call away.
-
 /**
- * How a compact list says how many results it holds: a count and the FORM they are in, never that they are
- * "shown". What the agent can actually see of a long result is decided later, where the result is admitted
- * (`memory/tool-result-view.ts` excerpts it and labels the gap); a tool that claimed "N shown" would be
- * contradicted by that label whenever the list was long. One phrase, so no list tool words it differently.
- */
+ * How a compact list says how many results it holds: a count and the FORM they are in.
+ * What the agent can see of a long result is decided later, where the result is admitted
+ * (`memory/tool-result-view.ts` excerpts and labels); a tool may not claim "shown". */
 export function compactCountNote(count: number, noun = 'result'): string {
   return `${count} ${noun}${count === 1 ? '' : 's'} in compact form`;
 }
@@ -281,21 +197,7 @@ export function compactListTrailer(opts: {
   return `\n\n${compactCountNote(opts.count)}. For full detail on one: ${opts.expandTool}(${idArg}). For all details on every result: re-call ${opts.listTool} with verbose=true.`;
 }
 
-// ── atomicWrite — STRIPPED, PHASE-4 T2 (2026-08-02) ──────────────────────
-//
-// requirement preserved: "a series of DB writes commits together, so a failure
-// mid-write cannot leave the system half-applied" — now `db/unit.ts withUnit`,
-// which is the same idea finished: synchronous BY TYPE (this one accepted
-// `async () => …` and would have handed the connection away mid-transaction),
-// nesting-aware, and carrying `afterCommit` so the broadcast waits for the
-// commit instead of racing it.
-//
-// It is removed on POSITIVE evidence, not on an absence (#15): every reader was
-// enumerated across BOTH repos and the set is its own declaration —
-//   git grep -n "atomicWrite" -- packages/ watchdog/ menubar/ deploy/ scripts/ templates/
-//   (dojo-test-kit) git grep -n "atomicWrite" .
-// → two hits, both in this file: the banner and the declaration. Zero callers
-// in production, in the dashboard, in tests, in the kit. Its doc comment named
-// `complete_task` as "the canonical example"; `complete_task` never called it.
-// A primitive with one writer and no readers, beside the primitive that
-// replaces it, is the duplication this overhaul exists to remove.
+// atomicWrite STRIPPED: `db/unit.ts withUnit` is the same requirement finished: sync-only
+// (this accepted `async` and could hand the connection away mid-transaction), nesting-aware,
+// `afterCommit` lets the broadcast wait for the commit, and it had zero callers on the record.
+// The `git grep` evidence is in deploy/code-history/c5-027-server-src-agent.md.

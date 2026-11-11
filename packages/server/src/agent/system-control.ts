@@ -1,39 +1,24 @@
-// ════════════════════════════════════════════════════════════════════════════
-// System Control Tools (Phase 5A) — Mouse, Keyboard, Screenshot, AppleScript
-//
-// ⚠ NO SHELL LIVES IN THIS FILE (PHASE-5 T3 Step 2). Every call here used to
-// build a command STRING and hand it to `execSync`, which is `/bin/sh -c`. Five
-// of the six interpolated a value the model chose, and `keyboard_type` did it
-// with a hand-rolled single-quote escape on text an agent composed — gated by
-// nothing but `system_control`, so an agent granted *"control the mouse and
-// keyboard"* held a shell. §T0-PINS P7 records `osascript -` as the same class.
-//
-// `spawn(program, argv)` is what stands here now (async since v3.5 E19, see
-// `run`): a program and an argument VECTOR, so the bytes never reach a parser. The vectors are built by
-// `system-control-argv.ts`, which is PURE — the splitting that `/bin/sh` used to
-// do (a key combo is FOUR arguments, not one string) is explicit there, where a
-// test can read it, and `system-control-argv.test.ts` asserts an injection
-// payload comes back as one inert element.
-// ════════════════════════════════════════════════════════════════════════════
+// System control tools: mouse, keyboard, screenshot, AppleScript.
+// NO SHELL HERE: every call spawns a program with an argv vector (see `run`), so
+// model-chosen bytes never reach a parser. The vectors are built, PRE-SPLIT where a
+// program takes several arguments, in the pure module `system-control-argv.ts`.
+// One runner binds every spawn to the owner's stop: `runBoundToTheStop`, imported as
+// `run` from `stop-bound-run.ts`; no call here runs unbound.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
-// t114 (census U6): the abort door every other dial in the tree comes through, so the vision
-// call is cut rather than abandoned and the owner's stop can reach it.
 import { openAgentCall } from './abortable-call.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import {
   clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,
 } from './system-control-argv.js';
-import { runBoundToTheStop as run, programOnPath } from './stop-bound-run.js';   // the one runner (E19 + E19b)
+import { runBoundToTheStop as run, programOnPath } from './stop-bound-run.js';   // the one runner, bound to the owner's stop
 
 const logger = createLogger('system-control');
-
-// ── Dependency Check ──
 
 let cliclickAvailable: boolean | null = null;
 
@@ -42,8 +27,6 @@ function checkCliclick(): boolean {
   cliclickAvailable = programOnPath('cliclick');
   return cliclickAvailable;
 }
-
-// ── Mouse Click ──
 
 export async function mouseClick(
   agentId: string,
@@ -67,8 +50,6 @@ export async function mouseClick(
   }
 }
 
-// ── Mouse Move ──
-
 export async function mouseMove(
   agentId: string,
   args: { x: number; y: number },
@@ -90,13 +71,6 @@ export async function mouseMove(
     return `Error: Mouse move failed: ${msg}`;
   }
 }
-
-// ── Keyboard Type ──
-
-// The combo table moved to `system-control-argv.ts` PRE-SPLIT. It had to: the
-// space-splitting inside `cliclick kd:cmd t:c ku:cmd` was the SHELL's work, so
-// dropping the shell without moving the splitting would hand cliclick one
-// argument it does not understand and the keyboard would silently stop working.
 
 export async function keyboardType(
   agentId: string,
@@ -123,12 +97,8 @@ export async function keyboardType(
     }
 
     if (text) {
-      // ⚠ NO ESCAPING, AND THAT IS THE FIX. The old line was
-      //     const escaped = text.replace(<single quotes>, "'\\''");
-      //     <the string form of exec>(`cliclick t:'${escaped}'`)
-      // — a hand-rolled quote escape in front of /bin/sh, on model-authored
-      // text. As one argv element the text is bytes cliclick receives; there is
-      // no quote to close and no shell to close it into.
+      // No escaping: the text is one argv element, so there is no quote to close
+      // and no shell to close it into.
       await run('cliclick', typeTextArgv(text), { agentId, timeout: 10000 });
       return `Typed: "${text.length > 100 ? text.slice(0, 100) + '...' : text}"`;
     }
@@ -141,15 +111,7 @@ export async function keyboardType(
   }
 }
 
-// ── Screenshot / Screen Read ──
-//
-// Vision-model resolution now lives in services/vision-model.ts so a
-// single helper governs every place on the platform that needs to
-// route an image through a vision-capable model. The old in-file
-// findVisionModel() that lived here did its own auto-pick of the
-// "cheapest vision-ish enabled model" when the calling agent couldn't
-// see, that decision is now an explicit, user-controlled config
-// (Settings → Dojo → Fallback Vision Model).
+// Vision-model resolution lives in services/vision-model.ts, one helper for every image route.
 
 export async function screenRead(
   agentId: string,
@@ -167,9 +129,7 @@ export async function screenRead(
   logger.info('Taking screenshot', { region, query }, agentId);
 
   try {
-    // Capture screenshot. The output path is ONE argv element, so a directory
-    // with a space in it works by construction rather than by the quoting the
-    // string form got right only by accident.
+    // The output path is ONE argv element: directories with spaces work by construction.
     await run('screencapture', screencaptureArgv(screenshotPath, region ?? null), { agentId, timeout: 10000 });
 
     if (!fs.existsSync(screenshotPath)) {
@@ -180,13 +140,8 @@ export async function screenRead(
     const imageData = fs.readFileSync(screenshotPath);
     const base64Image = imageData.toString('base64');
 
-    // Pick a model via the centralized vision-model resolver:
-    //   1. Use the calling agent's own model if it has vision (one
-    //      round trip, no extra hop).
-    //   2. Otherwise route through whichever model the user has set as
-    //      the platform's fallback vision model (Settings → Models → Fallback Vision Model).
-    //   3. If neither path is available, return a degraded text result
-    //      pointing the user at the right Settings control.
+    // Model choice is `getEffectiveVisionModel`: the agent's own model when it has
+    // vision, else the user's configured platform fallback; null means neither.
     const visionModel = getEffectiveVisionModel(agentId);
     if (!visionModel) {
       return `Screenshot saved to: ${screenshotPath}\nNo vision-capable model is configured. Either set a fallback vision model in Settings → Models → Fallback Vision Model, or switch the calling agent to a vision-capable model in Settings → Models.`;
@@ -202,21 +157,10 @@ export async function screenRead(
       ? `You are a screen reader assistant. Look at this screenshot and answer: ${query}\nFor interactive elements (buttons, links, text fields, menus), provide approximate pixel coordinates as [x,y]. Be precise about positions.`
       : 'You are a screen reader assistant. Describe what you see on the screen. For interactive elements (buttons, links, text fields, menus), provide approximate pixel coordinates as [x,y]. Be precise about positions. List all visible text and UI elements.';
 
-    // ── t114 (census U6 / row 34) — THE RACE ABANDONED A FINISHED ANSWER AND LEAKED THE CALL ──
-    //
-    // THE DEFECT, two halves. `callModel` was invoked with NO `abortSignal`, and `Promise.race`
-    // only ABANDONS the losing promise — it cannot cancel it. So on expiry the provider call
-    // kept running, orphaned, OUTSIDE the abort registry: the GPU went on grinding, the agent
-    // was told "Screen read failed", and the description the model eventually produced was
-    // thrown away. A local vision model on a 4K screenshot legitimately takes longer than a
-    // minute, so this was the ordinary case rather than the pathological one.
-    //
-    // THE FIX: the bound is composed into the call itself through `openAgentCall`, the same door
-    // every other dial in the tree comes through. Three things follow from that and none of them
-    // were true before — the abort actually CUTS the request, the call is in the registry so the
-    // owner's stop reaches it, and the slot is released when the call settles. `Promise.race` is
-    // gone: there is no second promise to abandon, so there is no finished answer to discard and
-    // nothing left running behind the error.
+    // The bound rides the model call's own signal through `openAgentCall`: expiry
+    // CUTS the request, the registry lets the owner's stop reach it, and the slot
+    // releases on settle. `Promise.race` cannot cancel the call it abandons; the
+    // timeout branch below attaches only when a bound (not a stop) cut the call.
     const SCREEN_READ_MODEL_TIMEOUT_MS = 60_000;
     const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(SCREEN_READ_MODEL_TIMEOUT_MS));
     if (slot.refused) {
@@ -228,7 +172,7 @@ export async function screenRead(
       abortSignal: slot.signal,
       agentId,
       modelId: visionModel.modelId,
-      // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+      // A caption of what is on screen, for the agent to read: an engine artifact.
       purpose: 'vision_caption',
       messages: [{
         role: 'user' as const,
@@ -250,10 +194,6 @@ export async function screenRead(
       systemPrompt: 'You are a screen reader assistant for a macOS automation platform. Be precise and thorough in describing screen contents.',
       tools: false,
     });
-    // t114: awaited directly. The bound rides the call's own signal, so an expiry arrives as a
-    // failure OF THIS CALL rather than as a second promise winning a race against it. The
-    // message is preserved verbatim from the old timeout branch — it is good, and the agent
-    // relies on it — and is now attached where the abort is actually translated, below.
     let result;
     try {
       result = await modelCall;
@@ -280,12 +220,9 @@ export async function screenRead(
   }
 }
 
-// t114 (census U21): five minutes. An AppleScript driving a large mailbox or a Finder batch is
-// legitimately slow and its side effects are not transactional, so the cost of being wrong here
-// is a half-applied change to the user's machine. See the argument at the call site.
+// Five minutes: an AppleScript driving a large mailbox or a Finder batch is legitimately
+// slow, and its side effects are not transactional, so a wrong cut leaves a half-applied change.
 const APPLESCRIPT_CEILING_MS = 5 * 60_000;
-
-// ── AppleScript Run ──
 
 export async function applescriptRun(
   agentId: string,
@@ -296,29 +233,14 @@ export async function applescriptRun(
   logger.info('Running AppleScript', { scriptLength: script.length }, agentId);
 
   try {
-    // `osascript -` reads the script from STDIN, so the script text never
-    // appears on a command line at all. It was ALREADY the safest of the six
-    // sites in that respect; what T3 adds is (a) `execFileSync`, so the program
-    // name stops going through /bin/sh either, and (b) the AUTHORIZATION —
-    // `brokers/applescript.ts` now reads this script before the dispatcher lets
-    // the call reach here, including any `do shell script` payload inside it.
+    // `osascript -` reads the script from STDIN, so the script text never appears
+    // on a command line. The authorization gate (`brokers/applescript.ts`) reads the
+    // script, including any `do shell script` payload inside it, before this runs.
     const result = await run('osascript', ['-'], { agentId,
-      // ── t114 (census U21) — A BOUND RAISE, ARGUED, BECAUSE THERE IS NO LIVENESS FACT HERE ──
-      //
-      // THE DEFECT: 30 seconds, and on expiry SIGTERM mid-action with side effects ALREADY
-      // APPLIED and no rollback. A legitimate AppleScript over a large mailbox or a Finder batch
-      // routinely exceeds half a minute, so this killed healthy work and left the user's machine
-      // half-changed — the worst shape of flat kill, because the damage outlives the turn.
-      //
-      // AND WHY THIS ONE IS NOT AN IDLE BOUND, which is the honest part. `osascript` produces NO
-      // incremental output: it prints its result when it finishes and says nothing before. There
-      // is no progress signal to re-arm on, so inventing one would be theatre — a bound that
-      // "re-arms on output" for a process that never writes any is just the old flat bound with a
-      // longer explanation. Where a process offers no proof of life, the doctrine's requirement
-      // reduces to "do not kill work you cannot prove is dead", so the number is raised to a
-      // ceiling a real script does not reach and the kill says plainly that the ceiling is what
-      // ended it. A bound still exists: a wedged `osascript` holding a UI dialog cannot run for
-      // ever.
+      // osascript produces no incremental output: there is no progress signal to
+      // re-arm on, so the bound is a flat CEILING, set where a real script does not
+      // reach it; only a wedged `osascript` holding a UI dialog ever hits it, and the
+      // kill states plainly that it fired. A bound must exist: it cannot run forever.
       timeout: APPLESCRIPT_CEILING_MS,
       input: script,
       maxBuffer: 1024 * 1024,
