@@ -1,27 +1,9 @@
-// ════════════════════════════════════════
-// Unified read tools (F4: coverage guarantee)
-//
-// The platform can hold up to four mail surfaces and four+ calendar surfaces:
-// {agent, owner} x {Google, Microsoft}, each slot holding several accounts.
-// Which surfaces a narrow tool swept was left to per-turn model judgment, and a
-// weak floor model picks a different arbitrary subset every time, so "what does
-// my day look like" or "check my email for X" produced confident, silently
-// INCOMPLETE answers. Per the correctness-floor law, coverage is the engine's
-// job, not the model's: one call here = complete coverage.
-//
-// unifiedCalendarAgenda / unifiedEmailSearch enumerate EVERY connected +
-// service-enabled account across both providers and both slots, fetch each in
-// parallel (per-account failures never sink the whole call), merge, and label
-// every line by source. The per-provider FETCH logic is NOT duplicated here:
-// these executors reuse the same helpers the narrow tools use
-// (fetchAgendaItemsForAccount / searchMailForAccount in google/tools-read.ts and
-// their Microsoft mirrors). One fetch path, two renderers.
-//
-// Import direction is one-way: this module -> provider modules -> nothing back.
-// Provider fetch helpers are pulled via DYNAMIC import inside the executors so
-// (a) there is no top-level cycle and (b) the pure merge/dedup/render functions
-// below carry no provider dependency and can be imported in isolation by tests.
-// ════════════════════════════════════════
+// Unified read tools: one call enumerates EVERY connected, service-enabled account across both providers
+// and both slots, fetches each in parallel (a failed account never sinks the call), merges, and labels every
+// line by source. Coverage is the engine's job, so a narrow pick cannot give a silently incomplete answer.
+// The per-account fetch helpers (google/tools-read.ts and the Microsoft mirrors) are reused, never duplicated.
+// Import direction is one-way (this module -> providers): fetch helpers come via DYNAMIC import so there is
+// no top-level cycle and the pure merge/dedup/render functions import without any provider in tests.
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
@@ -36,7 +18,7 @@ export interface UnifiedSource {
   providerLabel: string;
   slot: SlotWord;
   email: string;
-  /** `${slot} ${providerLabel}` — the ambiguity key (email is only shown when a label maps to >1 account). */
+  /** `${slot} ${providerLabel}`, the ambiguity key (email is only shown when a label maps to >1 account). */
   labelKey: string;
 }
 
@@ -168,11 +150,8 @@ export function renderCalendarAgenda(
   merged: MergedCalendarItem[],
   ambiguous: Set<string>,
   failures: AccountFailure[],
-  // `emptySurfaces` (F4 coverage floor, 2026-07-08): the connected calendars that
-  // were checked and held NOTHING in this window. Enumerated so the "across N
-  // connected calendars" claim is verifiable — a reader can see which of the N
-  // were swept and came back empty, instead of empty being indistinguishable
-  // from never-checked.
+  // `emptySurfaces`: connected calendars checked with nothing in this window, listed so "across N calendars"
+  // is verifiable and empty is distinguishable from never-checked.
   opts: { days: number; accountCount: number; emptySurfaces?: UnifiedSource[] },
 ): string {
   const timed = merged.filter(m => !m.allDay);
@@ -181,7 +160,7 @@ export function renderCalendarAgenda(
   lines.push(
     `Merged agenda (next ${opts.days} day(s)) across ${opts.accountCount} connected calendar${opts.accountCount === 1 ? '' : 's'}:`,
   );
-  // v3.5 K33: the events are outside text (an invite is written by its sender); the headings,
+  // The events are outside text (an invite is written by its sender); the headings,
   // the coverage lines and the failures are the platform's.
   if (timed.length > 0) {
     lines.push('');
@@ -212,10 +191,8 @@ export function renderEmailSearch(
   items: UnifiedMailItem[],
   ambiguous: Set<string>,
   failures: AccountFailure[],
-  // `emptySurfaces` (F4 coverage floor, 2026-07-08): the connected mailboxes that
-  // were searched and matched NOTHING. Enumerated so "across N connected
-  // mailboxes" is verifiable — the reader sees which of the N were swept clean
-  // rather than empty reading the same as never-checked.
+  // `emptySurfaces`: connected mailboxes searched with no match, listed so "across N mailboxes" is
+  // verifiable and empty is distinguishable from never-checked.
   opts: { query: string; accountCount: number; emptySurfaces?: UnifiedSource[] },
 ): string {
   const lines: string[] = [];
@@ -224,7 +201,7 @@ export function renderEmailSearch(
   );
   if (items.length > 0) {
     lines.push('');
-    // v3.5 K33: the emails are outside text; the heading, coverage lines and failures are the platform's.
+    // The emails are outside text; the heading, coverage lines and failures are the platform's.
     lines.push(items.map((m) => {
       const label = formatSourceLabel(m.source, ambiguous);
       const unread = m.unread ? ' [UNREAD]' : '';
@@ -250,13 +227,9 @@ export function renderEmailSearch(
 }
 
 // ── Narrow-tool DATA-floor helpers (pure; unit-tested directly) ──
-//
-// A narrow agenda/mail-search call touches ONE surface. Advice ("also call the
-// merged tool") does not survive a weak model — it reads the note and answers
-// anyway, missing real events/mail on the surfaces it skipped. The floor must be
-// DATA: the narrow result carries, compactly and labeled, what the OTHER
-// connected surfaces hold. These renderers build that appended block; the
-// impure fan-out that feeds them lives in the two orchestrators below.
+// A narrow call touches ONE surface and advice to call the merged tool is ignored by weak models, so the floor
+// is DATA: the narrow result carries what the OTHER surfaces hold. The fan-out feeding these renderers lives
+// in the two orchestrators below.
 
 /** Compact single time for the "also elsewhere" block: "9:00 AM", or "All day". Intl-only, pure. */
 export function compactEventTime(start: Date | null, tz: string, allDay: boolean): string {
@@ -277,21 +250,11 @@ export interface OtherCalendarRow {
 }
 
 /**
- * "Also on other connected calendars" block appended to a NARROW agenda result
- * so a single-surface answer never reads as the whole day.
- *
- * Coverage floor (2026-07-08): honest SILENCE for an empty surface was the wrong
- * call — the owner could not tell "checked, nothing there" from "never checked".
- * So the block now ACCOUNTS for every OTHER connected calendar the fan-out
- * touched:
- *   • surfaces WITH events keep their data lines (capped at `cap`; on overflow a
- *     pointer to the merged tool replaces the tail);
- *   • surfaces checked and EMPTY are named on one compact "Also checked, nothing
- *     in this window" line (the sweep is visible even when it found nothing);
- *   • surfaces whose fetch FAILED are itemized separately as "could not check"
- *     so a failure never masquerades as checked-empty.
- * Returns '' only when there was genuinely nothing to report (no rows, no empty,
- * no failures — i.e. no other surface at all). Pure.
+ * "Also on other connected calendars" block appended to a NARROW agenda result. It accounts for every OTHER
+ * calendar the fan-out touched: surfaces with events keep their data lines (capped at `cap`, overflow points
+ * to the merged tool), checked-empty ones share one "Also checked, nothing in this window" line, and failed
+ * ones are itemized as "could not check" so a failure never reads as checked-empty.
+ * Returns '' only when there is no other surface at all. Pure.
  */
 export function renderOtherCalendarsSection(
   rows: OtherCalendarRow[],
@@ -324,16 +287,10 @@ export interface MailboxCount {
 }
 
 /**
- * "Also matching / checked elsewhere" block for a NARROW mail search.
- *
- * Coverage floor (2026-07-08): honest silence for an empty mailbox hid the sweep
- * — the owner could not tell "checked, no matches" from "never checked". So every
- * OTHER connected mailbox the fan-out queried is now accounted for:
- *   • mailboxes WITH matches get a count on the "Also matching" line;
- *   • mailboxes checked with NO match are named on a "No matches in" line;
- *   • a mailbox whose query FAILED is itemized as "could not check" so a failure
- *     is never mistaken for checked-empty.
- * Returns '' only when there was no other mailbox to report at all. Pure.
+ * "Also matching / checked elsewhere" block for a NARROW mail search. Every OTHER mailbox queried is
+ * accounted for: matches get a count on the "Also matching" line, checked-with-none are named on a
+ * "No matches in" line, and failed queries are itemized as "could not check".
+ * Returns '' only when there was no other mailbox at all. Pure.
  */
 export function renderOtherMailboxesCount(
   counts: MailboxCount[],
@@ -460,9 +417,7 @@ export async function unifiedCalendarAgenda(
   const emptySurfaces: UnifiedSource[] = [];
   const collected: UnifiedCalendarItem[] = [];
 
-  // Fetch in parallel but CLASSIFY in a deterministic second pass (account
-  // enumeration order), so the empty-surface enumeration below is stable rather
-  // than in fetch-completion order.
+  // Fetch in parallel but classify in a second pass in enumeration order, so the empty-surface list is stable.
   const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
@@ -537,8 +492,7 @@ export async function unifiedEmailSearch(
   const emptySurfaces: UnifiedSource[] = [];
   const collected: UnifiedMailItem[] = [];
 
-  // Fetch in parallel; CLASSIFY in a deterministic second pass (enumeration
-  // order) so the empty-surface enumeration is stable, not fetch-completion order.
+  // Fetch in parallel; classify in a second pass in enumeration order so the empty-surface list is stable.
   const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
@@ -586,27 +540,15 @@ export async function unifiedEmailSearch(
 }
 
 // ── Narrow-tool DATA-floor orchestrators (impure; fan out over OTHER surfaces) ──
-//
-// Called by the NARROW agenda/mail cases in the provider files (via dynamic
-// import, keeping the static graph one-way). They reuse the SAME enumeration +
-// per-account fetch helpers the merged executors above use, excluding the one
-// account the narrow tool already read. A narrow answer is never SUNK or delayed
-// by another surface (each fetch is parallel and its own failure is caught), but
-// per the coverage floor (2026-07-08) a per-surface failure is no longer silently
-// swallowed: it is reported as a distinct "could not check" line so it cannot
-// masquerade as checked-empty. The ambiguity set is computed over ALL surfaces
-// (including the one already read) so a slot+provider with two accounts still
-// disambiguates the OTHER one by email.
+// Called by the narrow cases in the provider files via dynamic import (keeps the static graph one-way). They
+// reuse the merged executors' enumeration and fetch helpers, excluding the account already read. Each fetch
+// runs in parallel and its failure is caught and reported as "could not check", so a narrow answer is never
+// sunk or delayed by another surface.
 
 /**
- * Compact "also on other calendars" block for a NARROW agenda read. `exclude` is
- * the account the narrow tool already rendered (by provider + row id); every
- * OTHER connected calendar is fetched for the SAME window in parallel. Coverage
- * floor: the returned block accounts for EVERY other connected calendar — ones
- * with events (data lines), ones checked-and-empty (an enumerated line), and ones
- * that failed to fetch (a "could not check" line). Returns '' only when there is
- * no other connected calendar at all (leading newlines included only when
- * non-empty).
+ * Compact "also on other calendars" block for a NARROW agenda read. `exclude` is the account the narrow tool
+ * already rendered (provider + row id); every OTHER calendar is fetched for the SAME window in parallel and
+ * accounted for (events, checked-empty, could not check). Returns '' when there is no other calendar.
  */
 export async function otherCalendarsAgendaSection(
   exclude: { provider: 'google' | 'microsoft'; accountId: string },
@@ -660,21 +602,16 @@ export async function otherCalendarsAgendaSection(
   }
 
   collected.sort((a, b) => a.sortKey - b.sortKey);
-  // Ambiguity over ALL surfaces (including the one already read) so a two-account
-  // slot+provider still disambiguates the OTHER account by email.
+  // Ambiguity spans ALL surfaces (the one already read included) so two accounts in a slot still differ by email.
   const ambiguous = computeAmbiguousLabels(all.map(a => a.source));
   const section = renderOtherCalendarsSection(collected.map(c => c.row), ambiguous, { emptySurfaces, failed });
   return section ? `\n\n${section}` : '';
 }
 
 /**
- * "Also matching / checked in other mailboxes" block for a NARROW mail search.
- * Runs the SAME query against every OTHER connected mailbox (small per-mailbox
- * cap). Coverage floor: accounts for EVERY other connected mailbox — ones with
- * matches (a count), ones checked with none (an enumerated "No matches in" line),
- * and ones that failed (a "could not check" line). `days > 0` applies a Gmail
- * recency bound; pass 0 to mirror an unbounded narrow search. Returns '' only
- * when there is no other connected mailbox at all.
+ * "Also matching / checked in other mailboxes" block for a NARROW mail search: the SAME query against every
+ * OTHER mailbox (small per-mailbox cap), accounting for matches, checked-with-none and failed ones.
+ * `days > 0` applies a Gmail recency bound; 0 mirrors an unbounded narrow search. Returns '' when none.
  */
 export async function otherMailboxesCountSection(
   exclude: { provider: 'google' | 'microsoft'; accountId: string },
@@ -721,8 +658,7 @@ export async function otherMailboxesCountSection(
     else emptySurfaces.push(r.acc.source);
   }
 
-  // Ambiguity over ALL surfaces (including the one already read) so a two-account
-  // slot+provider still disambiguates the OTHER account by email.
+  // Ambiguity spans ALL surfaces (the one already read included) so two accounts in a slot still differ by email.
   const ambiguous = computeAmbiguousLabels(all.map(a => a.source));
   const line = renderOtherMailboxesCount(counts, ambiguous, { emptySurfaces, failed });
   return line ? `\n\n${line}` : '';
@@ -735,10 +671,8 @@ export const EMAIL_SEARCH_TOOL: ToolDefinition = {
   description:
     "[DEFAULT for any 'my email / check email for X' ask] Search EVERY connected mailbox at once (agent + owner, Gmail + Outlook), results labeled by source and merged most-recent-first. Use gmail_search / outlook_search / user_gmail_search / user_outlook_search only when the user names one specific mailbox. There is no `account` parameter here (the merged view spans every mailbox); the per-mailbox tools take one.",
   effects: [],
-  // PHASE-6 T0C: an explicit NEGATIVE advertisement — "There is no `account`
-  // parameter here (the merged view spans every mailbox)". The four Google and
-  // Microsoft families DO have `account`, injected at module load, which is
-  // exactly why this tool says in so many words that it does not.
+  // An explicit NEGATIVE advertisement: this tool says it has no `account` parameter (the merged view spans
+  // every mailbox), because the four Google and Microsoft families have one, injected at module load.
   advertisedNotDeclared: {
     account: 'named only to say it does NOT exist on this merged view — an explicit negative advertisement distinguishing it from the per-mailbox tools that do take it',
   },
