@@ -15,6 +15,7 @@ import { isProtectedIdentityPath } from './permissions.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
+import { refersToDojoDatabase } from './brokers/dojo-redirect.js';
 import { OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { APPROVAL_TTL_MINUTES, deliverGateWake } from './approval-decision.js';
@@ -29,6 +30,8 @@ const STALE_PENDING_MINUTES = 5;
 // Catastrophics are hard-denied in permissions.ts; this covers the destructive-but-legitimate band.
 // truncate joins the destroy group; mv/cp stay out: benign overwhelmingly, destructive form undetectable.
 const DESTRUCTIVE_EXEC_RE = /(^|[\s;&|])(rm|rmdir|shred|truncate|mkfs(\.\w+)?|dd)\b|--force|--hard\b|git\s+(push\s+.*--force|reset\s+--hard|clean\s+-[a-z]*f)/i;
+/** SQL that deletes rows or drops or reshapes a table; held only against the Dojo's own database. */
+const DESTRUCTIVE_SQL_RE = /\b(?:delete\s+from|drop\s+(?:table|index|view|trigger)|alter\s+table)\b/i;
 
 export function isDestructiveCall(
   toolName: string,
@@ -43,7 +46,7 @@ export function isDestructiveCall(
   if (execDoorFor(toolName)) {
     const text = execCallText(toolName, args);
     if (text === null) return 'destructive shell command';
-    if (DESTRUCTIVE_EXEC_RE.test(text)) return 'destructive shell command';
+    if (DESTRUCTIVE_EXEC_RE.test(text) || (refersToDojoDatabase(text) && DESTRUCTIVE_SQL_RE.test(text))) return 'destructive shell command';
     // Sudo is not classified here: the role wall in brokers/sudo-policy.ts is the one owner of that policy.
     // Non-primary agents cannot sudo at all; the primary's gated hold goes to the owner's card at dispatch.
   }
