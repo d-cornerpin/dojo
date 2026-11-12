@@ -1,12 +1,7 @@
-// ════════════════════════════════════════
-// Microsoft 365 Auth — Public Client with PKCE
-// Single registered app, no client secret, works for personal + work/school.
-//
-// Path B (multi-account): storage lives in the microsoft_accounts table via
-// microsoft/accounts.ts. The legacy slot ('agent'/'user') resolves to that
-// KIND's position-1 row; getters read it, setters create on demand. Token
-// resolution is account-id-keyed. Mirrors google/auth.ts.
-// ════════════════════════════════════════
+// Microsoft 365 auth: public client with PKCE. A single registered app with no client secret works for
+// personal and work/school accounts. Storage lives in the microsoft_accounts table via
+// microsoft/accounts.ts: the slot ('agent'/'user') resolves to that KIND's position-1 row (getters read
+// it, setters create on demand) and token resolution is keyed by account id. Mirrors google/auth.ts.
 
 import crypto from 'node:crypto';
 import { broadcast } from '../gateway/ws.js';
@@ -28,7 +23,7 @@ import {
 
 const logger = createLogger('ms-auth');
 
-// ── Hardcoded public client — registered once by Cornerpin ──
+// ── Hardcoded public client, registered once by Cornerpin ──
 const CLIENT_ID = '515c0ff6-31de-489d-a82c-75f5de836c50';
 
 const MSA_TENANT_ID = '9188040d-6c67-4c5b-b112-36a304b66dad';
@@ -52,13 +47,8 @@ const SCOPES = [
   'Notes.ReadWrite',
   'Tasks.ReadWrite',
   'Contacts.ReadWrite',
-  // t83 — the Teams/channel tools (teams_list_teams, teams_list_channels,
-  // teams_read_channel_messages, teams_send_channel_message) called
-  // /me/joinedTeams, /teams/{id}/channels, and channel-message endpoints
-  // from day one without ever requesting the permissions those endpoints
-  // need. Chat.ReadWrite above covers 1:1/group chats only — it does not
-  // cover team-level or channel-level resources. See the conformance test
-  // (the-signin-scopes-cover-every-graph-call.test.ts) for the full mapping.
+  // The Teams and channel tools call /me/joinedTeams, /teams/{id}/channels and channel-message endpoints.
+  // Chat.ReadWrite covers only 1:1 and group chats, so these team and channel scopes are required.
   'Team.ReadBasic.All',
   'Channel.ReadBasic.All',
   'ChannelMessage.Read.All',
@@ -157,10 +147,8 @@ export function isMsServiceEnabledForKind(
 }
 
 /**
- * FA-TS1: every service-enabled flag for a kind, computed from ONE account-list
- * read (mirrors getGoogleServiceFlagsForKind). Replaces ~76 per-tool
- * listMicrosoftAccounts scans in getFilteredTools with a single read per kind.
- * Same fact door (listMicrosoftAccounts + parseServices), byte-identical results.
+ * Every service-enabled flag for a kind from ONE account-list read (mirrors getGoogleServiceFlagsForKind),
+ * so getFilteredTools does not scan the account list once per tool.
  */
 export function getMsServiceFlagsForKind(
   slot: AccountSlot,
@@ -232,7 +220,7 @@ export function setMsEmailSendingEnabledForAccount(accountId: string, enabled: b
   updateMicrosoftAccount(accountId, { sendEmail: enabled });
 }
 
-/** Sanitized per-account view for the dashboard — never includes tokens. */
+/** Sanitized per-account view for the dashboard, never includes tokens. */
 export interface MicrosoftAccountView {
   id: string;
   kind: AccountSlot;
@@ -285,25 +273,21 @@ export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<
 }
 
 /**
- * Bench an account: mark it disconnected and, ONLY on the transition from
- * connected → benched, broadcast the disconnect and send the one critical
- * "re-authenticate" alert. Gating on the prior connected state is what stops
- * the recovery probe (which calls refresh on already-benched accounts) from
- * re-alerting the owner every cycle: the alert fires exactly once, when a
- * working account first goes down.
+ * Bench an account: mark it disconnected and, only on the connected to benched transition, broadcast the
+ * disconnect and record the expired-sign-in card. Gating on the prior state stops the recovery probe
+ * (which refreshes already-benched accounts) from repeating this every cycle.
  */
 function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string): void {
   const wasConnected = acc?.connected ?? false;
   updateMicrosoftAccount(accountId, { connected: false });
-  if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
+  if (!wasConnected) return; // already benched, nothing to repeat
   broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-  // OR-AUDIT-ANSWERS (d): a sign-in that expired is no platform text (the owner's set: offline and back online, budget,
-  // broken agent, Mac critical). The dashboard card stays; the agent sees the disconnected integration in its prompt and
-  // tells him (OR-ENGINE-LABELLED: the agent's job).
+  // No platform text for an expired sign-in: the dashboard card stays and the agent sees the disconnected
+  // integration in its prompt and tells the owner.
   noteMicrosoftSignInExpired(accountId, expiredWords(acc));
 }
 
-const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Microsoft cards).`; // the owner's card carries these words (t138 r3-4)
+const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Microsoft cards).`; // the dashboard card shows these words
 
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getMicrosoftAccount(accountId);
@@ -329,16 +313,13 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
       const err = await resp.text();
       const verdict = classifyTokenRefreshFailure(resp.status, err);
       if (verdict === 'terminal') {
-        // Genuine dead-account signal (invalid_grant / interaction_required /
-        // consent_required / login_required): bench + one critical alert.
+        // Genuine dead-account signal (invalid_grant, interaction_required, consent_required, ...).
         logger.error('Microsoft token refresh failed (terminal, benching account)', { accountId, status: resp.status, error: err });
         benchMicrosoftAccount(acc, accountId);
       } else {
-        // TRANSIENT (5xx, throttling, clock skew, an intermittent AADSTS server
-        // error, an unrecognized 400). Benching a healthy account on a passing
-        // hiccup is the one-way trap this fix removes: keep connected=1, log the
-        // parsed failure so the pattern is diagnosable, and let the caller's
-        // null-return handle just this call. The recovery probe re-tests later.
+        // Transient (5xx, throttling, clock skew, AADSTS server errors, an unknown 400): keep the account
+        // connected, log the parsed failure, and let the caller's null return cover this call. The recovery
+        // probe re-tests later.
         logger.warn('Microsoft token refresh failed (transient, leaving account connected)', { accountId, status: resp.status, error: err });
       }
       return null;
@@ -353,9 +334,8 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
     updateMicrosoftAccount(accountId, patch);
     return data.access_token;
   } catch (err) {
-    // A network throw never produced an HTTP response, so it is transient by
-    // definition (classifyTokenRefreshFailure(0, '') === 'transient'). Never
-    // bench here: log and return null so the caller degrades for this call only.
+    // A network throw is transient by definition (classifyTokenRefreshFailure(0, '') is 'transient'):
+    // never bench here, return null so the caller degrades for this call only.
     logger.warn('Microsoft token refresh error (transient, leaving account connected)', { accountId, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
@@ -364,24 +344,17 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
 // ── Recovery probe (the way back through the one-way door) ──
 
 /**
- * Benched accounts that still hold a refresh token — the recovery probe's
- * candidate set. An account with no refresh token can only be fixed by a
- * Settings re-auth, so the probe leaves it alone.
+ * Benched accounts that still hold a refresh token: the recovery probe's candidate set. An account with
+ * no refresh token can only be fixed by a Settings re-auth, so the probe leaves it alone.
  */
 export function listReconnectableMicrosoftAccounts(): MicrosoftAccount[] {
   return listMicrosoftAccounts().filter(a => !a.connected && !!a.refreshToken);
 }
 
 /**
- * Recovery-probe step for ONE benched account. Force a real token refresh: if
- * the refresh token still works, un-bench the account (connected=1 +
- * lastVerifiedAt) and broadcast the reconnect so the dashboard clears its
- * "disconnected" state. One plain info log, no owner ping — we already pinged
- * when it went down, and a silent self-heal should not celebrate. If the
- * refresh fails, refreshAccessTokenForAccount already handled it: a terminal
- * failure re-benched silently (the account was already connected=0, so the
- * transition-gated alert stayed quiet); a transient failure just leaves it for
- * the next cycle.
+ * Recovery-probe step for ONE benched account: force a token refresh and, if it works, un-bench it
+ * (connected=1, lastVerifiedAt) and broadcast the reconnect. One info log, no owner ping. A failed
+ * refresh is already handled by refreshAccessTokenForAccount (terminal stays benched, transient waits).
  */
 export async function attemptMicrosoftReconnect(accountId: string): Promise<'reconnected' | 'still-down'> {
   const acc = getMicrosoftAccount(accountId);
@@ -391,7 +364,7 @@ export async function attemptMicrosoftReconnect(accountId: string): Promise<'rec
   updateMicrosoftAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
   broadcast({ type: 'microsoft:connected', data: { email: acc.email ?? '', slot: acc.kind } });
   logger.info('Microsoft account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
-  // Its card left when the sign-in was restored (t138 r4). OR-AUDIT-ANSWERS (d): no all-clear text (the bench sent none).
+  // The sign-in card ends in updateMicrosoftAccount (connected: true); no all-clear text is sent.
   return 'reconnected';
 }
 
@@ -516,7 +489,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
           accountType,
           watchEmail: slot === 'agent',
           sendEmail: slot === 'agent',
-          // Personal (msa) accounts can't use Teams — disable it up front.
+          // Personal (msa) accounts can't use Teams, so disable it up front.
           ...(accountType === 'msa' ? { enabledServices: JSON.stringify({ ...DEFAULT_SERVICES, teams: false }) } : {}),
         });
         accountId = created.id;
@@ -618,8 +591,7 @@ export function disconnectMicrosoftAccount(accountId: string): void {
 // ── Access Level ──
 
 export function getAgentMicrosoftAccessLevel(agentId: string, _isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
-  // UX-ACCESS A1 — the same change as the Google twin, for the same reason
-  // (census C4). Connectivity still wins; the tier is this agent's grant.
+  // Same as the Google twin: connectivity still wins; the tier is this agent's grant.
   const anyEnabled = isMicrosoftEnabled('agent') || isMicrosoftEnabled('user');
   const anyConnected = isMicrosoftConnected('agent') || isMicrosoftConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';

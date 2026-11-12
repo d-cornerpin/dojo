@@ -1,7 +1,5 @@
-// ════════════════════════════════════════
-// Office Package Installer & Availability Check
-// Installs docx, xlsx, pptxgenjs on demand when Microsoft connects
-// ════════════════════════════════════════
+// Office package installer and availability check (docx, xlsx, pptxgenjs, installed when Microsoft
+// connects).
 
 import { exec } from 'node:child_process';
 import path from 'node:path';
@@ -11,14 +9,8 @@ import { broadcast } from '../gateway/ws.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 import { homeDir } from '../home.js';
 
-// Resolver anchored to THIS module so Node's standard
-// node_modules-walk-upward finds packages regardless of process.cwd().
-// In dev (npm workspaces) cwd is packages/server/ but the hoisted
-// install lives at the monorepo root — the old cwd-relative check
-// looked in the wrong place and reported "not installed" even when
-// the packages were sitting one directory up. In production cwd is
-// the install dir and resolution finds the local node_modules just
-// as before. Either way: stop guessing, ask Node.
+// Resolver anchored to THIS module, so packages resolve from the hoisted monorepo root in dev (cwd is
+// packages/server/) as well as from the install dir in production.
 const moduleRequire = createRequire(import.meta.url);
 
 const logger = createLogger('office-packages');
@@ -35,14 +27,8 @@ let packagesVerified = false;
 export function areOfficePackagesInstalled(): boolean {
   if (packagesVerified) return true;
 
-  // Use Node's resolver (createRequire anchored to this file) so the
-  // check works under npm workspaces (hoisted root node_modules) AND
-  // single-package production installs. Resolve the package's MAIN
-  // entry rather than ./package.json: modern packages like `docx` and
-  // `pptxgenjs` use the "exports" field to restrict subpaths, and
-  // ./package.json isn't exposed — resolving that throws even when
-  // the package is fully installed. Main entry is always defined and
-  // is the right "is this installed" signal.
+  // Resolve the package's MAIN entry, not ./package.json: `docx` and `pptxgenjs` restrict subpaths via
+  // "exports", so ./package.json throws even when the package is installed.
   for (const pkg of REQUIRED_PACKAGES) {
     try {
       moduleRequire.resolve(pkg);
@@ -66,7 +52,7 @@ export function checkAndUpdateStatus(): void {
   } else if (installStatus === 'installed') {
     // Was installed but packages are gone
     installStatus = 'not_installed';
-    bumpToolConfigGeneration(); // FA-TS1: office tools drop out of the surface
+    bumpToolConfigGeneration(); // office tools drop out of the surface
   }
 }
 
@@ -85,7 +71,7 @@ export function installOfficePackages(): void {
   if (areOfficePackagesInstalled()) {
     installStatus = 'installed';
     installError = null;
-    bumpToolConfigGeneration(); // FA-TS1: refresh any list cached before packages resolved
+    bumpToolConfigGeneration(); // refresh any list cached before packages resolved
     broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } });
     logger.info('Office packages already installed');
     return;
@@ -122,7 +108,7 @@ export function installOfficePackages(): void {
       if (areOfficePackagesInstalled()) {
         installStatus = 'installed';
         installError = null;
-        bumpToolConfigGeneration(); // FA-TS1: office create/edit tools enter the surface
+        bumpToolConfigGeneration(); // office create/edit tools enter the surface
         logger.info('Office packages installed successfully');
         broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } });
       } else {

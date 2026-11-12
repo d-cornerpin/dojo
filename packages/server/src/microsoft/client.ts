@@ -1,7 +1,5 @@
-// ════════════════════════════════════════
-// Microsoft Graph API Client
-// All Graph API calls go through here for token refresh, logging, and error handling
-// ════════════════════════════════════════
+// Microsoft Graph API client: msGraphRead/msGraphWrite add token refresh, logging and error handling.
+// Byte calls that must not log use graph-fetch.ts (re-exported here as graphFetch).
 
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
@@ -13,29 +11,14 @@ import { recordAtDoor, inOutboundScope, recordedId } from '../agent/v2/outbound.
 
 const logger = createLogger('ms-client');
 
-export { graphFetch } from './graph-fetch.js';   // the un-wrapped Graph door (L2-1)
+export { graphFetch } from './graph-fetch.js';   // the un-wrapped Graph door
 import { GRAPH_BASE } from './graph-fetch.js';
-// ── t114 (census U13) — THE GRAPH DEADLINE SCALES WITH THE BODY ──
-//
-// THE DEFECT: `TIMEOUT_MS` was a flat 30 seconds for EVERY Graph call, body-size-independent.
-// `google/client.ts:timeoutForBody` — in this same tree, for the same job — already scales its
-// bound by payload size (30s baseline plus 30s per MB, capped at 5 minutes) for exactly this
-// reason: a multi-MB `sendMail` with attachments cannot upload inside a bound sized for a
-// metadata GET. The census recorded the two files as the tree's two timeout philosophies and
-// most of its U-list as the gap between them.
-//
-// Worse than a slow failure, this one is AMBIGUOUS: a large `sendMail` aborted at 30s may
-// already have been ACCEPTED by Graph (a 202 with no id), and the codebase ships
-// `refetchOutlookSentId` precisely because of that ambiguity — so the flat bound manufactures
-// the uncertainty another module exists to clean up.
-//
-// The fix copies the sibling rather than inventing a second answer: same baseline, same per-MB
-// grant, same ceiling, one resolver shape. A bodyless call is bounded exactly as it is today.
+// The Graph deadline scales with the body, in the same shape as google/client.ts timeoutForBody: 30s
+// plus 30s per MB, capped at 5 minutes, so a multi-MB sendMail can upload. A bodyless call keeps 30s.
 const TIMEOUT_MS = 30_000;
-const MAX_TIMEOUT_MS = 5 * 60_000; // 5 min hard ceiling — the bound is still a bound
+const MAX_TIMEOUT_MS = 5 * 60_000; // 5 min hard ceiling
 
-/** Carried from `google/client.ts`'s `timeoutForBody`, deliberately unchanged in shape so the
- *  two clients cannot drift into two different answers again. */
+/** Same shape as `google/client.ts` timeoutForBody, so the two clients answer the same way. */
 function graphTimeoutForBody(body: unknown): number {
   if (body === undefined || body === null) return TIMEOUT_MS;
   const serialized = typeof body === 'string' ? body : JSON.stringify(body);
@@ -45,14 +28,9 @@ function graphTimeoutForBody(body: unknown): number {
 }
 
 /**
- * Build the URL prefix for a calendar operation based on the calendar_id form.
- *
- *   undefined       → me/                          (default mailbox)
- *   "<uuid>"        → me/calendars/{id}/           (own + accepted shares)
- *   "user@x.com"    → users/{email}/calendar/      (delegate access via Calendars.ReadWrite.Shared)
- *
- * Returns the prefix WITHOUT a trailing path segment — caller appends
- * 'events', 'calendarView?...', 'events/{id}', etc.
+ * URL prefix for a calendar operation from the calendar_id form: undefined is me/ (default mailbox),
+ * "<uuid>" is me/calendars/{id}/ (own and accepted shares), "user@x.com" is users/{email}/calendar/
+ * (delegate access via Calendars.ReadWrite.Shared). The caller appends 'events' and the like.
  */
 export function calendarPrefix(calendarId: string | undefined): string {
   if (!calendarId) return 'me/';
@@ -61,12 +39,8 @@ export function calendarPrefix(calendarId: string | undefined): string {
 }
 
 /**
- * Build the URL prefix for an OneDrive/SharePoint drive operation.
- *
- *   undefined       → me/drive/                   (personal OneDrive)
- *   "<drive-id>"    → drives/{driveId}/           (shared OneDrive item, or a SharePoint document library by its drive ID)
- *
- * Caller appends 'items/{id}', 'root/children', 'root:/path', etc.
+ * URL prefix for a drive operation: undefined is me/drive/ (personal OneDrive), "<drive-id>" is
+ * drives/{driveId}/ (a shared item or a SharePoint library). The caller appends 'items/{id}' and the like.
  */
 export function drivePrefix(driveId: string | undefined): string {
   if (!driveId) return 'me/drive/';
@@ -84,13 +58,10 @@ async function graphFetch(
   method: string,
   endpoint: string,
   body?: unknown,
-  // The account whose token to use. 'agent'/'user' are the ids of the
-  // position-1 rows, so callers passing a kind keep working; tool executors
-  // pass a specific resolved account id for multi-account.
+  // Account whose token to use: 'agent'/'user' name the position-1 rows; tools pass a resolved account id.
   accountId: string = 'agent',
-  // A-6: whose stop this call answers to. Optional and last, so every existing call site keeps
-  // compiling; the two public wrappers below pass the agentId they already hold. A call without
-  // one is platform plumbing with no agent to be stopped by, and dials exactly as before.
+  // Whose stop this call answers to. Optional and last; a call without one is platform plumbing with
+  // no agent to stop it.
   agentId?: string,
 ): Promise<MsGraphResult> {
   const url = endpoint.startsWith('http') ? endpoint : `${GRAPH_BASE}/${endpoint}`;
@@ -105,30 +76,12 @@ async function graphFetch(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
-    // v2.7.26 — force calendar event times to UTC in the response.
-    //
-    // Without this header, Microsoft Graph returns event start/end times
-    // in the event's ORIGINAL timezone. Events created via Outlook desktop
-    // get stored with the Windows timezone NAME ("Pacific Standard Time",
-    // "Eastern Standard Time", etc.) rather than the IANA name. Node's
-    // Intl.DateTimeFormat only accepts IANA names — it throws RangeError
-    // on Windows names — which caused recurring events in the agenda
-    // tools to surface as "(invalid time: Invalid Date)" because the
-    // parser hit the unrecognized timezone string.
-    //
-    // With Prefer: outlook.timezone="UTC", Graph normalizes every event's
-    // start/end to UTC + sets timeZone to "UTC" on the response. The
-    // existing parseFlexibleTime + formatTimeRangeForAgent path then
-    // handles them correctly, and the agent's user_timezone arg shapes
-    // the human-facing display string.
-    //
-    // The header is only honored by calendar endpoints; non-calendar
-    // Graph endpoints ignore it. Safe to set globally.
+    // Force calendar times to UTC: Graph otherwise returns the event's original zone, and Outlook-desktop
+    // events carry Windows zone names that Intl.DateTimeFormat rejects. Non-calendar endpoints ignore it.
     Prefer: 'outlook.timezone="UTC"',
   };
 
-  // Composed, not replaced: the Graph deadline still fires as a deadline. `turn` scope.
-  // t114 (U13): the deadline is sized from THIS call's body, not from a flat constant.
+  // Composed with the turn scope so the deadline still fires; sized from this call's body.
   const graphTimeoutMs = graphTimeoutForBody(body);
   const slot = agentId === undefined
     ? null
@@ -161,17 +114,12 @@ async function graphFetch(
       return { ok: false, data: null, error: errorMsg, apiEndpoint: url };
     }
 
-    // Some endpoints return 202 Accepted or 204 No Content (no body)
     if (resp.status === 202 || resp.status === 204) {
       return { ok: true, data: null, apiEndpoint: url };
     }
 
-    // Content-aware parse. Most Graph endpoints return JSON, but raw content
-    // downloads (a file's /content) return the raw bytes. Blindly calling
-    // resp.json() on those throws "Unexpected token ... is not valid JSON".
-    // Parse JSON only when the server says it's JSON; hand everything else
-    // back as a string. MsGraphResult.data is unknown and callers branch on
-    // typeof data.
+    // Parse JSON only when the server says it is JSON; raw downloads (a file's /content) come back as a
+    // string. MsGraphResult.data is unknown and callers branch on typeof data.
     const responseContentType = resp.headers.get('content-type') ?? '';
     const data = responseContentType.includes('application/json')
       ? await resp.json()
@@ -231,17 +179,13 @@ export function msGraphWrite(
       error: result.error,
     });
 
-    // Broadcast write actions to dashboard
     broadcast({
       type: 'microsoft:activity',
       data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     });
 
-    // PHASE-2 T5: THE DOOR RECORDS — but only for a send. Same reasoning as the Google door:
-    // this one function carries `outlook_send/reply/forward` and `teams_send_*` (a person
-    // receives something) alongside calendar and file writes (nobody does), and the OUTBOUND
-    // SCOPE the send tool opened is what tells them apart. The scope also names the CHANNEL,
-    // so a Teams send is recorded as Teams and an Outlook send as email.
+    // Only a send is recorded at the door: the outbound scope the send tool opened separates sends (a
+    // person receives something) from calendar and file writes (nobody does).
     if (inOutboundScope()) {
       recordedId(recordAtDoor({
         outcome: result.ok ? 'delivered' : 'failed',

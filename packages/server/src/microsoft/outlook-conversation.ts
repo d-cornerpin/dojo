@@ -1,25 +1,11 @@
-// ════════════════════════════════════════
-// Outlook archives whole conversations (v3.5, E20).
-//
-// A mail thread is one conversation to the owner: archiving a single reply left the rest of it in
-// the inbox and the thread came back. Gmail already archives the whole conversation by default
-// (google/gmail-archive.ts); Outlook's name for the same idea is a message's `conversationId`.
-//
-//   conversation_id          -> every message of that conversation; to the archive or deleted
-//                               items it names no folder to compare against, so Sent Items and
-//                               Drafts are left alone instead (Gmail parity: the sent copy stays).
-//   message_id + the archive or deleted-items folder, no `this_message_only`
-//                            -> the message's conversation, the messages that sit in the SAME
-//                               folder as it (Gmail parity: archiving takes the thread out of the
-//                               inbox; the owner's sent copies and drafts are not touched). Its id
-//                               and folder are looked up; a failed lookup moves nothing, never a
-//                               silent one-message move.
-//   message_id, any other folder, or `this_message_only`
-//                            -> that one message, exactly as before.
-//
-// The conversation is listed first (following every page to its end), then moved through Graph
-// `$batch`. Nothing is moved if the list could not be read.
-// ════════════════════════════════════════
+// Outlook archives whole conversations. A mail thread is one conversation to the owner, so a move into the
+// archive or deleted items takes the whole conversation (a message's `conversationId`), as Gmail does.
+//   conversation_id: every message of it (to the archive or deleted items, Sent Items and Drafts stay).
+//   message_id + archive/deleted-items folder, no `this_message_only`: the messages of its conversation in
+//     the SAME folder as it; a failed id or folder lookup moves nothing, never a silent one-message move.
+//   anything else: that one message.
+// The conversation is listed first (every page), then moved through Graph `$batch`; nothing moves if the
+// list could not be read.
 
 import { msGraphRead, msGraphWrite } from './client.js';
 
@@ -76,7 +62,6 @@ async function conversationOf(messageId: string, ctx: OutlookCallContext): Promi
   return { ok: true, id, folder };
 }
 
-/** Every message id in a conversation, paging to the end. */
 async function listConversation(conversationId: string, ctx: OutlookCallContext): Promise<{ ok: true; found: Array<{ id: string; folder?: string }> } | { ok: false; error: string }> {
   const value = conversationId.replace(/'/g, "''");
   let next: string | undefined = `me/messages?$filter=${encodeURIComponent(`conversationId eq '${value}'`)}&$select=id,parentFolderId`;
@@ -124,8 +109,8 @@ async function moveConversation(conversationId: string, folderId: string, ctx: O
   const total = ids.length;
   const stayed = left > 0 ? ` ${left} other message${left === 1 ? '' : 's'} of it in other folders (sent copies, drafts) ${left === 1 ? 'was' : 'were'} left where ${left === 1 ? 'it is' : 'they are'}.` : '';
   if (failures.length === 0) return `Moved the WHOLE conversation (${total} message${total === 1 ? '' : 's'}) to folder ${folderId}. Their old message IDs are no longer valid.${stayed}`;
-  // The engine reads failure from the first word (agent/tools/index.ts), so a partly-moved
-  // conversation leads with `Error: ` — same rule as Gmail's batch label. Every word stays.
+  // The engine reads failure from the first word (agent/tools/index.ts), so a partly-moved conversation
+  // leads with `Error: `.
   return `Error: Moved ${moved} of ${total} messages of the conversation to folder ${folderId}; ${failures.length} could not be moved (${[...new Set(failures)].join('; ')}). Call again with conversation_id=${conversationId} to move the rest.${stayed}`;
 }
 

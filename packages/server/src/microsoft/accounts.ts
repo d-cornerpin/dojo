@@ -1,14 +1,8 @@
-// ════════════════════════════════════════
-// Microsoft account registry (Path B) — mirrors google/accounts.ts.
-//
-// Up to five accounts per KIND ('agent' / 'user') in microsoft_accounts. KIND
-// is the permission boundary. Pure storage — no OAuth, no token refresh. MS
-// carries an extra account_type ('msa' personal vs 'entra' work/school).
-//
-// seedMicrosoftAccountsFromConfig() bridges the legacy ms_* / ms_user_* keys
-// into position-1 rows, preserving the old getter defaults (agent watch/send
-// default ON, user OFF; services default all-on).
-// ════════════════════════════════════════
+// Microsoft account registry: up to five accounts per KIND ('agent' / 'user') in microsoft_accounts.
+// KIND is the permission boundary. Pure storage, no OAuth or token refresh. account_type is 'msa'
+// (personal) or 'entra' (work/school). Mirrors google/accounts.ts.
+// seedMicrosoftAccountsFromConfig() bridges the legacy ms_* / ms_user_* keys into position-1 rows,
+// keeping the old defaults (agent watch/send ON, user OFF; services all on).
 
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
@@ -71,7 +65,7 @@ function rowToAccount(r: MicrosoftAccountRow): MicrosoftAccount {
     accountType: r.account_type,
     enabled: r.enabled === 1,
     connected: r.connected === 1,
-    // D1 (PHASE-5 T10): the ONE decode point for this table's OAuth material.
+    // The one place this table's OAuth columns are decoded.
     accessToken: openSecretColumn(r.access_token, 'microsoft_accounts.access_token'),
     refreshToken: openSecretColumn(r.refresh_token, 'microsoft_accounts.refresh_token'),
     tokenExpiresAt: r.token_expires_at,
@@ -123,15 +117,12 @@ export function resolveMicrosoftAccountForTool(
   email?: string | null,
 ): { account: MicrosoftAccount } | { error: string } {
   const account = resolveMicrosoftAccount(kind, email);
-  // FA-TS5: mirror google/accounts.ts. resolveMicrosoftAccount hands back a lone
-  // DISCONNECTED account via its single-account back-compat branch. The tool-facing
-  // resolver is authoritative on `.connected`; a disconnected-only resolution is
-  // not a success (avoids a confusing auth failure or a run against stale tokens).
+  // resolveMicrosoftAccount can return a lone DISCONNECTED account; only a connected one is a success
+  // here, so no call runs against stale tokens.
   if (account && account.connected) return { account };
   const connected = listMicrosoftAccounts(kind).filter(a => a.connected);
   if (connected.length === 0) {
-    // UX-REPAIR T39: mirrors google/accounts.ts — name the SIBLING slot when it
-    // is the one that is connected. See that file for the argument.
+    // Name the sibling slot when it is the one that is connected (same as google/accounts.ts).
     const sibling = kind === 'agent' ? 'user' : 'agent';
     const siblingConnected = listMicrosoftAccounts(sibling).some(a => a.connected);
     const pointer = siblingConnected
@@ -155,18 +146,9 @@ export interface MicrosoftReadResolution {
 }
 
 /**
- * READ-only account resolver. Mirrors google/accounts.ts resolveGoogleAccountForRead.
- * Diverges from resolveMicrosoftAccountForTool on ONE case, by owner decision
- * (2026-07-08, correctness-floor): when a slot has more than one connected
- * account and the caller named none, a READ must NOT bounce with an
- * ask-which-account error (a wasted round trip for a pure lookup). Instead it
- * defaults to the slot's PRIMARY (lowest-position) connected account and flags
- * `labelAccount` so the caller labels the result with that account's address;
- * the F4 coverage floor surfaces the other accounts in the "also checked" block.
- *
- * The WRITE side deliberately keeps the ambiguity error (resolveMicrosoftAccountForTool):
- * ask-which-account before mutating the wrong mailbox/calendar is intentional and
- * is the subject of a separate open owner decision. Do NOT fold the two.
+ * READ-only resolver (mirrors google/accounts.ts resolveGoogleAccountForRead). With several connected
+ * accounts and none named it defaults to the lowest-position one and sets `labelAccount`, rather than
+ * bouncing with an ask-which-account error. The write resolver keeps that error on purpose: do not merge.
  */
 export function resolveMicrosoftAccountForRead(
   kind: MicrosoftAccountKind,
@@ -180,7 +162,7 @@ export function resolveMicrosoftAccountForRead(
     return { account: strict.account, labelAccount: connected.length > 1 };
   }
   if (connected.length === 0) {
-    // No connected account — reuse the strict resolver's not-connected error.
+    // No connected account: reuse the strict resolver's not-connected error.
     return resolveMicrosoftAccountForTool(kind, email) as { error: string };
   }
   if (connected.length === 1) {
@@ -232,13 +214,13 @@ export function insertMicrosoftAccount(acc: NewMicrosoftAccount): MicrosoftAccou
     id, acc.kind, position, acc.email ?? null, acc.accountType ?? null,
     acc.enabled === false ? 0 : 1,
     acc.connected ? 1 : 0,
-    // D1: encode point 1 of 2 — the INSERT column list.
+    // Encode point 1 of 2 (the other is ENCODE): the INSERT column list.
     sealSecretColumn(acc.accessToken ?? null), sealSecretColumn(acc.refreshToken ?? null),
     acc.tokenExpiresAt ?? null,
     acc.grantedScopes ?? null, acc.enabledServices ?? null,
     acc.watchEmail ? 1 : 0, acc.sendEmail ? 1 : 0, acc.lastVerifiedAt ?? null,
   );
-  bumpToolConfigGeneration(); // FA-TS1: connect/add widens the tool surface
+  bumpToolConfigGeneration(); // connect/add widens the tool surface
   return getMicrosoftAccount(id)!;
 }
 
@@ -256,17 +238,12 @@ const COLUMN: Record<string, string> = {
   enabledServices: 'enabled_services', watchEmail: 'watch_email',
   sendEmail: 'send_email', lastVerifiedAt: 'last_verified_at',
 };
-/** M7 (PHASE-4 T5): the `?? null` that used to sit in each text encoder WAS P527 —
- *  `email: email || undefined` from a reconnect whose /me lookup failed meant "leave it
- *  alone" and arrived as SQL NULL. `db/patch.ts` drops undefined before any encoder runs,
- *  so the defence is deleted rather than left standing where it can never fire. P527's own
- *  text asked for exactly this generalization: "Same mechanism applies to any future
- *  undefined-valued key in a patch." */
+/** No `?? null` in these encoders: db/patch.ts drops undefined keys before any encoder runs,
+ *  so a failed lookup can never write NULL over a stored value. */
 const ENCODE: Record<string, (v: unknown) => unknown> = {
   email: v => v, accountType: v => v,
   enabled: v => (v ? 1 : 0), connected: v => (v ? 1 : 0),
-  // D1: encode point 2 of 2 — the partial-update encoder map. No `?? null` here,
-  // deliberately, for the M7 reason stated directly above.
+  // Encode point 2 of 2: the partial-update map (no `?? null`, see above).
   accessToken: v => sealSecretColumn(v as string | null),
   refreshToken: v => sealSecretColumn(v as string | null),
   tokenExpiresAt: v => v, grantedScopes: v => v,
@@ -283,20 +260,20 @@ export function updateMicrosoftAccount(id: string, patch: Partial<Omit<Microsoft
   sets.push("updated_at = datetime('now')");
   values.push(id);
   getDb().prepare(`UPDATE microsoft_accounts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-  bumpToolConfigGeneration(); // FA-TS1: connected flag / enabledServices edits change the surface
-  // t138 r4: a restored sign-in (probe or Settings) ends the owner's "connection expired" card.
+  bumpToolConfigGeneration(); // connected flag / enabledServices edits change the surface
+  // A restored sign-in (probe or Settings) ends the "connection expired" card.
   if (patch.connected === true) signInRestored('microsoft_accounts', id);
-  reconcileWatcherCards(); // r6: an unwatched account's watcher card ends
+  reconcileWatcherCards(); // an unwatched account's watcher card ends
 }
 
-/** t138 r4: the owner is told this account's sign-in expired; keep the words for his card. */
+/** Records that this account's sign-in expired; the words feed the card the owner sees. */
 export const noteMicrosoftSignInExpired = (id: string, words: string): void => noteSignInExpired('microsoft_accounts', id, words);
 
 export function deleteMicrosoftAccount(id: string): void {
-  accountRemoved('microsoft_accounts', id); // r6: the cards it is the subject of end, live
+  accountRemoved('microsoft_accounts', id); // the cards it is the subject of end, live
   getDb().prepare('DELETE FROM microsoft_accounts WHERE id = ?').run(id);
   reconcileWatcherCards();
-  bumpToolConfigGeneration(); // FA-TS1: removing an account narrows the surface
+  bumpToolConfigGeneration(); // removing an account narrows the surface
 }
 
 // ── One-time seed from legacy config keys ──

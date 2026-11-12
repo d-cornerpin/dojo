@@ -1,7 +1,5 @@
-// ════════════════════════════════════════
-// Microsoft Office Document Generation Tools
-// Creates Word, Excel, PowerPoint files and uploads to OneDrive
-// ════════════════════════════════════════
+// Microsoft Office document generation tools: create Word, Excel and PowerPoint files and upload to
+// OneDrive.
 
 import * as effectFs from '../agent/effects/fs.js';
 import { officeLocalPath } from './office-local-path.js';
@@ -20,37 +18,14 @@ import { graphFetch, GRAPH_BASE } from './graph-fetch.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { odataQuoted } from './tools-read.js';
 
-// ─────────────────────────────────────────
-// v2.5.10 — Shared edit helpers
-//
-// .docx and .pptx are ZIP archives containing XML files. To edit in place:
-//   1. Download bytes
-//   2. Unzip with JSZip
-//   3. Modify the relevant XML files
-//   4. Re-zip
-//   5. PUT back to the same OneDrive path (preserves the file_id → existing
-//      share links stay alive)
-//
-// For .xlsx we use the Microsoft Graph Workbook API instead, which supports
-// true in-place cell editing via REST — no download-modify-upload needed.
-// ─────────────────────────────────────────
+// Shared edit helpers. .docx and .pptx are ZIP archives of XML: download the bytes, unzip with JSZip, modify
+// the XML, re-zip and PUT back to the same OneDrive path (keeps the file_id, so share links stay alive).
+// .xlsx uses the Graph Workbook API for true in-place cell editing instead.
 
-// ── t114 (census U12) — THE OFFICE LEGS SIZE THEIR OWN DEADLINES ──
-//
-// THE DEFECT: this module moves whole re-zipped Office documents through a
-// download -> unzip -> edit -> re-zip -> PUT pipeline, and both wire legs carried a FLAT bound
-// with no size branch at all — 30s on the download, 60s on the write-back. The sibling
-// `tools-write.ts` branches at 4 MB and chunks; `google/client.ts` scales by payload. This file,
-// which carries the largest bodies of the three, had neither.
-//
-// The write-back leg is the one that hurts: an abort there DISCARDS ALL COMPLETED EDIT WORK —
-// the download, the unzip and every edit are gone, with nothing to resume from — and can leave a
-// partial PUT behind. So the flat clock destroyed work it could not prove was dead, which is the
-// exact shape the campaign doctrine refuses.
-//
-// Same resolver shape as `google/client.ts`'s `timeoutForBody` and the Graph client's own
-// `graphTimeoutForBody`, so the tree keeps ONE answer to "how long may a body take" rather than
-// gaining a fourth. A small document is bounded exactly as it is today.
+// Both Office wire legs size their own deadlines (the same resolver shape as google/client.ts
+// timeoutForBody and graphTimeoutForBody). An abort on the write-back leg discards all completed edit work
+// (download, unzip, edits) and can leave a partial PUT, so that deadline is sized from the re-zipped body,
+// not a flat bound.
 const OFFICE_BASE_TIMEOUT_MS = 30_000;
 const OFFICE_WRITE_BASE_TIMEOUT_MS = 60_000;
 const OFFICE_MAX_TIMEOUT_MS = 5 * 60_000;
@@ -66,8 +41,7 @@ async function downloadFileBytes(fileId: string, agentId?: string): Promise<Buff
   if (!token) throw new Error('Not authenticated with Microsoft');
   const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`, {
     headers: { Authorization: `Bearer ${token}` },
-    // t114: the response size is not known until the headers arrive, so the download keeps its
-    // baseline. It is the named constant now, so the two legs cannot drift apart silently.
+    // The response size is unknown until the headers arrive, so the download keeps the base timeout.
     signal: AbortSignal.timeout(OFFICE_BASE_TIMEOUT_MS),
   });
   if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
@@ -86,18 +60,14 @@ async function getFileMeta(fileId: string, agentId?: string): Promise<{ name: st
   return { name: data.name, parentId: data.parentReference?.id };
 }
 
-// The Word edit tools were built around OneDrive file_ids (download → edit the
-// document.xml → upload back). But on a local-only setup (Microsoft not
-// connected) documents live on disk under ~/.dojo/uploads/<agent>/ and there is
-// NO file_id — so the edit tools were unusable and the agent had to regenerate
-// the whole doc on every change. This resolver lets the SAME edit handlers run
-// against a LOCAL .docx: pass `path` (or pass the absolute path as `file_id` —
-// models conflate the two) and the read/write ends become plain disk I/O. The
-// in-between XML manipulation is identical, so every edit op works locally.
+// The Word edit tools run against OneDrive file_ids, or against a LOCAL .docx when Microsoft is not
+// connected (such documents live under ~/.dojo/uploads/<agent>/ and have no file_id). Pass `path`, or an
+// absolute path as `file_id`: the read and write ends become plain disk I/O and the XML manipulation
+// between them is identical.
 interface OfficeEditTarget {
   isLocal: boolean;
   name: string;
-  /** What to pass back to edit this file again — a local path or a file_id. */
+  /** What to pass back to edit this file again: a local path or a file_id. */
   handle: string;
   read(): Promise<Buffer>;
   writeBack(buf: Buffer, mimeType: string): Promise<{ name: string; ref: string; localPath?: string }>;
@@ -108,9 +78,8 @@ async function resolveOfficeEditTarget(
   ext: '.docx' | '.xlsx', agentId?: string,
 ): Promise<OfficeEditTarget | string> {
   const fileId = typeof args.file_id === 'string' && args.file_id.trim() ? args.file_id.trim() : undefined;
-  // A file_id that's actually a filesystem path (starts with / or ~) is local.
-  // ONE predicate, in `office-local-path.ts`, so the gate loop resolves this
-  // call's grant with the identical question (RULING P5-R15 ADDENDUM 3(1)(c)).
+  // A file_id that is really a filesystem path (starts with / or ~) is local. The one predicate lives in
+  // office-local-path.ts so the gate loop resolves this call's grant with the same question.
   const abs = officeLocalPath(args);
 
   if (abs) {
@@ -148,11 +117,8 @@ async function resolveOfficeEditTarget(
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
-// ── Local Excel (.xlsx) editing via ExcelJS ──
-// The Excel edit tools (read/write range, append rows, add/delete sheet) were
-// Graph-only. On a local-only setup they now read → modify → write the workbook
-// on disk with ExcelJS (the same lib office_create_spreadsheet uses). Each
-// handler checks for a local path first; otherwise the existing Graph path runs.
+// Local Excel (.xlsx) editing via ExcelJS (the library office_create_spreadsheet uses): each Excel edit
+// handler checks for a local path first and otherwise runs the Graph path.
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -205,11 +171,9 @@ function resolveLocalSheet(wb: any, sheetName?: string): any {
 }
 
 /**
- * Extract the inner content of `<w:body>` from a Word document's document.xml.
- * Returns the prefix (everything before body open), body inner XML, and the
- * suffix (closing tag + sectPr + closing document). Used so we can splice
- * paragraphs into the existing document without disturbing section properties
- * (page size, margins, headers/footers) that live in sectPr at the body end.
+ * Split a Word document.xml into prefix (before the body open), body inner XML, and suffix (closing tag,
+ * sectPr, closing document), so paragraphs can be spliced in without disturbing section properties (page
+ * size, margins).
  */
 export function splitDocumentXml(documentXml: string): { prefix: string; bodyInner: string; suffix: string } {
   const bodyOpenMatch = documentXml.match(/<w:body[^>]*>/);
@@ -257,10 +221,7 @@ export function parseBodyBlocks(bodyInner: string): string[] {
   return blocks;
 }
 
-/**
- * Extract a short text preview from a `<w:p>` paragraph block. Concatenates
- * all <w:t> text runs. Returns empty string if the block has no text.
- */
+/** Short text preview of a `<w:p>` block: its <w:t> runs joined, empty when there are none. */
 export function paragraphPreview(blockXml: string): { text: string; isHeading: boolean; level?: number } {
   // Match all <w:t>...</w:t> contents (handles xml:space="preserve" too)
   const texts: string[] = [];
@@ -277,12 +238,7 @@ export function paragraphPreview(blockXml: string): { text: string; isHeading: b
   };
 }
 
-/**
- * v2.5.13 — Extract the full text from a `<w:tbl>` table block.
- * Walks rows (`<w:tr>`) and cells (`<w:tc>`); within each cell, joins all
- * `<w:t>` text runs. Returns rows as a 2D array of strings. Used by
- * office_read_word_document so agents can actually see table contents.
- */
+/** Full text of a `<w:tbl>` block as rows of cell text, for office_read_word_document. */
 export function extractTableText(blockXml: string): string[][] {
   const rows: string[][] = [];
   const rowRe = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g;
@@ -305,11 +261,8 @@ export function extractTableText(blockXml: string): string[][] {
   return rows;
 }
 
-/**
- * v2.5.13 — Extract slide text from a slide XML, separated into title and
- * body. Title is the first text shape with a placeholder type of ctrTitle
- * or title; body is everything else. Used by office_read_presentation.
- */
+/** Slide text from slide XML, split into title (the ctrTitle or title placeholder shape) and body
+ *  (all else), for office_read_presentation. */
 export function extractSlideText(slideXml: string): { title: string; body: string[] } {
   // Title shape: find a <p:sp> shape that contains a placeholder of type
   // ctrTitle or title. Use \b after `sp` so we don't accidentally match
@@ -347,11 +300,8 @@ export function extractSlideText(slideXml: string): { title: string; body: strin
 }
 
 /**
- * Generate the body-inner XML for a list of content blocks by using the
- * existing docx generator to produce a temporary document, then extracting
- * just the inner body from it. Reuses generateWordBuffer's logic so all the
- * existing block types (heading/paragraph/table/bullet_list/page_break) are
- * supported here for inserts/appends without reimplementing OOXML.
+ * Body-inner XML for a list of content blocks: generateWordBuffer builds a temporary document and its
+ * inner body is extracted, so every block type works for inserts and appends without reimplementing OOXML.
  */
 async function blocksToBodyInnerXml(blocks: ContentBlock[]): Promise<string> {
   const buf = await generateWordBuffer(blocks);
@@ -363,22 +313,15 @@ async function blocksToBodyInnerXml(blocks: ContentBlock[]): Promise<string> {
   return bodyInner;
 }
 
-/**
- * Open a .docx buffer, rewrite document.xml with the provided string, return
- * the repacked buffer. Preserves all other parts of the archive (styles,
- * headers, footers, images, etc.).
- */
+/** Open a .docx buffer, replace document.xml with the given string, and return the repacked buffer.
+ *  All other parts of the archive are kept. */
 async function rewriteDocumentXml(buffer: Buffer, newDocumentXml: string): Promise<Buffer> {
   const zip = await JSZip.loadAsync(buffer);
   zip.file('word/document.xml', newDocumentXml);
   return Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
 }
 
-/**
- * Convert a zero-based column index to A1-style letter (0=A, 25=Z, 26=AA, …).
- * Used by office_append_spreadsheet_rows to compute the target range from
- * the appended-row dimensions.
- */
+/** Zero-based column index to an A1-style letter (0=A, 25=Z, 26=AA), for the appended-rows target range. */
 export function columnIndexToLetter(idx: number): string {
   let result = '';
   let n = idx;
@@ -389,9 +332,7 @@ export function columnIndexToLetter(idx: number): string {
   return result;
 }
 
-/**
- * Escape a string for safe insertion into XML attribute or text content.
- */
+/** Escape a string for safe insertion into XML attribute or text content. */
 export function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
@@ -434,9 +375,8 @@ export function replaceTextInSlideXml(slideXml: string, find: string, replaceWit
 }
 
 /**
- * Get the ordered list of slide XML file names from a loaded pptx zip.
- * Reads ppt/_rels/presentation.xml.rels for the relationship → file map,
- * then reads ppt/presentation.xml for the actual slide order.
+ * Ordered slide XML file names of a pptx zip: presentation.xml.rels maps relationship ids to files and
+ * presentation.xml gives the slide order.
  */
 async function getSlideOrder(zip: JSZip): Promise<Array<{ rId: string; file: string }>> {
   const relsFile = zip.file('ppt/_rels/presentation.xml.rels');
@@ -473,14 +413,9 @@ async function getSlideOrder(zip: JSZip): Promise<Array<{ rId: string; file: str
   return order;
 }
 
-/**
- * Read a slide's title from its XML. Looks for the first <a:t> inside a
- * shape with placeholder type "title" or "ctrTitle"; falls back to the
- * first <a:t> anywhere in the slide.
- */
+/** A slide's title: the first <a:t> in a "title" or "ctrTitle" placeholder, else the first anywhere. */
 function slideTitleFromXml(slideXml: string): string {
-  // Try to find a title placeholder shape first.
-  // v2.5.13 — \b after `sp` to prevent matching <p:spTree> (the wrapper).
+  // Title placeholder shape first; \b after `sp` avoids matching <p:spTree> (the wrapper).
   const titleSpMatch = slideXml.match(/<p:sp\b[^>]*>[\s\S]*?<p:ph[^>]*type="(?:ctrTitle|title)"[^>]*\/?>([\s\S]*?)<\/p:sp>/);
   const searchScope = titleSpMatch ? titleSpMatch[0] : slideXml;
   const texts: string[] = [];
@@ -858,11 +793,9 @@ export const officeToolDefinitions: ToolDefinition[] = [
     name: 'office_create_spreadsheet',
     description: 'Create an Excel spreadsheet (.xlsx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven workbook edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the Graph workbook tools aren\'t available against that path.\n\n**Cells, not columns.** Everything — values, formulas, styling, widths — goes through the `sheets[].rows` 2D array. There is NO sheet-level `formulas`, `columns`, `header_row`, or `currency_format` field — if you pass any of those, the call will be REJECTED with a corrective error. Column widths live on `sheets[].column_widths`; per-row / per-cell style lives inside the row cells.\n\nEach cell is either a plain primitive (string / number / boolean) OR an object with rich properties. Example: a formula cell looks like `{ formula: "=SUM(B2:B9)", number_format: "$#,##0" }`. A currency input looks like `{ value: 150000, number_format: "$#,##0", font: { color: "0070C0" } }` (blue inputs by financial-model convention). A percent looks like `{ formula: "=B4/B2", number_format: "0.0%" }`.\n\nCell object full surface: `{ value, formula, number_format, font: { name, size, bold, italic, underline, color }, fill_hex, align: "left"|"center"|"right"|"justified", v_align, border: "all"|"top"|"bottom"|"left"|"right"|"none", wrap_text, comment, hyperlink }`. Leading "=" on `formula` is optional.\n\nPer-sheet you can also set `column_widths` (array of numbers in Excel character units, e.g. [22, 14, 14, 14]), `freeze_rows`, `freeze_cols`, `default_header_row` (auto-styles row 1 with bold + light-blue fill — true by default), `zoom_pct`, `hidden`.\n\nKey defaults the renderer applies:\n- The first row gets bold + light-blue fill automatically unless `default_header_row: false` is passed.\n- Numbers stay numeric (SUM etc. work); strings stay text.\n- Common financial-model color convention: blue inputs (color "0070C0"), black formulas (default), green cross-sheet refs (color "00B050"), red external refs (color "C00000"), yellow assumption fill ("FFF2CC").\n- Number formats: "$#,##0;($#,##0);-" for currency, "0.0%" for percentages, "0.00x" for multiples, "yyyy-mm-dd" for dates.',
     effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
-    // PHASE-6 T0C: four of these five are an explicit NEGATIVE advertisement —
-    // "There is NO sheet-level `formulas`, `columns`, `header_row`, or
-    // `currency_format` field" — which is the opposite of a false promise and
-    // must not be deleted to satisfy a scan. `formula` is a CELL-OBJECT key
-    // described in prose inside `sheets[].rows`.
+    // Four of these five are an explicit NEGATIVE advertisement ("There is NO sheet-level `formulas`,
+    // `columns`, `header_row`, or `currency_format` field"), which is not a false promise and must not be
+    // deleted to satisfy a scan. `formula` is a cell-object key described in prose inside `sheets[].rows`.
     advertisedNotDeclared: {
       formulas: 'named only to say it does NOT exist — an explicit negative advertisement, the opposite of a false promise',
       columns: 'named only to say it does NOT exist — an explicit negative advertisement',
@@ -1081,28 +1014,12 @@ export const officeToolDefinitions: ToolDefinition[] = [
 
 // ── Helpers ──
 
-// ── Word document schema ──
-//
-// The schema below is the canonical shape an agent passes to
-// office_create_word_document and the append/insert siblings. The shape
-// stayed backward-compatible across the v2.9.x rewrite — old callers
-// supplying { type: 'paragraph', text, bold, italic, align } still work
-// and produce the same paragraphs; new optional fields and block types
-// add expressiveness without breaking anything.
-//
-// Design rules followed throughout:
-//   - Use US Letter as default page size (most docx-js consumers expect
-//     this; the library's own default is A4).
-//   - Default font is Arial 12pt — universally rendered, readable.
-//   - Tables always set width + columnWidths + per-cell width in DXA,
-//     plus cell margins. Without all of these Word collapses columns to
-//     1-character wide for content that lacks spaces (the bug that
-//     drove this rewrite).
-//   - Heading paragraph styles include outlineLevel so Word's
-//     navigation pane and Table of Contents both work.
-//   - Bullet/numbered lists use docx-js numbering refs, not raw
-//     unicode bullet characters (the latter break list semantics in
-//     some Word versions and on screen readers).
+// Word document schema: the canonical shape an agent passes to office_create_word_document and its append
+// and insert siblings. Defaults are US Letter and Arial 12pt. Tables set width, columnWidths and per-cell
+// width in DXA plus cell margins (without all of them Word collapses columns to one character for content
+// lacking spaces). Heading styles carry outlineLevel so the navigation pane and Table of Contents work.
+// Lists use docx-js numbering refs, not raw unicode bullets (those break list semantics in some Word
+// versions and screen readers).
 
 interface TextRunSpec {
   /**
@@ -1270,12 +1187,8 @@ interface WordDocOptions {
 }
 
 /**
- * Smart-quote normalization. Converts straight quotes into their
- * curly equivalents. Heuristic: a straight quote that follows
- * whitespace, opening punctuation, or is at the start of a string is
- * an opener; everything else is a closer. The skill recommends
- * this for professional typography — disabled by default so code
- * samples and technical content stay literal.
+ * Smart-quote normalization: a straight quote after whitespace, opening punctuation or at the start of a
+ * string opens; any other closes. Off by default so code samples and technical content stay literal.
  */
 export function smartenQuotes(text: string): string {
   if (!text) return text;
@@ -1287,15 +1200,9 @@ export function smartenQuotes(text: string): string {
 }
 
 /**
- * Save an office document buffer in the right place for the calling
- * agent's environment. When Microsoft is connected, upload to OneDrive
- * (file_id + share link returned, plus all the existing edit tools
- * work). When Microsoft is NOT connected, fall back to a local save
- * under ~/.dojo/uploads/<agentId>/<filename> — same pattern as the PDF
- * tools — so an agent on a local-only setup can still create Office
- * files. The create tool returns a user-facing summary either way; the
- * shape of what's available next (file_id-driven edits vs. just a
- * local path) is named explicitly in the result so the agent knows.
+ * Save an office document buffer: upload to OneDrive when Microsoft is connected (file_id and share link
+ * returned), else save locally under ~/.dojo/uploads/<agentId>/<filename> like the PDF tools. The result
+ * names what is available next (file_id edits or a local path).
  */
 async function saveOfficeBuffer(
   buffer: Buffer,
@@ -1306,21 +1213,17 @@ async function saveOfficeBuffer(
   kind: 'word' | 'excel' | 'powerpoint',
 ): Promise<string> {
   const { isMicrosoftConnected } = await import('./auth.js');
-  // OneDrive is the destination ONLY for the primary agent (owner decision
-  // 2026-07-03: mutating the connected Microsoft account is primary-only,
-  // while a LOCAL office doc is just a file on disk, allowed for ANY agent
-  // under its file_write manifest). Pre-fix this branch keyed on connection
-  // alone, so the moment Microsoft was connected a sub-agent's create was
-  // classified as an account write upstream and DENIED instead of falling
-  // back to the local path it is entitled to.
+  // OneDrive is the destination only for the primary agent: mutating the connected Microsoft account is
+  // primary-only, while a local office doc is a file on disk allowed for any agent under its file_write
+  // manifest. Keying on connection alone would classify a sub-agent's create as an account write and deny
+  // it upstream.
   const { getPrimaryAgentId } = await import('../config/platform.js');
   if (isMicrosoftConnected('agent') && agentId === getPrimaryAgentId()) {
     const result = await uploadToOneDrive(buffer, filename, mimeType, folderId, agentId);
     const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
     return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
   }
-  // Local fallback. Mirror the PDF tools' uploads-dir pattern so every
-  // agent-generated file lives in one predictable place.
+  // Local fallback: the PDF tools' uploads-dir pattern, so generated files live in one predictable place.
   const dir = path.join(homeDir(), '.dojo', 'uploads', agentId);
   if (!effectFs.existsSync(dir)) effectFs.mkdirSync(dir, { recursive: true });
   const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -1328,10 +1231,8 @@ async function saveOfficeBuffer(
   effectFs.writeFileSync(outPath, buffer);
   const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
   const shareLine = `To give the person you are talking to a downloadable URL for this file, call share_file with path="${outPath}" — do NOT invent or guess a URL.`;
-  // Word and Excel are editable IN PLACE on disk — their edit tools accept a
-  // local `path`. This is the key affordance: without it the model regenerates
-  // the whole file on every change and the canvas churns. PowerPoint edits still
-  // need the Graph connection.
+  // Word and Excel are editable IN PLACE on disk (their edit tools accept a local `path`), so the model
+  // need not regenerate the whole file on every change. PowerPoint edits still need the Graph connection.
   if (kind === 'word') {
     return (
       `Word document created locally at ${outPath} (${buffer.length} bytes). ` +
@@ -1375,8 +1276,7 @@ async function uploadToOneDrive(
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType },
     body: buffer,
-    // t114 (U12): THE LEG THAT DISCARDS WORK. The re-zipped document is in hand, so its size is
-    // a measured fact and the deadline is sized from it instead of from a flat minute.
+    // The re-zipped document is in hand, so its measured size sizes the deadline.
     signal: AbortSignal.timeout(officeTimeoutForBytes(OFFICE_WRITE_BASE_TIMEOUT_MS, buffer.byteLength)),
   });
 
@@ -1406,14 +1306,10 @@ async function uploadToOneDrive(
 
 // ── Word Document Generation ──
 
-// All Office packages are dynamically imported since they may not be installed yet.
-// TypeScript uses 'any' for these — the packages are optional runtime dependencies.
+// Office packages are dynamically imported since they may not be installed yet; they are typed `any`
+// because they are optional runtime dependencies.
 
-/**
- * Page dimensions in DXA (1440 DXA = 1 inch). Defaults to US Letter
- * because docx-js's own default is A4, which silently produces wrong
- * margins for US users.
- */
+/** Page dimensions in DXA (1440 DXA = 1 inch). Defaults to US Letter; docx-js's own default is A4. */
 export const PAGE_SIZES_DXA: Record<string, { width: number; height: number }> = {
   letter:  { width: 12240, height: 15840 },
   a4:      { width: 11906, height: 16838 },
@@ -1421,17 +1317,12 @@ export const PAGE_SIZES_DXA: Record<string, { width: number; height: number }> =
   tabloid: { width: 15840, height: 24480 },
 };
 
-/**
- * Reference for content-width math: page width minus left+right margin
- * (in DXA). Used to size full-width tables and column-width arithmetic.
- */
+/** Content width in DXA: page width minus left and right margin, for full-width tables and column math. */
 export function contentWidthDxa(pageW: number, marginInches: number): number {
   return pageW - Math.round(marginInches * 1440 * 2);
 }
 
-/**
- * Map the agent-friendly align string to docx-js AlignmentType.
- */
+/** Map the agent-friendly align string to docx-js AlignmentType. */
 function resolveAlign(docx: any, align?: string): any { // eslint-disable-line @typescript-eslint/no-explicit-any
   switch (align) {
     case 'center':    return docx.AlignmentType.CENTER;
@@ -1443,10 +1334,8 @@ function resolveAlign(docx: any, align?: string): any { // eslint-disable-line @
 }
 
 /**
- * Build the styles config that docx-js attaches to the Document. We
- * override the built-in Heading 1/2/3 styles so they use the chosen
- * default font and include outlineLevel (required for Word's
- * navigation pane and Table of Contents to find them).
+ * Styles config for the Document: overrides Heading 1/2/3 to use the chosen default font and include
+ * outlineLevel (needed for Word's navigation pane and Table of Contents).
  */
 function buildStylesConfig(docx: any, defaultFont: string, defaultSizeHalfPt: number): any { // eslint-disable-line @typescript-eslint/no-explicit-any
   return {
@@ -1473,11 +1362,7 @@ function buildStylesConfig(docx: any, defaultFont: string, defaultSizeHalfPt: nu
   };
 }
 
-/**
- * Numbering config providing two refs: 'bullets' (•) and 'numbers' (1. 2. 3.).
- * Both indented 0.5", hanging 0.25". docx-js requires this; raw unicode
- * bullets in paragraph text break list semantics in some Word versions.
- */
+/** Numbering config with refs 'bullets' and 'numbers', indented 0.5" with a 0.25" hanging indent. */
 function buildNumberingConfig(docx: any): any { // eslint-disable-line @typescript-eslint/no-explicit-any
   return {
     config: [
@@ -1501,11 +1386,7 @@ function buildNumberingConfig(docx: any): any { // eslint-disable-line @typescri
   };
 }
 
-/**
- * Convert a TextRunSpec into a docx-js run object. Returns either a
- * single object (TextRun, InternalHyperlink, ExternalHyperlink, etc.)
- * or null if the spec is invalid for its kind.
- */
+/** Convert a TextRunSpec into a docx-js run object, or null if the spec is invalid for its kind. */
 function buildRunFromSpec(
   docx: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   spec: TextRunSpec,
@@ -1554,9 +1435,8 @@ function buildRunFromSpec(
     case 'tab':
       return new docx.TextRun({ children: ['\t'], ...formatting });
     case 'tracked_insert':
-      // docx-js InsertedTextRun wraps a TextRun in a <w:ins> element
-      // with author + date attributes — Word reads it as an editorial
-      // insertion the recipient can accept or reject in the Review tab.
+      // docx-js InsertedTextRun wraps a TextRun in a <w:ins> element with author and date; Word shows it as
+      // an insertion the recipient can accept or reject in the Review tab.
       return new docx.InsertedTextRun({
         text,
         ...formatting,
@@ -1579,9 +1459,6 @@ function buildRunFromSpec(
   }
 }
 
-/**
- * Resolve a paragraph's tab stops into docx-js TabStop config.
- */
 function buildTabStops(docx: any, stops: NonNullable<ContentBlock['tab_stops']>): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
   return stops.map((s) => {
     const typeMap: Record<string, any> = { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -1598,9 +1475,6 @@ function buildTabStops(docx: any, stops: NonNullable<ContentBlock['tab_stops']>)
   });
 }
 
-/**
- * Convert a heading level number into the docx-js HeadingLevel enum.
- */
 function resolveHeadingLevel(docx: any, level?: number): any { // eslint-disable-line @typescript-eslint/no-explicit-any
   switch (level) {
     case 2: return docx.HeadingLevel.HEADING_2;
@@ -1613,9 +1487,6 @@ function resolveHeadingLevel(docx: any, level?: number): any { // eslint-disable
   }
 }
 
-/**
- * Build one TableCell with proper width, margins, and optional shading.
- */
 function buildTableCell(
   docx: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   input: TableCellInput,
@@ -1648,11 +1519,7 @@ function buildTableCell(
   });
 }
 
-/**
- * Render a single ContentBlock into one or more docx-js child objects
- * (paragraphs, tables, TOC entries, etc.). Returns an array; most blocks
- * produce a single element, lists produce one element per item, etc.
- */
+/** Render one ContentBlock into docx-js child objects (paragraphs, tables, TOC entries, list items). */
 function renderBlock(
   docx: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   block: ContentBlock,
@@ -1916,18 +1783,9 @@ async function generateWordBuffer(blocks: ContentBlock[], options: WordDocOption
   return Buffer.from(await docx.Packer.toBuffer(doc));
 }
 
-// ── Excel Generation ──
-//
-// Pre-rewrite this used SheetJS (xlsx) and accepted only plain string
-// values. That gave the agent no way to write formulas, number formats,
-// colors, comments, or column widths — every spreadsheet came out as
-// undifferentiated grey text. Switching to ExcelJS opens the full
-// styling surface without adding native dependencies.
-//
-// The schema stays backward-compatible: rows of plain strings still
-// work and render exactly as before. Anywhere a cell can be a string,
-// it can now alternatively be a CellSpec object with formula / style /
-// number_format / etc.
+// Excel generation uses ExcelJS, which opens the full styling surface (formulas, number formats, colors,
+// comments, column widths) without native dependencies. Rows of plain strings still work; anywhere a cell
+// can be a string it can instead be a CellSpec object.
 
 /** One cell in a sheet. Plain primitives are rendered as values; objects unlock styling. */
 type ExcelCellInput = string | number | boolean | null | undefined | ExcelCellSpec;
@@ -1945,7 +1803,7 @@ interface ExcelCellFont {
 interface ExcelCellSpec {
   /** Literal value. Numbers stay numeric; strings stay text; booleans stay boolean. */
   value?: string | number | boolean | null;
-  /** Excel formula. Leading '=' is optional — the renderer adds it if missing. */
+  /** Excel formula. Leading '=' is optional; the renderer adds it if missing. */
   formula?: string;
   /** Excel number format string. Examples: "$#,##0.00", "0.0%", "yyyy-mm-dd", "[Red](#,##0)". */
   number_format?: string;
@@ -2108,23 +1966,10 @@ async function generateExcelBuffer(sheets: ExcelSheetSpec[]): Promise<Buffer> {
   return Buffer.from(buf as ArrayBuffer);
 }
 
-// ── PowerPoint Generation ──
-//
-// Pre-rewrite this generated single-layout title+body slides with hard-
-// coded x/y positioning. Every deck looked identical and there was no
-// way to add shapes, images, tables, or speaker notes. The rewrite adds:
-//   - A deck-level theme (colors + font pair + 4:3 vs 16:9 slide size)
-//   - Seven layout presets (title, content, two_column, comparison,
-//     big_stat, image, blank) that auto-place common content
-//   - Free-form `elements[]` per slide for shapes, images, text boxes,
-//     tables — each with explicit x/y/w/h
-//   - Rich text runs with per-run formatting
-//   - Bullet + numbered lists
-//   - Speaker notes
-//   - Slide background overrides
-//
-// Backward compatible: a slide with only `{ title, body }` still
-// renders exactly like before, with no theme changes.
+// PowerPoint generation: a deck-level theme (colors, font pair, 4:3 or 16:9), seven layout presets (title,
+// content, two_column, comparison, big_stat, image, blank) that auto-place content, free-form `elements[]`
+// per slide with explicit x/y/w/h, rich text runs, lists, speaker notes and background overrides. A slide
+// with only `{ title, body }` renders with no theme changes.
 
 interface PptxTheme {
   /** Brand primary color (hex without #). Used for titles + accent shapes when nothing more specific is set. */
@@ -2325,9 +2170,7 @@ function pptxShapeType(docx: any, kind: PptxShape['shape_type']): unknown { // e
   return docx.ShapeType?.[map[kind]] ?? map[kind];
 }
 
-/**
- * Render one PptxElement onto a slide. `s` is the pptxgenjs slide handle.
- */
+/** Render one PptxElement onto a slide; `s` is the pptxgenjs slide handle. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function renderPptxElement(PptxGenJS: any, s: any, el: PptxElement, theme: ResolvedTheme): void {
   switch (el.type) {
@@ -2355,10 +2198,8 @@ function renderPptxElement(PptxGenJS: any, s: any, el: PptxElement, theme: Resol
         line: el.border_hex ? { color: el.border_hex, width: el.border_pt ?? 1 } : undefined,
       });
       if (el.text !== undefined) {
-        // Text-in-shape is implemented by overlaying a text box at the
-        // same coordinates — pptxgenjs supports text on shapes only when
-        // the text is supplied at addShape time as the second arg of the
-        // newer API. Overlay works across versions.
+        // Text-in-shape is a text box overlaid at the same coordinates: pptxgenjs only takes text on a
+        // shape at addShape time in its newer API, and the overlay works across versions.
         s.addText(pptxRuns(el.text, el.text_color ?? theme.text, theme.bodyFont), {
           x: el.x, y: el.y, w: el.w, h: el.h,
           fontSize: el.text_size,
@@ -2414,10 +2255,7 @@ function renderPptxElement(PptxGenJS: any, s: any, el: PptxElement, theme: Resol
   }
 }
 
-/**
- * Auto-place layout-driven content (title, body, etc.) before any
- * free-form `elements[]` get rendered on top.
- */
+/** Auto-place layout-driven content (title, body, ...) before free-form `elements[]` render on top. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function placeLayoutContent(PptxGenJS: any, s: any, slide: PptxSlide, theme: ResolvedTheme, slideW: number): void {
   // The seven layouts each have a default content placement. Anything
@@ -2611,20 +2449,12 @@ async function generatePptxBuffer(
 
 
 /**
- * Three tiers of gating (see the filter in agent/tools.ts):
- *   - CREATE tools work locally: they only need the npm packages (docx,
- *     exceljs, pptxgenjs) and write to disk. Granted to every agent.
- *   - LOCAL EDIT/READ tools (Word AND Excel) also work locally: they accept a
- *     `path` and read/manipulate/write the .docx or .xlsx on disk (they still
- *     accept a OneDrive file_id when Microsoft is connected). Granted alongside
- *     the creates so a local-only setup can EDIT in place instead of
- *     regenerating. Exposed as two honestly-named arrays,
- *     officeWordEditToolDefinitions and officeExcelEditToolDefinitions, so the
- *     array name cannot hide that Excel is a local-granted member (that mislabel
- *     is what dropped all 11 from the docs index).
- *   - The remaining EDIT/READ tools (PowerPoint slide ops and any other
- *     Graph-backed office op) genuinely need the Graph connection, so they stay
- *     gated behind full Microsoft access.
+ * Three tiers of gating (see the filter in agent/tools/surface.ts):
+ * CREATE tools work locally and go to every agent;
+ * LOCAL EDIT/READ tools (Word and Excel, via `path`) are granted with them so a local-only setup can edit in
+ * place (they also accept a OneDrive file_id when connected); the remaining PowerPoint and Graph-backed ops
+ * need full Microsoft access. Word and Excel are separate arrays (officeWordEditToolDefinitions,
+ * officeExcelEditToolDefinitions) so a name cannot hide that Excel is a local-granted member.
  */
 const OFFICE_CREATE_TOOL_NAMES = new Set([
   'office_create_word_document',
@@ -2652,11 +2482,8 @@ const OFFICE_LOCAL_EDIT_TOOL_NAMES = new Set([...OFFICE_WORD_EDIT_TOOL_NAMES, ..
 export const officeCreateToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_CREATE_TOOL_NAMES.has(t.name));
 // Word edit/read tools, local-capable (path-based), granted without Microsoft.
 export const officeWordEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_WORD_EDIT_TOOL_NAMES.has(t.name));
-// Excel range/sheet edit tools, ALSO local-capable (path-based) and granted
-// without Microsoft alongside the Word set. This is its own honestly-named
-// array on purpose: folding these into a "Word" list is exactly what let all
-// 11 local edit tools drop out of the docs index (getAllToolDefinitions),
-// so load_tool_docs answered "Tools not found" for tools the model could see.
+// Excel range/sheet edit tools, also local-capable and granted without Microsoft; a separate array so
+// its name says Excel (surface.ts and getAllToolDefinitions both list it).
 export const officeExcelEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_EXCEL_EDIT_TOOL_NAMES.has(t.name));
 // Everything else (PowerPoint edit/read), Graph-only, Microsoft required.
 export const officeEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(
@@ -2678,10 +2505,8 @@ export async function executeOfficeTool(
         const blocks = args.content as ContentBlock[];
         const folderId = args.folder_id as string | undefined;
 
-        // Top-level document options (page setup, default font,
-        // headers/footers, footnotes, columns). Anything omitted falls
-        // back to the renderer's sensible defaults (US Letter, 1"
-        // margins, Arial 12pt, full-width tables).
+        // Top-level document options (page setup, default font, headers/footers, footnotes, columns);
+        // anything omitted falls back to the renderer's defaults.
         const docOptions: WordDocOptions = {
           page_size: args.page_size as WordDocOptions['page_size'],
           orientation: args.orientation as WordDocOptions['orientation'],
@@ -2711,8 +2536,6 @@ export async function executeOfficeTool(
         if (typeof target === 'string') return target;
         const blocks = args.content as ContentBlock[];
 
-        // v2.5.10 — actually append now. Previously this re-generated the
-        // doc from scratch and overwrote the original (despite the name).
         const existingBuffer = await target.read();
         const zip = await JSZip.loadAsync(existingBuffer);
         const docFile = zip.file('word/document.xml');
@@ -2823,7 +2646,7 @@ export async function executeOfficeTool(
             lines.push(b.text || '');
             lines.push('');
           } else {
-            // table — render as markdown table
+            // table: render as markdown table
             const rows = b.rows;
             if (rows.length === 0) {
               lines.push('[empty table]');
@@ -2841,7 +2664,7 @@ export async function executeOfficeTool(
             lines.push('');
           }
         }
-        // v3.5 K33: the document is outside text; the "next slice" call is the platform's.
+        // The document is outside text; the "next slice" call is the platform's.
         const more = offset + parsed.length < totalBlocks
           ? `\n[truncated — ${totalBlocks - offset - parsed.length} more blocks. Call office_read_word_document(${target.isLocal ? `path="${target.handle}"` : `file_id="${target.handle}"`}, offset=${offset + parsed.length}) for the next slice.]`
           : '';
@@ -2967,7 +2790,7 @@ export async function executeOfficeTool(
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
 
-        // Resolve sheet name if not specified — use the first one
+        // Resolve sheet name if not specified: use the first one
         const sheetSegment = sheetName
           ? `worksheets('${odataQuoted(sheetName)}')`
           : `worksheets/$/Default`; // workbook default sheet
@@ -3181,13 +3004,10 @@ export async function executeOfficeTool(
         const sheets = args.sheets as ExcelSheetSpec[];
         const folderId = args.folder_id as string | undefined;
 
-        // Schema-mismatch detection. The unknownArgsWarning gate at
-        // tools.ts only checks top-level args, so nested wrong patterns
-        // (sheet-level `formulas`, `columns`, `header_row`, etc.) used
-        // to slip through silently and the agent's intended formatting
-        // or formulas would be dropped without any indication. This
-        // explicit check refuses the call with a corrective example
-        // pointing at the right per-cell pattern.
+        // Schema-mismatch check: the engine's unknown-args check (agent/tools/unknown-args-refusal.ts)
+        // sees only top-level args, so nested wrong patterns (sheet-level `formulas`, `columns`,
+        // `header_row`) would be dropped silently. Refuse the call with a corrective example pointing at
+        // the per-cell pattern.
         const KNOWN_SHEET_KEYS = new Set([
           'name', 'rows', 'column_widths', 'freeze_rows', 'freeze_cols',
           'default_header_row', 'zoom_pct', 'hidden',
@@ -3293,7 +3113,7 @@ export async function executeOfficeTool(
           }
           lines.push('');
         }
-        // v3.5 K33: the deck is outside text; the "next slice" call is the platform's.
+        // The deck is outside text; the "next slice" call is the platform's.
         const more = offset + slides.length < totalSlides
           ? `\n[truncated — ${totalSlides - offset - slides.length} more slides. Call office_read_presentation(file_id="${fileId}", offset=${offset + slides.length}) for the next slice.]`
           : '';
@@ -3488,7 +3308,7 @@ export async function executeOfficeTool(
         // Parse the existing <p:sldId> list and rebuild with the new entry inserted at `position`.
         const sldIdsList = [...presXml.matchAll(/<p:sldId[^>]*\/?>/g)].map((mm2) => mm2[0]);
         if (sldIdsList.length === 0) {
-          // No existing list — insert one inside <p:sldIdLst>
+          // No existing list: insert one inside <p:sldIdLst>
           presXml = presXml.replace(/<p:sldIdLst\s*\/?>/, `<p:sldIdLst>${newSldIdEntry}</p:sldIdLst>`);
         } else {
           const newList = [...sldIdsList];

@@ -524,16 +524,11 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
-// v2.7.0 multi-account: user_* tool variants. Same shape as the Google
-// generator in tools-read.ts — for each canonical tool name, emit a
-// `user_*` counterpart wired to the User slot. Always emitted so static
-// importers (agent/tools.ts) get the full surface at startup.
-// Full-parity (2026-06-17): every Microsoft read tool gets a user-slot
-// variant. Every read case threads the resolved `slot` into msGraphRead
-// (compiler-verified), so the variant reads the user's account and is gated
-// by isMsToolEnabledByService (User slot connected AND service enabled).
-// Snapshot the base list first so we don't iterate over appended variants.
+// User-slot variants: every read tool gets a `user_*` counterpart wired to the User slot, always emitted so
+// static importers (agent/tools/definitions.ts, surface.ts, index.ts) see the full surface at startup.
+// Every read case threads the resolved `slot` into msGraphRead, so the variant reads the user's account
+// and is gated by isMsToolEnabledByService (User slot connected AND service enabled). The base list is
+// snapshotted so variants are not iterated.
 const microsoftReadBaseTools = [...microsoftReadToolDefinitions];
 for (const baseDef of microsoftReadBaseTools) {
   const canonical = baseDef.name;
@@ -544,8 +539,8 @@ for (const baseDef of microsoftReadBaseTools) {
   });
 }
 
-// with the v2 partitioner / cap registry. tools.ts imports this module
-// statically, so registration happens at app startup.
+// Register concurrency and maxResultTokens with the v2 partitioner / cap registry; agent/tools/index.ts
+// imports this module statically, so registration happens at app startup.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { compactCountNote } from '../agent/tool-helpers.js';
@@ -554,8 +549,8 @@ for (const def of microsoftReadToolDefinitions) {
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
 }
 
-// Path B (multi-account): every Microsoft read tool can target a specific
-// connected account of its kind via an `account` param (the account's email).
+// Every Microsoft read tool can target a specific connected account of its kind via an `account` param
+// (the account's email).
 for (const def of microsoftReadToolDefinitions) {
   const schema = def.input_schema as { properties?: Record<string, unknown> };
   if (schema.properties && !schema.properties.account) {
@@ -569,14 +564,9 @@ for (const def of microsoftReadToolDefinitions) {
 // ── Tool Execution ──
 
 
-// ════════════════════════════════════════
-// F4: shared per-account FETCH helpers (mirror google/tools-read.ts).
-//
-// The narrow `calendar_agenda_ms` / `outlook_search` cases and the merged
-// tools/unified-read.ts executors both call these — one fetch path, two
-// renderers. Structured items out; the narrow-case rendering downstream stays
-// byte-for-byte what it was. Import direction is one-way (unified-read -> here).
-// ════════════════════════════════════════
+// Shared per-account fetch helpers (mirror google/tools-read.ts): the narrow `calendar_agenda_ms` and
+// `outlook_search` cases and the merged tools/unified-read.ts executors both call these, one fetch path and
+// two renderers. The import direction is one-way (unified-read imports from here).
 
 /** Normalized calendar event, provider-agnostic once times are parsed to Dates. */
 export interface MsAgendaFetchItem {
@@ -600,7 +590,7 @@ export interface MsMailFetchItem {
   dateDisplay: string;
   dateSortMs: number;
   snippet: string;
-  /** Raw Graph isRead flag (see outlook_search: its label expression is inverted; unified uses this correctly). */
+  /** Raw Graph isRead flag. */
   read: boolean | undefined;
 }
 
@@ -646,13 +636,10 @@ export async function fetchAgendaItemsForAccountMs(
 }
 
 /**
- * Escape a query for use inside Graph's OData `$search="..."` quoted string.
- * Graph's KQL parser treats an unescaped `"` as the closing wrapper quote, so a
- * phrase like subject:"Weekly Brief - Monday" closes the wrapper early and the
- * bare `-` becomes an invalid NOT operator at that position (the deterministic
- * RC-6 failure). Backslash-escape `\` first (so the escapes we add are not
- * themselves re-escaped), then `"`. Runs before encodeURIComponent so the
- * literal backslash and quote survive URL encoding into the request.
+ * Escape a query for Graph's OData `$search="..."` quoted string. An unescaped `"` closes the wrapper
+ * early, so subject:"Weekly Brief - Monday" leaves a bare `-` as an invalid NOT operator. Backslash-escape
+ * `\` first (so the added escapes are not re-escaped), then `"`. Runs before encodeURIComponent so both
+ * survive it.
  */
 export function escapeGraphSearch(q: string): string {
   return q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -708,12 +695,8 @@ export async function searchMailForAccountMs(
   return { ok: true, items };
 }
 
-// F4 data floor: the narrow read cases below no longer nudge with an advice
-// note (a weak model ignored it and answered from one surface). They now append
-// the ACTUAL other-surface data via otherCalendarsAgendaSection /
-// otherMailboxesCountSection (tools/unified-read.ts). The requirement the old
-// unifiedCoverageNote encoded — a narrow result must never read as the whole
-// picture — is preserved, strictly better, by carrying the data itself.
+// The narrow read cases below append the actual other-surface data (otherCalendarsAgendaSection and
+// otherMailboxesCountSection, tools/unified-read.ts), so a narrow result never reads as the whole picture.
 
 export async function executeMicrosoftReadTool(
   name: string,
@@ -732,13 +715,9 @@ export async function executeMicrosoftReadTool(
   }
 
 
-  // READ resolver (Issue 2, 2026-07-08): a narrow read on a multi-account slot
-  // defaults to the primary connected account instead of bouncing with an
-  // ask-which-account error (that stays on the WRITE side, deliberately). When the
-  // slot has >1 connected account, `labelAccount` is set so the result names the
-  // account it read (self-describing header), and the F4 "also checked" block
-  // surfaces the other accounts. This is the fix for the live divergence where a
-  // narrow MS calendar read returned the primary with an unlabeled header.
+  // READ resolver: a narrow read on a multi-account slot defaults to the primary connected account (the
+  // write side keeps the ask-which-account error). With >1 connected account `labelAccount` is set so the
+  // result names the account it read, and the "also checked" block surfaces the other accounts.
   const { resolveMicrosoftAccountForRead } = await import('./accounts.js');
   const resolved = resolveMicrosoftAccountForRead(kind, args.account as string | undefined);
   if ('error' in resolved) return `Error: ${resolved.error}`;
@@ -754,8 +733,8 @@ export async function executeMicrosoftReadTool(
       const fetched = await searchMailForAccountMs(slot, query, maxResults, agentId, agentName);
       if (!fetched.ok) return `Error searching Outlook: ${fetched.error}`;
 
-      // F4 data floor: the SAME query run against every OTHER connected mailbox,
-      // counts only, so a single-mailbox search never reads as the whole picture.
+      // The SAME query run against every OTHER connected mailbox, counts only, so a single-mailbox
+      // search never reads as the whole picture.
       const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
       const others = await otherMailboxesCountSection({ provider: 'microsoft', accountId: slot }, query, 0, agentId, agentName);
 
@@ -763,12 +742,10 @@ export async function executeMicrosoftReadTool(
       if (fetched.items.length === 0) return `No emails found matching that query${inAcct}.` + others;
 
       const emails = fetched.items.map(m => {
-        // Tag UNREAD mail (pre-existing inversion labeled READ mail instead;
-        // fixed 2026-07-07, outlook_inbox and the merged email_search already
-        // had the correct sense).
+        // Tag UNREAD mail (outlook_inbox and the merged email_search use the same sense).
         const unread = m.read ? '' : ' [UNREAD]';
         if (verbose) return `${unread.trim()}ID: ${m.id}\nFrom: ${m.from}\nSubject: ${m.subject}\nDate: ${m.dateDisplay}\nPreview: ${m.snippet}${conversationLine(m.conversationId)}`;
-        // Compact: one line per email — drop preview body, keep date+sender+subject+unread.
+        // Compact: one line per email, drops the preview body, keeps date+sender+subject+unread.
         return `-${unread} ${m.dateDisplay} | ${m.from} — ${m.subject}\n  ID: ${m.id}${conversationLine(m.conversationId, '\n  ')}`;
       });
 
@@ -804,8 +781,8 @@ export async function executeMicrosoftReadTool(
         body = stripHtmlTags(body);
       }
 
-      // Phase 3.5 (2026-05-04) — paginated body. Headers always included; the
-      // body slices to ~12K chars by default with offset/limit pagination.
+      // Paginated body: headers are always included; the body slices to ~12K chars by default
+      // (offset/limit).
       const pagedBody = applyTextPagination(
         body,
         'outlook_read',
@@ -815,7 +792,8 @@ export async function executeMicrosoftReadTool(
       );
 
       const { formatTimeForAgent: fmtTime1 } = await import('../services/format-time.js');
-      // v3.5 K33: the headers and the body are the sender's; the paging trailer and the thread line are the platform's.
+      // The headers and the body are the sender's; the paging trailer and the thread line are the
+      // platform's.
       let output = `${outsideSpan(`From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${fmtTime1(m.receivedDateTime)}`)}\n\n${pagedBody}${conversationLine(m.conversationId, '\n\n')}`;
       if (m.hasAttachments) output += '\n\nAttachments: yes';
       return output;
@@ -856,9 +834,8 @@ export async function executeMicrosoftReadTool(
       const fetched = await fetchAgendaItemsForAccountMs(slot, window, agentId, agentName, { calendarId, days });
       if (!fetched.ok) return `Error fetching calendar: ${fetched.error}`;
 
-      // F4 data floor: the SAME window fetched from every OTHER connected
-      // calendar surface, compact + labeled, so a single-calendar agenda never
-      // reads as the whole day (advice notes were ignored by the floor model).
+      // The SAME window fetched from every OTHER connected calendar surface, compact and labeled, so a
+      // single-calendar agenda never reads as the whole day.
       const tz = requestedTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
       const { otherCalendarsAgendaSection } = await import('../tools/unified-read.js');
       const others = await otherCalendarsAgendaSection({ provider: 'microsoft', accountId: slot }, window, tz, days, agentId, agentName);
@@ -979,8 +956,7 @@ export async function executeMicrosoftReadTool(
           if (f.webUrl) line += `\n  URL: ${f.webUrl}`;
           return line;
         }
-        // Compact: one line per item. Date-only is fine in compact mode —
-        // there's no time-of-day ambiguity to misread.
+        // Compact: one line per item. Date-only is fine here, there is no time-of-day ambiguity to misread.
         const shortType = f.folder ? `folder (${f.folder.childCount})`
           : (f.file?.mimeType?.includes('word') ? 'doc'
           : f.file?.mimeType?.includes('sheet') ? 'sheet'

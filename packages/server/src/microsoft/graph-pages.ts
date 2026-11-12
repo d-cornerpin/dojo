@@ -29,10 +29,9 @@ export async function readAllPages<T = unknown>(
   return { ok: true, value: limit !== undefined ? value.slice(0, limit) : value };
 }
 
-/** A Teams message body for the read result: cut at 500 characters, and a cut says so (P7: the agent must be able to tell it was shortened). */
+/** Teams message body for the read result: cut at 500 characters, and a cut says so to the agent. */
 export function teamsBodyShown(body: string): string {
   return body.length > 500 ? `${body.slice(0, 500)}… [truncated; ${body.length} chars]` : body;
 }
 
-/** A chat or channel message as the Teams reads use it. */
 export type TeamsMessage = { id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string };
