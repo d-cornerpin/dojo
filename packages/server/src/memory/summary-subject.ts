@@ -1,36 +1,18 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t144 — WHICH ONE CONVERSATION A ROW, AND SO A CONDENSED NOTE, BELONGS TO.
-//
-// Tracker #12 RC3, OR-V333-SET (8), OR-LABEL-NOT-HIDE. The condensing engine used to chunk an
-// agent's rows AGENT-WIDE, so one note held the owner's dashboard request and an email thread's
-// notices, and a majority vote then named it after whichever conversation had more rows. A note is
-// now written about ONE conversation, and says which in view — labelled, never hidden: every note
-// of every conversation stays in the agent's view.
-//
-// THE KEY is a pure function of the row's STORED columns (the same facts t141's row label reads):
-//   conv:<conversation id>   a person's conversation (dashboard, iMessage, an email thread, …)
-//   a2a:<thread id>          an agent-to-agent thread
-//   engine                   engine events (scheduled tasks, reminders, system notices)
-//   background               the agent's work on a wake that served no conversation
-//   unknown                  nothing on record says which conversation
-// A `system` row has no subject of its own: it travels with the row before it (a divider or a
-// no-reply marker belongs to the turn it closes). `several` is never a row's key: it is the one
-// honest name for a condensed note that OR-COMPACT-1's last resort had to merge across
-// conversations (each conversation is then named inside it).
-//
-// THE LABEL is rendered from the key with t141's `LabelFacts` — the same words the tail's own
-// block headers use for that conversation, so a note and the rows it came from name it alike. Cache
-// law (G2): stored columns only, never the turn or the clock; it moves once per agent, at upgrade.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Which ONE conversation a row, and so a condensed note, belongs to: a note is written about one conversation and
+// labelled with it, never hidden. The KEY is a pure function of the row's STORED columns: `conv:<conversation id>`
+// (a person's conversation), `a2a:<thread id>`, `engine`, `background` (a wake that served no conversation) or
+// `unknown`. A `system` row has no subject of its own and travels with the row before it. `several` is never a
+// row's key: it names a note merged across conversations as a last resort. The LABEL is rendered from the key with
+// `LabelFacts`, the same words the tail's block headers use; stored columns only, never the turn or the clock.
 import type { Message } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { LabelFacts, labelText } from './row-label.js';
 import { renderInstant } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
 
-/** A condensed note merged across conversations (OR-COMPACT-1's last resort only). */
+/** A condensed note merged across conversations (the last resort only). */
 export const SEVERAL_SUBJECTS = 'several';
-/** Notes written before this release about more than one conversation (migration 192). */
+/** Notes written about more than one conversation before notes were per-conversation (migration 192). */
 export type RebuildState = 'legacy_mixed' | 'legacy_mixed_rebuild' | 'lineage_lost';
 
 type KeyedRow = Pick<Message, 'role' | 'conversationId' | 'a2aThreadId' | 'sourceAgentId' | 'origin'> & { subjectKind?: SubjectKind | null };
@@ -97,7 +79,6 @@ export function lineageOf(key: string | null): { conversationId: string | null; 
 
 const day = (at: string): string => (renderInstant(at) ?? at).split(',').slice(0, 2).join(',');
 
-/** The conversation a note is labelled with in view (and in the condenser's input). */
 export function summaryConversationLabel(
   s: { subjectKey?: string | null; rebuildState?: string | null; earliestAt: string; latestAt: string }, facts: LabelFacts,
 ): string {
@@ -128,12 +109,9 @@ export function conversationLabels(rows: readonly Message[]): { one: boolean; la
 
 const QUEUED_STATE = 'legacy_mixed_rebuild';
 
-/** Condensation batches (OR-COMPACT-1 unchanged in what it guarantees): a conversation's notes merge
- *  with its own first; notes from before this release merge only with others in the SAME state — a note
- *  queued for rebuild (`legacy_mixed_rebuild`) never joins older mixed notes, because its parent would
- *  then be "older mixed notes" and the rebuild the owner was promised would never reach it. Only when no
- *  conversation has two notes left to merge do batches cross conversations (never taking a queued note
- *  along) — the climb must still end. */
+/** Condensation batches: a conversation's notes merge with its own first; older mixed notes merge only with notes in
+ *  the SAME state (a note queued for rebuild never joins them, or its rebuild would never reach it). Only when no
+ *  conversation has two notes left do batches cross conversations, never taking a queued note, so the climb ends. */
 export function subjectBatches<T extends { subjectKey?: string | null; rebuildState?: string | null }>(rows: readonly T[], size: number): T[][] {
   const groups = new Map<string, T[]>();
   for (const r of rows) {

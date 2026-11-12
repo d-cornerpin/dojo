@@ -1,38 +1,16 @@
-// ════════════════════════════════════════════════════════════════════════
-// Nightly contaminated-summary rebuild (D20, owner approved 2026-07)
-//
-// Before the compaction noise filter existed (isNonConversationForSummary),
-// live compaction folded inter-agent plumbing (Dreamer cycle scaffolding,
-// PM pokes, inbound A2A envelopes, embedded SOUL prompts) into the context
-// summaries, and the summarizer's deterministic-truncation fallback stored
-// RAW message text (role tags, [SOURCE: …] envelopes) verbatim. Those
-// contaminated summaries are embedded + FTS-indexed, so they pollute memory
-// search, and condensation carries them upward into depth-1/2 summaries.
-//
-// This module regenerates flagged summaries from their DAG descendants
-// through the CURRENT summarization path and filter. It is:
-//   - self-limiting: once the stock is clean the nightly scan finds nothing;
-//     t144 (owner ruling 2026-10-13, no hard limits): no per-night count.
-//   - idempotent + crash-safe: there is no "done" flag anywhere. A summary
-//     is clean purely by virtue of its content no longer matching the
-//     contamination taxonomy; a crash mid-batch just means the next run
-//     re-scans and picks up where the content says to.
-//   - depth-ordered: leaves rebuild before condensed parents, and a
-//     condensed summary is deferred while any of its children still match,
-//     so re-cleaned content flows upward instead of re-condensing noise.
-//
-// This is deliberately NOT a boot migration: rebuilding needs LLM calls and
-// embedding refreshes; doing ~180 of those at startup would block boot for
-// many minutes and burn a visible chunk of money in one shot.
-// ════════════════════════════════════════════════════════════════════════
+// Nightly contaminated-summary rebuild: regenerates flagged summaries (inter-agent plumbing or raw message text that
+// reached them) from their DAG descendants through the CURRENT summarization path and filter.
+// Self-limiting (a clean stock finds nothing, no per-night count) and idempotent + crash-safe: there is no "done"
+// flag, a summary is clean because its content no longer matches the taxonomy. Leaves rebuild before condensed
+// parents, which wait while any child still matches. Deliberately NOT a boot migration: it needs LLM calls and
+// embedding refreshes that would block boot.
 
 import { NEW_SESSION_DIVIDER, A2A_INBOUND_ANYWHERE_RE, SOURCE_ENVELOPE_ANYWHERE_RE,
   NEW_SESSION_BRACKET_ANYWHERE_RE } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPlatformNoise } from './platform-noise.js';
-// PHASE-3 T5 Step 2: the counter SWEEP C reads to retire this file. Its own module —
-// one owner per job, and this file is the thing being measured, not the measurer.
+// Its own module: this file is the thing being measured, not the measurer.
 import { recordCleanStock, countSummaryStock } from './summary-clean-stock.js';
 import {
   isNonConversationForSummary,
@@ -55,30 +33,13 @@ import { estimateTokens } from './budget.js';
 
 const logger = createLogger('summary-rebuild');
 
-// STRIP (t144, owner ruling 2026-10-13 "no hard limits"): `NIGHTLY_SUMMARY_REBUILD_LIMIT` (30 per
-// night). A count decided how long the owner waited; real signals pace the run (`rebuild-signals.ts`).
-
-// ── Detection taxonomy ──
-//
-// Two layers, both derived from the SAME taxonomy the live filter enforces
-// on summary INPUT (memory/platform-noise.ts + the A2A inbound markers in
-// memory/compaction.ts):
-//
-// (1) Content-wide structural markers. These engine-generated envelopes and
-//     scaffolding strings can only be present in a summary because the noisy
-//     source rows were fed to (or echoed by) the summarizer. A summary
-//     regenerated through the current filter cannot re-acquire them, which is
-//     what makes "clean = no longer matches" a terminating condition.
-// (2) Per-line raw-noise check. The deterministic-truncation fallback stored
-//     raw chunk text ("[ROLE · party] content" lines) verbatim, so we strip a
-//     leading role tag from each line and re-apply the live message-level
-//     filter to what remains.
+// Two layers, both from the taxonomy the live filter enforces on summary INPUT (`memory/platform-noise.ts` and the
+// A2A inbound markers in `memory/compaction.ts`): (1) content-wide envelope/scaffolding markers a summary regenerated
+// through the current filter cannot re-acquire, which makes "clean = no longer matches" terminate; (2) a per-line
+// check that strips a leading role tag and re-applies the message-level filter.
 const SUMMARY_CONTAMINATION_PATTERNS: RegExp[] = [
-  // PHASE-3 T5: these were a hand-written UNANCHORED superset of platform-noise.ts's
-  // anchored list (research 06 §5's named pair) — wider on `PM AGENT POKE` (no ` FROM`),
-  // NARROWER on `[SOURCE: ENGINE`, neither difference deliberate. Both forms now come from
-  // the same prefix arrays. The bare poke form below is kept ON PURPOSE: a legacy row with
-  // no sender must still count as contamination.
+  // Both forms come from the same prefix arrays as platform-noise.ts. The bare poke form is kept ON PURPOSE: a legacy
+  // row with no sender must still count as contamination.
   A2A_INBOUND_ANYWHERE_RE,
   SOURCE_ENVELOPE_ANYWHERE_RE,
   /\[SOURCE: PM AGENT POKE/i,
@@ -90,25 +51,19 @@ const SUMMARY_CONTAMINATION_PATTERNS: RegExp[] = [
   /This is batch \d+ of \d+\b/i,
   /You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
   /\[CONTINUITY BRIEF/i,
-  // PHASE-1 T8: shape from @dojo/shared; membership in this contamination list stays local.
+  // Shape from @dojo/shared; membership in this contamination list stays local.
   new RegExp(NEW_SESSION_DIVIDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-  // PHASE-3 T5: required the closing bracket, so the dated `[New Session: …]` form was
-  // invisible to it. Same matcher as platform-noise.ts now.
   NEW_SESSION_BRACKET_ANYWHERE_RE,
 ];
 
-// "This conversation consists solely of tool calls…" filler summaries. The
-// phrase alone is not enough to flag (a legitimate rebuild of a narration-rich
-// chunk could phrase things similarly); the summary is filler only when its
-// descendants genuinely carry no conversational prose, in which case the
-// deterministic placeholder replaces it (no LLM call, guaranteed convergence).
+// "This conversation consists solely of tool calls" filler: flagged only when the descendants really carry no
+// conversational prose (the phrase alone is not enough); the deterministic placeholder replaces it, no LLM call.
 const TOOL_ONLY_FILLER_RE = /consists\s+(?:solely|entirely|only|purely)\s+of\s+(?:\w+\s+)?tool\s+calls/i;
 
 // Leading "[ROLE]" / "[ROLE · party]" tag on a raw-embedded line.
 const ROLE_TAG_RE = /^\s*\[(USER|ASSISTANT|SYSTEM|TOOL)\b[^\]]*\]\s*/i;
 
-// Minimum conversational-prose chars for a span to be worth an LLM summary.
-// Below this, the span is tool traffic/plumbing and gets the placeholder.
+// Below this many conversational-prose chars a span is tool traffic and gets the placeholder.
 const MIN_PROSE_CHARS = 120;
 
 function lineIsRawNoise(line: string): boolean {
@@ -116,7 +71,6 @@ function lineIsRawNoise(line: string): boolean {
   return isPlatformNoise(stripped) || isNonConversationForSummary(stripped);
 }
 
-/** True when summary CONTENT carries inter-agent/platform noise markers. */
 export function isContaminatedSummaryContent(content: string | null | undefined): boolean {
   if (!content) return false;
   for (const pat of SUMMARY_CONTAMINATION_PATTERNS) {
@@ -128,44 +82,34 @@ export function isContaminatedSummaryContent(content: string | null | undefined)
   return false;
 }
 
-// ── Summarizer input ──
-// PHASE-3 T5 Step 1c (E19): this file's `buildLeafInput` was a byte-identical copy of
-// compaction.ts's inline builder. This module's whole job is to REPLAY the summariser's
-// transformation and ask whether the result is still contaminated — so a second copy means
-// replaying a summariser that does not exist. ONE builder, imported.
+// The one leaf-input builder (compaction's): this module replays the summariser's transformation, so a second copy
+// would replay a summariser that does not exist.
 const buildLeafInput = buildLeafSummaryInput;
 
-/** Conversational prose remaining in a leaf input once role tags and the
- *  condensed tool one-liners ("(called tool …)" / "(tool result: …)") are
- *  stripped. Used to decide placeholder vs. LLM rebuild. */
+/** Conversational prose left in a leaf input once role tags and the condensed tool one-liners are stripped;
+ *  decides placeholder vs. LLM rebuild. */
 function proseChars(leafInput: string): number {
   let total = 0;
   for (const rawLine of leafInput.split('\n')) {
     const line = rawLine.replace(ROLE_TAG_RE, '').trim();
-    if (line.length === 0 || line === '---' || line.startsWith('CONVERSATION: ')) continue;   // t144's header is not prose
+    if (line.length === 0 || line === '---' || line.startsWith('CONVERSATION: ')) continue;   // the CONVERSATION header is not prose
     if (/^\(called tool /.test(line) || /^\(tool result/.test(line)) continue;
     total += line.length;
   }
   return total;
 }
 
-// ── Convergence guards ──
 
-/** Detect generateSummary's deterministic-truncation fallback (model call
- *  failed or output stayed oversized): the "summary" is then an echo of the
- *  raw input, exactly the failure mode that created this contamination in
- *  the first place. On fallback we SKIP the update and retry another night
- *  rather than replace an old LLM summary with a raw dump. */
+/** Detect generateSummary's deterministic-truncation fallback (an echo of the raw input, the failure that created
+ *  this contamination): SKIP the update and retry another night rather than replace an LLM summary with a raw dump. */
 function looksLikeSummarizerFallback(input: string, output: string): boolean {
   if (output.includes(' tokens truncated ...]')) return true;
   const probe = input.trim().slice(0, 80);
   return probe.length >= 80 && output.trim().startsWith(probe);
 }
 
-/** Deterministic finishing pass: drop any output line that still matches the
- *  taxonomy (e.g. a marker quoted out of a kept tool-result one-liner). This
- *  guarantees a rebuilt summary no longer matches, so the mechanism cannot
- *  loop on the same summary forever. */
+/** Drop any output line that still matches the taxonomy (e.g. a marker quoted from a kept tool-result one-liner),
+ *  so a rebuilt summary no longer matches and the mechanism cannot loop on it forever. */
 function scrubResidualContamination(text: string): { text: string; removedLines: number } {
   const lines = text.split('\n');
   const kept: string[] = [];
@@ -178,7 +122,6 @@ function scrubResidualContamination(text: string): { text: string; removedLines:
   return { text: kept.join('\n').trim(), removedLines: removed };
 }
 
-// ── Scan ──
 
 interface SummaryScanRow {
   id: string;
@@ -202,8 +145,7 @@ interface FlaggedSummary {
   reason: 'contaminated' | 'tool_only_filler';
 }
 
-/** Scan ALL summaries and return the ones still matching the taxonomy,
- *  ordered depth-ASC then oldest-first so leaves rebuild before parents. */
+/** Scan ALL summaries and return those still matching the taxonomy, depth-ASC then oldest-first (leaves first). */
 export function findContaminatedSummaries(): FlaggedSummary[] {
   const db = getDb();
   const rows = db.prepare(`
@@ -219,8 +161,7 @@ export function findContaminatedSummaries(): FlaggedSummary[] {
       continue;
     }
     if (row.kind === 'leaf' && TOOL_ONLY_FILLER_RE.test(row.content) && row.content !== NO_CONVERSATION_PLACEHOLDER) {
-      // Filler only if the descendants genuinely lack conversational prose;
-      // this keeps the predicate false on any content the rebuild can write.
+      // Filler only if the descendants lack conversational prose, so the predicate is false on rebuilt content.
       try {
         const msgs = getDescendantMessages(row.id);
         if (msgs.length > 0 && proseChars(buildLeafInput(msgs)) < MIN_PROSE_CHARS) {
@@ -245,7 +186,6 @@ function toFlagged(row: SummaryScanRow, reason: FlaggedSummary['reason']): Flagg
   };
 }
 
-// ── Rebuild one summary ──
 
 type RebuildOutcome =
   | 'rebuilt'       // regenerated through the current path + filter
@@ -261,24 +201,21 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
   if (flag.kind === 'leaf') {
     const msgs = getDescendantMessages(flag.id);
     if (msgs.length === 0) {
-      // Source messages were deleted; this summary is the sole remaining copy
-      // of that span. Never overwrite the only copy of anything.
+      // Source rows gone: this summary is the sole copy of the span, never overwrite it.
       logger.warn('Summary rebuild skipped: source messages gone, summary is the sole copy', {
         summaryId: flag.id, reason: flag.reason,
       }, flag.agentId);
       return 'skipped';
     }
     input = buildLeafInput(msgs);
-    spanIds = msgs.map((m) => m.id);   // the check's key: this summary's own span (t268 fix round 2)
+    spanIds = msgs.map((m) => m.id);   // the check's key: this summary's own span
     if (input.trim().length === 0 || proseChars(input) < MIN_PROSE_CHARS) {
-      // Everything in the span is plumbing/tool traffic. Same deterministic
-      // placeholder the live path writes for all-noise chunks. The raw rows
-      // still exist in the messages table, so nothing is lost.
+      // Everything in the span is plumbing: the live path's placeholder for all-noise chunks (the raw rows remain).
       writeRebuiltContent(flag, NO_CONVERSATION_PLACEHOLDER);
       return 'placeholder';
     }
     depth = 0;
-    targetTokens = summaryTargetTokens(input, modelCharsPerToken(modelId));   // t269: proportional to the input, like the live path
+    targetTokens = summaryTargetTokens(input, modelCharsPerToken(modelId));   // proportional to the input, like the live path
   } else {
     const children = getSummaryChildren(flag.id);
     if (children.length === 0) {
@@ -287,8 +224,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       }, flag.agentId);
       return 'skipped';
     }
-    // Children must be clean first; condensing contaminated children would
-    // just re-absorb the noise. Depth ordering makes this resolve over nights.
+    // Children must be clean first, or condensing them would re-absorb the noise; depth ordering resolves it over nights.
     if (children.some(c => isContaminatedSummaryContent(c.content))) {
       return 'deferred';
     }
@@ -303,7 +239,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     targetTokens = mergeTargetTokens(input, children.length, modelCharsPerToken(modelId));   // a merge, as the live condenser asks
   }
 
-  // t144: paced by real signals, as the rebuild of older mixed notes is; the note stays flagged for a later night.
+  // Paced by real signals, as the older mixed notes are; the note stays flagged for a later night.
   const wait = waitReason(flag.agentId, modelId, estimateTokens(input) + targetTokens, targetTokens);
   if (wait) { logger.warn('Summary rebuild waits', { summaryId: flag.id, reason: wait }, flag.agentId); return 'deferred'; }
   const result = await generateSummary({
@@ -314,11 +250,8 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     modelId, spanIds,
   });
 
-  // PHASE-3 T5 Step 2: the summariser can now REFUSE, and a refusal is a skip — the row
-  // stays flagged and the next night tries again. Before the contract this arrived as a
-  // truncated copy of the raw input, and `looksLikeSummarizerFallback` below existed to
-  // catch it AFTER the fact by comparing prefixes. That heuristic stays as the belt for
-  // pre-contract rows; this is the braces.
+  // A summariser refusal is a skip: the row stays flagged and the next night tries again. The prefix check below
+  // covers older rows that were truncated copies of the raw input.
   if (!result.ok) {
     logger.warn('Summary rebuild REFUSED by the summarizer; leaving summary for a later night', {
       summaryId: flag.id, reason: result.reason,
@@ -344,24 +277,19 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       summaryId: flag.id, removedLines: scrubbed.removedLines,
     }, flag.agentId);
   }
-  // PHASE-2 T7: nothing to strip. The depth-0 contract no longer emits a fenced OPEN-LOOPS
-  // section, so a rebuilt summary is the regenerated text.
   const finalText = scrubbed.text.length > 0 ? scrubbed.text : NO_CONVERSATION_PLACEHOLDER;
 
   writeRebuiltContent(flag, finalText);
   return finalText === NO_CONVERSATION_PLACEHOLDER ? 'placeholder' : 'rebuilt';
 }
 
-/** Persist the regenerated content. The 083 AFTER UPDATE OF content triggers
- *  keep summaries_fts in sync; refreshEmbedding drops the stale embedding row
- *  and re-embeds the new text (best-effort; the scheduled embedding backfill
- *  re-embeds any summary left without a row if the embedder is down). */
+/** Persist the regenerated content. The AFTER UPDATE OF content triggers (migration 083) keep summaries_fts in
+ *  sync; `refreshEmbedding` re-embeds best-effort (the scheduled backfill covers a summary left without a row). */
 function writeRebuiltContent(flag: FlaggedSummary, text: string): void {
   updateSummaryContent(flag.id, text, estimateTokens(text));
   refreshEmbedding('summary', flag.id, flag.agentId, text);
 }
 
-// ── Nightly batch runner ──
 
 export interface SummaryRebuildStats {
   flaggedBefore: number;
@@ -370,24 +298,19 @@ export interface SummaryRebuildStats {
   deferred: number;
   skipped: number;
   remainingAfter: number;
-  /** Total summaries in the store this run looked at. PHASE-3 T5 Step 2 — see below. */
+  /** Total summaries in the store this run looked at. */
   stockScanned: number;
-  /** Consecutive runs, INCLUDING this one, that scanned a non-empty stock and found
-   *  nothing contaminated. Reset to 0 the moment anything is flagged. */
+  /** Consecutive runs, INCLUDING this one, that scanned a non-empty stock and found nothing contaminated. */
   consecutiveCleanRuns: number;
-  /** t144: the second selection — recent mixed notes rebuilt one conversation each. */
+  /** The second selection: recent mixed notes rebuilt one conversation each. */
   legacy?: LegacyRebuildStats;
 }
 
 
 
 /**
- * Run one bounded rebuild batch. Called nightly from the vault maintenance
- * window (vault/maintenance.ts), and callable directly on a dev box to run
- * one batch immediately for verification.
- *
- * opts.modelId overrides the writer model (default: same resolution as live
- * compaction). t144: then the recent mixed notes (`legacy-notes-rebuild.ts`).
+ * Run one bounded rebuild batch: nightly from the vault maintenance window (`vault/maintenance.ts`), and callable
+ * directly on a dev box. `opts.modelId` overrides the writer model; then the recent mixed notes are rebuilt.
  */
 export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
   const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0, remainingAfter: 0, stockScanned: 0, consecutiveCleanRuns: 0 };
@@ -399,7 +322,7 @@ export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promi
   rebuildGuard.running = true;
   try {
     const stats = await runContaminationPass(empty, opts);
-    try {   // t144: the second selection runs whatever the first found — its notes are another question
+    try {   // the second selection runs whatever the first found: its notes are another question
       stats.legacy = await rebuildLegacyMixedNotes();
     } catch (err) {
       logger.warn('Older mixed notes: rebuild pass failed; the next run resumes it', { error: err instanceof Error ? err.message : String(err) });
@@ -448,8 +371,7 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
     stats.remainingAfter = findContaminatedSummaries().length;
     logger.info('Summary rebuild nightly batch done', { ...stats });
     if (stats.remainingAfter === 0) {
-      // The streak starts at the FIRST run that both scanned a real stock and found it
-      // clean — this run repaired its way there, so it counts.
+      // The streak starts at the first run that scanned a real stock and found it clean; this run repaired its way there.
       stats.consecutiveCleanRuns = recordCleanStock(0, stats.stockScanned);
       logger.info(
         `SUMMARY_REBUILD_CLEAN_STOCK stockScanned=${stats.stockScanned} flagged=0 ` +

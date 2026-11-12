@@ -3,15 +3,10 @@
 import { MAX_DECISION_BODY_BYTES, decide, decideCountedBytes, fencedState, type Answer, type Question } from '../agent/decide.js';
 import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
-// A part fits the decision model's window (the number the memory fit sets aside) counted at its measured density
-// less the template slack every window carries (`NUM_CTX_MARGIN_TOKENS`), AND Ollama's 64 KiB body limit, counted as
-// Ollama counts them (`decideCountedBytes`). A part is as many whole rows (the `---`
-// lines the callers join rows with) as fit beside the summary and the questions; a single row larger than that
-// is split by characters. Joined back with the same separator, the parts are exactly the source.
+// A part fits the decision window (measured density less `NUM_CTX_MARGIN_TOKENS`) and Ollama's 64 KiB body limit
+// (`decideCountedBytes`): whole `---` rows where they fit, a larger row split by characters; parts rejoin exactly.
 const ROW_SEPARATOR = '\n---\n';
-/** A text's bytes inside the JSON body (escapes included), without its quotes: additive over concatenation. */
 const bodyBytes = (t: string): number => Buffer.byteLength(JSON.stringify(t)) - 2;
-/** The source's parts, or null when the summary alone leaves no room. */
 export function sourceParts(
   source: string, summary: string, windowTokens: number, questions: Record<string, Question>, charsPerToken: number,
 ): string[] | null {
@@ -34,7 +29,6 @@ export function sourceParts(
     }
     if (current) parts.push(current.text);
     if (fits(piece.length, bytes)) { current = { text: piece, bytes }; continue; }
-    // One row larger than the room: split by characters (the longest slice that fits both), the last slice carried on.
     let rest = piece;
     while (!fits(rest.length, bodyBytes(rest))) {
       // Not even one character fits the bytes left: no parts (recorded unavailable), never a spin.
@@ -51,7 +45,7 @@ export function sourceParts(
   return parts;
 }
 
-/** One part through decide(). A part the model still refuses is unanswered, so the summary is kept unchecked:
+/** One part through decide(). A part the model still refuses is unanswered, so the summary is kept unchecked;
  *  `sourceParts` is the one place that sizes a part. */
 export async function checkPart(
   part: string, label: string | null, summary: string, questions: Record<string, Question>, agentId: string,

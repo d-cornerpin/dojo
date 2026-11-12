@@ -1,30 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t210 — THE SUMMARIES LANE: render, selection and room-driven truncation, in one place.
-//
-// THE DEFECT THIS MODULE CLOSES (live on the dev box: 2,031 of 4,475 receipted summaries lanes
-// since 2026-10-01 were cut, every one at the 6,000-token ceiling). The selector counted each
-// summary's STORED `tokenCount`; the lane renders more (a header, and an XML wrapper per
-// summary), so a set packed to the ceiling always rendered over it; the recency floor forced
-// the two newest in even when they alone were over it; and the fit cut the block from the END.
-// The block is chronological, so the cut always landed in the NEWEST summary — the one that
-// bridges to the live conversation. One agent with 62 small summaries lost its newest 31 whole.
-//
-// THE RULE NOW, measured in the bytes the model receives:
-//   - the NEWEST summary is always in, whole;
-//   - then older ones, newest-first, while the RENDERED block fits; the first that does not
-//     fit ends the run, so what yields is always the OLDEST and the shown history has no gaps;
-//   - what is left out is SAID (one line with the count; they are still stored), never hidden;
-//   - the fit's truncate re-selects under the grant the ROOM gave, so a small window drops older
-//     summaries whole. A newest summary that alone exceeds the room is shown as its kept-row
-//     pointer (t269 fix round 2: head, tail, and `tool_result_read("note:<id>")`, never cut); only a
-//     room too small for even the pointer is cut as text, with the shared truncation marker.
-// The 6,000-token figure (`LANE_LIMITS['lane.summaries'].tokens.relevanceBudget`) still decides
-// how many OLDER summaries ride along. It never cuts the newest: the lane's own bound is the
-// room (its share of the content budget), which is the no-hard-limits law.
-//
-// CACHE: a pure function of (the summary set, the budget). Two assemblies with no summary
-// written between them render the same bytes, so message 0 still moves only at folds.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The summaries lane: render, selection and room-driven truncation, measured in the bytes the model receives.
+// The newest summary is always in, whole; older ones ride along newest-first while the RENDERED block fits, so only
+// the oldest yield and the shown history has no gaps. Left-out summaries are SAID (count line), never hidden.
+// A pure function of (summary set, budget): no new summary between assemblies means identical bytes (cache).
 
 import type { Summary } from './dag.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
@@ -44,9 +21,7 @@ export interface SummariesPayload {
   chosen: Summary[];
 }
 
-// t141 — ONE CLOCK: `earliest`/`latest` were bare UTC beside a local-time tail. Cached region:
-// moves ONCE per agent (argued in the t141 report), never again — stored columns only.
-// t144 — and the ONE conversation the note is about (labelled, never filtered: OR-LABEL-NOT-HIDE).
+// Stored columns only (cached region); the note's conversation is labelled, never filtered.
 export function formatSummaryXml(summary: Summary, facts: LabelFacts): string {
   const earliest = renderInstant(summary.earliestAt) ?? summary.earliestAt;
   const latest = renderInstant(summary.latestAt) ?? summary.latestAt;
@@ -64,12 +39,8 @@ function blockText(xmls: string[], omitted: number): string {
   return `${HEAD}${JOIN}${omittedLine(omitted)}${xmls.join(JOIN)}${JOIN}${FOOT}`;
 }
 
-/**
- * Newest always; then older pieces newest-first while the RENDERED block fits `budgetTokens`;
- * the first that does not fit ends the run. Returned chronologically, with the count left out.
- * Exact, not estimated: the lane's cost is `ceil(chars / CHARS_PER_TOKEN)`, so a block of at
- * most `budget x CHARS_PER_TOKEN` chars costs at most `budget`.
- */
+/** Newest always, then older pieces newest-first while the RENDERED block fits `budgetTokens`. Exact: lane cost is
+ *  `ceil(chars / CHARS_PER_TOKEN)`, so `budget x CHARS_PER_TOKEN` chars cost at most `budget`. */
 export function selectSummaries<T extends { xml: string }>(pieces: T[], budgetTokens: number): { chosen: T[]; omitted: number } {
   const n = pieces.length;
   if (n === 0) return { chosen: [], omitted: 0 };
@@ -94,16 +65,13 @@ function renderChosen(pieces: SummariesPayload['pieces'], budgetTokens: number):
   return { messages, tokens: renderTokens(messages), payload: { pieces, chosen: chosen.map((p) => p.summary) } };
 }
 
-/** The lane's render: every context summary rendered once, the set chosen under `ceilingTokens`. */
 export function renderSummariesLane(summaries: Summary[], agentId: string, ceilingTokens: number): LaneRender<SummariesPayload> | null {
   if (summaries.length === 0) return null;
   const facts = new LabelFacts(agentId);
   return renderChosen(summaries.map((summary) => ({ summary, xml: formatSummaryXml(summary, facts) })), ceilingTokens);
 }
 
-/** The fit's truncate: the ROOM decides. Re-select under the grant; a newest note that alone exceeds the room
- *  is shown as its kept-row pointer (t269 fix round 2); the text cut is the last resort, for a room too small
- *  for even the pointer. */
+/** The fit's truncate: re-select under the grant, then the newest note as its kept-row pointer, then a text cut. */
 export function truncateSummariesLane(render: LaneRender<SummariesPayload>, grant: number): LaneRender<SummariesPayload> {
   if (!render.payload) return truncateTextLane(render, grant);
   const shrunk = renderChosen(render.payload.pieces, grant);
@@ -112,7 +80,6 @@ export function truncateSummariesLane(render: LaneRender<SummariesPayload>, gran
   return pointered && pointered.tokens <= grant ? pointered : truncateTextLane(shrunk, grant);
 }
 
-/** The block with only the newest note, its body as head + tail + the `note:<id>` read call, inside `grant`. */
 function newestAsPointer(payload: SummariesPayload, grant: number): LaneRender<SummariesPayload> | null {
   const newest = payload.pieces[payload.pieces.length - 1];
   if (!newest) return null;
@@ -125,11 +92,8 @@ function newestAsPointer(payload: SummariesPayload, grant: number): LaneRender<S
   return { messages, tokens: renderTokens(messages), payload: { pieces: payload.pieces, chosen: [newest.summary] } };
 }
 
-/**
- * THE ROOM A NEWEST NOTE HAS in a lane of `laneRoomTokens` (t269 fix round 2: what a leaf is sized to): the
- * lane's room in characters less this block's frame — its head and foot, the omission line at its widest, and
- * a note's wrapper for a note about `label` — back in tokens. A note this size is shown whole (`selectSummaries`).
- */
+/** The room a newest note has in a lane of `laneRoomTokens`: the room less this block's frame (head, foot, widest
+ *  omission line, a note's wrapper for `label`), in tokens. A note this size is shown whole by `selectSummaries`. */
 export function newestNoteRoomTokens(laneRoomTokens: number, label: string): number {
   const wrapper = `<summary id="sum_00000000-0000-0000-0000-000000000000" depth="0" kind="leaf" tokens="9999999" conversation="${label}" earliest="${renderInstant(new Date().toISOString()) ?? ''}" latest="${renderInstant(new Date().toISOString()) ?? ''}">\n\n</summary>`;
   const frame = blockText([wrapper], 0).length + omittedLine(9_999_999).length;

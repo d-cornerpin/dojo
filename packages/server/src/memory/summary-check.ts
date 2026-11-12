@@ -22,13 +22,10 @@ const logger = createLogger('summary-check');
 
 const ON_THE_MODEL = 'summary_check/stated_current';
 const QUESTIONS: Record<string, Question> = { stated_current: { type: 'noul', instructions: 'Does `summary` describe anything as currently pending or owed?' } };
-/** What the rewrite is told (the writer's own words for the input: "the input"). */
 const FEEDBACK = 'it described something as currently pending or owed';
-/** How long the check's records are kept. */
 const KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** The model's probability that the summary states something pending (the highest over the source's parts), or
- *  null when any part went unanswered. */
+/** Max over the parts of P(summary states something pending); null if any part went unanswered. */
 export async function checkSummary(sourceRows: string, summary: string, agentId: string): Promise<number | null> {
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), QUESTIONS, MEASURED_CHARS_PER_TOKEN);
   if (parts === null) {
@@ -87,7 +84,6 @@ export function summaryCheckRefusedSince(agentId: string, sinceMs: number): bool
   } catch { return false; }
 }
 
-/** The span's rows as wait keys (or its content when no rows are named). */
 const rowKeys = (p: SummaryParams): string[] => p.spanIds && p.spanIds.length > 0
   ? [...p.spanIds] : [`content:${createHash('sha256').update(p.content).digest('hex').slice(0, 32)}`];
 

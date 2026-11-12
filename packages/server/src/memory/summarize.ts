@@ -15,11 +15,8 @@ import type { Summary } from './dag.js';
 
 const logger = createLogger('memory-summarize');
 
-// ── Identity Resolution ──
-
-// t144: the `[USER] = the human operator` line is gone — an inbound row is from whoever its PARTY tag
-// names (a contact, an email sender, another agent), and calling every one of them the operator is how
-// a notice read as the owner's request. Only the agent's own name is given.
+// An inbound row is from whoever its PARTY tag names, so only the agent's own name is given: calling every
+// sender the operator made a notice read as the owner's request.
 function getIdentityContext(agentId: string): string {
   const agent = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
   const agentName = agent?.name ?? 'the assistant';
@@ -29,8 +26,8 @@ function getIdentityContext(agentId: string): string {
 - Attribute every statement to the party its tag names: "<that party> asked…", "${agentName} did…"`;
 }
 
-/** t144 — THE ONE CONDENSED-INPUT BUILDER (the condenser and the nightly rebuild both read it). Each
- *  note carries the conversation it is about and its recorded range, in the single clock. */
+/** The one condensed-input builder (the condenser and the nightly rebuild both read it): each note carries
+ *  the conversation it is about and its recorded range. */
 export function condensedSummaryInput(batch: readonly Summary[]): string {
   const labels = new LabelFacts(batch[0]?.agentId ?? '');
   return batch.map((s) => {
@@ -40,8 +37,6 @@ export function condensedSummaryInput(batch: readonly Summary[]): string {
     return `<summary id="${s.id}" depth="${s.depth}" conversation="${label}" earliest="${earliest}" latest="${latest}">\n${s.content}\n</summary>`;
   }).join('\n\n');
 }
-
-// ── Depth-Aware Prompts ──
 
 export function getDepthPrompt(depth: number, targetTokens: number, previousContext?: string, agentId?: string): string {
   const contextBlock = previousContext
@@ -165,48 +160,18 @@ ABSOLUTE RULES:
 ${contextBlock}`;
 }
 
-// ── Main Summarization Function ──
-
 /**
- * THE SUMMARIZER'S RESULT CONTRACT. PHASE-3 T5 Step 2, per 19 §1e.
- *
- * Before this, every path returned `{ text, tokenCount }` and two of them filled `text`
- * with `truncateDeterministic(content)` — the RAW chunk, role tags and all. Research 06 §6
- * names that as one of the two reasons contaminated summaries exist at all: the raw body
- * was persisted, embedded, FTS-indexed and then condensed into depth-1 and depth-2 parents,
- * and a nightly job re-repaired it forever.
- *
- * A refusal is not a placeholder. `NO_CONVERSATION_PLACEHOLDER` is a CLAIM — "this span held
- * no conversation" — and it is true only when the filtered input really is empty, which the
- * caller checks before ever getting here. On the no-model and model-threw paths the claim
- * would be false and the cost of the lie is permanent: marking the sources compacted
- * destroys the rows. `{ok:false, reason}` leaves the span exactly where it was so the next
- * drain tries again.
+ * The result contract: a refusal is never a placeholder or the raw chunk. `NO_CONVERSATION_PLACEHOLDER` claims the
+ * span held no conversation, true only when the filtered input is empty (the caller checks); marking sources
+ * compacted destroys rows, so `{ok:false, reason}` leaves the span for the next drain.
  */
 export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
   | { ok: false; reason: string; stopped?: true; tooBig?: true; noRoom?: true; checkFailed?: true };   // see writer.ts, summary-check.ts
 
 /**
- * UX-REPAIR ROUND 6 T24 — AN EMPTY BODY IS A REFUSAL, and so is an aborted one.
- *
- * The contract above says a refusal is not a placeholder because "marking the sources
- * compacted destroys the rows". It closed the no-model and model-threw paths and left the
- * one that actually fired: a call that RETURNS, with nothing in it.
- *
- * Measured, 2026-08-10 22:56:03 (`dojo.log`, a harness agent): the background drain's
- * 60s wall clock aborted an in-flight summariser at 59,968ms; the provider closed the
- * stream with outputTokens=1; `estimateTokens('')` is 0, which is ≤ targetTokens * 1.5,
- * so the empty string was returned as a SUMMARY and `createLeafSummary` marked all 51
- * source rows compacted behind it — "Can you text my phone?" and its answer among them.
- * Two more zero-length summaries on the same body ate 37 and 34 rows the same way.
- *
- * `summary-rebuild.ts` already refuses empty output for the NIGHTLY path, where nothing is
- * destroyed by trying again. The live path, the one that reclaims rows, did not. Same test,
- * moved to where the cost is irreversible.
- *
- * The abort arm is not belt-and-braces for the empty arm: an abort can also land mid-body,
- * and a truncated span read as a whole one is the same lie with a longer body.
+ * An empty or aborted body is a refusal, not a summary: this path reclaims rows, so an empty string kept as a
+ * summary destroys its sources. An abort can also land mid-body, and a truncated span read as whole is the same lie.
  */
 function unusableOutput(text: string, abortSignal?: AbortSignal): string | null {
   if (abortSignal?.aborted) return 'summarizer call was aborted before it finished';
@@ -216,7 +181,7 @@ function unusableOutput(text: string, abortSignal?: AbortSignal): string | null 
 
 /** The one door: every summary call's outcome is settled against its writer (`writer.ts`), then checked. */
 export async function generateSummary(params: Parameters<typeof writeSummary>[0]): Promise<SummaryResult> {
-  // v3.5 B4: written, then checked against its source before anything keeps it (`summary-check.ts`).
+  // Written, then checked against its source before anything keeps it (`summary-check.ts`).
   return writeThenCheck(params, async (p) => settleSummaryCall(await writeSummary(p), p.agentId, p.modelId, p.abortSignal));
 }
 
@@ -227,21 +192,15 @@ async function writeSummary(params: {
   agentId: string;
   modelId?: string;
   previousContext?: string;
-  // v2.5.14 — Optional abort signal for cancellation. Used by the routine
-  // gap-trigger drain so a hanging summarizer call (e.g. provider timeout
-  // beyond a sane wall-clock) can actually be cancelled rather than
-  // continuing in the background.
+  // Cancels the routine gap-trigger drain's call so a hanging summarizer cannot continue in the background.
   abortSignal?: AbortSignal;
-  checkFeedback?: string;   // v3.5 B4: the rewrite after a failed accuracy check names what failed
-  spanIds?: readonly string[];   // v3.5: the rows summarised — a span whose check failed is known by them
+  checkFeedback?: string;   // the rewrite after a failed accuracy check names what failed
+  spanIds?: readonly string[];   // the rows summarised: a span whose check failed is known by them
   spanOpen?: boolean;   // the last chunk of a fold, still growing (see summary-check.ts writeThenCheck)
 }): Promise<SummaryResult> {
   const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal, checkFeedback } = params;
 
-  // Need a model to summarize with.
-  // PHASE-3 T5: this used to return `truncateDeterministic(content)` — the RAW chunk,
-  // persisted as if it were a summary. There is no model, so there is no summary; saying so
-  // is the only honest answer and it costs nothing but a retry.
+  // No model means no summary: saying so costs only a retry, where persisting the raw chunk would pass as one.
   if (!modelId) {
     logger.warn('SUMMARY_REFUSED no model specified for summarization', { depth }, agentId);
     return { ok: false, reason: 'no summarizer model configured for this agent' };
@@ -253,13 +212,12 @@ async function writeSummary(params: {
 
   try {
     logger.info('Generating summary', { depth, targetTokens, contentTokens: estimateTokens(content) }, agentId);
-    // t269: every call reads the SOURCE and declares the summary dial (thinking off on every transport that
-    // can switch it, the output room sized to the target); a cut or over-long answer is never kept as
-    // whole (`summary-whole.ts`, which replaced the level-2 re-summary and the level-3 middle cut).
+    // Every call reads the SOURCE and declares the summary dial (thinking off where the transport can switch it,
+    // output room sized to the target); a cut or over-long answer is never kept as whole (`summary-whole.ts`).
     return await writeWhole({
       content, depth, targetTokens, abortSignal,
       warn: (message, meta) => logger.warn(message, meta, agentId),
-      charsPerToken: modelCharsPerToken(modelId),   // t268: the writer's own density
+      charsPerToken: modelCharsPerToken(modelId),   // the writer's own density
       fits: (extra) => refuseWhatTheWriterCannotHold(modelId, systemPrompt + extra, content, agentId) === null,
       call: async (extra, outputRoomAsk) => {
         const result = await callModel({
@@ -273,27 +231,15 @@ async function writeSummary(params: {
       },
     });
   } catch (err) {
-    // PHASE-3 T5: this used to truncate the RAW input and persist it. The model failing is
-    // not a reason to write the conversation back into the summary store verbatim.
+    // A model failure is never a reason to write the input back into the summary store verbatim.
     const message = err instanceof Error ? err.message : String(err);
-    // t152: the writer's own "too long" answer is `tooBig` (halve, or the next writer that holds it), not a writer failure.
+    // The writer's own "too long" answer is `tooBig` (halve, or the next writer that holds it), not a failure.
     if (isContextOverflowError(message)) { logger.warn('SUMMARY_REFUSED the writer said the input is too long', { modelId, depth }, agentId); return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true }; }
-    // ── v3.2.3 LAYER 3: A WALL IS NOT A BAD MINUTE ──
-    // The incident: this catch fired ~4,000 times per prompt against a provider
-    // answering 402, and every failure was logged and forgotten. The classifier now
-    // separates PERMANENT (no balance, dead credential, refused access) from
-    // transient, and a permanent one opens the provider's breaker — which the chunk
-    // loop reads at the top of its next iteration and stops. Transient failures are
-    // untouched: they still return `ok:false` and get retried by the next drain.
-    // ⚠ THE SDK'S OWN FACTS, NOT THE WRAPPED PROSE (t87b review I1). `model.ts` wraps every
-    // failure as `OpenAI call failed: <sdkMessage>`, which is not a shape `statusIsAnchored`
-    // recognises, so a real `402 Payment Required` reaching here as prose classifies `unknown`
-    // and the breaker never opens — on the incident's own door. The throw already carries
-    // `provider: ProviderErrorFacts` with `basis: 'status'`; read structurally rather than by
-    // importing `AgentError`, because any thrower attaching the same field is equally credible
-    // and this file must never depend on which one it was.
+    // A permanent failure (no balance, dead credential, refused access) opens the provider's breaker, which the
+    // chunk loop reads and stops on; transient ones return `ok:false` and retry next drain. Classify from the
+    // throw's structured `provider` facts, not the wrapped message prose, and without importing `AgentError`.
     const facts = (err as { provider?: ProviderErrorFacts | null } | null)?.provider ?? undefined;
-    noteSummaryCallFailed({ modelId, message, agentId, facts, depth, targetTokens, abortSignal });   // t220: not for a call its caller stopped
+    noteSummaryCallFailed({ modelId, message, agentId, facts, depth, targetTokens, abortSignal });   // not for a call its caller stopped
     return { ok: false, reason: `summarizer model call failed: ${message}` };
   }
 }

@@ -1,37 +1,11 @@
-// ════════════════════════════════════════
-// The model-facing readers of `messages`.
-// ════════════════════════════════════════
-//
-// PHASE-1 T5. There is ONE message table and ONE tail query. What stood here before was a
-// pair of loaders per window — a plain one and a `*Merged` twin — that UNIONed `messages`
-// with `inter_agent_messages`, NULL-padded the columns the second table lacked, dedup'd the
-// double-homed ids with an anti-join, and stitched the two rowid spaces back together with
-// a synthetic `(created_at, _tag, _rowid)` collation. All of that existed to answer one
-// question the schema now answers by itself: which lane is this row on.
-//
-// STRIP — `mergedTailQuery`, `getRecentMessagesMerged`, `getMessagesOutsideFreshTailMerged`,
-// `getMessagesByAgentMerged`, `getMessagesByAgent`.
-// Requirement preserved: ONE tail query per window, over every lane the agent owns, in true
-// insertion order. `ORDER BY seq` replaces the three-part collation everywhere.
-//
-// WHY `seq` AND NOT `created_at`. `created_at` is second-granular TEXT, and the engine's own
-// undelivered-event re-home (`message-store.rehomeUndeliveredCreatedAt`) deliberately pushes
-// a row's clock FORWARD while its insertion key stays put — so a clock-ordered tail reports a
-// row that was written first as though it arrived last. `seq` is `INTEGER PRIMARY KEY
-// AUTOINCREMENT`, i.e. the table's rowid under a name that means something, and it cannot
-// drift. (T10 promotes it to the PK alias role across the tree.)
-//
-// LANE, NOT TABLE. These loaders are the MODEL's view and deliberately carry every lane the
-// agent owns — owner conversation, agent-to-agent coordination, engine events. That is the
-// defect this phase exists to close: agent-to-agent history used to sit in a table with no
-// FTS index and no summaries, structurally unrecallable. Anything rendered to a PERSON reads
-// the fail-closed `chat_messages` view (`lane='owner'`), never these.
+// Model-facing readers of `messages`: one tail query over every lane the agent owns, in insertion order.
+// Order by `seq`, not `created_at` (`message-store.rehomeUndeliveredCreatedAt` moves a row's clock forward).
+// Anything shown to a person reads the fail-closed `chat_messages` view instead.
 
 import { getDb } from '../db/connection.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
-// ── Session Boundary ──
 
 function getSessionBoundary(agentId: string): string | null {
   const db = getDb();
@@ -39,68 +13,27 @@ function getSessionBoundary(agentId: string): string | null {
   return row?.session_started_at ?? null;
 }
 
-// ── Token Estimation ──
-//
-// STRIP (PHASE-3 T2). `estimateTokens` used to be declared here, `/4`, and it was one of
-// SIX implementations in the tree (§T0-C). It now lives in `memory/budget.ts` with the
-// measurement that chose its divisor. PHASE-3 T9 removed the IMPORT too: the last consumer
-// in this file was `getTotalTokensByAgent`, stripped below.
-// Requirement preserved: one number for "what does this text cost", derived in one place.
-//
-// `getFreshTailCount` moved to the same module for the same reason and unchanged byte for
-// byte — it is a ROW budget, and leaving it here would have made `budget.ts` cyclic with
-// its own consumers (budget → store → budget).
 
-// ════════════════════════════════════════════════════════════════════════════════
-// TIME ON THE SPINE (PHASE-1 T6b, migration 131) — the two vocabularies, and the rule.
-//
-// `messages.created_at`, `swept_at`, `next_attempt_at` and `retired_at` are epoch-ms
-// INTEGER in the database. They were TEXT 'YYYY-MM-DD HH:MM:SS' until 131, and SQLite orders
-// INTEGER before TEXT UNCONDITIONALLY, so a comparison left in the old shape does not error —
-// it silently returns the wrong rows. (Measured, on real data: the scheduler's stale-task
-// gate returned 50 stale tasks unconverted against a true 44.) The two helpers below exist
-// so that mistake has to be made deliberately.
-//
-// WRITING a time: `NOW_MS`. Never `datetime('now')` — that stores a string, which the
-// column's typeof CHECK now rejects at the database rather than absorbing.
-//
-// READING a time INTO TypeScript: `createdAtText(...)`. Every projection that lands in a
-// `createdAt: string` goes through it, so the value TypeScript sees is the identical string
-// it saw before 131 — byte for byte, because `strftime('%s', …)` and `datetime(…,'unixepoch')`
-// are exact inverses for the second-granular UTC values this column holds (0 mismatches over
-// all rows; the command is in migration 131's header). That is what keeps THREE things this
-// phase does not own completely unchanged: the wire type `Message.createdAt: string` and the
-// dashboard that parses it (SWEEP-E's), the per-message prompt stamp whose bytes every
-// provider has cached (non-negotiable #10), and `vault_conversations.earliest_at`/`latest_at`,
-// which are TEXT and stay TEXT.
-//
-// COMPARING against a TEXT datetime the platform still holds — `agents.session_started_at`,
-// `tasks.updated_at`, a JS-formatted session boundary: put `unixepoch(<text>) * 1000` on the
-// TEXT side. Convert the other side; never leave the two sides in different types.
-// ════════════════════════════════════════════════════════════════════════════════
+// Time columns are epoch-ms INTEGER and SQLite orders INTEGER before TEXT, so a comparison in the old
+// TEXT shape silently returns the wrong rows. WRITE with `NOW_MS`, never `datetime('now')`. READ into a
+// string with `createdAtText` (the wire type and cached prompt stamp need TEXT). Convert the TEXT side.
 
-/** Epoch-ms for "now", second-granular — the same expression migration 127 gave `sent_at`
- *  and 131 gave `created_at`'s DEFAULT, so a row written through a writer and a row that
- *  fell back to the default are indistinguishable. */
+/** Epoch-ms for "now", second-granular: the same expression as the `created_at` column DEFAULT. */
 export const NOW_MS = "(CAST(strftime('%s','now') AS INTEGER) * 1000)";
 
-/** Project an epoch-ms time column back to the canonical SQLite TEXT shape under its own
- *  name. `col`/`alias` are SQL identifiers the CALLER supplies from its own literal — never
- *  user input. Use it in any SELECT whose row lands in a TypeScript `string`. */
+/** Project an epoch-ms time column back to the canonical TEXT shape; `col`/`alias` are SQL identifiers
+ *  the CALLER supplies from its own literal, never user input. */
 export function createdAtText(col = 'created_at', alias = 'created_at'): string {
   return `datetime(${col}/1000,'unixepoch') AS ${alias}`;
 }
 
-// ── Row-to-Message Mapping ──
 
-/** Every loader below projects exactly this list, so `rowToMessage` never has to ask whether
- *  a column happened to be selected. `seq` is projected as itself: it IS the rowid. */
+/** Every loader projects exactly this list, so `rowToMessage` never asks whether a column was selected. */
 const SELECT_COLS = `seq, id, agent_id, role, content, token_count, model_id, cost,
   latency_ms, ${createdAtText()}, turn_number, reasoning_content, reasoning_aged_out, lane, channel, source_agent_id,
   a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_intent, conversation_id`;
 
 export interface MessageRow {
-  /** The insertion key — `INTEGER PRIMARY KEY AUTOINCREMENT`, the table's rowid. */
   seq: number;
   id: string;
   agent_id: string;
@@ -113,9 +46,7 @@ export interface MessageRow {
   created_at: string;
   turn_number: number | null;
   reasoning_content: string | null;
-  /** T56 leg (b): 1 once a compaction boundary retired this row's reasoning from the wire. */
   reasoning_aged_out: number | null;
-  /** The stamped-at-ingest lane (OR4). Origin is PROJECTED from it — never re-parsed. */
   lane: string;
   channel: string | null;
   source_agent_id: string | null;
@@ -124,19 +55,12 @@ export interface MessageRow {
   a2a_requires_response: number | null;
   inbound_meta: string | null;
   origin_intent: string | null;
-  /** `conversations.id` — the FK that replaced `conv_key` as conversation identity
-   *  (PHASE-2 T10I). NULL means "not stamped yet", never "no conversation". */
+  /** `conversations.id`; NULL means not stamped yet, never no conversation. */
   conversation_id: string | null;
 }
 
 export function rowToMessage(row: MessageRow): Message {
-  // T5: the origin projection reads the STAMPED facts (`lane`, `channel`) instead of the two
-  // compat columns migration 127 carries for the writers that had not converted yet.
-  // `origin_kind` was only ever `lane='events'` spelled differently, and `source` was
-  // `lane='a2a'` plus `channel='voice'` folded into one nullable string (T3-0b §1/§3).
-  // Proven equivalent before the change, on every row the live box holds:
-  //   origin_kind mismatches 0 · source mismatches 0 · total rows 3211
-  // The two columns themselves are T10's to drop; this is the reader half.
+  // Origin is projected from the stamped `lane` and `channel`, never re-parsed.
   const legacy = legacyOriginInputs(row.lane, row.channel);
   return {
     id: row.id,
@@ -148,20 +72,11 @@ export function rowToMessage(row: MessageRow): Message {
     cost: row.cost,
     latencyMs: row.latency_ms,
     createdAt: row.created_at,
-    // The insertion key. One table, one keyspace: this is always a `messages.seq`, which is
-    // what the vault high-water and compaction's archive filter compare against.
+    // The insertion key (`messages.seq`): the vault high-water and compaction's archive filter compare it.
     rowid: row.seq,
-    // Phase 4 §E (2026-05-04) — surface turn_number so the assembler's
-    // stub-and-store pass can age out tool results from old turns.
     turnNumber: row.turn_number,
-    // Reasoning content from thinking-mode providers (DeepSeek native,
-    // OpenRouter unified reasoning, etc.). Migration 040.
     reasoningContent: row.reasoning_content,
-    // T56 leg (b), migration 161. The text above stays for the dashboard; this says whether
-    // the assembler may still replay it to the provider (and therefore whether it still
-    // costs the context budget).
     reasoningAgedOut: row.reasoning_aged_out === 1,
-    // ── Attribution ──
     source: legacy.source,
     sourceAgentId: row.source_agent_id,
     a2aThreadId: row.a2a_thread_id,
@@ -169,7 +84,6 @@ export function rowToMessage(row: MessageRow): Message {
     a2aRequiresResponse: row.a2a_requires_response,
     inboundMeta: row.inbound_meta,
     conversationId: row.conversation_id,
-    // The single canonical "who is this from" signal, derived from stamped columns.
     origin: deriveOrigin({
       role: row.role as Message['role'],
       content: row.content,
@@ -184,23 +98,10 @@ export function rowToMessage(row: MessageRow): Message {
   };
 }
 
-// ── Query Functions ──
 
-/** The newest `count` rows for an agent, oldest-first.
- *
- *  Window semantics are unchanged from the two-table era: bounded below by the agent's
- *  session boundary, and `turnCutoff` (when given) drops user rows that arrived after the
- *  turn started so a turn never answers a message it has not claimed.
- *
- *  T6b — THE TWO PREDICATES THAT MATTER MOST IN THIS FILE. `@boundary` is
- *  `agents.session_started_at` and `@cutoff` is a JS-formatted turn start; both are TEXT and
- *  neither is on the spine, so both are converted HERE, at the comparison. Left unwrapped
- *  they do not error — `<integer> >= '<datetime>'` is simply FALSE for every row — and this
- *  is the loader that builds the model's conversation. The whole tail comes back EMPTY, the
- *  model is handed nothing, and the turn ends without a reply. Measured exactly that way
- *  during this task: `simple-reply` went red with "[Agent ended turn without replying]" and
- *  no assistant row at all. It is the single most expensive thing this conversion could get
- *  wrong, and no SQL-literal scan can see it, because these fragments never name the table. */
+/** The newest `count` rows for an agent, oldest-first, above the session boundary; `turnCutoff` drops user
+ *  rows that arrived after the turn started. `@boundary` and `@cutoff` are TEXT and converted at the
+ *  comparison: unwrapped, `<integer> >= '<datetime>'` is false for every row and the tail comes back empty. */
 export function getRecentMessages(agentId: string, count: number, turnCutoff?: string): Message[] {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
@@ -209,7 +110,6 @@ export function getRecentMessages(agentId: string, count: number, turnCutoff?: s
   if (sessionBoundary) { clauses.push('created_at >= (unixepoch(@boundary) * 1000)'); params.boundary = sessionBoundary; }
   if (turnCutoff) { clauses.push("NOT (role = 'user' AND created_at > (unixepoch(@cutoff) * 1000))"); params.cutoff = turnCutoff; }
 
-  // Newest `count` by insertion key, returned oldest-first.
   const rows = db.prepare(`
     SELECT * FROM (
       SELECT ${SELECT_COLS} FROM messages
@@ -220,13 +120,8 @@ export function getRecentMessages(agentId: string, count: number, turnCutoff?: s
   return rows.map(rowToMessage);
 }
 
-/** Everything EXCEPT the newest `freshTailCount` rows, oldest-first.
- *
- *  FA-M3: this partition must stay exactly complementary with `getRecentMessages`, or the
- *  tail-to-summary handoff drops or duplicates messages. Both now order by the same single
- *  key, so complementarity is structural rather than a pair of collations that have to be
- *  kept in step by hand. A `NULL` cutoff (agent has no rows) yields no rows, which is the
- *  right answer for an empty history. */
+/** Everything EXCEPT the newest `freshTailCount` rows, oldest-first. Must stay exactly complementary with
+ *  `getRecentMessages` (same order, same window) or the tail-to-summary handoff drops or duplicates rows. */
 export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: number): Message[] {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
@@ -246,24 +141,10 @@ export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: num
   return rows.map(rowToMessage);
 }
 
-// Canonical model-aware fresh-tail ROW FLOOR: MOVED to memory/budget.ts at PHASE-3 T2,
-// unchanged. It is a row budget and it belongs with the token budget; keeping it here made
-// budget.ts cyclic with its own consumers.
-//
-// t140: the FA-M3 sentence that stood here — "the assembler's tail-shown count and
-// compaction's inside-tail count are the SAME number" — stopped being true at t94, when the
-// assembler's live view became every row since the compaction boundary (`tail-horizon.ts`)
-// rather than the newest N. What is still one number from one owner is the FLOOR: the newest
-// `getFreshTailCount` rows, which no compaction folds and which `getMessagesOutsideFreshTail`
-// above excludes by exactly the key `getRecentMessages` orders by. Which rows ABOVE the floor
-// are leaving the view, and so owed a summary, is `tail-horizon.ts`'s `rowsLeavingView`.
+// The fresh-tail row floor is `getFreshTailCount` (`memory/budget.ts`); `tail-horizon.ts` `rowsLeavingView`
+// says which rows above it are owed a summary.
 
-/** Resolve message ids to rows, in insertion order.
- *
- *  This is how a summary's source chunk is rebuilt (`dag.getSummarySourceMessages`), so the
- *  ORDER is the conversation the model is shown. It used to be `(created_at, _tag, _rowid)`
- *  over a UNION of two tables with a JS dedup pass on top, because a chunk could cover rows
- *  from either home; one table means one key and no dedup step. */
+/** Ids to rows in seq order, as the model saw them (how `dag.getSummarySourceMessages` rebuilds a chunk). */
 export function getMessagesByIds(ids: string[]): Message[] {
   if (ids.length === 0) return [];
   const db = getDb();
@@ -274,23 +155,4 @@ export function getMessagesByIds(ids: string[]): Message[] {
   return rows.map(rowToMessage);
 }
 
-// ── STRIP (PHASE-3 T9). `getTotalTokensByAgent(agentId)` is DELETED. ──
-//
-// It summed the current session's `messages.token_count`, estimating the NULL rows, and
-// answered "how much context does this agent hold". Enumerated with zero readers by T2 and
-// RE-VERIFIED at this HEAD before removal, not inferred from the earlier count (#15):
-// `git grep -n getTotalTokensByAgent -- .` returns exactly ONE hit tree-wide — the
-// declaration itself — across `packages/server`, `packages/dashboard`, `packages/shared`,
-// `watchdog`, `deploy` and every test.
-//
-// requirement preserved: "the engine can say how many tokens the assembled context costs"
-// — owned, and owned BETTER, by the allocator this phase built. `estimateAssembledTokens`
-// (memory/compaction.ts) is the allocator dry-run the pre-call compaction gate reads, and
-// the per-assembly truth is the T6 receipt's lane table (`requested / granted / admitted`
-// per lane, plus the post-validation total). This function could not have answered the
-// question the budget actually asks: it summed EVERY stored row of the session, while what
-// is spent is the ADMITTED set after the two-pass fit — and, until migration `150`, it was
-// summing dialect 3 (the provider's OUTPUT count) as if it were input cost, 37% high.
-// A second, wrong answer to a question the allocator now owns is the disease this phase
-// deletes.
 
