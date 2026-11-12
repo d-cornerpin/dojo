@@ -1,20 +1,10 @@
 /**
- * Per-connection voice session handler.
- *
- * Wire from server.ts onto a separate WS endpoint (e.g. /api/ws/voice). One
- * session belongs to one (user, agent) pair. Lifecycle:
- *
- *   client opens WS  → server creates VoiceSession
- *   client sends JSON {type:'config', voice, speed?, sttModel?}  (optional)
- *   client sends JSON {type:'utterance_start'}                   (optional, debug)
- *   client sends BINARY frames (Float32Array little-endian PCM, 16kHz mono)
- *   client sends JSON {type:'utterance_end'}
- *     → server transcribes, posts user message, subscribes chat:chunk
- *     → server pipes assistant text into kokoro stream
- *     → server emits BINARY frames (24kHz Int16 PCM WAV) back to client
- *     → server emits JSON {type:'tts_end', messageId} when stream done
- *   client sends JSON {type:'barge_in'}  → cancel TTS + stopAgent
- *   client sends JSON {type:'close'}     → tear down
+ * Per-connection voice session handler, one session per (user, agent) pair, served on the voice WS
+ * endpoint wired in gateway/server.ts.
+ *   client JSON: config, utterance_start, utterance_canonical, utterance_end, barge_in, close
+ *   client binary: Float32 little-endian PCM, 16kHz mono
+ *   server: transcribes on utterance_end, posts the user message, pipes the agent reply text into TTS,
+ *   and emits binary WAV frames (24kHz Int16 PCM) plus voice:tts_end when the stream is done.
  */
 
 import type { WSContext } from 'hono/ws';
@@ -45,130 +35,63 @@ interface VoiceSession {
   ws: WSContext;
   userId: string;
   agentId: string;
-  /** P8: the durable voice_sessions row for this WS session (null if the
-   *  record failed; everything proceeds unrecorded). */
+  /** Durable voice_sessions row for this WS session; null when recording failed (runs unrecorded). */
   recordId: string | null;
   voice: string;
   speed: number;
-  /**
-   * Canonical STT model key. 'moonshine-base' (default) selects the
-   * Moonshine engine; any WhisperSize string selects Whisper.cpp via the
-   * native server. See parseSttModelKey in stt-service.ts.
-   */
+  /** STT model key: 'moonshine-base' (default) or a WhisperSize served by the native whisper.cpp server. */
   sttModel: string;
   pcmChunks: Float32Array[];
   pcmSampleRate: number;
   unsubscribeChunk: (() => void) | null;
   activeTts: { abort: AbortController; messageId: string } | null;
   splitter: ReturnType<typeof createClauseQueue> | null;
-  // Live partial transcription state. We run whisper against the in-flight
-  // audio buffer every ~1s of new audio so the user sees their words appear
-  // before the utterance ends, perceived STT latency drops from ~1s
-  // (post-end-of-speech) to ~150ms (mid-speech partial).
+  // Live partials: whisper runs on the in-flight buffer about every second of new audio.
   partialInFlight: boolean;
   partialLastChunkCount: number;
   lastPartialText: string;
-  // Hands-free wake-word mode. When `wakeWordEnabled` is on and `passive`
-  // is true, transcripts are discarded unless the user says `wakePhrase` ,
-  // at which point we flip `passive` to false and continue normally. When
-  // `passive` is false (active conversation), saying `sleepPhrase` flips
-  // back to passive without submitting the utterance to the LLM.
+  // Wake-word mode: while `passive`, transcripts are dropped until `wakePhrase` is heard; while active,
+  // `sleepPhrase` returns to passive without submitting the utterance.
   wakeWordEnabled: boolean;
   wakePhrase: string;
   sleepPhrase: string;
   passive: boolean;
-  // Application-level ping/pong so the Cloudflare tunnel doesn't kill the
-  // socket during silent periods (no audio frames mean the connection looks
-  // idle to intermediaries even though both ends are still active).
+  // Application-level ping so tunnels do not close the socket during silent periods.
   pingInterval: ReturnType<typeof setInterval> | null;
-  // Always-on listener that catches proactive agent messages (the ones
-  // not in response to a voice prompt, e.g. a watcher firing, the agent
-  // sending an unsolicited update). When it sees agent chat:chunk content
-  // and there's no active TTS, it triggers a TTS burst so voice users
-  // hear those too. Reset between bursts.
+  // Catches proactive agent messages (watchers, pokes) while no TTS is active and starts a TTS burst.
   unsubscribeProactive: (() => void) | null;
-  /**
-   * Phase 6, held transcript awaiting a possible continuation. Populated
-   * when the previous utterance ended on a conjunction; the timer submits
-   * after TURN_EXTENSION_MS if the user doesn't keep talking. If they do
-   * keep talking, the next handleUtteranceEnd merges this transcript with
-   * the new one and clears the timer.
-   */
+  /** Transcript held after a mid-thought utterance; the timer submits it unless a continuation arrives
+   *  and merges with it (clearing the timer). */
   pendingTurnExtension: { transcript: string; timer: ReturnType<typeof setTimeout> } | null;
-  /**
-   * Set true by an 'utterance_canonical' control message; the very next
-   * binary frame is then treated as vad-web's canonical buffer (preroll
-   * included) and REPLACES pcmChunks rather than appending. Cleared
-   * immediately on use. This is what restores the first word of every
-   * utterance, which the live frame stream cuts off because it starts
-   * at onSpeechStart instead of preSpeechPadMs before it.
-   */
+  // Set by 'utterance_canonical': the next binary frame is vad-web's canonical buffer (with preroll)
+  // and REPLACES pcmChunks, restoring the first word the live frame stream cuts off.
   expectingCanonicalFrame: boolean;
-  /**
-   * Active TTS engine for this session, 'local' (Kokoro) or 'cloud'
-   * (Hume). Stored in config as voice.tts_engine; voice-ws.ts reads it
-   * once at session open and again whenever the dashboard sends a
-   * 'config' WS message with a new tts_engine field. The Cloud path
-   * silently falls back to Local when isHumeConfigured() is false.
-   */
+  // Active TTS engine: 'local' (Kokoro) or 'cloud' (Hume). Read at session open and on each 'config'
+  // message; cloud degrades to local when Hume is not configured.
   ttsEngine: 'local' | 'cloud';
-  /** Hume voice id used for cloud TTS bursts. */
   cloudVoice: string;
   /** Hume provider: HUME_AI (Voice Library) or CUSTOM_VOICE (the user's). */
   cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
   /** Standing delivery description for cloud TTS. null = let Octave decide. */
   cloudDescription: string | null;
-  /** Speed multiplier for cloud TTS. */
   cloudSpeed: number;
-  /**
-   * Engine-agnostic handle for pushing text into the currently active
-   * TTS burst. Set by whichever burst is running (local Kokoro pushes
-   * into its ClauseQueue; cloud Hume pushes via hume.push()). Cleared
-   * in the burst's finally block. Used by `pushVoiceFiller` so the
-   * filler-phrase feature works regardless of TTS engine choice.
-   */
+  // Engine-agnostic handle for pushing text into the active TTS burst (set by the running burst, cleared
+  // in its teardown); pushVoiceFiller uses it.
   activeBurstPush: ((text: string) => void) | null;
-  /**
-   * Fast first-responder window. Set true when a voice prompt is submitted;
-   * the burst's chat:chunk listener flips it false the instant the FULL
-   * agent's first real content arrives. The fast-opener only speaks while
-   * this is true, so if the real reply beats the opener we drop the opener
-   * rather than play it out of order.
-   */
-  /**
-   * Timestamp (ms) of the last utterance_end we actually processed. Used to
-   * drop vad-web's duplicate onSpeechEnd double-fire (~10-15 ms apart) so one
-   * utterance isn't transcribed + merged onto itself.
-   */
+  /** Time (ms) of the last utterance_end processed; drops vad-web's duplicate onSpeechEnd. */
   lastUtteranceEndAt: number;
+  // True from prompt submit until the real reply's first content arrives; the opener speaks only while
+  // true.
   openerWindowOpen: boolean;
-  /**
-   * True once the fast-opener has been spoken this turn. Suppresses the
-   * loop's generic pre-tool filler so the user doesn't hear a contextual
-   * opener AND a generic "on it" back to back. Reset each submit.
-   */
+  // True once the fast opener spoke this turn; suppresses the generic pre-tool filler. Reset each submit.
   openerSpoken: boolean;
-  /**
-   * FA-VO2 (D-D): true once the one-shot "cloud voice fell back to local"
-   * notice has been sent this session. A flaky cloud connection shouldn't
-   * spam the notice on every turn, the engine choice stays user-driven and
-   * genuinely persistent misconfig already degrades at load, so one heads-up
-   * per session is enough.
-   */
+  // One-shot guard: the cloud-to-local fallback notice is sent at most once per session.
   cloudFallbackNotified: boolean;
-  /**
-   * FA-VO3: true once the one-shot "custom voice unavailable, using default"
-   * warn has been logged this session. A corrupt/missing voicepack (or a
-   * Kokoro model bump that invalidates the pinned geometry) would otherwise
-   * warn on every clause; this collapses it to one structured warn.
-   */
+  // One-shot guard: the custom-voice-unavailable warning is logged at most once per session.
   customVoiceWarned: boolean;
 }
 
-/**
- * Load saved voice settings out of the `config` table. Falls back to
- * defaults on any missing or malformed key.
- */
+/** Load saved voice settings from the config table; defaults on any missing or malformed key. */
 function loadVoiceSettings(): {
   voice: string; speed: number; sttModel: string;
   wakeWordEnabled: boolean; wakePhrase: string; sleepPhrase: string;
@@ -181,12 +104,8 @@ function loadVoiceSettings(): {
   const db = getDb();
   let voice = DEFAULT_VOICE;
   let speed = 1;
-  // Default to Moonshine. Users with an existing voice.stt_model = WhisperSize
-  // preference keep it (the parser accepts those values too).
   let sttModel: string = DEFAULT_STT_MODEL_KEY;
   let wakeWordEnabled = false;
-  // Default to "hey <primary agent name>" so the wake phrase tracks however
-  // the user has named their primary agent in setup.
   let wakePhrase = `hey ${getPrimaryAgentName().toLowerCase()}`;
   let sleepPhrase = 'stop listening';
   let ttsEngine: 'local' | 'cloud' = 'local';
@@ -205,8 +124,6 @@ function loadVoiceSettings(): {
         if (Number.isFinite(n) && n >= 0.5 && n <= 2) speed = n;
       }
       if (r.key === 'voice.stt_model' && r.value) {
-        // parseSttModelKey returns the default for unknown values, so an
-        // invalid stored value silently falls back rather than failing.
         const parsed = parseSttModelKey(r.value);
         sttModel = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
       }
@@ -223,9 +140,7 @@ function loadVoiceSettings(): {
       }
     }
   } catch { /* table may not yet have these rows, defaults are fine */ }
-  // Hard guard: if the user picked cloud but never configured a key OR
-  // a cloud voice, drop back to local. We don't want voice mode to break
-  // on a misconfiguration; engine fallback is the contract.
+  // Cloud without a Hume key or a chosen voice falls back to local so voice mode never breaks.
   if (ttsEngine === 'cloud' && (!isHumeConfigured() || cloudVoice.length === 0)) {
     ttsEngine = 'local';
   }
@@ -236,15 +151,10 @@ function loadVoiceSettings(): {
   };
 }
 
-/**
- * Mark an assistant message as voice-delivered: the writer module stamps the
- * row as spoken aloud and this broadcasts chat:source_updated so live dashboard
- * sessions update the bubble's "via voice" badge in place. Idempotent , the
- * statement only updates rows not already on a channel, and the broadcast is
- * cheap, so duplicate calls during a burst are a no-op end-to-end.
- */
+// Mark an assistant message as voice-delivered and broadcast chat:source_updated so dashboards update
+// the "via voice" badge in place. Idempotent: markSpokenAloud only updates rows not yet on a channel.
 function markAssistantMessageVoiced(agentId: string, messageId: string, recordId?: string | null): void {
-  // P8: the spoken reply is bound by id, speaker 'agent', to its session.
+  // Binds the spoken reply to its voice session by id (speaker 'agent').
   stampSpokenMessage(messageId, 'agent', recordId ?? null);
   if (!messageId) return;
   try {
@@ -258,23 +168,13 @@ function markAssistantMessageVoiced(agentId: string, messageId: string, recordId
   }
 }
 
-/**
- * Whisper inserts noise around short phrases, a wake phrase like "hey aria"
- * might come back as "Hey, Aria?" or "hey, aria." or even "aria". This
- * normalizes both sides before matching so the wake-word check isn't brittle.
- */
+/** Normalizes both sides of a wake-phrase match, since whisper adds punctuation ("Hey, Aria?"). */
 function normalizeForPhrase(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Compact American Soundex implementation. Phonetic equivalence catches
- * the homophone class of whisper misfires for unusual proper nouns:
- *   Aria → A600, Arya → A600, Ariya → A600   (all match)
- *   Alex → A420, Aleks → A420                (all match)
- *
- * Hand-rolled rather than pulling in `natural` for one tiny function.
- */
+// Compact American Soundex. Phonetic equivalence catches whisper homophone drift on proper nouns
+// (Aria, Arya and Ariya all give A600).
 function soundex(word: string): string {
   const w = word.toUpperCase().replace(/[^A-Z]/g, '');
   if (!w) return '';
@@ -307,24 +207,14 @@ function soundexPhrase(phrase: string): string {
   return phrase.split(' ').filter(Boolean).map(soundex).join(' ');
 }
 
-// Words that commonly prefix a wake phrase. When the configured wake phrase
-// starts with one of these AND whisper drops it (which happens often for
-// quiet leading words on iPad/laptop mics), we still wake on the core word
-// alone, but ONLY for short utterances, so "Aria is at the store" said to
-// another human doesn't false-trigger.
+// Intro words whisper often drops from a wake phrase; the core word alone still wakes, but only for
+// short utterances so incidental name mentions do not trigger.
 const WAKE_INTRO_WORDS = new Set(['hey', 'hi', 'yo', 'ok', 'okay', 'hello']);
 const SHORT_UTTERANCE_MAX_WORDS = 3;
 
-/**
- * Fuzzy wake/sleep phrase matcher. Three layers of tolerance, applied in
- * order from cheapest to loosest:
- *   1. Exact substring after normalization (fast path, preserves prior behavior).
- *   2. Phonetic equivalence: Soundex on each word, then substring match. Catches
- *      Aria/Arya/Ariya and similar whisper proper-noun drift.
- *   3. Intro-word drop: if the phrase is "hey <core>" and whisper transcribed
- *      just <core> (or a homophone), still match, but only when the
- *      utterance is ≤3 words, to avoid waking on incidental name mentions.
- */
+// Fuzzy wake/sleep phrase matcher, cheapest tolerance first: (1) exact substring after normalization;
+// (2) Soundex on each word, then substring; (3) intro-word drop, "hey <core>" matching just <core>,
+// only when the utterance has at most SHORT_UTTERANCE_MAX_WORDS words.
 function findPhrase(transcript: string, phrase: string): { matched: boolean; remainder: string } {
   const normT = normalizeForPhrase(transcript);
   const normP = normalizeForPhrase(phrase);
@@ -342,8 +232,7 @@ function findPhrase(transcript: string, phrase: string): { matched: boolean; rem
     return { matched: false, remainder: '' };
   }
 
-  // Word-by-word soundex with space separation so we can search the phrase
-  // as a contiguous substring without false-matching across word boundaries.
+  // Space-separated soundex so the phrase matches as a substring without crossing word boundaries.
   const transcriptSx = transcriptWords.map(soundex).join(' ');
   const phraseSx = phraseWords.map(soundex).join(' ');
 
@@ -355,8 +244,7 @@ function findPhrase(transcript: string, phrase: string): { matched: boolean; rem
     return { matched: true, remainder };
   }
 
-  // 3. Intro-word drop. Only when phrase starts with a known intro word
-  // AND has at least one core word after it AND the utterance is short.
+  // 3. Intro-word drop: a known intro word, a core word after it, and a short utterance.
   if (
     phraseWords.length >= 2 &&
     WAKE_INTRO_WORDS.has(phraseWords[0]) &&
@@ -377,24 +265,12 @@ function findPhrase(transcript: string, phrase: string): { matched: boolean; rem
 
 const sessions = new Map<WSContext, VoiceSession>();
 
-/**
- * Push a short filler phrase into the active TTS burst for the named
- * agent. Used by the v2 loop when a voice-triggered turn is about to
- * run tools and the model produced no pre-tool acknowledgment of its
- * own - the filler keeps the user from sitting in silence while tools
- * execute.
- *
- * Engine-agnostic: routes through `session.activeBurstPush`, which the
- * active burst (local Kokoro or cloud Hume) sets when it starts and
- * clears in its finally block. Returns false when no voice session is
- * open for this agent, or no burst is currently active.
- */
+// Push a filler phrase into the agent's active TTS burst so the user is not left in silence while a
+// voice turn runs tools. Returns false when no session or burst is active, or a fast opener already
+// spoke this turn (one bridge per turn).
 export function pushVoiceFiller(agentId: string, phrase: string): boolean {
   for (const session of sessions.values()) {
     if (session.agentId !== agentId) continue;
-    // If a contextual fast-opener already spoke this turn, skip the generic
-    // filler, the user would otherwise hear "let me pull that up" followed by
-    // a redundant "on it". One bridge per turn.
     if (session.openerSpoken) return false;
     if (!session.activeBurstPush) return false;
     try {
@@ -415,14 +291,8 @@ function sendBinary(ws: WSContext, buf: Buffer): void {
   try { ws.send(buf as unknown as ArrayBuffer); } catch { /* ignore */ }
 }
 
-/**
- * FA-VO2 (D-D): release a voice client from its post-prompt waiting/speaking
- * state after a cloud-TTS failure we are NOT re-driving through local. Sends
- * the same tts_end + voice:state listening terminal frames (plus the
- * Cloudflare-tunnel insurance copies) the normal completion path would, so the
- * orb never hangs. This is the cloud-path analogue of the local engine's
- * emitTerminalIfNeverStarted "always release the client" contract.
- */
+// Release a voice client after a cloud-TTS failure that is not re-driven through local: sends the
+// terminal tts_end + listening frames (with the tunnel-insurance repeats) so the orb never hangs.
 function releaseVoiceClient(session: VoiceSession, messageId: string): void {
   sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
   sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
@@ -433,14 +303,8 @@ function releaseVoiceClient(session: VoiceSession, messageId: string): void {
   }
 }
 
-/**
- * FA-VO2 (D-D): one-shot, per-session, plain-language notice that a transient
- * cloud-voice failure pushed this reply to the local voice. Sent as a
- * `voice:notice` frame on the voice WS, the client renders it as an info
- * toast (the same surface it already uses for voice errors), which shows
- * regardless of the chat's wordy/non-wordy mode. Fires at most once per
- * session so a flaky cloud link can't spam the toast.
- */
+// One-shot, per-session voice:notice that a transient cloud-voice failure moved this reply to the local
+// voice; the client shows it as an info toast.
 function notifyCloudVoiceFallbackOnce(session: VoiceSession): void {
   if (session.cloudFallbackNotified) return;
   session.cloudFallbackNotified = true;
@@ -493,8 +357,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       wakeWordEnabled: saved.wakeWordEnabled,
       wakePhrase: saved.wakePhrase,
       sleepPhrase: saved.sleepPhrase,
-      // Start passive iff wake-word mode is enabled; otherwise jump straight
-      // to active behavior (same as before this feature existed).
+      // Passive only while wake-word mode is on.
       passive: saved.wakeWordEnabled,
       pingInterval: null,
       unsubscribeProactive: null,
@@ -511,7 +374,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       openerSpoken: false,
       cloudFallbackNotified: false,
       customVoiceWarned: false,
-      // P8: durable session identity, written before first use.
+      // Set from startVoiceSessionRecord just below.
       recordId: null,
     };
     session.recordId = startVoiceSessionRecord({
@@ -519,8 +382,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       sttModel: saved.sttModel, ttsEngine: saved.ttsEngine, voiceId: saved.voice,
     });
     sessions.set(ws, session);
-    // Heartbeat every 25s, under Cloudflare Tunnel's default WS idle timeout
-    // and under the typical 30s nginx default if anyone reverse-proxies us.
+    // Heartbeat every 25s, under typical tunnel and proxy idle timeouts (Cloudflare, nginx's 30s).
     session.pingInterval = setInterval(() => {
       try { sendJson(ws, { type: 'voice:ping', ts: Date.now() }); } catch { /* ignore */ }
     }, 25_000);
@@ -537,12 +399,8 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       sendJson(ws, { type: 'voice:state', agentId, state: 'passive' });
     }
 
-    // Pre-warm STT + TTS in parallel with the user's first utterance.
-    // First-load on both is slow (whisper-server ~9s, Kokoro ~20-30s), so
-    // if we wait until the agent's text arrives to start loading Kokoro
-    // we'll miss the entire first response. Kicking these off here means
-    // by the time STT completes (~1s once warm) + the LLM replies (~3-5s),
-    // both subprocesses are ready.
+    // Pre-warm STT and TTS during the first utterance: first load is slow on both (whisper-server,
+    // Kokoro), so waiting for the reply text would miss the whole first response.
     void ensureSttReady(session.sttModel).catch((err) => {
       logger.warn('STT preload failed', { error: err instanceof Error ? err.message : String(err) });
     });
@@ -551,12 +409,9 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
         logger.warn('Kokoro preload failed', { error: err instanceof Error ? err.message : String(err) });
       });
     }
-    // Preload Smart Turn v3 (downloads ~8.6 MB on first use, then warms one
-    // inference). Until ready, the turn-taking gate falls back to the legacy
-    // conjunction heuristic, so this is pure best-effort.
+    // Preload Smart Turn; until ready the turn gate uses the conjunction heuristic.
     void warmUpSmartTurn();
-    // Subscribe the proactive watcher so unsolicited agent messages
-    // (watchers firing, A2A pokes, scheduled triggers, etc.) also get TTS.
+    // Speak unsolicited agent messages (watchers, A2A pokes, scheduled triggers) too.
     session.unsubscribeProactive = subscribeProactiveWatcher(session);
     return true;
   } catch (err) {
@@ -574,8 +429,7 @@ export function closeVoiceSession(ws: WSContext): void {
   if (session.activeTts) session.activeTts.abort.abort();
   if (session.splitter) { try { session.splitter.close(); } catch { /* ignore */ } }
   if (session.pingInterval) clearInterval(session.pingInterval);
-  // Phase 6, clear any held turn-extension timer so it can't fire after
-  // the session is gone (would land a submitUserMessage on a dead WS).
+  // Clear a held turn-extension timer so it cannot submit on a closed WS.
   if (session.pendingTurnExtension) {
     clearTimeout(session.pendingTurnExtension.timer);
     session.pendingTurnExtension = null;
@@ -589,15 +443,11 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
   const session = sessions.get(ws);
   if (!session) return;
 
-  // Binary frames are raw PCM audio chunks.
   if (data instanceof ArrayBuffer || Buffer.isBuffer(data)) {
     const ab = Buffer.isBuffer(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
     const f32 = new Float32Array(ab);
-    // Canonical replacement path: the previous control message flipped
-    // expectingCanonicalFrame, so this frame is the full vad-web
-    // utterance buffer (including pre-speech padding). Drop whatever live
-    // frames accumulated and use this as the authoritative final buffer.
-    // Don't trigger a partial, the next message is utterance_end.
+    // After utterance_canonical this frame is the full vad-web buffer (with pre-speech padding): it
+    // replaces the live frames and triggers no partial, since utterance_end follows.
     if (session.expectingCanonicalFrame) {
       session.expectingCanonicalFrame = false;
       session.pcmChunks = [f32];
@@ -605,16 +455,13 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
       return;
     }
     session.pcmChunks.push(f32);
-    // Kick off a partial transcription if we've accumulated enough new audio
-    // since the last one. Runs async, caller doesn't wait. If a partial is
-    // already in flight, this no-ops and the next frame retries.
+    // Start a partial transcription once enough new audio arrived; it no-ops while one is in flight.
     if (session.pcmChunks.length - session.partialLastChunkCount >= PARTIAL_TRANSCRIBE_EVERY_CHUNKS) {
       void runPartialTranscribe(session);
     }
     return;
   }
 
-  // JSON control messages
   let msg: { type?: string; [k: string]: unknown };
   try {
     msg = JSON.parse(data as string);
@@ -630,9 +477,7 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
       if (typeof msg.pcmSampleRate === 'number') session.pcmSampleRate = msg.pcmSampleRate;
       if (typeof msg.ttsEngine === 'string') {
         const next: 'local' | 'cloud' = msg.ttsEngine === 'cloud' ? 'cloud' : 'local';
-        // Same fallback rule as initial load: cloud requires both a key
-        // and a chosen voice. Misconfigured cloud silently degrades to
-        // local so voice mode never breaks.
+        // Same fallback as the initial load: cloud needs a Hume key and a chosen voice.
         session.ttsEngine = (next === 'cloud' && (!isHumeConfigured() || session.cloudVoice.length === 0))
           ? 'local' : next;
       }
@@ -648,9 +493,7 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
         session.cloudSpeed = msg.cloudSpeed;
       }
       if (typeof msg.sttModel === 'string' && msg.sttModel.length > 0) {
-        // Accept either the new canonical key ('moonshine-base') or a
-        // WhisperSize. parseSttModelKey normalises and falls back to the
-        // Moonshine default for anything unknown.
+        // Accepts the canonical key or a WhisperSize; unknown values fall back to Moonshine.
         const parsed = parseSttModelKey(msg.sttModel);
         session.sttModel = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
         void ensureSttReady(session.sttModel).catch(() => { /* ignore */ });
@@ -658,8 +501,7 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
       if (typeof msg.wakeWordEnabled === 'boolean') {
         const wasEnabled = session.wakeWordEnabled;
         session.wakeWordEnabled = msg.wakeWordEnabled;
-        // Toggling wake-word mode on mid-session puts us back in passive;
-        // toggling it off promotes us straight to active.
+        // Enabling wake-word mode mid-session goes passive; disabling it goes active.
         if (!wasEnabled && msg.wakeWordEnabled) {
           session.passive = true;
           sendJson(ws, { type: 'voice:state', agentId: session.agentId, state: 'passive' });
@@ -696,9 +538,7 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
     }
 
     case 'utterance_canonical': {
-      // The next binary frame is vad-web's canonical buffer for this
-      // utterance, replaces pcmChunks rather than appending. See the
-      // expectingCanonicalFrame field comment for why.
+      // The next binary frame replaces pcmChunks (see expectingCanonicalFrame).
       session.expectingCanonicalFrame = true;
       return;
     }
@@ -723,20 +563,13 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
   }
 }
 
-// Roughly one second of 16 kHz mono PCM per partial transcription tick.
-// vad-web yields ~30ms frames, so ~30 chunks ≈ ~1s of new audio.
+// About one second of new audio (~30 vad-web frames) per partial transcription.
 const PARTIAL_TRANSCRIBE_EVERY_CHUNKS = 30;
-// Don't bother running partial inference until we have at least this much
-// audio buffered, whisper hallucinates badly on sub-300ms samples.
+// Whisper hallucinates on very short audio; skip partials until half a second is buffered.
 const PARTIAL_MIN_SAMPLES = 16_000 * 0.5;
 
-/**
- * Fire-and-forget partial transcription of whatever's accumulated so far.
- * Snapshots the buffer (does NOT drain) so the final pass on utterance_end
- * still sees the complete recording. One in-flight at a time per session ,
- * if a transcription is already running, new chunks just keep accumulating
- * and the NEXT tick will pick them up.
- */
+// Fire-and-forget partial transcription of the buffer so far. Snapshots without draining, so the final
+// pass still sees the whole recording; one in flight per session, later chunks wait for the next tick.
 async function runPartialTranscribe(session: VoiceSession): Promise<void> {
   if (session.partialInFlight) return;
   if (session.pcmChunks.length === 0) return;
@@ -748,8 +581,6 @@ async function runPartialTranscribe(session: VoiceSession): Promise<void> {
     const wav = pcmFloatToWav(pcm, session.pcmSampleRate);
     const result = await transcribeBuffer(wav, { modelKey: session.sttModel });
     const text = result.text.trim();
-    // Skip empty / duplicate emissions, whisper sometimes returns "" or
-    // re-returns the same partial when audio hasn't changed meaningfully.
     if (!text || text === session.lastPartialText) return;
     session.lastPartialText = text;
     sendJson(session.ws, {
@@ -778,77 +609,34 @@ function concatPcm(chunks: Float32Array[]): Float32Array {
 }
 
 // ── Backchannel filter ──
-//
-// Short acknowledgments ("yeah", "mhmm", "ok", etc.) that users naturally
-// say while the agent is mid-thought aren't actual prompts. Submitting them
-// preempts the agent's run and forces it to respond to nothing meaningful.
-// We catch the most common ones here. The match is intentionally exact ,
-// "ok do that" is NOT a backchannel and passes through, while bare "ok" is.
+// Short acknowledgments ("yeah", "mhmm") are not prompts and would preempt the agent. The match is exact:
+// "ok do that" passes through, bare "ok" does not.
 const BACKCHANNELS = new Set([
-  // Hm/mm variants
   'hm', 'hmm', 'hmmm', 'mhm', 'mhmm', 'mmhm', 'mmhmm', 'mm hmm', 'mm hm',
-  // Uh-huh variants
   'uh huh', 'uhuh', 'uhhuh',
-  // Affirmative
   'yeah', 'yep', 'yup', 'ya', 'yah',
-  // Ok variants
   'ok', 'okay', 'kay', 'k',
-  // Other quick acks
   'right', 'sure', 'got it', 'gotcha', 'understood', 'cool', 'nice',
-  // FA-VO4 (D-E): negations (no / nope / nah) are deliberately NOT here.
-  // A bare "no" is (almost) always a real instruction, most importantly the
-  // "stop what you just announced" case: the agent says "I'll email the whole
-  // team now", the user says "No!". Suppressing that as a backchannel let the
-  // action proceed. Negations always submit; only the acknowledgment class
-  // (mm-hmm / yeah / ok / sure ...) above is suppressed.
+  // Negations (no / nope / nah) are deliberately absent: a bare "no" is usually a real instruction, such
+  // as stopping an action the agent just announced, so it always submits.
 ]);
 
-/**
- * Phase 6, turn-taking heuristic. After the backchannel filter, look at
- * the FINAL transcript and decide whether the user actually finished the
- * thought. If the last word is a continuing conjunction ("and", "but",
- * "so", "or", "because"), treat the utterance as mid-thought and give
- * the user another 500ms of silence to keep going before we submit it
- * to the LLM. If they DO keep talking, the next utterance_end merges
- * with the held one and we submit as a single combined turn. If they
- * don't, the held timer fires and submits as-is.
- *
- * Strips terminal punctuation before checking so "and." still counts as
- * "and". Operates ONLY on the final transcript, never on partials, the
- * partial stream can flicker between conjunction and non-conjunction
- * endings depending on how the model committed each chunk.
- */
+// Turn-taking fallback: when the final transcript ends on a continuing conjunction, hold it for another
+// TURN_EXTENSION_MS so a continuation can merge into one turn. Final transcripts only, never partials,
+// whose endings flicker.
 const TURN_TAKING_CONJUNCTIONS = new Set(['and', 'but', 'so', 'because', 'or']);
 const TURN_EXTENSION_MS = 500;
 
-// vad-web double-fires onSpeechEnd ~10-15 ms apart for one utterance; coalesce
-// utterance_end signals that land within this window (well below any real
-// continuation gap, which is hundreds of ms).
+// vad-web double-fires onSpeechEnd ~10-15 ms apart; end signals inside this window are coalesced.
 const DOUBLE_FIRE_GUARD_MS = 250;
 
-// ── t114 (census U5) — THE TRANSCRIPTION BUDGET, SIZED FROM THE RECORDING ──
-//
-// Replaces a flat 30,000 ms that discarded real captured speech on any dictation long enough to
-// need it. The three numbers are split so each says what it is for rather than being one
-// constant doing three jobs:
-//
-//   BOOT ALLOWANCE — a cold whisper-server with a large model on a slow disk. Carried verbatim
-//     from the old flat bound, which is the one thing that number WAS sized for (its own comment
-//     said so: "a stuck whisper-server boot ... still in the middle of download/warmup").
-//   PER AUDIO SECOND — the part the old bound was missing entirely. Whisper runs faster than
-//     realtime on most boxes, so 2s of grant per 1s of audio is deliberately generous: this is a
-//     bound on a WEDGE, not a performance target, and being stingy here is what destroyed work.
-//   MAX — the ceiling, because an idle-shaped grant that grows without limit is the
-//     unbounded-renewal trap. Ten minutes is far above any plausible single utterance.
+// Transcription budget: a cold-engine boot allowance, plus a generous grant per second of audio (a bound
+// on a wedge, not a performance target), capped so a wedged engine cannot hold the session forever.
 const TRANSCRIBE_BOOT_ALLOWANCE_MS = 30_000;
 const TRANSCRIBE_MS_PER_AUDIO_SECOND = 2_000;
 const TRANSCRIBE_MAX_MS = 10 * 60_000;
 
-/**
- * How long this recording's transcription may take. EXPORTED because it is the whole fact of the
- * fix and a clause that re-derived the arithmetic instead of calling it would pass while the
- * shipped code said something else — which is how the flat bound survived in the first place.
- */
+/** How long one recording's transcription may take; exported so its test uses the real arithmetic. */
 export function transcribeBudgetMsFor(pcmLength: number, sampleRate: number): number {
   const audioSeconds = sampleRate > 0 ? pcmLength / sampleRate : 0;
   return Math.min(
@@ -857,19 +645,9 @@ export function transcribeBudgetMsFor(pcmLength: number, sampleRate: number): nu
   );
 }
 
-// ── Smart Turn hold policy ──
-// When Smart Turn says the user is mid-thought, the old flat 500ms wait was
-// far too short to catch a real thinking pause, so the fragment submitted and
-// the agent answered an unfinished sentence. Instead, wait LONGER the more
-// confident the model is that they're not done (lower p), bounded below by a
-// snappy floor and above by a cap that keeps a wrong "incomplete" from feeling
-// stuck. A continuation utterance arriving in this window merges + re-runs the
-// model; if none arrives, the held transcript submits on its own.
-// Turn-taking patience dial, how long to wait for the user to continue a
-// mid-thought turn. Driven by the `voice.vad_sensitivity` setting (repurposed
-// from the old client VAD-redemption knob into a pure patience control). Each
-// level is a [min, max] hold range; the confidence-scaled hold lands inside it
-// (lower p ⇒ more certain they're mid-thought ⇒ closer to max).
+// Smart Turn hold: when the model says the user is mid-thought, wait longer the less confident it is that
+// they are done (lower p), within a [min, max] range set by the `voice.vad_sensitivity` patience level. A
+// continuation arriving in the hold merges and re-runs the model; otherwise the held transcript submits.
 const HOLD_RANGES: Record<'quick' | 'normal' | 'patient', { min: number; max: number }> = {
   quick:   { min: 300,  max: 1000 },
   normal:  { min: 700,  max: 2500 },
@@ -884,11 +662,7 @@ function getTurnPatience(): 'quick' | 'normal' | 'patient' {
     const v = row?.value;
     if (v === 'quick' || v === 'normal' || v === 'patient') return v;
   } catch { /* fall back to the default below */ }
-  // FA-VO6(a): the unset default must MATCH the dashboard, which shows 'quick'
-  // for a box that never set voice.vad_sensitivity (Settings VoiceTab initial
-  // state). This used to default 'normal' here, so the two silently diverged:
-  // the UI claimed a snappy hold while the server ran the slower one. Migration
-  // 097 also seeds the row so the stored state is explicit going forward.
+  // The unset default matches the dashboard's initial 'quick'; migration 097 seeds the row.
   return 'quick';
 }
 
@@ -899,10 +673,8 @@ function smartTurnHoldMs(pComplete: number, threshold: number): number {
   return Math.round(min + frac * (max - min));
 }
 
-// Decision threshold: P(complete) at/above this submits, below holds. Tunable
-// live via the `voice.turn_complete_threshold` config key (0..1), higher =
-// more patient (fewer cut-offs, but more latency when the model wrongly thinks
-// a finished turn is unfinished). Defaults to the Smart Turn module default.
+// P(complete) at or above this submits, below holds. Tunable via `voice.turn_complete_threshold` (0..1);
+// higher is more patient. Defaults to the Smart Turn module default.
 function getTurnCompleteThreshold(): number {
   try {
     const row = getDb()
@@ -914,10 +686,8 @@ function getTurnCompleteThreshold(): number {
   return TURN_COMPLETE_THRESHOLD;
 }
 
-// Merge a held transcript with a continuation, deduping the case where they are
-// really the SAME utterance (a vad double-fire that slipped past the time guard,
-// or overlapping canonical buffers). A genuine continuation adds NEW words; a
-// duplicate just repeats them, concatenating those gives "make this make this".
+// Merge a held transcript with a continuation, collapsing the case where both are the SAME utterance
+// (a double-fire past the time guard) so words are not repeated.
 function mergeHeldTranscript(held: string, next: string): string {
   const h = held.trim();
   const n = next.trim();
@@ -951,20 +721,9 @@ export function isBackchannel(transcript: string): boolean {
   return BACKCHANNELS.has(cleaned);
 }
 
-/**
- * Carve-out for the backchannel filter: if the agent just asked the
- * user a question (most recent assistant message in the last 60s
- * ends with `?`), short acknowledgments like "yeah", "yep", "ok", or
- * "sure" are legitimate answers, not mid-thought acks. We bypass the
- * backchannel filter in that window. (Negations like "no"/"nope" are no
- * longer in the backchannel set at all per FA-VO4, so they always submit
- * regardless of this carve-out.)
- *
- * Time window stops a stale question from years-ago staying open
- * forever (e.g. agent asked an hour ago, user mumbles "yeah" while
- * unrelated). Most natural Q&A lands within a couple of seconds; 60s
- * is generous.
- */
+// Carve-out for the backchannel filter: when the agent's latest owner-lane message from the last 60s ends
+// with `?`, a short "yeah" or "ok" is a real answer and is submitted. The window keeps a stale question
+// from staying open.
 function lastAssistantWasQuestion(agentId: string): boolean {
   try {
     const row = getDb().prepare(`
@@ -983,8 +742,6 @@ function lastAssistantWasQuestion(agentId: string): boolean {
       LIMIT 1
     `).get(agentId) as { content: string; created_at: string } | undefined;
     if (!row?.content) return false;
-    // Stored as either plain text or a JSON array of content blocks
-    // (text + tool_use). Pull just the text.
     let text = row.content;
     if (text.startsWith('[')) {
       try {
@@ -1008,12 +765,8 @@ function lastAssistantWasQuestion(agentId: string): boolean {
 }
 
 async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
-  // vad-web can emit onSpeechEnd twice ~10-15 ms apart for a single utterance;
-  // the client sends a full canonical-frame + utterance_end sequence each time,
-  // so without a guard we transcribe and process the SAME utterance twice, and
-  // with the hold/merge path enabled, the second copy gets merged onto the
-  // first ("make this make this"). A genuine continuation utterance is hundreds
-  // of ms away, never ~10 ms, so coalesce end signals inside a short window.
+  // vad-web can fire onSpeechEnd twice ~10-15 ms apart for one utterance; coalescing end signals inside a
+  // short window stops the same utterance being transcribed and merged onto itself.
   const nowMs = Date.now();
   if (nowMs - session.lastUtteranceEndAt < DOUBLE_FIRE_GUARD_MS) {
     logger.debug('Dropping duplicate utterance_end (vad double-fire)', {
@@ -1026,7 +779,6 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
 
   const chunks = session.pcmChunks;
   session.pcmChunks = [];
-  // Reset partial state, next utterance starts fresh, no carryover.
   session.partialLastChunkCount = 0;
   session.lastPartialText = '';
   if (chunks.length === 0) {
@@ -1034,42 +786,28 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     return;
   }
   const pcm = concatPcm(chunks);
-  // Empty / sub-quarter-second utterances are usually mic clicks; drop.
   if (pcm.length < session.pcmSampleRate / 4) {
     logger.debug('Dropping tiny utterance', { samples: pcm.length });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
     return;
   }
 
-  // Kick off semantic end-of-turn detection in parallel with transcription so
-  // its ~12 ms cost is fully hidden behind STT. Consumed at the turn-taking
-  // decision below; resolves to null when the model is unavailable, in which
-  // case we fall back to the lexical-conjunction heuristic.
+  // Run semantic end-of-turn detection in parallel with STT; null when the model is unavailable (then the
+  // lexical-conjunction heuristic decides).
   const turnCompletePromise = predictTurnComplete(pcm, session.pcmSampleRate);
 
   sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'transcribing' });
   const wav = pcmFloatToWav(pcm, session.pcmSampleRate);
 
-  // ── t114 (census U5) — THE BOUND SCALES WITH THE AUDIO IT IS TRANSCRIBING ──
-  //
-  // THE DEFECT: a flat 30 seconds, on a job whose cost is proportional to the length of the
-  // recording. `session.pcmChunks` is CLEARED eleven lines above (`chunks` is the only
-  // reference), so when this bound fired the user's real, fully-captured speech was GONE — no
-  // retry, no re-queue, just `voice:state error`. A two-minute dictation, or a first utterance
-  // landing while whisper-server is still warming, exceeded it as a matter of course.
-  //
-  // The measured fact was already in hand and already being used: `pcm.length` gates the
-  // tiny-utterance drop a few lines up. The clock simply did not consult it. It does now — a
-  // fixed allowance that covers a cold engine boot, plus a generous per-second-of-audio grant,
-  // capped so the bound is still a bound and a wedged engine cannot hold the session for ever.
+  // The budget scales with the audio: pcmChunks was cleared above, so a timeout would lose the user's
+  // fully captured speech.
   const audioSeconds = pcm.length / session.pcmSampleRate;
   const transcribeBudgetMs = transcribeBudgetMsFor(pcm.length, session.pcmSampleRate);
   const runTranscribe = () => Promise.race([
     transcribeBuffer(wav, { modelKey: session.sttModel }),
     new Promise<never>((_, reject) =>
       setTimeout(
-        // The reason carries BOTH numbers, so a user who hits it can see that the bound was
-        // sized for their recording rather than guess at a constant.
+        // The reason carries both numbers so the bound is visibly sized for the recording.
         () => reject(new Error(
           `transcribe_timeout (${Math.round(transcribeBudgetMs / 1000)}s for `
           + `${Math.round(audioSeconds)}s of audio) — STT engine not ready`,
@@ -1093,13 +831,9 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     durationMs = result.durationMs;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // FA-VO6(b): the STT engine was swapped out from under this FINAL
-    // transcribe (a settings change flipped the model mid-utterance), so
-    // stt-service refused a result that belongs to the now-stale engine. This
-    // is the real utterance, not a throwaway partial, don't lose it to a hard
-    // error. Retry once: transcribeBuffer re-runs ensureSttReady, so the retry
-    // transcribes against the now-active engine. Any other failure keeps the
-    // original hard-error behaviour.
+    // stt-service refused a result from a stale engine (a settings change swapped the model
+    // mid-utterance). This is the real utterance, so retry once against the now-active engine; other
+    // failures are hard errors.
     if (msg === 'stt_engine_swapped') {
       logger.warn('STT engine swapped during final transcribe, retrying once against the active engine', { agentId: session.agentId }, session.agentId);
       try {
@@ -1130,14 +864,12 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // ── Wake word / Sleep word handling (passive ↔ active transitions) ──
   if (session.wakeWordEnabled) {
     if (session.passive) {
-      // Passive: discard everything UNTIL we hear the wake phrase.
       const { matched, remainder } = findPhrase(transcript, session.wakePhrase);
       if (!matched) {
         logger.debug('Passive mode, no wake phrase, dropping transcript', { agentId: session.agentId, transcript });
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'passive' });
         return;
       }
-      // Wake! Flip to active mode and notify the client.
       session.passive = false;
       logger.info('Wake phrase detected', { agentId: session.agentId, phrase: session.wakePhrase, remainder: remainder.slice(0, 80) });
       sendJson(session.ws, {
@@ -1149,10 +881,8 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
         return;
       }
-      // Continue with the post-wake text as the prompt.
       transcript = remainder;
     } else {
-      // Active: check for sleep phrase before doing anything else with it.
       const { matched } = findPhrase(transcript, session.sleepPhrase);
       if (matched) {
         session.passive = true;
@@ -1172,45 +902,26 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     }
   }
 
-  // Backchannel filter: short acknowledgments like "yeah" or "mhmm" should
-  // not preempt the agent or be submitted as a new prompt. The user's
-  // barge-in (if any) already cancelled in-flight TTS. Just go back to
-  // listening, no LLM call, no token spend, no spurious "you said yeah"
-  // entry in the chat history.
-  //
-  // EXCEPTION: if the agent JUST asked a question (most recent assistant
-  // message in the last 60s ends with `?`), short answers ARE the
-  // actual answer. Without this carve-out, the agent would ask "should
-  // I email Sarah?" and the user's "yes" would silently disappear.
+  // Backchannel filter: short acknowledgments are not prompts, so go back to listening with no LLM call.
+  // Exception: right after the agent asked a question, a short answer IS the answer.
   if (isBackchannel(transcript) && !lastAssistantWasQuestion(session.agentId)) {
     logger.debug('Backchannel detected, not submitting as prompt', { agentId: session.agentId, transcript });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
     return;
   }
 
-  // Phase 6, turn-taking heuristic. If a previous utterance ended on a
-  // conjunction and is still held by the extension timer, merge it with
-  // the new transcript and clear the timer. This is what makes "I went
-  // to the store... and... bought some milk" land as a single turn even
-  // though the user paused long enough for the VAD to call utterance_end
-  // twice.
+  // If a previous utterance is held by the extension timer, merge it with this one and clear the timer,
+  // so a mid-thought pause the VAD split into two utterance_ends lands as one turn.
   if (session.pendingTurnExtension) {
     clearTimeout(session.pendingTurnExtension.timer);
     transcript = mergeHeldTranscript(session.pendingTurnExtension.transcript, transcript);
     session.pendingTurnExtension = null;
   }
 
-  // Turn-taking decision. Smart Turn v3 predicts acoustically whether the
-  // user finished their thought (trailing intonation / pause shape), which is
-  // far better than the old lexical-conjunction guess: it catches mid-thought
-  // pauses that DON'T end on a conjunction, and it submits immediately when the
-  // user is clearly done even if they happened to end on "and"/"so", so the
-  // common (complete) case pays no debounce at all. We fall back to the
-  // conjunction heuristic only when the model is unavailable (returns null).
-  //
-  // If we believe the user is mid-thought, hold the transcript briefly so a
-  // continuation utterance can merge (the Phase 6 mechanism); if no
-  // continuation arrives, the timer submits the held transcript on its own.
+  // Smart Turn predicts acoustically whether the user finished: it holds mid-thought pauses that do not
+  // end on a conjunction and submits at once when the user is done, even after "and". The conjunction
+  // heuristic applies only when the model is unavailable (null). The timer submits a held transcript
+  // unless a continuation merges into it first.
   const threshold = getTurnCompleteThreshold();
   const turnComplete = await turnCompletePromise;
   const holdForContinuation = turnComplete !== null
@@ -1231,8 +942,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
     const heldTranscript = transcript;
     const timer = setTimeout(() => {
-      // Only fire if nothing has cleared us first (a continuation utterance
-      // would have cancelled this timer and moved the transcript forward).
+      // A continuation clears this timer and moves the transcript forward; only fire if still current.
       if (session.pendingTurnExtension?.timer !== timer) return;
       session.pendingTurnExtension = null;
       void submitTranscriptAndStartTts(session, heldTranscript);
@@ -1244,16 +954,12 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   await submitTranscriptAndStartTts(session, transcript);
 }
 
-/**
- * Submit a final voice transcript through the chat pipeline and start
- * TTS streaming for the agent's reply. Factored out so both the normal
- * end-of-turn path and the turn-extension timer (Phase 6) can reuse it.
- */
+// Submit a final voice transcript through the chat pipeline and start TTS for the agent's reply. Used by
+// the normal end-of-turn path and the turn-extension timer.
 async function submitTranscriptAndStartTts(session: VoiceSession, transcript: string): Promise<void> {
-  // Post the transcript through the normal chat pipeline. source='voice'
-  // so the dashboard renders a mic icon on this user bubble.
+  // source='voice' so the dashboard shows a mic icon on this user bubble.
   const submit = await submitUserMessage(session.agentId, transcript, undefined, 'voice');
-  // P8 speaker stamp on the id we hold (no read-back race; the row is ours).
+  // Speaker stamp on the id we hold (the row is ours, so no read-back race).
   if (submit.ok && submit.messageId) {
     stampSpokenMessage(submit.messageId, 'owner', session.recordId);
     bumpVoiceSessionTurnCount(session.recordId);
@@ -1263,33 +969,23 @@ async function submitTranscriptAndStartTts(session: VoiceSession, transcript: st
     return;
   }
 
-  // Confirm to the client that the prompt was actually submitted (not
-  // dropped as a backchannel / sleep / wake-only utterance). The client
-  // plays a "message sent" chime on this event.
+  // Tells the client the prompt was submitted (not dropped as a backchannel or wake-only utterance).
   sendJson(session.ws, { type: 'voice:prompt_submitted', agentId: session.agentId });
 
-  // Fast first-responder: open the opener window, start the burst (which sets
-  // activeBurstPush synchronously), then race a low-TTFT model to speak a
-  // short CONTEXTUAL BRIDGE ("sure, let me pull that up") while the full agent
-  // spins up. The opener shares this burst, so it plays first and the real
-  // reply streams in right behind it. The opener never states facts, so it
-  // can't contradict the answer. If the full agent's reply beats the opener,
-  // openerWindowOpen is already false and the opener is dropped (no out-of-
-  // order playback).
+  // Fast first responder: open the opener window, start the burst (which sets activeBurstPush), then race
+  // a low-latency model for a short contextual bridge that plays first. If the real reply arrives first
+  // the window is already closed and the opener is dropped.
   session.openerWindowOpen = true;
   session.openerSpoken = false;
 
-  // Subscribe to assistant chunks for this agent; pipe into TTS.
   startTtsForAgent(session);
 
   void fireFastOpener(session, transcript);
 }
 
-// ── Fast first-responder (contextual bridge) ──
-//
-// Tightly constrained: the opener is a SPOKEN BRIDGE, never an answer. It must
-// not state facts, numbers, names, or opinions, only acknowledge the request
-// and signal "I'm on it", so it can never contradict the full agent's reply.
+// ── Fast first responder ──
+// The opener is a spoken bridge, never an answer: no facts, numbers, names or opinions, so it cannot
+// contradict the full reply.
 const OPENER_SYSTEM_PROMPT =
   'You are the voice of an assistant. The user just spoke a request. Reply with ONE very short ' +
   'spoken bridge phrase (3 to 8 words) that warmly acknowledges the request and signals you are ' +
@@ -1300,12 +996,8 @@ const OPENER_SYSTEM_PROMPT =
 const OPENER_TIMEOUT_MS = 1500;
 const OPENER_MAX_CHARS = 80;
 
-/**
- * Resolve the model used for the spoken opener. Prefers the dedicated
- * `voice.opener_model` config (a low-TTFT model the user picks); falls back to
- * the System model so the feature works out of the box. `voice.opener_model`
- * set to 'off' disables the opener entirely.
- */
+// Model for the spoken opener: `voice.opener_model` if set ('off' disables the opener), else the System
+// model.
 async function resolveOpenerModel(): Promise<string | null> {
   let configured: string | undefined;
   try {
@@ -1328,20 +1020,14 @@ async function resolveOpenerModel(): Promise<string | null> {
  *  length, and ensure clean terminal punctuation for the TTS clause splitter. */
 function sanitizeOpener(raw: string): string {
   let t = raw.trim().replace(/\s+/g, ' ');
-  // Strip a single pair of wrapping quotes the model may have added.
   t = t.replace(/^["'“”‘’]+/, '').replace(/["'“”‘’]+$/, '').trim();
-  // Keep only the first line / sentence-ish, openers should be one clause.
   t = t.split('\n')[0].trim();
   if (t.length > OPENER_MAX_CHARS) t = t.slice(0, OPENER_MAX_CHARS).trim();
   if (t && !/[.!?,…]$/.test(t)) t += '.';
   return t;
 }
 
-/**
- * Race a fast model to speak a contextual opener while the full agent spins
- * up. Fully best-effort: any failure (no model, timeout, torn-down burst, real
- * reply already started) silently does nothing. Never throws.
- */
+/** Race a fast model to speak an opener while the agent spins up; best-effort, failures are silent. */
 async function fireFastOpener(session: VoiceSession, transcript: string): Promise<void> {
   try {
     const modelId = await resolveOpenerModel();
@@ -1353,12 +1039,10 @@ async function fireFastOpener(session: VoiceSession, transcript: string): Promis
       systemPrompt: OPENER_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: transcript }],
       tools: false,
-      // t88: the spoken filler while the real reply is written. Short by nature, and long output is
-      // actively harmful here — it has to land BEFORE the real answer.
+      // Spoken filler written while the real reply is produced: short output that must land first.
       purpose: 'voice_opener',
       abortSignal: AbortSignal.timeout(OPENER_TIMEOUT_MS),
-      // W3-1: documented "fully best-effort, never throws" opener; a failure
-      // means silence, which the real reply covers. WARN, not ERROR.
+      // A failure means silence, which the real reply covers: WARN, not ERROR.
       bestEffort: true,
     });
     const text = sanitizeOpener(result.content ?? '');
@@ -1377,52 +1061,30 @@ async function fireFastOpener(session: VoiceSession, transcript: string): Promis
   }
 }
 
-/**
- * Open a fresh TTS burst, splitter + Kokoro stream + chat:chunk listener.
- *
- * Called from two places:
- *  1. handleUtteranceEnd, right after submitting a transcribed voice prompt.
- *  2. subscribeProactiveWatcher, when the agent emits chat:chunk content
- *     without a corresponding voice prompt (proactive messages). In that
- *     case the watcher passes the FIRST chunk via `initialContent` so it
- *     isn't lost, the burst listener subscribes after this function
- *     returns and only catches subsequent broadcasts.
- */
-/**
- * Strip engine control markers from text destined for TTS. These tokens
- * are routing/suppression signals the agent emits for the chat pipeline
- * (e.g. `[no-reply]` to say "this turn produces no chat reply"), they
- * are NEVER meant to be spoken. When the agent emits just `[no-reply]`
- * by itself, Octave will improvise something plausible from the
- * baseline description rather than synthesise the literal token; the
- * user hears words the agent never wrote. Strip them here so neither
- * engine has a chance to read them aloud.
- */
+// Strip engine control markers (such as `[no-reply]`) from TTS text: they are routing signals, and a
+// cloud engine would improvise words for a bare one.
 function stripEngineControlMarkers(text: string): string {
   if (!text) return text;
-  // PHASE-1 T8: `stripNoReplySentinel` is @dojo/shared's, so this and the engine agree on
-  // what the sentinel looks like — including the markdown wrappers the weak model adds,
-  // which this local copy did not tolerate. Collapse runs of spaces afterwards so word
-  // boundaries stay intact without doubling.
+  // stripNoReplySentinel is shared with the engine so both agree on what the sentinel looks like.
+  // Runs of spaces are collapsed afterwards.
   return stripNoReplySentinel(text).replace(/ {2,}/g, ' ');
 }
 
+// Open a TTS burst for the agent's chat:chunk stream. Called after a voice prompt is submitted, and by
+// subscribeProactiveWatcher with the first chunk as `initialContent` (the burst listener only sees later
+// broadcasts).
 function startTtsForAgent(
   session: VoiceSession,
   initialContent?: string,
   opts?: { forceLocal?: boolean; replayEvents?: WsEvent[] },
 ): void {
-  // Pause the proactive watcher for the duration of this burst, the
-  // burst's own chat:chunk listener will handle every event from here.
-  // The IIFE finally below re-subscribes the watcher.
+  // Pause the proactive watcher for this burst; its teardown re-subscribes it.
   if (session.unsubscribeProactive) {
     session.unsubscribeProactive();
     session.unsubscribeProactive = null;
   }
-  // Tear down any prior subscription, splitter, and TTS stream before
-  // opening a new one. Without closing the prior splitter, its consumer
-  // generator would never exit (we'd no longer be listening for the idle
-  // event that triggers close), orphaned and slow-leaking memory.
+  // Close any prior subscription, splitter and TTS stream first; an unclosed splitter's consumer never
+  // exits.
   if (session.unsubscribeChunk) session.unsubscribeChunk();
   session.unsubscribeChunk = null;
   if (session.splitter) {
@@ -1434,25 +1096,16 @@ function startTtsForAgent(
     session.activeTts = null;
   }
 
-  // Engine dispatch, cloud (Hume) takes a totally different streaming
-  // shape (one socket per turn, internal buffering, no clause queue), so
-  // it lives in its own handler. Local (Kokoro) keeps the clause-queue
-  // path below. `opts.forceLocal` is the FA-VO2 (D-D) per-burst override:
-  // a transient cloud failure re-drives THIS burst through local without
-  // touching session.ttsEngine, so the user's engine choice still stands
-  // for the next turn.
+  // Cloud (Hume) streams differently (one socket per turn, no clause queue) so it has its own handler.
+  // forceLocal re-drives THIS burst through local after a transient cloud failure, leaving
+  // session.ttsEngine alone.
   if (session.ttsEngine === 'cloud' && !opts?.forceLocal) {
     startCloudTtsBurst(session, initialContent);
     return;
   }
 
-  // FA-VO3: resolve the voice this burst will actually synthesize with. A
-  // custom voicepack that's missing/corrupt, or byte-valid but dimensionally
-  // wrong after a KOKORO_MODEL_ID bump, would otherwise throw inside
-  // tts.generate on every clause and produce a silent turn. checkCustomVoiceUsable
-  // pre-flights the pack (and the model-version pin) and, when it can't be used,
-  // we fall back to the default built-in voice for this burst and warn once per
-  // session instead of per clause. Built-in voices pass through untouched.
+  // Pre-flight a custom voicepack (and the model-version pin); if unusable, fall back to the default
+  // voice for this burst and warn once per session, instead of failing on every clause.
   let effectiveVoice = session.voice;
   const voiceCheck = checkCustomVoiceUsable(session.voice, KOKORO_MODEL_ID);
   if (!voiceCheck.ok) {
@@ -1468,9 +1121,8 @@ function startTtsForAgent(
     }
   }
 
-  // Phase 4, clause-level TTS. We drive Kokoro one clause at a time so
-  // first audio lands within the first ~30 chars of the LLM's reply,
-  // instead of waiting for a full sentence boundary.
+  // Clause-level TTS: Kokoro runs one clause at a time so first audio lands within ~30 chars of the
+  // reply.
   const splitter = createClauseQueue();
   session.splitter = splitter;
   const sanitizer = new StreamingSpeechBuffer();
@@ -1480,25 +1132,14 @@ function startTtsForAgent(
   session.activeTts = { abort, messageId };
 
   let started = false;
-  // FA-VO1: guards the empty-reply terminal emit below. A voice turn whose
-  // text sanitizes to nothing speakable ([no-reply] only, ((mood:)) only, or a
-  // tool-only turn) never calls startStreaming(), so the clause-stream
-  // completion block that emits tts_end + voice:state listening never runs and
-  // the client sits in its post-prompt waiting state forever. This one-shot
-  // flag lets the terminal handlers emit that transition exactly once, and
-  // ONLY when synthesis never started (if it did, the completion block owns
-  // the state change and emitting here would flip the client to listening
-  // while audio is still draining).
+  // Guards the empty-reply terminal emit: a turn with nothing speakable never starts streaming, so the
+  // completion block never releases the client. Emitted once, and only if synthesis never started.
   let terminalEmitted = false;
   let sentenceCount = 0;
   const startStreaming = () => {
     if (started) return;
     started = true;
-    // PHASE-2 T5: THE BROWSER SPEECH-OUT DOOR. A spoken reply is a delivery the owner
-    // received, and research 03 found voice recording NOTHING on either path. One row per
-    // BURST, not per clause: the clause queue is how one reply is transported, not several
-    // replies. Recorded where synthesis actually starts, so a turn whose text sanitizes to
-    // nothing speakable never claims a delivery.
+    // One speech-out delivery row per burst (not per clause), recorded where synthesis starts.
     recordedId(recordAtDoor({
       outcome: 'delivered', channel: 'voice', tool: 'speech-out',
       agentId: session.agentId, recipientId: 'owner', messageId, detail: 'local',
@@ -1506,7 +1147,6 @@ function startTtsForAgent(
     logger.info('TTS streaming started', { agentId: session.agentId, messageId, voice: effectiveVoice });
     sendJson(session.ws, { type: 'voice:tts_start', agentId: session.agentId, messageId });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
-    // Drain the splitter through Kokoro and emit WAV chunks.
     void (async () => {
       try {
         for await (const chunk of synthesizeClauseStream(splitter, effectiveVoice, session.speed, abort.signal)) {
@@ -1527,13 +1167,8 @@ function startTtsForAgent(
           });
           sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
           sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
-          // Cloudflare named tunnels sometimes buffer trailing small WS text
-          // frames waiting for more bytes. Audio chunks (binary) get through
-          // fine but the tiny tts_end JSON can stall, leaving the client
-          // stuck on 'agent speaking'. Push 4 redundant copies over the next
-          // ~500ms, the increased traffic volume forces the tunnel to flush
-          // its buffer, and the client handler is idempotent (setState to a
-          // state it's already in is a no-op). Cheap insurance.
+          // Cloudflare named tunnels can buffer a trailing small text frame; 4 redundant tts_end copies
+          // over ~500ms force a flush (the client handler is idempotent).
           for (let i = 1; i <= 4; i++) {
             setTimeout(() => {
               if (abort.signal.aborted) return;
@@ -1545,8 +1180,7 @@ function startTtsForAgent(
         }
       } catch (err) {
         logger.error('TTS stream failed', { error: err instanceof Error ? err.message : String(err) }, session.agentId);
-        // The burst was announced as a delivery and then died mid-stream: correct the row
-        // rather than leave a `delivered` claim standing over silence.
+        // Correct the delivered row rather than leave a delivery claim standing over silence.
         recordedId(recordAtDoor({
           outcome: 'failed', channel: 'voice', tool: 'speech-out',
           agentId: session.agentId, recipientId: 'owner', messageId,
@@ -1564,8 +1198,7 @@ function startTtsForAgent(
           session.unsubscribeChunk();
           session.unsubscribeChunk = null;
         }
-        // Re-arm the proactive watcher for the next unsolicited message.
-        // Skipped if the WS already closed (sessions.delete handled it).
+        // Re-arm the proactive watcher unless the WS already closed.
         if (sessions.has(session.ws) && !session.unsubscribeProactive) {
           session.unsubscribeProactive = subscribeProactiveWatcher(session);
         }
@@ -1573,18 +1206,10 @@ function startTtsForAgent(
     })();
   };
 
-  // FA-VO1: emit the terminal tts_end + voice:state listening that the
-  // clause-stream completion block would have sent, but ONLY when synthesis
-  // never started (empty / marker-only / tool-only reply). Mirrors what the
-  // cloud engine's finishStream does unconditionally, so the local (default)
-  // engine matches the cloud path's "always release the client from waiting"
-  // contract. The !started guard is the load-bearing invariant: if synthesis
-  // DID start, the completion block owns the state transition and calling this
-  // would emit listening while audio is still draining. One-shot via
-  // terminalEmitted so the three terminal handlers (agent:status idle,
-  // chat:error, quiet-timer close) can each call it without double-driving the
-  // client. A barge-in aborts the controller first, so abort.signal.aborted
-  // short-circuits us and barge-in's own listening emit stands alone.
+  // Send the terminal tts_end + listening that the completion block would, only when synthesis never
+  // started (empty, marker-only or tool-only reply). The !started guard is load-bearing: once synthesis
+  // started the completion block owns the transition. Barge-in aborts first, so abort.signal.aborted
+  // short-circuits.
   const emitTerminalIfNeverStarted = (): void => {
     if (started || terminalEmitted || abort.signal.aborted) return;
     terminalEmitted = true;
@@ -1593,9 +1218,7 @@ function startTtsForAgent(
     });
     sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
-    // Same Cloudflare-tunnel insurance as the completion block: a few
-    // redundant tts_end frames so a buffered trailing JSON frame can't leave
-    // the client wedged in 'waiting'. Idempotent on the client.
+    // Same tunnel insurance as the completion block.
     for (let i = 1; i <= 4; i++) {
       setTimeout(() => {
         if (abort.signal.aborted) return;
@@ -1604,27 +1227,12 @@ function startTtsForAgent(
     }
   };
 
-  // chat:chunk fires done:true after EVERY model call. For a tool-using
-  // turn that ends in text, that's: tool-turn done → tool-turn done → text-turn done.
-  // We must NOT close the splitter on each done (that cut off TTS in v2.5.46-pre).
-  // Instead:
-  //   - chat:chunk content → run through StreamingSpeechBuffer (strips markdown +
-  //     summarizes URLs/paths, only emits text past balanced markdown markers),
-  //     push safe text into Kokoro splitter as it becomes available.
-  //   - chat:chunk done    → flush any sanitized tail of the current bubble.
-  //     This is what makes audio start AS SOON AS a bubble is complete instead
-  //     of waiting for the whole multi-turn run to finish.
-  //   - agent:status idle  → close the splitter for good (end of full run).
-  //
-  // Safety net: close the splitter after 4 seconds of post-bubble-done
-  // quiet WITH no tools in flight. The 'no tools in flight' guard is what
-  // keeps this safe for tool-using turns: a tool that takes 30s to run
-  // doesn't false-trigger the timer because the timer is cancelled the
-  // moment chat:tool_call fires and only re-arms after chat:tool_result
-  // brings the in-flight count back to zero AND chat:chunk done has been
-  // seen. So desktop's existing happy path (agent:status idle always
-  // fires) is unaffected; this only kicks in when agent:status is dropped
-  // AND there's genuinely no activity left.
+  // chat:chunk fires done:true after EVERY model call, so done must not close the splitter:
+  //   - content: through StreamingSpeechBuffer (strips markdown, summarizes URLs/paths) into the splitter.
+  //   - done: flush the sanitized tail, so audio starts as soon as a bubble completes.
+  //   - agent:status idle: close the splitter for good.
+  // Safety net: close after QUIET_CLOSE_MS of quiet with no tools in flight (cancelled on chat:tool_call,
+  // re-armed after the last chat:tool_result once a done was seen), for when agent:status is dropped.
   let bubbleCount = 0;
   let bubbleChars = 0;
   const QUIET_CLOSE_MS = 4000;
@@ -1641,10 +1249,7 @@ function startTtsForAgent(
       const tail = sanitizer.flushUnsafe();
       if (tail) splitter.push(tail);
       try { splitter.close(); } catch { /* ignore */ }
-      // FA-VO1: if this quiet-timer close is reached without synthesis ever
-      // starting (agent:status idle was dropped AND the reply was empty), the
-      // splitter close has no consumer to trigger the completion block, so
-      // release the waiting client here.
+      // Reached with synthesis never started (idle dropped, empty reply): release the waiting client.
       emitTerminalIfNeverStarted();
     }, QUIET_CLOSE_MS);
   };
@@ -1652,29 +1257,18 @@ function startTtsForAgent(
     if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
   };
   const maybeArmQuietTimer = () => {
-    // Only arm when the bubble is done AND no tools are still running.
-    // Either condition flipping back cancels the timer.
+    // Arm only when the bubble is done and no tools are running.
     if (bubbleDoneSeen && toolsInFlight === 0) armQuietTimer();
   };
   abort.signal.addEventListener('abort', cancelQuietTimer, { once: true });
-  // Defensive cue strip, even on the local engine, if the agent emits
-  // a stray ((deliver: ...)) cue we don't want it read aloud. Kokoro
-  // discards the description; only the cloud path acts on it.
+  // Strip a stray ((deliver: ...)) cue so it is not read aloud (only the cloud path uses it).
   const cueExtractor = createCueExtractor();
-  // Pending buffer for unclosed bracket markers. The model streams
-  // character-by-character, so a control marker like `[no-reply]` will
-  // rarely arrive as a single chat:chunk, it shows up as `[`, `no-`,
-  // `reply]` etc. A per-chunk regex strip can't see the full token and
-  // misses it, letting "no reply" leak through to TTS. We hold back
-  // any content from the last unmatched `[` onward until its `]`
-  // arrives, then strip the complete marker. Flushed verbatim at
-  // stream end so genuinely-orphan `[` text (rare) still gets spoken.
+  // Holds back text from an unmatched `[` until its `]` arrives: control markers like `[no-reply]` stream
+  // in pieces and a per-chunk strip would miss them. Flushed verbatim at stream end.
   let bracketPending = '';
   const pushContent = (raw: string): void => {
     let combined = bracketPending + raw;
-    // Hold back any text from the last UNMATCHED `[` onward until we
-    // see its closing `]`. Track depth so nested brackets are handled
-    // correctly (rare in TTS-bound text but safe).
+    // Hold back from the last unmatched `[` (depth-tracked for nesting) until its `]` arrives.
     let cursor = 0;
     let depth = 0;
     let holdFrom = -1;
@@ -1708,7 +1302,6 @@ function startTtsForAgent(
       startStreaming();
     }
   };
-  /** Flush any held-back bracket buffer through the strip + clauses pipeline. */
   const flushBracketPending = (): void => {
     if (!bracketPending) return;
     const tail = bracketPending;
@@ -1723,27 +1316,14 @@ function startTtsForAgent(
       startStreaming();
     }
   };
-  // v2.9.16 (fix v2.9.18): expose engine-agnostic push handle. Must
-  // route through pushContent (NOT splitter.push directly): splitter
-  // is just a queue, and the TTS for-await loop only fires when
-  // startStreaming() is called - which happens inside pushContent
-  // when the first content arrives. The previous wiring did
-  // `splitter.push(text)` straight from activeBurstPush, which queued
-  // the filler but never started TTS. Result: the filler audio sat
-  // buffered until the agent's real response arrived, at which point
-  // it played glued to the response instead of during the wait.
-  // pushContent also runs the sanitizer + bracket buffer so an
-  // accidental control marker in the filler phrase doesn't leak
-  // through.
+  // Engine-agnostic push handle. It must go through pushContent, not splitter.push: only pushContent
+  // calls startStreaming, and it also runs the sanitizer and bracket buffer on the filler text.
   session.activeBurstPush = (text: string) => {
     try { pushContent(text); } catch { /* burst already torn down */ }
   };
 
-  // Proactive watcher path: the watcher captures the FIRST chat:chunk
-  // content and hands it to us as `initialContent`. We push it through
-  // sanitizer+splitter here BEFORE subscribing the burst listener, so
-  // the burst's listener doesn't double-process it (the live broadcast
-  // already fired before we got here).
+  // Proactive path: push the watcher's first chunk through the sanitizer and splitter before subscribing,
+  // since its live broadcast already fired.
   if (initialContent) {
     bubbleChars += initialContent.length;
     pushContent(initialContent);
@@ -1752,12 +1332,10 @@ function startTtsForAgent(
     if (abort.signal.aborted) return;
     if (event.type === 'chat:chunk') {
       if (event.agentId !== session.agentId) return;
-      // New content from the model = activity. Cancel any pending close;
-      // we'll re-evaluate when the next done arrives.
+      // New content is activity: cancel any pending close until the next done.
       cancelQuietTimer();
       if (event.content) {
-        // Real agent content has begun, close the fast-opener window so a
-        // late opener doesn't play out of order behind the actual reply.
+        // Real content began: close the fast-opener window so a late opener cannot play out of order.
         session.openerWindowOpen = false;
         bubbleChars += event.content.length;
         bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
@@ -1765,25 +1343,13 @@ function startTtsForAgent(
       }
       if (event.done) {
         bubbleCount++;
-        // Stamp the assistant message as voice-delivered so the dashboard
-        // renders the "via voice" badge on the agent bubble. Done here
-        // (NOT in the content branch) because the messages row is
-        // INSERTed in loop.ts after streaming completes, during
-        // content chunks the row doesn't exist yet so the UPDATE
-        // silently matched 0 rows and no broadcast fired. By `done`
-        // the row is persisted.
+        // Stamp the message voice-delivered on `done`, not in the content branch: loop.ts INSERTs the row
+        // after streaming completes, so earlier the UPDATE would match nothing.
         markAssistantMessageVoiced(session.agentId, event.messageId, session.recordId);
-        // If the model ended mid-bracket (e.g. just emitted "[no") and
-        // never closed it, flush whatever we held back so the user
-        // hears it. Genuine control markers like `[no-reply]` always
-        // arrive complete and get stripped in pushContent before
-        // ever entering the splitter.
+        // Flush text held back after an unclosed `[` (complete markers were stripped in pushContent).
         flushBracketPending();
-        // FA-VO5(a): release any unclosed ((deliver: ...)) cue still held in
-        // the extractor. It never closed, so it was not a real cue, feed the
-        // held body through as normal speech instead of letting it swallow the
-        // whole reply. Before the sanitizer flush so the released text lands in
-        // this bubble's tail. Kokoro ignores the description.
+        // Release an unclosed ((deliver: ...)) cue as normal speech (it was not a real cue), before the
+        // sanitizer flush so it lands in this bubble's tail.
         const cueTail = cueExtractor.flush();
         if (cueTail.content.length > 0) {
           const cueClauses = sanitizer.pushClauses(cueTail.content);
@@ -1792,10 +1358,8 @@ function startTtsForAgent(
             startStreaming();
           }
         }
-        // Flush the tail of this bubble, anything past the last clause
-        // boundary, sanitized with no boundary requirement, gets queued
-        // as the final clause so audio for this bubble starts even when
-        // the model's reply doesn't end on punctuation.
+        // Flush the bubble's tail past the last clause boundary so audio starts even without final
+        // punctuation.
         const tail = sanitizer.flushUnsafe();
         if (tail) {
           splitter.push(tail);
@@ -1815,8 +1379,6 @@ function startTtsForAgent(
     }
     if (event.type === 'chat:tool_call') {
       if (event.agentId !== session.agentId) return;
-      // Tool started, don't close while we wait for the result, even if
-      // the tool takes 30+ seconds.
       toolsInFlight++;
       cancelQuietTimer();
       return;
@@ -1824,9 +1386,7 @@ function startTtsForAgent(
     if (event.type === 'chat:tool_result') {
       if (event.agentId !== session.agentId) return;
       toolsInFlight = Math.max(0, toolsInFlight - 1);
-      // If everything's settled (no tools running, bubble was done),
-      // re-arm the timer to catch the case where the post-tool model call
-      // never produces a second bubble (server crash / silent exit).
+      // Re-arm to cover a post-tool model call that never produces another bubble.
       maybeArmQuietTimer();
       return;
     }
@@ -1840,10 +1400,7 @@ function startTtsForAgent(
         const tail = sanitizer.flushUnsafe();
         if (tail) splitter.push(tail);
         try { splitter.close(); } catch { /* ignore */ }
-        // FA-VO1: the flush above ran first (terminal logic unchanged). If the
-        // reply produced nothing speakable, synthesis never started, so
-        // closing the splitter has no consumer to emit tts_end + listening ,
-        // release the waiting client explicitly. No-op once synthesis started.
+        // Releases the client when nothing speakable was produced (no-op once synthesis started).
         emitTerminalIfNeverStarted();
       }
       return;
@@ -1851,44 +1408,25 @@ function startTtsForAgent(
     if (event.type === 'chat:error') {
       if (event.agentId !== session.agentId) return;
       try { splitter.close(); } catch { /* ignore */ }
-      // FA-VO1: same release for the error terminal, if synthesis never
-      // started, the client would otherwise sit in 'waiting' forever.
       emitTerminalIfNeverStarted();
       return;
     }
   };
   const unsubscribe = onBroadcast(handleLocalEvent);
   session.unsubscribeChunk = unsubscribe;
-  // FA-VO2 (D-D) re-drive: when a cloud burst fails to open, it re-drives
-  // THIS turn through local and hands us the chat events it buffered during
-  // the failed hume.open() handshake. Replay them through the same handler,
-  // in order, so the local fallback speaks the WHOLE reply (which may have
-  // already fully streamed while cloud was trying to connect) rather than
-  // only what arrives after the switch. Runs synchronously right after we
-  // subscribe, so no live event can interleave and none is lost.
+  // Cloud fallback re-drive: replay the chat events the cloud burst buffered during its failed open, in
+  // order, so the local burst speaks the whole reply. Synchronous after subscribing, so no live event
+  // interleaves.
   if (opts?.replayEvents) {
     for (const e of opts.replayEvents) handleLocalEvent(e);
   }
 }
 
 /**
- * Cloud (Hume) TTS burst. Mirrors the Kokoro burst's lifecycle (chat:chunk
- * for text + flush points, agent:status idle for end-of-turn, quiet
- * timer fallback) but drives a single HumeStreamSession instead of a
- * ClauseQueue + per-clause Kokoro generate() loop.
- *
- * Key differences vs the local path:
- *   - One socket per BURST (not per clause). Hume buffers internally for
- *     expressive timing; we flush at LLM-clause boundaries to push audio
- *     out as soon as a clause completes.
- *   - The ((deliver: ...)) cue at the front of the burst is parsed and
- *     applied as the per-turn `description` (Hume's "acting
- *     instructions") before the first sendPublish.
- *   - On Hume open() or socket error, we surface a voice:state error so
- *     the client can fall back at the UI level. Engine-level fallback
- *     (silently switch to local mid-session) is intentionally NOT done
- *     here: the engine choice is user-driven, and a silent flip would
- *     mask a misconfiguration.
+ * Cloud (Hume) TTS burst: same lifecycle as the Kokoro burst (chat:chunk, agent:status idle, quiet-timer
+ * fallback) but one HumeStreamSession socket per burst, flushed at sentence boundaries. A leading
+ * ((deliver: ...)) cue becomes the turn's description. A failed open re-drives this burst through local
+ * (session.ttsEngine is untouched); a mid-burst socket error releases the client instead.
  */
 function startCloudTtsBurst(session: VoiceSession, initialContent?: string): void {
   const abort = new AbortController();
@@ -1904,23 +1442,13 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     description: session.cloudDescription ?? undefined,
     speed: session.cloudSpeed,
   });
-  // v2.9.16: engine-agnostic push handle (same pattern as the local
-  // path). Lets pushVoiceFiller inject acknowledgments regardless of
-  // which TTS engine is active. Cleared in the finally blocks below.
-  //
-  // Hume isn't open yet at this point - `await hume.open()` runs
-  // inside the IIFE below and has a 100-300ms window where calling
-  // hume.push() would silently drop the text (same window the
-  // existing chat:chunk handler buffers via pendingEvents). The
-  // filler trigger from the v2 loop can fire INSIDE this window when
-  // a voice-triggered turn goes straight to tools, so we buffer
-  // pre-open pushes here and drain after open() resolves. Without
-  // this the cloud-TTS user would silently lose the filler.
+  // Engine-agnostic push handle. Hume is not open for the first 100-300ms and hume.push would drop text,
+  // so pre-open pushes (e.g. the loop's filler) are buffered and drained once open() resolves.
   let started = false;
   const startStreaming = (): void => {
     if (started) return;
     started = true;
-    // PHASE-2 T5: the cloud engine is the same door on the other tier (OR3 keeps both).
+    // Same speech-out delivery row as the local engine, with detail 'cloud'.
     recordedId(recordAtDoor({
       outcome: 'delivered', channel: 'voice', tool: 'speech-out',
       agentId: session.agentId, recipientId: 'owner', messageId, detail: 'cloud',
@@ -1935,11 +1463,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   let humeOpened = false;
   const preOpenBuffer: string[] = [];
   session.activeBurstPush = (text: string) => {
-    // v2.9.16 (fix v2.9.18): also fire startStreaming so the
-    // dashboard moves into 'speaking' state when the filler plays.
-    // Without this, hume.push generates audio that the client plays,
-    // but the UI still shows the 'thinking' indicator because the
-    // voice:tts_start event was never sent.
+    // Also fires startStreaming so the dashboard shows 'speaking' when a filler plays.
     if (!humeOpened) {
       preOpenBuffer.push(text);
       return;
@@ -1959,22 +1483,12 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     logger.error('Cloud TTS stream error mid-burst, releasing client to listening', {
       error: err.message, agentId: session.agentId,
     }, session.agentId);
-    // FA-VO2 (D-D): a mid-burst socket failure. Re-driving only the *remaining*
-    // text through local is NOT clean here: Hume buffers internally and the
-    // client has already played part of this reply, while the un-spoken
-    // remainder streams in via future chat:chunks this aborted burst no longer
-    // listens for, splicing local audio onto a half-spoken cloud sentence
-    // would double or gap it. So we release the client to listening (the
-    // FA-VO1 "never leave the orb hanging" contract, cloud-side) and tell the
-    // user once. The engine choice stays cloud for the next turn, which will
-    // retry it fresh. release-only is deliberate; see the report for why a
-    // mid-burst re-drive isn't attempted.
+    // A mid-burst socket failure is not re-driven through local: part of the reply has already played and
+    // the rest streams via chunks this aborted burst no longer hears, so splicing would double or gap it.
+    // Release the client, tell the user once, and retry cloud fresh next turn.
     releaseVoiceClient(session, messageId);
     notifyCloudVoiceFallbackOnce(session);
-    // Tear down burst state so the next turn starts clean and proactive
-    // messages resume. abort() fires the abort listener below, which closes
-    // the socket; finishStream's terminal frames are then gated off by the
-    // aborted check, so there is no double emit with releaseVoiceClient above.
+    // Tear down burst state; abort() closes the socket and gates finishStream's terminal frames off.
     abort.abort();
     unsubscribe();
     if (session.activeTts && session.activeTts.abort === abort) session.activeTts = null;
@@ -1985,14 +1499,8 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     }
   };
 
-  // Subscribe to chat:chunk SYNCHRONOUSLY so the 100-300ms window for
-  // hume.open() doesn't drop events. The proactive watcher snaps off
-  // the moment it triggers this burst; without this immediate
-  // subscription, every chat:chunk that arrives during the handshake
-  // has no listener and is lost. The bug manifested as proactive
-  // agent messages getting only their first content token spoken,
-  // with the rest of the message orphaned in the buffer until the
-  // NEXT proactive message tacked onto it.
+  // Subscribe to chat:chunk synchronously: the proactive watcher unsubscribes when it triggers this
+  // burst, so events during the hume.open() handshake would otherwise have no listener.
   const pendingEvents: WsEvent[] = [];
   let handler: ((event: WsEvent) => void) | null = null;
   const unsubscribe = onBroadcast((event: WsEvent) => {
@@ -2008,8 +1516,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       unsubscribe();
       if (session.activeTts && session.activeTts.abort === abort) session.activeTts = null;
       session.activeBurstPush = null;
-      // Barge-in or session close already tore this burst down and released
-      // the client, don't re-drive a turn the user abandoned.
+      // Barge-in or session close already tore this burst down; do not re-drive an abandoned turn.
       if (abort.signal.aborted || !sessions.has(session.ws)) {
         logger.info('Cloud TTS open failed after abort/close, not re-driving', { error: msg }, session.agentId);
         if (sessions.has(session.ws) && !session.unsubscribeProactive) {
@@ -2017,14 +1524,9 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         }
         return;
       }
-      // FA-VO2 (D-D): the cloud voice is correctly configured (the open-time
-      // guard in loadVoiceSettings / config already passed) but hit a
-      // TRANSIENT failure opening this burst. Don't drop the reply, re-drive
-      // THIS burst through the resident local (Kokoro) engine and tell the
-      // user once. Per-burst only: session.ttsEngine is untouched, so the next
-      // turn retries cloud. Hand the local burst any chat events buffered
-      // during the failed handshake so it speaks the full reply (the whole
-      // turn may have streamed while cloud was still retrying its connect).
+      // A transient open failure on a correctly configured cloud voice: re-drive THIS burst through
+      // local, replaying the buffered events, and tell the user once. session.ttsEngine is untouched so
+      // the next turn retries cloud.
       logger.warn('Cloud TTS open failed, falling back to local voice for this burst', { error: msg }, session.agentId);
       notifyCloudVoiceFallbackOnce(session);
       const buffered = pendingEvents.splice(0);
@@ -2032,27 +1534,17 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       return;
     }
 
-    // Hume is now open. Drain any pushes that arrived during the
-    // open() handshake (e.g. the v2 loop's voice-filler trigger when
-    // tools fire immediately after the turn starts). Without this
-    // drain those pushes vanished silently. From this point on,
-    // activeBurstPush goes directly to hume.push.
+    // Hume is open: drain pushes buffered during the handshake; later pushes go straight to hume.push.
     humeOpened = true;
     const hadBuffered = preOpenBuffer.length > 0;
     for (const buffered of preOpenBuffer) {
       try { hume.push(buffered); } catch { /* ignore */ }
     }
     preOpenBuffer.length = 0;
-    // If we drained pre-open content (e.g. a filler the loop pushed
-    // during the open handshake), fire startStreaming so the
-    // dashboard moves into 'speaking' state. Without this the audio
-    // would play but the UI would stay on 'thinking'.
+    // Drained pre-open content needs startStreaming so the dashboard leaves 'thinking'.
     if (hadBuffered) startStreaming();
     if (session.activeBurstPush) {
-      // Replace the buffering wrapper with a direct passthrough now
-      // that the open window is closed. Still fires startStreaming
-      // so any subsequent filler / proactive push surfaces the
-      // 'speaking' state.
+      // Replace the buffering wrapper with a direct passthrough now that the handshake is over.
       session.activeBurstPush = (text: string) => {
         try {
           hume.push(text);
@@ -2087,9 +1579,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         if (!abort.signal.aborted) {
           sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
           sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
-          // Same Cloudflare tunnel insurance as the local path, push 4
-          // redundant tts_end frames so the client doesn't get stuck on
-          // 'speaking' if the trailing JSON gets buffered.
+          // Same tunnel insurance as the local path.
           for (let i = 1; i <= 4; i++) {
             setTimeout(() => {
               if (abort.signal.aborted) return;
@@ -2122,21 +1612,12 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     };
     abort.signal.addEventListener('abort', () => {
       cancelQuietTimer();
-      // Best-effort close on abort so the socket doesn't dangle.
       void hume.close();
     }, { once: true });
 
-    // When the agent emits a `((deliver: ...))` cue, override Hume's
-    // active description for this turn. When it doesn't, leave the
-    // baseline (set on the HumeStreamSession constructor from
-    // voice.cloud_voice_description) in place, that's the user's
-    // Settings → Voice → Baseline delivery field, which is the
-    // intended fallback for cue-less replies. If they leave the field
-    // blank, that's a deliberate choice and we don't substitute one.
-    // Same bracket-buffer fix as the local engine: hold back any text
-    // from an unmatched `[` onward until its `]` arrives so that split
-    // control markers like `[no-reply]` don't leak through. See the
-    // local engine's pushContent for the full rationale.
+    // A ((deliver: ...)) cue overrides Hume's description for this turn; without one the baseline
+    // description (voice.cloud_voice_description) stays, even if blank. Same bracket buffer as the local
+    // pushContent.
     let bracketPending = '';
     const pushContent = (raw: string): void => {
       let combined = bracketPending + raw;
@@ -2163,14 +1644,8 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       const { content, description } = cueExtractor.consume(stripped);
       if (description) hume.setDescription(description);
       if (content.length === 0) return;
-      // Whole-sentence buffering for the cloud engine. The Hume emotion
-      // brief is explicit: feed Octave complete thoughts, not clause
-      // fragments. sanitizer.push() returns text up to the last balanced
-      // sentence boundary (period/!/? followed by whitespace), so each
-      // hume.push() carries one or more complete sentences. Anything
-      // mid-sentence stays in the buffer until the next chunk completes
-      // it, and the bubble-done path uses flushUnsafe to drain the
-      // tail when the reply ends mid-sentence.
+      // Whole-sentence buffering: Octave wants complete thoughts, so sanitizer.push releases text only up
+      // to the last sentence boundary; bubble-done drains the tail with flushUnsafe.
       const safe = sanitizer.push(content);
       if (safe.length > 0) {
         hume.push(safe);
@@ -2201,7 +1676,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         if (event.agentId !== session.agentId) return;
         cancelQuietTimer();
         if (event.content) {
-          // Real agent content has begun, close the fast-opener window.
           session.openerWindowOpen = false;
           bubbleChars += event.content.length;
           bubbleDoneSeen = false;
@@ -2209,18 +1683,11 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         }
         if (event.done) {
           bubbleCount++;
-          // Stamp the assistant message as voice-delivered. Done here
-          // (NOT in the content branch) because the row is INSERTed in
-          // loop.ts after streaming completes, by `done` it exists.
+          // Stamp voice-delivered on done: the row is persisted by then.
           markAssistantMessageVoiced(session.agentId, event.messageId, session.recordId);
-          // Flush any held-back bracket buffer (mid-marker text that
-          // never got its closing bracket) so it isn't silently
-          // dropped on stream end.
+          // Flush held-back bracket text so it is not dropped at stream end.
           flushBracketPending();
-          // FA-VO5(a): release any unclosed ((deliver: ...)) cue still held in
-          // the extractor. It never closed, so it was not a real cue, speak
-          // the held body rather than swallow the whole reply. Before the
-          // sanitizer flush so the released text rides this bubble's tail.
+          // Release an unclosed cue as speech, before the sanitizer flush.
           const cueTail = cueExtractor.flush();
           if (cueTail.description) hume.setDescription(cueTail.description);
           if (cueTail.content.length > 0) {
@@ -2268,10 +1735,8 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       }
     };
 
-    // Process the initial chunk (captured by the proactive watcher
-    // before this burst was created) FIRST, then drain any chat:chunk
-    // events that landed during hume.open(). After draining, attach the
-    // live handler so future events flow through directly.
+    // Process the proactive watcher's initial chunk, then the events buffered during hume.open(), then
+    // attach the live handler.
     if (initialContent) {
       bubbleChars += initialContent.length;
       pushContent(initialContent);
@@ -2285,23 +1750,15 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   })();
 }
 
-/**
- * Catch proactive agent messages (the ones not in response to a voice
- * prompt, watchers firing, A2A pokes, scheduled triggers) and route them
- * into a TTS burst so voice-mode users hear them too.
- *
- * Self-unsubscribes the moment it triggers a burst, to avoid double-
- * processing the same event (the burst's own listener will be subscribed
- * during the same Set iteration and would otherwise also fire for it).
- * Re-subscribed by startTtsForAgent's finally block when the burst ends.
- */
+// Route proactive agent messages (watchers, A2A pokes, scheduled triggers) into a TTS burst. Unsubscribes
+// itself when it triggers one, so the burst's own listener does not double-process the event; the burst
+// teardown re-subscribes it.
 function subscribeProactiveWatcher(session: VoiceSession): () => void {
   const unsubscribe = onBroadcast((event: WsEvent) => {
     if (event.type !== 'chat:chunk') return;
     if (event.agentId !== session.agentId) return;
     if (!event.content) return;        // ignore done-only / empty events
     if (session.activeTts) return;     // burst in flight; its listener handles it
-    // Snap off self before kicking off the burst so we don't double-fire.
     unsubscribe();
     if (session.unsubscribeProactive === unsubscribe) {
       session.unsubscribeProactive = null;
@@ -2329,22 +1786,14 @@ function bargeIn(session: VoiceSession): void {
     session.unsubscribeChunk();
     session.unsubscribeChunk = null;
   }
-  // FA-VO5(b): re-arm the proactive watcher. startTtsForAgent snapped it off
-  // when the burst began, and only the burst's own completion/finish path
-  // re-subscribes it. A barge-in that lands BEFORE streaming started tears the
-  // burst down here without that path ever running, so without this the
-  // watcher stays unsubscribed and proactive agent messages go unspoken until
-  // the next fully-completed turn. Guarded on the null so a burst that already
-  // re-subscribed (later completion) can't double-subscribe.
+  // Re-arm the proactive watcher: a barge-in before streaming started tears the burst down without the
+  // completion path that normally re-subscribes it. Guarded on null so it cannot double-subscribe.
   if (sessions.has(session.ws) && !session.unsubscribeProactive) {
     session.unsubscribeProactive = subscribeProactiveWatcher(session);
   }
-  // Cancel the in-flight model call too. Without this, the agent keeps
-  // generating tokens for a reply the user is overriding, wastes money on
-  // unspoken text, and the agent's next turn ends up "anchored" to a thought
-  // they cut off. preemptAgentForUrgentMessage aborts the fetch cleanly
-  // without setting stop markers (stopAgent would inject a "[STOPPED BY USER]"
-  // marker, which is wrong here, the user isn't stopping, they're redirecting).
+  // Also cancel the in-flight model call, or the agent keeps generating a reply the user is overriding.
+  // preemptAgentForUrgentMessage aborts cleanly; stopAgent would inject a stop marker, wrong for a
+  // redirect.
   void import('../agent/runtime.js').then((m) => {
     try { m.preemptAgentForUrgentMessage(session.agentId); } catch { /* ignore */ }
   });
