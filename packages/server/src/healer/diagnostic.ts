@@ -1,21 +1,11 @@
-// ════════════════════════════════════════
-// Healer Diagnostic Report Compiler
-//
-// Reads logs, DB state, and agent health to produce
-// a structured diagnostic report for the Healer agent.
-// This is engine-level — no LLM involved.
-//
-// v2.3.19 (error-handling-spec Phase 3) — every collector is wrapped in
-// a per-collector char cap. This is the Dreamer-pattern hardening: the
-// Healer must never receive a runaway diagnostic that blows its context
-// window. Total cycle-message budget is enforced separately in
-// healer-agent.ts:buildHealerCycleMessage.
-// ════════════════════════════════════════
+// Healer diagnostic report compiler: reads logs, DB state and agent health into a structured report.
+// Engine-level, no LLM. Every collector is char-capped so the Healer never gets a runaway report; the
+// total cycle-message budget is enforced in healer-agent.ts buildHealerCycleMessage.
 
 import { getDb } from '../db/connection.js';
 import { summaryCheckLine } from '../memory/summary-check.js';
 import { HEALER_WORKING_STUCK_MINUTES, DORMANT_THRESHOLD_DAYS } from '../agent/stuck-thresholds.js';
-// SWEEP CORE-2 item 2: the ONE budget owner and the ONE spend reader. See getBudgetStatus.
+// The ONE budget owner and the ONE spend reader. See getBudgetStatus.
 import { getBudgets } from '../costs/budget.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { createLogger } from '../logger.js';
@@ -30,31 +20,21 @@ import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
 import { taskScope, msToText } from '../work/tracker-view.js';
-// SWEEP CORE-2 item 3 — "what counts as orphaned" has ONE definition, shared with the
-// version-gap reconciliation pass that looks for the same two shapes on a different clock.
+// "What counts as orphaned" has ONE definition, shared with the version-gap reconciliation pass.
 import { ORPHANED_TASK_WHERE, ORPHANED_TASK_JOIN } from '../tracker/version-gap-reconcile.js';
 import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('healer-diagnostic');
 
 // ── Vault dreaming health thresholds ──
-//
-// The Dreamer is the nightly memory distiller: it turns raw conversation
-// archives (vault_conversations, is_processed = 0) into long-term vault
-// entries. If it silently dies (a restart mid-cycle, a poison archive, or
-// model failures), unfiled archives pile up, no memories are distilled,
-// and the FN-1 recall bridge keeps serving the raw archives, so behaviour
-// looks normal while long-term memory silently stops being built. These
-// thresholds drive the diagnostic items that surface that.
+// A silently dead Dreamer leaves archives unfiled while recall keeps serving the raw archives, so
+// behaviour looks normal; these thresholds drive the items that surface it.
 const DREAM_BACKLOG_INFO_THRESHOLD = 25;   // info: a fresh box's day-one backlog is expected; stay quiet
 const DREAM_BACKLOG_WARN_THRESHOLD = 200;  // warning: a backlog this deep means the Dreamer is not keeping up
 const DREAM_STALE_HOURS = 48;              // warning: an archive unfiled this long = >= 2 nightly cycles missed
 
-// Per-collector char caps. Source: docs/error-handling-spec.md "Healer
-// log access — Dreamer-pattern hardening". Each collector's items are
-// rendered to text and the rendered total is capped here. If a
-// collector would emit more, the engine drops the lowest-severity items
-// first (we always keep critical).
+// Per-collector char caps on the rendered items; over the cap the engine drops the lowest-severity
+// items first and always keeps critical.
 const COLLECTOR_CAPS = {
   agent_anomalies: 4000,
   error_digest: 2000,
@@ -85,21 +65,19 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
 
-  // Agents in error or paused state
-  // Skip dormant agents (no activity in 7+ days) to avoid false alarms from
-  // old test groups or paused projects.
+  // Agents in error or paused state; dormant agents (no activity in 7+ days) are skipped to avoid
+  // false alarms from old test groups or paused projects.
   const troubled = db.prepare(`
     SELECT id, name, status, updated_at FROM agents
     WHERE status IN ('error', 'paused', 'rate_limited')
       AND status != 'terminated' AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a parked agent is not an injury
   `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
-  // PHASE-6 T10: from the ONE stuck-threshold table (7 days, unchanged).
+  // From the one stuck-threshold table (7 days).
   const DORMANT_THRESHOLD_MS = DORMANT_THRESHOLD_DAYS * 86400000;
   for (const agent of troubled) {
-    // Check if this agent is dormant (no messages in 7+ days).
-    // EXCEPTION: if the agent's status was updated recently (e.g., a server
-    // restart set it to error), it's a real issue even if messages are old.
+    // Dormant means no messages in 7+ days, unless the status was updated recently (a restart set it
+    // to error), which is a real issue even when messages are old.
     const agentUpdatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
     const statusIsRecent = (Date.now() - agentUpdatedMs) < DORMANT_THRESHOLD_MS;
     if (!statusIsRecent) {
@@ -108,9 +86,9 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
       ).get(agent.id) as { created_at: string } | undefined;
       if (lastMsg) {
         const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
-        if (Date.now() - new Date(lastTs).getTime() >= DORMANT_THRESHOLD_MS) continue; // dormant — skip
+        if (Date.now() - new Date(lastTs).getTime() >= DORMANT_THRESHOLD_MS) continue; // dormant, skip
       } else {
-        continue; // no messages at all — skip
+        continue; // no messages at all, skip
       }
     }
     const updatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
@@ -150,10 +128,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
     }
   }
 
-  // Agents stuck in working state.
-  // PHASE-6 T10: this was a bare `'-10 minutes'` SQL literal — the Healer's duplicate stuck
-  // detector, duplicating a number that had no name to duplicate. It reads the ONE table now;
-  // the value is unchanged and is the same cliff `healer-agent.ts`'s self-watchdog uses.
+  // Agents stuck in working state; the threshold is the one healer-agent.ts's self-watchdog also uses.
   const stuck = db.prepare(`
     SELECT id, name, updated_at FROM agents
     WHERE status = 'working'
@@ -161,8 +136,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   `).all() as Array<{ id: string; name: string; updated_at: string }>;
 
   for (const agent of stuck) {
-    // Skip dormant agents (no messages in 7+ days), unless their status
-    // was updated recently (e.g., server restart set them to working).
+    // Skip dormant agents unless their status was updated recently (a restart set them to working).
     const stuckUpdatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
     const stuckStatusRecent = (Date.now() - stuckUpdatedMs) < DORMANT_THRESHOLD_MS;
     if (!stuckStatusRecent) {
@@ -332,15 +306,8 @@ function getTrackerHealth(): DiagnosticItem[] {
     });
   }
 
-  // Tasks assigned to terminated agents
-  // SWEEP CORE-2 item 3: the PREDICATE is single-sourced with the version-gap reconciliation
-  // pass, which looks for the same shape on a different clock. The two mechanisms stay separate
-  // — continuous health is not a one-shot version-gap pass — but "what counts as orphaned" has
-  // one definition, because two copies of it is the drift this project keeps closing.
-  // t129: the JOIN comes from the shared definition too. It used to be written here on
-  // `t.agent_id` — the HOLDER — while the auto-fix selected and cleared `assignee_agent`, so a
-  // row the auto-fix had correctly fixed was still raised `critical` here on every sweep, for
-  // ever. The key is inside `ORPHANED_TASK_WHERE`'s definition now; see its header.
+  // Tasks assigned to terminated agents. Predicate and JOIN come from the shared definition (also used by
+  // the version-gap pass and the auto-fix), which keys on the assignee so all three agree on what is orphaned.
   const orphanedTasks = db.prepare(`
     SELECT t.id, t.title, t.assignee_agent AS assigned_to, a.name as agent_name
     FROM work t
@@ -362,32 +329,18 @@ function getTrackerHealth(): DiagnosticItem[] {
   return items;
 }
 
-// ── Bulletproof tool diagnostics ─────────────────────────────────────────
-//
-// These checks watch for failure modes the v2 tool audit hardened against.
-// The hardening fixes the underlying causes; these diagnostics catch any
-// stragglers (legacy data, new code paths that bypassed the helpers, edge
-// cases not yet covered) and surface them as healer proposals so production
-// hits become user-visible instead of silent breaks.
+// ── Bulletproof tool diagnostics ──
+// Catch stragglers the tool hardening missed (legacy data, code paths that bypassed the helpers) and
+// surface them as healer proposals instead of silent breaks.
 
 function getBulletproofToolHealth(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
 
-  // 1. Apprentice split-brain: agent is idle/working but their assigned
-  //    task is already complete. The completeAgent fallback in spawner.ts
-  //    auto-fixes new occurrences, so this catches legacy or post-restart
-  //    stragglers — and any future regression where a non-apprentice path
-  //    completes a task without terminating the agent.
-  //
-  //    Exclude persistent agents. An apprentice with config.persist=true
-  //    OR agent_type='persistent' is INTENTIONALLY kept alive after
-  //    complete_task so it can handle its next scheduled fire (think:
-  //    daily dispatcher, weekly delivery agent). Pre-fix this query
-  //    flagged a persistent dispatcher every day for 19 consecutive days
-  //    and the healer ended up proposing an "auto-terminate idle agents"
-  //    fix that would have broken the next day's run. The persist signal
-  //    lives in agents.config (JSON) so we extract it with json_extract.
+  // 1. Apprentice split-brain: agent idle/working but its assigned task is already complete (the
+  //    completeAgent fallback in spawner.ts fixes new cases; this catches stragglers and regressions).
+  //    Persistent agents (config.persist=true or agent_type='persistent') are excluded: they stay alive on
+  //    purpose for their next scheduled fire. The persist signal lives in agents.config JSON (json_extract).
   const splitBrain = db.prepare(`
     SELECT a.id, a.name, t.id as task_id, t.title as task_title
     FROM agents a
@@ -411,10 +364,8 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     });
   }
 
-  // 2. Cryptic tool errors leaking through to the model. If the audit log
-  //    shows raw SQLite or JS exceptions in the last 24h, a tool somewhere
-  //    is missing input validation or DB error wrapping. The model can't
-  //    act on these — they're noise that wastes turns.
+  // 2. Cryptic tool errors leaking to the model: raw SQLite/JS exceptions in the last 24h of the audit log
+  //    mean a tool is missing input validation or DB error wrapping; the model cannot act on them.
   const crypticErrors = db.prepare(`
     SELECT COUNT(*) as cnt, MAX(target) as sample
     FROM audit_log
@@ -440,10 +391,8 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     });
   }
 
-  // 3. Idle apprentices with assigned tasks that have never been poked.
-  //    Could indicate a caller spawned with auto_start: false but forgot
-  //    to wake the agent. Worth flagging at 30+ min so quick test runs
-  //    don't trigger it.
+  // 3. Idle apprentices with assigned tasks that were never poked (a caller may have spawned with
+  //    auto_start: false and forgotten to wake the agent); flagged at 30+ min so quick test runs stay quiet.
   const neverPoked = db.prepare(`
     SELECT a.id, a.name, t.title as task_title, t.id as task_id, a.created_at
     FROM agents a
@@ -469,55 +418,31 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     });
   }
 
-  // Vault dreaming health (backlog + staleness) is its own collector,
-  // getDreamHealth, so it can key off archive age and the dreaming-enabled
-  // door rather than a bare count.
+  // Vault dreaming health is its own collector (getDreamHealth), keyed off archive age.
 
   return items;
 }
 
-// ── Vault dreaming health ─────────────────────────────────────────────────
-//
-// Surfaces a silently-dead Dreamer. Two independent signals:
-//
-//   DREAM_BACKLOG, volume. Unprocessed archives past a count threshold.
-//                   info at >= 25 (a fresh box's day-one backlog is
-//                   expected, stay quiet), warning at >= 200 (a backlog
-//                   this deep means the Dreamer is not keeping up).
-//   DREAM_STALE  , age. The OLDEST unprocessed archive is older than
-//                   DREAM_STALE_HOURS. A healthy nightly Dreamer files
-//                   every archive within one cycle (< 24h), so an archive
-//                   still unfiled after 48h means >= 2 nightly cycles
-//                   failed. Keying off archive AGE (not a count, and not
-//                   lastDreamAt) is deliberate: it stays quiet on a
-//                   genuinely fresh box (all archives younger than the
-//                   threshold), trips on a box that has NEVER dreamed but
-//                   has old unfiled archives, and still catches a poison
-//                   archive that a recent, otherwise-successful cycle keeps
-//                   skipping (where lastDreamAt would look fresh).
-//
-// The Healer cannot start the Dreamer itself: dreamer_run_now is hard
-// primary-gated (tools.ts) and is not in the Healer's allow-list, so the
-// warning guidance steers the Healer to notify the owner in plain language
-// and ask the main agent to run it. It must NOT propose swapping the
-// Dreamer's model (HEALER-SOUL forbids "switch to a better model").
+// ── Vault dreaming health ──
+// Surfaces a silently dead Dreamer with two independent signals:
+//   DREAM_BACKLOG (volume): unprocessed archives past a count (info at >= 25, warning at >= 200).
+//   DREAM_STALE (age): the OLDEST unprocessed archive is older than DREAM_STALE_HOURS. Keying on age, not a
+//   count or lastDreamAt, stays quiet on a fresh box, trips on a box that never dreamed, and catches a
+//   poison archive that a recent successful cycle keeps skipping.
+// The Healer cannot start the Dreamer (dreamer_run_now is primary-only, agent/tools/gates.ts), so the
+// warning steers it to notify the owner and ask the main agent; it must NOT propose swapping the model.
 function getDreamHealth(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
 
   const stats = getVaultStats();
-  const backlog = stats.unprocessedArchives; // FA-V4: already excludes poisoned rows
-  // FA-V4: poisoned archives are the Dreamer's escalation surface, computed up
-  // front so their signal survives even when the (poison-excluding) backlog is 0.
+  const backlog = stats.unprocessedArchives; // already excludes poisoned rows
+  // Poisoned archives are computed up front so their signal survives even when the backlog is 0.
   const poison = getPoisonedArchiveStats();
   if (backlog === 0 && poison.count === 0) return items; // nothing unfiled or parked, nothing to report
 
-  // Age of the OLDEST still-unprocessed archive, in hours. julianday keeps
-  // both sides in UTC, so no Z-suffix parsing is needed.
-  // FA-V4: exclude poisoned archives from the age signal. A parked (poisoned)
-  // archive stays is_processed=0 forever by design (it was never distilled), so
-  // without this filter one poison archive would permanently trip DREAM_STALE.
-  // Poisoned archives are surfaced by DREAM_POISONED below instead.
+  // Age of the OLDEST unprocessed archive in hours (julianday keeps both sides in UTC). Poisoned archives
+  // are excluded: a parked one stays is_processed=0 forever and would permanently trip DREAM_STALE.
   const oldestRow = db.prepare(`
     SELECT MAX((julianday('now') - julianday(created_at)) * 24.0) AS oldest_hours
     FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0
@@ -554,9 +479,7 @@ function getDreamHealth(): DiagnosticItem[] {
   }
 
   // ── DREAM_BACKLOG (volume signal) ──
-  // Preserve the exact prior behaviour: info at >= 25 so a fresh box's
-  // day-one backlog stays quiet. Additive warning tier at >= 200, only
-  // when dreaming is enabled (a deliberately-off Dreamer shouldn't nag).
+  // Info at >= 25 keeps a fresh box quiet; the warning tier at >= 200 applies only when dreaming is enabled.
   if (backlog >= DREAM_BACKLOG_WARN_THRESHOLD) {
     items.push({
       severity: 'warning',
@@ -577,13 +500,9 @@ function getDreamHealth(): DiagnosticItem[] {
     });
   }
 
-  // ── DREAM_POISONED (FA-V4 escalation surface) ──
-  // An archive the Dreamer failed to distill after MAX_DREAM_ATTEMPTS terminal
-  // passes is parked (poisoned): excluded from the work queue, the backlog
-  // count, and the DREAM_STALE age signal above so it cannot retry forever nor
-  // permanently trip staleness. It is surfaced HERE instead so a human sees it.
-  // Ungated by the dreaming-enabled door: a parked archive is a discrete past
-  // failure worth flagging even if dreaming was later switched off.
+  // ── DREAM_POISONED ──
+  // An archive that failed MAX_DREAM_ATTEMPTS terminal passes is parked: excluded from the work queue, the
+  // backlog and the DREAM_STALE age, and surfaced here so a human sees it. Not gated on dreaming being on.
   if (poison.count > 0) {
     items.push({
       severity: 'warning',
@@ -633,14 +552,9 @@ function getNudgeStats(): DiagnosticItem[] {
   return items;
 }
 
-// Shared transient-provider-error SQL predicate. This is a boolean fragment
-// that references the `a` alias (agents a) and matches the 5xx / overloaded /
-// network-reset last_error strings we treat as a provider (not per-agent)
-// fault. FA-X5: injury-recovery's provider-pattern dedup mirrors this EXACT
-// filter, so the canonical copy lives here next to the outage detector and
-// both import it. Keeping one source prevents the two provider-outage
-// predicates from drifting apart (they classified "transient" differently
-// before, so the dedup over-counted against a stricter detector).
+// Shared transient-provider-error SQL predicate on the `a` (agents) alias: 5xx / overloaded / network-reset
+// last_error strings are a provider fault, not a per-agent one. injury-recovery's provider-pattern dedup
+// imports this exact filter so the two outage predicates cannot drift apart.
 export const TRANSIENT_PROVIDER_ERROR_SQL = `(
           a.last_error LIKE '%500%'
           OR a.last_error LIKE '%502%'
@@ -653,18 +567,13 @@ export const TRANSIENT_PROVIDER_ERROR_SQL = `(
           OR a.last_error LIKE '%ETIMEDOUT%'
         )`;
 
-// v2.3.19 (error-handling-spec Phase 4) — provider-wide outage detector.
-//
-// When 3+ agents on the same provider hit errors classified as transient
-// (5xx / network / overloaded) within the last hour, that's a provider
-// problem, not an agent problem. The Healer should propose failover to
-// a different provider rather than auto-fixing each agent in isolation.
+// Provider-wide outage detector: 3+ agents on one provider with transient errors (5xx / network /
+// overloaded) in the last hour is a provider problem, so the Healer should propose failover.
 function getProviderOutagePatterns(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
   try {
-    // Look back 1 hour at agents with last_error matching transient
-    // patterns, grouped by their provider.
+    // Agents with a transient last_error in the last hour, grouped by provider.
     const rows = db.prepare(`
       SELECT p.name AS provider_name,
              COUNT(DISTINCT a.id) AS agent_count,
@@ -695,37 +604,15 @@ function getProviderOutagePatterns(): DiagnosticItem[] {
   return items;
 }
 
-// ── THE SHADOW BUDGET LEDGER IS GONE (SWEEP CORE-2 item 2 / SWEEP-F T1) ──
-//
-// This collector used to keep its own books. It read a config key `daily_budget_usd` that
-// NOTHING in the tree has ever written — one reference in the whole repo, this read — and fell
-// back to a hardcoded 25; then it summed `audit_log.cost`, a column only two of the eight
-// `recordCost` sites populate. Two invented numbers over one another.
-//
-// On the owner's own box at `adfee42` that produced *"Spending is normal ($5.45 of $25 daily
-// limit)"* while `budgets.global_daily` said **500** — a cap understated twentyfold, written
-// into 24 persisted `healer_diagnostics` rows, shown on the health page, and fed to the Healer
-// in its own cycle prompt every cycle. Past ~$20 of real spend it would have raised
-// BUDGET_HIGH, and a single warning item is enough to wake the LLM Healer for a paid cycle
-// (`healer-agent.ts` remainingIssues) — a whole recovery cycle bought with a fabricated limit.
-//
-// The LEDGER dies; the ANSWER does not. `costs/budget.ts` owns the limit and `costs/tracker.ts`
-// owns the spend, and this now asks them, which is the same thing the budget wall and the cost
-// pages already ask. Deleting the item outright was the other option and was NOT taken: it has
-// live readers (#15) — the Healer's cycle prompt, the stale-proposal sweep's code set,
-// `GET /healer/diagnostics`, the Settings counts, and `BUDGET_HIGH` as a worked example in the
-// `healer_propose` tool description.
-//
-// One honest difference, stated rather than hidden: `getDailySpend()` is a ROLLING 24 HOURS,
-// where the old SUM was calendar-day-to-date. That is the window the budget WALL enforces, so
-// the health page and the thing that actually stops an agent now answer the same question.
+// The budget item keeps no ledger of its own: the limit comes from costs/budget.ts and the spend from
+// costs/tracker.ts. getDailySpend() is a ROLLING 24 HOURS, the window the budget wall enforces, so the
+// health page and the wall answer the same question.
 function getBudgetStatus(): DiagnosticItem[] {
   const items: DiagnosticItem[] = [];
 
   try {
     const limit = getBudgets().global?.limitUsd;
-    // No budget configured is not a fault and is not an alarm: say nothing rather than
-    // invent a cap, which is the whole defect this replaces.
+    // No budget configured is not a fault: say nothing rather than invent a cap.
     if (limit === undefined || !(limit > 0)) return items;
     const spend = getDailySpend();
 
@@ -745,16 +632,11 @@ function getBudgetStatus(): DiagnosticItem[] {
   return items;
 }
 
-// ── Update-check pipeline health (FA-D6) ─────────────────────────────────
-//
-// The daily update check never throws; a GitHub outage, a renamed repo, or a
-// sustained rate-limit just comes back as an error, so a box can silently
-// strand OFF updates (fixes included) for weeks. update.ts counts consecutive
-// failed checks and stamps a failing-since anchor once the pipeline crosses
-// UPDATE_CHECK_FAILURE_THRESHOLD; here we surface that as a notify-only warning
-// so the Healer can tell the owner in plain language. This is NOT an update
-// notification (we never push those), it is a health signal that the CHECK
-// itself is broken. The Healer must NOT try to force an update from this.
+// ── Update-check pipeline health ──
+// The daily update check never throws; a failing pipeline just returns an error, so a box can silently
+// miss updates for weeks. update.ts stamps a failing-since anchor past UPDATE_CHECK_FAILURE_THRESHOLD and
+// this surfaces it as a notify-only warning: a health signal that the CHECK is broken, not an update
+// notice. The Healer must NOT try to force an update from it.
 function getUpdateCheckHealthItems(): DiagnosticItem[] {
   const items: DiagnosticItem[] = [];
   try {
@@ -791,18 +673,13 @@ function getUpdateCheckHealthItems(): DiagnosticItem[] {
   return items;
 }
 
-// ── Self-update auto-rollback state (D-F) ────────────────────────────────
-//
-// The independent watchdog can auto-roll-back a self-update that fails to boot
-// (code only, owner decision 2026-07-06). The PRIMARY owner signal is the
-// watchdog's iMessage at the moment it acts; THIS is the durable, dashboard-
-// visible signal so the state is not lost if that text was missed. It reads the
-// same ~/.dojo/update-state.json marker the watchdog writes. Three phases matter:
+// ── Self-update auto-rollback state ──
+// A durable, dashboard-visible signal for the watchdog's auto-rollback of a self-update that fails to boot
+// (the watchdog's iMessage is the primary owner signal). Reads the ~/.dojo/update-state.json marker:
 //   rolled-back        -> the box undid a bad update and is on the previous build
-//   failed-permanently -> a failed update could NOT be safely undone; needs a person
-//   interrupted        -> the installer was cut off before it changed anything (t197); info only
-// (A healthy/idle/pending marker produces no item; this is notify-only, the
-// Healer must NOT try to force an update from it.)
+//   failed-permanently -> a failed update could not be safely undone; needs a person
+//   interrupted        -> the installer was cut off before it changed anything; info only
+// A healthy/idle/pending marker produces no item. Notify-only: the Healer must NOT force an update.
 function getUpdateRollbackItems(): DiagnosticItem[] {
   const items: DiagnosticItem[] = [];
   try {
@@ -823,7 +700,7 @@ function getUpdateRollbackItems(): DiagnosticItem[] {
           `another update.`,
       });
     } else if (marker.phase === 'interrupted') {
-      // t197: cut off before anything switched; info only (the watchdog texts the owner once, then idles the marker).
+      // Cut off before anything switched: info only (the watchdog texts the owner once, then idles it).
       items.push({
         severity: 'info',
         code: 'UPDATE_INTERRUPTED',
@@ -976,29 +853,20 @@ export function compileDiagnosticReport(): DiagnosticReport {
     criticalCount, warningCount, infoCount, totalItems: items.length,
   });
 
-  // Stash the structured items (with their codes + agent scope) so
-  // healer_propose can auto-fill provenance on the proposal it writes.
-  // The persisted healer_diagnostics row only stores the human report
-  // TEXT, not the codes, so this in-memory snapshot is the only place a
-  // later caller can read the current run's codes. healer_propose fires
-  // seconds after this during the same cycle, so the snapshot is fresh.
+  // Stash the structured items (codes plus agent scope) so healer_propose, firing seconds later in the same
+  // cycle, can auto-fill provenance; the persisted report row stores only the text, not the codes.
   latestDiagnosticSnapshot = { id, items, at: Date.now() };
 
   return { id, timestamp: now, items, criticalCount, warningCount, infoCount, reportText };
 }
 
 // ── Latest-run snapshot (for proposal provenance auto-fill) ──
-// In-memory only; not persisted. Consumers must treat a missing/stale
-// snapshot as "no auto-fill available" and fall back to model-supplied
-// values.
+// In-memory only. A missing or stale snapshot means no auto-fill: callers fall back to model-supplied values.
 let latestDiagnosticSnapshot: { id: string; items: DiagnosticItem[]; at: number } | null = null;
 
 /**
- * Return the most recently compiled diagnostic snapshot if it is fresh
- * enough to trust for provenance auto-fill, otherwise null. Freshness
- * guards against tagging a proposal with a code from a run that is no
- * longer the current one (which could make the sweep auto-resolve it
- * early).
+ * The latest compiled snapshot if it is fresh enough to trust for provenance auto-fill, else null: a stale
+ * one could tag a proposal with a code from a run that is no longer current and make the sweep resolve it early.
  */
 export function getFreshDiagnosticSnapshot(maxAgeMs = 10 * 60 * 1000): { id: string; items: DiagnosticItem[] } | null {
   if (!latestDiagnosticSnapshot) return null;

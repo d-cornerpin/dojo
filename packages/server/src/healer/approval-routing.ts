@@ -1,31 +1,10 @@
-// ════════════════════════════════════════
-// Healer destructive-approval routing (D-B, owner-directed v2).
-//
-// When the v2 loop's destructive gate HOLDS a Healer tool call, the Healer does
-// NOT wake the primary the way every other worker does. The Healer answers to
-// the OWNER, so a single owner-approval object is filed instead: a healer_proposals
-// row (the same object the model uses for routine consent) carrying the bound
-// approval token + the exact canonical signature of the held call, plus the
-// engine-derived urgency and delivery surface.
-//
-// Owner approval (gateway/routes/healer.ts) mints a one-shot destructive_approvals
-// row from that bound token/signature, so the Healer's RE-ATTEMPT of the same
-// call consumes it once and executes (destructive-gate.ts consumeApproval). The
-// signature is computed ONCE at hold time with canonicalToolSignature and stored;
-// the retry re-computes it from the identical tool call with the same function,
-// so the two cannot diverge.
-//
-// v2 (owner-directed): consent asks live in the Healer section of Vitals in plain
-// language; the orb toast is retired. The ONLY loud lane is a text, and only for a
-// CRITICAL diagnostic while the owner is away. A clean file returns a NON-error,
-// "queued, move on" tool-result so nothing blocks. A strictly-parseable deletion
-// whose every target is inside a scratch zone auto-approves with an audit + Vitals
-// record and no consent ask at all.
-//
-// This module owns the pure surface selector, the scratch-zone auto-approve rule,
-// the proposal filing, and the deterministic "applied on retry" close. It does NOT
-// render UI; the Vitals view and the iMessage lane consume the columns it stamps.
-// ════════════════════════════════════════
+// Healer destructive-approval routing. A held Healer tool call files ONE owner-approval row in
+// healer_proposals (bound token plus canonical signature) instead of waking the primary agent.
+// Owner approval mints a one-shot destructive_approvals row, so the Healer's retry of the same call
+// consumes it once (destructive-gate.ts consumeApproval); the signature is computed once with
+// canonicalToolSignature at hold time, so hold and retry cannot diverge.
+// Owns the surface selector, the scratch-zone auto-approve rule, proposal filing and the "applied on
+// retry" close. It renders no UI.
 
 import os from 'node:os';
 import path from 'node:path';
@@ -42,7 +21,7 @@ import { getPrimaryAgentId } from '../config/platform.js';
 
 const logger = createLogger('healer-approval-routing');
 
-/** Engine diagnostic severity, mirrored from diagnostic.ts DiagnosticItem. */
+// Must match DiagnosticItem's severity union (item-cap.ts).
 export type EngineSeverity = 'critical' | 'warning' | 'info';
 
 export type HealerApprovalUrgency = 'routine' | 'urgent';
@@ -54,25 +33,9 @@ export interface HealerApprovalRouting {
 }
 
 /**
- * D-B v2 (owner-directed) surface selector. Pure and deterministic, no model
- * judgment, no I/O. The caller supplies the engine-derived facts; this function
- * only applies the rules.
- *
- * The owner ruled the orb toast RETIRES: consent asks live in the Healer section
- * of Vitals in plain language. The ONLY loud, out-of-band lane left is a text,
- * and it is narrow:
- *
- *   surface = 'imessage'  iff  engine-severity is CRITICAL  AND  the owner is
- *             away (presence)  AND  iMessage is enabled. Everything else queues
- *             quietly in Vitals. 'toast' is never produced.
- *
- * Urgency now drives only the Vitals badge tone + the expiry class:
- *   - 'imessage' (the critical texted class) is 'urgent' and expires on the
- *     60-minute destructive-gate clock with a loud owner notice.
- *   - everything else is 'routine', queues in Vitals, and keeps the 14-day
- *     healer_proposals lifecycle (quiet expiry, never an error).
- *
- * The engine-severity, never the model's word, is what the selector reads.
+ * Pure surface selector (no model judgment, no I/O): 'imessage' only when engine severity is CRITICAL,
+ * the owner is away and iMessage is enabled; everything else queues in Vitals. 'toast' is never produced.
+ * Expiry keys on surface: 'imessage' uses the 60-minute gate clock (destructive-gate.ts), the rest 14 days.
  */
 export function selectHealerApprovalRouting(input: {
   engineSeverity?: EngineSeverity | null;
@@ -86,23 +49,13 @@ export function selectHealerApprovalRouting(input: {
   return { urgency, surface };
 }
 
-// ════════════════════════════════════════
-// D-B v2 Part 1: scratch-zone auto-approve (engine rule, static, fail-closed).
-//
-// A Healer destructive call whose EVERY target resolves (through the hardened
-// canonicalizer) strictly INSIDE a designated scratch zone runs WITHOUT consent,
-// leaving an audit_log row (outcome 'auto_approved_scratch') and a Vitals-visible
-// history record. Anything unparseable, out-of-zone, or unresolvable takes the
-// normal hold path. Protected-identity and global denies run FIRST (in
-// isDestructiveCall + the manifest exec check) and always win; this only ever
-// NARROWS what holds, never widens what can be deleted.
-// ════════════════════════════════════════
+// Scratch-zone auto-approve: a Healer destructive call whose EVERY target resolves strictly inside
+// a scratch zone runs without consent and leaves an audit_log row ('auto_approved_scratch') plus a
+// Vitals history record. Unparseable, out-of-zone or unresolvable calls take the normal hold path.
+// Protected-identity and global denies run first, so this only ever narrows what holds.
 
-// Static scratch/work zones. Ephemeral work areas ONLY: general temp + the agent
-// file-output tree. NEVER ~/.dojo/config, prompts, data, secrets, logs, or
-// techniques (all outside these roots). Resolved once through the hardened
-// canonicalizer so a symlinked /tmp or $TMPDIR normalizes to the same real path a
-// target resolves to (macOS /tmp -> /private/tmp, $TMPDIR -> /private/var/...).
+// Ephemeral work areas only (never ~/.dojo config, prompts, data, secrets or logs). Resolved through
+// the hardened canonicalizer so a symlinked /tmp or $TMPDIR matches the real path a target resolves to.
 const SCRATCH_ZONE_SOURCES = [
   '/tmp',
   os.tmpdir(),
@@ -119,27 +72,18 @@ const SCRATCH_ZONE_ROOTS: string[] = (() => {
   return [...roots];
 })();
 
-// Only a single, plain rm/rmdir with a literal arg list is auto-approvable. Any
-// shell metacharacter, subshell, redirection, variable, quote, or glob forces the
-// normal hold (we cannot statically reason about what those would delete).
+// Only a single plain rm/rmdir with a literal arg list is auto-approvable: any shell metacharacter,
+// quote, variable or glob forces the hold, since we cannot statically reason about what it deletes.
 const SHELL_META_RE = /[;&|`$()<>*?[\]{}!"'\\\n\r]/;
-// Conservative rm flag whitelist (recursive / force / directory / -R). Any other
-// dash-arg (e.g. --no-preserve-root) forces the hold.
+// rm flag whitelist (recursive, force, directory); any other dash-arg forces the hold.
 const RM_FLAG_RE = /^-[rRfd]+$/;
 
 export interface ScratchZoneDecision {
-  /** The exact command evaluated (audit/history target). */
   command: string;
-  /** The zone root each target landed strictly inside (audit detail). */
   zones: string[];
 }
 
-/**
- * Pure decision: is this a strictly-parseable rm/rmdir whose every target
- * resolves strictly inside a scratch zone? Returns the decision on a match,
- * null on ANY miss (fail closed). No I/O beyond the symlink-resolving stat walk
- * the hardened canonicalizer already performs.
- */
+/** A strictly-parseable rm/rmdir with every target strictly inside a scratch zone; null on ANY miss. */
 export function evaluateScratchZoneAutoApprove(
   toolName: string,
   args: Record<string, unknown>,
@@ -165,27 +109,20 @@ export function evaluateScratchZoneAutoApprove(
 
   const zones: string[] = [];
   for (const target of targets) {
-    // Protected identity/config paths ALWAYS hold, never auto-approve.
     if (isProtectedIdentityPath(target)) return null;
     const resolved = resolveRealPathHardened(target);
     if (!resolved.resolved) return null; // fail closed
     const zone = SCRATCH_ZONE_ROOTS.find(
       (root) => resolved.path === root || resolved.path.startsWith(root + path.sep),
     );
-    // Require STRICTLY under a zone; deleting a zone root itself (rm -rf /tmp)
-    // is NOT auto-approvable.
+    // Strictly under a zone: deleting a zone root itself (rm -rf /tmp) is not auto-approvable.
     if (!zone || resolved.path === zone) return null;
     zones.push(zone);
   }
   return { command, zones: [...new Set(zones)] };
 }
 
-/**
- * Evaluate + record. Returns true when the call was auto-approved (the caller
- * then lets it execute once WITHOUT filing a proposal), false when it must take
- * the normal hold path. On auto-approve it writes the audit_log row and the
- * Vitals history record and nudges the live Vitals view to refresh.
- */
+/** Evaluate and record; true means auto-approved (runs once, no proposal filed). Writes audit and history. */
 export function maybeAutoApproveHealerScratch(input: {
   agentId: string;
   toolName: string;
@@ -204,8 +141,7 @@ export function maybeAutoApproveHealerScratch(input: {
     zones: decision.zones,
   });
   try {
-    // audit_log.action_type is a fixed enum ('exec' is the action); the
-    // auto-approval outcome rides in detail.outcome, never a secret.
+    // audit_log.action_type is a fixed enum ('exec'); the outcome rides in detail.outcome.
     getDb().prepare(`
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, created_at)
       VALUES (?, ?, 'exec', ?, 'success', ?, datetime('now'))
@@ -216,7 +152,6 @@ export function maybeAutoApproveHealerScratch(input: {
     });
   }
   try {
-    // Vitals-visible record ("Things the Healer Did Automatically").
     getDb().prepare(`
       INSERT INTO healer_actions
         (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
@@ -232,8 +167,7 @@ export function maybeAutoApproveHealerScratch(input: {
       error: err instanceof Error ? err.message : String(err),
     });
   }
-  // Refresh the live Vitals view (HealerVitals reloads on any healer:proposal
-  // frame); no proposal exists, so this carries only the action id.
+  // HealerVitals reloads on any healer:proposal frame; no proposal exists, so it carries the action id.
   try { broadcast({ type: 'healer:proposal', data: { id: actionId } }); } catch { /* best effort */ }
 
   logger.info('healer scratch-zone destructive auto-approved', {
@@ -243,41 +177,20 @@ export function maybeAutoApproveHealerScratch(input: {
 }
 
 export interface FileHealerApprovalInput {
-  /** The Healer agent id (the held call's caller). */
   agentId: string;
   agentName: string;
   toolName: string;
-  /** Canonical destructive-gate signature of the held call (bound). */
   signature: string;
-  /** The gate's kind label, e.g. 'destructive shell command'. */
   kind: string;
-  /** Human-readable one-line description of the held call. */
   callDescription: string;
-  /** True for a live gate hold (a direct rm/write pause, not diagnostic
-   *  provenance). Retained for the caller's record; the v2 selector routes on
-   *  engine severity + presence, so a live hold with no diagnostic severity
-   *  queues quietly in Vitals. */
+  /** True for a live gate hold; recorded only, routing uses engine severity plus presence. */
   heldDirectDestructiveCall: boolean;
-  /**
-   * OWNER-FACING COPY OVERRIDE (sudo policy, v3.2.2). The routing, the bound token, the signature,
-   * the card and the approval → `destructive_approvals` mint are all generic; only the WORDS are
-   * Healer-specific ("your self-healing helper"). A held PRIMARY sudo call uses the same mechanism
-   * with its own sentence, because telling the owner his main agent is a self-healing helper would be
-   * false. Absent ⇒ the Healer copy below, unchanged.
-   */
+  /** Owner-facing wording override; routing, token and approval mint stay generic. Absent means Healer copy. */
   copy?: { title: string; description: string; proposedFix: string; evidence: readonly string[] };
-  /**
-   * AGENT-FACING REFUSAL OVERRIDE (sudo policy, v3.2.2 — fourth review). The same separation the
-   * `copy` override above makes for the OWNER's card: the mechanism is generic, the WORDS are not.
-   * The generic sentence below says "this could delete or overwrite something", which tells a held
-   * sudo caller nothing about the policy that held it or the card now waiting. Absent ⇒ that generic
-   * text, unchanged, for every Healer hold.
-   */
+  /** Agent-facing refusal override, same split as `copy`; absent means the generic text below. */
   agentRefusal?: string;
-  /** Engine diagnostic severity when the call has provenance. Only CRITICAL +
-   *  owner-away routes to the iMessage lane; everything else queues in Vitals. */
   engineSeverity?: EngineSeverity | null;
-  // P7b: full argument JSON of the held call (exact-call contract).
+  // Full argument JSON of the held call (exact-call contract).
   argsJson?: string | null;
 }
 
@@ -286,23 +199,14 @@ export interface FileHealerApprovalResult {
   token: string;
   urgency: HealerApprovalUrgency;
   surface: HealerApprovalSurface;
-  /** The structured tool-result text the loop gate hands back to the Healer. */
   refusal: string;
-  /** True when the consent was filed cleanly (queued, not an error): the loop
-   *  returns it as a NON-error tool result so the turn continues. False only
-   *  when filing failed (a genuine block). */
+  /** True when filed cleanly (a non-error "queued" result); false only when filing failed. */
   queued: boolean;
 }
 
 /**
- * D-B step 2: file the single owner-approval object for a HELD Healer call and
- * return the structured tool-result the gate hands back. Broadcasts the typed
- * healer:proposal WS frame (stamped with urgency + surface) so the live Vitals
- * view sees it immediately; only the critical-texted class (surface='imessage')
- * also texts the owner.
- *
- * Presence is read here (dynamic import to keep the loop gate's static import
- * graph free of the iMessage bridge); the DECISION stays in the pure selector.
+ * File the single owner-approval row for a HELD Healer call and return the tool-result text. Presence is
+ * read via dynamic import so the loop gate's static import graph stays free of the iMessage bridge.
  */
 export async function fileHealerApprovalProposal(
   input: FileHealerApprovalInput,
@@ -314,8 +218,7 @@ export async function fileHealerApprovalProposal(
     presence = presenceMod.getPresence();
     imessageEnabled = presenceMod.isImessageEnabled();
   } catch (err) {
-    // Presence unavailable: default to present (in_dojo), which routes to the
-    // quiet Vitals lane. Never block the hold on a presence lookup.
+    // Presence unavailable: default to in_dojo (quiet Vitals lane); never block the hold on it.
     logger.warn('healer approval-routing: presence lookup failed, defaulting to in_dojo', {
       error: err instanceof Error ? err.message : String(err),
     });
@@ -329,12 +232,9 @@ export async function fileHealerApprovalProposal(
 
   const proposalId = uuidv4();
   const token = uuidv4();
-  // The severity column is the Vitals badge tone: red for the critical texted
-  // class, amber for a quietly-queued consent (matching the Vitals pending tone).
+  // Severity is the Vitals badge tone: red for the texted class, amber for a quiet consent. Copy is
+  // engine-fixed plain language (never model-authored); the raw command rides in proposed_fix.
   const severity = routing.surface === 'imessage' ? 'critical' : 'warning';
-  // Engine-fixed, plain-language copy (never a model-authored headline). What it
-  // is, why it paused, what declining does, and a recommendation. The raw command
-  // rides in proposed_fix, which the Vitals card tucks behind a details expander.
   const title = input.copy?.title ?? 'A cleanup change is waiting for your OK';
   const description = input.copy?.description ??
     'Your self-healing helper wants to delete or change something outside its ' +
@@ -406,19 +306,14 @@ export async function fileHealerApprovalProposal(
     surface: routing.surface,
   });
 
-  // D-B step 5 OUTBOUND: the owner is away with iMessage enabled, so text the
-  // approval request to them. The proposal already stands in Vitals (the mirror),
-  // so a send failure is fail-open: log loudly, the request is never lost. Only
-  // the 'imessage' surface texts; 'toast'/'vitals' are handled by their own lanes.
+  // Owner away with iMessage on: text the request. The proposal already stands in Vitals, so a send
+  // failure is fail-open (logged, never lost).
   if (routing.surface === 'imessage') {
     await sendHealerApprovalRequestOverIMessage(proposalId);
   }
 
-  // D-B v2 Part 3: a NON-error, structured result. The action is QUEUED, not
-  // failed, and nothing is blocked. The turn continues normally. Do not frame the
-  // agent as waiting to be re-woken (that is what left it sitting during the wall
-  // run); tell it plainly to move on. If the owner approves later, the engine
-  // brings the exact call back through the existing 30s kick + consume-once retry.
+  // A NON-error "queued" result so the turn continues: tell the agent to move on, not wait. If the owner
+  // approves, the engine brings the exact call back through the post-approval kick and consume-once retry.
   const refusal = input.agentRefusal ??
     `[Queued for the owner] This ${input.kind} could delete or overwrite something, so it is ` +
     `now waiting in the Healer section of the owner's dashboard for a yes or no. This is not an ` +
@@ -431,11 +326,8 @@ export async function fileHealerApprovalProposal(
 }
 
 /**
- * D-B step 2 (deterministic close): the owner-approved held action just ran
- * through the gate (its bound token was consumed). Mark the matching proposal
- * applied so runHealingCycle stops re-presenting it AND, critically, so a stray
- * re-issue cannot re-hold the now-consumed token into a brand-new proposal.
- * Matched on (agent_id, approval_signature) exactly as the approval was bound.
+ * Close an owner-approved held action that just ran: mark the matching proposal (agent_id +
+ * approval_signature) applied so it is not re-presented and the consumed token cannot re-hold.
  */
 export function markHealerProposalAppliedBySignature(agentId: string, signature: string): void {
   try {
@@ -461,23 +353,13 @@ export function markHealerProposalAppliedBySignature(agentId: string, signature:
 }
 
 /**
- * D-B step 5: text the owner an approval request for an 'imessage'-surface
- * proposal. The message is plain (no tool names, no raw command), carries a
- * SHORT id (first 8 of the proposal id), and tells the owner exactly how to
- * reply. B2: the reply MUST name that id ("yes 1a2b3c"); a bare "yes"/"no" is
- * treated as ordinary chat, so the copy never implies a bare reply works. On
- * success it refreshes notified_at to the real send time.
- *
- * The iMessage bridge is pulled in via DYNAMIC import so the loop's static
- * import graph (loop.ts -> approval-routing.ts) never links the bridge, matching
- * the presence lookup idiom above. In dev sim mode the bridge captures the send
- * instead of really texting (imessage-bridge.ts sendIMessage), so the harness
- * verifies this lane without a real round-trip.
+ * Text the owner an approval request for an 'imessage'-surface proposal. The reply must name the short
+ * id (first 8 chars of the proposal id); a bare yes/no is ordinary chat. Refreshes notified_at on send.
+ * The bridge is imported dynamically so loop.ts -> approval-routing.ts never statically links it.
  */
 async function sendHealerApprovalRequestOverIMessage(proposalId: string): Promise<void> {
   const shortId = proposalId.slice(0, 8);
-  // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): labelled "Dojo:", never "I", and the main
-  // agent is told what was sent (below, after the send).
+  // Labelled "Dojo:" (never "I"); the main agent is told what was sent, below.
   const text = healerApprovalText(shortId);
 
   try {
@@ -489,8 +371,7 @@ async function sendHealerApprovalRequestOverIMessage(proposalId: string): Promis
       });
       return;
     }
-    // PHASE-2 T5: an approval prompt reaches the owner's phone and recorded nothing. A
-    // PLATFORM outbound, not an agent's — the healer speaks for the box, not for an agent.
+    // A platform outbound, not an agent's: the healer speaks for the box.
     const sent = await withOutboundAsyncIfAbsent(
       { agentId: PLATFORM_SENDER, tool: 'healer-approval', channel: 'imessage', recipientId: owner },
       () => bridge.sendIMessage(owner, text),

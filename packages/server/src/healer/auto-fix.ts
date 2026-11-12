@@ -1,24 +1,15 @@
-// ════════════════════════════════════════
-// Healer Auto-Fix Engine (Tier 1)
-//
-// Deterministic fixes that don't need LLM reasoning.
-// These run BEFORE the Healer agent's LLM cycle.
-// ════════════════════════════════════════
+// Healer Tier 1 auto-fixes: deterministic repairs that need no LLM reasoning, run before the
+// Healer agent's LLM cycle.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-// t129: the orphan definition — predicate AND join key — comes from its one source.
+// The orphan definition (predicate and join key) comes from its one source.
 import { ORPHANED_TASK_JOIN, ORPHANED_TASK_WHERE } from '../tracker/version-gap-reconcile.js';
 import { broadcast } from '../gateway/ws.js';
-// SWEEP CORE-2 item 2: the Healer's six status resets go through the ONE writer
-// (`agent/agent-status.ts`, PHASE-6 T10). Same column, same value, same `updated_at`; the
-// broadcast stays at each site because that is the order these sites already emitted in.
+// The Healer's status resets go through the one status writer; the broadcast stays at each site.
 import { writeAgentStatus } from '../agent/agent-status.js';
-// T81d (NO-DOOMED-DIALS, census row 17): `activeRuns` is the in-memory concurrency guard
-// `agent/runtime.ts`'s `recoverStuckAgents` (census row 19) already checks before reaping a
-// stale-looking 'working' row. `agent/shared-state.ts` is a leaf module (imports only the
-// logger) so importing it here does not reach back into `agent/runtime.ts` or anything else
-// this file's own layer would form a cycle with.
+// activeRuns is the in-memory concurrency guard. shared-state.ts is a leaf module (imports only the
+// logger), so importing it here cannot form a cycle with agent/runtime.ts.
 import { activeRuns } from '../agent/shared-state.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
@@ -38,24 +29,9 @@ interface AutoFixResult {
   agentId?: string;
 }
 
-// FA-X3: a Tier-1 status reset flips an injured agent (paused/error) back to
-// idle with a raw UPDATE. That UPDATE alone leaves the recovery bookkeeping
-// stale: recovery_attempts and the per-agent Healer suppression window are
-// never cleared (so a LATER injury starts deep in the backoff ladder with a
-// shrunken wake budget, and a persistent fault bounces error->idle->error with
-// no fresh owner signal), and no AGENT_RECOVERED broadcast fires (so the
-// dashboard's injury toast lingers). Close the loop the same way a natural
-// recovered turn (loop.ts) and the Healer self-watchdog do: dynamic-import
-// injury-recovery and call onAgentRecovered. It is safe on an agent that was
-// never injured (e.g. a STUCK_AGENT reset of a 'working' agent that has no
-// injury row): the counter/suppression clears are no-ops, the pending
-// grace-timer clears find nothing, and it just emits a benign recovered
-// signal. The 30-min cooldown resets still happen; this only closes the
-// bookkeeping they were skipping.
-// t114 (census U1): the sweep says WHICH KIND of recovery this is. It is a clock, so it passes
-// `'cooldown'` and `onAgentRecovered` withholds the three clears only evidence may earn — the
-// attempt ladder, the human-facing error text, and the doomed-dial marker. The Healer's own
-// backoff window and its pending grace timers still clear, because those are the sweep's to own.
+// A status write alone leaves the Healer suppression window, wake and grace timers and the injury toast
+// stale. onAgentRecovered with 'cooldown' clears those (harmless for a never-injured agent) but withholds
+// the evidence-only clears (attempt ladder, error text, doomed-dial marker): a clock is not evidence.
 function clearRecoveryBookkeeping(agentId: string): void {
   import('./injury-recovery.js')
     .then((m) => { try { m.onAgentRecovered(agentId, 'cooldown'); } catch { /* best effort */ } })
@@ -63,17 +39,8 @@ function clearRecoveryBookkeeping(agentId: string): void {
 }
 
 /**
- * t114 (census U1) — MAY A COOLDOWN SWEEP TOUCH THIS AGENT AT ALL?
- *
- * The sweep's premise is "thirty minutes passed, so a fresh start is probably worth a try". That
- * premise is FALSE for a failure a fresh start cannot fix, and the tree already records the one
- * class it provably cannot: a declared-patience refusal means the request could not finish inside
- * the patience its own provider row declares, so re-dialling it cold produces the identical
- * refusal and burns the box again. That is the chain T82c's marker exists to break.
- *
- * Refusing here keeps the agent's honest `error` status and its error text in front of the owner,
- * which is the outcome row 10's error-loop pause was built to produce and which this sweep was
- * silently undoing every half hour.
+ * May a cooldown sweep touch this agent at all? Not when its last failure was a declared-patience
+ * refusal: a fresh start cannot fix it, and clearing it every half hour would hide the honest error.
  */
 function cooldownSweepMayRecover(agentId: string): { ok: true } | { ok: false; why: string } {
   try {
@@ -90,25 +57,14 @@ function cooldownSweepMayRecover(agentId: string): { ok: true } | { ok: false; w
     }
     return { ok: true };
   } catch {
-    // Unreadable row: do not invent permission. The sweep is an optimisation, never an
-    // obligation, so the safe direction is to leave the agent as the human last saw it.
+    // Unreadable row: do not invent permission; leave the agent as the human last saw it.
     return { ok: false, why: 'its last error could not be read, so the sweep made no claim about it' };
   }
 }
 
-// ── v2.3.19 (error-handling-spec Phase 4) — frequent auto-fix sweep ──
-//
-// Runs every 5 minutes engine-level, bypassing the daily Healer cycle.
-// Targets the deterministic status-recovery fixes only (stuck-working,
-// long-paused, long-errored). Other auto-fixes (orphaned messages,
-// orphaned tasks/projects) need the full diagnostic and stay in the
-// daily cycle.
-//
-// This replaces the pre-spec "wait until 04:00 for a stuck agent to be
-// unstuck" behavior. Stuck-working detection (>10 min) was already at
-// runtime.ts:recoverStuckAgents on 5-min cadence; this adds the long-
-// paused (>30 min) and long-errored (>30 min) recovery to the same
-// cadence.
+// Frequent sweep: every 5 minutes, outside the daily Healer cycle. Status recovery only (long-paused,
+// long-errored); the other auto-fixes need the full diagnostic and stay in the daily cycle.
+// Stuck-working recovery lives in runtime.ts recoverStuckAgents.
 
 const FREQUENT_AUTOFIX_INTERVAL_MS = 5 * 60 * 1000;
 const PAUSED_COOLDOWN_MS = 30 * 60 * 1000;
@@ -116,14 +72,7 @@ const ERROR_COOLDOWN_MS = 30 * 60 * 1000;
 let frequentAutoFixTimer: ReturnType<typeof setInterval> | null = null;
 
 export function runFrequentAutoFixes(): void {
-  // v2.5.8 — Heartbeat demoted to DEBUG. Pre-spec we logged at INFO so a
-  // silent sweep could be distinguished from a dead timer. That concern
-  // was a one-time debugging need; in production it just spams the Health
-  // page log viewer every 5 min with no actionable information. The
-  // actual recoveries below (resumed/reset paths) still log at INFO, AND
-  // get their own healer_actions DB row — those are the only events worth
-  // surfacing. The startup log in startFrequentAutoFixes still confirms
-  // the timer kicked off.
+  // The heartbeat is DEBUG: only actual recoveries log at INFO (each also gets a healer_actions row).
   logger.debug('Frequent auto-fix sweep firing');
   try {
     const db = getDb();
@@ -137,8 +86,7 @@ export function runFrequentAutoFixes(): void {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     for (const a of longPaused) {
-      // t261 (F4): same cause check as the daily-cycle fixer. A clock is not evidence a
-      // declared-patience refusal cleared, so the honest `paused` status stays in front of the owner.
+      // Same cause check as the daily-cycle fixer: a clock is not evidence the refusal cleared.
       const mayPaused = cooldownSweepMayRecover(a.id);
       if (!mayPaused.ok) {
         logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: a.id, why: mayPaused.why });
@@ -150,7 +98,7 @@ export function runFrequentAutoFixes(): void {
         agentId: a.id, agentName: a.name, pausedSince: a.updated_at,
       });
       void persistAction(`Resumed ${a.name} — it had been paused for over 30 minutes`, 'success', a.id);
-      clearRecoveryBookkeeping(a.id); // FA-X3
+      clearRecoveryBookkeeping(a.id);
     }
 
     // Long-errored agents (status='error' for >30 min).
@@ -161,8 +109,7 @@ export function runFrequentAutoFixes(): void {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     for (const a of longErrored) {
-      // t261 (F4): same cause check as the daily-cycle fixer. A clock is not evidence a
-      // declared-patience refusal cleared, so the honest `error` status stays in front of the owner.
+      // Same cause check as the daily-cycle fixer: a clock is not evidence the refusal cleared.
       const mayError = cooldownSweepMayRecover(a.id);
       if (!mayError.ok) {
         logger.info('frequent auto-fix: declining to reset an errored agent', { agentId: a.id, why: mayError.why });
@@ -174,7 +121,7 @@ export function runFrequentAutoFixes(): void {
         agentId: a.id, agentName: a.name, erroredSince: a.updated_at,
       });
       void persistAction(`Reset ${a.name} — it had been in error state for over 30 minutes`, 'success', a.id);
-      clearRecoveryBookkeeping(a.id); // FA-X3
+      clearRecoveryBookkeeping(a.id);
     }
   } catch (err) {
     logger.error('runFrequentAutoFixes failed', {
@@ -209,14 +156,8 @@ export function startFrequentAutoFixes(): void {
 function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'STUCK_AGENT' || !item.agentId) return { applied: false, description: '' };
 
-  // T81d (NO-DOOMED-DIALS, census row 17): never reap a run THIS process knows is live.
-  // `activeRuns` is the in-memory concurrency guard; flipping the DB row to 'idle' out from
-  // under a running turn lets a new inbound message start a SECOND concurrent turn on the same
-  // context. A row can look stale to the `STUCK_AGENT` diagnostic (which reads only DB
-  // `updated_at`, same as `runtime.ts`'s stale-row query) yet still be an active run here only
-  // if the heartbeat also stalled, which means the turn really is wedged in THIS process — so
-  // skip it and let the process-level watchdog (`recoverStuckAgents`, census row 19, which this
-  // guard copies verbatim) handle it instead of resetting a status the run is still writing to.
+  // Never reap a run THIS process knows is live: flipping the row to 'idle' under a running turn lets a
+  // new inbound start a SECOND concurrent turn on the same context. Mirrors the recoverStuckAgents guard.
   if (activeRuns.has(item.agentId)) {
     logger.warn('Auto-fix STUCK_AGENT: row is stale but run is live in-process, not resetting', {
       agentId: item.agentId, agentName: item.agentName,
@@ -226,7 +167,7 @@ function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
 
   writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
-  clearRecoveryBookkeeping(item.agentId); // FA-X3
+  clearRecoveryBookkeeping(item.agentId);
 
   return {
     applied: true,
@@ -248,8 +189,7 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: `${item.agentName} was paused recently — giving it time to cool down before restarting` };
   }
 
-  // t114 (U1): the cause is read BEFORE the status is written, so a fault a restart cannot fix is
-  // left alone with its diagnostic intact rather than bounced error->idle->error for ever.
+  // Read the cause BEFORE writing status, so a fault a restart cannot fix keeps its diagnostic.
   const mayPaused = cooldownSweepMayRecover(item.agentId);
   if (!mayPaused.ok) {
     logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: item.agentId, why: mayPaused.why });
@@ -258,7 +198,7 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
 
   writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
-  clearRecoveryBookkeeping(item.agentId); // FA-X3
+  clearRecoveryBookkeeping(item.agentId);
 
   return {
     applied: true,
@@ -280,8 +220,7 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: '' };
   }
 
-  // t114 (U1): same cause check as the paused arm. This is the arm that was erasing the
-  // doomed-dial marker on a 30-minute cycle.
+  // Same cause check as the paused arm.
   const mayError = cooldownSweepMayRecover(item.agentId);
   if (!mayError.ok) {
     logger.info('frequent auto-fix: declining to reset an errored agent', { agentId: item.agentId, why: mayError.why });
@@ -290,7 +229,7 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
 
   writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
-  clearRecoveryBookkeeping(item.agentId); // FA-X3
+  clearRecoveryBookkeeping(item.agentId);
 
   return {
     applied: true,
@@ -318,41 +257,10 @@ function fixOrphanedToolMessages(item: DiagnosticItem): AutoFixResult {
 function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'ORPHANED_TASK') return { applied: false, description: '' };
 
-  // Unassign tasks from terminated agents. A paused hold stays (the owner paused it on purpose);
-  // any other task moves to Open so it can be reassigned.
-  // PHASE-2 T8b: on `work`, and the state half now goes through `transition()` per row.
-  // The old statement did both jobs in one ungated UPDATE — it moved state with no reason,
-  // no actor and no event. Unassigning is a column patch; moving to `on_deck` is a
-  // transition and says who did it and why.
-  // ── t129 / S6 — THIS SWEEP COULD NOT SUCCEED, AND THE FIRST ORPHAN TOOK THE REST WITH IT ──
-  //
-  // The write below used to be `{ agent_id: null, assignee_agent: null }`. `work.agent_id` is
-  // `TEXT NOT NULL` (`135_work_spine.sql:42`), so that is a constraint abort, not an
-  // unassignment — verified at this head rather than inherited:
-  // `NOT NULL constraint failed: work.agent_id`. And it THROWS: `patchWork` returns its
-  // refusals, but SQLite's abort comes out of the statement, so `noteUnsettled` never saw it
-  // and the exception left this function entirely. The state half had ALREADY committed by
-  // then — its own `setTrackerStatus` call above — so each attempt left a row reading
-  // `on_deck` while still owned by a terminated agent, and the FIRST such row aborted the
-  // whole pass, including every orphan behind it. Daily cycle, `healerMode === 'active'`.
-  //
-  // THE CORRECT WRITE WAS ALREADY WRITTEN DOWN, one module over. `tracker/schema.ts`'s
-  // `updateTask` carries the M7 / P706 clear protocol in full: *"`null` means 'nobody in
-  // particular is assigned', and that fact does NOT live in `agent_id` … `assignee_agent` is
-  // the nullable column that carries it … a null CLEARS the assignee and leaves the holder."*
-  // This is that protocol, applied here. The holder survives (it is the row's history, and
-  // NOT NULL means it must be someone); the ASSIGNEE is what gets cleared, which is what
-  // "unassign" means on this spine.
-  //
-  // t129 FIX ROUND — AND THE SELECTION IS NOT THIS FILE'S TO WRITE ANY MORE.
-  // The first cut keyed this query on the ASSIGNEE (correctly) while `healer/diagnostic.ts`
-  // and the version-gap scan still joined on the HOLDER, so a row THIS function had just
-  // fixed was raised `critical` by the diagnostic on every sweep, for ever. That was a second
-  // copy of one definition with only one of them repaired — the same drift class as the
-  // disposal gate's re-typed uphold predicate, in the same lane. Both the JOIN and the WHERE
-  // now come from `ORPHANED_TASK_JOIN`/`ORPHANED_TASK_WHERE`, and the key lives INSIDE the
-  // definition so a fourth consumer cannot pick a different one. Keying on the assignee is
-  // also what makes this pass idempotent: a row it has cleared is no longer selected.
+  // Unassign tasks from terminated agents: a paused hold stays (the owner paused it on purpose); any
+  // other task returns to on_deck through a recorded transition. The ASSIGNEE is cleared and the
+  // holder kept (work.agent_id is NOT NULL, so nulling it aborts). ORPHANED_TASK_JOIN/_WHERE (shared with
+  // diagnostic.ts) key on the assignee, so a cleared row is no longer selected and the diagnostic agrees.
   const db = getDb();
   const orphans = db.prepare(`
     SELECT w.id AS id, w.assignee_agent AS assignee
@@ -361,11 +269,8 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   `).all() as Array<{ id: string; assignee: string }>;
   let changed = 0;
   for (const o of orphans) {
-    // ONE ROW CANNOT TAKE THE PASS DOWN ANY MORE. The write above is fixed, so the known
-    // abort is gone; this is here because the lesson of S6 is not "that one constraint" but
-    // that a per-row fault was escaping into the caller and silently ending the sweep.
+    // One failing row must not end the sweep: a per-row fault is caught and logged.
     try {
-      // Paused tasks stay paused (the user explicitly paused them — don't silently unpause).
       if (holdOf(o.id)?.kind !== 'paused') {
         const r = setTrackerStatus(o.id, 'on_deck', {
           by: 'healer', actorId: 'healer',
@@ -373,8 +278,8 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
         });
         if (!workSettled(r)) continue;
       }
-      // t201: the gate's one writer clears the assignee and the move is recorded like every move. An agent
-      // assignee and a group assignee exclude each other, so a selected row has no group to clear.
+      // The gate's one writer clears the assignee (an agent and a group assignee exclude each other),
+      // and the move is recorded like every move.
       if (writeAssignee(o.id, { clear: true }) === 0) continue;
       recordMove({ taskId: o.id, actor: 'healer', from: o.assignee, to: null, cause: 'assignee_gone', door: 'healer orphan sweep' });
       changed++;
@@ -448,7 +353,6 @@ export function runAutoFixes(diagnosticId: string, items: DiagnosticItem[]): { f
         fixCount++;
         fixes.push(result.description);
 
-        // Log to healer_actions table
         db.prepare(`
           INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
           VALUES (?, ?, ?, ?, ?, ?, 'success', datetime('now'))
@@ -466,7 +370,6 @@ export function runAutoFixes(diagnosticId: string, items: DiagnosticItem[]): { f
         error: err instanceof Error ? err.message : String(err),
       });
 
-      // Log failure
       db.prepare(`
         INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
         VALUES (?, ?, ?, ?, ?, ?, 'failed', datetime('now'))
@@ -474,13 +377,8 @@ export function runAutoFixes(diagnosticId: string, items: DiagnosticItem[]): { f
     }
   }
 
-  // NOTE: the per-cycle "applied N fixes — nothing needs your attention" note to the
-  // primary was REMOVED here. It is superseded by the Healer's single once-daily health
-  // heartbeat (runHealingCycle Step 5), which reports "all systems operational" (or what
-  // needs attention) exactly once per day and folds the routine-fix count into that. The
-  // full per-fix detail remains in the healer_actions table (the vitals panel reads it).
-  // runAutoFixes ALSO runs on the 5-minute frequent cadence, where a note every few
-  // minutes would itself be the firehose we're removing.
+  // No per-cycle note to the primary: this also runs on the 5-minute cadence, and the daily heartbeat
+  // (runHealingCycle) reports routine fixes. Per-fix detail lives in healer_actions.
 
   logger.info('Auto-fix cycle complete', { fixCount, diagnosticId });
   return { fixCount, fixes };

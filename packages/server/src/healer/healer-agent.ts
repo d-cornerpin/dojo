@@ -1,26 +1,16 @@
-// ════════════════════════════════════════
-// Healer Agent, Self-Healing Orchestrator
-//
-// Manages the healing cycle: compile diagnostic,
-// run auto-fixes, then wake the permanent Healer
-// agent for Tier 2-3 analysis.
-//
-// The Healer is a permanent resident of Masters
-// (like the Trainer and Imaginer). It stays idle
-// between cycles and wakes when a cycle fires.
-// ════════════════════════════════════════
+// Healer self-healing orchestrator: compile the diagnostic, run auto-fixes, then wake the permanent Healer
+// agent for Tier 2-3 analysis. The Healer is a permanent resident of Masters (like the Trainer and Imaginer):
+// idle between cycles, woken when a cycle fires.
 
 import { HELD_CONSENT_EXPIRY_NOTE_TEXT } from '../agent/engine-lines.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import fs from 'node:fs';
-import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
+import { CHARS_PER_TOKEN } from '../memory/budget.js'; // shared token-estimate constant
 import { HEALER_WORKING_STUCK_MINUTES } from '../agent/stuck-thresholds.js';
-// SWEEP CORE-2 item 2: the Healer's three status writes go through the ONE writer.
+// The Healer's status writes go through the one status writer.
 import { writeAgentStatus } from '../agent/agent-status.js';
-// T81d (NO-DOOMED-DIALS, census row 15): the same `activeRuns` guard `agent/runtime.ts`'s
-// `recoverStuckAgents` (census row 19) already applies before reaping a stale 'working' row.
-// `agent/shared-state.ts` is a leaf module (imports only the logger), so this does not reach
-// back into `agent/runtime.ts` or create a cycle with anything in this file's own layer.
+// The activeRuns concurrency guard, as recoverStuckAgents applies it in agent/runtime.ts. shared-state.ts is a
+// leaf module (imports only the logger), so this import cannot form a cycle.
 import { activeRuns } from '../agent/shared-state.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -53,41 +43,26 @@ import { ownerConditionsOnHealerSeen } from './owner-notices.js';
 const logger = createLogger('healer-agent');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── v2.3.19 (error-handling-spec Phase 3), Dreamer-pattern budget ──
-//
-// The Healer must never receive a runaway cycle message that blows its
-// context window. Constants mirror the Dreamer's approach in
-// vault/maintenance.ts. Per-collector caps are enforced in diagnostic.ts;
-// these constants are for the TOTAL cycle-message ceiling.
+// Budget for the cycle message: the Healer must never receive a runaway message that blows its context window.
+// Mirrors the Dreamer's approach in vault/maintenance.ts; per-collector caps live in diagnostic.ts, these
+// constants set the TOTAL ceiling.
 const HEALER_CONTEXT_OVERHEAD_TOKENS = 40_000; // sys prompt + tool schemas + vault retrieval
 const HEALER_PROCESSING_GROWTH_FACTOR = 1.3;   // Healer makes fewer tool calls than Dreamer
 const HEALER_BATCH_BUDGET_CAP_RATIO = 0.35;    // hard ceiling: 35% of context for diagnostic payload
 const HEALER_FALLBACK_CONTEXT_WINDOW = 200_000; // sane default if we can't look up the model's window
 
-// Stale-proposal sweep. A pending proposal is only auto-resolved by
-// issue-matching when it carries usable provenance (an agent scope
-// and/or a diagnostic code) AND the current run shows the issue is gone.
-// Provenance-less proposals (all-NULL legacy rows, or ones the model
-// filed with no agent/code) are never issue-matched, they would vanish
-// on a false match, so an age cap is the only thing that ever closes
-// them. The cap is generous on purpose: a live proposal the owner has
-// not touched must survive many cycles, but the table still cannot grow
-// without bound.
+// Stale-proposal sweep: a pending proposal is auto-resolved by issue-matching only with usable provenance (an
+// agent scope and/or a diagnostic code) AND the current run showing the issue gone. Provenance-less proposals
+// are never issue-matched (they would vanish on a false match), so only this generous age cap closes them.
 const PROPOSAL_EXPIRY_DAYS = 14;               // age cap: close pending proposals older than this
 const PROPOSAL_EXPIRY_NOTE = `No decision after ${PROPOSAL_EXPIRY_DAYS} days, expired unapproved and closed by sweep.`;
 const PROPOSAL_CLEARED_NOTE = 'Issue no longer detected in diagnostic, closed by sweep.';
-// D-B v2: a quietly-queued Vitals consent (a held destructive call) that the
-// owner never decided gets the same 14-day age cap, closed with a plain,
-// non-error note (a quiet Vitals drop, never a loud alert).
-const HELD_CONSENT_EXPIRY_NOTE = HELD_CONSENT_EXPIRY_NOTE_TEXT;   // field fix 3 audit round (#6): the Dojo speaking, never 'I'
+// A quietly-queued Vitals consent (a held destructive call) the owner never decided gets the same age cap,
+// closed with a plain non-error note.
+const HELD_CONSENT_EXPIRY_NOTE = HELD_CONSENT_EXPIRY_NOTE_TEXT;   // the Dojo speaking, never 'I'
 
-// FA-X7(b): cap on how many cycles re-present an approved-but-unapplied
-// proposal to the Healer. An approved proposal wakes the Healer every cycle
-// until the Healer applies it (calls healer_mark_applied). If the Healer keeps
-// failing to apply it, that is an indefinite re-wake. After this many tries we
-// stop re-presenting it and tell the primary agent once that the fix is stuck,
-// so the owner can step in. Approved proposals still apply within the budget;
-// only genuinely-stuck ones fall out of the wake loop.
+// Cap on how many cycles re-present an approved-but-unapplied proposal to the Healer (each one wakes it). Past
+// the cap it stops being re-presented and the primary agent is told once that the fix is stuck.
 const MAX_APPROVAL_REWAKES = 3;
 
 function getHealerContextWindow(modelId: string | null): number {
@@ -117,10 +92,8 @@ interface BuildCycleMessageResult {
 }
 
 /**
- * Compose the Healer's cycle message under a strict char budget. If the
- * composed text would exceed the budget, the diagnostic REPORT is
- * truncated (with a marker) so approved proposals + instructions are
- * preserved, those are the highest-value content.
+ * Compose the Healer's cycle message under a strict char budget. Over budget, the diagnostic REPORT is
+ * truncated (with a marker) so approved proposals and instructions, the highest-value content, survive.
  */
 function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMessageResult {
   const { reportText, approvedSection, autoFixCount, contextWindow } = opts;
@@ -167,11 +140,7 @@ export function getHealerConfig(): {
   modelId: string | null;
   healerTime: string;
   healerMode: HealerMode;
-  /** v2.3.19, true when the Healer and primary agent share a provider.
-   *  If their provider goes down both Healers go down at once, defeating
-   *  the cross-provider isolation that's the whole point of having a
-   *  separate Healer model. The dashboard surfaces a Settings warning
-   *  when this is true. */
+  /** True when the Healer and primary share a provider (an outage takes both down); Settings shows a warning. */
   providerSharedWithPrimary: boolean;
   primaryProviderName: string | null;
   healerProviderName: string | null;
@@ -181,10 +150,7 @@ export function getHealerConfig(): {
   const timeRow = db.prepare("SELECT value FROM config WHERE key = 'healer_time'").get() as { value: string } | undefined;
   const modeRow = db.prepare("SELECT value FROM config WHERE key = 'healer_mode'").get() as { value: string } | undefined;
 
-  // Provider-isolation check. Resolve each model to its provider name.
-  // Pre-spec the dashboard surfaced no warning for this, so users could
-  // unknowingly run both agents on Anthropic and lose every recovery
-  // path the moment Anthropic flapped.
+  // Provider-isolation check: resolve each model to its provider name.
   let primaryProviderName: string | null = null;
   let healerProviderName: string | null = null;
   let providerSharedWithPrimary = false;
@@ -263,41 +229,18 @@ function getDefaultHealerModel(): string | null {
   return model?.id ?? null;
 }
 
-// ── W42 TOMBSTONE (UX-REPAIR T59): `loadHealerSoulPrompt` IS GONE, AND SO IS ITS WRITE ──
-//
-// It read `templates/HEALER-SOUL.md` correctly and wrote the result as a `role='system'`
-// message row at agent CREATION. `memory/assembler.ts`'s `tailRender` emits only
-// user/assistant/tool rows, so that row could never reach a model on its own; the only thing
-// that ever read it was `readStoredCharter`'s legacy earliest-system-row sniff, and on this
-// box the PM prune had deleted it — measured at `85537ff`: `GET /api/agents/healer/
-// system-prompt` served 0 bytes and all 30 surviving system rows were engine markers.
-//
-// THE REQUIREMENT NOW LIVES IN ONE PLACE: `prompt/assembler.ts`'s `soulFileForAgent`, which
-// declares `HEALER-SOUL.md` with the shipped template as its seed. That store is read by the
-// runtime (`getSoulContent`) and by the Settings card (`agent-prompt-surface.ts`) alike, so a
-// doctrine update reaches an already-running Healer without a row to rewrite, and the identity
-// survives every prune.
+// The Healer's charter (HEALER-SOUL.md) is not written as a message row at creation: soulFileForAgent in
+// prompt/assembler.ts declares it and the runtime (getSoulContent) and Settings card (agent-prompt-surface.ts)
+// read it, so a doctrine update reaches a running Healer and the identity survives pruning.
 
 // ── Permanent Healer Agent Tools & Permissions ──
 
-// FU-4 (owner decision 2026-07-05): the Healer keeps EVERY permission the primary
-// agent has for its write/exec work, with ONE deny-list carve-out. An empty allow
-// means it keeps everything its manifest permits (the prior whitelist was the FU-4
-// root cause: it silently under-granted the Healer every time a new tool shipped,
-// most visibly file_write/file_patch/file_append, which the strip dropped so the
-// Healer could not write a fix at all despite HEALER_PERMISSIONS carrying
-// file_write '*'). The deny is exactly the shared SEND_TO_PEOPLE set: those
-// comms-to-people tools (gmail/outlook send-reply-forward, teams sends, sms,
-// imessage, voice) have NO identity gate in their executors, so nothing else stops
-// the Healer from mailing/texting a real person on the owner's channels. Derived
-// from the SAME sensei-policy set the Trainer denies from so the two cannot drift:
-// a FUTURE comms tool is denied by construction (add it to sensei-policy.ts and
-// this boot refresh picks it up). The rest of the safety boundary is unchanged:
-// the destructive-action approval gate (destructive-gate.ts) holds the Healer's
-// rm/dd/truncate AND, per FU-4, its writes to the owner's identity/config files;
-// the always-on global write/exec denies (SOUL/secrets) and the non-primary
-// PRIMARY_ONLY_TOOLS strip still apply. Refreshed on the ensure/reactivate/create
-// paths below every boot, like the Trainer refreshes both columns.
+// The Healer keeps every permission the primary has for write/exec work, with ONE deny-list carve-out: the shared
+// SEND_TO_PEOPLE set (comms tools with no identity gate in their executors), derived from the same sensei-policy
+// set the Trainer denies from so a future comms tool is denied by construction. An empty allow keeps everything
+// the manifest permits. The destructive-action gate (destructive-gate.ts) still holds rm/dd/truncate and writes
+// to the owner's identity/config files; the global write/exec denies and PRIMARY_ONLY_TOOLS strip still apply.
+// Written on the create and reactivate paths only.
 const HEALER_TOOLS_POLICY = JSON.stringify({ allow: [], deny: [...SEND_TO_PEOPLE] });
 
 const HEALER_PERMISSIONS = JSON.stringify({
@@ -313,24 +256,12 @@ const HEALER_PERMISSIONS = JSON.stringify({
   system_control: [],
 });
 
-// ── v2.3.19 (error-handling-spec Phase 3), Healer self-watchdog ──
-//
-// The pre-spec system had a chicken-and-egg problem: if the Healer
-// itself was injured, onAgentInjured exited early ("can't heal myself")
-// and just iMessaged the user. Other agents that errored during the
-// Healer outage stayed stuck because nothing else could deal with them.
-//
-// This watchdog runs every 5 minutes and, bypassing onAgentInjured's
-// self-skip, applies the existing Tier 1 auto-fix logic to the Healer
-// directly. If the Healer is stuck in 'error', 'paused', or has been
-// 'working' too long, the watchdog resets it to idle. The Healer can
-// then be re-engaged by the next normal cycle or any new injury.
-//
-// This is engine-level, deterministic, no LLM cost.
+// ── Healer self-watchdog ──
+// Bypasses onAgentInjured's self-skip (the Healer cannot heal itself) and applies the Tier 1 auto-fix logic to
+// the Healer directly every 5 minutes: error, paused or working too long resets it to idle. No LLM cost.
 
 const HEALER_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
-// PHASE-6 T10: read from the ONE stuck-threshold table, where its reason sits beside the
-// engine reaper's 75 minutes it deliberately disagrees with.
+// From the one stuck-threshold table, which explains why it differs from the engine reaper's 75 minutes.
 let healerWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 
 export function runHealerSelfWatchdog(): void {
@@ -341,7 +272,7 @@ export function runHealerSelfWatchdog(): void {
     const row = db
       .prepare('SELECT id, name, status, updated_at, last_error FROM agents WHERE id = ?')
       .get(healerId) as { id: string; name: string; status: string; updated_at: string; last_error: string | null } | undefined;
-    ownerConditionsOnHealerSeen(row?.status ?? null); // t138 r4: back, or healthy, ends the owner's card
+    ownerConditionsOnHealerSeen(row?.status ?? null); // back, or healthy, ends the owner's card
     if (!row) return; // Healer doesn't exist yet; ensureHealerAgentRunning will create it
 
     let shouldReset = false;
@@ -350,20 +281,15 @@ export function runHealerSelfWatchdog(): void {
     if (row.status === 'error') {
       shouldReset = true;
       reason = 'in error status';
-    } else if (row.status === 'paused' && !/^\[(?:budget_stop|no_model_fits)\]/.test(row.last_error ?? '')) {   // t148: a parked Healer is not reset by a clock
+    } else if (row.status === 'paused' && !/^\[(?:budget_stop|no_model_fits)\]/.test(row.last_error ?? '')) {   // a parked Healer is not reset by a clock
       shouldReset = true;
       reason = 'in paused status';
     } else if (row.status === 'working') {
       const updatedMs = new Date(row.updated_at.replace(' ', 'T') + 'Z').getTime();
       if (Date.now() - updatedMs > HEALER_WORKING_STUCK_MINUTES * 60 * 1000) {
-        // T81d (NO-DOOMED-DIALS, census row 15): never reap a run THIS process knows is live.
-        // `activeRuns` is the in-memory concurrency guard; flipping the Healer's own row to
-        // 'idle' out from under a running cycle lets a new inbound wake start a SECOND
-        // concurrent Healer cycle on the same context. A row can be stale by this clock
-        // (>HEALER_WORKING_STUCK_MINUTES) yet still be an active run here only if the heartbeat
-        // also stalled, which means the cycle really is wedged in THIS process — so skip it and
-        // let the process-level watchdog (`recoverStuckAgents`, census row 19, which this guard
-        // copies verbatim) handle it instead of resetting a status the cycle is still writing to.
+        // Never reap a run THIS process knows is live: resetting the row under a running cycle lets a new wake
+        // start a SECOND concurrent cycle. A stale row that is still an active run means the cycle is wedged
+        // here, so leave it to recoverStuckAgents.
         if (activeRuns.has(healerId)) {
           logger.warn('Healer self-watchdog: row is stale but run is live in-process, not resetting', {
             healerId, healerName: row.name,
@@ -376,17 +302,13 @@ export function runHealerSelfWatchdog(): void {
     }
 
     if (shouldReset) {
-      // SWEEP CORE-2 item 2: through the ONE writer. Same column, same value; the broadcast
-      // stays here, in the order this site already emitted it.
       writeAgentStatus(healerId, 'idle');
       broadcast({ type: 'agent:status', agentId: healerId, status: 'idle' });
       logger.warn('Healer self-watchdog reset Healer to idle', {
         healerId, healerName: row.name, prevStatus: row.status, reason,
       });
-      // Also clear the per-agent backoff state for the Healer if any
-      // (defensive, under normal flow this won't be set since the
-      // Healer's onAgentInjured short-circuits, but if a future code path
-      // changes that this keeps us safe).
+      // Also clear the Healer's per-agent backoff state (defensive: normally unset, since the Healer's
+      // onAgentInjured short-circuits).
       import('./injury-recovery.js').then((m) => {
         try { m.onAgentRecovered(healerId); } catch { /* */ }
       }).catch(() => { /* best effort */ });
@@ -403,8 +325,7 @@ export function startHealerSelfWatchdog(): void {
   healerWatchdogTimer = setInterval(runHealerSelfWatchdog, HEALER_WATCHDOG_INTERVAL_MS);
   // Also run once on startup so any state left over from a crash gets cleaned.
   setTimeout(runHealerSelfWatchdog, 30_000);
-  // One-shot prune of stale archives at startup, catches accumulated
-  // logs even if no new cycle ran in the retention window.
+  // One-shot prune of stale archives at startup, even if no cycle ran within the retention window.
   setTimeout(pruneOldArchives, 60_000);
   logger.info('Healer self-watchdog started', { intervalMs: HEALER_WATCHDOG_INTERVAL_MS });
 }
@@ -426,9 +347,7 @@ export function ensureHealerAgentRunning(): void {
 
   if (!primaryReady('Healer', primaryId, () => ensureHealerAgentRunning())) return;
 
-  // (The name-keyed clean-up of "old temporary Healer agents" that stood here is deleted: it ended any
-  // agent carrying the Healer's name, which is an owner's agent as often as a clone. The Healer is the row
-  // with `healer_agent_id`; nothing is ended because of what it is called.)
+  // The Healer is identified by `healer_agent_id`, never by its name (an owner's agent can carry that name).
 
   const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as
     | { id: string; status: string }
@@ -436,22 +355,10 @@ export function ensureHealerAgentRunning(): void {
 
   if (existing && existing.status !== 'terminated') {
     logger.info('Healer agent already running', { status: existing.status });
-    // ⟨RETIRED — UX-ACCESS A1, owner ruling 3⟩ The per-boot rewrite of this
-    // agent's `tools_policy` + `permissions` stood here. Census C8: it was one of
-    // four sites that overwrote a live row on EVERY restart, which meant an owner
-    // edit to this agent was silently reverted — the exact defect ruling 3 names
-    // ("the boot rewriter retires so edits stop silently reverting").
-    //
-    // WHAT STILL HOLDS THE INVARIANT IT WAS PROTECTING. The frozen deny/allow list
-    // was never the real wall: a sensei that is not the primary now carries
-    // `channels.master = null` and no channel grant at all, so every tool on the
-    // build-checked `SEND_TO_PEOPLE` surface is refused AT THE DOOR by
-    // `mayUseChannel` — including one added after this boot, which a frozen list
-    // of names could never have covered. The declared grants are seeded once, from
-    // this row's own values, by `agent/access/materialize.ts`.
-    //
-    // The CREATE and REACTIVATE paths below still write the policy: those mint a
-    // row rather than overwrite a live one, so they revert nobody.
+    // No boot rewrite of tools_policy or permissions, so owner edits to a live row stay. The send-to-people tools
+    // are refused by mayUseChannel (a non-primary sensei has no channel grant), including ones added later; the
+    // declared grants are seeded once by agent/access/materialize.ts. The create and reactivate paths below do
+    // write the policy, since they mint a row rather than overwrite a live one.
     return;
   }
 
@@ -469,12 +376,8 @@ export function ensureHealerAgentRunning(): void {
 
   if (existing) {
     // Reactivate from terminated
-    // SWEEP CORE-2 item 2: the re-enrolment upsert kept its `status = 'idle'` in the same SET
-    // list as the row's identity columns — one of the five byte-shaped copies T10 named as a
-    // class and could not see with a one-line grep. The identity columns stay here (they are
-    // this module's business); the STATUS goes through the one writer. Both run inside ONE
-    // transaction, so the reactivation is still atomic: no reader can see a row that is
-    // renamed-but-terminated or terminated-but-renamed.
+    // Identity columns are updated here but the STATUS goes through the one writer, both in ONE transaction, so
+    // no reader sees a row that is renamed-but-terminated or terminated-but-renamed.
     db.transaction(() => {
       db.prepare(`
         UPDATE agents SET
@@ -505,8 +408,7 @@ export function ensureHealerAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(healerId, healerName, modelId, primaryId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY);
 
-    // (No soul row is written here any more — see the W42 tombstone above. The identity is
-    // seeded into `~/.dojo/prompts/HEALER-SOUL.md` on the first read, by the one door.)
+    // No soul row is written here: the identity is seeded into ~/.dojo/prompts/HEALER-SOUL.md on first read.
     logger.info('Healer agent created', { healerId, healerName });
   }
 }
@@ -526,35 +428,15 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     infoCount: report.infoCount,
   });
 
-  // Step 2: Sweep pending proposals. The owner rarely checks the Healer
-  // block, and many issues clear on their own (a transient provider
-  // failure, a stuck agent that restarted, a model the owner removed),
-  // so without a sweep those proposals pile up forever. But the sweep
-  // must NEVER make a live, still-relevant proposal vanish, that would
-  // gut the approval flow the owner deliberately kept as the consent
-  // lane for routine fixes.
-  //
-  // Decision rule, per pending proposal:
-  //   1. Age cap (backstop): if it is older than PROPOSAL_EXPIRY_DAYS,
-  //      close it as expired-unapproved. This is the ONLY thing that
-  //      ever closes a provenance-less proposal, and the ultimate
-  //      guarantee the table cannot grow without bound.
-  //   2. Issue-match (only with usable provenance): if it has an agent
-  //      scope and/or a diagnostic code, close it ONLY when the current
-  //      run shows the issue is gone:
-  //        - agent-scoped  -> gone iff the current run has NO anomaly of
-  //          ANY code for that agent (conservative: keep the proposal
-  //          alive while the agent still has any trouble).
-  //        - code-only     -> gone iff the current run has NO item with
-  //          that code.
-  //   3. Otherwise (no provenance, under the age cap): keep it pending.
-  //      It is never issue-matched, so it can never vanish on a false
-  //      match; it waits for the owner or, eventually, the age cap.
-  //
-  // The prior implementation matched on `category` (free text the model
-  // supplies) against diagnostic CODES, two disjoint domains, so
-  // stillPresent was essentially always false and a proposal was
-  // auto-resolved on the very next cycle. That is the bug this replaces.
+  // Step 2: Sweep pending proposals so ones whose issue cleared do not pile up, but NEVER make a live,
+  // still-relevant proposal vanish (the approval flow is the consent lane for routine fixes). Per proposal:
+  //   1. Age cap (backstop): older than PROPOSAL_EXPIRY_DAYS closes it as expired-unapproved; the only thing
+  //      that ever closes a provenance-less proposal.
+  //   2. Issue-match (only with usable provenance): close it ONLY when the current run shows the issue gone.
+  //      Agent-scoped: gone iff the run has NO anomaly of ANY code for that agent. Code-only: gone iff no item
+  //      has that code.
+  //   3. Otherwise keep it pending: with no provenance it is never issue-matched, so it cannot vanish on a
+  //      false match.
   let autoResolvedCount = 0;
   let expiredCount = 0;
   try {
@@ -574,18 +456,10 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         if (item.agentId) currentAgents.add(item.agentId);
       }
       for (const p of pending) {
-        // (0) D-B v2: a token-bearing proposal is an engine-HELD destructive
-        // consent, NOT a diagnostic anomaly. Its agent_id is the caller (the
-        // Healer), not a diagnostic scope, so issue-matching is meaningless and
-        // would wrongly close it whenever the Healer has no current anomaly.
-        // Lifecycle by lane:
-        //   - the critical TEXTED class (surface='imessage') expires on the
-        //     destructive-gate 60-minute clock with a loud owner notice;
-        //   - a quietly-queued Vitals consent gets the SAME 14-day age cap as a
-        //     routine proposal, closed here with a plain, non-error note (a quiet
-        //     Vitals drop, not an alert).
-        // Owner approval moves either out of 'pending'. Never issue-match a held
-        // call (structural marker, not text parsing).
+        // (0) A token-bearing proposal is an engine-HELD destructive consent, not a diagnostic anomaly: its agent_id
+        // is the caller (the Healer), so issue-matching would wrongly close it. The texted class (surface='imessage')
+        // expires on the destructive-gate clock; a quietly-queued Vitals consent gets the same age cap, closed with a
+        // plain non-error note.
         if (p.approval_token) {
           if (p.surface === 'imessage') continue; // destructive-gate owns this expiry
           if (typeof p.age_days === 'number' && p.age_days >= PROPOSAL_EXPIRY_DAYS) {
@@ -620,9 +494,8 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         if (!hasAgentScope && !hasCode) {
           continue; // (3) no provenance: never issue-matched, keep pending
         }
-        // Agent scope wins when present: a proposal about an agent stays
-        // live while that agent has ANY open anomaly. Code-only proposals
-        // (global, no agent) match on the exact code.
+        // Agent scope wins when present (the proposal stays live while that agent has ANY open anomaly);
+        // code-only proposals match on the exact code.
         const stillPresent = hasAgentScope
           ? currentAgents.has(p.agent_id as string)
           : currentCodes.has(code as string);
@@ -654,18 +527,10 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     autoFixCount = autoResult.fixCount;
   }
 
-  // Step 3: If there are warnings/critical items remaining, OR if there
-  // are approved-but-not-yet-applied proposals waiting, wake the permanent
-  // Healer agent. v2.3.19, pre-spec, the Healer only fired when the
-  // diagnostic found something to diagnose. If the owner approved a proposal
-  // but no NEW issues came up, the proposal sat forever waiting for
-  // Healer to execute it. Now any pending approval also triggers the
-  // cycle.
+  // Step 3: wake the permanent Healer when warnings/critical items remain OR approved-but-unapplied proposals
+  // wait (an approval with no new issue must still get executed).
   const remainingIssues = report.items.filter(i => i.severity !== 'info');
-  // FA-X7(b): only proposals still under the re-wake cap can trigger a wake.
-  // Once a proposal has been re-presented MAX_APPROVAL_REWAKES times without
-  // being applied it is considered stuck (the owner was told once), so it no
-  // longer counts here and stops waking the Healer.
+  // Only proposals still under the re-wake cap (MAX_APPROVAL_REWAKES) can trigger a wake; a stuck one no longer counts.
   const pendingApprovals = (() => {
     try {
       const row = getDb()
@@ -694,15 +559,8 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
       } else if (!healerState) {
         logger.warn('Healer agent not found after ensureHealerAgentRunning, skipping LLM trigger');
       } else {
-        // Check for approved proposals from the user. v2.3.19:
-        // applied_at filters out proposals you've already executed in a
-        // prior cycle, only the OUTSTANDING approvals show up here.
-        // After executing, you MUST call healer_mark_applied(proposal_id)
-        // to record the work, otherwise the proposal will show up
-        // again on the next cycle.
-        // FA-X7(b): exclude proposals already at the re-wake cap. They are
-        // stuck (the owner was notified once when they hit the cap), so they
-        // are not re-presented to the Healer.
+        // Approved and not yet applied (applied_at filters out earlier executions), and under the re-wake cap.
+        // After executing, the Healer MUST call healer_mark_applied(proposal_id) or it is shown again next cycle.
         const approved = db.prepare(`
           SELECT id, title, proposed_fix, fix_action, rewake_count, approval_token FROM healer_proposals
           WHERE status = 'approved' AND applied_at IS NULL AND rewake_count < ?
@@ -712,11 +570,8 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         if (approved.length > 0) {
           approvedSection = '\n\n═══ APPROVED PROPOSALS, execute these, then call healer_mark_applied(proposal_id) ═══\n' +
             approved.map((p) =>
-              // D-B step 2: a token-bearing proposal is a live destructive call the
-              // owner approved. The Healer carries it out by RE-RUNNING the exact
-              // same tool call; the engine lets it through once and records it as
-              // done automatically, so it must re-issue the action, not just
-              // acknowledge it.
+              // A token-bearing proposal is a live destructive call the owner approved: the Healer must RE-RUN
+              // the exact same tool call (the engine lets it through once), not just acknowledge it.
               p.approval_token
                 ? `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   The owner approved this sensitive action. Re-run this exact action now to carry it out: ${p.proposed_fix}`
                 : `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
@@ -724,12 +579,8 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
             '\n═══ END APPROVED ═══';
         }
 
-        // v2.3.19 (error-handling-spec Phase 3), Dreamer-pattern budget.
-        // Build the cycle message and enforce a hard ceiling on its
-        // length BEFORE delivering it. If it exceeds the cap, drop the
-        // lowest-priority sections (approved proposals are KEPT, user
-        // explicitly asked for those; report content gets trimmed first
-        // since collectors were already capped individually).
+        // Build the cycle message and enforce a hard length ceiling BEFORE delivering it: lowest-priority sections
+        // drop first (approved proposals are KEPT; the report is trimmed first, its collectors already capped).
         const buildResult = buildHealerCycleMessage({
           reportText: report.reportText,
           approvedSection,
@@ -738,9 +589,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         });
         const cycleMessage = buildResult.message;
 
-        // Telemetry: log the final composed prompt size. If it ever
-        // climbs past 80% of context, that's a Tier C signal, the
-        // collectors need further tightening. Surface via warning log.
+        // Log the final prompt size; at 80% or more of the ceiling the collectors need tightening.
         const promptCharLimit = Math.floor(
           buildResult.contextWindow * HEALER_BATCH_BUDGET_CAP_RATIO * CHARS_PER_TOKEN,
         );
@@ -791,13 +640,9 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         logger.info('Healer agent woken for cycle', { healerId });
         llmTriggered = true;
 
-        // FA-X7(b): this cycle re-presented each approved-but-unapplied
-        // proposal to the Healer, count it. When a proposal reaches the cap,
-        // stop re-waking on it (the `rewake_count < ?` filters above exclude
-        // it next cycle) and tell the primary agent ONCE that the approved fix
-        // is stuck so the owner can step in. Fires exactly once per proposal:
-        // `approved` only holds rows with rewake_count < cap, so `next` reaches
-        // the cap on a single transition.
+        // Count this re-presentation of each approved-but-unapplied proposal. At the cap the `rewake_count < ?`
+        // filters stop re-waking it and the primary agent is told ONCE the fix is stuck (`next` reaches the cap
+        // on a single transition).
         for (const p of approved) {
           const next = p.rewake_count + 1;
           db.prepare("UPDATE healer_proposals SET rewake_count = ? WHERE id = ?").run(next, p.id);
@@ -832,13 +677,9 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
   // Step 4: Append to the healer log file
   appendToHealerLog(report, autoFixCount);
 
-  // Step 5 (owner request): ONE daily heartbeat to the primary, a positive "all systems
-  // operational" when healthy, or a brief notice of what needs attention when not. This is
-  // the Healer's single daily message; real-time injury alerts (runtime.notifyPrimaryOfInjury)
-  // fire on the spot for immediate breakage and are separate. Re-compile AFTER the auto-fixes
-  // so we report the true remaining state, not the pre-fix snapshot (don't flag a problem the
-  // auto-fix just resolved). This runs on the daily scheduled cycle; a manual dashboard-
-  // triggered cycle also posts (a status in response to an explicit run is expected).
+  // Step 5: ONE daily heartbeat to the primary: "all systems operational" or what needs attention (real-time
+  // injury alerts are separate, runtime.notifyPrimaryOfInjury). Re-compiled AFTER the auto-fixes so it reports
+  // the true remaining state. A manual dashboard-triggered cycle also posts, since a reply to a run is expected.
   try {
     const finalReport = compileDiagnosticReport();
     const problems = finalReport.items.filter((i) => i.severity === 'critical' || i.severity === 'warning');
@@ -916,16 +757,14 @@ export function scheduleHealingCycle(): void {
 }
 
 // ── Healer Log File ──
-// Appends a plain-text summary of each cycle to a running log file.
-// This log accumulates until the user sends a Healer Report, at which
-// point it gets archived and a new log starts.
+// Accumulates until the user sends a Healer Report, then it is archived and a new log starts.
 
 const HEALER_LOG_PATH = path.join(homeDir(), '.dojo', 'logs', 'healer-report.log');
 const HEALER_ARCHIVE_DIR = path.join(homeDir(), '.dojo', 'logs', 'healer-archives');
 
 /**
- * Map an agent name to a generic role label for external reports.
- * Reports go to the dev team who don't know the user's agent names.
+ * Map an agent name to a generic role label for external reports (the dev team does not know the user's
+ * agent names).
  */
 function agentRoleLabel(agentId?: string, agentName?: string): string {
   if (!agentId) return 'unknown agent';
@@ -1009,9 +848,7 @@ function getAgentNameById(agentId: string): string | null {
   } catch { return null; }
 }
 
-/**
- * Read the current healer log file content.
- */
+/** Read the current healer log file content. */
 export function getHealerLogContent(): string | null {
   try {
     if (!fs.existsSync(HEALER_LOG_PATH)) return null;
@@ -1020,15 +857,8 @@ export function getHealerLogContent(): string | null {
   } catch { return null; }
 }
 
-/**
- * Archive the current healer log and start a new one.
- * Returns the archive filename.
- */
-// v2.3.19 (error-handling-spec Phase 3 cleanup), archive retention.
-// Without pruning, healer-report-*.log files accumulate forever in
-// ~/.dojo/logs/healer-archives/. 30 days is generous, if you need
-// older diagnostics they're in the structured DB tables anyway
-// (healer_diagnostics, healer_actions).
+// Archive retention: 30 days of healer-report-*.log in ~/.dojo/logs/healer-archives/; older diagnostics remain
+// in the structured tables (healer_diagnostics, healer_actions).
 const ARCHIVE_RETENTION_DAYS = 30;
 
 function pruneOldArchives(): void {
@@ -1061,6 +891,7 @@ function pruneOldArchives(): void {
   }
 }
 
+/** Archive the current healer log and start a new one; returns the archive filename. */
 export function archiveHealerLog(): string | null {
   try {
     if (!fs.existsSync(HEALER_LOG_PATH)) return null;
@@ -1076,8 +907,7 @@ export function archiveHealerLog(): string | null {
     fs.renameSync(HEALER_LOG_PATH, archivePath);
     logger.info('Healer log archived', { archivePath });
 
-    // Prune anything older than the retention window. Best-effort, 
-    // failures here don't fail the archive operation.
+    // Prune anything older than the retention window; failures here do not fail the archive.
     pruneOldArchives();
 
     return archiveName;
@@ -1089,9 +919,7 @@ export function archiveHealerLog(): string | null {
   }
 }
 
-/**
- * Send the healer report via email (Gmail or Outlook) and archive the log.
- */
+/** Send the healer report via email (Gmail or Outlook) and archive the log. */
 export async function sendHealerReport(): Promise<{ ok: boolean; error?: string }> {
   const logContent = getHealerLogContent();
   if (!logContent) {
@@ -1116,11 +944,8 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
   const modelList = (db.prepare("SELECT name, api_model_id FROM models WHERE is_enabled = 1").all() as Array<{ name: string; api_model_id: string }>).map(m => `${m.name} (${m.api_model_id})`).join(', ');
   const platform = `${os.platform()} ${os.arch()}, Node ${process.version}, ${os.cpus()[0]?.model ?? 'unknown CPU'}, ${Math.round(os.totalmem() / (1024 * 1024 * 1024))}GB RAM`;
 
-  // Recipient is pulled from config (`healer_report_recipient`). Pre-fix
-  // this was hardcoded to the platform author's address, which meant
-  // every install's "Send Healer Report" button silently emailed
-  // diagnostics off-host. If no recipient is configured, refuse and
-  // surface a friendly error so the user knows to set one in Settings.
+  // The recipient comes from config (`healer_report_recipient`); with none configured, refuse and surface a
+  // friendly error so the user sets one in Settings.
   const recipientRow = db.prepare("SELECT value FROM config WHERE key = 'healer_report_recipient'").get() as { value: string } | undefined;
   const recipient = recipientRow?.value?.trim();
   if (!recipient) {
