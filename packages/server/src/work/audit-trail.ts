@@ -1,28 +1,16 @@
-// The audit trail as a projection over the spine.  PHASE-2 T10G (RULING 10).
-//
-// The tracker's history used to be its own table, `task_log`. Migration `146` absorbed it and
-// dropped it; this module is where the reading now happens, under `work/` beside the tables it
-// reads. `tracker/task-log.ts` is the seam the 57 writers and 3 readers still call — it holds
-// the vocabulary and the rendering; this holds the SQL.
-//
-// The trail is ONE event kind, `audit`, with the entry's own kind inside the payload. That is
-// the load-bearing decision and the migration's header carries the full argument: the trail's
-// entry kinds collide BY NAME with spine event kinds (`transition`, `poke`,
-// `user_verdict_request`), so an audit line must never answer a predicate over spine events.
-// `kind='audit'` is read here and nowhere else, which is what makes that safe.
+// The audit trail: a projection over the work spine, read here only; `tracker/task-log.ts` calls it for the SQL.
+// The trail is one event kind, `audit`, with the entry kind inside the payload: entry kinds collide by
+// name with spine kinds (`transition`, `poke`, `user_verdict_request`), so an audit line must never
+// answer a predicate over spine events.
 
 import { getDb } from '../db/connection.js';
 import type { WorkEventKind } from './event-kinds.js';
 import { appendWorkEvent } from './store.js';
 import { STATE_TO_STATUS_SQL, msToText } from './tracker-view.js';
 
-/** The spine event kind the trail lives on. Read by this module only — see the header.
- *  `satisfies` (T4-SCHEMA) binds it to the declared list in `event-kinds.ts` while keeping
- *  the literal type its readers rely on. */
 export const AUDIT_KIND = 'audit' as const satisfies WorkEventKind;
 
-/** The spine's own verdict events. `upholdClaim`/`rejectClaim` write one of these beside the
- *  `adjudications` row, so the trail renders the event and never a second copy of a verdict. */
+/** The spine's own verdict events; the trail renders these, never a second copy of a verdict. */
 const VERDICT_KINDS = ['claim_upheld', 'claim_rejected'] as const;
 
 export interface TrailRow {
@@ -49,14 +37,11 @@ export interface AuditEntryFields {
   evidenceJson?: string | null;
 }
 
-/** Does this work row exist? The old table's FK swallowed the violation (its writer caught
- *  everything), so an entry against a vanished row was silently dropped; this makes the same
- *  outcome explicit, with a reason the caller can log. */
+/** Does this work row exist? Lets a caller skip an entry for a vanished row and log why. */
 export function workExists(workId: string): boolean {
   return getDb().prepare('SELECT 1 FROM work WHERE id = ?').get(workId) !== undefined;
 }
 
-/** Append one trail entry. Returns the spine event's rowid. */
 export function appendAuditEntry(workId: string, actor: string, f: AuditEntryFields): number {
   return appendWorkEvent(workId, AUDIT_KIND, actor, {
     entry_kind: f.entryKind,
@@ -73,22 +58,10 @@ export function appendAuditEntry(workId: string, actor: string, f: AuditEntryFie
 export const LADDER_HELD_ENTRY = 'ladder_held';
 
 /**
- * THE TRAIL, as one ordered projection over three spine sources:
- *
- *   (a) the trail's own `audit` events — the content with no spine counterpart;
- *   (b) the spine's `transition` events — the state changes, translated into TRACKER
- *       vocabulary on the way out;
- *   (c) the spine's verdict events — the PM's blessings and throw-backs.
- *
- * THE VOCABULARY TRANSLATION IS RULING 10's ONE OWNER-VISIBLE DECISION. The spine stores
- * `work.state` (`open|claimed|done|failed|abandoned`); this history has always rendered
- * TRACKER status (`active|in_progress|complete|fallen|cancelled`). Absorbing without
- * translating would have changed the one history the owner reads. `STATE_TO_STATUS_SQL` is
- * T2's own mapping, already used by `taskRowColumns`, so this is a re-point of an existing
- * mapping and not an invention.
- *
- * `created_at` converts back through `msToText`, so a rendered line keeps the exact
- * `YYYY-MM-DD HH:MM:SS` shape the panel has always shown.
+ * The trail as one ordered projection over spine sources: the trail's own `audit` events, the
+ * `transition` events, the verdict events, a pending close request, and hand-in/decision/proof events.
+ * The spine stores `work.state`; the panel renders tracker status, so `STATE_TO_STATUS_SQL` translates.
+ * `created_at` goes back through `msToText` so a line keeps the `YYYY-MM-DD HH:MM:SS` shape.
  */
 export function readAuditTrail(
   workId: string,
@@ -99,9 +72,8 @@ export function readAuditTrail(
   const kinds = opts?.kinds ?? null;
   const jx = (f: string): string => `json_extract(e.payload, '$.${f}')`;
 
-  // K35: what the PM looked at rides under its verdict on the card. A close the PM moved itself keeps
-  // the record as JSON in the transition's evidence_ref; a throw-back keeps it in the claim event.
-  // An uphold's own note already says it ("PM validated: ..."), so only these two add a line.
+  // What the PM looked at rides under its verdict: a PM-moved close keeps it as JSON in the transition's
+  // evidence_ref, a throw-back in the claim event. An uphold's own note already says it.
   const underNote = (note: string, summary: string): string =>
     `CASE WHEN ${summary} IS NOT NULL THEN coalesce(${note} || char(10), '') || 'Looked at: ' || ${summary} ELSE ${note} END`;
   const movedSummary = `CASE WHEN json_valid(${jx('evidence_ref')}) THEN json_extract(${jx('evidence_ref')}, '$.summary') END`;
@@ -126,21 +98,13 @@ export function readAuditTrail(
             NULL, NULL, ${underNote(jx('note'), rejectSummary)}, NULL, e.created_at
        FROM work_events e
       WHERE e.work_id = ? AND e.kind IN (${VERDICT_KINDS.map((k) => `'${k}'`).join(', ')})`,
-    // ── (d) UX-REPAIR T40 — THE PENDING CLOSE IS A FACT THE OWNER CAN SEE. ──
-    // A worker's close is Key 1 and ONLY Key 1: `validation_requested` lands and the row
-    // does not move (migration 139 / RULING 1). With no branch for that kind, the three
-    // branches above had NOTHING to show for the entire pending window — so the owner's
-    // card read "no entries yet" whether the close had been filed and ignored, or never
-    // filed at all. Those are different failures and he could not tell them apart.
-    //
-    // This branch RENDERS an existing event. It introduces no event kind, writes nothing,
-    // and touches no predicate: `handedInExpr` is untouched. 2d: old rows only; a hand-in is a `handed_in` event.
+    // A worker's close files `validation_requested` and the row does not move; this renders that event so
+    // the card shows the pending close. It adds no event kind and writes nothing.
     `SELECT e.id, e.work_id, e.actor, 'validation_requested',
             ${STATE_TO_STATUS_SQL(jx('from'))}, ${STATE_TO_STATUS_SQL(jx('requested_state'))},
             ${jx('reason')}, NULL, 'close requested — awaiting validation', NULL, e.created_at
        FROM work_events e
       WHERE e.work_id = ? AND e.kind = 'validation_requested'`,
-    // A hand-in (outcome, note), a decision (verdict, reason, and who relayed the owner's quote) and a proof item opened.
     `SELECT e.id, e.work_id, e.actor, e.kind, NULL, NULL, CASE e.kind WHEN 'handed_in' THEN ${jx('note')} ELSE ${jx('reason')} END,
             CASE e.kind WHEN 'proof_opened' THEN 'opened proof item ' || ${jx('index')} WHEN 'handed_in' THEN ${jx('outcome')} ELSE ${jx('verdict')} END,
             CASE WHEN ${jx('relayedBy')} IS NOT NULL THEN 'relayed by ' || ${jx('relayedBy')} || ', quoting the owner: "' || ${jx('quote')} || '"' END, NULL, e.created_at
