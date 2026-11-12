@@ -2,13 +2,9 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import type { ChildRunFailure } from '../child-idle-bound.js';
 
-// THE COPY MUST NOT OUTLIVE US. `cp -R` on a node_modules takes minutes, and a kill that
-// lands inside one used to reparent the child: it kept writing into the staging tree while
-// the NEXT start's clean-up deleted that same tree under it. So the copy stays in OUR process
-// group (NOT `detached`): launchd ends an overrunning job with a SIGKILL to its whole group,
-// and no `exit` hook runs on a SIGKILL, so group membership is what takes the copy down with
-// the server. The `exit` hook covers the ordinary exit. `cp` has no grandchildren, so killing
-// the child is complete. `unref()` is deliberately NOT called, and there is no timer.
+// The copy stays in OUR process group (not `detached`) and is killed on `exit`, so a launchd SIGKILL of
+// the group takes it down too: an orphaned `cp` would keep writing into a staging tree the next
+// start's clean-up deletes. `cp` has no grandchildren; `unref()` is deliberately not called.
 function copyTree(argv: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('cp', argv);
@@ -18,8 +14,6 @@ function copyTree(argv: string[]): Promise<void> {
     let stderr = '';
     child.stderr?.setEncoding('utf-8');
     child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
-    // Shaped like `ChildRunFailure` (child-idle-bound.ts): `childFailureText` and
-    // `isOutOfSpaceError` at the call site read `message`/`stderr`/`code` off it.
     child.once('error', (err) => settled(() => reject({
       stdout: '', stderr, code: (err as NodeJS.ErrnoException).code, message: err.message,
     } satisfies ChildRunFailure)));

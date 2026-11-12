@@ -1,56 +1,12 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE UPDATE CHECKS DISK SPACE AND TELLS THE USER — owner-requested 2026-08-06, landed by
-// SWEEP CORE-2 item 3 (SWEEP-F's INBOUND). His words:
-//
-//   *"add a disk space check to the update mechanism so we can give the user a notification
-//    either before the update starts, or if it fails, when they don't have enough disk space."*
-//
-// ── THE GAP THIS CLOSES, MEASURED ───────────────────────────────────────────────────────
-// SWEEP-A built the after-the-fact half. `db/migration-backup.ts` refuses the migration chain
-// when free disk is under 2x the live database, and that refusal is MEASURED to be protective:
-// with nothing applied, the watchdog's `decideAutoRollback` returns `rollback` rather than
-// `escalate` (`task-RESTORE-PATH-report.md`, three recorded verdicts). RESTORE-PATH also made
-// the OUTCOME loud — `config.migration_backup_last`, `GET /api/update/db-backup`, and the
-// Update tab's `DataBackupNotice`.
-//
-// What did not exist is the check BEFORE the owner commits. `applyUpdate` measured no free
-// space at all before `curl` -> `unzip` -> `cp -R` of a 100-200 MB tree, in a module whose own
-// header records that these copies "have been reported to fill mac mini disks". The sequence a
-// short box actually got was: download, extract, copy, swap, restart — and only then a refusal,
-// at a moment when the dashboard is down and the message is a line in a log file.
-//
-// ── THE NEED IS DERIVED. EVERY COMPONENT, FROM A MEASUREMENT OR THE RELEASE ITSELF ──────
-// The owner's requirement says "both derived, never guessed", and there are four things that
-// land on this disk during an apply. Each is measured, none is a constant:
-//
-//   1. THE DATABASE BACKUP        `MIGRATION_BACKUP_FREE_DISK_MULTIPLE` x (db + wal + shm).
-//                                 The multiple is IMPORTED from the module that enforces it,
-//                                 so the pre-flight cannot promise room the chain then refuses.
-//                                 The WAL and SHM are in the footprint because a busy box
-//                                 carries recent writes there until the next checkpoint.
-//   2. THE DOWNLOADED ZIP         the release asset's OWN `size`, from the GitHub metadata the
-//                                 update check already holds. Not an estimate of it.
-//   3. THE EXTRACTED TREE         `unzip` writes it beside the zip. Its size is not knowable
-//                                 before extraction, so it is taken as the size of the tree
-//                                 ALREADY INSTALLED on this box — a real measurement of the
-//                                 same artifact one version back, which is the closest honest
-//                                 number available and is stated as such rather than guessed at.
-//   4. THE STAGED DEPENDENCIES    the measured tree again (t197): node_modules is cloned into
-//                                 the staged tree, counted at full size as not every volume can
-//                                 clone. The old tree becomes the backup by rename, at no cost.
-//
-// ⚠ WHAT THIS DELIBERATELY DOES NOT DO: model the pruning along the way (`MAX_BACKUPS_TO_KEEP
-// = 2`, the work-dir cleanup). Those FREE space, so ignoring them errs the only allowed way.
-// Saying "you may be short" and being wrong costs the owner a look at his disk; saying "you
-// have room" and being wrong costs him a failed update.
-//
-// ── AND IT MUST NOT INVENT A NO ─────────────────────────────────────────────────────────
-// When the volume cannot be measured (`statfs` unavailable on the platform, an exotic mount),
-// the answer is "we could not tell", and the update proceeds. That is the convention
-// `db/migration-backup.ts:155` and `gateway/routes/migration.ts:147` both already keep, and it
-// is the right one: a platform that cannot answer the question has not earned the right to
-// block on it. The downstream refusal still stands as the real net.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Before an update downloads anything, this measures what it will put on the disk and refuses with a
+// plain-language message when the volume is short. Every component of the need is measured:
+// the database backup (`MIGRATION_BACKUP_FREE_DISK_MULTIPLE` x db+wal+shm, imported so this cannot
+// promise room the migration chain then refuses), the zip (its published size), and the extracted
+// tree plus the staged dependency copy (each the size of the installed tree, since the extracted size
+// is unknowable beforehand and not every volume can clone). Pruning of old backups and the work dir
+// is not modelled: it frees space, so ignoring it errs the safe way. A volume that cannot be measured
+// answers "could not tell" and the update proceeds (as `db/migration-backup.ts` and
+// `gateway/routes/migration.ts` do); the migration chain's own refusal remains the net.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -69,28 +25,20 @@ export interface UpdateDiskNeed {
   ok: boolean;
   /** True when free space was actually read. False means "we could not tell". */
   measured: boolean;
-  /** Free bytes on the volume holding the data directory, or null when unmeasurable. */
   freeBytes: number | null;
-  /** The live database footprint: main + WAL + SHM. */
   dbBytes: number;
-  /** `dbBytes` x the multiple the migration chain enforces. */
   backupNeedBytes: number;
-  /** The release artifact's own size, from its GitHub metadata. */
   artifactBytes: number;
-  /** The installed platform tree, measured on this disk. */
   platformBytes: number;
-  /** Everything that lands on the disk during one apply. */
   totalNeedBytes: number;
-  /** How much more is needed. Zero when there is room, or when nothing could be measured. */
   shortfallBytes: number;
 }
 
-/** Bytes of one file, or 0 if it is not there. */
 function fileSize(p: string): number {
   try { return fs.statSync(p).size; } catch { return 0; }
 }
 
-/** Bytes of a directory tree. Symlinks are not followed — the `cp -R` copies the link. */
+/** Bytes of a directory tree. Symlinks are not followed (the `cp -R` copies the link). */
 function treeSize(dir: string): number {
   let total = 0;
   const stack = [dir];
@@ -109,30 +57,15 @@ function treeSize(dir: string): number {
   return total;
 }
 
-/**
- * A byte count a person can read.
- *
- * SCALE-AWARE on purpose: `migration-backup.ts` prints GB unconditionally, which reads as
- * "0.03 GB" on a 31 MB database — a number that tells the owner nothing about the size of his
- * problem. GB is right for the disk-sized quantities and MB for the file-sized ones, and
- * choosing per number is the difference between a sentence he can act on and one he skims.
- */
+/** GB for disk-sized numbers, MB for file-sized ones, so a 31 MB database never reads as "0.03 GB". */
 export function readableBytes(bytes: number): string {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${Math.round(bytes / 1e6)} MB`;
 }
 
-/**
- * Measure what one update needs against what this box has.
- *
- * Pure with respect to the world it is handed: `dbPath` and `platformDir` are parameters so a
- * constrained-volume rehearsal (and the unit suite) can point it at a body of a known size.
- */
+/** Measure what one update needs against this box; the paths are parameters so tests can use known sizes. */
 export function measureUpdateDiskNeed(input: {
-  /** The release asset's own size, in bytes, from its GitHub metadata. */
   artifactBytes: number;
-  /** The live database file. Defaults to the running box's. */
   dbPath?: string;
-  /** The installed platform tree. Defaults to the running box's. */
   platformDir?: string;
 }): UpdateDiskNeed {
   const dbPath = input.dbPath ?? path.join(homeDir(), '.dojo', 'data', 'dojo.db');
@@ -142,7 +75,6 @@ export function measureUpdateDiskNeed(input: {
   const backupNeedBytes = dbBytes * MIGRATION_BACKUP_FREE_DISK_MULTIPLE;
   const platformBytes = treeSize(platformDir);
   const artifactBytes = Math.max(0, input.artifactBytes);
-  // zip + extracted tree + the staged dependency copy + the database snapshot.
   const totalNeedBytes = backupNeedBytes + artifactBytes + platformBytes * 2;
 
   let freeBytes: number | null = null;
@@ -164,13 +96,7 @@ export function measureUpdateDiskNeed(input: {
   };
 }
 
-/**
- * What to tell the owner, in his own language.
- *
- * Deliberately shaped like `migration-backup.ts`'s `refusalMessage`: what is wrong, what it
- * costs, and what to do — because the two messages describe the same disk and he should not
- * have to reconcile two vocabularies for one problem.
- */
+/** The owner's message; same words and shape as migration-backup.ts `refusalMessage` (same disk). */
 export function describeUpdateDiskShortfall(need: UpdateDiskNeed): string {
   if (need.ok) return '';
   return [
@@ -188,12 +114,8 @@ export function describeUpdateDiskShortfall(need: UpdateDiskNeed): string {
 }
 
 /**
- * The pre-flight's verdict on whether this update may proceed.
- *
- * Returns the refusal text, or `null` to proceed. The override is the SAME one the migration
- * chain honours — one permission, not two — and it is PEEKED at rather than consumed: the
- * one-shot file exists for the chain that runs after the restart, and a pre-flight that ate it
- * would wave the download through and then have the chain refuse anyway.
+ * The refusal text, or `null` to proceed. The migration chain's override is honoured and only peeked
+ * at, never consumed: the chain that runs after the restart still needs it.
  */
 export function updateDiskRefusal(
   need: UpdateDiskNeed, opts?: { dataDir?: string },
@@ -216,21 +138,10 @@ export function updateDiskRefusal(
   ].join('\n');
 }
 
-/**
- * Did this failure happen because the disk filled up?
- *
- * The update shells out to `curl`, `unzip`, `cp` and `rsync`, so the evidence arrives in three
- * different shapes: an `ENOSPC` code from Node's own fs calls, the POSIX sentence those tools
- * print, and `unzip`'s own wording. All three are the same fact, and the owner is entitled to
- * be told the fact rather than the shape.
- *
- * The negative control is the point of the narrowness: a 404 from GitHub must NOT be
- * relabelled a disk problem, because sending someone to clear space over a network error is a
- * worse failure than the generic message it replaced.
- */
+/** Did the disk fill up? ENOSPC, the POSIX message or unzip's wording; never a plain network error. */
 export function isOutOfSpaceError(err: unknown): boolean {
   if ((err as { code?: string } | null)?.code === 'ENOSPC') return true;
-  // t219: a child's failure is a plain object (stdout, stderr, exit code), not an Error.
+  // A child's failure is a plain object (stdout, stderr, exit code), not an Error.
   return /no space left on device|ENOSPC|disk full|write error \(disk full/i.test(childFailureEvidence(err));
 }
 

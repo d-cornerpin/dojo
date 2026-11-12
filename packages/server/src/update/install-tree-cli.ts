@@ -1,16 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// `deploy/install.sh`'s door to the ONE installer (t197, v3.4 F2).
-//
+// `deploy/install.sh`'s door to the one installer: it stages the unpacked package beside the live tree
+// and switches it in, so a cut-off reinstall leaves Dojo wholly old or wholly new.
 //   node <package>/platform/packages/server/dist/update/install-tree-cli.js <package>/platform
-//
-// The installer script used to `rsync --delete` the package over `~/.dojo/platform` and run
-// `npm ci` in the live tree: the same in-place shape the in-app update had, in a third copy.
-// It now stages the package beside the live tree and switches it in with the same two renames,
-// so a cut-off reinstall leaves Dojo wholly old or wholly new, exactly like an update.
-//
-// Runs from the UNPACKED package, which has no node_modules: its imports are Node built-ins
-// and this package's own files only (see the header of `install-tree.ts`).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Imports only Node built-ins and this package's own files: the unpacked package has no node_modules.
 import path from 'node:path';
 import { homeDir } from '../home.js';
 import { installPlatformTree, runNpmInstall, treeVersion, stagePackageCopy, discardWorkDir } from './install-tree.js';

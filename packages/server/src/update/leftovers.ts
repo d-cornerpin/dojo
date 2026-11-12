@@ -5,20 +5,14 @@ import { deadInstallWorkDirs, pidAlive, INSTALL_CEILING_MS } from './install-tre
 
 const logger = createLogger('update-leftovers');
 
-/** Temp files the marker writer leaves when a kill lands between its temp write and its
- *  rename (`update-state.ts`'s `tempPath`). The record itself and its `.lock` cannot match. */
+/** Temp files the marker writer leaves when killed between its temp write and rename (`update-state.ts`). */
 const UPDATE_STATE_TMP = /^update-state\.json\.(\d+)\.(?:.+\.)?tmp$/;
 
-/** A work dir named `<prefix><pid>-<started ms>` outlived one whole install attempt. */
+/** Older than one whole install attempt (the dir name ends in its start time in ms). */
 const pastOneAttempt = (dir: string, now: number): boolean =>
   !(now - Number(path.basename(dir).split('-').pop()) < INSTALL_CEILING_MS);
 
-/**
- * Every start: remove what a killed update left behind. A work dir whose installer is gone and
- * that is older than one install attempt (its copy ran in the installer's process group, so it
- * died with it), and a marker temp file whose writer is gone. A removal that fails is logged and
- * tried again at the next start; nothing here holds boot up.
- */
+/** Every start: remove what a killed update left behind; a failed removal is retried at the next start. */
 export async function cleanUpdateLeftovers(dojoDir: string, now = Date.now()): Promise<{ deleted: string[]; failed: string[] }> {
   let tmps: string[] = [];
   try {

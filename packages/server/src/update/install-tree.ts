@@ -1,18 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE ONE WAY A PLATFORM TREE BECOMES LIVE (t197, v3.4 F2; owner ruling 2026-08-30: an
-// update never fails, and never leaves a box half-updated).
-//
-// The new tree is built and checked BESIDE the live one, then switched in by two renames:
-//   live -> platform.backup-<old>, then staged -> live.
-// Until the first rename the box is wholly old; after the second it is wholly new. The only
-// gap is the instant between them, when `~/.dojo/platform` does not exist. The swap is
-// recorded first (`markPendingUpdate` with the staged path), so the repairs can finish it:
-// `rollback.sh --heal` (run by the watchdog when the folder is missing) and the boot sentinel
-// (`settlePendingInstall`, which names what is actually live). The old tree IS the backup: no `cp -R`.
-//
-// Every caller uses this: the in-app update, the rollback route and `deploy/install.sh` (via
-// `install-tree-cli.ts`, from the unpacked release: so Node built-ins only, no node_modules).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The one way a platform tree becomes live: the new tree is built and checked beside the live one,
+// then switched in by two renames (live -> platform.backup-<old>, staged -> live), so the box is wholly
+// old or wholly new. The swap is recorded first (`markPendingUpdate`) so `rollback.sh --heal` (run by
+// the watchdog when the folder is missing) and the boot sentinel (`settlePendingInstall`) can finish
+// it. The old tree is the backup: no `cp -R`. Callers: the in-app update, the rollback route and
+// `deploy/install.sh` (via `install-tree-cli.ts`, run from the unpacked release, so Node built-ins only).
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -34,7 +25,7 @@ export const SWAP_LOCK = 'rollback.lock';
 
 export type InstallStep = 'deps-cloned' | 'deps-installed' | 'verified' | 'marked' | 'aside' | 'swapped';
 
-/** t114: npm is bounded by SILENCE, not a flat total, so a slow but moving install finishes. */
+/** npm is bounded by SILENCE, not a flat total, so a slow but moving install finishes. */
 const INSTALL_IDLE_MS = 120_000;
 export const INSTALL_CEILING_MS = 30 * 60_000;
 const DEFAULT_ENV = (): NodeJS.ProcessEnv => ({ ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}` });
@@ -138,9 +129,8 @@ export function treeVersion(dir: string): string | null {
   } catch { return null; }
 }
 
-// Loads the database module the server cannot run without, from the STAGED tree, in a
-// separate node, with NO flat give-up (R25/R27: a loaded Mac's cold load is slow, not broken; the
-// process either exits with its own verdict or is still working) — the check a staged tree with a missing or wrong-ABI binding fails.
+// Loads the database module from the STAGED tree in a separate node, with no flat give-up (a loaded
+// Mac's cold load is slow, not broken): catches a missing or wrong-ABI binding.
 const NATIVE_SMOKE = "const r=require('module').createRequire(process.argv[1]+'/');"
   + "const D=r('better-sqlite3');const d=new D(':memory:');d.prepare('select 1').get();d.close();";
 
@@ -164,11 +154,9 @@ function stamp(): string {
 }
 
 /**
- * Settle a 'pending-update' its installer did not live to finish. Two renames leave the live tree
- * wholly one side: the target with the staged tree consumed (boot it as the new build) or not
- * (nothing switched; the watchdog tells the owner). Staging-installer markers only: an in-place
- * updater's tree may be mixed, and this cannot tell which half it is. Called at boot right before
- * the boot sentinel counts the boot, and by the installer when its own swap fails.
+ * Settle a 'pending-update' its installer did not live to finish: the live tree is wholly one side, so
+ * the marker becomes booting-new (staged tree consumed) or interrupted. Staging-installer markers only:
+ * an in-place updater's tree may be mixed. Called at boot and when the installer's own swap fails.
  */
 export function settlePendingInstall(dojoDir: string): UpdatePhase | null {
   const live = treeVersion(path.join(dojoDir, 'platform'));
@@ -259,7 +247,7 @@ export async function installPlatformTree(a: InstallTreeArgs): Promise<InstallTr
     if (marked) settlePendingInstall(a.dojoDir);
     logger.error('install failed during the swap', { error: (err as Error).message });
     return fail(`The update to ${a.targetVersion} stopped while switching versions (${(err as Error).message}). `
-      // Field fix 3 audit round: a fact, never a chore (it told the owner to run rollback.sh).
+      // States a fact, not an instruction.
       + `Dojo is now running ${treeVersion(platformDir) ?? 'no version'}. The watchdog puts the previous version back if this one does not start.`);
   } finally {
     release();
