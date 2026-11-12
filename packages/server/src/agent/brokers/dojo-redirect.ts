@@ -26,7 +26,9 @@ export const FACT_REFUSAL = 'Refused: dojo_inspect answers questions about the D
 export const WORKER_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
 const SQLITE = new Set(['sqlite3', '/usr/bin/sqlite3']);
-const METADATA_PROGRAMS = new Set(['ls', 'stat', 'du', 'wc', 'lsof', 'fuser', 'file', 'shasum']);
+const METADATA_PROGRAMS = new Set(['ls', 'stat', 'du', 'wc', 'lsof', 'fuser', 'file', 'shasum', 'find']);
+/** The find primaries that run a program, write a file or delete one. */
+const FIND_ACTIONS = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
 const SYSTEM_BIN = new Set(['/bin', '/usr/bin', '/usr/sbin', '/sbin']);
 const OUTPUT_FLAGS = new Set(['-readonly', '-header', '-noheader', '-csv', '-json', '-line', '-column', '-list', '-box', '-table', '-markdown', '-tabs']);
 const READ_PRAGMAS = new Set(['table_info', 'table_xinfo', 'index_list', 'index_info', 'index_xinfo', 'foreign_key_list']);
@@ -158,7 +160,7 @@ export function healerRepairRefusal(stmt: string, db: Database.Database | undefi
   return null;
 }
 
-/** A metadata look: METADATA_PROGRAMS program (bare or system bin), plain words, `wc` bytes only. */
+/** A metadata look: METADATA_PROGRAMS program (bare or system bin), plain words, `wc` bytes only, `find` with no action. */
 function isMetadataLook(words: readonly Word[]): boolean {
   const head = words[0];
   if (!head || !head.plain) return false;
@@ -167,6 +169,7 @@ function isMetadataLook(words: readonly Word[]): boolean {
   if (!METADATA_PROGRAMS.has(base) || (head.value !== base && !SYSTEM_BIN.has(dir))) return false;
   const rest = words.slice(1);
   if (rest.some((w) => w.expands)) return false;
+  if (base === 'find') return !rest.some((w) => FIND_ACTIONS.test(w.value));
   if (base === 'wc') {
     const flags = rest.filter((w) => w.value.startsWith('-'));
     return flags.length > 0 && flags.every((w) => w.value === '-c' || w.value === '--bytes');

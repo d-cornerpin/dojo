@@ -72,10 +72,28 @@ const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
 
   // ── 'write' by rank: the strongest segment wins ──
   { line: 'cat dojo.db | rm dojo.db', want: 'refused', why: 'the strongest segment wins: a read (sql) then a delete (write)' },
+
+  // ── find: a metadata look while it runs, writes and deletes nothing ──
+  { line: 'find ~/.dojo -name "*.md"', want: 'allowed', why: 'find with a quoted name pattern lists file names only' },
+  { line: 'find ~/.dojo -type f', want: 'allowed', why: 'find by type lists file names only' },
+  { line: 'find ~/.dojo/data -name dojo.db -ls', want: 'allowed', why: '-ls prints file facts, not contents' },
+  { line: 'find ~/.dojo -name x -delete', want: 'refused', why: '-delete removes files' },
+  { line: 'find ~/.dojo -exec cat {} +', want: 'refused', why: '-exec runs a program on each file' },
+  { line: 'find ~/.dojo -name x -execdir cat {} ;', want: 'refused', why: '-execdir runs a program' },
+  { line: 'find ~/.dojo -ok cat {} ;', want: 'refused', why: '-ok runs a program' },
+  { line: 'find ~/.dojo -fprint /tmp/list', want: 'refused', why: '-fprint writes a file' },
+  { line: 'find ~/.dojo -name *.md', want: 'refused', why: 'an unquoted pattern the shell expands' },
+  { line: 'find ~/.dojo -name "*.db" | xargs strings', want: 'refused', why: 'a look piped onward is no longer a look' },
 ];
 
 describe('dojoDoorVerdict: the shell-redirect classifier', () => {
   it.each(CASES)('$line', ({ line, want, why }) => {
     expect(dojoDoorVerdict(line, 'main').outcome, why).toBe(want);
+  });
+});
+
+describe('dojoDoorVerdict: find for a worker', () => {
+  it('a worker is refused even a plain find', () => {
+    expect(dojoDoorVerdict('find ~/.dojo -type f', 'worker').outcome).toBe('refused');
   });
 });

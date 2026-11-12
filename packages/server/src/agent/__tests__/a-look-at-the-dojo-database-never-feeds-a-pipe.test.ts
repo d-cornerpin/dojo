@@ -41,9 +41,11 @@ const PIPED = [
   'stat -f %N ~/.dojo/data/dojo.db | xargs strings',
   'ls ~/.dojo/data | xargs -I{} cat ~/.dojo/data/{}',
   'ls ~/.dojo/data | wc -l',
+  'find ~/.dojo -name "*.db" | xargs strings',
 ];
 const STANDALONE = [
   'ls -la ~/.dojo/data/dojo.db',
+  'find ~/.dojo/data -name "*.db"',
   'ls -la ~/.dojo/data && stat ~/.dojo/data/dojo.db-wal',
   'sqlite3 -readonly ~/.dojo/data/dojo.db "select id from agents" | head -5',
 ];
