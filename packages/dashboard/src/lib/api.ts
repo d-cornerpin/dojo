@@ -1176,7 +1176,7 @@ export const getTasks = async (filter?: {
 };
 
 
-// Phase B.0: structured audit log for a task.
+// One structured audit-log entry of a task.
 export interface TaskLogEntry {
   id: string;
   taskId: string;
