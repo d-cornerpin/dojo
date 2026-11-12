@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// In-Memory Rate Limit Tracking
-// NOT persisted. Resets on restart.
-// ════════════════════════════════════════
+// In-memory rate limit tracking: not persisted, resets on restart.
 
 import { createLogger } from '../logger.js';
 
@@ -16,16 +13,15 @@ interface RateLimitState {
 
 const rateLimits = new Map<string, RateLimitState>();
 
-// The retry/reset value is a count of seconds (a bare number like "30" or "1.5") or a Go-style
-// duration of <number><unit> parts — units h, m, s, ms (e.g. "1h2m3s", "6m0s", "250ms"). Returns
-// the value in seconds, or null when it is neither (e.g. "soon" or an HTTP date), so the caller
-// leaves retryAfter at 0, exactly as before.
+// The retry/reset value is a count of seconds ("30", "1.5") or a Go-style duration of <number><unit>
+// parts (h, m, s, ms; e.g. "1h2m3s", "250ms"). Returns seconds, or null when it is neither (e.g. "soon"
+// or an HTTP date), so the caller leaves retryAfter at 0.
 function parseDurationSeconds(value: string): number | null {
   const str = value.trim();
   if (str === '') return null;
-  // A bare number of seconds, as before.
+  // A bare number of seconds.
   if (/^\d+(?:\.\d+)?$/.test(str)) return parseFloat(str);
-  // Otherwise a duration that must tile the whole string — units ms, m, s, h (match ms before m).
+  // Otherwise a duration that must tile the whole string (match ms before m).
   const unitSeconds: Record<string, number> = { ms: 0.001, m: 60, s: 1, h: 3600 };
   const partRe = /(\d+(?:\.\d+)?)(ms|m|s|h)/g;
   let total = 0;

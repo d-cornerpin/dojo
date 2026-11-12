@@ -1,15 +1,6 @@
-// ════════════════════════════════════════
-// Tier Decision Orchestrator
-// One entry point for "what tier should this turn use". Layered:
-//   1. Structural hard rules (vision -> heavy) — context the query embedding
-//      can't see.
-//   2. Semantic classification (trained head if present, else exemplar
-//      centroids), trusted when its confidence margin clears a floor.
-//   3. Keyword heuristic fallback (scorer.ts), which also carries context
-//      signals like conversation momentum, used when semantic is low-confidence
-//      or the embedder is unavailable.
-// See SEMANTIC-ROUTER-PLAN (local doc).
-// ════════════════════════════════════════
+// Tier decision: one entry point for "what tier should this turn use".
+// Order: structural rules (vision, short confirmation), then semantic classification, then the
+// keyword heuristic (scorer.ts) when the embedder is unavailable.
 
 import { createLogger } from '../logger.js';
 import { scoreQuery } from './scorer.js';
@@ -34,11 +25,8 @@ export interface RouteDecision {
 
 type Msg = { role: string; content: string | object[] };
 
-// A short confirmation ("yes", "go ahead", "do it") carries almost no semantic
-// signal on its own, so the classifier would route it by its surface text
-// (usually 'light') and drop tier mid-task. Instead we treat it structurally:
-// the user is greenlighting the actual request they made just before, so we
-// route the confirmation at the tier of THAT request (carry the task forward).
+// A short confirmation carries no semantic signal of its own, so it inherits the tier of the
+// request it greenlights.
 const SHORT_CONFIRM = /^(yes|yeah|yep|yup|ok|okay|sure|sounds good|go|go ahead|do it|go for it|proceed|approved|confirmed|let'?s go|please do|continue|run it|ship it)\b/i;
 
 function textOf(content: string | object[]): string {
@@ -146,11 +134,8 @@ export async function decideTier(
     // No prior request (or embedder down) -> fall through to normal handling.
   }
 
-  // 3. Semantic. Trust the classifier's top tier whenever the embedder worked;
-  //    its pick (even at a low top-2 margin) beats the keyword scorer, which is
-  //    exactly the thing we are replacing. The heuristic is only a safety net
-  //    for when the embedder is unavailable. The margin is still reported as
-  //    confidence so the low-confidence shadow probe can target uncertain calls.
+  // 3. Semantic: trust the classifier's top tier whenever the embedder worked, even at a low margin;
+  //    the heuristic is only a safety net. The margin is still reported as confidence.
   try {
     const sem = await classifyTierSemantic(query);
     if (sem) {

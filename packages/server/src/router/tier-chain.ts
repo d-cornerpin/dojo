@@ -1,13 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE ROUTER'S TIERS AND THEIR FALLBACK ORDER (moved out of `router/selector.ts` by t268 so the summary writers
-// can read the same order without importing the router's selection graph: one owner of one rule). A leaf: it
-// reads the database and nothing else. Its standing filters live beside it in `standing-filters.ts`.
-// ════════════════════════════════════════════════════════════════════════════
+// The router's tiers and their fallback order, read by the summary writers too so one place owns
+// the rule. A leaf: it reads the database and nothing else. Standing filters are in standing-filters.ts.
 
 import { getDb } from '../db/connection.js';
 
-// Tier fallback order: every tier can fall back downward. A rate-limited
-// Opus (heavy) should fall back to Sonnet (standard), not crash the agent.
+// Every tier can fall back downward: a rate-limited heavy model falls back to standard, not a crash.
 export const TIER_FALLBACK: Record<string, string[]> = {
   light: ['light', 'standard', 'heavy'],
   standard: ['standard', 'heavy', 'light'],

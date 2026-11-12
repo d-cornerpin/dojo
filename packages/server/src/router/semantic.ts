@@ -1,11 +1,6 @@
-// ════════════════════════════════════════
-// Semantic Tier Classifier
-// Embeds the user's query with the local embedder (nomic-embed-text via Ollama,
-// reused from the memory engine) and matches it to per-tier exemplar centroids
-// by cosine similarity. If a trained head is active (Phase 3), it is preferred
-// over the centroids. Returns null on ANY embedder failure so the caller can
-// fall back to the keyword heuristic. See SEMANTIC-ROUTER-PLAN (local doc).
-// ════════════════════════════════════════
+// Semantic tier classifier: embeds the query with the memory engine's local embedder (nomic-embed-text via
+// Ollama) and matches it to per-tier exemplar centroids by cosine, preferring an active trained head. Returns
+// null on any embedder failure so the caller falls back to the keyword heuristic.
 
 import { generateEmbedding } from '../memory/embeddings.js';
 import { createLogger } from '../logger.js';
@@ -20,12 +15,9 @@ const TASK_PREFIX = 'classification: ';
 // Version tag recorded with each decision so a past route is reconstructable.
 const CENTROID_VERSION = 'centroid-1';
 
-// FA-R4: routing rides the turn-start critical path, so the routing embed gets a
-// short deadline instead of the memory engine's 30s background timeout. A slow or
-// cold embedder blows this budget and the caller degrades to the deterministic
-// keyword scorer rather than stalling first token. The centroids are pre-built by
-// the warmer (below), so a live route pays at most one query embed under this
-// deadline; the rare critical-path build is bounded by the same budget.
+// Routing is on the turn-start critical path, so the routing embed gets a short deadline: a slow or cold
+// embedder degrades to the keyword scorer instead of stalling first token. The warmer pre-builds the
+// centroids, so a live route pays at most one query embed.
 const ROUTER_EMBED_DEADLINE_MS = 1500;
 
 interface Centroids {
@@ -36,8 +28,6 @@ interface Centroids {
 
 let centroidCache: Centroids | null = null;
 let buildPromise: Promise<Centroids | null> | null = null;
-
-// ── Vector helpers ──
 
 function normalize(v: Float32Array): Float32Array {
   let norm = 0;
@@ -61,8 +51,7 @@ function cosine(a: Float32Array, b: Float32Array): number {
   return d === 0 ? 0 : dot / d;
 }
 
-// Mean of L2-normalized vectors — the average direction, which is what cosine
-// similarity cares about.
+// Mean of L2-normalized vectors: the average direction, which is what cosine similarity cares about.
 function meanDirection(vectors: Float32Array[]): Float32Array {
   const dim = vectors[0].length;
   const acc = new Float32Array(dim);
@@ -74,7 +63,7 @@ function meanDirection(vectors: Float32Array[]): Float32Array {
   return acc;
 }
 
-// ── Centroid build (lazy, single-flight; never at startup, see Gating) ──
+// Centroid build: lazy and single-flight; never at startup (see gating.ts).
 
 async function buildCentroids(): Promise<Centroids | null> {
   try {
@@ -118,10 +107,8 @@ function ensureCentroidsBuilding(): Promise<Centroids | null> {
   return buildPromise;
 }
 
-// deadlineMs bounds ONLY the caller's wait (FA-R4), never the build itself. On a
-// live route the first turn after boot may still be mid-build if the warmer hasn't
-// finished; rather than stall the turn, return null (→ keyword scorer) and let the
-// detached build keep going so the next route is centroid-routed.
+// deadlineMs bounds only the caller's wait, never the build. If the warmer has not finished, return null
+// (keyword scorer) and let the detached build continue so the next route is centroid-routed.
 async function getCentroids(deadlineMs?: number): Promise<Centroids | null> {
   if (centroidCache) return centroidCache;
   const p = ensureCentroidsBuilding();
@@ -138,14 +125,10 @@ async function getCentroids(deadlineMs?: number): Promise<Centroids | null> {
   }
 }
 
-// ── Classification ──
-
 export interface SemanticResult {
   tier: Tier;
-  // FA-R5: normalized top-2 separation on ONE scale (0..1), NOT the raw margin.
-  // 0 = top and second tied (uncertain), 1 = top dominates. Same meaning whether
-  // the scores came from cosine centroid sims or head softmax probs, so a single
-  // PROBE_BAND and the router_log.confidence column no longer mix scales.
+  // Normalized top-2 separation on one scale (0..1): 0 = top and second tied, 1 = top dominates, whether the
+  // scores are cosine sims or head probs.
   confidence: number;
   topScore: number;         // top similarity (centroid) or top probability (head)
   scores: Record<Tier, number>;
@@ -157,13 +140,9 @@ function rank(scores: Record<Tier, number>, headVersion: string): SemanticResult
   const top = scores[ordered[0]];
   const second = scores[ordered[1]];
   const third = scores[ordered[2]];
-  // FA-R5: normalize the top-2 margin to one scale. Cosine centroid sims share a
-  // high common baseline (all tiers ~0.5-0.7) so raw margins are tiny and PROBE
-  // fires constantly; head softmax probs spread wider so raw margins are large and
-  // PROBE rarely fires. Subtracting the least-likely tier (min) removes that
-  // baseline, giving a parameter-free [0,1] separation (no temperature to
-  // mis-tune): confidence = (top - second) / ((top - third) + (second - third)).
-  // Degenerate all-equal case → 0 (maximally uncertain).
+  // Normalize the top-2 margin to one scale: centroid cosine sims share a high baseline (raw margins tiny), head
+  // probs spread wider. Subtracting the least-likely tier removes that baseline, parameter-free:
+  // confidence = (top - second) / ((top - third) + (second - third)); all-equal gives 0 (maximally uncertain).
   const spread = (top - third) + (second - third);
   const confidence = spread > 0 ? (top - second) / spread : 0;
   return {
@@ -181,8 +160,7 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
 
   let queryEmb: Float32Array;
   try {
-    // FA-R4: short deadline on the routing embed. Covers both the direct route
-    // and the short-confirmation path (decide.ts calls this with the prior text).
+    // Short deadline on the routing embed (also covers decide.ts's short-confirmation path).
     queryEmb = await generateEmbedding(TASK_PREFIX + trimmed, { timeoutMs: ROUTER_EMBED_DEADLINE_MS });
   } catch (err) {
     logger.debug('Query embedding failed or timed out; heuristic fallback', {
@@ -191,7 +169,6 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
     return null;
   }
 
-  // Prefer a trained head if Phase 3 has produced one; else exemplar centroids.
   try {
     const { getActiveHead } = await import('./head.js');
     const head = getActiveHead();
@@ -200,11 +177,11 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
       return rank(probs, head.version);
     }
   } catch {
-    // head module/data not available — fall through to centroids
+    // head module or data not available: fall through to centroids
   }
 
-  // FA-R4: bound the wait on the (usually pre-warmed) centroids so a first-turn
-  // race with the warmer's build can't stall the route; degrade to the scorer.
+  // Bound the wait on the (usually pre-warmed) centroids so a first-turn race with the warmer cannot stall the
+  // route; degrade to the scorer.
   const centroids = await getCentroids(ROUTER_EMBED_DEADLINE_MS);
   if (!centroids) return null;
   const sims: Record<Tier, number> = {
@@ -215,8 +192,7 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
   return rank(sims, CENTROID_VERSION);
 }
 
-// Embed an arbitrary query (used by the label collector and probe paths so they
-// store the SAME representation the classifier sees). Returns null on failure.
+// Embed a query as the classifier does (label collector and probe store this); null on failure.
 export async function embedQuery(query: string): Promise<Float32Array | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
@@ -227,13 +203,9 @@ export async function embedQuery(query: string): Promise<Float32Array | null> {
   }
 }
 
-// ── Embedder keep-warm (gated; see Gating) ──
-// Ollama unloads an idle model after its keep_alive window, which would make the
-// next route pay a cold load (~300ms). Instead of racing that timeout with
-// frequent pings, we explicitly tell Ollama to hold the model for a window and
-// re-assert it well within that window. Net effect: while at least one agent is
-// on auto-router, the embedder stays resident; when auto-router is turned off we
-// stop re-pinning and Ollama lets it unload on its own after the window.
+// ── Embedder keep-warm (gated, see gating.ts) ──
+// Ollama unloads an idle model after its keep_alive window, so we tell it to hold the model for a window and
+// re-assert well within it; when auto-router is off we stop re-pinning and it unloads on its own.
 
 const WARM_KEEP_ALIVE = '30m';            // how long Ollama holds the model
 const WARM_INTERVAL_MS = 10 * 60 * 1000;  // re-pin every 10m (well inside 30m)
@@ -245,18 +217,14 @@ async function pinEmbedder(): Promise<void> {
     const { isAutoRouterInUse } = await import('./gating.js');
     if (!isAutoRouterInUse()) return;
     await generateEmbedding(TASK_PREFIX + 'warmup', { keepAlive: WARM_KEEP_ALIVE });
-    // FA-R4: pre-build the tier centroids off the critical path so the first
-    // auto-routed turn after boot never pays the 52-embed build inline. Gated on
-    // auto-router (above) and single-flighted + cached by getCentroids, so this is
-    // a cheap no-op once built. Awaited here (background, unref'd timer) so a build
-    // failure just re-arms for the next interval.
+    // Pre-build the tier centroids off the critical path; single-flighted and cached, so a cheap no-op once
+    // built. A build failure re-arms for the next interval.
     await getCentroids();
   } catch { /* best effort */ }
 }
 
 export function startEmbedderWarmer(): void {
   if (warmTimer) return;
-  // Pin immediately (gated), then re-assert on the interval.
   void pinEmbedder();
   warmTimer = setInterval(() => { void pinEmbedder(); }, WARM_INTERVAL_MS);
   if (typeof warmTimer.unref === 'function') warmTimer.unref();

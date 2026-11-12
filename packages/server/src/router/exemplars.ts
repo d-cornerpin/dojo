@@ -1,11 +1,5 @@
-// ════════════════════════════════════════
-// Router Tier Exemplars
-// Labeled example prompts per tier for the semantic router. The classifier
-// embeds these once (lazily) and routes an incoming query to the tier whose
-// exemplar centroid it is closest to. Written for a personal-agent workload
-// (messages, calendar, files, web, multi-step tasks). No proper names, no
-// personal data — generic phrasing only.
-// ════════════════════════════════════════
+// Labeled example prompts per tier. The semantic classifier embeds these lazily and routes a query
+// to the tier whose exemplar centroid is closest. Generic phrasing only: no names, no personal data.
 
 export type Tier = 'light' | 'standard' | 'heavy';
 

@@ -1,10 +1,6 @@
-// ════════════════════════════════════════
-// On-device Head Trainer
-// Trains a multinomial logistic-regression head over router_labels and promotes
-// it only if it beats the current champion on a held-out slice (champion/
-// challenger). Pure CPU, no framework. Runs infrequently from the maintenance
-// loop, never in the request path. See SEMANTIC-ROUTER-PLAN (local doc).
-// ════════════════════════════════════════
+// On-device head trainer: trains a multinomial logistic-regression head over router_labels and promotes it
+// only if it beats the current champion on a held-out slice. Pure CPU; runs from the maintenance loop,
+// never in the request path.
 
 import { createLogger } from '../logger.js';
 import { TIERS, type Tier } from './exemplars.js';
@@ -70,17 +66,9 @@ export function trainAndMaybePromote(): TrainResult {
     return { trained: false, promoted: false, reason: 'split too small' };
   }
 
-  // Class-coverage floor. A head trained on a set missing any tier class can
-  // never predict that class, so it would silently route every genuinely-heavy
-  // query below heavy, the router itself degrading the correctness floor. The
-  // only wired label source (the shadow probe) records down-tier labels only,
-  // so the heavy class is routinely absent from router_labels; without this
-  // guard the first such head trivially beats the null champion and goes live.
-  // Refuse to train on incomplete coverage rather than promote a broken head.
-  // This sits before the gradient descent so no compute is wasted and no dead
-  // challenger row is written (nothing consumes an unpromoted head; head.ts
-  // only ever reads is_active = 1). The weekly cadence, the promote floor, and
-  // the champion/challenger comparison are unchanged for full-coverage sets.
+  // Class-coverage floor: a head missing any tier class can never predict it and would route genuinely heavy
+  // queries below heavy, so refuse to train on incomplete coverage. Placed before the descent so no compute
+  // is spent and no unpromoted challenger row is written.
   const present = new Set<Tier>(train.map(r => r.label));
   const missingClasses = TIERS.filter(t => !present.has(t));
   if (missingClasses.length > 0) {

@@ -1,14 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 N42 fix round 1 — THE OWNER'S WORDS WHEN AN AUTO AGENT CANNOT RUN AT THE ROUTER WINDOW.
-//
-// An auto-routed agent has no model of its own: what is too small is the one router window
-// (`router-window.ts`), set by the router's smallest model or lowered with the Router tab's slider.
-// The words a pinned agent gets ("point it at a model with a bigger context window", "pick a bigger
-// model") would send the owner to pin the agent to a big fixed model — every turn quietly moved onto a
-// pricier one. These name the router's smallest model and the slider instead. OWNER-FACING ONLY (the
-// card and the notice the dashboard shows); the platform notice persisted in the agent's own chat keeps
-// its words until the text wave (`overhaul-plans/v35-text-wave.md`).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Owner-facing words for an auto agent that cannot run at the router window (router-window.ts). They name
+// the router's smallest model and the slider; "pick a bigger model" would push the owner to pin a pricier one.
 
 import { autoRouterContext } from './router-window.js';
 import { honestStopWords } from '../agent/v2/error-format.js';
@@ -18,7 +9,6 @@ export interface AutoRouterContext { modelName: string; floorTokens: number; win
 const k = (tokens: number): string => `${Math.round(tokens / 1000)}k`;
 const SLIDER = '"Context window for automatic choice"';
 
-/** What changes it: the slider when the owner set it below the smallest model, else that model. */
 function theFix(r: AutoRouterContext): string {
   return r.windowTokens < r.floorTokens
     ? `raise the ${SLIDER} slider on the Router tab in Settings (it can go up to ${k(r.floorTokens)}, the window of the router's smallest model, ${r.modelName})`
@@ -38,8 +28,6 @@ export function autoNoFitOwnerWords(r: AutoRouterContext): string {
     + `Your message is kept. To fix it, ${theFix(r)}, and it will answer.`;
 }
 
-/** The no-fit notice the OWNER reads (`agent/v2/honest-stop.ts`): an auto agent's names the router; a pinned
- *  agent's is the stop's own words. */
 export function noFitOwnerWords(agentId: string): string {
   const r = autoRouterContext(agentId);
   return r ? autoNoFitOwnerWords(r) : honestStopWords('no_model_fits');

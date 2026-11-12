@@ -1,27 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t212 (v3.4 D11) — WHAT THE ROUTER READS, TAKEN FROM THE STORE BEFORE ANYTHING IS ASSEMBLED.
-//
-// An auto-routed turn used to be assembled for the largest window the router opens a tier on,
-// routed on that array, then assembled AGAIN for the model it dials when that model was smaller
-// (`call-llm/reassemble-for-fit.ts`). The router never needed the assembly: `decide.ts` reads the
-// query, whether the turn's asks carry an image, the user's previous real request (a short "yes,
-// do it" inherits its tier) and, on the keyword fallback, the newest user and assistant messages.
-// Each of those is a fact of the newest rows, the part every view keeps whatever its window. So
-// the turn is routed on those rows, read here, and assembled once, for the model it will dial.
-//
-// THE VIEW, oldest first: the user's previous real request; the agent's newest reply before this
-// turn's asks; this turn's asks as one user message (the assembler merges consecutive user rows
-// the same way), carrying an image block when one of them has an image attached (the same rows
-// `runtime.ts` `injectAttachmentBlocks` attaches images to: those since the agent's last plain
-// reply). Every walk below stops on a real signal (the first reply, the first real request), never
-// on a count.
-//
-// SCOPE: a person's turn reads its own conversation (the assembler scopes the same way); an engine
-// or peer turn has no conversation id and reads the agent's own rows.
-//
-// LABEL, NEVER HIDE: this decides only which model answers. What the model sees is still the one
-// assembly, built afterwards for that model.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// What the router reads, taken from the store before anything is assembled: the user's previous real
+// request, the agent's newest reply before this turn's asks, and this turn's asks as one user message
+// (with an image block when one has an image attached, as `injectAttachmentBlocks` does). Walks stop on
+// a real signal, never on a count. A person's turn reads its own conversation; an engine or peer turn
+// reads the agent's rows. The view only decides which model answers; the model still sees the one assembly.
 
 import { getDb } from '../db/connection.js';
 import { isSubstantiveRequest } from './decide.js';
@@ -30,7 +11,6 @@ export type RoutingMessage = { role: 'user' | 'assistant'; content: string | obj
 
 interface Row { role: 'user' | 'assistant'; content: string; attachments: string | null }
 
-/** An assistant row's stored content: the provider's own blocks (a tool turn), or plain text. */
 function assistantContent(content: string): string | object[] {
   if (!content.startsWith('[')) return content;
   try {
@@ -52,11 +32,7 @@ function carriesImage(attachments: string | null): boolean {
   } catch { return false; }
 }
 
-/**
- * The routing view of `agentId`'s newest rows. `query` is the turn's authoritative ask (the trigger
- * row's text, null on an engine or peer turn). `throughSeq` bounds the read to the rows that existed
- * at an instant: the offline replay of recorded decisions reads the store as it stood then.
- */
+/** The routing view of `agentId`'s newest rows; `query` is the turn's own ask, `throughSeq` bounds the read. */
 export function routingView(agentId: string, scope: { conversationId: string | null; query: string | null; throughSeq?: number }): RoutingMessage[] {
   const rows = getDb().prepare(`
     SELECT role, content, attachments FROM messages
@@ -88,8 +64,7 @@ export function routingView(agentId: string, scope: { conversationId: string | n
   const view: RoutingMessage[] = [];
   if (prior !== null) view.push({ role: 'user', content: prior });
   if (reply !== null) view.push({ role: 'assistant', content: reply });
-  // No ask after the newest reply (an engine or peer turn woken by a note the agent already
-  // answered): the turn's own trigger, else the newest ask the agent has.
+  // No ask after the newest reply (engine or peer turn): the turn's trigger, else the newest ask.
   const askText = asks.length > 0 ? asks.reverse().map((r) => r.content).join('\n\n') : (scope.query ?? newestAsk ?? '');
   view.push({ role: 'user', content: image ? [{ type: 'text', text: askText }, { type: 'image' }] : askText });
   return view;

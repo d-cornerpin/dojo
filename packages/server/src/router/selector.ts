@@ -1,19 +1,16 @@
-// ════════════════════════════════════════
-// Model Selector with Fallback
-// ════════════════════════════════════════
+// Model selection with tier fallback.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js';   // t268: the one owner of the tier order
-import { standingSkip, estimateRequestCost, type RoutedSkip } from './standing-filters.js';   // t268: and of its standing filters
+import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js';
+import { standingSkip, estimateRequestCost, type RoutedSkip } from './standing-filters.js';
 import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { standardModelRowId } from '../services/local-standard.js';
 import type { DimensionScore } from './types.js';
-// T82a fix wave (round 2) — a LEAF import, deliberately not `agent/model.js`: see
-// `providerCeilingTokensFor` below for why the query is mirrored here instead.
+// A leaf import, deliberately not `agent/model.js` (see `providerCeilingTokensFor`).
 import { resolveStreamPatience, resolveDoomCeiling, providerAwareBudgetTokens, doomGuardApplies } from '../agent/stream-patience.js';
 import { CONTEXT_THRESHOLD } from '../memory/budget.js';
 
@@ -26,41 +23,19 @@ export interface SelectedModel {
   fallbackUsed: boolean;
 }
 
-/**
- * The model for the engine's own writing jobs (titles, project names, voice openers). v3.5: the Dojo's
- * standard WRITER (`services/local-standard.ts`) when installed, else the `system` tier row its install
- * writes; null when neither (callers fall back to their non-LLM behaviour). Not `pm_agent_model`.
- */
+/** The engine's own writing model: the standard writer, else the `system` tier row; null when neither. */
 export function getSystemModel(): string | null {
   return standardModelRowId('writer') ?? getTierModels('system')[0]?.model_id ?? null;
 }
 
-/** t148: the estimate `selectModel` skips each reachable model on, so a budget stop is judged by the same number. */
+/** The estimate `selectModel` skips each reachable model on, so a budget stop is judged by the same number. */
 export function routedCandidateCosts(): number[] {
   return [...new Map(Object.values(TIER_FALLBACK).flat().flatMap(getTierModels).map((m) => [m.model_id, estimateRequestCost(m)] as const)).values()];
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T82a FIX WAVE (round 2) — THE FALLBACK PICK LEARNS THE BOX TOO.
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// Round 1 taught `agent/v2/steps/call-llm/index.ts` to re-check the ROUTER'S INITIAL pick
-// against the array it inherited. The same hole exists one layer deeper: when that pick's
-// dial FAILS and `model-call.ts` asks THIS function for a fallback, the fallback candidate
-// is filtered on capability/rate-limit/budget and nothing else — a tier mixing cloud rows
-// (no ceiling) with a declared-local row (600s/180tps) can hand back the local row for the
-// SAME oversized array, unchecked. This is that same gap, reachable from a second door.
-//
-// `inputEstimate` is OPTIONAL and every existing call site omits it: the R6 byte-preservation
-// control AND the `selector-latency.test.ts` sub-2ms guard (the fit check never runs, never queries
-// the two ceiling columns, without an estimate).
-//
-// WHY A LOCAL, MIRRORED QUERY AND NOT `agent/model.js`'s `getProviderCeilingTokens`:
-// `agent/model.ts` carries the Anthropic/OpenAI SDKs and undici, and this selector has never
-// needed any of that for the sake of two already-declared columns (the turn-budget reader that once
-// set the same precedent was deleted with the total-time cap, t137). It also keeps `selectModel`
-// SYNCHRONOUS: `getProviderCeilingTokens` only does a synchronous indexed read, so mirroring it
-// costs nothing async and the three existing callers, none of which await it, keep working.
+// A local mirrored query, not `agent/model.js`'s `getProviderCeilingTokens`: that module carries the Anthropic and
+// OpenAI SDKs and undici, and a synchronous indexed read keeps `selectModel` synchronous for its callers.
+// `inputEstimate` is optional: without it the fit check never runs and never queries the ceiling columns.
 function providerCeilingTokensFor(modelId: string): number | null {
   try {
     const db = getDb();
@@ -71,17 +46,12 @@ function providerCeilingTokensFor(modelId: string): number | null {
       WHERE m.id = ?
     `).get(modelId) as { first_chunk_timeout_ms: number | null; prefill_tokens_per_sec: number | null; measured_prefill_tokens_per_sec: number | null; type: string | null; base_url: string | null } | undefined;
     if (!row) return null;
-    // v3.5 field fix 3 (#11, OR-FIELD3 (a)), mirrored from `getProviderCeilingTokens`: a cloud provider has no doom ceiling.
+    // A cloud provider has no doom ceiling (mirrors `getProviderCeilingTokens`).
     if (!doomGuardApplies({ providerType: row.type, providerBaseUrl: row.base_url })) return null;
     const patience = resolveStreamPatience({ firstChunkTimeoutMs: row.first_chunk_timeout_ms, streamIdleTimeoutMs: null });
-    // R6, mirrored from `getProviderCeilingTokens`: a declared throughput alone, with no
-    // declared patience, is not "this provider declared both halves" — leave it unconstrained.
+    // A declared throughput with no declared patience is not both halves: leave it unconstrained.
     if (!patience.firstChunkDeclared) return null;
-    // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22): the third column is the measured
-    // fallback, read ONLY where the declared one is NULL. It stays mirrored here rather than
-    // calling `getProviderCeilingTokens` for the reason stated two paragraphs above — this
-    // selector still must not import `agent/model.ts` and its SDKs for the sake of what is now
-    // three already-declared columns on a join it already performs.
+    // The measured prefill rate is the fallback, read only where the declared one is NULL.
     return resolveDoomCeiling(patience.firstChunkMs, row.prefill_tokens_per_sec, row.measured_prefill_tokens_per_sec);
   } catch {
     return null;
@@ -89,48 +59,29 @@ function providerCeilingTokensFor(modelId: string): number | null {
 }
 
 /**
- * Whether `modelId` can serve a prompt of `inputEstimate` tokens at all, per its own
- * declared ceiling. `null` ceiling (undeclared, or only one half declared) means
- * unconstrained — every candidate before T82a, and every fast/cloud one since.
- *
- * `providerAwareBudgetTokens(Infinity, ceiling)` rather than a bare `floor(ceiling * 0.5)`:
- * the arithmetic is `agent/stream-patience.ts`'s ONE named constant
- * (`PROVIDER_CEILING_SAFETY`), reused rather than re-derived a second time with its own
- * literal `0.5` a different module could tune out of step with the first. `Infinity` stands
- * in for "this candidate's own admission budget", which this synchronous, per-candidate
- * filter cannot afford to compute (that needs an async tool-payload measurement per
- * candidate) — the ceiling term is the one that actually binds for a declared-slow box, which
- * is the whole shape of the incident this filter exists to catch.
+ * Whether `modelId` can serve `inputEstimate` tokens per its declared ceiling (null ceiling: unconstrained).
+ * The arithmetic is stream-patience.ts's one `PROVIDER_CEILING_SAFETY`; `Infinity` stands for the candidate's own
+ * admission budget, which a synchronous per-candidate filter cannot measure.
  */
 function fitsProviderCeiling(
   modelId: string, inputEstimate: number, windowOf?: (modelId: string) => number,
 ): boolean {
-  // t140 fix round 1 (review I1): AND ITS WINDOW. A candidate that declares no ceiling "fit"
-  // any array at all, so a 200K-sized array could be handed to a 32K fallback, refused at the
-  // boundary, and the turn failed. `windowOf` is the caller's window resolver (the selector does
-  // not import `agent/model.ts`, see above); the bound is the window's fill line, the most the
-  // assembler would ever admit on it. The caller still re-fits the array to the pick it gets.
+  // Also its window: a candidate with no ceiling must not get an array above its window's fill line.
+  // `windowOf` is the caller's resolver (this file does not import `agent/model.ts`).
   if (windowOf && inputEstimate > Math.floor(CONTEXT_THRESHOLD * windowOf(modelId))) return false;
   const ceiling = providerCeilingTokensFor(modelId);
   if (ceiling === null) return true;
   return inputEstimate <= providerAwareBudgetTokens(Number.POSITIVE_INFINITY, ceiling);
 }
 
-/**
- * The filters a candidate must pass whatever the call: its provider is not circuit-broken, it has
- * the capabilities asked for, it is not rate-limited. (Enabled is the tier query's own `WHERE`.)
- * `selectModel` applies these, then the per-call ones (budget, fit); `routedFirstPicks` applies
- * only these — one predicate, so the two can never disagree about which model a tier opens on.
- */
+/** The standing filters alone; `routedFirstPicks` uses only these so it agrees with `selectModel`. */
 function passesStandingFilters(model: TierModelRow, required: string[], agentId?: string): boolean {
   return standingSkip(model, required, agentId) === null;
 }
 
-/** t140 round 7 (H2'): why `selectModel` would not offer a model now (t268: declared in `standing-filters.ts`). */
 export type { RoutedSkip };
 
-/** t140 round 7 — every model `selectModel` could walk to from `tier`, with the filter turning it away
- *  now (`null`: offered). Its predicates, in its order: the owner is told the cause the router acted on. */
+/** Every model `selectModel` could walk to from `tier`, with the filter turning it away now (null: offered). */
 export function routedSkipReasons(
   tier: string | null | undefined, agentId: string, exclude: string[], required: string[],
 ): Array<{ modelId: string; skip: RoutedSkip | null }> {
@@ -148,16 +99,9 @@ export function routedSkipReasons(
 }
 
 /**
- * t140 round 5 — THE MODEL EACH TIER OPENS ON: for every tier an auto-routed turn can be decided
- * into, the model `selectModel` would return first for it (the turn's own call asks for `tools`,
- * so this does too). It answers "can a model of this agent's own hold it" (the "cannot hold a
- * conversation" card is true only when none can) and the window of an auto agent asked without a
- * pick (`agent/model.ts`). The per-call filters are left out on purpose: the budget check carries
- * its own alerting side effects and is the call's to make, and the fit check needs an assembled array.
- * Round 7 (H2'): so are the filters that PASS (a rate limit, an open breaker): an agent is not
- * "unable to hold a conversation" because its roomy model is briefly rate-limited. Since t212 the
- * turn routes first and passes over a pick too small before building (`call-llm/model-selection.ts`),
- * or tells the owner why none holds (`call-llm/no-pick-holds.ts`).
+ * The model each tier opens on (asked with `tools`): standing filters only, since the budget check has side
+ * effects and fit needs an assembled array. Passing skips (rate limit, open breaker) still count as offered, so
+ * an agent is not "unable to hold a conversation" because its roomy model is briefly limited.
  */
 export function routedFirstPicks(): string[] {
   const picks = new Set<string>();
@@ -180,24 +124,15 @@ export function selectModel(
   agentId: string,
   excludeModels?: string[],
   requireCapabilities?: string[],
-  /**
-   * T82a fix wave (round 2): the current assembled input, in tokens. When present, a
-   * candidate whose declared ceiling cannot cover it is excluded — mirroring the existing
-   * rate-limit/budget filters, one more predicate in the same walk. `undefined` (every
-   * caller before this task) skips the check entirely: R6's byte-preservation control.
-   */
+  /** The assembled input in tokens: a candidate whose declared ceiling cannot cover it is skipped. */
   inputEstimate?: number,
-  /** t140 fix round 1: the caller's window resolver, checked with `inputEstimate`. */
+  /** The caller's window resolver, checked with `inputEstimate`. */
   windowOf?: (modelId: string) => number,
 ): SelectedModel | null {
   const excluded = new Set(excludeModels ?? []);
   const required = requireCapabilities ?? [];
 
-  // Defensive: callers occasionally pass null/undefined/unknown tier (e.g.,
-  // when fallback fires mid-tool-loop and scoring was skipped this iteration).
-  // Without this, TIER_FALLBACK[null] is undefined and we end up searching
-  // a single tier with id 'null', which finds nothing and forces an injury.
-  // Default to 'standard' so we still try every tier via the fallback chain.
+  // A null or unknown tier (a fallback firing mid-tool-loop) defaults to 'standard' so every tier is still tried.
   const effectiveTier = (tier && TIER_FALLBACK[tier]) ? tier : 'standard';
   if (effectiveTier !== tier) {
     logger.warn('selectModel called with unknown tier — defaulting to standard fallback chain', {
@@ -213,12 +148,10 @@ export function selectModel(
     const models = getTierModels(candidateTier);
 
     for (const model of models) {
-      // Skip excluded models
       if (excluded.has(model.model_id)) continue;
 
       if (!passesStandingFilters(model, required, agentId)) continue;
 
-      // Check budget
       const estimatedCost = estimateRequestCost(model);
       const budgetCheck = checkBudget(agentId, estimatedCost);
       if (!budgetCheck.allowed) {
@@ -229,9 +162,7 @@ export function selectModel(
         continue;
       }
 
-      // T82a fix wave (round 2): skip a candidate whose own declared ceiling cannot cover
-      // what is already assembled. Mirrors the budget check immediately above — same shape,
-      // same log level, one more predicate a starved selection can be diagnosed from.
+      // Skip a candidate whose own declared ceiling cannot cover what is already assembled.
       if (inputEstimate !== undefined && !fitsProviderCeiling(model.model_id, inputEstimate, windowOf)) {
         logger.warn('Model cannot fit the already-assembled input within its declared ceiling, skipping', {
           modelId: model.model_id,
@@ -248,7 +179,6 @@ export function selectModel(
       };
     }
 
-    // If we've exhausted this tier and it wasn't the requested one, mark fallback
     if (candidateTier === tier) {
       fallbackUsed = true;
     }
@@ -291,8 +221,7 @@ export function logRouterDecision(
       method ?? null,
       confidence ?? null,
       headVersion ?? null,
-      // P6b execution lineage: the per-turn request id (shared with the
-      // cost_records rows this decision produced) and the turn's root.
+      // The per-turn request id (shared with the cost_records rows this decision produced) and the turn's root.
       turnContext(agentId)?.modelRequestId ?? null,
       turnContext(agentId)?.root?.kind ?? null,
       turnContext(agentId)?.root?.id ?? null,

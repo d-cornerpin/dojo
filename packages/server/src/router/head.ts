@@ -1,11 +1,6 @@
-// ════════════════════════════════════════
-// Router Head (on-device trained classifier)
-// A multinomial logistic-regression head mapping a query embedding to a tier.
-// Trained on-device from router_labels (see trainer.ts) and stored in the
-// router_head table. The semantic classifier prefers an active head over the
-// shipped exemplar centroids. Weights are a Float32 blob, row-major per class,
-// each class row being [w_0 .. w_{D-1}, bias].
-// ════════════════════════════════════════
+// A multinomial logistic-regression head mapping a query embedding to a tier, trained on-device from
+// router_labels (trainer.ts) and stored in router_head. The classifier prefers an active head over the
+// exemplar centroids. Weights are a Float32 blob, row-major per class, each row [w_0 .. w_{D-1}, bias].
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -14,12 +9,8 @@ import { TIERS, type Tier } from './exemplars.js';
 
 const logger = createLogger('router-head');
 
-// FA-X7(a): saveHead INSERTs a row on EVERY weekly train, promoted or not, and
-// nothing ever pruned them, so challenger (is_active = 0) rows grew without
-// bound. After each save, keep only the most-recent HEAD_HISTORY_KEEP inactive
-// rows; every active/promoted row is kept regardless (the DELETE only ever
-// touches is_active = 0). getActiveHead / getActiveHeadEval only ever read
-// is_active = 1, so a pruned challenger can never be loaded.
+// saveHead inserts a row on every train, so only the newest HEAD_HISTORY_KEEP inactive rows are kept;
+// active rows are never pruned, and readers only load is_active = 1.
 const HEAD_HISTORY_KEEP = 8;
 
 export interface ActiveHead {
@@ -122,10 +113,7 @@ export function saveHead(params: {
       params.evalScore,
       params.activate ? 1 : 0,
     );
-    // FA-X7(a): prune old challenger heads. Delete every inactive row except
-    // the HEAD_HISTORY_KEEP most-recently-trained ones. Active rows are never
-    // eligible (is_active = 0 guard), so the live head and any promoted
-    // history survive.
+    // Prune old challenger heads: delete every inactive row except the newest HEAD_HISTORY_KEEP.
     db.prepare(`
       DELETE FROM router_head
       WHERE is_active = 0

@@ -1,42 +1,16 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 N42 (GitHub #25) — ONE WINDOW FOR EVERY AUTOMATIC PICK. THE OWNER'S DESIGN, 2026-10-23.
-//
-// THE DEFECT: an auto-routed agent's memory was sized by the model the router picked for THIS
-// request (`getContextWindow(pick)` at every reader of a turn's window). A cheap light-tier turn on
-// a small model folded the rows its window could not hold, folding moves the compaction boundary for
-// good, and the next turn on a bigger model did not get them back: one light turn shrank what the
-// agent remembers word for word to the light model's size.
-//
-// THE DESIGN (the owner's; he rejected "skip a pick too small and use a pricier one"): the router
-// keeps choosing models by tier exactly as before, so cheap picks stay cheap. Only the window every
-// pick runs at is fixed: ONE setting for the whole router (`router.context_window`, a slider on the
-// Router tab), whose top is the smallest window among the router's light, standard and heavy models.
-//
-//   floor          the smallest effective window (`getContextWindow`, num_ctx applied) among the
-//                  models assigned to light, standard and heavy. The `system` tier is not counted:
-//                  it dials titles and classifiers, never an agent's conversation. Every ENABLED
-//                  assigned model counts, one whose provider is down included, so the figure does not
-//                  jump when a provider trips; a model the owner disabled is never dialled, so it
-//                  does not set the window (fix round 1).
-//   router window  min(setting ?? floor, floor). The floor is the slider's own top — an arithmetic
-//                  consequence (no tier model can run at more than its own window), not a cap.
-//   a turn's window  the router window for an auto-routed agent; `getContextWindow(model)` unchanged
-//                  for a fixed-model agent (byte-preservation). A pick the router reaches OUTSIDE its
-//                  tiers (the budget's free redirect) may be smaller than the floor, and no model runs
-//                  at more than its own window, so a turn's window is never above its pick's.
-//
-// NOT MOVED: the transport's `max_tokens` and the provider boundary keep the dialed model's REAL
-// window (`agent/model.ts`), so a bigger pick still has its full room to answer.
-// STATED TRADE-OFF (release notes): on a router whose models differ in size, an auto-routed agent
-// uses the smallest model's window even on a bigger model; to give it more room, raise the smallest
-// model or take it off the router.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// One window for every automatic pick: an auto-routed agent's memory is sized by ONE router window, not by
+// the model picked for this request, so a cheap small-model turn never shrinks what the agent remembers.
+// floor: the smallest effective window (`getContextWindow`) among enabled models on light, standard and
+//   heavy (not `system`); a model whose provider is down still counts so the figure does not jump.
+// router window: min(setting ?? floor, floor); the floor is the slider's top (no tier model runs above its own).
+// A turn's window: the router window for an auto agent (never above its pick's own), else `getContextWindow(model)`.
+// Not moved: the transport's `max_tokens` and the provider boundary keep the dialed model's real window
+//   (agent/model.ts). On a mixed-size router an auto agent uses the smallest window; raise or drop that model.
 
 import { getDb } from '../db/connection.js';
 import { getContextWindow } from '../agent/model.js';
 import { registerRouterFloorName } from '../healer/owner-notices.js';
 
-/** The config key the Router tab's slider writes (through the existing settings route). */
 export const ROUTER_WINDOW_SETTING = 'router.context_window';
 
 const AGENT_TIERS = ['light', 'standard', 'heavy'] as const;
@@ -64,7 +38,6 @@ export function routerWindowFloor(): { tokens: number; modelName: string; modelI
 // The no-fit text names the router's smallest model (`healer/owner-notices.ts`, a light module).
 registerRouterFloorName(() => routerWindowFloor()?.modelName ?? null);
 
-/** The owner's setting, when it is a positive whole number of tokens. */
 function routerWindowSetting(): number | null {
   try {
     const raw = (getDb().prepare('SELECT value FROM config WHERE key = ?').get(ROUTER_WINDOW_SETTING) as { value: string } | undefined)?.value;
@@ -74,7 +47,6 @@ function routerWindowSetting(): number | null {
   }
 }
 
-/** The window every automatic pick runs at: the setting, never above the floor. Null with no tier model. */
 export function routerWindowTokens(): number | null {
   const floor = routerWindowFloor();
   if (floor === null) return null;
@@ -99,7 +71,6 @@ export function isAutoRouted(agentId: string): boolean {
   }
 }
 
-/** The window an agent's turn on `modelId` is sized for (see the header). */
 export function agentTurnWindow(agentId: string, modelId: string): number {
   const own = getContextWindow(modelId);
   if (!isAutoRouted(agentId)) return own;
@@ -108,9 +79,7 @@ export function agentTurnWindow(agentId: string, modelId: string): number {
 }
 
 export interface RouterWindowReport {
-  /** The window every automatic pick runs at now. */
   tokens: number;
-  /** The slider's top: the smallest tier model's window, and that model. */
   floorTokens: number;
   floorModelName: string;
   /** The slider's low end, MEASURED: the smallest window the named agent can run in (instructions, tools
@@ -121,7 +90,6 @@ export interface RouterWindowReport {
   unmeasuredAgentNames: string[];
 }
 
-/** What the Router tab shows. Null when no model is on the three tiers (no slider is shown then). */
 export async function routerWindowReport(): Promise<RouterWindowReport | null> {
   const floor = routerWindowFloor();
   const tokens = routerWindowTokens();
