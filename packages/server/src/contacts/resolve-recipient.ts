@@ -1,26 +1,5 @@
-// ════════════════════════════════════════
-// Outbound recipient display resolver
-//
-// ONE cheap, deterministic, server-side name lookup used by every outbound
-// label writer: the reply-destination routing markers (loop.ts), the engine
-// ack channel pushes, and the explicit send-tool marker. Given a channel + the
-// raw handle the model/engine is delivering to (a phone number, an email
-// address, an iMessage handle), it returns the best human name we can prove
-// from LOCAL state, never a network or model call:
-//
-//   1. the DOJO contacts store (the curated record the safe-sender mirror keeps
-//      in sync), then
-//   2. the channel's own safe-sender registry (the allowlist the owner trusted,
-//      which carries a display name), then
-//   3. the raw handle itself, unchanged, when nothing resolves.
-//
-// Step 3 is the honest fallback: an unknown number stays a number, so the badge
-// reads "to +1555…" rather than inventing a name. Keeping this in one place is
-// what stops the outbound badge wording from drifting between the auto-route
-// path and the explicit-send path (the two used to resolve names differently,
-// which is why an explicit send showed a raw number while an auto-route showed
-// the name).
-// ════════════════════════════════════════
+// Outbound recipient display resolver: the single server-side lookup every outbound label writer uses.
+// Contacts store, then the channel safe-sender registry, then the raw handle. Local reads only.
 
 import type { ChannelKind } from '@dojo/shared';
 import { findMatchingContact, type ContactRecord } from './store.js';
@@ -33,10 +12,7 @@ import {
   getTeamsSafeSenders,
 } from '../services/channel-safe-senders.js';
 
-// Match a handle against the contact-record field it lives in for this channel.
-// iMessage handles can be a phone OR an email but are stored in their own field
-// so the exact trusted handle matches; SMS/voice are phone numbers; mail/Teams
-// are email addresses.
+// Contact field a handle lives in for this channel (iMessage handles have their own field).
 function contactByChannelHandle(channel: ChannelKind, handle: string): ContactRecord | null {
   switch (channel) {
     case 'imessage': return findMatchingContact({ imessageHandles: [handle] });
@@ -48,10 +24,8 @@ function contactByChannelHandle(channel: ChannelKind, handle: string): ContactRe
   }
 }
 
-// Every safe-sender list a channel's handle could be trusted on. Email is not
-// slot-scoped for display purposes: a name is a name whether it came in on the
-// agent or user mailbox, so we check both. Best-effort throughout — a registry
-// read that throws is swallowed so labeling never breaks a send.
+// Every safe-sender list the handle could be on; email checks both slots. A throwing read returns null
+// so labeling never breaks a send.
 function safeSenderNameFor(channel: ChannelKind, handle: string): string | null {
   const lists: SafeSender[][] = [];
   try {
@@ -78,9 +52,7 @@ function safeSenderNameFor(channel: ChannelKind, handle: string): string | null 
   }
   for (const list of lists) {
     const match = findSafeSenderByAddress(list, handle);
-    // Only treat the record's name as a resolved display name when it is a real
-    // label, not the address copied into the name slot (legacy migration did
-    // that), which would just echo the handle back.
+// Skip records whose name is just the address, which would echo the handle back.
     if (match?.name && match.name.trim() && match.name.trim() !== match.address.trim()) {
       return match.name.trim();
     }
@@ -89,10 +61,7 @@ function safeSenderNameFor(channel: ChannelKind, handle: string): string | null 
 }
 
 /**
- * Resolve the display name for an outbound recipient handle on a channel.
- * Contacts store first, then the channel's safe-sender registry, then the raw
- * handle. Pure DB/config reads, no network, no model calls. Always returns a
- * non-empty string (the handle itself when nothing better is known).
+ * Display name for an outbound handle; the handle itself when nothing better is known (empty in, empty out).
  */
 export function resolveRecipientDisplay(channel: ChannelKind, handle: string | null | undefined): string {
   const h = (handle ?? '').trim();
@@ -104,7 +73,7 @@ export function resolveRecipientDisplay(channel: ChannelKind, handle: string | n
       return contact.displayName.trim();
     }
   } catch {
-    /* contacts read is best-effort; fall through to the registry + raw handle */
+    /* best-effort; fall through to the registry */
   }
 
   return safeSenderNameFor(channel, h) ?? h;

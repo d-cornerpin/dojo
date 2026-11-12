@@ -1,23 +1,5 @@
-// ════════════════════════════════════════
-// Safe senders -> contacts mirror
-//
-// When someone is added to a channel's safe-sender allowlist (via the
-// dashboard Settings/Channels UI or the agent's add_safe_sender tool), mirror
-// them into the DOJO contacts store so the name resolves later. Without this, a
-// user who adds "Alex" to the iMessage safe-sender list and then says "text
-// Alex about X" sends the agent hunting the vault for a contact that never
-// existed -- it spins out on the missing record.
-//
-// Properties:
-//   - Additive + one-way: a safe-sender add creates or augments a contact;
-//     REMOVING a safe sender never deletes the contact (the contact store is a
-//     knowledge record, not the allowlist).
-//   - Idempotent: re-running over a full list is a no-op once the address is on
-//     file, so the dashboard's "replace the whole list" save is safe to mirror
-//     in its entirety every time.
-//   - Best-effort: a contacts failure must never block the safe-sender write,
-//     so every entry is wrapped and only logged on failure.
-// ════════════════════════════════════════
+// Mirrors safe-sender allowlist entries into the contacts store so the name resolves later.
+// Additive and one-way (removing a sender never deletes the contact), idempotent, best-effort.
 
 import type { SafeSender } from '../services/imessage-bridge.js';
 import { findMatchingContact, createContact, updateContact, type ContactInput } from './store.js';
@@ -29,10 +11,8 @@ export type SafeSenderChannel = 'imessage' | 'gmail' | 'outlook' | 'teams' | 'sm
 
 type AddressField = 'emails' | 'phones' | 'imessageHandles';
 
-// Which contact field a channel's address belongs in. iMessage handles can be a
-// phone OR an email, but they live in imessage_handles so the agent texts the
-// exact handle the user trusted; SMS/voice are phone numbers; mail/Teams are
-// email-style addresses.
+// Contact field per channel. iMessage handles (phone or email) go in imessage_handles so the agent texts
+// the exact trusted handle.
 const FIELD_BY_CHANNEL: Record<SafeSenderChannel, AddressField> = {
   imessage: 'imessageHandles',
   gmail: 'emails',
@@ -42,11 +22,7 @@ const FIELD_BY_CHANNEL: Record<SafeSenderChannel, AddressField> = {
   voice: 'phones',
 };
 
-/**
- * Map a config key (the dashboard's safe-sender write target) to its channel,
- * or null if the key is not a safe-sender list. Gmail/Outlook are per-slot
- * (`..._agent` / `..._user`), so they match on prefix.
- */
+/** Config key to its channel, or null; gmail/outlook keys are per slot, so they match by prefix. */
 export function configKeyToChannel(key: string): SafeSenderChannel | null {
   if (key === 'imessage_approved_senders') return 'imessage';
   if (key.startsWith('gmail_approved_senders')) return 'gmail';
@@ -59,31 +35,25 @@ export function configKeyToChannel(key: string): SafeSenderChannel | null {
 
 type SyncOutcome = 'created' | 'updated' | 'noop';
 
-// Mirror one safe sender. Match by address only (never by name alone), so adding
-// a handle that is already on file to that person's record augments it.
+// Mirror one safe sender, matching by address only (never by name alone).
 function syncOne(channel: SafeSenderChannel, sender: SafeSender, agentId: string | null): SyncOutcome {
   const address = sender.address?.trim();
   if (!address) return 'noop';
   const field = FIELD_BY_CHANNEL[channel];
   const name = (sender.name ?? '').trim();
 
-  // By ADDRESS only (any address field, so a handle that is already someone's email still
-  // finds them). A shared label alone is not the same person: it makes a separate contact.
+// Any address field matches, so a handle already on file as an email still finds the person.
   const match = findMatchingContact(
     { emails: [address], phones: [address], imessageHandles: [address] },
     { allowNameMatch: false },
   );
   if (match) {
     const patch: ContactInput = {};
-    // Add the channel address if the matched contact doesn't carry it yet.
     if (!match[field].some((a) => a.toLowerCase() === address.toLowerCase())) {
       patch[field] = [address];
     }
-    // Reconcile the name so the person stays findable by their CURRENT
-    // safe-sender label. A safe-sender-derived contact (tagged below) tracks
-    // that label, so a rename ("Test" -> "Ted") updates display_name. For a
-    // contact the user curated by hand, don't clobber the name -- record the
-    // label as a searchable preferred_name alias instead.
+// A safe-sender-derived contact tracks the current label; a hand-curated one keeps its name and gets
+// the label as a preferred_name alias.
     const lname = name.toLowerCase();
     const nameAlreadyKnown =
       !name ||
@@ -98,8 +68,7 @@ function syncOne(channel: SafeSenderChannel, sender: SafeSender, agentId: string
     return 'updated';
   }
 
-  // New contact. Fall back to the address as the display name when the safe
-  // sender carried none, so the record is at least matchable later.
+// New contact; the address stands in as display name when the sender has none.
   const createPatch: ContactInput = { displayName: name || address, tags: ['safe-sender'] };
   createPatch[field] = [address];
   createContact(createPatch, agentId);
@@ -107,9 +76,8 @@ function syncOne(channel: SafeSenderChannel, sender: SafeSender, agentId: string
 }
 
 /**
- * Mirror a whole channel safe-sender list into contacts (the dashboard replaces
- * the entire list on each save, so we re-mirror the lot; idempotent). agentId is
- * the actor, or null for a dashboard/user-driven save.
+ * Mirror a whole list (the dashboard replaces it each save); a failing entry is logged, never thrown.
+ * agentId is null for a user save.
  */
 export function syncSafeSendersToContacts(
   channel: SafeSenderChannel,
