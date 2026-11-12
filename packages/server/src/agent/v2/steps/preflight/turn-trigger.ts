@@ -1,18 +1,4 @@
-// ════════════════════════════════════════
-// PHASE-6 T2 (CUT 9) — `preflight` §1: THE TURN'S TRIGGER.
-//
-// The agent and its model, the waiting-conversation set, the C3 continuation
-// restore, and the PICKUP CLAIM — the atomic edge that decides whether this process
-// serves this message at all. ONE of the step's two `abandon` sites is here, and it
-// is the D-2 cross-process race: another process stamped the trigger between our
-// read and our stamp, so this turn stops rather than running a duplicate.
-//
-// ⚠ THE ORDER PAIR `conversation-identity-is-the-fk` PINS IS IN THIS FILE AND MUST
-// STAY IN IT. Its clause pairs `chosenConversationId = resolveOrCreateConversation(`
-// with `turnCtx.conversationId = `, and `engineFileWithBoth` THROWS when an order
-// pair straddles two files — so the seam below the second of them is load-bearing,
-// not cosmetic.
-// ════════════════════════════════════════
+// The turn's trigger and its pickup claim; abandons when another process claimed the trigger first.
 
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../../../../logger.js';
@@ -32,9 +18,6 @@ import type { PreflightContext } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/** What this section hands the eight after it. Every type is the one the checker
- *  already inferred at the declaration inside `runV2TurnBody`; nothing was widened
- *  or re-spelled, because a relocation that re-types a value is not a relocation. */
 export interface TurnTriggerOutputs {
   readonly db: Database;
   readonly agent: Record<string, unknown>;
@@ -61,7 +44,7 @@ export function runTurnTrigger(
 ): PreflightOutcome<TurnTriggerOutputs> {
   const { agentId, setAgentStatus, startStatusHeartbeat } = ctx;
   const db = getDb();
-  turnCtx.pickupSeq = (db.prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(agentId) as { s: number | null }).s;   // t145: M1b
+  turnCtx.pickupSeq = (db.prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(agentId) as { s: number | null }).s;
 
   const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(agentId) as
     | Record<string, unknown>
@@ -78,147 +61,36 @@ export function runTurnTrigger(
   const contextModelId = isAutoRouted ? '__auto__' : configuredModelId;
   const contextWindow = agentTurnWindow(agentId, contextModelId);
 
-  // UX-REPAIR T7: the `working` status write + its broadcast USED TO STAND HERE, ~80 lines
-  // before `chosenConvKey` exists. That is why frame 1 of every turn carried no `userFacing`
-  // and a FABRICATED `turnKind:'user'`: the turn's bag was still empty, so the seam had
-  // nothing true to say and said something anyway. The pair now runs immediately after the
-  // conversation key is published (below) — see the note there.
 
-  // Trigger context, read once at preflight (Part XIX preservation).
-  //
-  // v2.9.15: filter out rows that share `role='user'` but are NOT
-  // actual user-channel inbounds. Without this, an A2A reply from a
-  // sub-agent or a synthetic rate-limit-recovery notice shows up as
-  // "the most recent user message" and the engine misattributes the
-  // current turn's inbound channel - the canonical failure shape is:
-  // user iMessages primary, primary delegates to a sub-agent, the
-  // sub-agent's A2A reply lands as `role='user'` with content starting
-  // `[A2A:`, and the primary's next-turn reply auto-routes to
-  // dashboard instead of back to the original iMessage thread.
-  // Recent role='user' rows with full attribution, newest first. The turn
-  // trigger / counterparty is classified by STRUCTURED origin (deriveOrigin =
-  // the origin_kind column + the legacy-marker shim), NOT a prose NOT-LIKE list.
-  // The old query only excluded [SOURCE: SYSTEM / [A2A: / [SOURCE: AGENT MESSAGE,
-  // so engine events written as role='user' (tracker / scheduler / thrash gate /
-  // healer / …) became the "trigger" and resolved to a malformed
-  // "a contact / engine / dashboard" counterparty, which then misclassified A2A
-  // turns and leaked their planning text to the dashboard. origin.kind tells
-  // human (user) from engine from agent unambiguously.
-  // ── Counterparty serialization (turn continuity) ──
-  // Serve the human conversation that has been WAITING longest with an
-  // unanswered message (FIFO). Its LATEST message is the trigger, so multi-part
-  // messages from one sender answer together. Because a turn only marks a
-  // conversation "served" when it actually delivers a reply (below), a turn that
-  // ends mid-task leaves its conversation waiting → the next turn RESUMES the
-  // SAME one and routes to it, instead of jumping to whoever is newest (which
-  // sent a Teams answer to a client's email). Same helper the runtime uses to
-  // decide whether to re-trigger and drain the rest. Engine events / A2A are not
-  // human conversations here.
+  // Serve the human conversation waiting longest (FIFO), classified by structured origin; engine events
+  // and A2A are not human conversations.
   const waitingConvs = getWaitingHumanConversations(agentId);
-  // PHASE-2 T6 (C8, requirement 1e): ONE QUERY on the spine, taken HERE — at the same
-  // instant as the waiting set and BEFORE the pickup claim below. The instant is
-  // load-bearing: the claim moves this turn's own trigger to `claimed`, so a read taken
-  // afterwards answers "is anybody ELSE waiting" and turns every ordinary user turn into a
-  // settled-context wake.
+  // Read before the pickup claim: afterwards this turn's own ask is claimed, and every user turn would
+  // look like a settled-context wake.
   const openHumanWorkAtTurnStart = hasOpenHumanWork(agentId);
-  // C3: restore a human-task continuation. When a long human task hit MAX_TOOL_LOOPS /
-  // the time budget / emergency compaction, the engine auto-continued with an empty
-  // trigger and stashed the conversation here. This continuation turn has no waiting
-  // human (the ask was stamped served at the original pickup), so without restoring it
-  // the turn would be pureBackgroundTurn → its final answer suppressed + routed to
-  // dashboard. Always consume the entry on read: a continuation is used once, and if a
-  // real human turn arrived in between (waitingConvs non-empty) the entry is stale and
-  // must be dropped so it can't falsely restore later.
+  // A continuation stashed by an engine auto-continue is restored and consumed once; a waiting human wins.
   const continuation = continuationContext.get(agentId);
   continuationContext.delete(agentId);
   const isHumanContinuation = waitingConvs.length === 0 && !!continuation;
   const chosenConvKey = isHumanContinuation ? continuation!.convKey : (waitingConvs[0]?.key ?? null);
-  // PHASE-2 T10I: the same choice as the FK. `conversationId` is resolved at ingest by the
-  // producer and read straight off the trigger row here; the `??` fallback below (at the
-  // pickup stamp) is what covers a row no door ever resolved for. `chosenConvKey` SURVIVES
-  // beside it because four other tables are still keyed by the string — see
-  // `TurnContext.conversationId`'s note in turn-context.ts.
+  // `chosenConvKey` stays beside the conversation id because other tables are still keyed by the string.
   let chosenConversationId: string | null = isHumanContinuation
     ? (continuation!.conversationId ?? null)
     : (waitingConvs[0]?.oldest?.conversation_id ?? null);
-  // F9: timestamp of the turn's most recent context assembly; sibling user rows
-  // of the same conversation created before this instant were IN the assembled
-  // context and are adjudicated at turn finalize (see assembledContextAsks and
-  // work/ask-settlement.ts).
-  // PHASE-6 T4 (CUT 6): MOVED to the turn's bag with its two siblings — the
-  // `assemble` span writes it and the teardown closure reads it, so a by-value
-  // hand-off would lose the stamp. Reason at the field (RULING P6-R3(1)).
-  // FA-M1: the non-compressible overhead (assembled system prompt + tool-schema/
-  // output reserve) the pre-call compaction gate subtracts from the window to get
-  // the compressible budget. Refreshed from each assembly below; the pre-call gate
-  // sits at the top of the iteration (before assembly), so it uses the prior
-  // iteration's value (0 on the very first gate, i.e. old full-window behavior).
-  // The stronger, exact anti-silent-loss signal is the eviction broadcast, which
-  // fires whenever the assembler actually drops fresh-tail rows.
-  // PHASE-6 T4 (CUT 6): both MOVED to the turn's bag — see `lastAssembledAtIso`
-  // above. `freshTailDropWarned` is the once-per-TURN latch behind the CONTEXT_HIGH
-  // banner, which is why it cannot ride by value into a step that runs per iteration.
-  // E-C1: publish the conversation this turn serves so recall_recent_thread scopes
-  // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
-  // last human conversation. Cleared when the agent goes idle.
+  // Scopes recall_recent_thread to this conversation; null on engine/A2A turns.
   turnCtx.convKey = chosenConvKey;
-  // ── UX-REPAIR T7 — THE FIRST STATUS FRAME OF THE TURN, NOW THAT IT HAS SOMETHING TRUE
-  //    TO SAY ────────────────────────────────────────────────────────────────────────
-  // `userFacing`'s own commit (`e0acf31`) requires status events to carry human-facing truth
-  // "on working and idle alike". Frame 1 was the single place that could not: emitted at the
-  // top of this function, it read an empty bag and dropped the field. One statement after the
-  // publication above it is DETERMINED — a real conversation key, or null on a pure
-  // background a2a / engine turn — so the composer can stay quiet on an a2a turn from frame 1
-  // instead of frame 2.
-  //
-  // THE MOVE IS WITHIN ONE SYNCHRONOUS SPAN AND THAT IS THE WHOLE SAFETY ARGUMENT.
-  // `setAgentStatus` WELDS the DB write to the broadcast, and the `working` row must be
-  // visible early: `gateway/routes/agents.ts` returns 409 on it, peers' busy checks and the
-  // stuck-agent reaper read the same row. `runTurnTrigger` is a plain function containing no
-  // `await` anywhere, so nothing can observe the row between the old site and this one and
-  // the 409 window does not widen. `agent/__tests__/status-frame-never-asserts-an-unknown-
-  // turn-kind.test.ts` pins both facts, including the absence of the `await`.
-  //
-  // The heartbeat moves WITH it, keeping the pair's order: it re-broadcasts `working` and
-  // bumps `updated_at` for rows whose status is already `working`, so starting it before its
-  // own status write would be a new ordering, not a preserved one.
+  // The working status is set once the conversation key is known, so the first frame carries the truth.
+  // No `await` precedes it, so the busy row's 409 window does not widen; the heartbeat starts after it.
   setAgentStatus(agentId, 'working');
   startStatusHeartbeat(agentId);
-  // The ID half of the same publication is written AFTER the pickup block below, where
-  // `chosenConversationId` becomes final. See the note at that write.
-  // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,
-  // so a conversation's pending messages are answered oldest-first, a later ping
-  // ("are you there?") can never be answered before the request that came before it.
+  // Trigger on the oldest unanswered message, so a later ping is never answered before the request.
   const triggerRow = waitingConvs[0]?.oldest;
   const lastUserMessageContent = triggerRow?.content ?? null;
-  // P1 lineage spine: the inbound ask's ROW ID, the origin key work records
-  // born this turn will carry (the prose copy in lastUserMessageContent stays
-  // for display; identity travels as this id).
   const lastUserMessageId: string | null = triggerRow?.id != null ? String(triggerRow.id) : null;
   turnCtx.root = lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null;
-  // CLAIM this ask the moment the turn picks it up, so it reads as SERVED regardless of how
-  // this turn ends. The old design only marked a conversation served when the turn
-  // delivered a terminal reply (or [no-reply]), so a turn that did real, NON-IDEMPOTENT
-  // work (created a project, wrote files, messaged the PM) but then ended via a suppressed
-  // reply, a gate/limit, or an A2A hand-off tagged nothing, left the conversation
-  // "waiting", and the runtime drain re-triggered the SAME message → the agent redid the
-  // work → duplicate projects (the thrash spiral). A genuinely newer message in the same
-  // conversation has its OWN ticket, so it still reads as waiting and is served on the next
-  // turn; only the self-re-trigger of the message we are handling right now is killed.
-  // Continuing a long task is the tracker/PM's job, never re-running the user's message.
-  //
-  // PHASE-2 T3: the claim is a STATE on the ask (`open → claimed`), not a NULL becoming a
-  // string on `messages.conv_key`. The conv_key stamp stays as what it was always named
-  // for — the conversation's IDENTITY, which conversation-scoped recall and the turn's own
-  // output tagging read (07 §3g/3l) — and it no longer decides anything about the queue.
-  // requirement preserved: restart-durable (still a DB fact, now on the ticket), one winner
-  // across processes (the CAS is `expectedState: 'open'` inside `transition()`), and
-  // identity untouched (a claim can no longer overwrite a channel).
+  // Claim the ask at pickup (`open` to `claimed`, a CAS) so it reads served however the turn ends: the
+  // drain must never re-run a message whose turn did real work. A newer message has its own work item.
   const triggerWorkId: string | null = waitingConvs[0]?.workId ?? null;
-  // The conversation the trigger arrived on, read HERE at pickup and carried to the
-  // delegation exit. PHASE-2 T4 copies it onto the join rather than re-resolving the channel
-  // later from an `inbound_meta` blob, which is what the park machine had to do after it
-  // overwrote the identity column.
   const triggerConversationId: string | null = waitingConvs[0]?.oldest?.conversation_id ?? null;
   if (chosenConvKey && triggerRow) {
     let claimed = true;
@@ -228,26 +100,9 @@ export function runTurnTrigger(
       if (!claimed && !isStateConflict(res)) {
         logger.warn('v2: pickup claim refused by the work spine', { agentId, workId: triggerWorkId, res }, agentId);
       }
-      // R-V333-5 (t139): the automatic REOPEN EDGE that stood here is DELETED. It resumed
-      // engine-paused work of any age on any owner message; a waiting task now stays waiting,
-      // visible on the task list, until the agent resumes it with the tracker.
     }
-    // Identity, always, and independent of the claim: this row belongs to this
-    // conversation whether or not this turn won the race to serve it.
-    //
-    // PHASE-2 T10I: the identity is `conversations.id`. Two cases, and the second is the
-    // reason this write still exists after the backfill:
-    //   * the producer resolved it at ingest (the normal path) — nothing to do, the row
-    //     already carries it, and re-writing it from the turn's coarser view could only make
-    //     it worse (a door knows the mail thread; a turn knows the sender);
-    //   * the producer could NOT (`resolveOrCreateConversation` is best-effort by contract and
-    //     returns null rather than blocking an inbound) or the row never passed a door at all
-    //     — resolve it here, once, through the same one writer, from the identity the waiting
-    //     set derived from this row's own stamped origin.
-    // This is a DOOR-TIME resolution, not a backfill guess: the turn is genuinely having this
-    // conversation right now, which is what `resolveOrCreateConversation` exists to record.
-    // It logs when it fires, because a live occurrence means a producer is not stamping and
-    // that is a finding rather than routine.
+    // Identity, independent of the claim. A row no producer resolved gets its conversation here through
+    // the one writer, and it logs, because that means a producer is not stamping.
     if (!chosenConversationId) {
       const identity = waitingConvs[0]?.identity;
       if (identity) {
@@ -264,35 +119,18 @@ export function runTurnTrigger(
         stampConversationIdByRowid({ rowid: triggerRow.rowid, agentId, conversationId: chosenConversationId });
       } catch { /* best effort, served-tagging also happens at turn end */ }
     }
-    // C24: reset the turn-continuation counter at the start of a genuinely NEW
-    // human-triggered turn (a fresh trigger claimed here). The counter bounds CONSECUTIVE
-    // time-budget auto-continuations of ONE turn; without a reset it accumulated across the
-    // whole process, so three unrelated long turns would prematurely hard-stop the fourth.
-    // Continuation turns (empty trigger → no pickup) never reach here, so a single long
-    // task's own continuations still accumulate and cap correctly.
+    // A fresh claimed trigger resets the counter bounding consecutive auto-continuations of one turn.
     if (claimed) turnContinuationCounts.delete(agentId);
     if (!claimed) {
-      // D-2 (comms-audit): the atomic claim affected 0 rows, ANOTHER process already
-      // stamped this trigger between our read and our stamp (cross-process race on one
-      // SQLite DB). Bail cleanly instead of running a DUPLICATE turn on the same
-      // message. Single-process production never hits this (changes is always 1); this
-      // only guards the multi-process case (e.g. stray dev `tsx watch` processes). The
-      // turn's own `finally` clears its context; the other process serves the message.
+      // Another process claimed this trigger between our read and our claim: bail, never a duplicate turn.
       logger.warn('v2: pickup claim lost, another process already claimed this trigger; skipping to avoid a duplicate turn', { agentId, rowid: triggerRow.rowid, workId: triggerWorkId }, agentId);
       setAgentStatus(agentId, 'idle');
       return preflightAbandon('pickup-claim-lost');
     }
   }
 
-  // E-C1 / PHASE-2 T10I: publish the conversation this turn serves, as `conversations.id`.
-  // PHASE-3 STRIP-3 MOVED IT HERE (it was beside its KEY sibling above) because THIS is where
-  // `chosenConversationId` is final: the pickup repair just above resolves one for exactly the
-  // trigger rows no producer stamped. Written early, the map said "no conversation" on a turn
-  // that had one, `memory/assembler.ts` handed that null to `scopeToHumanConversation`, and
-  // the own-output rule dropped every stamped answer — the model saw its asks with its replies
-  // missing and answered again (dojo `8bc7d7a`'s re-answer ghost; 23.6% of user rows on the dev
-  // body carry no `conversation_id`). MOVED, not doubled — a second `.set()` is two owners of
-  // one fact. Pinned by integration.test.ts, "STRIP-3 … (b)".
+  // Published only here, where `chosenConversationId` is final: an early null made the assembler drop
+  // the agent's stamped answers and the model answered again. One `.set()`, one owner.
   turnCtx.conversationId = chosenConversationId;
 
   return preflightProceed({

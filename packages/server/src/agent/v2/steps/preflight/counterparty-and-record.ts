@@ -1,26 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T2 (CUT 9) — `preflight` §4: THE COUNTERPARTY, THE TURN RECORD, AND THE
-// STATE ITSELF.
-//
-// Who this turn is addressing, the owner-channel affinity decision, the turn's own
-// IDENTITY allocated by the `turns` table in-transaction, the serve edges that link
-// the ask and the engine event to that number — and, last, `initState`.
-//
-// ⚠ THIS IS WHERE THE STEP MAKES THE THING EVERY OTHER STEP TAKES. `preflight` is the
-// one step whose signature is not `(state, ctx)`, because before this statement there
-// is no state to take; inventing one to satisfy a signature is a lie the type system
-// would then carry for eight tranches. The state is published to the turn's BAG
-// (`turnCtx.state`) rather than returned, because three closures this span declares
-// read it LIVE — one of them from a wall-clock timer — and a returned value is a
-// snapshot.
-//
-// `initState` ALSO SEEDS THE PHASE. `'preflight'` has been a member of `TurnPhase`
-// since the union existed, and it is the one phase the driver does not advance INTO,
-// because the step that owns it is the step that creates the record. The shared rule
-// ("the driver advances ahead of the call, so `validate()` runs on the transition")
-// is met here by CONSTRUCTION rather than by a call site: there is no transition,
-// there is a birth, and `initState` runs the same validation on it.
-// ════════════════════════════════════════
+// Resolves who the turn addresses and the owner-channel affinity, allocates the turn's identity in the
+// `turns` table, stamps the serve edges, and creates the state with `initState`. The state goes on the
+// bag (`turnCtx.state`) rather than being returned, because closures read it live.
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
@@ -43,7 +23,6 @@ import type { PreflightContext, PreflightScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/** What the sections before this one produced that it reads. */
 export interface CounterpartyAndRecordInputs {
   readonly isHumanContinuation: boolean;
   readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty; address?: TurnAddress } | undefined;
@@ -68,11 +47,10 @@ export interface CounterpartyAndRecordInputs {
   readonly configuredModelId: string;
   readonly isNotificationTurn?: boolean;
   readonly settledContextWakeTurn?: boolean;
-  readonly notificationTriggerRowid: number | null;  // t141: a notice wake's own reason (by seq)
+  readonly notificationTriggerRowid: number | null;  // a notice wake's own reason (messages.seq)
 }
 
-/** What this section hands the sections after it. The STATE is not among them: it
- *  goes on the bag, live, for the reason in this file's header. */
+/** Handed to later sections; the state is not among them, it goes on the bag. */
 export interface CounterpartyAndRecordOutputs {
   readonly counterparty: TurnCounterparty;
   readonly turnNumber: number;
@@ -93,13 +71,8 @@ export async function runCounterpartyAndRecord(
     terminalWakeA2A, terminalWakeDrivesTurn, pendingEngineEvent, a2aReplyContext,
     contextWindow, isAutoRouted, configuredModelId,
   } = input;
-  // ── Turn counterparty (attribution redesign, Phase 3) ──
-  // The single entity this turn is addressing, resolved from structured origin.
-  // Drives the explicit "who you're talking to" header (Phase 3) and the
-  // fresh-tail scoping (Phase 4). Derived from the same signals computed above.
-  // C3: on a human-task continuation, restore the ORIGINAL counterparty so the final
-  // answer routes to the conversation's real channel/person (the empty-trigger
-  // continuation has no inbound to resolve from). Otherwise resolve normally.
+  // The one entity this turn addresses, from structured origin. A human-task continuation has no inbound,
+  // so it restores the original counterparty and the answer reaches the conversation's real channel.
   const counterparty: TurnCounterparty = isHumanContinuation
     ? continuation!.counterparty
     : resolveTurnCounterparty({
@@ -113,28 +86,15 @@ export async function runCounterpartyAndRecord(
         inboundChannel,
       });
 
-  // RC-10: owner-channel affinity, resolved ONCE here so the SAME value drives both the
-  // counterparty header (so the model is never told "dashboard" on a turn the engine
-  // will text) and the end-of-turn reply routing. Applies only when: the counterparty
-  // is the owner (never a contact), the natural destination would be the dashboard (not
-  // a bound routed channel, and never voice/phone), the owner's most recent contact was
-  // iMessage within 48h, the bridge is configured, and the per-conversation rate limit
-  // allows a promotion. The presence-away override at end-of-turn remains stronger.
-  // RC-5.3: an authorized owner inbound (the owner is present and engaging) resets the
-  // proactive-send backoff. A settled-context wake has no trigger row, so only a genuine
-  // owner message clears the streak; every unanswered proactive ping keeps it climbing.
+  // An authorized owner inbound resets the proactive-send backoff; a settled-context wake has no
+  // trigger row, so only a real owner message clears the streak.
   if (triggerRow && counterparty.kind === 'user' && counterparty.relation === 'owner') {
     resetProactiveSendStreak(agentId);
   }
 
-  // P5c: the affinity cooldown is keyed by the CONVERSATION ROW. Owner-addressed
-  // dashboard-default turns (the only promotion case) all belong to the owner's
-  // one dashboard conversation per agent, the same identity the chat route
-  // stamps, so resolve that row lazily inside the promotion guard.
-  // PHASE-6 T9 (CUT 4), RULING P6-R3(1): both live on the turn's bag — the pair is one
-  // mechanism (the destination is meaningless without the conversation its cooldown is
-  // keyed to) and both cross into the `finalize` span, which decides the reply's
-  // destination and records the promotion. Written once each, here, in straight-line code.
+  // Owner-channel affinity, resolved once so the same value drives the counterparty header and the reply
+  // routing: an owner turn bound for the dashboard is promoted to iMessage when affinity and the rate limit
+  // allow. The cooldown is keyed by the owner's dashboard conversation row; both values cross into finalize.
   {
     const destinationWouldBeDashboard =
       counterparty.channel !== 'imessage' && counterparty.channel !== 'teams' &&
@@ -158,7 +118,6 @@ export async function runCounterpartyAndRecord(
     }
   }
 
-  // ── 3.5: THE TURN'S ADDRESS, computed once, here (`turn-address.ts`) ──
   turnCtx.address = await computeTurnAddressLive({
     counterparty, isEngineTurn, isNotificationTurn: input.isNotificationTurn ?? false,
     inboundChannel, inboundContext, ownerAffinityChannel: turnCtx.ownerAffinityDestination, autoRoutes: isPrimaryAgent(agentId),
@@ -166,17 +125,8 @@ export async function runCounterpartyAndRecord(
     restoredFrom: isHumanContinuation ? continuation?.address : undefined,
   });
 
-  // ── P4 turn record: allocate this turn's IDENTITY and record what it SERVES ──
-  //
-  // PHASE-2 T2: the turn number is allocated by the `turns` table itself, in-transaction
-  // (`INSERT … SELECT COALESCE(MAX(turn_number),0)+1 … RETURNING`), and NOT derived here from
-  // `MAX(messages.turn_number)`. The old derivation was wrong in two live situations — a turn
-  // that writes no messages, and an agent whose history was cleared — because `messages`
-  // restarts while `turns` keeps climbing, so the derived number collided with an already
-  // recorded turn and the old `ON CONFLICT DO UPDATE` overwrote it in silence. Both facts now
-  // come from one place. Per Part XVIII §E turn_number stays per-agent and monotonic; it no
-  // longer resets when history is cleared, which is the honest reading of "turn 41 of this
-  // agent's life".
+  // The turn number is allocated by the `turns` table in-transaction, never derived from `messages`,
+  // which restarts when history is cleared while `turns` keeps climbing (per-agent, monotonic).
   const turnNumber: number = (() => {
     const root = turnCtx.root ?? null;
     const kind: 'user' | 'a2a' | 'engine' | null =
@@ -188,49 +138,32 @@ export async function runCounterpartyAndRecord(
       : 'none' as const;
     const subjectId = isEngineTurn ? (pendingEngineEvent?.id ?? null)
       : terminalWakeA2A ? terminalWakeA2A.threadId
-      : isA2ATurn ? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null)   // t173: a job's continuation names its thread; a reply-needed turn has no root, as before
+      : isA2ATurn ? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null)   // a job's continuation names its thread; a reply-needed turn has no root
       : chosenConvKey;
     turnCtx.modelRequestId = `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
     return startTurn({
       agentId, kind, subjectKind, subjectId,
-      // P8: typed spoken-stream lane on the record.
       lane: latestUserSource === 'voice' ? 'voice' : inboundChannel === 'phone' ? 'phone' : null,
       rootKind: root?.kind ?? null, rootId: root?.id ?? null,
-      // t141: a notice wake records ITS notice, so its work is labelled with that email.
+      // A notice wake records its own notice, so its work is labelled with that email.
       sourceMessageId: root?.sourceMessageId ?? (input.notificationTriggerRowid == null ? null : ((getDb().prepare(
         'SELECT id FROM messages WHERE seq = ?').get(input.notificationTriggerRowid) as { id: string } | undefined)?.id ?? null)),
       convKey: chosenConvKey,
     });
   })();
-  // RC-12: publish the turn number so writeToolReceipt can stamp turn_number on
-  // engine receipts without threading it through every send executor. Cleared at
-  // the turn's `finally`, like every other fact in the bag.
+  // Published so writeToolReceipt can stamp turn_number on engine receipts without threading it through.
   turnCtx.turnNumber = turnNumber;
-  // T81c FIX ROUND 1 (NO-DOOMED-DIALS) — belt-and-suspenders clear, right where this turn's
-  // OWN identity is allocated. `runtime.ts`'s queued-wakeup gate already refuses to act on this
-  // marker unless it names `currentTurnNumber(agentId)` exactly, and allocating `turnNumber`
-  // here moves that number forward BEFORE this line runs — so a stale entry from an earlier
-  // turn already fails that identity check on its own. This clear is the second, independent
-  // guarantee (matching the marker's own doc in `shared-state.ts`): every new turn starts with
-  // a clean slate regardless of what a future edit to the identity check might get wrong.
+  // Independent of `runtime.ts`'s identity check on this marker (see its doc in `shared-state.ts`):
+  // every new turn starts with no declared-patience marker.
   declaredPatienceHonestFailTurn.delete(agentId);
-  // S3 (PHASE-3 T3): restart rehydration, at the TURN, once per agent per process.
-  // `memory/assembler.ts:1262-1281` (pre-repin) did this from inside the assembly read path
-  // on EVERY assembly — a mutation on a read, and one that re-broke the cached tools prefix
-  // for every agent on the first assembly after any restart. The requirement it encoded (an
-  // agent should not have to re-call load_tool_docs for a tool it was already using before
-  // the server restarted) is preserved exactly, at the boundary where a restart is visible.
+  // Restart rehydration of session tools, once per agent per process, at the turn and never in the
+  // assembly read path, where a mutation would break the cached tools prefix.
   try {
     const { rehydrateSessionToolsFromHistory } = await import('../../../../tools/tool-docs.js');
     rehydrateSessionToolsFromHistory(agentId);
-  } catch { /* best effort — never break a turn over a cache warm-up */ }
-  // Per-ask forward link: the claimed trigger records WHICH turn serves it (the claim
-  // above only made it invisible to the waiting set). Two rows, one fact: the ticket's
-  // `claimed_by_turn` is what the delivery close and the boot reconciliation read; the
-  // message's `served_by_turn` is the message-side lineage the answer stamp joins on.
-  // The ticket is stamped HERE and not at the claim because the turn number is allocated
-  // from the subject the claim itself decides — and the D-2 race has to be settled before
-  // any of that runs.
+  } catch { /* best effort; never break a turn over a cache warm-up */ }
+  // Forward links: the work item's `claimed_by_turn` (read by delivery close and boot reconciliation)
+  // and the message's `served_by_turn`. Stamped here, not at the claim, since the number exists only now.
   try {
     if (triggerWorkId) {
       stampClaimingTurn(triggerWorkId, turnNumber);
@@ -238,12 +171,8 @@ export async function runCounterpartyAndRecord(
     if (triggerRow) {
       markServedByRowid(triggerRow.rowid, turnNumber);
     }
-    // PHASE-2 T9 — THE ENGINE EVENT'S ATOMIC CLAIM, and it is this stamp.
-    // It used to be an unconditional re-stamp of a row already claimed by the
-    // `conv_key='engine'` sentinel 155 lines above. With the sentinel gone, the stamp IS the
-    // claim: a CAS on `served_by_turn IS NULL`. A loss means another process took the event,
-    // and the turn continues WITHOUT owning it — so no revert and no delivery-failure
-    // bookkeeping is recorded against a claim it never held.
+    // The engine event's atomic claim: a CAS on `served_by_turn IS NULL`. A lost claim means another
+    // process took the event; the turn continues without owning it, so nothing is reverted or recorded.
     if (sc.pendingEngineClaim) {
       const won = claimEngineEventByRowid({ rowid: sc.pendingEngineClaim.rowid, agentId, turnNumber }) > 0;
       if (won) {
@@ -254,13 +183,8 @@ export async function runCounterpartyAndRecord(
         }, agentId);
       }
     }
-    // GATED on driving the turn, and that gate is load-bearing since T4. A terminal wake that
-    // exists but LOST the turn (an unreplied QUESTION/ASSIGN/BLOCK wins the counterparty, or a
-    // human is waiting) must stay UNSERVED so it gets its own turn later — that is the whole
-    // point of "the A2A re-defers to its own turn". Before T4 the wake's un-served-ness was
-    // tracked by a second column (`conv_key`), so stamping `served_by_turn` unconditionally
-    // here was inert; now it is the finder's own predicate, so an ungated stamp would
-    // SWALLOW the wake. The two stamps disagreed; they agree now.
+    // Stamp a terminal wake only when it drives the turn: one that lost the turn must stay unserved
+    // for its own later turn, since `served_by_turn` is the finder's own predicate.
     if (terminalWakeA2A && terminalWakeDrivesTurn) {
       markServedByRowid(terminalWakeA2A.rowid, turnNumber);
     }
@@ -270,19 +194,10 @@ export async function runCounterpartyAndRecord(
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   turnBoundary.set(agentId, turnStartedAt);
 
-  // Remediation Phase 5 (5a): if a technique gets injected this turn, the
-  // turn's outcome (completed vs errored) is written back to its usage row.
-  // PHASE-6 T9 (CUT 4), RULING P6-R3(1): on the turn's bag — it crosses into the
-  // `finalize` span (the success write-back) and the teardown package already takes it
-  // as a context field, which the driver closure below now feeds from the bag.
-
-  // D6: the technique-acknowledgement gate no longer blocks (the hard gate was
-  // removed, see the tool loop) and is per-turn only. Do NOT hydrate it from
-  // agents.config across turns: a pending ack left over from a prior turn used
-  // to resurrect a global tool lock on an unrelated later turn with no expiry.
+  // The technique-acknowledgement gate is per-turn only: never hydrate it from agents.config, or a
+  // leftover ack would lock tools on an unrelated later turn.
   const initialPendingTechniqueAck: import('../../state.js').AgentTurnState['pendingTechniqueAck'] = null;
 
-  // Initial state
   turnCtx.state = initState({
     agentId,
     contextWindow,
