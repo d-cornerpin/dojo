@@ -1,25 +1,6 @@
-// PHASE-2 T8b — THE TRACKER'S WRITES, ON THE SPINE.
-//
-// The other half of `tracker-view.ts`: that file is how a tracker row is READ out of `work`,
-// this one is how it gets IN. Together they are the whole of "the order-ticket IS the
-// tracker" (OR1) for the tracker's own storage.
-//
-// THE TWO-CLAUSE PROPERTY this file exists inside (orchestrator ruling, PHASE-2 ledger
-// 2026-07-29, T6 acceptance §3): the single-writer walk names the `work/` DIRECTORY as its
-// boundary, preserving the sharp guarantee in two parts —
-//   (a) every write to `work` / `work_events` / `adjudications` lives under `work/`, and
-//   (b) `work.state` UPDATEs exist ONLY in `store.ts`, inside `transition()`.
-// So this file may INSERT a tracker row and patch its attribute columns; it may NOT move a
-// row's state, and it does not try to — `setTrackerStatus` below calls `transition()` and
-// hands back its result unchanged, including its refusals.
-//
-// WHAT REPLACED WHAT, so the removal can be checked rather than trusted:
-//   `tracker/schema.ts:createTask` / `:createProject` (raw INSERT INTO legacy_*)  -> here
-//   `tracker/schema.ts:updateTask` (a generic column patcher with NO gate, PINNED §13's
-//     "route R2", 11 call sites)                                                  -> here,
-//     split in two: attribute writes land in `patchWork`, the status argument goes through
-//     `transition()`. The two-mechanism disease was that ONE function did both and the
-//     status half had no gate at all.
+// The tracker's writes onto `work`; `tracker-view.ts` is the read side. `work.state` moves only through
+// `transition()` in `store.ts` (see `setTrackerStatus`); every write to `work`, `work_events` and
+// `adjudications` lives under `work/`.
 
 import { v4 as uuidv4 } from 'uuid';
 import type { OutcomeRefused } from '@dojo/shared';
@@ -35,20 +16,15 @@ import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcom
 import { transition, appendWorkEvent, type Actor, type WorkOutcome, type WorkState } from './store.js';
 import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal } from './row-authority.js';
-import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
+import { planJson, type Plan } from './plan-json.js';
 import { isSystemServiceAgent } from '../config/platform.js';
 
 const logger = createLogger('tracker-store');
 
 const now = (): number => Date.now();
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 1 — CREATION
-// ════════════════════════════════════════════════════════════════════════════════
 
-/** Origin, exactly as `tracker/schema.ts` has required it since migration 112: the param may
- *  not be omitted, the values may be null. A new writer that forgets lineage fails to
- *  compile instead of silently minting origin-less work. */
+/** Every field must be passed (null allowed) so a writer that forgets lineage fails to compile. */
 export interface TrackerOrigin {
   kind: string | null;
   sourceMessageId: string | null;
@@ -64,7 +40,7 @@ export interface OpenTrackerProjectInput {
   createdBy: string;
   groupId?: string | null;
   origin: TrackerOrigin;
-  plan?: Plan;   // v3.5: the agent's plan, stored as `plan_json`
+  plan?: Plan;   // stored as `plan_json`
 }
 
 export interface OpenTrackerTaskInput {
@@ -85,56 +61,20 @@ export interface OpenTrackerTaskInput {
   dependsOn?: string[];
   taskKind?: string | null;
   a2aThreadId?: string | null;
-  /** Which tracker vintage this row is. Defaults to `TRACKER_ROOT_KIND`; the engine's own
-   *  >=6 floor passes `engine_scaffold`, which is the T8c rekey of `ENGINE_AUTO_MARKER`. */
+  /** Defaults to `TRACKER_ROOT_KIND`; the engine's own floor passes `engine_scaffold`. */
   rootKind?: string;
   origin: TrackerOrigin;
 }
 
-/** `requester` is the spine's four-value enum (`owner|agent|schedule|watcher`) and is NOT the
- *  same fact as `requester_id`. Migration `135` derived it the same way — a literal `'user'`
- *  creator is the owner, everything else is an agent — and this keeps that one rule in one
- *  place rather than at each insert. */
+/** The spine's `requester` enum (not `requester_id`): a literal 'user' creator is the owner, else an agent. */
 const requesterOf = (createdBy: string): string => (createdBy === 'user' ? 'owner' : 'agent');
 
-// ════════════════════════════════════════════════════════════════════════════════
-// t118 — THE WORK SPINE'S TEXT COLUMNS ARE REDACTED AT THE DOOR
-//
-// WHY HERE AND NOT AT THE CALLERS. The tracker-scaffold leak was one caller holding a raw
-// owner message, and it was fixed at its own source (`tracker-floors.ts`), because that path
-// had sinks this door cannot see (a dashboard broadcast and the PM rename handoff, neither
-// of which is a column). t139 removed the message from that floor altogether — it writes no
-// prose from the turn's message and the handoff is deleted. But the census that fix demanded found the SAME SHAPE in eight more
-// writers into the same four columns — the A2A ASSIGN payload becoming a task's
-// title/description/goal (`tracker/schema.ts`), model-authored tool arguments on create and
-// edit, an apprentice's completion summary (`agent/spawner.ts`), engine-rendered delivery
-// evidence (`tracker/pm-agent.ts`, `teardown/finalize-record.ts`) — and the list grows every
-// time someone opens or patches work.
-//
-// A redact call per caller is EXACTLY THE DISEASE THAT PRODUCED THIS DEFECT: the helper sat
-// one import away from the leaking line for five months, and the only reason it was ever
-// noticed is that a random draw happened to cross a floor of six untracked calls with a
-// credential in the message. Nine call sites each owing a call they can forget is nine
-// chances to reproduce it, and a tenth writer tomorrow owes it too.
-//
-// So the DOOR owes it. Every text column on `work` that can receive owner- or model-authored
-// prose passes `redactHandedCredentials` — the tree's ONE redactor, which returns its input
-// BY REFERENCE when the agent has handled no credential, so the ordinary write pays a map
-// lookup and no string is rebuilt (G2: assembled bytes cannot move).
-//
-// KEYED TO THE ROW'S AGENTS, UNION. The handed-value set is per agent, and a work row has up
-// to three: its assignee, its creator/requester, and (on a patch) whoever the row belongs to
-// now. The union is deliberate and is the SAFE direction — redacting a value agent B handled
-// out of agent A's row is still correct (it is a secret either way), whereas keying on one
-// agent and guessing wrong leaves the value in the clear. Over-redaction cannot leak.
-// ════════════════════════════════════════════════════════════════════════════════
+// Prose columns are redacted at the door so no caller owes the call. Redaction is keyed to the union of
+// the row's agents (assignee, creator, current owner): redacting a value another agent handled is still
+// correct, while keying to one agent and guessing wrong would leave it in the clear.
 
-/** Every `TrackerAttr` that can carry owner- or model-authored prose.
- *
- *  THE CENSUS CLAUSE READS THIS LIST against `TrackerAttr` itself, so a new text column
- *  added to the union and not classified here fails rather than passing silently. The
- *  columns deliberately absent are absent because they cannot carry prose: ids, agent
- *  handles, enums, counts, timestamps and the JSON `depends_on` id array. */
+/** Every `TrackerAttr` that can carry prose; a test checks it against `TrackerAttr`, so a new text
+ *  column must be classified here. */
 export const CREDENTIAL_BEARING_WORK_TEXT = [
   'title', 'description', 'original_description', 'goal', 'notes',
   'result', 'evidence_json', 'hold_reason',
@@ -142,7 +82,6 @@ export const CREDENTIAL_BEARING_WORK_TEXT = [
 
 const BEARING = new Set<string>(CREDENTIAL_BEARING_WORK_TEXT);
 
-/** One string, redacted against every agent the row belongs to. */
 function scrubText(agentIds: readonly (string | null | undefined)[], text: string): string {
   let out = text;
   const seen = new Set<string>();
@@ -162,8 +101,7 @@ function scrubMaybe(
   return typeof text === 'string' ? scrubText(agentIds, text) : text;
 }
 
-/** The agents a row belongs to, for a patch that names a prose column. One SELECT, taken
- *  ONLY when such a column is named — an ordinary status/schedule patch reads nothing. */
+/** The agents a row belongs to, read only when a patch names a prose column. */
 function rowAgents(id: string): readonly (string | null)[] {
   try {
     const r = getDb().prepare(
@@ -171,9 +109,7 @@ function rowAgents(id: string): readonly (string | null)[] {
     ).get(id) as { agent_id: string | null; assignee_agent: string | null; requester_id: string | null } | undefined;
     return r ? [r.agent_id, r.assignee_agent, r.requester_id] : [];
   } catch (err) {
-    // A redaction that cannot resolve its agents must not fail the write; it degrades to the
-    // pre-t118 behaviour for this one patch and says so, loudly, rather than throwing inside
-    // someone else's transaction.
+    // A redaction that cannot resolve its agents must not fail the write; the patch goes unredacted.
     logger.warn('work text redaction could not resolve the row\'s agents; patch proceeds unredacted', {
       workId: id, error: err instanceof Error ? err.message : String(err),
     });
@@ -181,8 +117,7 @@ function rowAgents(id: string): readonly (string | null)[] {
   }
 }
 
-/** A patch with every prose column redacted against the row's agents. Returns the SAME
- *  object when the patch names no prose column, so the common path allocates nothing. */
+/** The patch with prose columns redacted; the SAME object when it names none. */
 function scrubPatch(id: string, patch: WorkPatch): WorkPatch {
   let needs = false;
   for (const k of Object.keys(patch)) {
@@ -213,32 +148,18 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
                 ?, ?, ?, ?, ?, ?, ?, 'live')
     `).run(
       id, p.createdBy, requesterOf(p.createdBy), p.createdBy, TRACKER_ROOT_KIND, id,
-      // t118: the door's redaction, on the two prose columns this insert binds.
       scrubText([p.createdBy], p.title), scrubMaybe([p.createdBy], p.description) ?? null,
       p.level ?? 1, p.groupId ?? null,
       p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
     );
-    if (p.plan) db.prepare('UPDATE work SET plan_json = ? WHERE id = ?').run(planJson(p.plan, (t) => scrubText([p.createdBy], t)), id);   // v3.5: the plan, scrubbed like every prose column
+    if (p.plan) db.prepare('UPDATE work SET plan_json = ? WHERE id = ?').run(planJson(p.plan, (t) => scrubText([p.createdBy], t)), id);   // the plan, scrubbed like every prose column
     appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: scrubText([p.createdBy], p.title), ...(p.plan ? { planned: true, steps: p.plan.steps.length } : {}) });
   });
   return id;
 }
 
-/**
- * THE TASK→ASK EDGE (UX-REPAIR round 2 T11). "This tracker task exists to satisfy that ask"
- * lived only in prose — the task's origin line renders *"created from the owner's dashboard
- * conversation at …, asking: …"* — so the ask's own `compile_resolved`, and the receipt it
- * names, were unreachable from the task. Two separate defects (the PM's blind review, and the
- * owner escalation that fired 25 s after the answer shipped) both needed this one edge.
- *
- * No schema change and no new column: `work.source_message_id` already exists and already
- * carries exactly this fact everywhere else that has it (`delivery-evidence.ts:52-70`,
- * `task-stamps.ts:98`, `tools.ts:698`, `spawner.ts:861`). An ask's id IS `ask:<messageId>`
- * (`store.ts:602`), so stamping the ask's own source message makes the edge resolvable with
- * the derivation the spine already publishes, rather than a second pointer to keep in step.
- *
- * Only fills a GAP: a caller that states an origin keeps it byte-identically.
- */
+/** The source message of the ask the creating turn is serving, so the task links to its request.
+ *  Only fills a gap: a caller-stated origin wins. */
 function askSourceMessageForCreatingTurn(agentId: string, creator: string, originTurn: number | null): string | null {
   try {
     const turn = currentTurnNumber(agentId);
@@ -251,7 +172,7 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
     if (r?.root_id) return r.root_id;
     return originTurn !== null ? askOfDelegateReplyWake(creator, originTurn) : null;
   } catch (err) {
-    // A missing edge is the status quo, never a failed task creation.
+    // A missing link must not fail task creation.
     logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {
       agentId, error: err instanceof Error ? err.message : String(err),
     });
@@ -260,28 +181,10 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
 }
 
 /**
- * t139 — THE DELEGATED ASK A WAKE TURN IS FINISHING (the gap `work/join-drive.ts` names).
- *
- * The owner asks; the agent hands the job (or parts of it) to helpers; the ask is HELD behind
- * the join. When a helper's reply lands, the agent is woken to finish the job — on a turn that
- * serves no ask at all (its turn record carries no subject and no root). A task the agent opens
- * there was born with no link, so the task list could show only the agent's own restatement and
- * never the owner's words (driven in `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`).
- *
- * The tie is RECORDED facts, never a guess by text:
- *   * the creating turn's own record names the reply's thread: the reply woke it (`turns.subject_kind
- *     = 'a2a_thread'`, `subject_id` = the thread — the live order for the first reply, t149 F1), or
- *     it serves NOTHING (`'none'`, no root) and the newest inbound row it started on is that reply.
- *     An ask, engine, occurrence or continuation turn has a subject of its own: never re-pointed;
- *   * that thread is a PIECE of one of its asks (`work.root_kind = 'a2a_thread'`, `root_id` = the
- *     thread, `parent_id` = the ask) — so a turn woken by anything else (a mailbox notice, a contact,
- *     a peer's own thread) is never tied to the owner's ask, as if it were his request (#12).
- * The ask's own state is deliberately NOT a condition: whether the engine already relayed a
- * single piece (the ask is done) or is waiting for the agent to combine several (blocked,
- * compile pending), a task opened on the turn that reply woke continues THAT request.
- *
- * Point reads: the `turns` primary key, `idx_messages_agent_created`, `ix_work_root`, the `work`
- * primary key. It runs only when a task is opened with no stated origin, never on an assembly.
+ * The ask a delegate-reply wake turn is finishing, when the turn serves no ask of its own: the turn's
+ * subject is the reply's a2a thread (or none, with the newest inbound row being that reply), and that
+ * thread is a piece (`root_kind = 'a2a_thread'`, `parent_id` = the ask) of one of the agent's asks.
+ * The ask's state is deliberately not a condition: done or blocked compile-pending, the task continues it.
  */
 function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   const db = getDb();
@@ -291,9 +194,8 @@ function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   ).get(agentId, turn) as { subject_kind: string | null; subject_id: string | null; root_kind: string | null; started_ms: number | null } | undefined;
   let thread = t?.subject_kind === 'a2a_thread' ? t.subject_id : null;
   if (t && t.subject_kind === 'none' && t.root_kind === null && t.started_ms !== null) {
-    // The row the turn woke on: the newest inbound row (not an engine events-lane row). t145 (M1b): "at its start" is the message-sequence high-water recorded at pickup, because every
-    // clock here is whole-second and a notice landing in the turn's first second is not separable by
-    // time. A turn this process did not pick up (no bag for it) keeps the whole-second bound.
+    // The row the turn woke on: the newest inbound non-events row. Clocks here are whole-second, so when
+    // the turn's pickup is known the bound is the message sequence recorded at pickup instead.
     const bag = turnContext(agentId);
     const pickup = bag && bag.turnNumber === turn ? bag.pickupSeq : null;
     thread = (db.prepare(
@@ -322,9 +224,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
   const at = now();
   const sourceMessageId = p.origin.sourceMessageId
     ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy, p.createdBy, p.origin.turn);
-  // `agent_id` is NOT NULL on the spine and the legacy column was nullable, so an unassigned
-  // task belongs to its creator until someone claims it — the same COALESCE migration `135`
-  // used (`COALESCE(t.assigned_to, t.created_by)`), not a new rule.
+  // `agent_id` is NOT NULL, so an unassigned task belongs to its creator until someone claims it.
   const taskAgents: readonly (string | null | undefined)[] = [p.assignedTo, p.createdBy];
   withUnit(() => {
     db.prepare(`
@@ -342,9 +242,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
       requesterOf(p.createdBy), p.createdBy,
       p.rootKind ?? (opensAsHousekeeping(p.assignedTo ?? p.createdBy, p.createdBy) ? SERVICE_ROOT_KIND : TRACKER_ROOT_KIND), id,
       statusToState(p.status ?? 'in_progress'),
-      // t118: the door's redaction, on the four prose columns this insert binds, keyed to
-      // the assignee AND the creator (an A2A ASSIGN row is created by the sender whose
-      // model authored the payload and assigned to the receiver).
+      // Redacted at the door, keyed to the assignee and the creator.
       scrubText(taskAgents, p.title), scrubMaybe(taskAgents, p.description) ?? null,
       scrubMaybe(taskAgents, p.originalDescription) ?? null, scrubMaybe(taskAgents, p.goal) ?? null,
       p.priority ?? 'normal', p.stepNumber ?? null, p.totalSteps ?? null, p.phase ?? 1,
@@ -357,25 +255,10 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
   return id;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 2 — ATTRIBUTE WRITES
-// ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Every `work` column a tracker writer may patch, and NOT ONE MORE.
- *
- * `state`, `closed_at`, `result_delivery_id`, `claimed_by_turn`, `remaining_children` and
- * `compile_pending` are deliberately absent: they are `transition()`'s, and a patcher that
- * could reach them would be the ungated second writer this phase is removing. The union is
- * the gate — a caller that names one of those does not compile.
- *
- * SWEEP CORE-2 item 3 (SWEEP-F T2) — `next_run_at` LEFT THIS UNION for the same reason.
- * It is the platform's firing clock, and fourteen call sites reached it through this
- * forty-five-column door with no way for the compiler to tell a caller it was moving a
- * schedule rather than a title. It is `work/next-run.ts`'s now, behind doors that each
- * demand a reason. `schedule_status` and the rest stay here: they are ordinary attributes,
- * and the ones that must move WITH a fire time ride along in that module's own statement.
- */
+/** Every `work` column a tracker writer may patch. `state`, `closed_at`, `result_delivery_id`,
+ *  `claimed_by_turn`, `remaining_children`, `compile_pending` (`transition()`) and `next_run_at`
+ *  (`work/next-run.ts`) are absent on purpose: naming one does not compile. */
 export type TrackerAttr =
   | 'parent_id' | 'agent_id' | 'assignee_agent' | 'requester_id' | 'conversation_id'
   | 'title' | 'goal' | 'priority' | 'notes' | 'description' | 'original_description'
@@ -388,54 +271,21 @@ export type TrackerAttr =
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
   | 'paused_until' | 'last_run_at' | 'missed_runs_paused_at'
   | 'anchor_local' | 'attempts' | 'hold_kind' | 'hold_reason' | 'hold_at'
-  // UX-REPAIR round 2 T13: `work.tz` existed since migration 135 and was DEAD — absent from
-  // this union, so no attribute write could name it, and absent from `scheduleRowColumns`, so
-  // the scheduler never read it. The declared per-reminder zone contract was silently void and
-  // every calendar-unit reminder resolved against the PROCESS timezone instead.
+  // `tz` is the per-reminder zone (see `scheduleRowColumns`); null means the box timezone.
   | 'tz';
-// PHASE-2 T8c item 2: the six ticket-stamp columns left this union with their storage. They
-// are `work_events` rows of kind `activity` now (see `stampTicket` below), so a patcher that
-// could still name them would be writing a column nothing reads.
+// The stamp columns are gone: stamps are `work_events` rows of kind `activity` (see `stampTicket`).
 
 export type WorkPatch = Partial<Record<TrackerAttr, unknown>>;
 
 /**
- * Patch a work row's attribute columns.
- *
- * M7 (PHASE-4 T5): the values obey `db/patch.ts`'s ONE RULE — `undefined` LEAVES a column
- * alone, `null` CLEARS it. A caller holding a maybe-undefined expression that MEANS clear
- * says so with `?? null`; a caller that means leave-alone can pass the expression as it is.
- *
- * `updated_at` moves by default because that is what every legacy writer did
- * (`updated_at = datetime('now')` on the same statement). The opt-out exists for ONE named
- * reason and carries it: requirement #15 says the denormalized activity stamps must never
- * bump `updated_at`, because the PM ladder reads that column as "when did this work last
- * MOVE" and a stamp is not a move. `tracker/task-stamps.ts` passes `touch: false`.
- *
- * PHASE-6 T0D — G1, THE ATTRIBUTE DOOR'S OWN. This was a bare `UPDATE … WHERE id = ?`
- * returning `number`, with no existence check, no log and no outcome type, so a write
- * against an id from an earlier session did nothing and told nobody. It is the same gate
- * `transition()` has carried since PHASE-2, on the other half of the row, telling the same
- * story in the same sentence (`noSuchWorkDetail`).
- *
- * THE CHECK COSTS NOTHING ON THE PATH THAT MATTERS, and that is why it is shaped this way:
- * SQLite's `changes` counts rows the statement PROCESSED, not rows whose values differed, so
- * `changes === 0` after a non-empty patch means no row matched — no probing SELECT is owed.
- * The one extra read is on the empty-patch branch, which is the rare caller bug.
+ * Patch a work row's attribute columns: `undefined` leaves a column alone, `null` clears it. `updated_at`
+ * moves unless `touch: false` (the PM ladder reads it as when the work last moved). After a non-empty
+ * patch `changes === 0` means no row matched, so it refuses with no-such-work.
  */
 export function patchWork(id: string, patch: WorkPatch, opts?: { touch?: boolean }): WorkPatchOutcome {
-  // t118: the door's redaction. Applied to the PATCH, before `patchAssignments` reads it, so
-  // every prose column a patcher names is scrubbed no matter which of the thirty-seven call
-  // sites named it. A patch that names no prose column is passed through by reference.
+  // Prose columns are redacted first; a patch naming none passes through by reference.
   const { sets, values } = patchAssignments(scrubPatch(id, patch));
-  // A patch that mentions no field CHANGED NOTHING, so `updated_at` may not move either:
-  // the PM ladder reads that column as "when did this work last MOVE" and a clock bumped by
-  // an empty patch is a receipt for something that did not happen. (Before M7 this function
-  // did the opposite twice over — an all-`undefined` patch erased every column it named AND
-  // bumped the clock, and an empty `{}` bumped the clock on its own.)
-  //
-  // It is still a `no_change` and not a refusal — nothing was asked — UNLESS the row is not
-  // there, because then the caller has two problems and only one of them is about the world.
+  // An empty patch changes nothing, so `updated_at` stays put; it is `no_change` unless the row is missing.
   if (sets.length === 0) {
     return getDb().prepare('SELECT 1 FROM work WHERE id = ?').get(id)
       ? { kind: 'no_change', workId: id, reason: 'empty-patch', detail: `no field named for ${id}` }
@@ -456,9 +306,7 @@ function refuseNoSuchWork(id: string): OutcomeRefused<'no-such-work'> & { workId
   return { kind: 'refused', workId: id, reason: 'no-such-work', detail: noSuchWorkDetail(id) };
 }
 
-/** The same patch applied to every row matching a predicate on ONE column. The only shape
- *  the legacy tree used it in (`SET assigned_to_group = NULL WHERE assigned_to_group = ?`),
- *  kept narrow on purpose: a general WHERE here would be a SQL door. */
+/** The same patch for every row matching ONE column; kept narrow so it never becomes a SQL door. */
 export function patchWorkWhere(
   where: { column: 'assigned_to_group' | 'group_id' | 'parent_id'; equals: unknown },
   patch: WorkPatch,
@@ -472,11 +320,9 @@ export function patchWorkWhere(
   ).run(...values).changes;
 }
 
-/** Append a timestamped line to `notes`, preserving `addTaskNotes`'s exact SQL shape (the
- *  CASE keeps a first note from becoming `NULL || text`). */
+/** Append a line to `notes` (the CASE keeps a first note from becoming `NULL || text`). */
 export function appendWorkNotes(id: string, entry: string): number {
-  // t118: `notes` is a prose column and this is its own door (the CASE-append shape cannot
-  // go through `patchWork`), so the redaction is owed here too.
+  // `notes` is a prose column with its own SQL shape, so it is redacted here, not via `patchWork`.
   entry = scrubText(rowAgents(id), entry);
   return getDb().prepare(`
     UPDATE work SET
@@ -486,41 +332,16 @@ export function appendWorkNotes(id: string, entry: string): number {
   `).run(entry, entry, now(), id).changes;
 }
 
-/** `attempts` is the spine's name for `run_count` (T8a §2.3a). Incremented, never assigned,
- *  for the same reason the legacy scheduler incremented it: two fires racing must not lose
- *  a count. */
+/** Incremented in SQL, never assigned, so two racing fires cannot lose a count. */
 export function bumpWorkAttempts(id: string): number {
   return getDb().prepare('UPDATE work SET attempts = attempts + 1, updated_at = ? WHERE id = ?')
     .run(now(), id).changes;
 }
 
 /**
- * Delete a tracker row and its children. The dashboard's delete routes and the memory
- * route's cleanup both did this against the legacy tables; descendants BELOW the children are
- * detached rather than followed, so `parent_id`'s FK stays satisfiable and the blast radius
- * stays one level deep.
- *
- * ── WHY IT ROUTES THROUGH `work-refs.ts` (W2-B item C) ──
- * This swept two of the four things that then referenced `work(id)` — `work_events` and
- * `adjudications` — and left `techniques.build_project_id` and the self-reference
- * `work.parent_id` alone. All of them are `NO ACTION`, so the consequence was not a stranded row
- * but a RAISE: measured with `foreign_keys = ON`, deleting a project with a grandchild
- * occurrence, or one whose own row or whose child had built a technique, threw
- * `FOREIGN KEY constraint failed` and the whole delete failed in front of the user. The
- * grandchild half was patched at ONE of five callers (`gateway/routes/tracker.ts`'s project
- * route calls `deleteOccurrencesOf` first and its comment logs the deleter as the real
- * defect); the technique half was patched at none, and a technique is built BY a project, so
- * that reference is the normal case for the table.
- *
- * `clearReferencesToWork` is the tree's one list of them, and `work-refs.ts`'s header
- * already records that three call sites had three different ideas of it. This was the third.
- *
- * ── WHY IT IS CALLED TWICE, AND IN THIS ORDER ──
- * The helper NULLS `work.parent_id` on everything pointing INTO the set it is given. Handing
- * it the children and the row together would null the children's own `parent_id` and the
- * `WHERE parent_id = ?` delete below would then match nothing. So: the children's family,
- * then the children; then the row's family, then the row. The first call is what releases the
- * GRANDCHILDREN, which is the shape that raised.
+ * Delete a tracker row and its children (deeper descendants are detached). The helper runs twice, children
+ * first, because it nulls `parent_id` on everything pointing into its set: one call for both would leave
+ * the `WHERE parent_id = ?` delete matching nothing.
  */
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
@@ -528,7 +349,7 @@ export function deleteTrackerRow(id: string): number {
   withUnit(() => {
     const children = (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(id) as
       Array<{ id: string }>).map(r => r.id);
-    clearReferencesToWork(children);         // every reference, for the children — see `work-refs.ts`
+    clearReferencesToWork(children);         // every reference, for the children
     db.prepare('DELETE FROM work WHERE parent_id = ?').run(id);
     clearReferencesToWork([id]);             // every reference, for the row itself
     changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
@@ -542,9 +363,6 @@ export function detachChildren(parentId: string): number {
     .run(now(), parentId).changes;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 3 — STATUS, WHICH IS A TRANSITION
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface SetStatusInput {
   by: Actor;
@@ -555,7 +373,7 @@ export interface SetStatusInput {
   expectedState?: WorkState;
   claimedByTurn?: number | null;
   note?: string | null;
-  userQuote?: string | null;   // t193: the owner's words for acting on another live agent's work; checked, never trusted
+  userQuote?: string | null;   // the owner's words for acting on another live agent's work; checked, never trusted
 }
 
 /** The tracker's one status writer: `transition()` with the tracker's words (a hold is `work/done/hold.ts`). */
@@ -564,8 +382,8 @@ export function setTrackerStatus(
 ): WorkOutcome {
   const to = statusToState(status);
 
-  // Another live agent's work is not reopened or moved on an agent's say-so (t193).
-  const disposal = takeoverRefusal(id, to, input);   // t193 (dec 2)
+  // Another live agent's work is not reopened or moved on an agent's say-so.
+  const disposal = takeoverRefusal(id, to, input);
   if (disposal) {
     logger.warn(`status change refused (${disposal.reason})`, { workId: id, status, by: input.by, actorId: input.actorId });
     return disposal;
@@ -584,18 +402,8 @@ export function setTrackerStatus(
   return result;
 }
 
-/**
- * The delivery a PROJECT's completion points at.
- *
- * `transition()`'s G7 refuses `done` without a `deliveries` row, and a project has no
- * delivery of its own — it finishes because its children did. So it points at a REAL
- * delivery: the most recent one its own completed children were closed against. That is
- * evidence, not a sentinel: the row already exists, it was written by a transport door
- * (T5), and it says exactly why the project is finished.
- *
- * Returns null when no child was ever closed against a delivery, and the caller then gets a
- * refusal rather than a manufactured receipt. That is the gate doing its job.
- */
+/** The delivery a project's completion points at: the newest one its completed children closed against.
+ *  Null when none exists, and the caller then gets a refusal rather than a manufactured receipt. */
 export function deliveryForCompletedChildren(projectId: string): string | null {
   const r = getDb().prepare(
     `SELECT result_delivery_id AS id FROM work
@@ -605,38 +413,9 @@ export function deliveryForCompletedChildren(projectId: string): string | null {
   return r?.id ?? null;
 }
 
-// ⟨TOMBSTONE⟩ `claimOccurrence` lived here and was D21's timestamp CAS: one UPDATE keyed on
-// `next_run_at = ?`. It moved to `work/occurrences.ts` and CHANGED SHAPE in PHASE-2 T8c2
-// item 4, because keying exactly-once on a clock was the defect, not the implementation:
-// the caller could only obtain that clock through `msToText`, which drops milliseconds, so
-// every schedule started from a real clock reading was permanently unclaimable. The claim is
-// now the INSERT of a `work(kind='occurrence')` row, refused by `ux_work_occurrence` — a
-// constraint, and durable, so a crashed fire cannot lose the occurrence either.
-// requirement preserved: exactly-once, the claim token, advance-at-fire, and the unfired
-// release — all four asserted in `work/__tests__/occurrences.test.ts`.
 
-// ⟨TOMBSTONE⟩ `stopLiveSchedule` lived here. SWEEP CORE-2 item 3 moved it to
-// `work/next-run.ts` as `clearLiveSchedule`, unchanged SQL, because it SETS `next_run_at` and
-// that column now has exactly one writing module. Its one caller
-// (`scheduler/runner.ts:terminateLiveScheduleOnFallen`) imports it from there.
-// requirement preserved: `changes === 1` is still the token that says THIS caller won the
-// race, which is what keeps two terminators from both announcing a termination — asserted in
-// `scheduler/__tests__/fallen-terminates.test.ts`.
-
-/**
- * The turn-finalize ticket stamp — ONE EVENT, not six columns (PHASE-2 T8c item 2, executing
- * T8a's booked collapse).
- *
- * Deliberately does NOT touch `updated_at` — the drive ladder's idle clock — which is
- * requirement #15 and is conformance-locked. That is now true BY CONSTRUCTION rather than by
- * remembering to leave a column out of a SET list: an event log has no `updated_at` to touch.
- *
- * The three COALESCEs are gone with the columns. They were maintaining "the last turn that
- * ANSWERED" and "the last delivery summary" across turns that did neither, i.e. one statement
- * keeping three facts in step. `work/tracker-view.ts:stampColumns` asks the log for each fact
- * separately ("the newest activity", "the newest that answered", "the newest that
- * delivered"), so there is nothing left to keep in step.
- */
+/** The turn-finalize stamp: one `activity` event per task, never touching `updated_at` (the drive
+ *  ladder's idle clock). `stampColumns` in `tracker-view.ts` reads each fact back off the log. */
 export function stampTicket(workId: string, f: {
   activityTurn: number; activityAt: number; activityOutcome: string;
   answeredTurn: number | null; answeredAt: number | null; deliverySummary: string | null;
@@ -649,12 +428,9 @@ export function stampTicket(workId: string, f: {
   });
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 4 — THE TWO-KEY WRITES (the flag columns' successors)
-// ════════════════════════════════════════════════════════════════════════════════
 
-/** `revert_count = 0`. A COUNT cannot be assigned, so a reset is a MARKER the count reads
- *  past — which also means the history survives the reset instead of being erased. */
+/** `revert_count = 0`. A count cannot be assigned, so a reset is a marker the count reads past,
+ *  which also keeps the history. */
 export function resetRevertCount(id: string, actorId: string, reason: string): void {
   appendWorkEvent(id, WORK_EVENT.revertReset, actorId, { reason });
 }

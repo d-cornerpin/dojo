@@ -1,46 +1,14 @@
-// ── EVERYTHING THAT POINTS AT A WORK ROW, IN ONE PLACE (release-blocker round) ────────────
-//
-// FIVE things reference `work(id)`, and every one of them is `NO ACTION`:
-//
-//   work_events.work_id            deleted with the row
-//   work_ledger.work_id            deleted with the row (v3.5: the items the task's calls touched)
-//   adjudications.work_id          deleted with the row
-//   techniques.build_project_id    NULLED — a technique outlives whatever built it
-//   work.parent_id (itself)        NULLED — a child work row outlives its parent
-//
-// `NO ACTION` means the database does nothing for you: every path that deletes a work row has to
-// clear all five by hand, and a path that clears four of five either strands a row or — because
-// `NO ACTION` REFUSES rather than cascades — raises and cannot complete at all.
-//
-// ── WHY THIS IS A MODULE ──
-// Three call sites had three different ideas of the list. `work/tracker-store.ts` swept
-// `work_events` and `adjudications`; `work/purge-sweep.ts` swept those plus the two nullable
-// links; `work/occurrences.ts` swept only `work_events`, which is the defect this round closes
-// (a released occurrence left its verdict behind, measured live an hour after migrations 172 and
-// 173 cleaned the older damage). A list that lives in one place can be wrong once; a list copied
-// into three can be wrong three different ways, and was.
-//
-// The census clause in `work/__tests__/a-deleted-work-row-leaves-no-verdict.test.ts` reads the
-// five references out of `PRAGMA foreign_key_list` at run time and fails if a sixth appears — so
-// this comment cannot quietly go stale.
+// Every reference into `work(id)` is NO ACTION, so each delete path must clear all five by hand:
+// work_events, work_ledger and adjudications rows are deleted; techniques.build_project_id and
+// work.parent_id are nulled. A census test reads the five from `PRAGMA foreign_key_list`.
 
 import { getDb } from '../db/connection.js';
 
-/** The doomed set as a SELECT of ids (`purge-sweep.ts`: every row of an agent, of any count), for a
- *  caller whose set is a predicate rather than a list it already holds. */
+/** The doomed set as a SELECT of ids, for a caller whose set is a predicate rather than a list. */
 export interface WorkIdSelect { sql: string; params: readonly unknown[] }
 
-/**
- * Clear every reference into `workIds` so the rows can be deleted. Does NOT delete the work rows
- * themselves — the caller owns that, because each caller's predicate differs (by id, by parent,
- * by agent) and only the caller knows what it means to have deleted them.
- *
- * Call inside the caller's `withUnit`: clearing references and deleting the rows they point at is
- * one fact, and a failure between the two halves is the state this exists to prevent.
- *
- * A no-op on an empty list, deliberately — a caller that resolved nothing must not turn into a
- * statement with an empty `IN ()` that matches differently than intended.
- */
+/** Clear every reference into `workIds`; the caller deletes the rows, inside its own `withUnit`.
+ *  A no-op on an empty list, so an empty `IN ()` is never built. */
 export function clearReferencesToWork(workIds: readonly string[] | WorkIdSelect): void {
   const sel = Array.isArray(workIds)
     ? { sql: (workIds as readonly string[]).map(() => '?').join(','), params: workIds as readonly unknown[] }
@@ -48,8 +16,6 @@ export function clearReferencesToWork(workIds: readonly string[] | WorkIdSelect)
   if (Array.isArray(workIds) && workIds.length === 0) return;
   const db = getDb();
   const { sql: ph, params } = sel;
-  // Order is irrelevant among these five — none references another — but the deletes come first
-  // so a reader sees "remove what is owned, then release what merely points".
   db.prepare(`DELETE FROM work_events WHERE work_id IN (${ph})`).run(...params);
   db.prepare(`DELETE FROM adjudications WHERE work_id IN (${ph})`).run(...params);
   db.prepare(`DELETE FROM work_ledger WHERE work_id IN (${ph})`).run(...params);
