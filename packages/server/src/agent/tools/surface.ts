@@ -1,45 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE ADVERTISED SURFACE (PHASE-5 T4 — relocated verbatim from `agent/tools.ts`)
-//
-// Which tools a given agent is TOLD about, and the executor-side deny set that
-// re-checks the same policy after the model has spoken. Two questions, one
-// parser, deliberately in one module:
-//
-//   getFilteredTools(agentId)  → the advertised list (permissions manifest,
-//                                tools_policy allow/deny, account connectivity,
-//                                the FA-TS2 primary-only strip, per-account
-//                                description annotation), memoized per agent.
-//   getAgentDenySet(agentId)   → the executor's re-check of tools_policy.deny.
-//
-// ── WHY BOTH LIVE HERE, AND WHY THAT IS THE POINT (FU-4) ──
-// Architecture Rule 1 is "the engine enforces, the model follows": the strip is
-// ADVICE. The floor model parses tool calls out of free text, so a deny-listed
-// agent can emit a denied name and reach `executeTool` anyway. `parseToolsPolicy`
-// is therefore the SINGLE parser behind both the strip and the executor gate —
-// if they were two parsers they would drift, and the drift would be silent and
-// in the permissive direction. The gate itself has NOT moved: it is still the
-// first branch of the executor, ahead of the outbound-capture instrument.
-//
-// ── WHY THIS IS A LEAF, AND WHAT IT MAY NOT IMPORT ──
-// `load_tool_docs` needs `getFilteredTools`, and a category module under
-// `cat/` may not import `agent/tools.ts` — that rule is the split. So the
-// surface machinery moved out ahead of the last dispatch key rather than the
-// key being given a licence to reach backwards. This module imports the wire
-// array, the definition families and the leaves; it imports no dispatcher and
-// no handler.
-//
-// ── THE MEMOS ARE A MEASUREMENT, NOT A HABIT ──
-// `callModel` asks `getFilteredTools` once per tool-loop iteration; before
-// FA-TS1 a 20-tool-call turn rebuilt the list ~20 times, each rebuild running
-// ~185 synchronous account scans that cannot change mid-turn. Both memos are
-// keyed by agentId and validated by the SAME two cheap keys (the global
-// tool-config generation + a per-agent row fingerprint), so a policy edit
-// self-invalidates without hunting the agents-table write sites.
-// ════════════════════════════════════════════════════════════════════════════
+// THE ADVERTISED SURFACE: which tools an agent is TOLD about (getFilteredTools); the strip is advice:
+// the floor model can emit a denied name from free text, so the executor re-checks. Both read ONE
+// parser (agent/access/tools-policy.ts), two would drift; no cat/ module may import agent/tools.ts back.
 
 import type { ToolDefinition } from './types.js';
 import { getDb } from '../../db/connection.js';
-import { getAgentPermissions } from '../manifest.js'; // the DECLARING module, which `brokers/sudo-claim.ts` also reads — census + why: `agent/brokers/__tests__/the-sudo-door-and-the-surface-read-one-manifest.test.ts`
+import { getAgentPermissions } from '../manifest.js'; // the DECLARING manifest module; sudo-claim.ts reads this same one, per the shared-manifest test
 import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor, mayUseChannel } from '../access/read.js';
 import { channelForTool } from '../access/channels.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
@@ -70,63 +35,25 @@ import { getEffectiveAudioGenModel } from '../../services/audio-gen-model.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../../services/voice-catalog.js';
 import { RESULT_READ_TOOL } from '../../memory/tool-result-view.js';
 
-// ── Filtered tools per agent (based on permissions + tools policy) ──
 
-/**
- * FA-TS2: owner-facing platform, session, and group management controls. Each
- * acts on the OWNER's behalf or on other agents: install+restart the platform,
- * rewrite a capability's model, enable/disable a whole channel, change voice or
- * presence (which reroutes the owner's comms), drive the owner's dashboard, and
- * inspect/edit or group other agents' identities. getFilteredTools strips these
- * from every non-primary agent's advertised toolset (below), but that strip is
- * only advisory: Architecture Rule 1 is "the engine enforces, the model
- * follows". The floor model parses tool calls from FREE TEXT, so any non-primary
- * agent (a spawned worker, a role/service agent, an A2A relay, an injection) can
- * emit one of these names and reach the executor. executeToolInner re-checks
- * this SAME set before dispatch, turning the surface hint into enforcement. One
- * constant backs both sites so the strip and the gate can never drift.
- *
- * reset_session is deliberately NOT in this set: the Healer (a non-primary
- * service agent) legitimately calls the reset_session TOOL to clear a wedged
- * agent's corrupted context. It stays surface-stripped but stays executable, so
- * it is pushed onto the strip separately below rather than through this set.
- */
+/** Owner-facing controls; the strip is advice, so executeToolInner re-checks THIS SAME constant, and
+ * strip and gate cannot drift. reset_session is stripped separately below, not through this set. */
 
-// ── Tool-eligibility memo (FA-TS1) ──
-// callModel calls getFilteredTools once per tool-loop iteration; a 20-tool-call
-// turn used to rebuild the list ~20 times, each rebuild running ~185 synchronous
-// google_accounts / microsoft_accounts scans that CANNOT change mid-turn. The
-// memo caches the computed list per agent, validated by two cheap keys:
-//   - the module-level tool-config generation (bumped by every GLOBAL write that
-//     changes the surface: account connect/disconnect/service-toggle, plaud,
-//     office packages, audio-gen model), and
-//   - a per-agent fingerprint (a single SELECT of the agent's own
-//     eligibility-relevant columns plus its primary/PM identity).
-// The generation covers global state; the fingerprint covers the agent's own row
-// by construction, so the diffuse set of agents-row write sites needs no manual
-// bump. On a hit the whole call costs ONE fingerprint SELECT (vs ~185 scans);
-// on a miss it recomputes and re-caches. Keyed by agentId with the gen +
-// fingerprint stored in the entry, so the map holds at most one entry per agent.
+// Filtered-tools memo: callModel asks once per tool-loop iteration, and each rebuild runs ~185
+// synchronous account scans that cannot change mid-turn. Two cheap keys validate the entry: the global
+// tool-config generation (bumped by every global surface write) and a per-agent fingerprint.
 interface FilteredToolsCacheEntry {
   generation: number;
   fingerprint: string;
   tools: ToolDefinition[];
 }
 const filteredToolsCache = new Map<string, FilteredToolsCacheEntry>();
-// Bound the map so a long-lived server that spawns many ephemeral agents can't
-// leak one entry per agent id forever. FIFO eviction (Map preserves insertion
-// order); an evicted agent just recomputes on its next call. Comfortably above
-// the count of concurrently-active agents on any real box.
+// Bound the map: a long-lived server spawns many ephemeral agents, and each would hold one entry
+// forever. FIFO (Map keeps insertion order); an evicted agent just recomputes on its next call.
 const FILTERED_TOOLS_CACHE_MAX = 512;
 
-/**
- * FA-TS1: single SELECT of everything AGENT-SPECIFIC that getFilteredTools
- * consumes: the permission manifest source (`permissions`, `spawn_depth`,
- * `created_by`), the tools-policy / group / lifecycle fields, and the agent's
- * primary/PM identity (which flips the FA-TS2 strip and the Google/MS access
- * level). Any change to these flips the fingerprint, so the memo self-invalidates
- * on a per-agent row change without hunting the diffuse agents-table write sites.
- */
+/** ONE SELECT of everything AGENT-SPECIFIC getFilteredTools consumes: manifest source, tools
+ * policy/group/lifecycle columns and primary/PM identity; any change flips the memo's key. */
 function computeAgentToolFingerprint(agentId: string, sudoPolicy: string): string {
   const primary = isPrimaryAgent(agentId) ? '1' : '0';
   const pm = isPMAgent(agentId) ? '1' : '0';
@@ -158,10 +85,8 @@ function computeAgentToolFingerprint(agentId: string, sudoPolicy: string): strin
 
 export function getFilteredTools(agentId: string): ToolDefinition[] {
   const generation = getToolConfigGeneration();
-  // ONE policy read for both the cache key and the computed value. Review finding on the
-  // first cut of this change: fingerprint and description each called getSudoPolicy(), so
-  // a flip landing between the reads stored the NEW text under the OLD key — a stale
-  // description that nothing invalidates, because no policy write bumps the generation.
+  // ONE policy read for both the cache key and the computed value: two reads could straddle a
+  // flip and store the NEW text under the OLD key, a stale description nothing invalidates.
   const sudoPolicy = getSudoPolicy();
   const fingerprint = computeAgentToolFingerprint(agentId, sudoPolicy);
   const cached = filteredToolsCache.get(agentId);
@@ -169,9 +94,8 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     return cached.tools;
   }
   const tools = computeFilteredTools(agentId, sudoPolicy);
-  // Callers treat the list as read-only (filter/map/some/find, audited); freeze
-  // the container outside production so a future in-place mutation of the shared
-  // cached array trips loudly instead of silently corrupting every agent's cache.
+  // Callers treat the list as read-only (audited); freeze outside production so a future
+  // in-place mutation of the shared cached array trips loudly, not silently for every agent.
   if (process.env.NODE_ENV !== 'production') Object.freeze(tools);
   filteredToolsCache.delete(agentId); // re-insert at the tail so FIFO stays honest
   filteredToolsCache.set(agentId, { generation, fingerprint, tools });
@@ -182,27 +106,10 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   return tools;
 }
 
-// FU-4's SINGLE tools-policy parser moved to `agent/access/tools-policy.ts` in
-// UX-ACCESS A1 and gained a second caller (the access snapshot, which migrates a
-// stored policy into `permissions.grants.tools`). Its reason for being one
-// function is unchanged: the surface strip and the executor deny re-check must
-// read the same canonicalized names or they drift, permissively and silently.
-//
-// WHAT CHANGED IS THE SOURCE, NOT THE SEMANTICS. Both sites below now read the
-// policy out of the agent's GRANTS (`toolGrantsFor`), which answers with the
-// stored object when there is one and with the column when there is not — so a
-// box that has not materialized yet behaves identically, and one that has stops
-// having its policy rewritten under it every boot (census C8).
+// Both sites read policy via the agent's grants (`toolGrantsFor`); an unmigrated box reads the column.
 
-// ── Executor-side tools_policy.deny memo (FU-4) ──
-// computeFilteredTools strips a denied tool from the ADVERTISED surface, but per
-// Architecture Rule 1 that strip is only advice: the floor model can emit a
-// denied tool name from free text and reach the executor. executeToolInner
-// re-checks this deny set before dispatch (the same surface-strip/executor-
-// recheck pairing PRIMARY_ONLY_TOOLS uses). Kept O(1) per call by mirroring the
-// FA-TS1 filtered-tools memo shape: keyed by agentId, validated by the SAME
-// (generation, fingerprint) keys. The fingerprint already includes tools_policy,
-// so any policy edit self-invalidates without hunting the agents-table write sites.
+// The advertised strip is only advice: the model can emit a denied name and reach executeToolInner,
+// which re-checks this set. Mirrors the filtered-tools memo; the fingerprint holds tools_policy.
 interface DenySetCacheEntry {
   generation: number;
   fingerprint: string;
@@ -212,8 +119,7 @@ const agentDenySetCache = new Map<string, DenySetCacheEntry>();
 
 export function getAgentDenySet(agentId: string): Set<string> {
   const generation = getToolConfigGeneration();
-  // A FIXED sentinel, not a policy read: deny sets hold tool NAMES the policy can never
-  // change; the gate measured a real read breaking 9 thin-DB executor clauses for nothing.
+  // A FIXED sentinel, not a policy read: deny sets hold tool NAMES the policy can never change.
   const fingerprint = computeAgentToolFingerprint(agentId, 'deny-set');
   const cached = agentDenySetCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
@@ -229,38 +135,27 @@ export function getAgentDenySet(agentId: string): Set<string> {
   return deny;
 }
 
-// PHASE-5 T4: `resolveSpawnSquad` moved to `agent/tools/cat/agents.ts` with
-// `spawn_agent`, its only caller (re-derived at that HEAD).
 
 function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
-  // Get tools policy from DB
   const db = getDb();
   const agentRow = db.prepare('SELECT tools_policy, group_id, classification, task_id FROM agents WHERE id = ?').get(agentId) as { tools_policy: string; group_id: string | null; classification: string | null; task_id: string | null } | undefined;
   const toolsPolicy = toolGrantsFor(agentId);
 
-  // Base toolkit includes the static `toolDefinitions` plus the PDF
-  // creation/manipulation tools, which require no external auth and
-  // are safe for every agent classification.
+  // Base toolkit: static `toolDefinitions` plus the PDF tools: no external auth, safe for every agent.
   let filtered = [...toolDefinitions, ...pdfToolDefinitions];
 
-  // 1. Tools policy deny list, remove denied tools
   if (toolsPolicy.deny.length > 0) {
     filtered = filtered.filter(t => !toolsPolicy.deny.includes(t.name));
   }
 
-  // 2. Tools policy allow list, if non-empty, only include allowed tools
   if (toolsPolicy.allow.length > 0) {
     filtered = filtered.filter(t => toolsPolicy.allow.includes(t.name));
   }
 
-  // 2b. Phase 7 (Part X), squad coordination primitives auto-available to
-  // any agent with a group_id, even when tools_policy.allow is set. This
-  // prevents the "two agents in a squad can share/retrieve" acceptance
-  // criterion from silently regressing whenever an agent has a curated
-  // allow list that predates Phase 7. Explicit `tools_policy.deny` still
-  // wins (filter step 1 above), the user can opt out per-agent.
+  // 2b. Squad coordination stays auto-available to any agent with a group_id, even under a curated
+  // allow list, so the squad criterion cannot regress; an explicit deny still wins (step 1).
   if (agentRow?.group_id) {
     const present = new Set(filtered.map(t => t.name));
     const explicitDeny = new Set(toolsPolicy.deny);
@@ -270,11 +165,10 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
       if (def) filtered.push(def);
     }
   }
-  // A long result's pointer names this reader of the agent's OWN results; every agent holds it, allow list or not (deny wins).
+  // The pointer reader names the agent's OWN results; every agent holds it, deny still wins.
   const reader = toolDefinitions.find((t) => t.name === RESULT_READ_TOOL);
   if (reader && !filtered.includes(reader) && !toolsPolicy.deny.includes(RESULT_READ_TOOL)) filtered.push(reader);
 
-  // 3. Permission-based filtering
   const hasFileRead = manifest.file_read === '*' || (Array.isArray(manifest.file_read) && manifest.file_read.length > 0);
   const hasFileWrite = manifest.file_write === '*' || (Array.isArray(manifest.file_write) && manifest.file_write.length > 0);
   const hasExec = manifest.exec_allow.length > 0;
@@ -293,21 +187,14 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
   if (!hasWebBrowse) removeTools.push('web_browse');
   if (!manifest.can_spawn_agents) removeTools.push('spawn_agent', 'kill_agent', 'spawn_timeout_decision');
 
-  // C27: update_agent (merged) self-gates its permissions/tools fields on
-  // can_assign_permissions inside the handler, so it stays available for
-  // name/model/prompt edits even without that permission (no removeTools here).
+  // update_agent self-gates permissions/tools edits on can_assign_permissions inside its handler.
 
-  // Only primary-level agents should have group management, session, and presence tools.
-  // C27: update_agent replaces update_agent_{model,profile}; tunnel replaces the
-  // tunnel_* quartet but self-gates mutating actions (start/stop/restart) to the
-  // primary inside the handler, so non-primary agents keep tunnel({action:"status"}).
-  // FA-TS2: the set here is PRIMARY_ONLY_TOOLS, the SAME constant executeToolInner
-  // enforces, so the surface strip and the executor gate cannot drift. reset_session
-  // is stripped here too but is intentionally not in that set (the Healer executes it).
+  // Only primary gets group, session and presence tools: PRIMARY_ONLY_TOOLS, the SAME constant that
+  // executeToolInner enforces; update_agent and tunnel self-gate mutations; reset_session strips here only.
   if (!isPrimaryAgent(agentId)) {
     removeTools.push(...PRIMARY_ONLY_TOOLS, 'reset_session');
   }
-  if (!holdsDojoInspect(agentId)) removeTools.push(DOJO_INSPECT);   // v3.5: the main agent, the Healer, and agents whose grant names it
+  if (!holdsDojoInspect(agentId)) removeTools.push(DOJO_INSPECT);   // the main agent, the Healer, and agents whose grant names it
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
   const agentClassification = agentRow?.classification ?? undefined;
@@ -315,11 +202,8 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique', 'technique_set_placeholder', 'technique_finalize');
   }
 
-  // FN-8: complete_task terminates the calling agent. It is a SPAWNED-agent
-  // lifecycle tool, not a general "mark work done" tool. Remove it from any
-  // agent that must not self-terminate (the primary, standalone agents), so a
-  // weak floor model can't end a persistent agent by emitting the call. The
-  // handler re-checks this same predicate as the actual engine enforcement.
+  // complete_task ends the CALLING agent: a SPAWNED-agent lifecycle tool, so agents that must
+  // not self-terminate never see it; the handler re-checks the same predicate as enforcement.
   const canSelfComplete = agentRow ? agentCanSelfComplete(agentId, agentRow) : false;
   if (!canSelfComplete) {
     removeTools.push('complete_task');
@@ -330,31 +214,16 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     filtered = filtered.filter(t => !removeTools.includes(t.name));
   }
 
-  // ── Permission-aware tool descriptions ──
-  // Customize tool descriptions with the agent's specific permissions so
-  // the agent knows upfront what it CAN do, not just what will be denied.
-  // This prevents loops where the agent tries a disallowed command 20+
-  // times because the generic description says "run a command" without
-  // specifying which commands are allowed.
-  //
-  // THE SUDO DOOR IS PART OF THE TRUTH (v3.2.2 blast, live): a model believes its
-  // tools — told "Any other command will be blocked", the primary never issues a
-  // sudo call at all and the policy broker, which intercepts sudo BEFORE the
-  // allowlist (proc.ts:188), goes unreached. So the sentence renders for the BOX
-  // PRIMARY under gated/free on BOTH command tools, whatever the allowlist shape;
-  // a finite allowlist adds the caveat that sudo does not widen the grant.
-  //
-  // UX-ACCESS A4 FOLD-IN: the door and the words now live in `brokers/sudo-claim.ts`,
-  // which the soul capability register reads too (`prompt/assembler.ts`). This file
-  // spells neither — one predicate, two renderings, no way for them to disagree.
+  // Permission-aware descriptions carry the agent's real limits so it does not retry a blocked
+  // command 20 times. THE SUDO DOOR IS PART OF THE TRUTH: a model believes its tools, so told that
+  // other commands are blocked it never issues the call. The door and its words live in
+  // brokers/sudo-claim.ts, which the soul capability register also reads: one predicate, two renderings.
   const mayRunAdminCommands = agentMayRunAdminCommands(agentId, sudoPolicy);
   const sudoDoorSentence = (finiteList: boolean): string =>
     (mayRunAdminCommands ? adminCommandsToolSentence(sudoPolicy, finiteList) : '');
   if (hasExec && manifest.exec_allow[0] !== '*') {
     const allowedCmds = manifest.exec_allow.join(', ');
-    // FN-8: only suggest complete_task(status="blocked") to agents that can
-    // actually self-complete; others get a routing/escalation hint that does
-    // not name a tool they don't have.
+    // Only suggest complete_task(status="blocked") to agents that can actually self-complete.
     const blockedHint = canSelfComplete
       ? 'use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked")'
       : 'use send_to_agent to ask an agent with broader permissions, or tell the person you are talking to you are blocked';
@@ -366,16 +235,13 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
       };
     });
   } else if (hasExec && sudoDoorSentence(false) !== '') {
-    // The DEFAULT primary manifest is exec_allow ['*'] — the branch above never runs
-    // for it, which is exactly how the first cut of this fix missed the only agent
-    // most boxes have. The generic description gets the same door sentence appended.
+    // DEFAULT primary manifest is exec_allow ['*']: the branch above never runs, door sentence appended.
     filtered = filtered.map(t => (t.name === 'exec'
       ? { ...t, description: `${t.description}${sudoDoorSentence(false)}` }
       : t));
   }
   {
-    // The script tool is the other road a sudo line travels (authorizeShellScript);
-    // a primary that favors `shell` over `exec` must read the same door.
+    // `shell` is the other road a sudo line travels (authorizeShellScript): same door sentence.
     const shellFinite = ((manifest.shell_allow ?? manifest.exec_allow)[0] ?? '*') !== '*';
     const shellSentence = sudoDoorSentence(shellFinite);
     if (shellSentence !== '') {
@@ -407,12 +273,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     });
   }
 
-  // ── tts_create voice catalog ──
-  // Inject the configured TTS model's known voices (id + character) into the
-  // tool description so the agent picks a real voice by vibe instead of
-  // guessing. OpenRouter returns null for supported_voices on gpt-audio, so
-  // the catalog is seeded in voice-catalog.ts. Models with no seed keep the
-  // generic static description (and skip dispatcher voice validation).
+  // Inject the configured model's real voice ids so the agent picks one instead of guessing.
   if (filtered.some(t => t.name === 'tts_create')) {
     try {
       const audioModel = getEffectiveAudioGenModel();
@@ -432,29 +293,21 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     } catch { /* best-effort enrichment, fall back to the static description */ }
   }
 
-  // ── Google Workspace tools (access-level gated) ──
   const isPrimary = isPrimaryAgent(agentId);
   const isPM = isPMAgent(agentId);
 
   const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimary, isPM);
-  // Path B: a kind's tools belong in the index if ANY of that kind's connected
-  // accounts has the service enabled, not just the position-1 row. Without
-  // this, a half-connected kind leaves a broken tool surface visible to the
-  // agent (calls return "Not authenticated"); the agent burns tokens trying
-  // the wrong tool, then has to recover.
+  // Service enabled on ANY connected account of the kind, not just the first row: a stricter test
+  // hides tools behind live accounts; a looser one advertises tools whose calls die "Not authenticated".
   const agentKindConnected = isAnyGoogleAccountConnected('agent');
   const userKindConnected = isAnyGoogleAccountConnected('user');
 
-  // FA-TS1 (tier 1): precompute per-(kind, service) enabled flags ONCE, one
-  // google_accounts read per kind, instead of a full SELECT per tool inside
-  // isToolEnabledByService (which ran ~109 times). Same fact door, identical
-  // results; the memo above then reuses this across the whole tool loop.
+  // Flags precomputed ONCE per kind (one accounts read), not a SELECT per tool; same fact door.
   const googleServiceFlags = {
     agent: getGoogleServiceFlagsForKind('agent'),
     user: getGoogleServiceFlagsForKind('user'),
   } as const;
 
-  // Service-to-tool-prefix mapping for filtering by enabled service.
   const serviceToolPrefixes: Record<string, string[]> = {
     gmail: ['gmail_'],
     calendar: ['calendar_'],
@@ -465,16 +318,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     forms: ['forms_'],
   };
 
-  /**
-   * Two filters in one: (1) is this tool's kind connected (any account)?
-   * (2) does any connected account of that kind have the underlying service
-   * enabled? Both must pass.
-   *
-   * `user_*` tools route through the user kind; everything else through the
-   * agent kind. The check strips `user_` to find the service prefix so
-   * `user_gmail_inbox` correctly maps to the Gmail service (not the catch-all
-   * "always allowed" branch).
-   */
+  /** Both must pass: kind connected AND service enabled; `user_*` strips `user_` to find the service. */
   function isToolEnabledByService(toolName: string): boolean {
     const isUserKind = toolName.startsWith('user_');
     const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
@@ -494,43 +338,28 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions, ...slidesToolDefinitions, ...formsToolDefinitions];
     filtered.push(...allGoogleTools.filter(t => isToolEnabledByService(t.name)));
   } else if (googleAccess === 'read') {
-    // Read-only agents (Ronin/Apprentice): read-only tools for Gmail/Calendar/
-    // Drive/Docs/Sheets, PLUS the full Slides toolkit, because slides decks
-    // are a standalone creative output that's safe for sub-agents to produce.
-    // They still cannot send email, edit docs, or modify Drive files directly.
+    // Read tier: read tools PLUS all of Slides (decks are safe output); no send, no doc/Drive edits.
     filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
     filtered.push(...slidesToolDefinitions.filter(t => isToolEnabledByService(t.name)));
-    // Forms is gated tighter than Slides because forms collect responses from
-    // external people (durable real-world impact). Sub-agents get the read
-    // tools (forms_get, forms_list_responses), they can summarize survey
-    // results, but not the create/edit tools. Primary owns those.
+    // Forms collects answers from outside people, so read tools only; create/edit stay with the primary.
     filtered.push(
       ...formsToolDefinitions
         .filter(t => t.name === 'forms_get' || t.name === 'forms_list_responses')
         .filter(t => isToolEnabledByService(t.name)),
     );
-    // drive_upload is also exposed because it's the only way to get a local
-    // file (e.g. an Imaginer-generated image) into a deck via
-    // slides_add_image_from_drive. Without it the Slides toolkit is half
-    // broken for any deck that needs an inline image. The upload goes into
-    // the dojo owner's Drive, same account these read-tier agents already
-    // have read access to, so the trust delta is small.
+    // drive_upload rides the read tier: without it slides_add_image_from_drive cannot reach a local file.
     filtered.push(
       ...googleWriteToolDefinitions
         .filter(t => t.name === 'drive_upload')
         .filter(t => isToolEnabledByService(t.name)),
     );
   }
-  // googleAccess === 'none': no Google tools added
 
-  // ── Microsoft 365 tools (access-level gated) ──
   const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimary, isPM);
   const agentSlotMsConnected = isAnyMicrosoftAccountConnected('agent');
   const userSlotMsConnected = isAnyMicrosoftAccountConnected('user');
 
-  // FA-TS1 (tier 1): precompute per-(kind, service) MS flags ONCE (one
-  // microsoft_accounts read per kind) instead of a full SELECT per tool inside
-  // isMsToolEnabledByService (which ran ~76 times). Same fact door.
+  // MS flags once per kind (one accounts read), not a SELECT per tool; same fact door.
   const msServiceFlags = {
     agent: getMsServiceFlagsForKind('agent'),
     user: getMsServiceFlagsForKind('user'),
@@ -546,9 +375,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     tasks: ['tasks_'],
   };
 
-  /** Same two-stage gate as the Google version, multi-account aware: the kind
-   *  must have a connected account AND some connected account of that kind must
-   *  have the service enabled. */
+  /** Like the Google gate, multi-account: some connected account of the kind with the service enabled. */
   function isMsToolEnabledByService(toolName: string): boolean {
     const isUserKind = toolName.startsWith('user_');
     const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
@@ -569,15 +396,8 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
   } else if (msAccess === 'read') {
     filtered.push(...microsoftReadToolDefinitions.filter(t => isMsToolEnabledByService(t.name)));
   }
-  // msAccess === 'none': no Microsoft tools added
 
-  // ── F4: unified email_search (merged read across every connected mailbox) ──
-  // Available whenever at least one MAIL-capable account is connected on a slot
-  // the agent can read (Gmail on any connected Google account, or Outlook on any
-  // connected Microsoft account). The merged calendar_agenda ships as part of the
-  // Google read set above; email_search is registered here because it is a NEW,
-  // cross-provider tool with no provider array of its own. It deliberately gets
-  // no user_ twin and no `account` param (it spans every mailbox at once).
+  // Unified cross-mailbox read: any readable slot with a MAIL-capable account; no user_ twin or param.
   const googleMailCapable = googleAccess !== 'none'
     && ((agentKindConnected && googleServiceFlags.agent.gmail) || (userKindConnected && googleServiceFlags.user.gmail));
   const msMailCapable = msAccess !== 'none'
@@ -586,12 +406,8 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     filtered.push(EMAIL_SEARCH_TOOL);
   }
 
-  // The merged `calendar_agenda` lives in googleReadToolDefinitions (so the
-  // user_ generator + registration loops find it), and the Google filter above
-  // already added it when the AGENT's Google calendar is enabled. But the merged
-  // view spans every provider, so it must also be available on a Microsoft-only
-  // or owner-Google-only box. Surface it whenever ANY connected calendar exists
-  // and it isn't already present (the guard prevents a double-push).
+  // The merged `calendar_agenda` lives in googleReadToolDefinitions so the user_ generator finds it,
+  // but it spans every provider: surface it when ANY calendar exists and the Google pass skipped it.
   const calendarCapable =
     (googleAccess !== 'none' && ((agentKindConnected && googleServiceFlags.agent.calendar) || (userKindConnected && googleServiceFlags.user.calendar)))
     || (msAccess !== 'none' && ((agentSlotMsConnected && msServiceFlags.agent.calendar) || (userSlotMsConnected && msServiceFlags.user.calendar)));
@@ -600,19 +416,8 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     if (mergedAgenda) filtered.push(mergedAgenda);
   }
 
-  // ── Office document tools ──
-  // Three tiers of gating:
-  //   - CREATE tools (Word / Excel / PowerPoint generation) write to disk
-  //     under ~/.dojo/uploads/<agentId>/ when Microsoft isn't connected,
-  //     just like pdf_create. Exposed to every agent with the npm packages.
-  //   - LOCAL EDIT/READ tools (Word: append/insert/replace/delete/outline/read;
-  //     Excel: get/write range, append rows, add/delete sheet) operate on a
-  //     LOCAL path too, so they're granted alongside the creates, otherwise a
-  //     local-only setup could create docs/workbooks but not edit them, forcing
-  //     wasteful full-file regeneration. Two honestly-named arrays (Word +
-  //     Excel) so neither can silently hide the other's membership.
-  //   - The remaining EDIT/READ tools (PowerPoint slide ops) genuinely need the
-  //     Graph connection, gated behind 'full'.
+  // Office CREATE + LOCAL Word/Excel edit tools write under the agent's uploads dir (npm only, like
+  // pdf_create), so a local-only box edits what it makes; slide ops need Graph: 'full' only.
   if (areOfficePackagesInstalled()) {
     filtered.push(...officeCreateToolDefinitions);
     filtered.push(...officeWordEditToolDefinitions);
@@ -622,42 +427,18 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     filtered.push(...officeEditToolDefinitions);
   }
 
-  // ── Plaud (meeting recordings) ──
-  // Read-only across the board. No slot model (single account per Dojo
-  // install) and no service-level toggles, if the user connected Plaud,
-  // every agent that has integration access sees the full tool set.
-  // UX-ACCESS A1: connectivity AND the agent's grant. Census C13 — this push had
-  // no identity check at all, so even the PM (explicitly `none` for both
-  // Workspace providers) received the full Plaud set. Every migrated agent
-  // carries `plaud: true`, so nothing moves until an owner turns one off.
+  // Plaud is read-only, one account per install, no service toggles: connected AND the agent's
+  // plaud grant, both required. Without it the PM is offered a full Plaud set it cannot use.
   if (isPlaudConnected() && mayUsePlaud(agentId)) {
     filtered.push(...plaudReadToolDefinitions);
   }
 
-  // ── Agent credentials vault ──
-  // Always available to every agent. Storage for credentials agents
-  // collect while building techniques (third-party API keys, tokens).
-  // Separate from secrets.yaml (platform-managed) and vault entries
-  // (knowledge that decays). Encrypted at rest with a master key in
-  // secrets.yaml.
-  // UX-ACCESS A1: "always available to every agent" is now "available to an agent
-  // that holds a credential grant" — and every migrated agent holds `'*'`, so the
-  // list is unchanged. An agent granted NOTHING is not shown a vault it may not
-  // open; one granted a SUBSET keeps the tools and is refused per service at row 16.
+  // The credentials vault (third-party API keys, encrypted at rest) is gated by the agent's
+  // credential grant: nothing granted, no vault advertised; a subset keeps the tools, refused per service.
   if (holdsCredentialGrant(agentId)) filtered.push(...credentialsToolDefinitions);
 
-  // ── Multi-account description annotation ──
-  // Every Google/Microsoft tool gets its description prefixed with
-  // "[Routes to <email>, <slot> <provider>]" so the agent never has
-  // to guess which account a tool hits. Without this the agent reads
-  // descriptions like "the user's connected account" generically and
-  // can't name the email in chat without a tool call. Office document
-  // tools and pure-utility tools (slides/forms when not user-facing)
-  // aren't annotated, they don't have a slot to disambiguate.
-  //
-  // Pull fresh emails from config here (not at module load) so a
-  // reconnect to a different account updates the annotations on the
-  // very next agent turn, no server restart needed.
+  // [Routes to <email>, <slot> <provider>] prefixes name the exact account; no-slot tools skip it.
+  // Emails are read HERE, not at module load, so a reconnect shows up on the next turn, no restart.
   const agentGoogleEmail = agentKindConnected ? getGoogleWorkspaceConfig('agent').accountEmail : null;
   const userGoogleEmail = userKindConnected ? getGoogleWorkspaceConfig('user').accountEmail : null;
   const agentMsEmail = agentSlotMsConnected ? getMicrosoftWorkspaceConfig('agent').accountEmail : null;
@@ -674,47 +455,19 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     ...microsoftWriteToolDefinitions.map(t => t.name),
   ]);
 
-  // ── THE POSITIVE CATEGORY GRANT (UX-ACCESS A1) ──
-  // The last filter, and deliberately last: every strip and every append above
-  // has already run, so this reads the surface the agent would have had and
-  // keeps only what its grants name. Every migrated agent carries `'*'` — no
-  // mechanism at HEAD withheld a category, so the honest snapshot withholds
-  // none — which is what makes A1 invisible while A3's panel has something real
-  // to switch. A tool in no category is never refused here (`read.ts`).
+  // Deliberately the LAST filter: it reads the surface every strip and append above produced and
+  // keeps only categories the agent's grants name; a tool in no category is never refused (read.ts).
   filtered = filtered.filter(t => t.name === DOJO_INSPECT || toolCategoryGranted(agentId, t.name));   // dojo_inspect: its grant is its own (strip above)
 
-  // ── SURFACE TRUTH FOR THE CHANNEL TOOLS (UX-ACCESS A4) — A1 §6.5, closed ──
-  //
-  // A1 moved every channel DOOR onto the grant and left the ADVERTISEMENT where
-  // it was, deliberately: stripping these names would have moved ~110 agents'
-  // tool indexes, and A1 was committed to moving no prompt byte. It handed the
-  // question here — *"A4 owns prompt/capability truth"* — and this is it.
-  //
-  // MEASURED on the owner's box at `ac945a99`, before the filter existed: 105 of
-  // 111 agents were advertised exactly six tools they hold no grant for —
-  // `imessage_send`, `imessage_list_contacts`, `sms_send`, `voice_call`,
-  // `voice_call_end`, `voice_call_status` — and every one of the six is refused
-  // for those agents at a door that already reads `mayUseChannel` (ladder row 7
-  // for the two iMessage names, the `cat/comms.ts` handler walls for the other
-  // four). So this strips nothing an agent could do; it stops the prompt saying
-  // it could. That is the `can_spawn_agents` shape exactly: the tool leaves the
-  // list when the authority says no, and `generateToolsGuidance_v2`'s per-tool
-  // blocks — the `## iMessage` paragraph among them — are keyed on the list, so
-  // the guidance stops claiming the capability WITHOUT a second rule being
-  // written anywhere.
-  //
-  // The channel map is `channelForTool`, derived from the build-checked
-  // `SEND_TO_PEOPLE` surface, so a send tool added tomorrow is covered the day
-  // it lands. A tool that reaches nobody answers `null` and is never touched.
+  // Strip advertised channel tools whose channel grant the agent lacks: nothing executable is removed
+  // (the doors already refuse); it stops the prompt and the guidance claiming an unbought capability.
   filtered = filtered.filter(t => {
     const channel = channelForTool(t.name);
     return channel === null || mayUseChannel(agentId, channel);
   });
 
   const annotated = filtered.map(t => {
-    // F4: `calendar_agenda` is the MERGED cross-account view, not routed to a
-    // single email — skip the "[Routes to <email>, agent's Google account]"
-    // prefix that would be misleading here. Its user_ variant stays annotated.
+    // calendar_agenda is the merged cross-account view, so it skips the misleading [Routes to] prefix.
     if (t.name === 'calendar_agenda') return t;
     const isUserSlot = t.name.startsWith('user_');
     let routesTo: string | null = null;

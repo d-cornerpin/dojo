@@ -1,30 +1,18 @@
-// B11 (GitHub #22) — THE REFUSAL FOR A CALL MADE ONLY OF UNKNOWN ARGUMENTS.
-//
-// When the arguments an agent sent are ALL ones the tool does not declare, the call is not "a call
-// with a stray extra"; it is a call to a different shape of the tool, and running it empty let the
-// model read past the warning to a line that said "done". The door refuses it before any gate, with
-// what the tool does take and the declared name each unknown one most likely meant. When some
-// declared argument IS present this returns null and the old warning stays (the tools' own
-// empty-change guards own "an id but no action"). A call with no arguments at all has no extras and
-// never reaches here: the required-field door owns it. A tool that declares no arguments is exempt:
-// it runs the same way whatever was passed, so there is nothing for the call to have meant.
+// Refuse a call whose arguments are ALL unknown to the tool: running it empty would report
+// success for a shape never accepted. Null when some declared argument is present (the per-tool
+// warnings own that) or the tool declares none; a call with no args belongs to the required-field door.
 import { canonicalToken, editDistance } from '../../tools/name-help.js';
 import { workOpCallName, workOpsThatRead, type WorkOp } from '../../tools/work-verbs.js';
 
-// The argument NAMES a call probably meant, lexical only (no synonym table): an edit distance of two
-// or less, or a shared stem (a whole underscore-separated word, singularized: "labels" is the tail of
-// "add_labels"). One-and-two-letter words never count as a stem ("id" is in half the schemas).
+// Likely-meant names, lexical only: edit distance of two or less, or one shared underscore
+// stem of at least three letters. Short words like "id" sit in half the schemas.
 
 function argTokens(name: string): string[] {
   return name.toLowerCase().split('_').filter((t) => t.length >= 3).map(canonicalToken);
 }
 
-/**
- * For each unknown argument name, the declared name(s) it most likely meant. A
- * close spelling wins over a shared stem; a stem that fits several declared names
- * (`labels` ~ `add_labels`, `remove_labels`) returns every one, in declared order,
- * rather than picking one. An argument with nothing close returns nothing.
- */
+/** For each unknown argument name, the declared name(s) it most likely meant. A close
+ * spelling wins over a shared stem; a stem fitting several names returns them all. */
 export function suggestArgNames(
   unknown: string[],
   declared: readonly string[],
@@ -70,12 +58,8 @@ export function allUnknownArgsRefusal(
     + `Call load_tool_docs(tools=["${name}"]) and retry with the declared names. Nothing was done.`;
 }
 
-/**
- * v3.5 field fix 3, test-2 rank 3: the refusal for DECLARED arguments the chosen operation does not read
- * (`unreadWorkArgs`, `tools/work-verbs.ts`). Facts only: which operation, which arguments, that nothing
- * was done, and which operations read each one, from the same map. The tool text stays unchanged; the
- * guidance rides here.
- */
+/** Refusal for declared arguments the chosen operation does not read (`unreadWorkArgs`,
+ * `tools/work-verbs.ts`): facts only, nothing was done, and the tool text stays as it is. */
 export function unreadArgsRefusal(op: WorkOp, unread: readonly string[]): string {
   const quoted = unread.map((a) => `"${a}"`);
   const list = quoted.length <= 1 ? quoted.join('') : `${quoted.slice(0, -1).join(', ')} or ${quoted[quoted.length - 1]}`;
