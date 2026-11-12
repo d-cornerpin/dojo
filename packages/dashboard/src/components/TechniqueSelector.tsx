@@ -10,12 +10,11 @@ interface TechniqueSelectorProps {
   selected: string[];
   onChange: (techniques: string[]) => void;
   /**
-   * UX-ACCESS A4 — the technique IDs this agent is GRANTED, when the caller
-   * knows them. Equipping is a pre-load, not a grant: the server's renderer
-   * skips an equipped-but-ungranted id, so a picker that still offers one is
-   * offering something that will load nothing. Omitted (the create-agent form,
-   * which has no agent to read a grant from) means "no opinion" and the list is
-   * the published set exactly as before.
+   * The technique IDs this agent is GRANTED, when the caller knows them.
+   * Equipping is a pre-load, not a grant: the server's renderer skips an
+   * equipped-but-ungranted id, so a picker that still offers one offers something
+   * that loads nothing. Omitted (the create-agent form has no agent to read a
+   * grant from) means "no opinion" and the list is the full published set.
    */
   only?: string[];
 }

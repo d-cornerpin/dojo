@@ -4,7 +4,7 @@ import type { WsEvent } from '@dojo/shared';
 import { getToken } from '../lib/api';
 
 // ════════════════════════════════════════
-// WebSocket Hook — bulletproof version
+// WebSocket Hook
 // Heartbeat, auto-reconnect with backoff,
 // connection status, StrictMode safe
 // ════════════════════════════════════════
@@ -52,7 +52,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
       clearTimeout(heartbeatTimeoutRef.current);
     }
     heartbeatTimeoutRef.current = setTimeout(() => {
-      // No ping received — connection is dead
+      // No ping received, so the connection is dead
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close(4000, 'Heartbeat timeout');
       }
@@ -66,7 +66,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
 
     const token = getToken();
     if (!token) {
-      // No token yet — retry in 2s (might be during OOBE)
+      // No token yet, retry in 2s (might be during OOBE)
       reconnectTimeoutRef.current = setTimeout(connect, 2000);
       return;
     }
@@ -75,7 +75,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
     try {
       const payload = JSON.parse(atob(token.split('.')[1]));
       if (payload.exp && payload.exp * 1000 < Date.now()) {
-        // Token expired — clear it and redirect to login
+        // Token expired: clear it and redirect to login
         localStorage.removeItem('dojo_token');
         window.location.href = '/login';
         return;
@@ -124,7 +124,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
         try {
           const data = JSON.parse(event.data);
 
-          // Handle server pings — respond with pong
+          // Handle server pings: respond with pong
           if (data.type === 'ping') {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'pong' }));
@@ -145,9 +145,8 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
           }
         } catch (err) {
           // A non-JSON frame or a throwing subscriber lands here. The dispatch
-          // stays isolated (a bad message must not kill the socket), but no
-          // longer swallows silently: surface it so payload drift or a broken
-          // subscriber is at least visible in the console.
+          // stays isolated (a bad message must not kill the socket) and logs to the
+          // console so payload drift or a broken subscriber is visible.
           console.error('[useWebSocket] dropped a WS message during dispatch', err);
         }
       };
@@ -178,7 +177,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
       };
 
       ws.onerror = () => {
-        // onerror is always followed by onclose — let onclose handle reconnection
+        // onerror is always followed by onclose, so let onclose handle reconnection
         // Don't call ws.close() here, it will trigger onclose
       };
     } catch {

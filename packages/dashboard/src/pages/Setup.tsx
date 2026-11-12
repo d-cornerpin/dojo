@@ -46,7 +46,7 @@ const STEP_LABELS: Record<Step, string> = {
 };
 
 // The setup wizard renders OUTSIDE the authenticated chrome (and thus outside
-// the app-wide OrbProvider + WebSocketProvider), so it brings its own — the
+// the app-wide OrbProvider + WebSocketProvider), so it brings its own, the
 // same way Login does for the orb. The WebSocketProvider is needed because the
 // voice step subscribes to live model-download progress over the socket.
 export const Setup = () => (
@@ -66,7 +66,7 @@ const SetupWizard = () => {
   const stageRef = useRef<HTMLDivElement>(null);
   const dojoOrb = useDojoOrb();
 
-  // The orb sits at the top of the stage, observing — a calm, attentive presence
+  // The orb sits at the top of the stage, observing, a calm, attentive presence
   // (curious mood over the idle base) watching the user equip their dojo.
   useEffect(() => {
     dojoOrb.setState('listening');
@@ -152,7 +152,7 @@ const SetupWizard = () => {
         <div className="dojo3-backdrop" aria-hidden="true" />
         <DojoOrb stageRef={stageRef} />
         <div className="dojo3-setup__layout">
-          {/* Fixed chrome — the orb (above), the DOJO wordmark, the progress, and
+          {/* Fixed chrome: the orb (above), the DOJO wordmark, the progress, and
               the step label all stay put; only the card below scrolls */}
           <div className="dojo3-setup__chrome">
             <span className="dojo3-setup__wordmark">DOJO</span>
@@ -177,7 +177,7 @@ const SetupWizard = () => {
 
           {/* Only this region scrolls */}
           <div className="dojo3-setup__scroll">
-            {/* Step Content — steps stay mounted once visited so state is preserved on back/next */}
+            {/* Step Content: steps stay mounted once visited so state is preserved on back/next */}
             <div className="dojo3-setup__card">
           <div style={{ display: currentStep === 'welcome' ? 'block' : 'none' }}>
             {visitedSteps.has('welcome') && <WelcomeStep />}
@@ -247,7 +247,7 @@ const SetupWizard = () => {
 
           </div>
 
-          {/* Fixed footer — the nav stays put while the card scrolls */}
+          {/* Fixed footer: the nav stays put while the card scrolls */}
           <div className="dojo3-setup__footer">
             <div className="dojo3-setup__nav">
               <button
@@ -451,7 +451,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
         Connect a cloud AI provider for your agents. You can add more providers later in Settings.
       </p>
 
-      {/* Everything already configured \u2014 so a re-run of the wizard shows what's
+      {/* Everything already configured, so a re-run of the wizard shows what's
           set up instead of looking empty */}
       {providers.length > 0 && (
         <div className="space-y-2">
@@ -999,7 +999,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
       if (existingName) setPmName(existingName);
-      // v3.5: the cheapest model the server accepts for an agent (never a local one it refuses).
+      // The cheapest model the server accepts for an agent (never a local one it refuses).
       setSelectedModel(existingModel || await defaultRoleModel(enabled));
       if (existingName) setSaved(true);   // already set up → step through freely
     })();
@@ -1493,7 +1493,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
     // Send welcome message to start the bridge and verify it works
     if (enabled && effectiveDefault) {
       setSending(true);
-      // Through the one door (BACKLOG line 31): the dead-network case arrives as
+      // Through the one request door: the dead-network case arrives as
       // `{ ok: false }` rather than a throw, so the two branches below are one.
       const result = await api.request('/system/imessage/welcome', {
         method: 'POST',
@@ -1798,7 +1798,7 @@ export const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void 
   const [error, setError] = useState<string | null>(null);
 
   // Hydrate from existing search config. The key is a secret (never echoed), but
-  // hasKey tells us it's configured — pre-fill the provider and mark ready so you
+  // hasKey tells us it's configured, so pre-fill the provider and mark ready so you
   // can step through without re-entering the key.
   useEffect(() => {
     let cancelled = false;
@@ -1813,7 +1813,7 @@ export const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void 
 
   const handleSave = async () => {
     if (!apiKey.trim()) {
-      // Skip — no key provided
+      // Skip: no key provided
       setSaved(true);
       return;
     }

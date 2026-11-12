@@ -7,7 +7,7 @@ import { copyTextToClipboard } from '../lib/clipboard';
 // Twilio channel card. Lives on the Channels tab (it's a messaging channel,
 // like the iMessage bridge). A master-enable toggle gates the whole panel:
 // when off, everything below collapses. When on, the connect flow appears
-// ("paste Account SID + Auth Token, Test, Connect" — API-key auth, not OAuth),
+// ("paste Account SID + Auth Token, Test, Connect", API-key auth, not OAuth),
 // and once connected the card grows additional sections: feature toggles,
 // numbers management, safe-sender lists for SMS + Voice, and webhook URLs to
 // copy into the Twilio console.
@@ -141,7 +141,7 @@ export const TwilioSettings = () => {
         </p>
       )}
 
-      {/* Master enable — mirrors the iMessage Bridge toggle. When off, the rest
+      {/* Master enable, mirrors the iMessage Bridge toggle. When off, the rest
           of the panel collapses. */}
       {!collapsed && (
         <div className="flex items-center justify-between">
@@ -377,7 +377,7 @@ const NumbersSection = ({ config, reload }: { config: api.TwilioConfigDto; reloa
 
 export const VoiceSettingsSection = ({ config, onPatch }: { config: api.TwilioConfigDto; onPatch: (p: api.TwilioSettingsPatchDto) => Promise<void> }) => {
   // The PATCH answer replaces `config`, so these two fields type into a local
-  // draft and save on blur — otherwise React puts the old value back after
+  // draft and save on blur, otherwise React puts the old value back after
   // every key press and each keystroke is a server call.
   const [minutes, setMinutes] = useState(String(config.voiceMaxMinutesPerCall));
   const [greeting, setGreeting] = useState(config.voiceVoicemailGreeting);

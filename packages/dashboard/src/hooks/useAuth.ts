@@ -36,7 +36,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (!result.ok && (result.error === 'Unauthorized' || result.error === 'Invalid or expired token')) {
         break;
       }
-      // Server might not be up yet — wait and retry
+      // Server might not be up yet, wait and retry
       if (attempt < 2) {
         await new Promise((r) => setTimeout(r, 1500));
       }

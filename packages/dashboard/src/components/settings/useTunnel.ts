@@ -1,4 +1,4 @@
-// ── State and actions for the Remote Access card (task 9301: a refused action is reported).
+// ── State and actions for the Remote Access card; a refused action is reported to the user.
 
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
@@ -30,11 +30,8 @@ export const useTunnel = () => {
     const result = await api.request<TunnelStatus>('/system/tunnel');
     setLoading(false);
     if (!result.ok) {
-      // ⚠ THE DEFECT THIS REPLACES (BACKLOG line 31): the bare `fetch` here had
-      // no `.catch` and `load` is called from an effect, so with no server the
-      // rejection ESCAPED — and `status` stayed null, which this card draws as
-      // "cloudflared is not installed". It told the owner a lie about his box
-      // and offered him an install button for software he already has.
+      // A failed request must set an error: `status` stays null otherwise, which this card
+      // draws as "cloudflared is not installed" and offers an install button.
       setLoadError(result.error);
       return;
     }

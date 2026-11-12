@@ -124,7 +124,7 @@ export const Memory = () => {
     };
   }, [subscribe, agentId, loadDag, rightPanel]);
 
-  // Load vault entries — same counter: an answer for an older keystroke never
+  // Load vault entries, same counter: an answer for an older keystroke never
   // overdraws the newest search's entries or stats.
   const vaultSeq = useRef(0);
   const loadVault = useCallback(async () => {
@@ -392,7 +392,7 @@ export const Memory = () => {
         </div>
       )}
 
-      {/* DAG actions row (formerly the bottom bar). Inject / Compact /
+      {/* DAG actions row. Inject / Compact /
           Briefing live here so the DAG view keeps its full operator set. */}
       {mainTab === 'dag' && (
         <div className="toolbar" style={{ marginTop: 14 }}>

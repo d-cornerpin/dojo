@@ -1,4 +1,4 @@
-// ── The Dojo's two standard local models (v3.5): their state, read from the server ──
+// ── The Dojo's two standard local models: their state, read from the server ──
 //
 // Shown on the setup screen (progress while they install themselves; no choice) and in the Ollama
 // tile under Settings → Dojo (with a Repair button). The tags are the server's: the dashboard
@@ -32,7 +32,7 @@ export const StandardModels = ({ repair, onState }: { repair?: boolean; onState?
   }, [onState]);
 
   useEffect(() => { void load(); }, [load]);
-  // Poll while an install is running, so the progress lines move — and while a model is missing that no
+  // Poll while an install is running, so the progress lines move, and while a model is missing that no
   // install has tried yet (setup starts it a moment after this mounts). Once an attempt has left lines,
   // polling stops: the server retries by itself whenever Ollama answers, and Repair asks it now.
   const awaitingFirstAttempt = !!state && state.lines.length === 0 && state.ollama === 'running'

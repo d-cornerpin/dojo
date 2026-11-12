@@ -45,8 +45,7 @@ export function skippedLinksMessage(paths: string[]): string {
 
 async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: ExportResolution[]; skippedLinks: string[] }> {
   // `requestRaw`, not `request`: this call's answer is a zip plus two RESPONSE
-  // HEADERS (`X-Dojo-Export-Resolutions`, `Content-Disposition`) that no JSON
-  // envelope carries (BACKLOG line 31).
+  // HEADERS (`X-Dojo-Export-Resolutions`, `Content-Disposition`) that no JSON envelope carries.
   const sent = await requestRaw(`/techniques/${id}/export`, { method: 'POST' });
   if (!sent.ok) throw new Error(sent.error);
   const res = sent.response;
@@ -71,7 +70,7 @@ async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: Expo
       const json = atob(resolutionsHeader);
       const parsed = JSON.parse(json);
       if (Array.isArray(parsed)) resolutions = parsed as ExportResolution[];
-    } catch { /* malformed header — ignore, still deliver the zip */ }
+    } catch { /* malformed header: ignore, still deliver the zip */ }
   }
 
   // Links inside the technique folder are never followed into the package; the server names them.
@@ -131,7 +130,7 @@ export const TechniqueCard = ({
       // Auto-resolver ran when TECHNIQUE.md referenced files we
       // couldn't drop straight into the zip. Summarize: how many got
       // bundled (we found the file and shipped it) vs how many got
-      // added as manual_steps (couldn't fetch — receiver's user
+      // added as manual_steps (couldn't fetch; receiver's user
       // supplies). Non-blocking toast; the zip already downloaded.
       if (resolutions.length > 0) {
         const bundled = resolutions.filter(r => r.action === 'bundled').length;
@@ -144,9 +143,8 @@ export const TechniqueCard = ({
         else toast.info(summary);
       }
     } catch (err) {
-      // Hard failures (technique not found, IO error, etc.) — error
-      // toast. Validator refusals no longer reach this path; they're
-      // auto-resolved server-side and never throw.
+      // Hard failures (technique not found, IO error, etc.) get an error toast.
+      // Validator refusals never throw: they are auto-resolved server-side.
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setSharing(false);

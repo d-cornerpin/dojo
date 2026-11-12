@@ -37,23 +37,16 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
   apprentice: 'Apprentice',
 };
 
-// ⚰ THE "EQUIPPED TECHNIQUES" CARD MOVED (UX-ACCESS A3). It is inside the Access
-// panel now — two controls for one field is the drift this overhaul exists to
-// end. The behaviour is carried verbatim: the same `TechniqueSelector`, the same
-// `updateAgentConfig({equippedTechniques})`, the same save-on-change.
+// Equipped techniques live inside the Access panel (the same `TechniqueSelector` and
+// `updateAgentConfig({equippedTechniques})`), so one field has one control.
 //
-// ⚰ AND THE "PERMISSIONS" CARD IS GONE (UX-ACCESS A6). Its toggles are rows two
-// and five of the Access panel — "What it can reach" and "What it may manage" —
-// and its storage is untouched: the same `permissions` blob, the same
-// `tools_policy` column, the same `config.shareUserProfile`, written through the
-// same PUT. Two cards answering overlapping questions, neither of which
-// mentioned the other, is exactly the drift this overhaul exists to end; the
-// card that survives is the one the owner can read.
+// The permission toggles are rows two and five of the Access panel, "What it can reach" and
+// "What it may manage". They write the same `permissions` blob, `tools_policy` column and
+// `config.shareUserProfile` through the same PUT.
 //
-// What the card ALSO carried was the rule that a platform agent's manifest is
-// not editable here. That rule is unchanged and now rides one prop
-// (`manifestEditable`), decided HERE — the page knows which agent is the main
-// one — so the panel never has to learn a rank to draw itself.
+// A platform agent's manifest is not editable here. That rule rides one prop
+// (`manifestEditable`), decided HERE from the sensei classification (the dojo's built-in
+// agents), so the panel never has to classify an agent to draw itself.
 
 // ── Memory card ──
 //
@@ -110,11 +103,9 @@ const MemoryCard = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 // state / handlers / API calls from AgentDetail's ConfigTab.
 const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: () => void }) => {
   const toast = useToast();
-  // `isSensei` was called `isPrimary` and meant neither: it is the CLASSIFICATION,
-  // and six agents on the owner's box carry it while exactly one of them is the
-  // primary. Three cards keyed claims about "the primary agent" off it and two of
-  // those claims were false for five of the six (UX-ACCESS A3). The real primary
-  // comes from the platform, through the provider the agent card already uses.
+  // `isSensei` is the CLASSIFICATION, which many agents carry while exactly one is the
+  // primary. Claims about "the primary agent" must key off `primaryId`, which comes from
+  // the platform through the provider the agent card already uses.
   const isSensei = agent.classification === 'sensei';
   const { primaryId } = useActiveAgent();
   const isThisPrimary = primaryId != null && agent.id === primaryId;
@@ -150,7 +141,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         api.getModels(),
         api.getProviders(),
       ]);
-      if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled && !m.capabilities.includes('decision')));   // v3.5: never the Dojo's decision model
+      if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled && !m.capabilities.includes('decision')));   // never the Dojo's decision model
       if (providersResult.ok) {
         const map: Record<string, string> = {};
         for (const p of providersResult.data) map[p.id] = p.name;
@@ -223,7 +214,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 
   return (
     <>
-    {/* ── ACCESS (UX-ACCESS A3, one panel since A6) ──
+    {/* ── ACCESS ──
         Full width rather than a masonry sibling: one row alone is 38 checkboxes,
         and a 310px column would make the owner's most consequential card the
         hardest one to read. Everything else keeps its column. */}
@@ -383,8 +374,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         )}
       </div>
 
-      {/* Memory. Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo"): the main agent always
-          dreams, so it has no Skip-in-Dreamer toggle. */}
+      {/* Memory. The main agent always dreams, so it has no Skip-in-Dreamer toggle. */}
       {!isThisPrimary && <MemoryCard agent={agent} onUpdated={onUpdated} />}
       <QuietTimeCard agent={agent} onUpdated={onUpdated} />
     </div>
@@ -393,7 +383,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 };
 
 // Keyed by id: the route reuses one element for every agent, so each agent gets a fresh panel
-// and a late answer for the agent you left lands in a panel that is gone (GitHub #14).
+// and a late answer for the agent you left lands in a panel that is gone.
 export const AgentConfigPanel = () => {
   const { id } = useParams<{ id: string }>();
   return <AgentConfigFor key={id} id={id} />;
