@@ -1,17 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — PERSISTING WHAT THE MODEL SAID, moved byte-faithfully out of
-// `loop.ts`'s `postCallClassify` span: the XML-fallback detection, the attachment
-// drain, the assistant row itself (text plus `tool_use` blocks), the iMessage
-// attachment route and the streaming-complete broadcast.
-//
-// TWO OF THE STEP'S FOUR OUTPUTS ARE BORN HERE — `hasXmlFallbackTools` and
-// `effectiveModelIdForPersist` — and the driver hands both straight to `execute` in
-// the same iteration, which is why they are OUTPUTS rather than fields on the bag.
-//
-// THE FILLER LATCH IS READ AND WRITTEN HERE. `turnCtx.voiceFillerFired` is CUT 8's
-// second carrier: kept as a module local it would reset on every iteration and the
-// caller would hear the engine's fillers stacked one after another.
-// ════════════════════════════════════════
+// Persists the model's output: the assistant row (text plus tool_use blocks), attachments, fillers
+// and broadcasts. The filler latch lives on `turnCtx`, not a module local, so it fires once per turn.
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { stripMoodMarker } from '@dojo/shared';
@@ -28,17 +16,8 @@ import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 const logger = createLogger('v2-loop');
 
 /**
- * UX-REPAIR ROUND 12 T47 — THE OWED COMPILE IS DISCHARGED BY THE REPLY ITSELF.
- *
- * The compile gate refuses TOOL CALLS; the duty it enforces is satisfied by TEXT. When the
- * model does both in one round — writes the combined answer and reaches for a tool with it —
- * the answer has landed and the gate has nothing left to force, so it comes down for the rest
- * of the turn.
- *
- * ERRING TOWARD DISARM IS THE POINT. A mid-turn caption that is not the compile also trips
- * this, and that is the safe direction by BUG-2's own lesson: a gate that keeps refusing after
- * a person's answer went out is the recorded failure, and the gate re-arms next turn from the
- * spine if the compile is genuinely still pending. The reverse mistake has no such floor.
+ * Reply text discharges the owed compile, so the gate comes down for the rest of the turn. Erring
+ * toward disarm is deliberate: the gate re-arms next turn from the spine if the compile is pending.
  */
 function compileDutyDischarged(s: AgentTurnState): Partial<AgentTurnState> {
   return s.compileOwedAskIds.length > 0 && !s.compileGateSatisfied
@@ -58,38 +37,14 @@ export async function runPersistAssistant(
   } = ctx;
   const chosenConversationId = turnCtx.conversationId ?? null;
   const { interAgentTurn, persistedContent } = sc;
-  // t141: an agent-to-agent turn's rows carry THEIR THREAD from birth (they had neither thread
-  // nor conversation). The writer derives the rest of the label (`ownRowSubject`).
+  // An A2A turn's rows carry their thread from birth; the writer derives the rest of the label.
   const a2aThreadId = counterparty.kind === 'agent'
     ? (ctx.unrepliedAssign?.threadId ?? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null))
     : null;
 
-  // ── t116 E1 — THE SEAM'S OWN FENCE READ, BECAUSE THE POST-CALL STAGES CAN AWAIT ──
-  //
-  // `model-call.ts`'s fourth checkpoint catches the press that landed by the time the call
-  // returned. It cannot catch the press that lands AFTER it: between that checkpoint and
-  // this writer sit seven post-call stages, several of which await (the no-reply drains, the
-  // closeout floors, the terminal-text classifier), and this module's own docstring says
-  // "No way out." It was literally true — zero fence reads in this file — and the owner-lane
-  // insert plus `ownOutputBroadcast` below are the exact two statements that put a refused
-  // answer in front of a person.
-  //
-  // WHAT IS SUPPRESSED AND WHAT IS NOT. The row and the broadcast are suppressed; the TURN's
-  // honest record is not touched, and cannot be from here — `exit_reason` is derived from
-  // this same fence by `engine-exit.ts` and written by the run's own exit path, so the stop
-  // is still written down as a stop. A stop must neither lose the record nor show the person
-  // a reply they refused, and those are two different writers.
-  //
-  // THE RETRACT IS NOT COSMETIC. Live `onChunk` frames may have already painted a partial
-  // bubble, so suppressing the row silently would leave the refused text on screen for ever
-  // with no row behind it — the one shape that makes "every bubble has a row" unstateable.
-  // This is the established idiom, not a new one: same two frames, same order, as
-  // `no-reply.ts`'s ghosted-ask arm and `closeout-floors.ts`'s redundant-closeout arm.
-  //
-  // `proceed`, deliberately NOT `abandon`: abandon leaves the TURN and the engine's two
-  // abandons are pinned to the `callLLM` span by CUT 4's finalize contract. Proceeding hands
-  // the stop to `execute`'s own checkpoint, which cancels the remaining tool batch and lets
-  // the turn leave through the path where finalize runs and the record gets written.
+  // A stop can land while post-call stages await, so re-read the fence before the row and broadcast.
+  // The retract clears any partial bubble streamed live; the stop's record is written by the exit path.
+  // `proceed`, not `abandon`: execute's own checkpoint cancels the tool batch and finalize still runs.
   if (isStopFenced(agentId)) {
     sc.hasXmlFallbackTools = result.toolCalls.some((tc) => tc.id.startsWith('text_tool_'));
     sc.effectiveModelIdForPersist =
@@ -102,50 +57,26 @@ export async function runPersistAssistant(
     }, agentId);
     return proceed(state);
   }
-  // ── XML-fallback detection (matches v1 runtime.ts:1240) ──
-  // Weak/local models that don't support structured tool calling emit
-  // tool calls via the XML text-fallback parser. Their tool IDs are
-  // synthetic (`text_tool_*`). Persisting them as structured tool_use
-  // blocks would corrupt the next turn, the provider can't reference
-  // IDs it didn't generate. Instead we persist text-only, then broadcast
-  // a collapsed view with calls + results inline so the user sees them.
+  // Synthetic `text_tool_*` ids from the XML fallback are persisted text-only: the provider cannot
+  // reference ids it did not generate.
   const hasXmlFallbackTools = result.toolCalls.some((tc) =>
     tc.id.startsWith('text_tool_'),
   );
 
-  // Drain attachments queued by show_to_user during prior tool calls
-  // in this turn. The runtime owns assistant-message persistence, so
-  // we attach here rather than letting the tool insert a synthetic
-  // message (which would break tool_use/tool_result alternation).
-  //
-  // v2.9.20: ONLY drain on text-bearing iterations. Tool-only
-  // iterations (no text + tool_use blocks) render as compact tool
-  // pills in non-wordy mode and have no slot to display
-  // attachments - draining onto them silently swallowed the files.
-  // The 2026-06-06 JJ-report incident lost the deliverable this
-  // way: show_to_user → work_update(action="complete_step") → end. Attachments
-  // drained onto the work_update(action="complete_step") pill and vanished. Now
-  // the queue persists across tool iterations and only drains
-  // when text accompanies the persist - and an end-of-turn safety
-  // net catches anything still queued so files can't be lost.
+  // Drain show_to_user attachments only on text-bearing iterations (tool-only pills cannot show them); the
+  // queue persists and the end-of-turn flush catches leftovers. A tool-inserted row would break alternation.
   const { drainPendingAttachments } = await import('../../../pending-attachments.js');
   const hasTerminalTextThisIter = !!(persistedContent && persistedContent.trim().length > 0);
   const queuedAttachments = hasTerminalTextThisIter ? drainPendingAttachments(agentId) : [];
   const queuedAttachmentsJson =
     queuedAttachments.length > 0 ? JSON.stringify(queuedAttachments) : null;
 
-  // Build content for persistence (text + tool_use blocks if any)
   const effectiveModelIdForPersist =
     state.modelId === '__auto__' ? configuredModelId : state.modelId;
 
   if (result.toolCalls.length > 0 && !hasXmlFallbackTools) {
-    // v2.9.16: voice-mode filler. When a voice-triggered turn is
-    // about to run tools AND the model produced no pre-tool text
-    // of its own ("let me check that"), push a short random
-    // acknowledgment into the active TTS burst so the user doesn't
-    // sit in silence while tools execute. Once per turn, works
-    // with both local (Kokoro) and cloud (Hume) TTS engines via
-    // the engine-agnostic push handle on the voice session.
+    // A voice turn running tools with no opener text gets a short spoken filler, once per turn,
+    // so the user is not left in silence.
     if (
       !turnCtx.voiceFillerFired &&
       latestUserSource === 'voice' &&
@@ -169,14 +100,7 @@ export async function runPersistAssistant(
       }
     }
 
-    // v2.9.23, same filler logic for live phone calls. Tool calls
-    // are the only path that produces noticeable latency on phone
-    // (a plain text reply now streams sentence-by-sentence via the
-    // onChunk pipe above). When the model jumps straight to tools
-    // with no opener text, push a short filler to the CallSession
-    // so the caller hears something instead of dead air. Caller
-    // hears "On it" / "One sec" / "Let me check" within ~150 ms
-    // of finishing their utterance.
+    // The same filler for a live phone call, so the caller does not hear dead air while tools run.
     if (
       !turnCtx.voiceFillerFired &&
       turnCtx.phoneStreamCallSid &&
@@ -213,35 +137,16 @@ export async function runPersistAssistant(
         input: tc.arguments,
       });
     }
-    // THE PERSIST SEAM (rule 6: secrets never in message content). Two
-    // redactions, one owner (credentials/secret-fields.ts): a DECLARED secret
-    // field never enters a stored tool_use argument (PHASE-4 T5b / P4-R2 — the
-    // owner's key was at rest in `credential_add`'s own arguments, in a row
-    // replayed to the provider every later turn), and any secret this agent has
-    // handled is scrubbed from the rest of the row (NEXT-WAVE item 5's classic
-    // `sshpass -p '<pw>'`). result.toolCalls is untouched, so the live call still
-    // runs with the real value; only the stored copy is redacted.
-    //
-    // ⚠ DESIGN RULING 13 AS THE OWNER CORRECTED IT (2026-09-22): "The agent should
-    // not reply with credentials. The user can see them in the credentials store in
-    // the vault tab instead." So this scrub is unconditional, it has no channel
-    // carve-out, and the SIBLING ARM below now matches it — a tool-less reply is
-    // scrubbed at its source in `terminal-text.ts`, so the two arms finally agree.
+    // Secrets never enter stored content: declared secret fields are redacted from tool_use arguments and
+    // handled secrets scrubbed from the rest; result.toolCalls keeps the real values for the live call.
+    // No channel carve-out; terminal-text.ts scrubs the tool-less reply the same way.
     const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent);
     const reasoningForStore = result.reasoningContent
       ? redactHandedCredentials(agentId, result.reasoningContent) : null;
     const assistantContentJson = JSON.stringify(assistantContentForStore);
     if (interAgentTurn) {
-      // D-A step 8: the agent's OWN inter-agent-turn output goes to the physical
-      // inter-agent store, never the `messages` chat table. Persisting it here
-      // (stamped source='a2a') is what let a coordination burst bury the owner's
-      // conversation 10k rows deep and blank the chat, and the 'a2a' stamp was a
-      // leak-prone downstream overlay. The merged tail loaders UNION this row back
-      // into the model context byte-identically (role/content/order/attachments/
-      // turn_number preserved; the display/accounting columns NULL-pad exactly as
-      // for peer-A2A rows), so model continuity holds. Regular-mode chat (messages-
-      // only) never sees it; wordy mode serves it from the merged set. The row id
-      // stays STABLE (other tables reference message ids) and content byte-identical.
+      // Own inter-agent output goes to the inter-agent lane, never the `messages` chat table; the merged
+      // tail loaders union it back into model context unchanged. The row id stays stable.
       insertMessageIfAbsent({
         id: messageId,
         agentId,
@@ -253,10 +158,6 @@ export async function runPersistAssistant(
         a2aThreadId,
       });
     } else {
-      // The old statement's trailing `NULL` was the `source` column — the else arm of
-      // the a2a split, and T3-0b §3 measured it as the reason NO live writer stamps
-      // source='a2a' into `messages`. Owner-lane is the writer module's default, so
-      // that NULL position simply disappears.
       insertMessageIfAbsent({
         id: messageId, agentId, role: 'assistant', content: assistantContentJson,
         attachments: queuedAttachmentsJson,
@@ -264,12 +165,7 @@ export async function runPersistAssistant(
         reasoningContent: reasoningForStore,
       });
     }
-    // T9: the event family follows the SAME `interAgentTurn` flag that just picked the
-    // writer, decided in one place (agent/interagent-broadcast.ts). Before this, the
-    // broadcast sat outside the if/else and a coordination turn's tool_use row went out
-    // on the owner's chat feed (research 17 D2). `convKey` rides the owner arm only —
-    // conv_key is stamped on the row at turn TEARDOWN, so a mid-turn broadcast is the
-    // only place the live view can learn it (research 17 §C2 / bug (a), not T9's).
+    // The event family follows the same `interAgentTurn` flag that just picked the writer.
     broadcast(ownOutputBroadcast({
       interAgentTurn,
       agentId,
@@ -280,21 +176,13 @@ export async function runPersistAssistant(
       createdAt: new Date().toISOString(),
       modelId: effectiveModelIdForPersist,
       attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
-      // m5: the thinking panel keeps the placeholder. Un-redacting the reasoning
-      // would put the value into the copy the provider replays for the rest of
-      // the turn, which is the one window this seam exists to keep clean.
+      // The thinking panel keeps the redacted copy: the raw value would enter the reasoning the
+      // provider replays for the rest of the turn.
       reasoningContent: reasoningForStore ?? undefined,
       conversationId: chosenConversationId,
     }));
-    // v2.7.24, also track text-with-tools iterations as deliverable
-    // assistant text. Previously this branch ran (because there are
-    // tool calls) without updating lastAssistantTextForIM, which meant
-    // a turn shaped "text + tool call → tool result → [no-reply]" would
-    // leave the channel-routing block with nothing to deliver. The
-    // user's substantive answer (the text in iter 1) never reached
-    // iMessage / Teams / email. Capturing the LAST iteration's text
-    // regardless of whether tools rode with it gives the routing
-    // block the right value to deliver at end-of-turn.
+    // Text riding with tool calls is still deliverable: keep the latest so the end-of-turn channel
+    // router has it even when the turn ends in [no-reply].
     if (persistedContent && persistedContent.trim().length > 0) {
       state = advance(state, {
         lastAssistantTextForIM: stripMoodMarker(persistedContent),
@@ -303,11 +191,8 @@ export async function runPersistAssistant(
     }
   } else if (persistedContent) {
     if (interAgentTurn) {
-      // D-A step 8: own-output on an inter-agent iteration NEVER touches
-      // `messages`. In practice outputPersistenceClassifier always suppresses
-      // trailing text on an inter-agent turn (so persistedContent is null and
-      // this branch does not run), but keeping the relocation here makes the
-      // "no own inter-agent output in messages" invariant total and future-proof.
+      // Own inter-agent output never touches `messages`; the classifier normally nulls this text,
+      // and relocating it here keeps the invariant total.
       insertMessageIfAbsent({
         id: messageId,
         agentId,
@@ -323,9 +208,7 @@ export async function runPersistAssistant(
         id: messageId, agentId, role: 'assistant', content: persistedContent,
         attachments: queuedAttachmentsJson,
         modelId: effectiveModelIdForPersist, cost: null, turnNumber,
-        // T5b: the REPLY stands (the phase's second binding caution — the
-        // platform never edits what it said). The model's private reasoning
-        // is not the reply, and it restates the key it was just handed.
+        // The reply stands as written; only the private reasoning is redacted.
         reasoningContent: result.reasoningContent
           ? redactHandedCredentials(agentId, result.reasoningContent) : null,
       });
@@ -337,27 +220,8 @@ export async function runPersistAssistant(
       });
       noteTerminalAnswer(messageId, 'a genuine terminal reply');
     }
-    // T9 — THE TEXT-ONLY REPLY NOW GETS ITS CORRECTING chat:message, AND THAT IS
-    // THIS TASK'S SHARPEST SINGLE FIX (research 17 D3).
-    //
-    // This used to fire only when attachments were queued. The reason given was "the
-    // streaming chunks already delivered the text live, so we'd dupe-render if we
-    // unconditionally fired chat:message", citing v1 runtime.ts:1303-1318. That reason
-    // has been FALSE since 2026-04-30: the dashboard's handler REPLACES a bubble's
-    // content in place on an id match (it says so in its own comment — "Pre-2026-04-30
-    // this skipped on id match"), and appends only when no bubble exists, which is the
-    // correct outcome for a client that missed the stream.
-    //
-    // What the omission actually cost: the chunks carry the model's RAW output, the row
-    // carries what the writer stored — sanitized, timestamp-stripped, `[no-reply]`-free,
-    // and since T8 with the orb mood marker moved out to its own column. With no
-    // chat:message there was nothing to correct the bubble with, so on a plain text
-    // reply the browser kept the raw string forever while the database held the clean
-    // one. That is research 17 D3 ("streamed text != persisted text") and the live half
-    // of the mood gap recorded at the T8 boundary.
-    //
-    // Found by BROADCAST_EQUALS_ROW on its first real run (bms4dtng747), which is what
-    // a new invariant is for.
+    // Always send chat:message: the dashboard replaces the streamed bubble by id, correcting the raw
+    // streamed text to what was stored (sanitized, mood marker moved to its own column).
     broadcast(ownOutputBroadcast({
       interAgentTurn,
       agentId,
@@ -371,10 +235,8 @@ export async function runPersistAssistant(
     }));
   }
 
-  // A-1 (comms-audit): the end-of-turn channel router routes TEXT only, so a
-  // deliverable file attached to the reply reached only the dashboard. If the
-  // requester is on iMessage, deliver the files to them too. iMessage counterparty
-  // only (a dashboard turn already renders the files in its bubble above).
+  // The end-of-turn channel router routes text only, so send reply attachments to an iMessage
+  // requester here; a dashboard turn already renders them in its bubble.
   if (queuedAttachments.length > 0 && counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
     try {
       const { textFilesToRequester } = await import('../text-files-to-requester.js');

@@ -1,13 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — THE SILENT-CLOSEOUT STEER (owner ruling 2026-07-22), moved
-// byte-faithfully out of `loop.ts`'s `postCallClassify` span.
-//
-// OR2 IN ITS PUREST FORM, AND THE REASON THIS TRANCHE'S NOTE SAYS THE FLOOR FAMILY IS
-// ALREADY AGENT-VOICED: the user speaks with the AGENT, so the always-acked completion
-// guarantee is enforced as a CHECK PLUS A HANDED-BACK MIC — the engine detects that a
-// turn is ending without the person hearing anything, and STEERS the model to say it.
-// The engine never composes the line itself.
-// ════════════════════════════════════════
+// When a turn completes tracked work and the person heard nothing, steer the model to say it.
+// The engine detects; the model phrases. The engine never composes the line itself.
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
@@ -33,12 +25,7 @@ export async function runSilentCloseout(
     messageId, persistAndBroadcastSystemRow, turnCtx, turnNumber, turnStartedAt,
   } = ctx;
   const { persistedContent } = sc;
-  // ── Silent-closeout steer (owner ruling 2026-07-22) ── The user speaks
-  // with the AGENT; the engine never speaks for it. So the always-acked
-  // completion guarantee (v3.1.14 hard rule) is enforced as a CHECK plus
-  // a handed-back mic, not as engine-composed text: when this ending turn
-  // completed task(s) and nothing user-facing surfaced, steer once and
-  // let the model say it in its own words. The engine-record facts ride
+  // Fires once, on user-facing turns where nothing user-facing surfaced. Engine-record facts ride
   // in the steer so the weakest model only has to phrase, not remember.
   if (
     !steerFired(state.steerQueue, 'silent-closeout') &&
@@ -52,12 +39,8 @@ export async function runSilentCloseout(
     !Object.values(state.explicitSendThisTurn).some(Boolean)
   ) {
     try {
-      // PHASE-2 T6 (C2, requirement 1b): "did work close WITHOUT a delivery" is a JOIN
-      // now. The SPINE half asks it directly (`closedWithoutDelivery()`; the DDL's own
-      // CHECK makes that set exact, since a row cannot be `done` without pointing at a
-      // delivery); the TRACKER half — task rows on the same spine, kept as a separate
-      // read because it carries the closed row's own prose — filters through the same
-      // ONE reader, `owesAnswer()`.
+      // Spine work closed without a delivery is only logged; tracker tasks carry the closed row's
+      // own prose and are filtered through the one owesAnswer() reader.
       const turnStartedAtMs = Date.parse(`${turnStartedAt.replace(' ', 'T')}Z`);
       const closedWorkThisTurn = closedWithoutDelivery(agentId, Number.isFinite(turnStartedAtMs) ? turnStartedAtMs : Date.now() - 60_000);
       const closedThisTurn = db.prepare(`
@@ -73,20 +56,8 @@ export async function runSilentCloseout(
         }, agentId);
       }
       if (closedThisTurn.length > 0) {
-        // Receipt-keyed owe, PER TASK (2026-07-23, owner production
-        // transcript: duplicate status reply after the real answer). The
-        // old time-window dedup ("any substantive reply since the
-        // earliest task was created") failed exactly when a bookkeeping
-        // task was born AFTER the real answer went out: the window was
-        // empty, the steer fired on a settled conversation, and the
-        // model re-announced work the user already had, on a WAKE turn
-        // nobody was waiting on. The receipts say who is owed what:
-        //   - a task WITH an origin ask owes a closeout only while that
-        //     ask records no answer (mig 113 answer_message_id);
-        //   - a task WITHOUT an origin ask (self/bookkeeping) owes one
-        //     only when this turn is serving a live human ask; on a
-        //     wake/bookkeeping turn its close is incidental, exactly
-        //     what the tracker engine-note tells the model to [no-reply].
+        // Owed per task by receipt: a task with an origin ask owes a closeout only while that ask is
+        // unanswered; a task without one owes it only when this turn serves a live human ask.
         const owedTasks = closedThisTurn.filter((t) => (
           t.source_message_id ? owesAnswer(t.source_message_id) : hasUnansweredUser
         ));
@@ -95,21 +66,13 @@ export async function runSilentCloseout(
           const whichTask = owedTasks.length === 1
             ? `the task "${first.title.slice(0, 80)}"`
             : `${owedTasks.length} tasks (first: "${first.title.slice(0, 80)}")`;
-          // Receipts, never the model's own result prose (owner .19
-          // transcript: a task closed with a FALSE "opened in the canvas"
-          // claim and this steer quoted it back as "result on file",
-          // lending engine framing to a lie; prose-never-authority
-          // applies to the engine's own steers too). The engine states
-          // only what it RECORDED; with no recorded delivery it demands
-          // honesty instead of a victory lap.
+          // Quote engine receipts only, never the model's result prose (it can be false); with no
+          // recorded delivery, demand honesty instead of a claim of done.
           let receipts = '';
           try {
             const { composeTurnDeliverySummary, isTangibleDeliverySummary } =
               await import('../../../../tracker/task-stamps.js');
-            // T19 (D7): this steer's own two branches say "no file artifact, no channel send"
-            // — it means TANGIBLE, and it keeps meaning tangible. The summary now also names a
-            // dashboard-only bubble, which is exactly the case this floor is firing ABOUT, so
-            // quoting it back as a recorded delivery would be the engine contradicting itself.
+            // Only a tangible delivery counts; a dashboard-only bubble is what this floor fires about.
             const summary = composeTurnDeliverySummary(agentId, turnNumber);
             receipts = isTangibleDeliverySummary(summary) ? summary : '';
           } catch { /* fall through to the no-receipts wording */ }
@@ -136,6 +99,5 @@ export async function runSilentCloseout(
       }
     } catch { /* best effort; the teardown detector still logs the miss */ }
   }
-  // ── v2.7.17: "added a note then stopped" detector ──
   return proceed(state);
 }

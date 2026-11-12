@@ -1,23 +1,12 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — THE PROMISE FLOOR, moved byte-faithfully out of `loop.ts`'s
-// `postCallClassify` span. The last member of the fall-asleep family, observed live
-// 2026-07-08: a turn whose ENTIRE deliverable is a promise to start ("I'll get on
-// that") and which then ends, having done nothing. The floor hands the model one more
-// round to actually do the work.
-//
-// `MAX_TOOL_LOOPS` is PASSED rather than moved (readers outside this span);
-// `argsForResult` MOVED with the code, measured `out=0` first.
-// ════════════════════════════════════════
+// The promise floor: a user turn whose reply only promises, with nothing behind it, gets one more
+// round to do the work, record it, or check it.
 
 import { classifyTool } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { CLOSING_WORK_OPS, isWorkVerb, toolOpKey } from '../../../../tools/work-verbs.js';
 import { broadcast } from '../../../../gateway/ws.js';
-// T53: `advance` left with the events-lane write — the door returns the advanced state.
 import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-// T53: `enqueueSteer` is gone from this file — the floor's one steer goes through the
-// RC-19 door, which owns the enqueue and the durable row.
 import { steerFired } from '../../steer-queue.js';
 import { isForwardPromiseReply, isStandingPromiseReply, standingStateClaimSentence } from '../../ack-copy.js';
 import { argsForResult } from './args-for-result.js';
@@ -27,35 +16,16 @@ import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
-/**
- * UX-REPAIR ROUND 8 T33 — the memory doors whose writes OUTLIVE a session reset, named one by
- * one rather than derived from a verb. `vault_remember` is the door the platform's own tool
- * description points at for this exact request shape ("phrases like … 'from now on, …' … call
- * this tool with verbatim: true and pin: true"), `vault_update` edits what is already pinned,
- * and `update_agent` rewrites a sub-agent's standing instructions. `scratchpad_set` is
- * excluded on its own description's word: the pad "does NOT survive session reset".
- */
+/** Memory writes that outlive a session reset. `scratchpad_set` is excluded: the pad does not
+ *  survive a reset. */
 const DURABLE_MEMORY_WRITES: ReadonlySet<string> = new Set([
   'vault_remember',
   'vault_update',
   'update_agent',
 ]);
 
-/**
- * UX-REPAIR ROUND 9 T36 — CONTACT WITH THE BOARD THIS TURN, which is the third class's exemption.
- *
- * Two surfaces answer "what is currently scheduled or owed": the work board (the six verbs — a
- * `work_update` list or get READS it, and an open, note or transition means this turn put the row
- * there itself) and the calendar. Reads and writes both count on purpose: the question is whether
- * the turn had any contact with the thing it is describing, and a turn that just opened the
- * reminder it is confirming has not asserted anything from memory.
- *
- * The calendar side is a NAME PREFIX rather than an enumerated set, which is the opposite of the
- * rule `tools/work-verbs.ts` exists to enforce — and deliberately, because the direction of
- * failure is opposite too. There, a set that missed a member made a GATE go dark. Here a missed
- * member makes an EXEMPTION too narrow, i.e. steers a turn that did look; a new `calendar_*` tool
- * joining the exemption on the day it ships is the safe default, not a silent widening of a gate.
- */
+/** Board contact this turn, read or write. The calendar side is a name prefix on purpose: a missed
+ *  member only narrows this exemption, so a new `calendar_*` tool joining it is the safe default. */
 function isBoardContact(name: string): boolean {
   return isWorkVerb(name) || name.startsWith('calendar_');
 }
@@ -69,58 +39,10 @@ export function runPromiseFloor(
   const { agentId, chosenConvKey, counterparty, db, isEngineTurn, maxToolLoops, turnNumber } = ctx;
   const MAX_TOOL_LOOPS = maxToolLoops;
   const { persistedContent } = sc;
-  // ── Promise floor: a turn whose entire deliverable is a promise to start ──
-  // The last member of the fall-asleep family. Observed live 2026-07-08: the
-  // owner asked for a calendars-to-markdown job, the ack fired, one
-  // load_tool_docs round ran, then the model emitted TEXT ("On it. Let me pull
-  // up all your calendars.") with NO tool calls, and the loop took that promise
-  // as the turn's reply and ended clean. Every existing floor (task closeout,
-  // going-idle, completion ack) keys on tasks or deliveries; NONE catches a
-  // reply whose whole content is a promise to begin.
-  //
-  // Sequenced AFTER the F3 owed-interrupt block so that answering an owed
-  // mid-turn ask takes priority (F3 continues before we reach here). Guards
-  // mirror F3 (real user turn, non-empty reply, a human conv_key, and the same
-  // MAX_TOOL_LOOPS proximity skip so it can neither spin nor push past the cap)
-  // plus two more, deliberately conservative because the action is a re-prompt:
-  // (2) the reply must LOOK like a forward promise at its END
-  // (isForwardPromiseReply, unit-tested), and (3) the turn must have done
-  // NEGLIGIBLE work, no successful effectful-action tool result AND no task
-  // transitioned/closed this turn (same classifyTool === 'effectful-action'
-  // derivation the closeout machinery uses at countsAsTaskWork; retrieval /
-  // bookkeeping reads like load_tool_docs do NOT count, so the live case still
-  // qualifies). One-shot: if the model ends AGAIN with a promise after the
-  // steer, log the tripwire and let the turn end rather than spin.
-  //
-  // ── THE SECOND CLASS (UX-REPAIR ROUND 8 T33): THE STANDING PROMISE ──
-  // Round-8 S5: "From now on, when a reminder fires I'll post it here first — and if you
-  // haven't replied within a few minutes, I'll text it to your phone as a backup." Zero tool
-  // calls; every durable surface snapshotted before and after read identical (work rows,
-  // vault, config, files, receipts). The promise covers a monitoring mechanism the platform
-  // does not have and an SMS send this agent is refused by identity, and it lived only in one
-  // assistant message — it did not even survive the next session reset. The recognizer above
-  // could not see it: it asks about an IMMEDIATE promise ("I'll go pull that up"), and this is
-  // a promise about every future occasion.
-  //
-  // The two classes share every guard and the ONE steer per turn, and they ask a DIFFERENT
-  // question of the turn. "Do the work NOW" is the right order for a promise to start work
-  // now; for a promise about future occasions the only thing that can make it real is a
-  // durable record, so this class asks: was anything DURABLE written this turn? The forward
-  // class keeps precedence, so every case the floor already fired on keeps its exact steer.
-  //
-  // ── THE THIRD CLASS (UX-REPAIR ROUND 9 T36): THE STANDING-STATE CLAIM ──
-  // Round-9 S5, "Recap the week for me": one 1,100-character answer, ZERO tool calls in the whole
-  // scenario. Its PAST-work claims were nearly perfect — exact file names, an exact 11-file count,
-  // the flight fare quoted from the ticket's own result. Its claims about what is still LIVE were
-  // fiction: "schedule intact for tomorrow" (no such row; the only future fire on the board was a
-  // pasta timer), "Still on deck: parking pass renewal" (nothing), "two fence quotes still parked,
-  // waiting on Bob's address" (88 such commitment rows, every one `abandoned`, four documents).
-  // Third sighting in two rounds (round-8 S1, round-9 S5): the model recaps memory-state.
-  //
-  // The two promise classes ask what the reply COMMITTED to; this one asks what it ASSERTED, and
-  // its exemption is a READ rather than a write — the same receipts-not-prose rule pointed the
-  // other way. "I checked the tracker just now" is not a check. Both promise classes keep
-  // precedence, so every case the floor already fired on keeps its exact steer.
+  // Three classes share the guards and one steer per turn: a promise to start with no work done, a
+  // standing promise with nothing durable written, and a claim about live state with no board read.
+  // Earlier classes take precedence. Exemptions are receipts (rows, tool results), never the reply's prose.
+  // One-shot: a second promise ending is logged and the turn ends rather than spins.
   const forwardPromise = isForwardPromiseReply(persistedContent);
   const standingPromise = !forwardPromise && isStandingPromiseReply(persistedContent);
   const standingStateClaim = !forwardPromise && !standingPromise ? standingStateClaimSentence(persistedContent) : null;
@@ -139,24 +61,8 @@ export function runPromiseFloor(
     const transitionedATaskThisTurn = state.toolResults.some(
       (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))),
     );
-    // ── THE THIRD EXEMPTION (UX-REPAIR round 5 T22): the promise the SCHEDULER is
-    //    keeping. Round-5 S1: "In 15 minutes, look up whether the Mariners played today
-    //    and message me the score." The turn opened a task with `scheduled_start` fifteen
-    //    minutes out and said so — and because `work_open` classifies as BOOKKEEPING, the
-    //    two predicates above read the turn as a promise with nothing behind it and this
-    //    floor steered *"Do the work NOW"*, against the user's own explicit timing. The
-    //    model nearly obeyed in the worst way (its thinking: do the lookup now, deliver
-    //    now, cancel the scheduled task).
-    //
-    //    This floor's subject is a promise with NOTHING BEHIND IT — its header's 2026-07-08
-    //    case, pinned red in the tests. A promise backed by a tracked row with a FUTURE fire
-    //    is bounded and owned: the scheduler does the follow-through, not the next round.
-    //
-    //    RECEIPTS, NOT PROSE. The question is asked of the ROW — `origin_turn` is the stamp
-    //    every tracker open writes, so "this turn opened it" needs no parsing of a tool
-    //    result, and a work_open that FAILED left no row to find. Same `agent_id`/`origin_turn`
-    //    pair `teardown/finalize-record.ts`'s strike-0 close reads, widened to the opener
-    //    because a row assigned elsewhere is still this turn's promise to have made.
+    // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;
+    // `origin_turn` is stamped on every tracker open, and a failed open leaves no row.
     let openedFutureScheduledWorkThisTurn = false;
     if (forwardPromise && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
       try {
@@ -165,22 +71,13 @@ export function runPromiseFloor(
           + ' AND w.origin_turn = ? AND COALESCE(w.scheduled_start, w.next_run_at) > ? LIMIT 1',
         ).get(agentId, agentId, turnNumber, Date.now());
       } catch (err) {
-        // A read that cannot run must not manufacture an exemption: the floor keeps its
-        // pre-T22 behaviour, which is the direction that never lets an empty promise pass.
+        // A read that cannot run must not manufacture an exemption.
         logger.warn('promise floor: could not read this turn\'s opened work; falling back to the pre-exemption floor', {
           agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
         }, agentId);
       }
     }
-    // ── T33's EXEMPTION QUESTION, for the standing class only: was anything DURABLE written
-    //    this turn? RECEIPTS, NOT PROSE, on the same principle T22 established — the model
-    //    saying "I've saved that to your preferences" is not a save. Two receipts count:
-    //    (a) a `work` row stamped with THIS turn (the tracker's own `origin_turn`, so a
-    //        commitment, task, project or scheduled reminder all qualify and a call that FAILED
-    //        left no row to find), and
-    //    (b) a successful call to one of the named memory doors that outlive a session reset.
-    //    `scratchpad_set` is deliberately NOT one of them: its own tool description says the
-    //    pad "does NOT survive session reset", which is precisely the death this promise died.
+    // Durable: a successful call to a memory door above, or a work row stamped with this turn.
     let wroteSomethingDurableThisTurn = false;
     if (standingPromise && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
       wroteSomethingDurableThisTurn = state.toolResults.some(
@@ -193,19 +90,13 @@ export function runPromiseFloor(
             + ' AND w.origin_turn = ? LIMIT 1',
           ).get(agentId, agentId, turnNumber);
         } catch (err) {
-          // Same rule as T22's read: a read that cannot run must not manufacture an exemption.
           logger.warn('promise floor: could not read this turn\'s opened work; treating the standing promise as unbacked', {
             agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
           }, agentId);
         }
       }
     }
-    // ── T36's EXEMPTION QUESTION, for the standing-STATE class only: did this turn have any
-    //    contact with the board it is describing? RECEIPTS, NOT PROSE for the third time — the
-    //    model writing "I checked the tracker just now" is not a check, and the S5 reply that
-    //    named four live rows made no tool call at all. Read from the turn's own tool results
-    //    rather than from a row, because the question is about the LOOKING, and a read leaves no
-    //    row behind to find.
+    // Read from tool results, not rows: the question is about looking, and a read leaves no row.
     let readTheBoardThisTurn = false;
     if (standingStateClaim !== null && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
       readTheBoardThisTurn = state.toolResults.some(
@@ -216,27 +107,13 @@ export function runPromiseFloor(
       && !wroteSomethingDurableThisTurn && !readTheBoardThisTurn) {
       const quoted = (standingStateClaim ?? persistedContent).replace(/\s+/g, ' ').trim().slice(0, 200);
       if (steerFired(state.steerQueue, 'promise-floor')) {
-        // Steered once already this turn and the model STILL ended on a promise.
-        // Don't spin, let the turn end. This warn is the tripwire that a harder
-        // floor is needed if the weak model can't be talked past it.
         logger.warn('promise floor: second promise ending, letting the turn end', {
           agentId, turnNumber, convKey: chosenConvKey,
         }, agentId);
       } else {
         const steer = standingStateClaim !== null ? (
-          // T36: the same floor, a third order — nothing here needs doing or recording, it needs
-          // READING before it is said. Engine speaks to the MODEL, never to the user (OR2).
-          //
-          // THE LAST SENTENCE IS DRIVEN, NOT GUESSED. Two floor-model replays of the round-9 send
-          // (2026-08-11) took the granted round and spent it on a blocked task the board read had
-          // just surfaced — the check happened, the correction never did, and the recap the person
-          // actually asked for was left behind as the turn's non-answer. Bounding the round to the
-          // answer it was granted for is the difference between a check and a detour.
-          //
-          // t158 (run 6, S2): the round used to ORDER a restatement, so a reply whose every line
-          // matched the board reached the owner twice. The reply is already persisted and shown
-          // (`persist-assistant.ts` keys it as the answer first); the round now checks, then ends
-          // with `[no-reply]` or says only the correction.
+          // Check before asserting. The reply is already shown, so the round ends with [no-reply] or only
+          // the correction, and is bounded to that answer so it does not pick up other work.
           `[System] Your reply told ${userWords(ctx.turnCtx.address)} what is currently scheduled or owed ('${quoted}'), ` +
           `but nothing this turn read the board, so that came from memory rather than from a row. ` +
           `Check it before you assert it: work_update(action="list") for the live tracker, plus ` +
@@ -247,8 +124,6 @@ export function runPromiseFloor(
           `was never created is not "on deck" and will not fire. This round is for checking THAT ` +
           `answer: do not pick up new work you were not asked for.`
         ) : standingPromise ? (
-          // T33: the same floor, a different order — there is no work to "do now" for a promise
-          // about future occasions, and the engine speaks to the MODEL, never to the user (OR2).
           `[System] Your reply made a STANDING promise to ${userWords(ctx.turnCtx.address)} ('${quoted}') — a commitment ` +
           `about every future occasion — but nothing durable was written this turn, so nothing ` +
           `will carry it out. A promise that lives only in this conversation does not survive a ` +
@@ -261,24 +136,13 @@ export function runPromiseFloor(
           `was about to end with no work done. Do the work NOW with tool calls and deliver the ` +
           `result. Do not narrate what you are about to do again.`
         );
-        // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-        // This site used to write the steer to the events lane as well, and its own
-        // comment named the queue as the delivery "on the next iteration" — which is
-        // exactly right, and is the whole argument. The events row could not reach that
-        // iteration (the tail query drops `role='user'` rows created after the turn
-        // boundary) and reached a LATER turn as a ≤400-char gist. All three of this
-        // floor's steers quote the user's own words back at the model and then name the
-        // door to use; the gist keeps the quote and cuts the door.
-        // `persistEngineSteer` files the same entry and writes the durable `role='system'`
-        // row. The promise text row the user already saw is untouched, as before — this
-        // floor has never deleted a user-visible row and still does not.
+        // persistEngineSteer files the queue entry and the durable system row; the promise row the
+        // user already saw is never deleted.
         state = persistEngineSteer(
           state,
           { agentId, content: steer, turnNumber, floor: 'promise-floor', atLoop: state.loopCount },
           { broadcast },
         );
-        // The message names the CLASS because there are three of them now and the old wording
-        // ("reply was a forward promise") has been false for two of them since T33.
         logger.info('v2 promise floor: the reply cleared none of this class\'s receipts; steering the model', {
           agentId, turnNumber, convKey: chosenConvKey,
           floorClass: standingStateClaim !== null ? 'standing-state-claim'
