@@ -1,8 +1,4 @@
-// ════════════════════════════════════════
-// The Healer's "lessons from rough tasks" section (K34): the lessons the Dreamer wrote or renewed
-// in the last seven days, one line each, with the component it says should change. A report,
-// not a limit; nothing is injected into any agent from here.
-// ════════════════════════════════════════
+// The Healer's report of lessons the Dreamer wrote or renewed this week; nothing is injected into any agent.
 
 import { lessonsTouchedSince } from '../vault/lessons-store.js';
 import type { DiagnosticItem } from './diagnostic.js';

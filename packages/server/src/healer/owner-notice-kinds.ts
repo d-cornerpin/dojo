@@ -1,11 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE STANDING LIST: what each kind of owner notice is, and whether it is still true.
-//
-// A notice key is `<kind>` or `<kind>:<id>`. Each kind names its class and severity and the one check of its own store
-// that says the condition still holds (a budget's latches, a balance latch, an agent's row, an account, a watcher's
-// record, the import marker, the Ollama upkeep's held version). The dashboard's reload list is the told, undismissed
+// The standing list: what each kind of owner notice is, and whether it is still true. A notice key is `<kind>` or
+// `<kind>:<id>`; each kind has one check of its own store. The dashboard's reload list is the told, undismissed
 // action notices whose check passes; a told notice whose check fails leaves the list as it is read.
-// ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';

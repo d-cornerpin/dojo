@@ -1,16 +1,11 @@
-// ════════════════════════════════════════
-// The Healer's "recurring tool errors this week" section (K37). A report, not a limit: it lists
-// the tool errors that happened more than once in the last seven days, with how many times, how
-// many agents, a sample, and whether the remedy registry (tools/error-remedies.ts) has an answer
-// for it. An error with no remedy is the Healer's cue to ask for one.
-// ════════════════════════════════════════
+// Report of tool errors seen more than once in the last seven days, and whether the remedy registry
+// (tools/error-remedies.ts) has an answer; an error with no remedy is the Healer's cue to ask for one.
 
 import { getDb } from '../db/connection.js';
 import { hasRemedy } from '../tools/error-remedies.js';
 import type { DiagnosticItem } from './diagnostic.js';
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-// "Recurring" is arithmetic: it happened more than once.
 const RECURRING_MIN_HITS = 2;
 
 interface SignatureRow { tool: string; sample: string; hits: number; agents: string }

@@ -1,17 +1,5 @@
-// ════════════════════════════════════════
-// Injury Recovery, Event-Driven Agent Healing
-//
-// When an agent enters 'error' status, the system schedules a delayed
-// notification to the Healer agent. After a 5-minute grace period (to
-// let transient errors resolve), if the agent is still injured, the
-// Healer is woken with a diagnostic message and can use its tools to
-// investigate and attempt recovery.
-//
-// When an agent recovers, the Healer is notified so it has full context.
-//
-// This replaces the polling approach, no interval timer, just
-// event-driven setTimeout per injured agent.
-// ════════════════════════════════════════
+// Event-driven healing of injured agents: when an agent enters 'error', a per-agent timer wakes the Healer
+// after a grace period if it is still injured; the Healer is told when the agent recovers.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -26,16 +14,10 @@ import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { workingExpr } from '../work/done/hold.js';
 import * as told from './owner-notices.js'; // once per condition, and the owner's cards
-import { brokenWords, noteNoticeOnce, readNotice } from '../agent/agent-owner-cards.js'; // t143: BROKEN
+import { brokenWords, noteNoticeOnce, readNotice } from '../agent/agent-owner-cards.js';
 
 const logger = createLogger('injury-recovery');
 
-// ── Persisted attempt counter ──
-// The counter lives on agents.recovery_attempts (migration 035) so it
-// survives restarts and can be inspected/reset. Pre-2026-04-29 it was
-// in-memory only, which meant a long-running server could silently
-// accumulate attempts past MAX_RECOVERY_ATTEMPTS and the healer would
-// stop trying for that agent.
 function getAttempts(agentId: string): number {
   try {
     const db = getDb();
@@ -50,10 +32,7 @@ function setAttempts(agentId: string, value: number): void {
   } catch { /* best effort */ }
 }
 
-// Broadcast a chat:error so the dashboard surfaces healer activity.
-// Without this, every silent return path (max attempts hit, healer missing,
-// agent already recovered) leaves the user staring at a stuck agent with no
-// idea what's happening.
+// Broadcasts a chat:error so the dashboard surfaces every Healer outcome, including the silent return paths.
 type HealerEventCode =
   | 'HEALER_DISPATCHED'
   | 'HEALER_SUPPRESSED_MAX_ATTEMPTS'
@@ -68,50 +47,24 @@ function broadcastInjuryEvent(agentId: string, severity: 'info' | 'warning' | 'e
       error: message,
       code,
       severity,
-      cardClass: severity === 'error' ? 'action' : 'informational',   // audit #7: the Healer broken or missing is his; the rest is news
+      cardClass: severity === 'error' ? 'action' : 'informational',   // the Healer broken or missing is the owner's to act on; the rest is news
       retryable: false,
     });
   } catch { /* best effort */ }
 }
 
-// Auto-wake delay, fires once before the Healer is involved. Functions as
-// a free "are you ok?" poke: the engine just re-runs the agent's loop.
-// If it succeeds (transient error cleared) or in-loop recovery handles it,
-// the agent recovers without ever bothering the Healer. If it re-injures,
-// the Healer dispatches at the (much shorter) grace period below.
 const AUTO_WAKE_DELAY_MS = 5 * 1000; // 5s, enough for DB writes to settle
 
-// Grace period before notifying the Healer. With the auto-wake step above,
-// the Healer's job is now "agent is genuinely stuck after a free retry
-// didn't fix it", not "let's wait and see if it self-resolves". Cut hard.
-// Transient errors (rate limit, network) keep a longer grace because they
-// may need an upstream window to tick over.
-// History:
-//   - pre-2026-04-29: single 5-minute period for everything
-//   - 2026-04-29:     60s transient / 15s non-transient
-//   - 2026-04-29 v2:  30s transient / 5s non-transient (this version,
-//                     paired with engine auto-wake)
+// Grace period before the Healer is notified; transient errors (rate limit, network) wait longer because
+// they may need an upstream window to tick over.
 const GRACE_PERIOD_MS_TRANSIENT = 30 * 1000;
 const GRACE_PERIOD_MS_NON_TRANSIENT = 5 * 1000;
 
-// Max recovery attempts per agent before applying backoff. v2.3.19: this
-// is no longer "permanent suppression", once the backoff window
-// elapses, Healer fires again. See healerBackoffMs() and
-// suppressedUntil below.
+// Recovery attempts per agent before backoff applies (see healerBackoffMs and healerSuppressedUntil).
 const MAX_RECOVERY_ATTEMPTS = 3;
 
-// v2.3.19 (error-handling-spec Phase 3), per-agent Healer backoff.
-//
-// Pre-spec: once recovery_attempts hit MAX, the Healer was suppressed
-// PERMANENTLY for that agent until the user manually intervened
-// (send message / reset_session / update_agent). User feedback
-// was that this turned every transient escalation into a manual chore.
-//
-// New behavior: once attempts hit MAX, the Healer enters per-agent
-// backoff. After backoff window elapses, Healer fires again on the next
-// injury. Each consecutive attempt during/after backoff doubles the
-// next window: 10 min → 1 hr → 6 hr → 24 hr (cap). Reset on any
-// successful turn OR any applied Healer fix.
+// Per-agent Healer backoff once attempts hit MAX: each further attempt moves one rung up the quiet-window
+// ladder (10 min, 1 hr, 6 hr, 24 hr cap). Cleared by onAgentRecovered.
 const HEALER_BACKOFF_LADDER_MS: number[] = [
   10 * 60 * 1000,        // 10 min after MAX
   60 * 60 * 1000,        // 1 hr after MAX+1
@@ -119,18 +72,11 @@ const HEALER_BACKOFF_LADDER_MS: number[] = [
   24 * 60 * 60 * 1000,   // 24 hr cap
 ];
 function healerBackoffMs(attempts: number): number {
-  // attempts here is the count AFTER it was incremented past MAX. So
-  // attempts=MAX is index 0, attempts=MAX+1 is index 1, etc. Cap at last
-  // entry for any value past the ladder length.
+  // attempts=MAX is index 0; any value past the ladder length uses the last entry.
   const idx = Math.min(attempts - MAX_RECOVERY_ATTEMPTS, HEALER_BACKOFF_LADDER_MS.length - 1);
   return HEALER_BACKOFF_LADDER_MS[Math.max(0, idx)];
 }
 
-// ── Durable Healer damping state (remediation Phase 4, S8.3) ──
-// These used to be in-memory Maps, which reset on a process bounce: a
-// crash-loop that survived a restart was re-hammered by the very backoff
-// meant to damp it. Same .get/.set/.delete shape, DB-backed (durable means
-// the DB; shared-state is process memory).
 function readHealerState(scope: string, key: string): number | null {
   try {
     const row = getDb()
@@ -155,48 +101,20 @@ function deleteHealerState(scope: string, key: string): void {
   } catch { /* best-effort */ }
 }
 
-// ── T82c (ANSWER-ANYWAY) — the durable "how many distinct turns has compact-and-redial
-// already failed on" signal, backed by the SAME `healer_state` table above (no schema
-// change: a THIRD scope value on an already-generic (scope, key, at_ms) store).
-//
-// OWNER RULING, VERBATIM INTENT: "We aren't taking that away" — the Healer keeps session
-// reset, it just can't be the first trigger pulled when compaction could have worked. For a
-// size-class injury (`declared_patience_exceeded`), `agent/tools/cat/session.ts`'s
-// `reset_session` guard (`evaluateSessionResetGuard` below) refuses UNLESS compact-and-redial
-// has already failed on >=2 DISTINCT turns for this agent, corruption is diagnosed, or the
-// owner explicitly asked. This is the durable count backing criterion (a).
-//
-// SOURCE, documented per this task's own instruction: `v2/recovery.ts`'s `recordInjury` is
-// the ONE place that authoritatively knows a turn just ended on `DECLARED_PATIENCE_EXCEEDED_CODE`
-// with no self-scheduled retry (see its own comment, and `declaredPatienceHonestFailTurn`'s doc
-// in `shared-state.ts`) — it calls `onAgentInjured(agentId, message, code)` with that code
-// EXACTLY ONCE per failed turn. `onAgentInjured` below records one row here whenever
-// `classifyError` resolves to `'declared_patience_exceeded'`, so counting rows IS counting
-// distinct turns, without threading `state.turnNumber` through this call — each row's key
-// carries a fresh UUID rather than the turn number, precisely so a second call in the same
-// process tick never collides with (and silently loses) the first. "Within the current
-// chain" is read as "since this agent's last clean recovery": `onAgentRecovered` clears every
-// row for the agent the moment it leaves error/paused, the same reset point
-// `agents.recovery_attempts` already uses for the identical reason (a truly recovered agent
-// starts its next injury, of any kind, with a clean slate).
+// Durable count of distinct turns on which compact-and-redial already failed, kept in healer_state (one row per
+// failed turn, keyed agentId:uuid so same-tick calls never collide). It backs criterion (a) of
+// evaluateSessionResetGuard; onAgentRecovered clears the agent's rows on a recovery by evidence.
 const DECLARED_PATIENCE_HONEST_FAIL_SCOPE = 'declared_patience_honest_fail';
 
 function recordDeclaredPatienceHonestFail(agentId: string): void {
   writeHealerState(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:${uuidv4()}`, Date.now());
 }
 
-// T82 FIX WAVE, Minor M4 — the LIKE prefix is built from `agentId`, which is a `agents.id`
-// UUID today and therefore never itself contains a LIKE wildcard (`%`, `_`) or the escape
-// character. That invariant is exactly the kind that quietly stops being true (a future ID
-// scheme, an imported/legacy row, a caller passing something that was never validated as a
-// UUID) with nothing here to notice — escaping is cheap insurance against THAT id turning this
-// prefix scan into a wildcard match across a DIFFERENT agent's honest-fail rows, not a reaction
-// to an observed collision.
+// agents.id is a UUID today, but escape LIKE wildcards so a future id can never match another agent's rows.
 function escapeLikePrefix(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
-/** Exported for `evaluateSessionResetGuard` (below) and for tests. */
 export function countDeclaredPatienceHonestFails(agentId: string): number {
   try {
     const row = getDb()
@@ -216,28 +134,14 @@ function clearDeclaredPatienceHonestFails(agentId: string): void {
   } catch { /* best-effort, matches every other clear in this section */ }
 }
 
-// Per-agent absolute timestamp before which Healer will NOT re-fire.
-// Cleared on any successful turn (via onAgentRecovered).
 const healerSuppressedUntil = {
   get: (agentId: string): number | null => readHealerState('agent_suppression', agentId),
   set: (agentId: string, untilMs: number): void => writeHealerState('agent_suppression', agentId, untilMs),
   delete: (agentId: string): void => deleteHealerState('agent_suppression', agentId),
 };
 
-// v2.3.19 (error-handling-spec Phase 4), provider-wide pattern dedup.
-//
-// When the same provider is hurting MULTIPLE agents (e.g. an OpenRouter
-// outage), the pre-spec code spawned one Healer cycle per injured
-// agent. Three agents → three diagnostic cycles → three duplicate
-// Vitals proposals → wasted tokens + UI clutter.
-//
-// New behavior: once a provider-wide pattern is detected, mark it
-// alerted for 30 minutes. Subsequent injuries on the same provider
-// within that window skip the Healer dispatch (the pattern is already
-// being handled by the cycle that fired for the first agent, which
-// sees ALL three injuries in its diagnostic report).
-//
-// providerName → lastAlertTimestampMs (DB-backed via healer_state above)
+// Provider-wide dedup: once a provider pattern has been alerted (30 min window), later injuries on that provider
+// skip Healer dispatch, because the first cycle's diagnostic report already sees them all.
 const providerPatternAlerted = {
   get: (provider: string): number | null => readHealerState('provider_alert', provider),
   set: (provider: string, atMs: number): void => writeHealerState('provider_alert', provider, atMs),
@@ -248,10 +152,8 @@ const PROVIDER_PATTERN_LOOKBACK_MS = 60 * 60 * 1000;     // count peers errored 
 const PROVIDER_PATTERN_PEER_THRESHOLD = 2;               // 2 other agents = pattern (3 total)
 
 /**
- * Decide whether this injury is part of a provider-wide outage already
- * being handled. Returns the provider name if a recent pattern alert
- * exists (in which case the caller should skip per-agent Healer
- * dispatch), or null if no active pattern.
+ * Returns the provider name when a recent pattern alert covers this agent's provider (the caller skips
+ * per-agent Healer dispatch), else null.
  */
 function isProviderPatternHandled(agentId: string): string | null {
   try {
@@ -278,10 +180,8 @@ function isProviderPatternHandled(agentId: string): string | null {
 }
 
 /**
- * Mark a provider-wide pattern detected. Subsequent injuries on the same
- * provider within PROVIDER_PATTERN_WINDOW_MS will skip Healer dispatch.
- * Returns the provider name if a pattern was newly recorded, or null if
- * no pattern (fewer than threshold peers).
+ * Records a provider-wide pattern when enough peers are injured on the same provider; returns the
+ * provider name if newly recorded, else null.
  */
 function maybeRecordProviderPattern(agentId: string): string | null {
   try {
@@ -295,14 +195,8 @@ function maybeRecordProviderPattern(agentId: string): string | null {
     `).get(agentId) as { provider_name: string } | undefined;
     if (!row?.provider_name) return null;
 
-    // FA-X5: mirror the outage detector's transient-error filter AND require
-    // the peer to be currently injured (status IN 'error'/'paused'). Pre-fix
-    // this counted ANY same-provider agent with a non-null last_error in the
-    // last hour, with no error-type filter and no status check, so agents that
-    // had already RECOVERED (last_error is not cleared on every recovery path)
-    // inflated the count and a genuinely distinct injury got deduped as part
-    // of a "pattern" that no longer existed. The shared predicate keeps this
-    // in lockstep with getProviderOutagePatterns so the two never drift.
+    // Peers must be currently injured and pass the outage detector's transient-error filter (the shared
+    // TRANSIENT_PROVIDER_ERROR_SQL), so recovered agents with a stale last_error do not inflate the count.
     const lookbackSec = Math.floor(PROVIDER_PATTERN_LOOKBACK_MS / 1000);
     const peers = db.prepare(`
       SELECT COUNT(*) AS cnt FROM agents a
@@ -331,47 +225,17 @@ function maybeRecordProviderPattern(agentId: string): string | null {
   }
 }
 
-// Pending recovery timers, keyed by agent ID. Cancelled if the agent recovers
-// within the grace period (no need to bother the healer).
+// Pending Healer-notification timers by agent ID; cancelled if the agent recovers within the grace period.
 const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Pending auto-wake timers, same lifecycle as pendingTimers but for the
-// engine-level "are you ok?" poke that fires before the Healer is involved.
 const autoWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Classify the error for the healer's diagnostic context.
-//
-// PHASE-4 T5: this reader holds a STRING and nothing else — `agents.last_error` is a persisted
-// message, so the status that produced it is long gone. Hence the ONE shared prose table
-// (`classifyProviderErrorText`) instead of a sixth private copy: every status there is matched
-// as a token, so "prompt is too long: 204015 tokens" can no longer read as a 401. The
-// dojo-specific buckets (context corruption, config) have no HTTP equivalent and stay.
-// T82 FIX WAVE, Minor M3 — NOT exported. Verified at this task's own HEAD: no file outside
-// this one imports `classifyError` from `injury-recovery.js` (three call sites below are its
-// only callers), so the export was dead surface. `agent/__tests__/error-taxonomy-conformance.
-// test.ts`'s census of "surviving classifyError wrappers" matches on the bare declaration text
-// (`function classifyError(`), not on `export`, so that guard is unaffected by dropping it here.
+// Classifies a persisted error string for the Healer's diagnostic. It holds only the string (the originating status
+// is gone), so it reuses classifyProviderErrorText; the corruption and config buckets are dojo-specific.
 function classifyError(error: string | null, code?: string): string {
-  // T81a — GPU livelock incident (2026-09-18/19). Checked FIRST, ahead of every rule below: a
-  // declared-patience exhaustion carries this CODE from the model layer on the live path (the
-  // overwhelmingly common case — this function is called synchronously from the same injury
-  // that just threw), and the IDENTICAL LITERAL PHRASE `agent/model.ts`'s
-  // `STREAM_FIRST_CHUNK_TIMEOUT_ERROR` throws, in its own message text, on the one path that
-  // survives a restart holding nothing but `agents.last_error` (`rehydrateInjuredAgents`, which
-  // has no code to pass — only the persisted string). Copied as a literal rather than imported
-  // for the same reason every other entry in this table is one: this reader holds a STRING and
-  // nothing else, per the file header above. Checked ahead of the generic prose table below
-  // because "no data from provider for too long" contains the word "timeout" and would
-  // otherwise fall into the SAME 'network' bucket a genuine dropped connection does — which is
-  // the exact misclassification that let the auto-wake below cold-re-dial an un-finishable
-  // prompt every five seconds.
-  // T81 fix wave (final review, Minor M1): a pre-dial refusal (`agent/model.ts`'s
-  // `refuseIfDoomed`) is the SAME honest-fail class — it throws `DECLARED_PATIENCE_EXCEEDED_CODE`
-  // on the live path too — but until now only the watchdog's own timeout phrase survived a
-  // restart here. `PRE_DIAL_REFUSAL_PHRASE`'s literal ('refused before any network dial') is
-  // copied rather than imported, for the same reason `STREAM_FIRST_CHUNK_TIMEOUT_ERROR` above it
-  // is: this reader holds a STRING and nothing else, and `agent/model.ts` is too heavy an import
-  // for this leaf module to take just for a phrase.
+  // Checked first: a declared-patience exhaustion arrives as a code on the live path, or after a restart as the literal
+  // phrases agent/model.ts throws (first-chunk timeout, pre-dial refusal). The phrases are copied, not imported, since
+  // model.ts is too heavy for this leaf module; checked before the prose table, where "timeout" would read as network.
   if (code === DECLARED_PATIENCE_EXCEEDED_CODE
     || (error ?? '').toLowerCase().includes('model first-chunk timeout')
     || (error ?? '').toLowerCase().includes('refused before any network dial')) {
@@ -396,8 +260,7 @@ function classifyError(error: string | null, code?: string): string {
     case 'server': return 'network';
     case 'auth':
     case 'access_denied': return 'auth';
-    // Phase 8 F1: bucket generic 4xx instead of falling through to 'unknown' (the toast
-    // said "(error: unknown)" for anything unmatched, even a clear 400).
+    // Generic 4xx is bucketed as provider_error rather than falling through to 'unknown'.
     case 'bad_request': return 'provider_error';
     default: break;
   }
@@ -407,55 +270,37 @@ function classifyError(error: string | null, code?: string): string {
 }
 
 /**
- * Called when an agent enters 'error' or 'paused' (error loop) status.
- * Starts a grace period timer. If the agent is still injured after the
- * grace period, notifies the Healer agent.
- *
- * `code`, T81a: the `AgentError.code` that produced this injury, when the caller has one (the
- * live path — `agent/v2/recovery.ts`'s `recordInjury` always does). Optional because
- * `rehydrateInjuredAgents` has only a persisted `agents.last_error` STRING to offer after a
- * restart; `classifyError` below still recognises a declared-patience exhaustion from that
- * string alone, so the omission does not reopen the auto-wake for it.
+ * Called when an agent enters 'error' or 'paused'. Starts the grace-period timer; if the agent is still injured
+ * when it fires, the Healer is notified. `code` is the AgentError.code when the caller has one; rehydrateInjuredAgents
+ * has only the persisted string, which classifyError still recognises.
  */
 export function onAgentInjured(agentId: string, errorMessage: string, code?: string): void {
-  // The healer cannot heal itself, that would create an infinite loop.
-  // Instead, alert the user directly via iMessage AND broadcast to the
-  // dashboard so the user sees the alert without needing iMessage.
+  // The Healer cannot heal itself (infinite loop): alert the owner directly by iMessage and on the dashboard.
   try {
     const db = getDb();
     const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
     if (healerRow && agentId === healerRow.value) {
       logger.warn('Healer agent is injured, alerting user directly (cannot self-heal)', { agentId });
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      // v2.3.19 (error-handling-spec Phase 2): both iMessage and dashboard
-      // toast use the same plain-English wording. Raw provider error stays
-      // in logs only (logged at line ~135 above). No JSON, no field paths,
-      // no "Error: ..." dump.
+      // iMessage and dashboard share one plain-English wording; the raw provider error stays in logs.
       const userMsg = told.HEALER_BROKEN_WORDS;
       if (told.tellOwner('healer-broken', userMsg)) void sendAlert(userMsg, 'critical', { kind: 'broken-agent', agentId }); // until it recovers
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_SELF_INJURED');
       return;
     }
   } catch { /* config not available */ }
-  const broken = brokenWords(agentId, errorMessage); // t143: only the owner can fix it — told at once, once per incident
+  const broken = brokenWords(agentId, errorMessage); // only the owner can fix it: told at once, once per incident
   if (broken && noteNoticeOnce(agentId, 'broken_notice', broken)) void sendAlert(broken, 'notice', { kind: 'broken-agent', agentId });
 
-  // v2.3.19 (error-handling-spec Phase 3), per-agent Healer backoff.
-  //
-  // Once attempts hit MAX, we enter backoff. The Healer can fire again
-  // after the backoff window elapses (10 min → 1 hr → 6 hr → 24 hr cap).
-  // The user gets a one-time iMessage on the FIRST entry into backoff;
-  // subsequent injuries within the window stay silent (the user already
-  // knows). This replaces the pre-spec permanent suppression that
-  // required manual unsticking.
+  // Once attempts hit MAX the Healer backs off and may fire again after the window elapses. The owner is told once,
+  // on first entry into backoff; injuries inside the window stay silent.
   const attempts = getAttempts(agentId);
   if (attempts >= MAX_RECOVERY_ATTEMPTS) {
     const now = Date.now();
     const suppressedUntil = healerSuppressedUntil.get(agentId) ?? 0;
 
     if (suppressedUntil > now) {
-      // Still in backoff window, silent. Healer will get a fresh shot
-      // when the timer elapses.
+      // In the backoff window: stay silent; the Healer gets a fresh shot when it elapses.
       logger.info('Healer in backoff for agent, skipping this injury', {
         agentId,
         attempts,
@@ -465,15 +310,12 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
       return;
     }
 
-    // Backoff window has elapsed (or this is the first entry into
-    // backoff). Schedule the NEXT backoff window now so we don't fire
-    // again immediately on a re-injury during this Healer cycle.
+    // Backoff has elapsed (or this is the first entry): schedule the next window now so a re-injury during this
+    // Healer cycle does not fire again immediately.
     const nextBackoffMs = healerBackoffMs(attempts);
     healerSuppressedUntil.set(agentId, now + nextBackoffMs);
 
-    // Only alert the user on the FIRST entry into the backoff cycle
-    // (attempts === MAX). Subsequent re-tries should be silent so the
-    // user isn't pinged every few minutes for a slow-resolving issue.
+    // Alert the owner only on first entry into backoff (attempts === MAX), not on every retry.
     if (attempts === MAX_RECOVERY_ATTEMPTS) {
       logger.warn('Max recovery attempts hit, entering Healer backoff', {
         agentId, attempts, max: MAX_RECOVERY_ATTEMPTS, nextRetryInMs: nextBackoffMs,
@@ -490,59 +332,28 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
         agentId, attempts, nextRetryInMs: nextBackoffMs,
       });
     }
-    // Fall through, Healer attempts again. attempts++ happens later in
-    // the normal flow.
+    // Fall through: the Healer attempts again; attempts++ happens in the normal flow below.
   }
 
-  // Cancel any existing timers for this agent (rapid re-injury)
   const existingHealer = pendingTimers.get(agentId);
   if (existingHealer) clearTimeout(existingHealer);
   const existingWake = autoWakeTimers.get(agentId);
   if (existingWake) clearTimeout(existingWake);
 
-  // Classify error and pick the matching grace period. Transient errors
-  // (rate_limit, network) get a longer grace because they often resolve on
-  // their own. Non-transient errors are unlikely to self-resolve, so the
-  // healer should engage almost immediately.
+  // Transient errors (rate_limit, network) get the longer grace because they often resolve on their own; others
+  // should engage the Healer almost immediately.
   const errorClass = classifyError(errorMessage, code);
   const isTransient = errorClass === 'rate_limit' || errorClass === 'network';
   const gracePeriodMs = isTransient ? GRACE_PERIOD_MS_TRANSIENT : GRACE_PERIOD_MS_NON_TRANSIENT;
 
-  // T82c: reaching here with THIS class means `v2/recovery.ts`'s `recordInjury` already
-  // concluded compact-and-redial could not save this turn (see that function's own comment on
-  // when it sets `declaredPatienceHonestFailTurn`) — record the durable count criterion (a) of
-  // the session-reset guard reads. One row per call, see the section doc above for why counting
-  // rows is counting distinct turns.
-  //
-  // T82 FIX WAVE, CRITICAL C1 — keyed on the `code` PARAMETER, never on `errorClass` (a PHRASE
-  // match against `errorMessage`/`agents.last_error`). The two used to be the same gate here,
-  // and that was the defect: `rehydrateInjuredAgents` (below) replays `onAgentInjured(agent.id,
-  // agent.last_error)` for EVERY error/paused agent on EVERY server start, with no code (a
-  // restart holds nothing but the persisted STRING) — and `agents.last_error` keeps carrying the
-  // declared-patience phrase for as long as the agent stays injured. `errorClass` above still
-  // correctly reads 'declared_patience_exceeded' from the phrase alone (that is WHY the
-  // auto-wake skip and grace-period selection above are untouched — they must survive a
-  // restart), but a fresh honest-fail ROW on every rehydrate meant one real failed chain plus
-  // one routine restart reached the guard's count of 2 without a second genuine failure ever
-  // happening: amnesia-first, reopened by routine restarts, exactly the class R2 exists to
-  // close. The live path (`v2/recovery.ts`'s `recordInjury`) ALWAYS passes `code` (see this
-  // file's own header comment on `onAgentInjured`'s `code` parameter); rehydrate and the
-  // platform-error caller (`v2/recovery.ts`'s `tryPlatformErrorRecovery`) never do — so this is
-  // the one condition that is true exactly once per genuinely NEW failed chain.
+  // Counted only when the live path passes `code`: rehydrateInjuredAgents and tryPlatformErrorRecovery pass none, so a
+  // restart replaying a persisted declared-patience string never adds a row. One row per genuinely new failed chain.
   if (code === DECLARED_PATIENCE_EXCEEDED_CODE) {
     recordDeclaredPatienceHonestFail(agentId);
   }
 
-  // v2.3.19, known-permanent errors (auth, config) should NOT auto-wake.
-  // The pre-spec auto-wake was useful for transient flakes, but firing it
-  // on a 401 just spams paid model calls every 5 seconds with the same
-  // broken credentials. Tier D conditions get the Healer's attention but
-  // skip the engine-level retry.
-  //
-  // T81a: a declared-patience exhaustion gets the SAME treatment, for a different reason — not
-  // because retrying can't work (a 401 never will), but because retrying is PROVABLY the wrong
-  // remedy: a cold re-dial re-sends the identical un-finishable prompt to the identical slow
-  // provider, which is the exact GPU livelock this class exists to stop.
+  // Known-permanent errors (auth, config) and declared-patience exhaustion skip the engine auto-wake: a retry only
+  // repeats paid calls with broken credentials, or re-sends the same un-finishable prompt to the same slow provider.
   const isKnownPermanent =
     errorClass === 'auth' ||
     errorClass === 'config' ||
@@ -560,19 +371,10 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
     maxAttempts: MAX_RECOVERY_ATTEMPTS,
   });
 
-  // Step 1, engine-level auto-wake. Fires first. Just re-runs the agent's
-  // loop without involving the Healer (no LLM cost). If transient errors
-  // cleared or in-loop recovery handles the failure, the agent recovers
-  // here and onAgentRecovered cancels the Healer timer below.
-  //
-  // v2.3.19, skip auto-wake entirely for known-permanent errors. The
-  // Healer is still scheduled below (it can audit, propose, log), but no
-  // wasteful model retry.
   if (isKnownPermanent) {
     logger.info('Skipping auto-wake, error is known-permanent (will not self-clear)', {
       agentId, errorClass,
     });
-    // Still schedule the Healer notification below, fall through.
   } else {
   const wakeTimer = setTimeout(async () => {
     autoWakeTimers.delete(agentId);
@@ -606,31 +408,21 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
   autoWakeTimers.set(agentId, wakeTimer);
   } // end of "not known-permanent" auto-wake block
 
-  // Step 2, Healer notification. Fires after the grace period if the
-  // agent is still injured. With the auto-wake above, this only fires
-  // when the agent is genuinely stuck.
-  //
-  // v2.3.19 (error-handling-spec Phase 4), pattern-aware dispatch:
-  // before scheduling, check if this injury is part of a provider-wide
-  // pattern that's ALREADY being handled by a recent Healer dispatch.
-  // If yes, skip, the existing cycle sees all the injuries in its
-  // diagnostic report and there's no point spawning another.
+  // After the auto-wake, notify the Healer once the grace period ends if the agent is still injured. Skip
+  // dispatch when a provider-wide pattern is already being handled, since that report sees all the injuries.
   const alreadyHandledProvider = isProviderPatternHandled(agentId);
   if (alreadyHandledProvider) {
     logger.info('Skipping per-agent Healer dispatch, provider-wide pattern already in flight', {
       agentId,
       provider: alreadyHandledProvider,
     });
-    // We still bump the attempts counter so the per-agent backoff
-    // ladder progresses correctly on repeat injuries.
+    // Still bump attempts so the per-agent backoff ladder progresses on repeat injuries.
     setAttempts(agentId, attempts + 1);
     return;
   }
 
-  // No active pattern yet, but is this injury part of a NEW emerging
-  // pattern (≥2 peers on the same provider already errored in last 1h)?
-  // If so, record it BEFORE scheduling so subsequent injuries on the
-  // same provider during the dispatch window get deduped.
+  // Record an emerging pattern (enough peers on the same provider errored in the last hour) BEFORE scheduling,
+  // so injuries during the dispatch window are deduped.
   maybeRecordProviderPattern(agentId);
 
   const timer = setTimeout(() => {
@@ -643,87 +435,33 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
 }
 
 /**
- * Called when an agent recovers (transitions from error/paused to idle/working).
- * Cancels the grace period timer if still pending, and notifies the Healer
- * that the agent recovered.
+ * Recovery basis: 'evidence' (a turn completed) clears everything on recovery; 'cooldown' (a clock) clears only
+ * the Healer backoff window and timers, so the attempt ladder, last_error and honest-fail marker survive a clock.
  */
-// ── t114 (CENSUS U1) — WHAT A CLOCK MAY CLEAR, AND WHAT ONLY EVIDENCE MAY ──
-//
-// THE DEFECT: `onAgentRecovered` is the one chokepoint for "this agent is healthy again", and the
-// 30-minute auto-fix sweep called it on ELAPSED TIME ALONE. Every 5 minutes, any agent `paused`
-// or `error` for more than half an hour was flipped to `idle` and passed through here, which:
-//
-//   * reset `MAX_RECOVERY_ATTEMPTS` and the 10m->1h->6h->24h ladder (census row 14), the thing
-//     whose whole job is to escalate to a human instead of retrying for ever;
-//   * deleted `last_error`, the only human-facing account of what went wrong;
-//   * cleared `declaredPatienceHonestFails` — THE T82c MARKER, which is the only thing standing
-//     between an agent and a second doomed cold-redial chain.
-//
-// So the NO-DOOMED-DIALS chain could do its job perfectly — refuse a doomed dial, error honestly,
-// set the marker, tell the human — and thirty minutes later, with no fact consulted about WHY it
-// failed, the agent was returned to `idle` with its error text deleted and its guard erased, free
-// to re-enter the identical chain on a 30-minute cycle for ever while the dashboard showed a
-// healthy idle agent. `auto-fix.ts`'s own header names the failure it was creating: "a persistent
-// fault bounces error->idle->error with no fresh owner signal".
-//
-// THE SPLIT: recovery BY EVIDENCE (a turn actually completed) still clears everything, because a
-// completed turn is proof. Recovery BY COOLDOWN (a clock) may clear only the things a clock can
-// honestly speak to — the Healer's own backoff window and its pending grace timers — and must
-// leave the attempt ladder, the human-facing error and the doom marker exactly where they are.
-// A clock knows that time passed. It does not know that anything was fixed.
 export type RecoveryBasis = 'evidence' | 'cooldown';
 
 export function onAgentRecovered(agentId: string, basis: RecoveryBasis = 'evidence'): void {
-  // Clear recovery attempt counter, the agent is healthy again.
-  // If it errors again later, the counter starts fresh. Persisted to DB
-  // so a future restart sees a clean state.
-  //
-  // t114 (U1): EVIDENCE ONLY. Row 14's ladder escalates to the owner precisely because repeated
-  // failures should stop being retried silently; a 30-minute clock resetting it to zero made the
-  // top of that ladder unreachable, so the owner was never told.
+  // Evidence only: the attempt ladder must keep escalating to the owner, so a clock may not reset it.
   if (basis === 'evidence') setAttempts(agentId, 0);
 
-  // FA-A2: this is the deliberate-recovery chokepoint (a clean turn end with
-  // prior attempts, and the Tier-1 auto-fix reset, which moves the status without
-  // clearing the diagnostic). last_error now survives the 'working' transition, so
-  // clear it HERE too, otherwise an auto-fixed agent would carry a stale diagnostic
-  // that re-trips the injury readers. Not called on mid-turn retries, so "diagnostic
-  // survives retries" is preserved.
-  // SWEEP CORE-2 item 2: the clear itself moved to the one owner of the column; the
-  // decision to clear stays here, where it was made.
-  // t114 (U1): EVIDENCE ONLY. `last_error` is the human's only account of what happened; a clock
-  // deleting it is how a persistent fault became invisible on the dashboard.
+  // Evidence only: clear last_error, the human's only account of what went wrong. Not called on mid-turn retries,
+  // so the diagnostic survives them.
   if (basis === 'evidence') {
     try { clearAgentLastError(agentId); } catch { /* best effort */ }
   }
 
-  // v2.3.19, also clear the Healer backoff window so the next injury
-  // gets full attention again (don't carry a "muted Healer" state across
-  // a successful turn).
   healerSuppressedUntil.delete(agentId);
-  if (basis === 'evidence') told.ownerConditionsOnRecovery(agentId); // a clock is not evidence (t114 U1)
+  if (basis === 'evidence') told.ownerConditionsOnRecovery(agentId); // a clock is not evidence
 
-  // T82c: a clean recovery ends the current doomed chain — the next injury (of any class)
-  // starts the session-reset guard's count at zero again, same reset point
-  // `agents.recovery_attempts` already uses.
-  // t114 (U1): EVIDENCE ONLY, and this is the sharpest of the three. The marker is the ONLY
-  // thing stopping a second declared-patience cold-redial chain — the exact GPU livelock the
-  // whole NO-DOOMED-DIALS plan exists to close. A clock must never be able to clear it.
+  // Evidence only: this marker alone stops a second declared-patience cold-redial chain; a clock must not clear it.
   if (basis === 'evidence') clearDeclaredPatienceHonestFails(agentId);
 
-  // Cancel the engine auto-wake timer if it's still pending, agent recovered
-  // before we needed to poke them.
   const wakeTimer = autoWakeTimers.get(agentId);
   if (wakeTimer) {
     clearTimeout(wakeTimer);
     autoWakeTimers.delete(agentId);
   }
 
-  // Phase 8 F1 fix: emit an info-severity AGENT_RECOVERED broadcast so the
-  // dashboard can auto-dismiss the lingering injury error toast. Most
-  // provider 4xx errors are transient (auto-recovered within 5s), without
-  // this signal the user sees a red banner from a problem that already
-  // resolved.
   try {
     const db = getDb();
     const agentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
@@ -746,46 +484,19 @@ export function onAgentRecovered(agentId: string, basis: RecoveryBasis = 'eviden
     return; // Recovered before the healer needed to know
   }
 
-  // Agent recovered AFTER the healer was notified, let the healer know
-  // so it can close the loop in its records.
-  //
-  // ── t114 (t113 hand-up 2) — THE FIRE-AND-FORGET IS NOW DRAINABLE ──
-  //
-  // THE DEFECT, measured by t113 and handed over: this call is async and nothing awaited it.
-  // `onAgentRecovered` is sync and so are its three callers (`auto-fix.ts`'s `.then`,
-  // `healer-agent.ts`, the turn path), so making it async would ripple through all of them for a
-  // notice that is deliberately non-blocking. The leak was not the asynchrony — it was that the
-  // promise had NO HANDLE: nothing could wait for it, so in tests it landed on whichever later
-  // case's module-cached transport spy happened to resolve first and made two
-  // `toHaveBeenCalledTimes` clauses a coin flip. Which case it hit moved when t113 re-routed the
-  // notice by one module, so the same latent bug produced a different red.
-  //
-  // The call stays unawaited HERE — production behaviour is byte-identical, a recovery FYI must
-  // not block a recovering agent's turn — but the promise is now tracked and its rejection
-  // swallowed at the source, so `drainRecoveryNotices()` below can settle it. That is what a
-  // test (or a shutdown path) needs in order to stop a stray notice deciding someone else's
-  // verdict.
+  // Recovered after the Healer was notified: tell it so it can close the loop. Not awaited (a recovery FYI must not
+  // block the agent's turn) but tracked, so drainRecoveryNotices() can settle it.
   trackRecoveryNotice(notifyHealerOfRecovery(agentId));
 }
 
-/**
- * In-flight recovery notices. A SET of promises rather than a counter, so a caller can await the
- * exact ones outstanding instead of polling a number.
- */
 const pendingRecoveryNotices = new Set<Promise<void>>();
 
 function trackRecoveryNotice(p: Promise<void>): void {
-  // `.catch` at the source: an unhandled rejection from a best-effort FYI must not become a
-  // process-level warning, and must not reach whoever happens to await the drain.
+  // catch at the source: a best-effort FYI must never become an unhandled rejection or reach a drain awaiter.
   const tracked = p.catch(() => undefined).finally(() => { pendingRecoveryNotices.delete(tracked); });
   pendingRecoveryNotices.add(tracked);
 }
 
-/**
- * Settle every recovery notice this module has started. The honest tool for a test that triggers
- * a recovery and must not leak the resulting FYI into the next case, and a safe no-op when
- * nothing is outstanding.
- */
 export async function drainRecoveryNotices(): Promise<void> {
   while (pendingRecoveryNotices.size > 0) {
     await Promise.all([...pendingRecoveryNotices]);
@@ -796,7 +507,6 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
   try {
     const db = getDb();
 
-    // Verify the agent is still injured (might have recovered between timer start and fire)
     const agent = db.prepare('SELECT id, name, status, classification, last_error FROM agents WHERE id = ?')
       .get(agentId) as { id: string; name: string; status: string; classification: string; last_error: string | null } | undefined;
     if (!agent || (agent.status !== 'error' && agent.status !== 'paused')) {
@@ -804,13 +514,7 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       return;
     }
 
-    // Notify the primary agent in parallel with the Healer. Pre-2026-04-30
-    // the primary was alerted at the moment of injury, before auto-wake
-    // and grace period had a chance to clear transient errors, so a
-    // momentary 429 would fire a misleading "they will not recover on
-    // their own" message even though the agent self-resolved seconds
-    // later. Doing it here means the primary only hears about agents that
-    // genuinely need help.
+    // Tell the primary agent here, after the grace period, so it hears only about agents that genuinely need help.
     try {
       const { getAgentRuntime } = await import('../agent/runtime.js');
       const pausedByLoop = agent.status === 'paused';
@@ -825,19 +529,14 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       .get() as { value: string } | undefined;
     const healerId = healerRow?.value ?? 'healer';
 
-    // Verify the healer exists and is not terminated. Pre-2026-04-29 this
-    // returned silently, leaving an injured agent stuck with no surface
-    // signal. Now we alert via iMessage AND broadcast to the dashboard so
-    // the user actually finds out.
+    // Verify the Healer exists and is not terminated; otherwise alert the owner by iMessage and on the dashboard.
     const healer = db.prepare("SELECT id, status FROM agents WHERE id = ? AND status != 'terminated'")
       .get(healerId) as { id: string; status: string } | undefined;
     if (!healer) {
       logger.warn('Healer agent not available, cannot auto-recover injured agent', { agentId, healerId });
-      // v2.3.19 (error-handling-spec Phase 2): plain language only on
-      // user-facing surfaces. Provider error already logged above.
+      // Plain language only on user-facing surfaces; the provider error is already logged above.
       const userMsg = told.healerMissingWords(agent.name);
-      // v2.3.19, Healer missing is a true blocker (auto-recovery
-      // entirely off until restored). Critical. Once until an injury finds it present (t138 r3).
+      // A missing Healer is a true blocker (auto-recovery is off), so critical; told once until an injury finds it present.
       if (told.tellOwner(`healer-missing:${agentId}`, userMsg, 'healer-missing:')) void sendAlert(userMsg, 'critical', { kind: 'broken-agent', agentId });
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_MISSING');
       return;
@@ -847,7 +546,6 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     const errorClass = classifyError(agent.last_error ?? errorMessage);
     const errorSnippet = (agent.last_error ?? errorMessage).slice(0, 400);
 
-    // Find tasks stalled on this agent
     interface StalledTask { id: string; title: string; status: string }
     const stalledTasks = db.prepare(`
       SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
@@ -872,18 +570,8 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
 
     parts.push('');
     if (errorClass === 'declared_patience_exceeded') {
-      // T82c (ANSWER-ANYWAY), THE STEERING FIX — OWNER RULING, VERBATIM INTENT: "We aren't
-      // taking that away" — the Healer keeps session reset, it just can't be the first trigger
-      // pulled when compaction could have worked. This is the note the vault-archive incident
-      // traced back to: pre-T82c a declared-patience injury fell into the GENERIC three-item
-      // list below, whose item 2 ("context corruption: reset_session") reads, to an LLM
-      // skimming for the most decisive tool, like it covers "the model timed out" too. It does
-      // not — this class is compaction-first, and this branch says so explicitly, states what
-      // the engine ALREADY tried, names the remedy ordering, and does NOT surface reset_session
-      // as an option (it is gated by `evaluateSessionResetGuard` in
-      // `agent/tools/cat/session.ts` and will refuse outside its own three criteria regardless
-      // of what this note says — but a note that never dangles the hammer is the steering half
-      // of this fix, the guard above is the mechanical half).
+      // Declared-patience exhaustion is compaction-first: this note says what the engine already tried and does not offer
+      // reset_session as a first move (evaluateSessionResetGuard refuses it outside its criteria regardless of this text).
       parts.push(
         'This is a declared-patience exhaustion (the model could not be served fast enough for ' +
         'this request) — the engine already ran ONE forced compaction + redial automatically ' +
@@ -911,25 +599,8 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
 
     const content = parts.join('\n');
 
-    // Deliver via A2A transport, ASSIGN intent wakes the healer to act.
-    //
-    // v2.3.19, fresh thread per injury. Pre-spec, all injuries for the
-    // same agent shared a single deterministic thread ID
-    // (`injury-${agentId}`), which meant the 8-message hop limit
-    // permanently retired the thread after enough flapping. Subsequent
-    // injuries got HOP_LIMIT_EXCEEDED and the Healer never saw them.
-    // Each injury notification now opens its own thread, correct
-    // because each injury IS a separate event the Healer should
-    // diagnose freshly. Recovery notices below still get a fresh
-    // thread too (they're informational, not part of the conversation).
-    // Use QUESTION (not ASSIGN) so the A2A transport does NOT auto-create
-    // a tracker task. Injury alerts wake the Healer to act once; the
-    // audit trail lives in healer_log_action, not the kanban. Pre-fix
-    // (intent='ASSIGN') every injury left an on_deck task on the Healer's
-    // tracker view that nothing ever closed, they piled up forever and
-    // polluted the user's tracker (until we also hid Healer's tasks from
-    // the dashboard). QUESTION wakes the receiver identically (see
-    // a2a-transport.ts open-thread branch) but skips the auto-task.
+    // QUESTION wakes the Healer without auto-creating a tracker task; the audit trail lives in healer_actions.
+    // A fresh thread per injury, so one thread's hop limit can never retire later alerts.
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
     const result = await deliverA2AMessage({
       intent: 'QUESTION',
@@ -948,29 +619,17 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
         errorClass,
         stalledTaskCount: stalledTasks.length,
       });
-      // Surface to the dashboard so the user can see the healer kicked in.
-      // Without this, the healer's actions happen invisibly, the user is
-      // left wondering whether anything is happening at all.
       broadcastInjuryEvent(
         agentId,
         'info',
-        // User-facing: brief and reassuring. Tech detail (errorClass +
-        // errorSnippet) was previously surfaced here but it's clutter for
-        // users, it's already in logs and on the agent's detail page.
         `${agent.name} hit an error. Auto-healer is investigating, give it a moment.`,
         'HEALER_DISPATCHED',
       );
     } else {
-      // Delivery failed (semantic dedup, hop limit, etc.), surface so the
-      // user knows the healer wasn't reached and can act manually.
       logger.warn('Healer notification delivery failed', {
         healerId, injuredAgentId: agentId, reason: result.reason,
       });
-      // Phase 8 F1 fix: SEMANTIC_DUPLICATE means the Healer was already informed
-      // about this exact issue. That's the dedup working as designed, not a
-      // failure. Show as info ("already aware"), not error. Other reasons
-      // (hop limit, healer down, etc.) stay as warning since the user may
-      // need to intervene.
+      // SEMANTIC_DUPLICATE means the Healer already knows (dedup working): info. Other reasons stay a warning.
       const isDedup = result.reason === 'SEMANTIC_DUPLICATE';
       broadcastInjuryEvent(
         agentId,
@@ -1007,9 +666,7 @@ async function notifyHealerOfRecovery(agentId: string): Promise<void> {
 
     const content = `${agent.name} (ID: ${agentId}) has recovered from its injured state and is back online. No further action needed.`;
 
-    // Deliver via A2A transport, FYI intent does NOT wake the healer.
-    // The recovery notice sits as read-only context, no tokens spent.
-    // v2.3.19, fresh thread (matches the injury-alert change above).
+    // FYI on a fresh thread: the recovery notice must not wake the Healer; it sits as read-only context.
     const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
     await deliverA2ANotice({
       intent: 'FYI',
@@ -1029,46 +686,32 @@ async function notifyHealerOfRecovery(agentId: string): Promise<void> {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// T82c (ANSWER-ANYWAY) — THE SESSION-RESET GUARD.
-//
-// OWNER RULING, VERBATIM INTENT: the Healer KEEPS session reset — "We aren't taking that
-// away" — it just can't be the first trigger pulled when compaction could have worked. For
-// size-class injuries (declared-patience exhaustions): compaction-first; session reset ONLY
-// when (a) compact-and-redial already failed on >=2 distinct turns, (b) context corruption is
-// diagnosed, or (c) the owner explicitly asked. Non-size injuries: byte-identical behavior.
-// The reset TOOL itself is untouched — this is a MECHANICAL guard `agent/tools/cat/session.ts`'s
-// `reset_session` handler consults before it does anything, not a change to what reset DOES
-// once it is permitted to fire.
-//
-// Reads the target's RECENT injury class off `agents.last_error` — the same persisted STRING
-// every other reader in this file treats as authoritative (see `classifyError`'s own header):
-// a genuinely recovered agent has this column cleared by `onAgentRecovered` (`clearAgentLastError`
-// above), so a stale injury from days ago cannot trip this guard.
-// ════════════════════════════════════════════════════════════════════════════
+// SESSION-RESET GUARD: for declared-patience exhaustions, reset_session (agent/tools/cat/session.ts) proceeds
+// only when compact-and-redial failed on >=2 distinct turns, corruption is diagnosed, or the owner asked.
+// Other injuries are unaffected. The class is read from agents.last_error, cleared only by a recovery by evidence.
 
 export interface SessionResetGuardArgs {
-  /** T82c criterion (b): pass 'corruption' (or any string containing it) when the caller has
-   *  diagnosed corrupted context on the target. Bypasses the count. Audit-logged. */
+  /**
+   * Pass 'corruption' (or any string containing it) when the target's context is diagnosed corrupted;
+   * bypasses the count and is audit-logged.
+   */
   reason?: string | null;
-  /** T82c criterion (c): true ONLY when relaying an explicit owner instruction to reset this
-   *  agent right now. Bypasses the count. Audit-logged. Never inferred, only set. */
+  /**
+   * True only when relaying an explicit owner instruction to reset now; bypasses the count and is audit-logged.
+   * Never inferred, only set.
+   */
   ownerRequested?: boolean;
 }
 
 export interface SessionResetGuardResult {
   allowed: boolean;
-  /** Present only when allowed=false — the decision-moment text `reset_session` returns to
-   *  its caller, naming what to do instead and when reset becomes permitted. */
+  /** Present only when allowed=false: the text reset_session returns, naming what to do instead. */
   refusalText?: string;
 }
 
 /**
- * Evaluate whether `reset_session` may proceed against `targetAgentId`. Called by
- * `agent/tools/cat/session.ts` before ANY side effect (archive, boundary write, reorient).
- *
- * Non-size injuries (or no recent injury at all) return `{ allowed: true }` immediately —
- * this is the CONTROL case the T82c tests hold to byte-identical behavior.
+ * Whether reset_session may proceed against targetAgentId; called before any side effect. Non-size injuries (or none)
+ * return { allowed: true } immediately.
  */
 export function evaluateSessionResetGuard(
   targetAgentId: string,
@@ -1085,12 +728,12 @@ export function evaluateSessionResetGuard(
     }
     const label = row?.name ?? targetAgentId;
 
-    // (b) corruption diagnosed — bypasses the count, audit-logged.
+    // (b) corruption diagnosed: bypasses the count, audit-logged.
     if (args.reason && /corrupt/i.test(args.reason)) {
       auditSessionResetBypass(targetAgentId, 'corruption', args.reason);
       return { allowed: true };
     }
-    // (c) owner explicitly asked — bypasses the count, audit-logged.
+    // (c) owner explicitly asked: bypasses the count, audit-logged.
     if (args.ownerRequested === true) {
       auditSessionResetBypass(targetAgentId, 'owner_requested', null);
       return { allowed: true };
@@ -1116,28 +759,19 @@ export function evaluateSessionResetGuard(
         `audit-logged.`,
     };
   } catch (err) {
-    // Fail OPEN, matching every other best-effort guard in this file (healer damping,
-    // provider-pattern detection): this guard's own failure must never brick the one
-    // recovery tool the Healer has for a genuinely wedged agent — R2 ("we aren't taking that
-    // away") applies to the guard breaking too, not just to the policy it enforces.
+    // Fail open like every other best-effort guard here: the guard's own failure must not block the Healer's reset tool.
     logger.warn('Session-reset guard failed open (treating as allowed)', {
       targetAgentId, error: err instanceof Error ? err.message : String(err),
     });
-    // T82 FIX WAVE, Minor M5 — a fail-open IS a reset permitted outside the guard's own policy,
-    // the same category of event criteria (b)/(c) already audit-log via
-    // `auditSessionResetBypass` below. A `logger.warn` alone left this specific "the guard broke
-    // and let it through" case invisible to anyone reading `healer_actions`, the one table every
-    // other Healer-adjacent bypass/audit trail in this codebase lands in.
+    // A fail-open is a reset permitted outside the guard's policy, so it is audited in healer_actions like (b) and (c).
     auditSessionResetGuardFailOpen(targetAgentId, err);
     return { allowed: true };
   }
 }
 
 /**
- * T82 FIX WAVE, Minor M5 — the guard's OWN error is not a policy bypass (`auditSessionResetBypass`
- * above is criteria (b)/(c), a human or the owner deliberately invoking an escape hatch); this
- * is the guard breaking and failing open on itself. Same table, same category, a distinct
- * `action_taken` so the two are never confused when read back.
+ * Audits the guard failing open on its own error (not a policy bypass); same table as auditSessionResetBypass,
+ * with a distinct action_taken.
  */
 function auditSessionResetGuardFailOpen(targetAgentId: string, err: unknown): void {
   try {
@@ -1157,10 +791,7 @@ function auditSessionResetGuardFailOpen(targetAgentId: string, err: unknown): vo
 }
 
 /**
- * T82c criteria (b)/(c): both bypasses are AUDIT-LOGGED, per this task's own instruction, into
- * `healer_actions` — the existing table every other Healer-initiated action already lands in
- * (see `healer-agent.ts`'s `runAutoFixes` writes and `appendToHealerLog`'s read of it).
- * `diagnostic_id` is NULL: this action is not tied to a diagnostic cycle.
+ * Audits the (b)/(c) bypasses into healer_actions; diagnostic_id is NULL (not tied to a diagnostic cycle).
  */
 function auditSessionResetBypass(
   targetAgentId: string,
@@ -1185,25 +816,14 @@ function auditSessionResetBypass(
 }
 
 /**
- * Called at server startup to pick up agents that were injured before a
- * restart. In-memory timers are lost on restart, so we scan the DB for
- * agents in error/paused status and schedule healer notifications for each.
+ * Called at server startup to pick up agents injured before a restart: timers are lost on restart, so scan the DB
+ * for error/paused agents and schedule Healer notifications for each.
  */
 export function rehydrateInjuredAgents(): void {
   try {
     const db = getDb();
-    // SWEEP CORE-2 item 2 — WHY THE `last_error IS NOT NULL` FILTER IS GONE.
-    //
-    // The loop below reads `agent.last_error ?? 'Unknown error (pre-restart)'`. Under the old
-    // filter that fallback could never fire: a dead branch is the code's own statement that
-    // the filter contradicted the intent. And the rows it excluded are precisely the ones
-    // that most need this sweep — an injury writes the status and the diagnostic, and if the
-    // second write is lost (a throw inside its best-effort catch, or the process dying between
-    // them) the row reads `error` with a NULL `last_error`. The rescue that exists to survive
-    // a crash was skipped by exactly the crash it is for. `error`/`paused` is itself the
-    // durable record that a dispatch is owed, so that is the whole condition now. (The
-    // recovery.ts merge closes the window on the `error` arms; this closes it for the rows a
-    // real box is already carrying, and for the pause arm that still writes twice.)
+    // No last_error filter: error/paused is itself the durable record that a dispatch is owed, and a crash can leave
+    // a NULL last_error.
     const injured = db.prepare(`
       SELECT id, last_error, recovery_attempts FROM agents
       WHERE status IN ('error', 'paused') AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a parked agent is not an injury
@@ -1215,13 +835,8 @@ export function rehydrateInjuredAgents(): void {
         agentIds: injured.map(a => a.id),
       });
       for (const agent of injured) {
-        // v2.3.19, a server restart is a meaningful "fresh start"
-        // signal. Pre-spec, recovery_attempts persisted across restarts,
-        // so an agent that hit attempt 12 before a restart picked up at
-        // attempt 13, instantly into the longest backoff window with
-        // no chance to actually heal naturally. Reset to 0 on rehydrate
-        // and clear any in-memory backoff suppression. The Healer gets
-        // a fresh shot.
+        // A restart is a fresh start: reset attempts and backoff so a stale ladder position does not send the agent
+        // straight into the longest window.
         const prevAttempts = agent.recovery_attempts ?? 0;
         if (prevAttempts > 0) {
           setAttempts(agent.id, 0);
