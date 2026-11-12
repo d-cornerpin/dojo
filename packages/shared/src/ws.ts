@@ -1,6 +1,3 @@
-// ════════════════════════════════════════
-// WebSocket Event Type Definitions
-// ════════════════════════════════════════
 
 import type { Agent, AgentMessage, AgentStatus, CompletionAnnouncement, HealthData, LogEntry, Message, MessageRole, Project, Task } from './types.js';
 import type { DisplayKind, MessageLane, VisibilityTier } from './visibility.js';
@@ -9,80 +6,27 @@ export interface AgentStatusEvent {
   type: 'agent:status';
   agentId: string;
   status: AgentStatus;
-  /** t148: on a `paused` frame for a parked agent, why (plain words); the pill's tooltip. */
+  /** On a `paused` frame for a parked agent, why (plain words); the pill's tooltip. */
   parkedCause?: string;
-  /**
-   * When status === 'working', whether this turn is a normal user turn or an
-   * agent-to-agent (A2A) turn. Lets the composer stay quiet (no thinking dots,
-   * no stop button) while the agent is only talking to another agent — unless
-   * wordy mode is on. Absent on non-working statuses.
-   */
+  /** When working: a user turn or an a2a turn (the composer stays quiet on a2a unless wordy). */
   turnKind?: 'user' | 'a2a';
-  /**
-   * Whether this turn is serving a HUMAN conversation (dashboard / iMessage /
-   * voice), i.e. its turn conv_key is a real conversation and not a pure
-   * background a2a / engine (scheduler, PM poke, watcher) turn. Carried on
-   * working AND idle/terminal broadcasts so the composer's "a user request is
-   * unanswered" latch can survive a background turn's idle: on a busy box a
-   * dashboard send queues behind background work, and the background turn's idle
-   * used to wipe that latch before the queued user turn even started, killing the
-   * thinking dots + stop button (regression, v3.1.10-preflight.31). A background
-   * idle now carries userFacing:false and the client keeps the latch; only a
-   * user-facing turn's idle (userFacing:true) clears it. Absent on legacy / raw
-   * status broadcasts that predate this field, which keep the old clear-on-idle
-   * behavior.
-   */
+  /** True when the turn serves a HUMAN conversation, not a background a2a/engine turn. Sent on idle
+   *  frames too, so a background idle (false) does not clear the "request unanswered" latch. */
   userFacing?: boolean;
-  /**
-   * T83 — THE TRUTHFUL "STOPPING" STATE, and why it is a flag here rather than a seventh
-   * `AgentStatus`. The stop button used to write `status='idle'` into `agents` the instant it
-   * was pressed while the loop kept unwinding for minutes; the code called that cosmetic, and
-   * it was not — `agents.status` is what every OTHER reader consults to decide whether this
-   * agent is busy, and a false idle is how three `resetSession()` calls sailed through a
-   * genuinely working agent on 2026-09-21. The row now keeps saying `working` until the run is
-   * actually torn down, which is true, and this flag is what lets a dashboard say "Stopping…"
-   * instead of either lying or looking like the button did nothing.
-   *
-   * A real seventh status would mean widening `agents.status`'s CHECK constraint (see
-   * `AGENT_STATUSES`' own note: a member added without a migration throws on write) for a
-   * state that is never persisted and never outlives one run. This is the cheaper true thing.
-   *
-   * Set only on the frame `stopAgent` emits for a run that is still unwinding. Absent
-   * everywhere else, so every existing reader is unchanged.
-   */
+  /** Set only on the frame `stopAgent` emits for a run still unwinding, so the dashboard can say
+   *  "Stopping". `agents.status` keeps `working` until teardown because other readers consult it. */
   stopping?: boolean;
 }
 
-// ════════════════════════════════════════
-// A-5b / OWNER RULING #9 — WHAT A STOP WOULD CUT FOR ONE AGENT, RIGHT NOW.
-//
-// *"STOP means stop for anything that agent is doing"*: an agent with a live background job is
-// not idle, the stop control stays offered while anything runs, and the press cuts the turn AND
-// every background job.
-//
-// WHY A NEW FRAME AND NOT A RULE OVER THE ONES THAT EXIST. `agent:status` describes a TURN, and
-// a background job that outlives one emits no further status frame — so there was nothing for a
-// rendering rule to be clever about: the composer had never been told (BACKLOG L40's own words,
-// *"needs a new emission, not a rendering rule"*). The two per-job frames below
-// (`generation_job:update`, `video_job:update`) are not it either: each describes ONE job and
-// carries a box-wide `activeCount`, so answering "does this agent still have anything running"
-// from them means a component keeping its own tally — the server's predicate, copied into JSX.
-// This frame carries the ANSWER; `server/src/agent/live-work.ts` owns the question and the full
-// argument, and `AgentDetail.inFlight` reports the same two numbers.
-//
-// Emitted on the lifecycle EDGES — a background registration opening or releasing, a job row
-// changing state, the stop route's own zero — never on a timer, so a quiet box is quiet.
-// ════════════════════════════════════════
+// What a stop would cut for one agent: `agent:status` describes a TURN, and a background job that outlives
+// one emits no status frame. `server/src/agent/live-work.ts` owns the predicate. Emitted on lifecycle edges.
 export interface AgentJobsEvent {
   type: 'agent:jobs';
   agentId: string;
-  /** Live turn-scoped provider calls. */
+  /** Live turn-scoped abortable registrations (a count, not a turn number). */
   turn: number;
-  /**
-   * Distinct background things a stop would cut: live `background` registrations and open
-   * media job rows, counted as ONE where a job is both (a video poll loop holds a
-   * registration and owns a row). Never their sum — the number is the text on a button.
-   */
+  /** Distinct background things a stop would cut (registrations plus open media rows, a job counted
+   *  once). */
   background: number;
   /** `turn > 0 || background > 0`, computed server-side so no client re-derives the predicate. */
   stoppable: boolean;
@@ -97,13 +41,6 @@ export interface ChatChunkEvent {
   modelId?: string | null;
 }
 
-/**
- * Streamed reasoning / thinking deltas from providers that expose them
- * (DeepSeek native, OpenRouter unified). Distinct from chat:chunk so the
- * dashboard can render them in a collapsible "Thinking…" panel above the
- * eventual assistant bubble. Each event is one delta; final state is
- * implied when chat:chunk done:true arrives or chat:message lands.
- */
 export interface ChatReasoningChunkEvent {
   type: 'chat:reasoning_chunk';
   agentId: string;
@@ -126,44 +63,18 @@ export interface ChatToolResultEvent {
   result: string;
 }
 
-/**
- * The persisted row behind a `chat:message`, copied off the database at the broadcast
- * seam (PHASE-1 T9, research 17 §C4).
- *
- * Why it exists. ~70 sites hand-build the `message` literal above, and nothing ever made
- * that literal agree with the row that was stored — research 17 measured twelve
- * live-view-vs-reload divergence points growing out of exactly that. The seam
- * (`gateway/ws.ts`) now looks every emission up by its own id and attaches what the
- * database holds, so "what the browser was told" and "what was written" are the same
- * facts rather than two independent guesses.
- *
- * It is also the FIRST production reader of `display_kind` / `display_tier` (T8 wrote
- * them; nothing read them). Sweep E re-points the dashboard's own classification onto
- * these fields; until then they ride the wire and the harness asserts on them.
- *
- * Absent only when the emission has NO persisted row — which is a defect, reported by the
- * seam and failed by the kit's BROADCAST_EQUALS_ROW. It is optional in the type because
- * the seam fills it at fan-out time, after every call site has constructed its event.
- */
+/** The persisted row behind a `chat:message`, attached at the broadcast seam (`gateway/ws.ts`) by
+ *  looking the emission up by its own id. Optional in the type because the seam fills it after the call
+ *  sites build the event; absent means no persisted row (a defect). */
 export interface BroadcastRow {
-  /** The insertion key (`messages.seq`) — strictly monotonic, the ordering key the reload
-   *  route pages on. A client can order live and reloaded rows by the same number. */
+  /** The insertion key (`messages.seq`), strictly monotonic; live and reloaded rows order by it. */
   seq: number;
   id: string;
-  /** Whose traffic this is. `owner` is the only lane the human chat surface serves. */
   lane: MessageLane;
   displayKind: DisplayKind;
   displayTier: VisibilityTier;
-  /**
-   * ONE time format, epoch-ms (research 17 D7). Before T9 a broadcast carried
-   * `new Date().toISOString()` while the reload route served SQLite's
-   * `YYYY-MM-DD HH:MM:SS`, and the client compared the two lexicographically.
-   * `message.createdAt` now carries the SAME instant in the reload route's text form, so
-   * the two paths agree; this field is that instant as a number, with no format to get
-   * wrong.
-   */
+  /** Epoch ms: the same instant as `message.createdAt`, which carries the reload route's text form. */
   createdAt: number;
-  /** The orb mood, in its own column since T8. Null on rows that carry none. */
   mood: string | null;
 }
 
@@ -171,91 +82,34 @@ export interface ChatMessageEvent {
   type: 'chat:message';
   agentId: string;
   message: Message;
-  /** The persisted row, stamped at the broadcast seam. See `BroadcastRow`. */
   row?: BroadcastRow;
 }
 
-/**
- * Remove a bubble the client is already showing (PHASE-1 T9, research 17 §C4).
- *
- * This replaces a hack. When the engine decided a streamed bubble should not become a
- * message — a bare `[no-reply]`, a redundant closeout, a ghosted work ask — it broadcast a
- * `chat:message` with EMPTY content and the client read "empty" as "delete this". That
- * overloaded the one event meaning "here is a message" with its own opposite, and it
- * misfired in a way the owner could see: when no bubble existed for the id, the client
- * APPENDED the empty message instead, rendering as a bare timestamp (research 17 §4 item
- * 1). It also made "every broadcast has a row" unstateable, because those three emissions
- * deliberately had none.
- *
- * A retraction is now its own event with its own name. It carries no content, needs no
- * row, and is a no-op on a bubble that is not there.
- */
+/** Remove a bubble the client already shows (an engine-dropped stream); carries no content and is a
+ *  no-op if absent. */
 export interface ChatRetractEvent {
   type: 'chat:retract';
   agentId: string;
-  /** The streaming bubble id to drop. */
   messageId: string;
 }
 
-/**
- * Demote a live-streamed bubble into a working note. Mid-work narration
- * (assistant text riding in the same model response as tool calls) is never a
- * message to the user; the engine persists it as a `[working-note]` system row
- * instead of a conversation message. Because that text already STREAMED live,
- * silently dropping it made the bubble vanish before the user's eyes (owner
- * report 2026-07-10). This event tells the dashboard to convert the streamed
- * bubble (messageId) in place into the dimmed note (noteId), so live view and
- * reload agree and nothing pops out of existence.
- */
+/** Convert a streamed bubble (messageId) in place into the dimmed working-note row (noteId). */
 export interface ChatWorkingNoteEvent {
   type: 'chat:workingnote';
   agentId: string;
-  /** The streaming bubble to convert in place. */
   messageId: string;
-  /** The persisted working-note system row's id. */
   noteId: string;
-  /** The narration text, unprefixed. */
   content: string;
-  /**
-   * RC-9: this note was demoted on a routed-channel human turn (iMessage / SMS /
-   * Teams / email), where exactly ONE routing pass delivers exactly ONE string to
-   * the channel while the dashboard live-mirrors every iteration. A demoted line
-   * here was NOT delivered to that channel, so showing it as a settled note risks
-   * reading as a second, contradictory reply. Internal notes are hidden by default
-   * in the dashboard (shown only in wordy/verbose mode). Absent/false = the prior
-   * always-visible working note (dashboard/voice turns are unchanged).
-   */
+  /** Demoted on a routed-channel human turn (iMessage / SMS / Teams / email), where one string is
+   *  delivered to the channel; shown only in wordy mode. */
   internal?: boolean;
-  /**
-   * SWEEP CORE-2 item 7 — THIS IS A RE-CLASSIFICATION, NOT A DEMOTION-WITH-A-NEW-ROW.
-   *
-   * The two shapes ride the same event because they are the same fact on screen (a bubble
-   * becomes a dimmed note), but they are different facts in the database and the client has
-   * to know which it is:
-   *
-   *   absent/false  the pre-2026-07-10 demotion path. The engine decided MID-TURN that this
-   *                 narration was never a reply, wrote a NEW `[working-note]` system row, and
-   *                 the assistant text was never persisted at all. `messageId` is the streamed
-   *                 bubble to convert; `noteId` is the different row it becomes.
-   *   true          the turn-end path. The answer's identity is only known when the turn ends,
-   *                 so the bubble streamed and PERSISTED as an ordinary assistant row; what
-   *                 changed at the boundary is the platform's account of which bubble the
-   *                 ledger names as the answer. ONE row moves ONE column (`display_kind`
-   *                 -> `working-note`); `content` and `role` are untouched (the cache law), and
-   *                 `messageId` and `noteId` are therefore the SAME id.
-   *
-   * A client that fabricated a system row on the second shape would disagree with its own
-   * reload, which is the divergence class this event exists to close.
-   */
+  /** true: the turn-end path, where the bubble was persisted as an ordinary assistant row and only
+   *  `display_kind` changes (`content` and `role` untouched), so `messageId` and `noteId` are the SAME
+   *  id. Absent or false: a NEW working-note row was written. A client must not fabricate a system row
+   *  on the true shape. */
   reclassified?: boolean;
 }
 
-/**
- * Marks an existing assistant message as having been delivered through
- * voice mode TTS (Kokoro or Hume). The dashboard sets the local
- * message's `source` field to 'voice' so the AssistantBubble renders
- * a "via voice" badge, mirroring the user-side badge.
- */
 export interface ChatSourceUpdatedEvent {
   type: 'chat:source_updated';
   agentId: string;
@@ -263,49 +117,23 @@ export interface ChatSourceUpdatedEvent {
   source: 'voice' | null;
 }
 
-/**
- * One inter-agent message as the dashboard's Inter-Agent lane renders it. This is the
- * DEDICATED lane for agent-to-agent (A2A) traffic and engine-origin notices. A2A leaves
- * `chat:message` entirely and rides `interagent:message`; the lane loads history from
- * GET /api/interagent/:agentId. The payload is self-sufficient (no MessageOrigin
- * dependency) so the seam in a2a-transport.ts, which imports @dojo/shared type-only to
- * dodge the packaged-runtime import trap, can build it without a runtime `deriveOrigin`.
- *
- * PHASE-1 T4 corrected WHERE these rows live: not a second physical table any more, but
- * `lane IN ('a2a','events')` in the one `messages` table, behind a CHECK-constrained
- * column with the fail-closed `chat_messages` view (`lane='owner'`) as the human surface.
- *
- * PHASE-1 T9 completed WHO rides this event. Three seams broadcast it (peer delivery,
- * engine notices, healer routing) and a fourth was missing: the agent's OWN
- * inter-agent-turn output — its assistant/tool rows on a coordination turn — was still
- * going out on `chat:message` even though the lane's history route already served it. So
- * the lane's live view was structurally missing half its content and the owner's chat feed
- * carried coordination traffic. Own output now rides here too.
- *
- * `agentId` is the agent the lane is scoped to. For inbound traffic that is the RECIPIENT
- * (the woken agent); for own output it is the AUTHOR. Both are "the agent whose lane this
- * belongs to", which is what the lane filters on, and the DIRECTION is carried by `role`
- * exactly as it is on the row (`user` = inbound, `assistant`/`tool` = own output).
- */
+/** One inter-agent message as the Inter-Agent lane renders it: A2A traffic, engine notices, and the
+ *  agent's own output on a coordination turn. These are `lane IN ('a2a','events')` rows; the human chat
+ *  surface is the `chat_messages` view. Self-sufficient (no MessageOrigin) so a2a-transport.ts, which
+ *  imports @dojo/shared type-only, can build it. `agentId` is the agent whose lane it belongs to;
+ *  `role` carries the direction. */
 export interface InterAgentMessage {
   id: string;
-  /** The recipient agent (the woken agent). The lane filters on this. */
   agentId: string;
   role: MessageRole;
   content: string;
   createdAt: string;
-  /** Sender agent id for peer A2A; null for engine-origin subsystem notices. */
   sourceAgentId: string | null;
-  /** Resolved display name of the sender (an agent name, or a subsystem label
-   *  like "Healer"/"Scheduler" for engine notices). */
+  /** Resolved sender name (an agent, or a subsystem label like "Healer"). */
   senderName: string | null;
-  /** Resolved display name of the recipient agent. May be null on the live
-   *  broadcast path (the lane fills it from the viewed agent it already knows). */
+  /** Resolved recipient name; may be null on a live broadcast (the lane fills it from the viewed agent). */
   recipientName: string | null;
-  /** a2a_thread_id, groups messages into a conversation thread. Null for engine
-   *  notices that carry no thread. */
   threadId: string | null;
-  /** A2A intent (QUESTION/ASSIGN/ANSWER/…) or the engine origin_intent. */
   intent: string | null;
   /** Whether the sender expects a reply (a2a_requires_response). */
   requiresResponse: boolean;
@@ -316,7 +144,6 @@ export interface InterAgentMessage {
 
 export interface InterAgentMessageEvent {
   type: 'interagent:message';
-  /** Recipient agent id (the lane filters to the viewed agent, like chat). */
   agentId: string;
   message: InterAgentMessage;
 }
@@ -329,57 +156,36 @@ export interface ChatErrorEvent {
     | 'RATE_LIMITED' | 'MODEL_FAILED' | 'PERMISSION_DENIED' | 'ERROR_LOOP'
     | 'TIMEOUT' | 'TERMINATED' | 'STUCK_REPEATING' | 'NO_RESULTS'
     | 'TASK_THRASH_PAUSED'
-    // Healer visibility codes (added 2026-04-29) — surface every silent
-    // return path so the user always knows whether auto-recovery is running.
+    // Healer visibility codes: every silent return path surfaces, so the user knows if recovery is running.
     | 'HEALER_DISPATCHED' | 'HEALER_SUPPRESSED_MAX_ATTEMPTS' | 'HEALER_MISSING'
     | 'HEALER_SELF_INJURED' | 'HEALER_DELIVERY_FAILED'
-    // v2 — surfaces 90% context utilization WARN events so users see them as
-    // toasts in real time. Each is an architecture bug to investigate.
+    // 90% context utilization WARN events, shown as real-time toasts.
     | 'CONTEXT_HIGH'
-    // Phase 8 F1 toast audit — emitted by onAgentRecovered so the dashboard
-    // can auto-dismiss the lingering injury error toast once the agent
-    // self-resolves (most provider 4xx errors are transient).
+    // Emitted by onAgentRecovered so the dashboard can auto-dismiss the lingering injury error toast.
     | 'AGENT_RECOVERED'
-    // error-handling-spec v2.3.19 Tier D — platform-level lock codes.
-    // Each represents a condition where the engine can't proceed and the
-    // user needs to act. Plain-English user message lives in `error`.
+    // Platform-level lock codes: the engine cannot proceed and the user must act (plain English in `error`).
     | 'AUTH_INVALID' | 'ACCESS_DENIED' | 'QUOTA_EXHAUSTED' | 'DNS_FAILURE'
-    // v2.3.19 (Phase 1 hardening, 2026-05-10) — preflight escapes that
-    // bypass the recovery cascade entirely (thrown before its try/catch).
-    | 'NO_MODEL' | 'AGENT_NOT_FOUND' | 'COMPACTION_FAILING'   // OR-COMPACT-1: compaction is failing for a repairable reason
-    // PHASE-4 T4 (OR2). A turn-ending floor steered the agent twice and the agent
-    // stayed silent. The engine used to speak in its place, in the first person, on
-    // the owner's own lane; it does not any more. This is the platform saying, as the
-    // platform, that a platform fault happened — the health half of the same event
-    // `work_events(kind='floor_ghosted')` records durably.
+    // Failures thrown before the recovery cascade's try/catch, so they bypass it entirely.
+    | 'NO_MODEL' | 'AGENT_NOT_FOUND' | 'COMPACTION_FAILING'   // compaction is failing for a repairable reason
+    // A turn-ending floor steered the agent twice and it stayed silent: the platform says so, as itself
+    // (`work_events(kind='floor_ghosted')` records the same event durably).
     | 'FLOOR_GHOSTED'
-    // UX-REPAIR T40. Closed work is waiting on the project manager and it has not ruled.
-    // Not a fault the owner must fix and nothing is lost — the tasks stay open until the
-    // validator returns — so it rides `severity:'warning'`. It exists because the owner
-    // watched a task sit unclosed with no surface anywhere saying what it was waiting on.
+    // Closed work is waiting on the project manager and it has not ruled; tasks stay open, so this rides
+    // `severity:'warning'`.
     | 'VALIDATION_STALLED'
-    // t113 G (t109 hand-up 3, ruled). This agent's model window cannot hold its system prompt
-    // at all, so no message can be admitted and nothing about the turn would be true. The
-    // engine has always refused this loudly — `budget.ts`'s `SystemPromptTooLargeError` — but
-    // only into the LOG, so the person saw an agent answering with no memory of anything and
-    // nothing said why. `retryable: false` and `severity: 'error'` are both deliberate: unlike
-    // a provider outage this does NOT clear itself, somebody has to shorten the tool list or
-    // move the agent to a bigger-window model, and the card must stay until they do.
+    // The agent's model window cannot hold its system prompt (`budget.ts` SystemPromptTooLargeError).
+    // It does not clear itself: `retryable: false` and `severity: 'error'` keep the card until the tool list
+    // shrinks or the agent moves to a bigger-window model.
     | 'WINDOW_TOO_SMALL'
-    // t202 D10. An agent that was ALREADY on a model under the 32K main-model floor when the
-    // floor was introduced. Nothing is stopped or changed; the person is told once.
+    // An agent already on a model under the 32K main-model floor: nothing changes, the person is told once.
     | 'MAIN_MODEL_SMALL';
-    // (v3.5 B4's SUMMARY_CHECK_FAILING card is gone, OR-AUDIT-ANSWERS (c): a failing summary is rewritten, no card.)
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
-  /** v3.5 N42 r2: an owner card whose words can change while it stands (the no-fit card names the router's
-   *  smallest model) is matched by its condition key, so its end frame finds it whatever the words became. */
+  /** An owner card whose words can change while it stands is matched by this condition key. */
   cardKey?: string;
-  /** v3.5 field fix 3 (#9): an owner card's class. `action` (absent means action, as every card before it): the
-   *  owner must do something, a sticky card holding the orb's red alert. `informational`: a plain toast that
-   *  leaves by itself, never red. Background progress is no card at all (`engine:activity`).
-   *  An agent's chat:error declares it too; there only `action` with severity `error` is sticky and red. Required, so
-   *  every site that sends a card says which it is. */
+  /** `action` (the owner must do something; a sticky card holding the orb's red alert) or
+   *  `informational` (a plain toast that leaves by itself, never red). On an agent's chat:error only
+   *  `action` with severity `error` is sticky. */
   cardClass: 'action' | 'informational';
 }
 
@@ -463,12 +269,8 @@ export interface ResourceWarningEvent {
   };
 }
 
-/**
- * Emitted at server startup when the dep installer freshly installs a brew
- * package. The dashboard toasts each one so the user knows what changed.
- * Status 'failed' fires if brew couldn't install the package — usually a
- * homebrew issue worth surfacing to the user.
- */
+/** Emitted at startup when the dep installer freshly installs a brew package ('failed' if brew could
+ *  not). */
 export interface SystemDepInstalledEvent {
   type: 'system:dep_installed';
   data: {
@@ -477,14 +279,8 @@ export interface SystemDepInstalledEvent {
   };
 }
 
-/**
- * Emitted whenever a video generation job changes state (created, polling,
- * succeeded, failed, cancelled). The dashboard's ActiveJobsIndicator
- * listens for this to show/hide the in-flight spinner and refresh the
- * modal without re-polling. `activeCount` is the number of jobs still in
- * 'queued' or 'polling' across all agents, so the indicator can render a
- * badge straight from the event.
- */
+/** Emitted whenever a video generation job changes state; `activeCount` is the jobs still queued or
+ *  polling across all agents, so it cannot answer a per-agent question. */
 export interface VideoJobUpdateEvent {
   type: 'video_job:update';
   data: {
@@ -496,14 +292,8 @@ export interface VideoJobUpdateEvent {
   };
 }
 
-/**
- * Emitted by the generation-jobs worker as an image / audio / music job
- * changes state. The same ActiveJobsIndicator that listens for video job
- * updates also listens for this, so the spinning-icon + popup covers every
- * media generator. `kind` lets the indicator pick the right icon/label.
- * `activeCount` here is the count of in-flight generation_jobs only; the
- * indicator merges it with the video count for its badge.
- */
+/** Emitted as an image / audio / music job changes state; `activeCount` counts in-flight
+ *  generation_jobs only (the indicator merges it with the video count). */
 export interface GenerationJobUpdateEvent {
   type: 'generation_job:update';
   data: {
@@ -516,16 +306,9 @@ export interface GenerationJobUpdateEvent {
   };
 }
 
-/**
- * Emitted by engine-managed background sequences that are not media jobs.
- * Memory compaction fires this directly (start/end correlated by `id`). The
- * Dreamer and Healer are surfaced by the indicator from their agent:status
- * instead, since they run as agents. The ActiveJobsIndicator renders these
- * as in-flight rows with NO Stop button (engine-managed, not user-cancellable).
- * An item with an `agentId` is that agent's work and shows (on the orb and in the
- * indicator) only while that agent is the one viewed; `agentId: null` is the box's
- * own work and shows everywhere (v3.5 field fix 3 #10).
- */
+/** Emitted by engine-managed background sequences that are not media jobs (compaction, start/end
+ *  correlated by `id`; no Stop button). An item with an `agentId` shows only while that agent is
+ *  viewed; `agentId: null` is the box's own work and shows everywhere. */
 export interface EngineActivityEvent {
   type: 'engine:activity';
   data: {
@@ -538,72 +321,33 @@ export interface EngineActivityEvent {
   };
 }
 
-/**
- * Emitted when the Healer files a new fix proposal that needs owner approval
- * (healer_propose) and again when an approved proposal is marked applied
- * (healer_mark_applied). The dashboard's HealerVitals card re-runs its
- * proposals/actions load() on this event so a freshly-filed consent decision
- * (or a just-applied fix) appears live instead of only after a page reload.
- * The two emit sites send different fields, so everything past `id` is
- * optional: the propose site sends `title` + `severity`; the mark-applied
- * site sends `status: 'applied'`.
- */
+/** Emitted when the Healer files a proposal and at every resolution, so HealerVitals reloads live. The
+ *  sites send different fields, so everything past `id` is optional. */
 export interface HealerProposalEvent {
   type: 'healer:proposal';
   data: {
     id: string;
     title?: string;
     severity?: string;
-    // Resolution stamps. Every resolution site broadcasts its status so a live
-    // surface (the step-4 decision toast) can drop a stale pending card no
-    // matter WHERE the proposal was resolved (toast button, Vitals, the
-    // 60-minute urgent expiry sweep, or the Healer applying it).
+    // Every resolution site broadcasts its status so a live surface can drop a stale pending card.
     status?: 'applied' | 'approved' | 'denied' | 'auto_resolved';
-    // D-B step 2: the engine stamps these on a proposal so a later surface
-    // (step 4 orb toast, step 5 iMessage) can decide from the live WS frame,
-    // without a refetch, whether this proposal is urgent and which lane it
-    // belongs to. Optional so the existing propose/mark-applied emit sites,
-    // which never set them, keep compiling.
+    // Stamped by the engine so a later surface can decide from the live frame whether this proposal is
+    // urgent and which lane it belongs to.
     urgency?: 'routine' | 'urgent';
     surface?: 'vitals' | 'toast' | 'imessage';
   };
 }
 
-/**
- * DOJO-REPORT T3 — emitted when an agent SUBMITS a problem report for the owner's
- * decision (`dojo_report`'s `submit` phase, the tool's last act). The dashboard's
- * report preview card re-runs its list on this event so a freshly-filed report
- * appears live instead of only after a reload, exactly as `healer:proposal` does
- * for the Healer's consent decisions.
- *
- * It is a PING, not a payload: `id` and `title` are enough to draw a card stub, and
- * the card fetches the brief and the telemetry over HTTP. The brief is the text a
- * human is about to approve for a PUBLIC page, so it travels the route that can be
- * authenticated and re-read, never a broadcast frame. Nothing about this event
- * posts anything — the owner's Post button is the only door.
- */
+/** An agent SUBMITTED a report for the owner's decision. A PING: the brief travels the authenticated route,
+ *  never a frame, and nothing here posts anything (the owner's Post button is the only door). */
 export interface ReportPendingEvent {
   type: 'report:pending';
   data: { id: string; title: string };
 }
 
-/**
- * DOJO-REPORT T6 — the owner DECIDED. Emitted by `POST /api/reports/:id/approve` and
- * `/cancel`, the only two doors that resolve a report, and by nothing else.
- *
- * It exists for a reason the pending frame does not cover: the card can be open in two
- * dashboard tabs, and a decision made in one must clear the card in the other. Without it the
- * second tab keeps a Post button in front of someone for a report that is already delivered,
- * and the only thing standing between that and a second issue is the store's one-shot UPDATE.
- * That UPDATE is the real guarantee; this frame is what stops the owner being asked twice.
- * Status-stamped for the same reason `healer:proposal` is — the surfaces converge on the answer
- * rather than each remembering its own.
- *
- * `posted` covers BOTH deliveries, because both consume the one approval (contract C3): a
- * report that left as a file is as finished as one that left as an issue. Like its sibling it
- * is a PING — no brief, no telemetry, no link. The text a human approved for a public page
- * travels the authenticated route the card can re-read, never a broadcast frame.
- */
+/** The owner decided (`POST /api/reports/:id/approve` or `/cancel` only); clears the card in other tabs.
+ *  The store's one-shot UPDATE (approveOnce), not this frame, stops a second issue. `posted` covers file
+ *  or issue. A PING too. */
 export interface ReportResolvedEvent {
   type: 'report:resolved';
   data: { id: string; status: 'posted' | 'cancelled' };
@@ -691,75 +435,46 @@ export type WsEvent =
   | MigrationDepsetupEvent
   | SystemRestartEvent;
 
-/**
- * Open the right dock for the user (slides the chat left). Emitted by the
- * agent (via a tool) to surface a working document / HTML render ('canvas')
- * or a live website ('iframe') alongside the conversation.
- */
-/**
- * The canvas/dock was collapsed to the edge handle (the user closed it, or
- * another device did). Content is retained server-side; the dashboard shows the
- * re-open handle. Broadcast so every connected device stays in sync.
- */
+/** The canvas/dock was collapsed to the edge handle (by the user or another device); content stays
+ *  server-side. */
 export interface DockCollapseEvent {
   type: 'dock:collapse';
-  /** Which agent's canvas slot was collapsed (canvas is per-agent). The dashboard
-   *  only mirrors the collapse when it matches the agent currently being viewed. */
+  /** Which agent's canvas slot (canvas is per-agent); mirrored only when it is the viewed agent. */
   agentId: string;
 }
 
 export interface DockOpenEvent {
   type: 'dock:open';
-  /** Which agent's canvas slot this open belongs to (canvas is per-agent). The
-   *  dashboard only opens the dock when this matches the agent being viewed, so a
-   *  background agent's auto-open can never replace the viewed agent's canvas. */
+  /** Which agent's canvas slot; the dock opens only for the viewed agent, so a background auto-open
+   *  cannot replace its canvas. */
   agentId: string;
   data: {
-    // 'screen' = live VNC screen-share viewer (needs no extra data fields).
     kind: 'canvas' | 'iframe' | 'screenshot' | 'screen';
     title?: string;
-    /** canvas: inline HTML to render */
     html?: string;
-    /** canvas (a hosted doc) or iframe: the url to load. screenshot: the served
-     *  PNG of the page (used when the site blocks iframe embedding). */
+    /** canvas (hosted doc) or iframe: the url to load. screenshot: the served PNG (when the site blocks
+     *  iframes). */
     url?: string;
-    /** canvas: absolute path of the backing file, when the canvas shows a file
-     *  on disk. Lets the dock auto-refresh when the agent edits that file and
-     *  enables the download affordance. */
+    /** canvas: absolute path of the backing file; lets the dock auto-refresh on edits and enables
+     *  download. */
     path?: string;
-    /** screenshot: the original website URL, so the dock's "Open in new window"
-     *  button can launch the real, interactive site in a browser tab. */
     sourceUrl?: string;
   };
 }
 
-/**
- * A file on disk that a canvas may be showing was just written (file_write /
- * file_patch / file_append). The dock re-fetches if it's displaying this path,
- * so edits the agent makes appear without a manual refresh.
- */
+/** A file a canvas may be showing was just written (file_write / file_patch / file_append); the dock
+ *  re-fetches it. */
 export interface CanvasUpdatedEvent {
   type: 'canvas:updated';
-  /** Which agent's canvas slot changed (canvas is per-agent). The dashboard only
-   *  re-fetches when it matches the agent currently being viewed. */
   agentId: string;
   data: {
-    /** absolute path of the file that changed */
     path: string;
   };
 }
 
-/**
- * Tells the dashboard to navigate the user's view — open a top-level page
- * or a specific Settings tab. Emitted by the agent (via the open_page /
- * open_settings tools) so it can take the user where they asked to go
- * ("show me my cost dashboard", "where do I change my voice?"). Purely a
- * UI move: it only does something for a user who has the dashboard open,
- * and changes no state on its own. `path` is a react-router path (e.g. '/',
- * '/settings', '/costs'); `tab` is the Settings tab id when path is
- * '/settings'; `section` is an optional human label matched against a
- * section heading within that tab to scroll it into view.
- */
+/** Tells the dashboard to navigate the user's view (emitted by open_page / open_settings): a UI move
+ *  only. `path` is a react-router path; `tab` is the Settings tab id when path is '/settings';
+ *  `section` is a heading label to scroll into view. */
 export interface UiNavigateEvent {
   type: 'ui:navigate';
   data: {
@@ -773,16 +488,11 @@ export interface OllamaStatusEvent {
   type: 'ollama:status';
   data: {
     maxConcurrentModels: number;
-    // Slots are now per-provider: each entry tags which Ollama provider
-    // the model is loaded on, so the same modelName can legitimately
-    // appear once per provider.
     slots: Array<{ providerId: string; modelName: string; activeRequests: number }>;
     queuedRequests: number;
     queuedModels: Array<{ providerId: string; modelName: string }>;
-    // T81c (NO-DOOMED-DIALS) Fix Round 1, Minor 1: a same-model pileup (two+ requests for the
-    // IDENTICAL model on one provider, serialized behind each other) is a different condition
-    // from `queuedRequests`/`queuedModels` above (two DIFFERENT models contending for one slot)
-    // — the GPU-livelock incident's own shape, surfaced so the Health page can tell them apart.
+    // A same-model pileup (several requests for the IDENTICAL model on one provider) differs from
+    // `queuedRequests`/`queuedModels` (DIFFERENT models contending for one slot).
     sameModelWaiters: number;
     sameModelWaitingModels: Array<{ providerId: string; modelName: string; count: number }>;
   };
@@ -818,15 +528,8 @@ export interface MigrationProgressEvent {
   data: { stage: string; progress: number; message: string };
 }
 
-// A call-to-action the import wizard renders for a post-migration check.
-//   link                 → navigate within the dashboard (target = route)
-//   open_system_settings → open a macOS System Settings pane (target = pane id)
-//   revalidate_provider  → re-test a provider's restored API key (target = provider id)
-//   run_installer        → (re)run the dependency installer
-//   recheck              → re-evaluate this check now (e.g. after a manual action)
-//   reconnect_oauth      → start an OAuth reconnect right here (target = 'google'|'microsoft');
-//                          the wizard POSTs /api/<target>/connect and opens the authUrl
-//   info                 → no action, informational only
+// A call-to-action the import wizard renders for a post-migration check; `target` by type: link (route),
+// open_system_settings (pane id), revalidate_provider (provider id), reconnect_oauth (google | microsoft).
 export interface MigrationCta {
   type: 'link' | 'open_system_settings' | 'revalidate_provider' | 'run_installer' | 'recheck' | 'reconnect_oauth' | 'info';
   label: string;
@@ -837,15 +540,11 @@ export interface PostMigrationCheck {
   id: string;
   label: string;
   status: 'ok' | 'action_needed' | 'in_progress';
-  // Grouping for the wizard's guided setup step:
-  //   automated  → handled by the dojo (deps, ollama, models); shown as status only
-  //   action     → needs the user (permissions, re-auth, missing key)
-  //   technique  → a migrated technique's own setup notes (one card per technique)
+  // Wizard grouping: automated (the dojo handles it), action (needs the user), technique (its setup notes).
   category?: 'automated' | 'action' | 'technique';
   /** Legacy free-text hint (kept for back-compat); prefer cta + detailItems. */
   action?: string;
   detail?: string;
-  /** Structured, line-by-line setup items for technique cards. */
   detailItems?: { text: string; kind: 'install' | 'manual' }[];
   cta?: MigrationCta;
 }
@@ -855,7 +554,6 @@ export interface MigrationChecksEvent {
   data: { checks: PostMigrationCheck[]; dismissed: boolean };
 }
 
-// ── Voice mode events ──
 
 export interface VoiceModelDownloadEvent {
   type: 'voice:model_download';
@@ -922,13 +620,7 @@ export interface VoiceSleepDetectedEvent {
   phrase: string;
 }
 
-// ── Integration connect / activity events ──
-//
-// Google and Microsoft workspace connect/disconnect toggles and per-write
-// activity. `slot` is the account slot ('agent' | 'user' today; a plain string
-// so multi-account additions don't break the wire contract). None of these are
-// consumed by the dashboard yet, but they are typed so the compiler guards the
-// wire shape and a future consumer can subscribe without guessing.
+// Integration events: `slot` is a plain string ('agent' | 'user' today) so new accounts keep the wire shape.
 
 export interface GoogleConnectedEvent {
   type: 'google:connected';
@@ -977,9 +669,7 @@ export interface MicrosoftActivityEvent {
   };
 }
 
-// ── Plaud (voice recorder) auth events ──
-// These carry their fields at the top level (not under `data`), matching the
-// emit sites in plaud/auth.ts and the PlaudSettings consumer.
+// Plaud auth events: fields are top level (not under `data`), matching plaud/auth.ts and PlaudSettings.
 
 export interface PlaudAuthUrlEvent {
   type: 'plaud:auth_url';
@@ -1000,24 +690,21 @@ export interface PlaudLoginFailedEvent {
   error: string;
 }
 
-// ── GitHub (device flow) auth events — DOJO-REPORT T4 ──
-// Top-level fields, not a `data` envelope, matching the Plaud four above: an out-of-band
-// connect card wants the fields. NO FRAME CARRIES A TOKEN and none ever may — the card
-// re-reads `GET /api/github/status`, whose shape has no token field at all.
+// GitHub (device flow) auth events: top-level fields like the Plaud four above. NO FRAME CARRIES A TOKEN and
+// none ever may; the card re-reads `GET /api/github/status`, which has no token field.
 
 export interface GithubDeviceCodeEvent {
   type: 'github:device_code';
   userCode: string;
   verificationUri: string;
-  /** Epoch ms — GITHUB'S OWN `expires_in` as an instant, so the card counts down honestly
-   *  rather than inventing a deadline of its own. */
+  /** Epoch ms: GitHub's own `expires_in` as an instant, so the card counts down honestly. */
   expiresAt: number;
 }
 
 export interface GithubConnectedEvent {
   type: 'github:connected';
-  /** Null when GitHub granted a token but would not name the user: a missing NAME, never a
-   *  missing connection. */
+  /** Null when GitHub granted a token but would not name the user: a missing name, not a missing
+   *  connection. */
   login: string | null;
 }
 
@@ -1027,12 +714,11 @@ export interface GithubDisconnectedEvent {
 
 export interface GithubConnectFailedEvent {
   type: 'github:connect_failed';
-  /** A plain sentence for the card, and the loop's ONLY unhappy ending. Nothing re-dials, so
-   *  this frame is the last word until a human presses Connect (NO-DOOMED-DIALS P3). */
+  /** A plain sentence for the card, and the only unhappy ending: nothing re-dials until a human presses
+   *  Connect. */
   error: string;
 }
 
-// ── Agent group lifecycle ──
 
 export interface GroupCreatedEvent {
   type: 'group:created';
@@ -1044,7 +730,6 @@ export interface GroupDeletedEvent {
   data: { id: string };
 }
 
-// ── Memory backfill (embedding) progress ──
 
 export interface BackfillProgressEvent {
   type: 'backfill:progress';
@@ -1056,10 +741,7 @@ export interface BackfillProgressEvent {
   };
 }
 
-// ── Dreamer (vault maintenance) lifecycle ──
-// dream:complete carries different fields depending on the exit path (skipped
-// vs a real run), so everything is optional; the Memory page consumes it only
-// to trigger a re-fetch.
+// Dreamer: dream:complete fields vary by exit path (skipped or a real run), so all are optional.
 
 export interface DreamStartedEvent {
   type: 'dream:started';
@@ -1090,7 +772,6 @@ export interface DreamRecoveryEvent {
   };
 }
 
-// ── Scheduled task run lifecycle (consumed by TaskRunHistory) ──
 
 export interface TaskRunStartedEvent {
   type: 'task:run_started';
@@ -1102,7 +783,6 @@ export interface TaskRunCompleteEvent {
   data: { taskId: string; runId: string; status: string; nextRun: string | null };
 }
 
-// ── Tracker task audit-log append ──
 
 export interface TrackerTaskLogEvent {
   type: 'tracker:task_log';
@@ -1124,9 +804,7 @@ export interface SystemTunnelStatusEvent {
   };
 }
 
-// ── Migration dependency-installer stream ──
-// Streams the installer's stdout line-by-line, then a terminal frame with the
-// exit result. Consumed by the ImportWizard.
+// Migration dependency-installer stream: stdout line by line, then a terminal frame with the exit result.
 
 export interface MigrationDepsetupEvent {
   type: 'migration:depsetup';
@@ -1139,10 +817,7 @@ export interface MigrationDepsetupEvent {
   };
 }
 
-// ── Server restart marker ──
-// Broadcast right before the process exits for a restart so every connected
-// device can show a "restarting" overlay and ride out the reconnect gap
-// instead of surfacing raw connection errors. Fields sit at the top level.
+// Broadcast right before the process exits for a restart so connected devices ride out the reconnect gap.
 
 export interface SystemRestartEvent {
   type: 'system:restart';
@@ -1150,48 +825,26 @@ export interface SystemRestartEvent {
   mode: 'dev' | 'production';
 }
 
-// ════════════════════════════════════════
-// Batching decision (colocated with the union)
-// ════════════════════════════════════════
-//
-// The gateway coalesces high-frequency events in a short window (<=50ms, no
-// reorder within a type, no persistence impact) to spare the event loop. That
-// decision USED to live in a hand-maintained Set inside the server, which drifts:
-// a new high-frequency event (e.g. chat:reasoning_chunk, FA-G3) is trivially
-// forgotten, and every thinking delta then fans out one stringify+send per token.
-//
-// Carrying the flag HERE, as a Record keyed by every WsEvent type, makes the
-// batching decision part of the wire contract: adding a member to WsEvent that
-// is missing from this map is a compile error, so a new event cannot ship without
-// an explicit `true`/`false`. BATCHABLE_EVENTS is DERIVED from it, so the two can
-// never disagree.
-//
-//   true  = high-frequency stream, safe to coalesce (chunks, status, logs)
-//   false = deliver immediately (errors, completions, one-shot state changes)
+// Batching decision, colocated with the union: the gateway coalesces high-frequency events in a short window
+// (<=50ms, no reorder within a type). A Record keyed by every WsEvent type makes a missing entry a compile
+// error, and BATCHABLE_EVENTS is derived from it so the two cannot disagree.
+//   true = high-frequency stream, safe to coalesce; false = deliver immediately.
 export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
-  // High-frequency streams: batch.
   'chat:chunk': true,
   'chat:reasoning_chunk': true,
   'chat:tool_call': true,
   'chat:tool_result': true,
   'chat:message': true,
-  // T9: a retraction MUST ride the same buffer as the chunks and messages it cancels.
-  // Made immediate it could overtake a still-buffered `chat:chunk` for the same bubble
-  // and the client would re-create the bubble it had just dropped. The pair it replaces
-  // (`chat:chunk done:true` + an empty `chat:message`) were both batched, so this keeps
-  // the observed ordering byte-for-byte.
+  // A retraction MUST ride the same buffer as the chunks it cancels: made immediate it could overtake a
+  // buffered `chat:chunk` for the same bubble and the client would re-create the dropped bubble.
   'chat:retract': true,
-  // One-shot bubble demotion; must land promptly so the streamed bubble
-  // converts before the eye registers a vanish.
+  // One-shot demotion; must land promptly so the streamed bubble converts before the eye registers a vanish.
   'chat:workingnote': false,
   'agent:status': true,
   'log:entry': true,
   'ollama:status': true,
 
-  // Everything else: deliver immediately.
   'chat:source_updated': false,
-  // Inter-agent lane: low-frequency structured traffic (peer A2A + engine
-  // notices), never a per-chunk stream, so deliver immediately.
   'interagent:message': false,
   'chat:error': false,
   'system:health': false,
@@ -1202,16 +855,12 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'agent:terminated': false,
   'agent:message': false,
   'healer:proposal': false,
-  // A consent decision the owner has to make. Batching would delay the card behind
-  // an unrelated flush, which is the one frame a gate must not arrive late.
+  // A consent decision the owner must make: batching would delay the card behind an unrelated flush.
   'report:pending': false,
-  // The other half of the same gate: a decision the owner has ALREADY made, clearing the card
-  // in every other tab. Batching it would leave a live Post button in front of a delivered
-  // report, which is the one frame a consent gate must not arrive late.
+  // Clears the card in other tabs once the owner has decided; batching it would leave a live Post button.
   'report:resolved': false,
-  // A-5b: NOT batched. It is a one-shot state change on a surface's stop control, and the
-  // frame that MATTERS most is the last one — the zero after a stop, which takes the button
-  // away. Held behind an unrelated flush that reads as a button that did nothing.
+  // A one-shot state change on the stop control: the zero after a stop removes the button, and held behind a
+  // flush it reads as a button that did nothing.
   'agent:jobs': false,
   'video_job:update': false,
   'generation_job:update': false,
@@ -1255,8 +904,7 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'plaud:connected': false,
   'plaud:disconnected': false,
   'plaud:login_failed': false,
-  // T4: all four false, for the Plaud reason — a connect card is a human standing at a screen
-  // waiting for a code, and a frame held behind an unrelated flush is a card that looks broken.
+  // All four immediate: a connect card is a human waiting for a code, and a held frame looks broken.
   'github:device_code': false,
   'github:connected': false,
   'github:disconnected': false,
@@ -1273,11 +921,7 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'system:restart': false,
 };
 
-/**
- * The set of event types the gateway batches, DERIVED from EVENT_BATCHABLE so it
- * can never drift from the per-event decision above. Consumed by the gateway's
- * broadcast() to pick immediate vs. batched fan-out.
- */
+/** The event types the gateway batches, DERIVED from EVENT_BATCHABLE so it cannot drift from it. */
 export const BATCHABLE_EVENTS: ReadonlySet<WsEvent['type']> = new Set(
   (Object.keys(EVENT_BATCHABLE) as Array<WsEvent['type']>).filter((t) => EVENT_BATCHABLE[t]),
 );
