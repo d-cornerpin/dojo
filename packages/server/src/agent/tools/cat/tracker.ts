@@ -1,37 +1,23 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE PROJECT TRACKER'S WORK VERBS (PHASE-5 T4 — relocated from `agent/tools.ts`)
+// THE PROJECT TRACKER'S WORK VERBS: the handler bodies behind the `work_*` tools.
 //
-// Twenty-three dispatch keys, and they are the reason this table is keyed on the
-// DISPATCH KEY rather than the tool name. PHASE-2 T8V collapsed 24 public tool
-// names into six `work_*` verbs, so `work_update` alone reaches SEVEN different
-// bodies (`:status`, `:edit`, `:get`, `:list`, `:complete_step`,
-// `:close_project`, `:reassign`) and `work_validate` five. A by-name map could
-// not express that; `workOperation(name, args) ?? name` is what the switch keyed
-// on and it is what this module's keys are.
+// The table is keyed on the DISPATCH KEY (`workOperation(name, args) ?? name`),
+// not the tool name: the six `work_*` verbs fan out (one `work_update` reaches
+// seven bodies, `work_validate` five) and a by-name map cannot express that.
 //
-// ── THE NINETEEN PER-OPERATION `checkRequired` SITES ARE ALL HERE, INTACT ──
-// T3C folded 57 per-TOOL required-field arrays into one boundary at
-// `executeTool` and DELIBERATELY PRESERVED nineteen per-OPERATION checks,
-// because the work verbs' `input_schema.required` is `[]` — the wire carries a
-// UNION of every operation's fields and requiredness is per operation, in code.
-// A schema-compiled validator validates NOTHING for them, so deleting them
-// would have deleted validation outright (RULING P5-R8's own reasoning). All
-// nineteen moved with their handlers, unedited; `grep -c "checkRequired(" ` on
-// this file is 19 and that is the same unit T3C measured.
+// ── THE PER-OPERATION `checkRequired` SITES ARE ALL HERE ──
+// The work verbs' `input_schema.required` is `[]`: the wire carries a UNION of
+// every operation's fields, so a schema-compiled validator would validate NOTHING
+// for them. These checks are the validation; dropping one drops it for
+// that operation.
 //
-// RELOCATION, NOT REWRITE. Every body is byte-faithful, including
-// `work_open:task`'s scheduling normalisation, `work_close_request:commitment`'s
-// delivery-record read, and every user-facing refusal string.
+// `normalizeRepeatDaysOfWeek` + `REPEAT_DAY_NAME_MAP` live here because their
+// only call sites (`work_open:task`, `work_open:reminder`, `work_update:edit`)
+// are all here.
 //
-// `normalizeRepeatDaysOfWeek` + `REPEAT_DAY_NAME_MAP` moved WITH these handlers:
-// re-derived at this HEAD, their only three call sites are `work_open:task`,
-// `work_open:reminder` and `work_update:edit`, all of them here.
-//
-// ── FIVE LAZY LOADS DIED ──
-// The five `../tracker/tools.js` loads (four destructures + one namespace) are
-// not on §T0-PINS P8's sanctioned list, and `tracker/tools.ts` imports nothing
-// from the toolbox, so not one broke a cycle. Converted; the unit suite is the
-// arbiter under RULING P5-R9 and it stayed green.
+// ── NO LAZY LOADS ──
+// `tracker/tools.ts` imports nothing from the toolbox, so its loads are plain
+// static imports: there is no cycle to break.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../../../db/connection.js';
@@ -56,18 +42,14 @@ import {
   trackerPauseSchedule, trackerResumeSchedule, trackerRetask, trackerResolveMissedRuns,
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
-import { readMeasureArg, remeasureTask, editWithMeasure } from './measure-door.js';   // v3.5 DONE IS MEASURED
-import { checkPlan, tasksFromPlan, explicitTasks, taskPlanMismatch, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
+import { readMeasureArg, remeasureTask, editWithMeasure } from './measure-door.js';   // DONE IS MEASURED
+import { checkPlan, tasksFromPlan, explicitTasks, taskPlanMismatch, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // PLAN BEFORE PROJECT
 import { scaleFactsForAgent } from '../../../tools/scale-facts.js';
 import type { ToolHandlerMap } from '../handler.js';
 
-// v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
-// array of names ("mon", "wednesday"), an array of ints (0-6), or a CSV
-// string and returns the canonical CSV-of-ints stored in the DB ("1,3").
-// Returns null when the input is null (caller wants to clear), undefined
-// when the field wasn't supplied, or a string when normalization succeeded.
-// Returns the literal string '__INVALID__' if every entry was unparseable
-//, callers translate that to a user-facing error.
+// Accepts names ("mon"), ints (0-6) or a CSV string; returns the canonical
+// CSV-of-ints stored in the DB ("1,3"). null clears, undefined is unsupplied,
+// and the literal '__INVALID__' means nothing parsed (callers refuse that).
 const REPEAT_DAY_NAME_MAP: Record<string, number> = {
   sun: 0, sunday: 0,
   mon: 1, monday: 1,
@@ -143,7 +125,8 @@ const tableOfHandlers: ToolHandlerMap = {
       { name: 'title', value: args.title, type: 'string' },
     ]);
     if (projErr) { content = projErr; isError = true; return { content, isError }; }
-    // v3.5 PLAN BEFORE PROJECT: with no tasks of its own the tasks are the plan's steps, so a step's measure is read here (counting is I/O); a bad plan is refused by the creator.
+    // With no tasks of its own the tasks are the plan's steps, so a step's
+    // measure is read here (counting is I/O); a bad plan is refused by the creator.
     const given = explicitTasks(args.tasks as Array<Record<string, unknown>> | undefined), planned = checkPlan(args.plan);
     const rawTasks = !planned.ok || (given && taskPlanMismatch(given.length, planned.plan)) ? [] : given ?? tasksFromPlan(planned.plan);
     const measures = await Promise.all(rawTasks.map((t) => readMeasureArg(agentId, t?.measure)));
@@ -170,7 +153,7 @@ const tableOfHandlers: ToolHandlerMap = {
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="project")');
     }
-    if (content.startsWith(PLAN_REFUSAL_PREFIX)) isError = true;   // v3.5: a project the engine would not open is a failed call
+    if (content.startsWith(PLAN_REFUSAL_PREFIX)) isError = true;   // a project the engine would not open is a failed call
     return { content, isError };
   },
 
@@ -182,10 +165,7 @@ const tableOfHandlers: ToolHandlerMap = {
     ]);
     if (taskErr) { content = taskErr; isError = true; return { content, isError }; }
 
-    // v2.5.2, normalize repeat_days_of_week from agent-friendly
-    // formats (array of names, array of ints, or CSV string) into
-    // the canonical CSV-of-ints stored in the DB. v2.5.3, shared
-    // with work_update(action="edit") via normalizeRepeatDaysOfWeek().
+    // Day names/ints/CSV become the canonical CSV-of-ints the scheduler stores.
     const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
     if (normalizedDays === '__INVALID__') {
       content = 'Error: repeat_days_of_week contained no valid days. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
@@ -199,11 +179,8 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // The repeat number itself must be able to step the calendar: zero, a
-    // negative, a fraction or NaN gives the engine no next run, the task
-    // fires once and its schedule quietly completes — the "recurring" lie
-    // the pairing checks below were built to catch, from the other side.
-    // Refuse the number before they run.
+    // Zero, negative, a fraction or NaN gives the engine no next run: the task
+    // fires once and the schedule quietly completes. Refuse it before the pairing checks.
     const intervalNumErr = repeatNumberError(args.repeat_interval);
     if (intervalNumErr) {
       content = intervalNumErr;
@@ -211,31 +188,15 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // Recurring-schedule integrity gate. Pre-fix the engine would
-    // accept partial schedules and write them straight to the row,
-    // producing silent failures:
-    //   - repeat_interval without repeat_unit → calculateNextRun
-    //     treats the task as one-shot (fires once, then nothing).
-    //   - repeat_unit without repeat_interval → same outcome.
-    //   - repeat_unit set to a value not in the enum → next_run_at
-    //     stays at scheduled_start, fires once, then dies.
-    //   - any repeat_* without scheduled_start → the entire
-    //     scheduling block in trackerCreateTask is skipped (no
-    //     next_run_at written) and hasFutureSchedule still suppresses
-    //     the assignment notification. Task created, never fires,
-    //     assignee never told.
-    // All three shapes match the symptom from the field report:
-    // "agent set up a recurring task and it never fired."
+    // A partial repeat config (interval without unit, unit without interval, a bad
+    // unit, or repeat_* without a first-run time) writes a row that silently never
+    // fires and whose assignee is never told. Refuse every shape before the write.
     const VALID_REPEAT_UNITS = new Set([
       'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
     ]);
     const hasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
     const hasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
-    // Order matters here. Catch invalid unit FIRST, otherwise an
-    // agent passing repeat_unit="weekly" (the common wrong spelling)
-    // hits the "missing interval" branch first and gets a misleading
-    // hint telling it to add interval=1 to "every weekly". Validate
-    // the unit value before checking pairing.
+    // Order matters: validate the unit before pairing, so a misspelling gets the corrective hint.
     if (hasUnit && !VALID_REPEAT_UNITS.has(args.repeat_unit as string)) {
       content =
         `Error: repeat_unit="${args.repeat_unit}" is not a valid unit. ` +
@@ -255,9 +216,7 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     if (hasUnit && !hasInterval && args.repeat_unit !== 'specific_days') {
-      // specific_days legitimately ignores interval (handled below by
-      // the defaulting at trackerCreateTask). Every other unit needs
-      // an explicit number.
+      // specific_days legitimately ignores interval; every other unit needs a number.
       content =
         `Error: repeat_unit="${args.repeat_unit}" was set without repeat_interval. ` +
         `Add repeat_interval (e.g. repeat_interval=1 for "every ${(args.repeat_unit as string).replace(/s$/, '')}"). ` +
@@ -265,16 +224,9 @@ const tableOfHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // Task ANCHOR-HUNT: `local_time` SATISFIES this gate. It is the wall-clock
-    // spelling of the same fact, `trackerCreateTask` converts it into
-    // `scheduled_start` before it reads any schedule field (RC-18), and this
-    // tool's own declaration tells the model to prefer it ("Use this INSTEAD of
-    // scheduled_start whenever the user names a clock time"). Asking only for
-    // `scheduled_start` here refused the one spelling the engine recommends —
-    // reported from the owner's box in the same sitting as the +7h echo. The
-    // refusal below names both spellings for the same reason: an error that
-    // omits a fix that would have worked is an error that teaches the wrong
-    // lesson. Held by `tracker/__tests__/schedule-echo-seam.test.ts` §3.
+    // `local_time` SATISFIES this gate: it is the wall-clock spelling of the same
+    // fact, and this tool's declaration tells the model to prefer it. The refusal
+    // names both spellings: an error that omits a working fix teaches the wrong lesson.
     if ((hasInterval || hasUnit) && !args.scheduled_start && !args.local_time) {
       content =
         `Error: a recurring task needs a first-run time — either scheduled_start (an ISO 8601 UTC instant) ` +
@@ -298,32 +250,22 @@ const tableOfHandlers: ToolHandlerMap = {
         stepNumber: args.step_number as number | undefined,
         dependsOn: args.depends_on as string[] | undefined,
         phase: args.phase as number | undefined,
-        // Schedule parameters
         scheduled_start: args.scheduled_start as string | undefined,
-        // v2.5.2, interval is meaningless for specific_days but the
-        // engine and DB row should still carry 1 so downstream callers
-        // (UI form, formatter) can detect a recurring schedule.
+        // Meaningless for specific_days, but carry 1 so callers detect a recurring schedule.
         repeat_interval: (args.repeat_interval as number | undefined)
           ?? (args.repeat_unit === 'specific_days' ? 1 : undefined),
         repeat_unit: args.repeat_unit as string | undefined,
         repeat_end_type: args.repeat_end_type as string | undefined,
         repeat_end_value: args.repeat_end_value as string | undefined,
         repeat_days_of_week: repeatDaysOfWeek,
-        // PHASE-6 T0A: declared on work_open, read by trackerCreateTask, dropped here —
-        // so a fixed wall-clock cadence was unreachable at creation and every schedule
-        // drifted by its own run duration. Held by tracker-door-census.test.ts.
+        // Forwarding the anchor keeps a fixed wall-clock cadence reachable; without it
+        // every schedule drifts by its own run duration (held by tracker-door-census.test.ts).
         anchor_time: args.anchor_time as string | undefined,
-        // PHASE-6 T0C-W (seed 1): the wall-clock pair. `trackerCreateTask` has converted
-        // these into `scheduled_start` since RC-18 so the model never does UTC math; the
-        // door dropped both, leaving the conversion HTTP-only while this tool's own
-        // success echo told the model to use it.
+        // The wall-clock pair: converted into `scheduled_start` so the model does no UTC math.
         local_time: args.local_time as string | undefined,
         local_timezone: args.local_timezone as string | undefined,
-        // Group assignment
         assigned_to_group: args.assigned_to_group as string | undefined,
-        // Override for the near-duplicate guard
         allow_duplicate: args.allow_duplicate as boolean | undefined,
-        // Goal pass-through (B.1)
         goal: args.goal as string | undefined,
       }, { measure: measured.reading });
     } catch (err) {
@@ -340,9 +282,7 @@ const tableOfHandlers: ToolHandlerMap = {
     ]);
     if (remErr) { content = remErr; isError = true; return { content, isError }; }
 
-    // Mirror the task path's day-of-week normalization for the
-    // recurring reminder case so callers can pass ["mon","wed"] and
-    // get the canonical CSV-of-ints the scheduler expects.
+    // Same day-of-week normalization as the task path: ["mon","wed"] in, CSV-of-ints out.
     const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
     if (normalizedDays === '__INVALID__') {
       content = 'Error: repeat_days_of_week contained no valid days. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
@@ -356,9 +296,7 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // Same refusal of an unusable repeat number as kind="task", before the
-    // pairing checks below: a reminder on 0, a negative or a fraction fires
-    // once and its schedule quietly completes.
+    // Same refusal of an unusable repeat number as kind="task": it fires once and completes.
     const remIntervalNumErr = repeatNumberError(args.repeat_interval);
     if (remIntervalNumErr) {
       content = remIntervalNumErr;
@@ -366,17 +304,13 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // Same recurring-schedule integrity gate as kind="task".
-    // Reminders go through the same scheduler, so a partial config
-    // produces the same silent never-fires failure mode here.
+    // Same integrity gate as kind="task": reminders share the scheduler, same silent never-fires.
     const VALID_REMINDER_REPEAT_UNITS = new Set([
       'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
     ]);
     const remHasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
     const remHasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
-    // Same ordering rule as kind="task": catch invalid unit
-    // first so a misspelled value ("weekly") produces a corrective
-    // hint instead of a misleading "missing interval" message.
+    // Same ordering rule as kind="task": invalid unit first, so a misspelling gets a hint.
     if (remHasUnit && !VALID_REMINDER_REPEAT_UNITS.has(args.repeat_unit as string)) {
       content =
         `Error: repeat_unit="${args.repeat_unit}" is not a valid unit. ` +
@@ -402,9 +336,7 @@ const tableOfHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // Task ANCHOR-HUNT: the reminder twin of the task gate above. `reminderCreate`
-    // has accepted `local_time` as an alternative to `when` since RC-18 and this
-    // door forwards it; only this gate disagreed.
+    // Reminder twin of the task gate: `reminderCreate` takes `local_time` too; the gate must agree.
     if ((remHasInterval || remHasUnit) && !args.when && !args.local_time) {
       content =
         `Error: a recurring reminder needs a first-fire time — either \`when\` (an ISO 8601 UTC instant) ` +
@@ -425,9 +357,7 @@ const tableOfHandlers: ToolHandlerMap = {
         repeat_end_value: args.repeat_end_value,
         repeat_days_of_week: repeatDaysOfWeek,
         anchor_time: args.anchor_time,
-        // PHASE-6 T0C-W (seed 1): `reminderCreate` accepts a wall clock as an alternative
-        // to `when` and hands it to trackerCreateTask; the door dropped it, so the
-        // ASK_USER text that offered it named a field the model could not reach.
+        // The refusal offers the wall-clock pair, so the door must forward it.
         local_time: args.local_time,
         local_timezone: args.local_timezone,
       });
@@ -487,9 +417,7 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_update:edit"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // PHASE-2 T8V: one `edit` discriminator covers both nouns. A project_id
-    // with no task_id edits the PROJECT (the §7.2 absorb-don't-refuse rule);
-    // this is the merged body of the retired project-edit verb, unchanged.
+    // One `edit` discriminator covers both nouns: a project_id with no task_id edits the PROJECT.
     if (typeof args.project_id === 'string' && args.project_id.trim() && !args.task_id) {
       content = trackerEditProject(agentId, {
         project_id: args.project_id as string,
@@ -502,32 +430,23 @@ const tableOfHandlers: ToolHandlerMap = {
       { name: 'task_id', value: args.task_id, type: 'string' },
     ]);
     if (editErr) { content = editErr; isError = true; return { content, isError }; }
-    // Forward every field the schema lists. trackerEditTask reads either
-    // snake_case or camelCase, so passing snake_case through works.
-    // PHASE-6 T0A: the list is `WORK_EDITABLE_TASK_FIELDS`, the same declaration the
-    // refusal's `Editable:` line renders from — see its header for the defect that
-    // cost. A hand-written copy here is what dropped `anchor_time`.
+    // Forward every field the schema lists (snake_case passes through fine); the list IS
+    // `WORK_EDITABLE_TASK_FIELDS`, the declaration the `Editable:` refusal renders from.
     const editArgs: Record<string, unknown> = {
       taskId: args.task_id as string,
     };
     for (const k of WORK_EDITABLE_TASK_FIELDS) {
       if (args[k] !== undefined) editArgs[k] = args[k];
     }
-    // PHASE-6 T0C-W — three seeds that are NOT editable fields, so they must stay OUT of
-    // `WORK_EDITABLE_TASK_FIELDS` (which renders the `Editable:` refusal byte-for-byte,
-    // pinned at 417 chars by T0A). `local_time`/`local_timezone` are an alternative
-    // SPELLING of `scheduled_start` — `trackerEditTask` converts them before it reads any
-    // editable field, so one of them satisfies the "at least one editable field" check by
-    // itself, which is precisely the refusal a wall-clock-only edit used to get.
-    // `revert_to_original` is an ACKNOWLEDGEMENT: the guard is unchanged and still refuses
-    // without it; what changed is that its named escape hatch is reachable through here.
+    // Three seeds that are NOT editable fields, kept OUT of `WORK_EDITABLE_TASK_FIELDS`
+    // (which renders the `Editable:` refusal byte-for-byte). The wall-clock pair is an
+    // alternative SPELLING converted before editable fields are read; `revert_to_original`
+    // is an ACKNOWLEDGEMENT the guard still requires.
     for (const k of ['local_time', 'local_timezone', 'revert_to_original'] as const) {
       if (args[k] !== undefined) editArgs[k] = args[k];
     }
-    // v2.5.3, normalize and forward repeat_days_of_week so agents can
-    // change the day-of-week list on an existing recurring task without
-    // having to delete and recreate it. Mirrors the create-side
-    // validation: specific_days requires at least one valid day.
+    // The day-of-week list on an existing task can change in place; create-side
+    // validation is mirrored: specific_days needs at least one day.
     if (args.repeat_days_of_week !== undefined) {
       const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
       if (normalizedDays === '__INVALID__') {
@@ -537,12 +456,9 @@ const tableOfHandlers: ToolHandlerMap = {
       }
       editArgs.repeat_days_of_week = normalizedDays; // string | null
     }
-    // If the agent is switching to specific_days, make sure the list is
-    // present (either supplied this call, or already on the row).
+    // Switching to specific_days: the list must be supplied or already on the row.
     if (args.repeat_unit === 'specific_days') {
       if (editArgs.repeat_days_of_week === undefined || editArgs.repeat_days_of_week === null) {
-        // Permit it only if days were also supplied (already handled
-        // above) or if the row already carries days.
         try {
           const row = getDb().prepare('SELECT repeat_days_of_week FROM work WHERE id = ?').get(args.task_id) as { repeat_days_of_week: string | null } | undefined;
           const existingDays = row?.repeat_days_of_week ?? null;
@@ -553,8 +469,7 @@ const tableOfHandlers: ToolHandlerMap = {
           }
         } catch { /* fall through; tracker layer will surface row issues */ }
       }
-      // Mirror create: specific_days needs interval=1 so downstream
-      // formatters detect a recurring schedule.
+      // Mirror create: carry interval=1 so downstream detects a recurring schedule.
       if (editArgs.repeat_interval === undefined) {
         editArgs.repeat_interval = 1;
       }
@@ -565,9 +480,7 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_update:get"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // F6 (harness finding): sibling tools take task_id / project_id, so weak
-    // models naturally pass those here too. Accept them as aliases for id
-    // instead of warning-and-ignoring (which left the call id-less).
+    // Sibling tools take task_id / project_id; accept them as aliases, not warn-and-ignore.
     if (typeof args.id !== 'string') {
       const alias = args.task_id ?? args.project_id;
       if (typeof alias === 'string') args.id = alias;
@@ -578,7 +491,7 @@ const tableOfHandlers: ToolHandlerMap = {
     if (getErr) { content = getErr; isError = true; return { content, isError }; }
     // The tool takes a single 'id' param, try as task first, then project
     const lookupId = args.id as string;
-    content = trackerGetStatus(agentId, { taskId: lookupId, projectId: lookupId, offset: coerceNumberArg(args.offset) });   // t169: pages the task's notes
+    content = trackerGetStatus(agentId, { taskId: lookupId, projectId: lookupId, offset: coerceNumberArg(args.offset) });   // pages the task's notes
     return { content, isError };
   },
 
@@ -591,9 +504,7 @@ const tableOfHandlers: ToolHandlerMap = {
     } else if (listFilter === 'blocked') {
       content = trackerListActive(agentId, { scope: 'tasks', status: 'blocked', verbose });
     } else if (listFilter === 'overdue') {
-      // PHASE-6 T0C-W: the fourth declared enum value finally has a branch. It used to
-      // fall to the `else` and return the UNFILTERED list — the worst kind of unimplemented,
-      // because the answer looked like an answer.
+      // Every declared enum value needs a branch: returning the UNFILTERED list fakes an answer.
       content = trackerListActive(agentId, { scope: 'tasks', filter: 'overdue', verbose });
     } else {
       content = trackerListActive(agentId, { scope: 'all', verbose });
@@ -601,20 +512,11 @@ const tableOfHandlers: ToolHandlerMap = {
     return { content, isError: false };
   },
 
-  // ── UX-REPAIR ROUND 13 T60 — WHAT CHANGED OVER A WINDOW ───────────────────────────────
-  // The sibling of `work_update:list`, and deliberately its own door rather than a flag on
-  // it: round-13 S4 read the list, was shown the three rows open at that instant, and told
-  // the owner "quiet day … nothing else changed on the tracker" over 57 rows opened AND
-  // closed the same day. NOW and OVER-A-WINDOW are different questions; a flag would have
-  // made them one answer with a switch, which is how the substitution happened in the first
-  // place. `verbose` means the same thing here as on `list`: more rows, same counts.
-  //
-  // T65: and the WINDOW is now the wire's too. T60 left it as the renderer's argument because
-  // declaring it moves the cached tools prefix; round-14 S2 measured what that cost (an ask
-  // about "since yesterday morning" answered from a since-midnight window, 61 rows outside
-  // it) and the property was declared in one registered re-blessing. Two declared properties
-  // forwarded, both hand-picked rather than passed through — `activityWindowStart` owns what
-  // an unusable `hours` means, and the report states the window it really measured either way.
+  // ── WHAT CHANGED OVER A WINDOW ───────────────────────────────
+  // Its own door, not a flag on `list`: NOW and OVER-A-WINDOW are different questions, and a
+  // flag lets one stand in for the other. `verbose` means the same as on `list`. Both window
+  // properties are hand-forwarded; `activityWindowStart` owns an unusable `hours`, and the
+  // report states the window it really measured.
   async "work_update:activity"({ agentId, args }) {
     const content = trackerActivity(
       agentId, { verbose: args.verbose === true }, activityWindowStart(args.hours),
@@ -661,18 +563,11 @@ const tableOfHandlers: ToolHandlerMap = {
     ]);
     if (crErr) { content = crErr; isError = true; return { content, isError }; }
     let crRow = findObligationByTypedId(agentId, args.id as string);
-    // ── UX-REPAIR ROUND 7.5 T32 LEG B2 — the withdrawal has to reach the ask the turn is
-    // HOLDING, and the shared owed-states set deliberately does not include `claimed`.
-    //
-    // `OWED_STATES` is `('open','blocked')` and it is right for what it is
-    // for: the OPEN WORK block lists what is owed and NOT being worked, so the ask the current
-    // turn is serving is correctly absent from it. But the round-7 S6 withdrawal arrives
-    // exactly then — "never mind, forget the earbuds" twenty seconds into the turn comparing
-    // earbuds — and the row is `claimed` by that very turn. Widening the shared constant would
-    // change every obligation surface; this looks the one row up at the door instead, narrowed
-    // three ways: `dropped` only, `kind='ask'` only, and claimed BY THIS AGENT. The engine
-    // supplies the id in the in-flight steer, so the model does not have to find it in a block
-    // that is not showing it.
+    // ── THE WITHDRAWAL HAS TO REACH THE ASK THE TURN IS HOLDING ──
+    // `OWED_STATES` is right for the OPEN WORK block: it lists work owed and NOT being
+    // worked, so the ask this turn serves is absent. A withdrawal lands exactly then, the
+    // row already `claimed`, so the door looks that row up itself, narrowed three ways:
+    // `dropped` only, `kind='ask'` only, claimed by this agent (the steer carries the id).
     if (!crRow && String(args.disposition) === 'dropped') {
       const typed = String(args.id ?? '').trim().replace(/^\[+|\]+$/g, '').toLowerCase();
       const claimedAsk = typed ? getDb().prepare(
@@ -685,47 +580,28 @@ const tableOfHandlers: ToolHandlerMap = {
       if (claimedAsk) crRow = claimedAsk as unknown as typeof crRow;
     }
     if (!crRow) {
-      // The refusal is steerable, and it names the surface the id comes from — the
-      // recorded baseline red is a model writing to an id from a previous session.
+      // Steerable refusal naming the id's surface: a model may write to an id from a previous session.
       content = `Error: no open work matches "${String(args.id)}". Use an id exactly as shown in [brackets] in the OPEN WORK block; it may already be closed.`;
       isError = true;
       return { content, isError };
     }
-    // ── SWEEP-A TB1: THE ASK BRANCH IS NARROWED OUT (`DESIGN-2BUGS/DESIGN.md` §1b, row 4) ──
-    // This tool is the agent's PROMISE LEDGER: commitments IT makes, closed by IT. It reaches
-    // asks because asks and commitments deliberately share one obligation frame, and on
-    // 2026-08-05 it was measured closing an owner's ask straight out of the OPEN WORK block
-    // (probe B3: `open -> done`, "commitment kept", pointing at another ask's delivery). An
-    // owner's ask is not the model's to close — the record that answers it closes it.
-    // The refusal is steerable and names what actually decides, because a model that cannot
-    // tell why it was refused invents a second way to try.
+    // ── THE ASK BRANCH IS NARROWED OUT ──
+    // This tool is the agent's PROMISE LEDGER: commitments IT makes, closed by IT. It
+    // reaches asks only because both share one obligation frame; an owner's ask is closed
+    // by the record that answers it, never by the model. Refusals name what decides.
     //
-    // ── UX-REPAIR ROUND 7.5 T32 LEG B2 — ONE SHAPE IS ADMITTED, AND IT IS NOT A CLOSE ──
+    // ── ONE SHAPE IS ADMITTED, AND IT IS NOT A CLOSE ──
     //
-    // The refusal above answers "may the model mark an owner's ask ANSWERED", and the answer
-    // stays NO, totally: `disposition="kept"` on an ask is refused in the same words it always
-    // was. What it cannot answer is the round-7 S6 shape, because that ask is never going to be
-    // answered by anybody: at 00:40:58 the user said *"Never mind, forget the earbuds"*, and
-    // the ledger recorded NOTHING — `SELECT COUNT(*) FROM work_events WHERE payload LIKE
-    // '%never mind%' OR '%cancelled by the user%'` → 0. The ask closed `done` on the answer it
-    // had told the agent not to give. "It closes itself the moment an answer is delivered" is
-    // true and useless for a request that was withdrawn.
+    // `kept` on an ask is refused in the same words it always was; a withdrawn ask is the
+    // shape no answer will ever arrive for. The withdrawal is admitted, and the model is
+    // its actor because the engine may not read prose to decide the user called something
+    // off, and the model is already the classifier through this door, with this vocabulary.
     //
-    // So the withdrawal is admitted, and its actor is the model for the same reason T18 made it
-    // the model for tasks: the engine may not read prose to decide the user called something
-    // off (`definitions.ts:1107`, *"Use 'cancelled' whenever the user says to cancel, drop,
-    // skip or never mind something"*), and the model is already the classifier through this
-    // exact door — this tool's own description says *"Use disposition 'dropped' when the person
-    // told you to forget it or it no longer applies."* The door and the vocabulary both already
-    // existed; only the ask was fenced out of them. NO tool surface changes, so no prompt
-    // prefix moves (cache tenet untouched).
-    //
-    // It lands on `abandoned`, T18's user-choice terminal, NOT `done` and NOT `failed` — the board's own word for
-    // "someone chose to call it off, which is NOT a failure" — and the reason carries the model's note (the user's words).
-    // The state machine already admits it: `open -> abandoned` and `claimed -> abandoned` are both declared transitions.
+    // It lands on `abandoned`, the board's user-choice terminal, NOT `done` and NOT `failed`;
+    // `open -> abandoned` and `claimed -> abandoned` are declared transitions; reason = the user's words.
     const crNote = (args.note as string | undefined)?.trim() || null;
     if (crRow.kind === 'ask') {
-      const inherited = inheritedAskDoor(crRow.id, String(args.disposition), crNote, agentId);   // proof-fix-f R3-1(b)
+      const inherited = inheritedAskDoor(crRow.id, String(args.disposition), crNote, agentId);   // the inherited-ask door decides first
       if (inherited) return inherited;
       if (String(args.disposition) !== 'dropped') {
         content = `Not closed: "${crRow.title ?? crRow.id}" is something the owner asked YOU for, not a `
@@ -737,7 +613,8 @@ const tableOfHandlers: ToolHandlerMap = {
         return { content, isError };
       }
       if (!crNote) {
-        // The note is the whole point of the leg: a withdrawal whose reason is not the user's words is the engine guessing, which is what this task exists to stop.
+        // The note is the whole point: a withdrawal whose reason is not the
+        // user's own words is the engine guessing.
         content = `Not dropped: pass \`note\` with what the person you are talking to actually said when they called `
           + `"${crRow.title ?? crRow.id}" off. The reason goes on the record.`;
         isError = true;
@@ -760,9 +637,8 @@ const tableOfHandlers: ToolHandlerMap = {
       else { content = `Error: could not drop ${crRow.id} (${dr.kind}).`; isError = true; }
       return { content, isError };
     }
-    // 'kept' — and a promise is kept by DELIVERING it. The delivery is resolved from this
-    // turn's own transport receipts rather than taken from the model, so there is no
-    // argument it can pass that would make an undelivered promise look kept.
+    // A promise is kept by DELIVERING it: the delivery is resolved from this turn's own
+    // receipts, not the model's, so no argument can make an undelivered promise look kept.
     const crTurn = turnContext(agentId)?.turnNumber ?? null;
     const crDelivery = terminalDeliveryForTurn(agentId, crTurn, crRow.conversationId);
     const rr = resolveCommitment(crRow.id, {
@@ -841,13 +717,9 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_schedule:resolve_missed"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // PHASE-2 T8V: the discriminator collision. The retired verb's own
-    // parameter was called `action` and one of its values was "pause", which
-    // is also a work_schedule action — so the missed-run choice moved to
-    // `resolution` and is mapped back onto the handler's `action` here. A
-    // model that still sends the old shape (`action:"run_now"|"skip"`) is
-    // absorbed: workOperation only reads pause/resume/resolve_missed, so an
-    // unrecognised value falls through to this case and is used as-is.
+    // The retired verb's own `action` collided with the schedule action (one value
+    // was "pause"), so the missed-run choice arrives as `resolution` and is mapped
+    // back onto the handler's `action`; calls still sending the old shape are absorbed.
     const rawResolution = args.resolution ?? (
       args.action === 'run_now' || args.action === 'skip' ? args.action : undefined
     );
@@ -861,13 +733,10 @@ const tableOfHandlers: ToolHandlerMap = {
   },
 
   async "work_update:reassign"({ agentId, args }) {
-    // t193 — THE REASSIGN DOOR IS A CALL INTO THE ROW-AUTHORITY GATE, AND NOTHING ELSE.
-    // It used to resolve the id globally and `patchWork` the assignee with no ownership check, no
-    // cause and no state check, recording the fixed reason "reassigned to a new owner". Every
-    // rule now lives in `work/row-authority.ts:moveAssignee` — who may move it, for which cause
-    // (assignee_gone · coordination · user_requested; never pace), blocked or declined work
-    // escalating to the owner — and that function writes and records the move (cause, who,
-    // from, to) on the row's own event log.
+    // THE REASSIGN DOOR IS A CALL INTO THE ROW-AUTHORITY GATE AND NOTHING ELSE: every
+    // rule (who may move it, which cause: assignee_gone, coordination, user_requested,
+    // never pace; blocked or declined work escalates to the owner) lives in
+    // `work/row-authority.ts:moveAssignee`, which writes the row and records the move.
     const rawReassignTaskId = args.task_id as string;
     if (!rawReassignTaskId) return { content: 'Error: task_id is required', isError: true };
     const reassignResolved = resolveTaskId(rawReassignTaskId);
@@ -918,18 +787,12 @@ const tableOfHandlers: ToolHandlerMap = {
   },
 };
 
-// ── ONE RULE FOR "IS THIS AN ERROR" (t189 B3) ──
-// Each handler used to repeat `isError = content.startsWith('Error')` by hand, and six forgot it,
-// so a refused validate or override read as a success to the error-loop counter and the
-// identical-call brake. The rule is stated here, once, for every handler in the table (a handler
-// added later gets it too); a handler may still set `isError` itself for a refusal that does not
-// begin with `Error`.
-/**
- * v3.5 field fix 3 follow-up: a close or verdict door READS the natural note-like argument a model
- * puts on it, rather than refusing the whole call over it (the PM's `reason` on validate was refused
- * ten times and the finished work stayed claimed). `primary` is the door's own field; `extra` is the
- * sibling spelling, kept beside it when both are given, so neither is silently lost.
- */
+// ── ONE RULE FOR "IS THIS AN ERROR" ──
+// The error rule is stated once here for the whole table, so a handler added later
+// gets it; a handler may still set `isError` itself for a refusal not starting with `Error`.
+/** A close or verdict door READS the natural note-like argument a model puts on it instead
+ * of refusing the whole call over it. `primary` is the door's own field; `extra` is the
+ * sibling spelling kept beside it when both are given, so neither is silently lost. */
 function noteWithReason(primary: unknown, extra: unknown): string | undefined {
   const parts = [primary, extra].filter((v): v is string => typeof v === 'string' && v.trim() !== '').map((v) => v.trim());
   if (parts.length === 2 && parts[0] === parts[1]) parts.pop();

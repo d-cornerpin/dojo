@@ -1,20 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
-// TUNNEL, PRESENCE AND SESSION RESET (PHASE-5 T4 — relocated from
-// `agent/tools.ts`)
-//
-// Three single-key categories that share one property: each acts on the DOJO's
-// own state rather than on a document, a person or another agent, and none of
-// them fits the platform-controls module without pushing it past its ceiling.
-//
+// TUNNEL, PRESENCE AND SESSION RESET: each acts on the DOJO's own state, not on a
+// document, a person or another agent.
 // ── `reset_session` IS DELIBERATELY NOT A DOJO-CONTROL ──
-// `PRIMARY_ONLY_TOOLS` does not contain it, and the reason is written at that
-// constant: the Healer — a NON-primary service agent — legitimately calls the
-// reset_session TOOL to clear a wedged agent's corrupted context. It stays
-// surface-stripped but stays executable. That distinction is a gate's, not a
-// handler's, and the gate is not in this file.
-//
-// RELOCATION, NOT REWRITE. `tunnel`'s install-cloudflared branch, the presence
-// re-route and reset_session's divider + system-prompt rewrite are byte-faithful.
+// `PRIMARY_ONLY_TOOLS` omits it: the Healer (a NON-primary service agent)
+// legitimately calls the reset TOOL on a wedged agent, so it stays executable while
+// surface-stripped; that distinction belongs to a gate, not to this file.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -45,8 +35,7 @@ export const sessionHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // C27: mutating actions stay primary-only (pre-merge, only tunnel_status
-    // was available to non-primary agents); status is open to all.
+    // Mutating actions stay primary-only; `status` is open to all.
     if (action !== 'status' && !isPrimaryAgent(agentId)) {
       content = `Permission denied: only the primary agent can ${action} the tunnel. You can still use tunnel({action:"status"}).`;
       isError = true;
@@ -70,7 +59,6 @@ export const sessionHandlers: ToolHandlerMap = {
         stopTunnel();
         content = 'Tunnel stopped.';
       } else {
-        // start or restart share the poll-for-URL tail; restart stops first.
         const restarting = action === 'restart';
         if (restarting) {
           stopTunnel();
@@ -115,7 +103,6 @@ export const sessionHandlers: ToolHandlerMap = {
       }
       const previous = getPresence();
       setPresence(status);
-      // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying `presence:<status>` — not an agent status, zero subscribers (PresenceProvider reads GET /system/presence); it only left Agents/Tracker holding it as the agent's status. requirement preserved: setPresence persists config('user_presence'), the fact every reader consults.
       content = status === 'away'
         ? `Done. User marked as away. Messages will be forwarded via iMessage. (Was: ${previous})`
         : `Done. User marked as in the dojo. Messages will go to the dashboard. (Was: ${previous})`;
@@ -134,56 +121,35 @@ export const sessionHandlers: ToolHandlerMap = {
       // Accept both 'agent_id' and 'agent' (models use inconsistent param names)
       const rawTarget = (args.agent_id as string) ?? (args.agent as string) ?? null;
 
-      // Safety: if no target specified, the agent is resetting itself.
-      // Require explicit confirmation to prevent accidental self-resets.
       if (!rawTarget) {
         content = 'Error: agent_id is required. To reset your OWN session, pass your own agent ID explicitly. To reset a sub-agent, pass their agent ID or name.';
         isError = true;
         return { content, isError };
       }
 
-      // Resolve agent reference (UUID, sensei id, or name, case-insensitive)
       const resolveResult = resolveAgentRef(rawTarget, 'reset_session');
       if (!resolveResult.ok) { content = resolveResult.error; isError = true; return { content, isError }; }
       const resolvedId = resolveResult.id;
       const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(resolvedId) as { id: string; name: string; status: string };
 
-      // Idempotency: if the target is already terminated, refuse cleanly
-      // instead of archiving an empty conversation and confusing the
-      // caller. Resetting a terminated agent is almost always a mistake
-      //, they have no live state to reset.
       if (agent.status === 'terminated') {
         content = `Agent "${agent.name}" is already terminated, there is no live session to reset. Spawn a new agent if you need a fresh start.`;
         isError = true;
         return { content, isError };
       }
 
-      // Mid-turn guard: never reset ANOTHER agent while it is genuinely in a
-      // live turn. A real in-process run is tracked in activeRuns; a STALE DB
-      // status='working' row (a wedged agent whose run is actually gone) is
-      // NOT in activeRuns, and healing exactly that wedged case is the whole
-      // point of this tool, so we gate on activeRuns, never on the DB status.
-      // Without this a genuinely-running target got reset underneath its own
-      // turn and its work leaked past the New Session divider. Self-reset is
-      // exempt: an agent resetting its OWN session mid-turn is intentional
-      // (the boundary + reorient take hold as its current turn winds down).
+      // Never reset ANOTHER agent mid live turn; gate on activeRuns, never on the
+      // DB status: a stale 'working' row whose run is gone is exactly the wedged
+      // case this tool heals. Self-reset is exempt: mid-turn self-reset is intentional.
       if (resolvedId !== agentId && activeRuns.has(resolvedId)) {
         content = `Agent "${agent.name}" is in the middle of a live turn right now. Resetting it would cut its work off mid-thought and leak that work past the new-session divider. Wait for it to go idle, then reset.`;
         isError = true;
         return { content, isError };
       }
 
-      // T82c (ANSWER-ANYWAY) — OWNER RULING, VERBATIM INTENT: the Healer KEEPS session
-      // reset — "We aren't taking that away" — it just can't be the first trigger pulled
-      // when compaction could have worked. For a size-class injury (a declared-patience
-      // exhaustion) this refuses unless compact-and-redial has already failed on 2 distinct
-      // turns for this agent, context corruption is diagnosed (reason="corruption"), or the
-      // owner explicitly asked (owner_requested=true) — see `evaluateSessionResetGuard`'s own
-      // doc in `healer/injury-recovery.ts` for the durable signal each criterion reads and
-      // why both bypasses are audit-logged there. Non-size injuries (or no recent injury at
-      // all) return allowed:true immediately: byte-identical to pre-T82c behavior. The reset
-      // MECHANISM below (archive, boundary write, reorient) is untouched — this only gates
-      // whether it runs.
+      // The Healer KEEPS session reset, but a size-class injury takes compaction
+      // first: refuse unless compact-and-redial failed on 2 distinct turns, corruption
+      // is diagnosed (reason="corruption") or owner_requested=true; see `evaluateSessionResetGuard`.
       const resetGuard = evaluateSessionResetGuard(resolvedId, {
         reason: typeof args.reason === 'string' ? args.reason : null,
         ownerRequested: args.owner_requested === true,
@@ -195,71 +161,38 @@ export const sessionHandlers: ToolHandlerMap = {
         return { content, isError };
       }
 
-      // Archive current conversation to vault. force=true so we always create
-      // a new archive, without it, an existing unprocessed archive blocks the
-      // re-archive and the post-reset conversation is silently lost.
+      // force=true: else an unprocessed archive blocks the re-archive and the fresh conversation is lost.
       const archiveId = archiveAgentConversation(resolvedId, true);
 
-      // NOTE: we intentionally do NOT clear context items (summaries).
-      // Summaries from before the reset are still valid compressed history
-      // of what the agent was working on. Clearing them causes amnesia, 
-      // the agent loses all project context with nothing to replace it
-      // until compaction runs again (which could be hours).
-      // The session_started_at boundary already prevents old raw messages
-      // from appearing in the fresh tail, summaries are the ONLY way
-      // the agent retains context across a reset.
+      // Summaries are intentionally NOT cleared: they are the agent's only context
+      // across a reset, and `session_started_at` already keeps old raw rows out.
 
-      // W4 (two-phase-loader audit, 2026-09-26) — THE OTHER DOOR ALREADY DID THIS. The
-      // dashboard's new-session route clears the session-loaded tool docs
-      // (`gateway/routes/chat.ts:418-422`) and this tool did not (grep count 0), so an agent
-      // reset through the TOOL — the Healer's path for a wedged agent, and a self-reset —
-      // kept every tool it had loaded, and its array never returned to the always-loaded
-      // head until the process restarted. `clearSessionLoadedTools` is also what sets the
-      // rehydration flag, so the decision survives the next turn (`tool-docs.ts`: "A reset is
-      // a DECISION to forget"). Dynamic import keeps this handler off that graph.
-      // SMALLFRY 2026-09-26: this door also lacked `clearServedConversations`, which the chat
-      // route had — one of the four different answers five doors gave. Both now come from the
-      // single owner, `agent/session-forget.ts`, whose header carries the measurement.
+      // Also forget session-loaded tool docs and served conversations; both clears
+      // live in `agent/session-forget.js`, loaded lazily to keep it off this graph.
       await (await import('../../session-forget.js')).forgetSessionScratch(resolvedId);
 
-      // Set session boundary and clear the session
-      // scratchpad. Scratchpad is session-scoped (its own tool docs promise
-      // it "auto-clears on session reset"); leaving it behind bleeds the
-      // prior task's outline into the fresh session via the assembler.
+      // The scratchpad must clear too: its docs promise it, and it would bleed the old outline forward.
       const now = new Date();
       const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
       db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(boundary, boundary, resolvedId);
 
-      // Carry a fired-but-undelivered reminder/scheduler event across the
-      // reset boundary so it is not silently lost (all engine-event queries
-      // gate created_at >= session_started_at). Narrow scope: unclaimed
-      // deliverable engine rows only, never ordinary conversation.
+      // Unclaimed deliverable engine rows are rehomed across the boundary, never ordinary chat.
       rehomeUnclaimedEngineEvents(resolvedId, boundary);
 
-      // Insert UI divider. The row's created_at is stamped by the writer at insert
-      // time, which is at-or-after `boundary` (computed a few lines up), so the
-      // divider still lands inside the new session for every `created_at >=
-      // session_started_at` query. The broadcast keeps quoting `boundary` for the UI.
+      // The divider's created_at is stamped at insert time, at or after `boundary`, so it stays inside.
       const markerId = uuidv4();
       insertMessageIfAbsent({ id: markerId, agentId: resolvedId, role: 'system', content: NEW_SESSION_DIVIDER });
       broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: NEW_SESSION_DIVIDER, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
-      // Inject the reorientation prompt. Picks between full reorient
-      // (agent has active tasks → pick up where you left off) and
-      // fresh-start (no active tasks → don't dredge up old work).
       const reorientId = uuidv4();
       const reorientContent = buildSessionResetMessage(resolvedId);
       insertMessageIfAbsent({ id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent });
       broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
-      // If the agent is in error/paused status, heal it by setting to idle.
-      // A session reset clears corrupted context, which is often the root
-      // cause of the error. Without this, reset_session clears the context
-      // but leaves the agent stuck in error status.
+      // An error/paused agent heals to idle: the reset cleared the context that caused it.
       if (agent.status === 'error' || agent.status === 'paused') {
         writeAgentStatus(resolvedId, 'idle', { clearError: true });
         broadcast({ type: 'agent:status', agentId: resolvedId, status: 'idle' });
-        // Notify injury recovery that the agent is healed
         try {
           onAgentRecovered(resolvedId);
         } catch { /* module may not be available */ }

@@ -1,33 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════
-// OFFICE DOCUMENTS (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// Word, Excel and PowerPoint, local files and OneDrive alike: NINETEEN dispatch
-// keys that were nineteen `case` labels on ONE case body, which branches on
-// `name` internally. The handler table is keyed on the dispatch key, so all
-// nineteen keys must resolve — to the SAME function, which is what the
-// fall-through meant. They are listed one per line rather than generated from a
-// loop, so `git grep` still finds each tool at its own line.
-//
-// ── THE SECOND HANDLER-BODY `checkPermission`, MOVED WITH ITS HANDLER ──
-// §T0-PINS P6 found exactly TWO permission checks buried inside handler bodies
-// rather than declared as gates. `show_to_user`'s went with the comms category;
-// THIS IS THE OTHER ONE: for a LOCAL office document the body computes the
-// destination (an explicit `path` for an edit, else the agent's uploads dir for
-// a create) and puts it through `checkPermission(agentId, { type: 'file_write',
-// path: localDest })` — the same floor `file_write` itself enforces. It is
-// preserved verbatim. A relocation that dropped it would let any agent that can
-// reach an office tool write a file its manifest forbids. Converting it into a
-// declared gate is a change of MECHANISM and belongs to T7, which already owns
-// this site by name.
-//
-// The OneDrive branch's own refusal (`isMicrosoftConnected` / `isPrimaryAgent`)
-// is likewise the body's, and likewise unchanged.
-//
-// RELOCATION, NOT REWRITE. The canvas auto-open tail — the ten-name
-// `OFFICE_LOCAL_CANVAS_TOOLS` set and the "is now open"/"has been updated"
-// wording it appends — is byte-faithful; that string is what stops the model
-// calling `share_file` on a document the user is already looking at.
-// ════════════════════════════════════════════════════════════════════════════
+// OFFICE DOCUMENTS: Word, Excel, PowerPoint, local files and OneDrive alike.
+// NINETEEN dispatch keys onto ONE body that branches on `name`: all resolve
+// to the same function (the old fall-through), each on its own line for `git grep`.
+// TWO permission checks live in the body, not in declared gates: account writes
+// are primary-only (the owner's cloud is the owner's), and a local document pays
+// the same `file_write` manifest floor as the `file_write` tool. Neither may drop.
 
 import path from 'node:path';
 import { getDb } from '../../../db/connection.js';
@@ -42,20 +18,8 @@ import { homeDir } from '../../../home.js';
 const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     let content = '';
     let isError = false;
-    // ── Local vs Microsoft-account office split (owner decision 2026-07-03) ──
-    // The office_* tools are DUAL-destination. A create writes to the agent's
-    // LOCAL uploads dir when Microsoft is NOT connected, but UPLOADS to the
-    // owner's OneDrive when it is (saveOfficeBuffer → isMicrosoftConnected).
-    // An edit/read works on a LOCAL `path` or, when handed a `file_id`, on
-    // the OneDrive item; the presentation edit/read tools are file_id-only
-    // (always the Microsoft account).
-    //   • Anything that writes/edits the connected MICROSOFT account stays
-    //     PRIMARY-ONLY: the owner's cloud is the owner's; a sub-agent must
-    //     not mutate it.
-    //   • A LOCAL office doc is just a file on disk: allowed for ANY agent,
-    //     governed by its permission manifest (file_write), exactly like the
-    //     file_write tool. No hard primary-only gate (that was the defect the
-    //     manifest now enforces after the spawn_depth fix).
+    // Anything that writes/edits the connected MICROSOFT account stays
+    // PRIMARY-ONLY: the owner's cloud is the owner's; a sub-agent must not mutate it.
     const OFFICE_CREATE_TOOLS = new Set([
       'office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation',
     ]);
@@ -68,14 +32,8 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
       'office_replace_in_presentation', 'office_insert_slide', 'office_delete_slide',
     ]);
     const usesOneDriveFileId = typeof args.file_id === 'string' && (args.file_id as string).trim().length > 0;
-    // A create goes to OneDrive only when Microsoft is connected AND the
-    // caller is the primary agent; saveOfficeBuffer routes every other
-    // agent's create to the LOCAL uploads path. Pre-fix this keyed on the
-    // connection alone, so connecting Microsoft flipped every sub-agent
-    // create from "local file, manifest-governed" to "account write,
-    // denied", the exact split the 2026-07-03 decision forbids. The
-    // primary-only wall below still guards every REAL account write
-    // (file_id edits and the Graph-only presentation ops).
+    // A create reaches OneDrive only when Microsoft is connected AND the caller
+    // is primary; every other create lands in local uploads via `saveOfficeBuffer`.
     const createGoesToOneDrive = OFFICE_CREATE_TOOLS.has(name) && isMicrosoftConnected('agent') && isPrimaryAgent(agentId);
     const targetsMicrosoftAccount = OFFICE_MS_ACCOUNT_ONLY_TOOLS.has(name) || usesOneDriveFileId || createGoesToOneDrive;
 
@@ -87,9 +45,6 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
         return { content, isError };
       }
     } else {
-      // Local office document: enforce the agent's file_write manifest on the
-      // destination (an explicit local `path` for an edit, or the agent's
-      // uploads dir for a create), the same floor file_write itself enforces.
       const localFilename = typeof args.filename === 'string' && (args.filename as string).trim().length > 0
         ? (args.filename as string).trim()
         : 'document';
@@ -110,12 +65,8 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await executeOfficeTool(name, args, agentId, agentRow?.name ?? agentId);
     isError = content.startsWith('Error');
-    // Auto-open / refresh the canvas for Word & Excel writes that touch a
-    // LOCAL file, creates AND in-place edits (replace/insert/delete/append
-    // save back to the same path). The canvas renders them as a formatted
-    // preview; for an edit to the already-open doc openFileInCanvas just
-    // refreshes it. PowerPoint isn't canvas-renderable, so it's excluded.
-    // OneDrive results carry no local path, so this is a no-op for them.
+    // Canvas auto-open for Word & Excel LOCAL writes (creates and in-place
+    // edits); the appended line stops `share_file` on a doc the user can see.
     const OFFICE_LOCAL_CANVAS_TOOLS = new Set([
       'office_create_word_document', 'office_append_to_word_document',
       'office_replace_in_word_document', 'office_insert_in_word_document',
@@ -133,7 +84,6 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     return { content, isError };
   };
 
-// One body, nineteen labels — the switch's fall-through, written down.
 export const officeHandlers: ToolHandlerMap = {
   office_create_word_document: officeBody,
   office_append_to_word_document: officeBody,

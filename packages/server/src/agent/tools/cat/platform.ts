@@ -1,47 +1,14 @@
-// ════════════════════════════════════════════════════════════════════════════
-// DOJO CONTROLS + OVERSIGHT (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// The tools the owner-facing primary uses to run the Dojo itself on the owner's
-// behalf, plus the read-only oversight surface that sat in the same run of the
-// switch: `dreamer_run_now`, `channel_inspect`, `open_settings`,
-// `dashboard_navigate`, `set_capability_model`, `check_for_update`,
-// `apply_update`, `set_voice`, `set_channel`, `cost_summary`.
-//
-// RELOCATION, NOT REWRITE. Every body is byte-faithful, including the two
-// `broadcast({ type: 'ui:navigate' })` payload shapes the dashboard router
-// keys on, `check_for_update`'s channel-mismatch refresh (the branch that stops
-// a Preflight build being reported as a Stable release), and every
-// user-facing string down to the parenthetical about the dashboard not being
-// open.
-//
-// ── WHAT DID *NOT* MOVE, AND WHY THE GATES STILL HOLD ──
-// `apply_update` and `dreamer_run_now` are primary-gated, `set_*` are DOJO
-// controls, and NONE of those gates lived in these bodies: they are declared
-// gates evaluated by T2's gate loop in `executeToolInner`, ahead of dispatch.
-// A handler that moves cannot take a gate with it, because the gate was never
-// here — which is the whole point of T1's registry and T2's loop, and is why
-// this move cannot silently drop one.
-//
-// ── SEVEN LAZY LOADS DIED AND THREE SURVIVED, AND THE THREE ARE THE FINDING ──
-// Died: `vault/maintenance.js`, `vault/store.js`, `services/channel-inspect.js`,
-// `gateway/routes/update.js` (×2) and `costs/tracker.js`. None is on §T0-PINS
-// P8's pinned sanctioned list, and measured at this HEAD not one imports
-// `agent/tools.js`, so not one broke a cycle.
-//
-// KEPT LAZY: the three `services/agent-controls.js` loads, and NOT because a
-// cycle was found — because converting them was TRIED and the unit suite went
-// RED. That module resolves a capability→setter table at module top level
-// (`agent-controls.ts:47-51`), so a static import here pulls its initialisation
-// into the toolbox's own module graph, and
-// `agent/__tests__/enforce-capabilities.test.ts` — which partially mocks
-// `services/vision-model.js` — died on
-// `No "setConfiguredFallbackVisionModelId" export is defined on the mock`.
-// The `await import(…)` was therefore never only a cycle break: it DEFERS a
-// module-load side effect, which is a real job. Reverted with the measurement
-// rather than fixed by editing the test's mock, which would have been
-// manufacturing a green. Handed up: whether that table should be lazy is the
-// capability subsystem's question, not a relocation's.
-// ════════════════════════════════════════════════════════════════════════════
+// DOJO CONTROLS + OVERSIGHT: `dreamer_run_now`, `channel_inspect`, `open_settings`,
+// `dashboard_navigate`, `set_capability_model`, `check_for_update`, `apply_update`,
+// `set_voice`, `set_channel`, `cost_summary`. The `ui:navigate` broadcast payloads
+// are the shapes the dashboard router keys on.
+// The gates here (`apply_update`/`dreamer_run_now` primary-only, `set_*` DOJO
+// controls) are DECLARED gates evaluated by the executor's gate loop before
+// dispatch, not body code: a moved handler cannot carry a gate with it, and a
+// move cannot silently drop one.
+// The three `services/agent-controls.js` loads stay lazy: that module resolves a
+// capability->setter table at module top level, so a static import runs its
+// initialisation inside the toolbox graph; the lazy load defers that side effect.
 
 import { getUnprocessedConversationCount } from '../../../vault/store.js';
 import { runDreamingCycle } from '../../../vault/maintenance.js';
@@ -55,10 +22,8 @@ import { SETTINGS_TAB_LIST, settingsPath, type SettingsTabKey } from '@dojo/shar
 
 export const platformHandlers: ToolHandlerMap = {
   async dreamer_run_now() {
-    // Primary-only gate is enforced earlier in the dispatch pipeline.
-    // Kick off the cycle in the background, runDreamingCycle spawns the
-    // Dreamer agent and returns once that agent is started, but the
-    // actual extraction is async on that agent's loop.
+    // Kick off the cycle in the background: runDreamingCycle returns when the
+    // Dreamer agent starts; the extraction itself is async on that agent's loop.
     const unprocessedCount = getUnprocessedConversationCount();
     if (unprocessedCount === 0) {
       return {
@@ -128,16 +93,14 @@ export const platformHandlers: ToolHandlerMap = {
   },
 
   async check_for_update() {
-    // Read the daily cache the engine maintains (services/update-checker.ts)
-    //, no GitHub round-trip per call. Cold start (cache empty) OR a stale
-    // cache from the OTHER channel (user just toggled Stable/Preflight): do
-    // one live check so we always report the user's CURRENT channel.
+    // Read the engine's daily cache, no GitHub round-trip per call. On a cold
+    // cache or one left by the OTHER channel (user toggled Stable/Preflight),
+    // do one live check so the report matches the user's CURRENT channel.
     const channel = getUpdateChannel();
     let info = getUpdateCache();
     if (!info || info.channel !== channel) info = await refreshUpdateCache();
     const asOf = info.checkedAt ? ` (as of ${info.checkedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
-    // Be explicit about the channel so a pre-release is never mistaken for a
-    // normal stable release.
+    // State the channel explicitly, so a pre-release is not read as a stable release.
     const chanNote = channel === 'preflight'
       ? ' Channel: Preflight (pre-release/test builds, may be unstable).'
       : ' Channel: Stable.';

@@ -1,23 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// VAULT (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// The seven tools `tools/categories.ts` files under "Vault (Long-Term Memory)".
-//
-// RELOCATION, NOT REWRITE. Each body is the body that stood in the switch,
-// byte-faithful; only the trailing `content = …; break;` became a `return`.
-// `vault_remember`'s bounce-shape regex, `vault_refresh`'s own try/catch, and
-// `vault_discard_archives`'s Dreamer-only refusal are carried across exactly as
-// they were, including the audit row's `'tool_call'` action type and the log
-// line's field names.
-//
-// ── THE DYNAMIC IMPORTS THAT DIED HERE ──
-// The bodies fetched `../vault/store.js` twice and `../config/platform.js` once
-// through `await import(…)`. Measured at this HEAD: neither module imports
-// anything from the toolbox, so neither call broke a cycle, and neither is on
-// §T0-PINS P8's pinned sanctioned list. They are static imports now.
-// `isDreamerAgent` in particular was already imported statically by
-// `agent/tools.ts` — the lazy fetch was a second route to the same symbol.
-// ════════════════════════════════════════════════════════════════════════════
+// VAULT: the seven tools `tools/categories.ts` files under "Vault (Long-Term
+// Memory)", plus `lesson_record`. The bodies are the switch bodies, unchanged.
+// The vault and platform modules are STATIC imports here: none of them imports
+// anything from the toolbox, so none of these lines can form an import cycle.
 
 import {
   executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand, executeVaultUpdate,
@@ -31,12 +15,10 @@ import type { ToolHandlerMap } from '../handler.js';
 export const vaultHandlers: ToolHandlerMap = {
   async vault_remember({ agentId, args }) {
     const content = await executeVaultRemember(agentId, args);
-    // RC-13: vault_remember bounces return plain refusal strings that do NOT
-    // start with "Error" ("Too long…", "Reads like narrative prose…",
-    // "Refused:…", "Near-duplicate:…"). Left as startsWith('Error') they read
-    // as SUCCESS to every downstream mechanism (the bookkeeping "reply
-    // 'Saved.'" nudge, recordToolOutcome's failure ledger). Treat every bounce
-    // shape as a real tool error so a rejected save never masquerades as done.
+    // Bounces ("Too long…", "Reads like narrative prose…", "Refused:…",
+    // "Near-duplicate:…") do not start with "Error", so startsWith('Error')
+    // would read a rejected save as SUCCESS to every downstream mechanism.
+    // Grade every bounce shape as a real tool error.
     return { content, isError: /^(Error|Too long|Reads like narrative prose|Refused|Near-duplicate)/.test(content) };
   },
 
@@ -51,10 +33,10 @@ export const vaultHandlers: ToolHandlerMap = {
   },
 
   async vault_refresh({ agentId }) {
-    // Phase 4 §C, return the snapshot the assembler would have injected
-    // at session start (pinned + session_context-tagged entries).
+    // Return the snapshot the assembler would have injected at session start:
+    // pinned plus session_context-tagged entries.
     try {
-      // W3-4: scoped to the calling agent's own vault (per-agent design).
+      // Scoped to the calling agent's own vault (per-agent design).
       const pinned = getPinnedEntries(agentId);
       const sessionCtx = getSessionContextEntries(agentId);
       // Dedupe (a pinned entry might also be tagged session_context).
@@ -94,10 +76,8 @@ export const vaultHandlers: ToolHandlerMap = {
   },
 
   async vault_discard_archives({ agentId, args }) {
-    // Dreamer-only, silently no-op for everyone else so the dispatcher
-    // doesn't crash if a non-Dreamer agent somehow calls it. The
-    // permission gate at tools-policy / always-loaded should prevent
-    // this anyway.
+    // Dreamer-only; the permission gate should prevent the call, and this
+    // refuses it anyway so a stray caller gets an error, not a silent write.
     if (!isDreamerAgent(agentId)) {
       return { content: 'Error: vault_discard_archives is Dreamer-only.', isError: true };
     }

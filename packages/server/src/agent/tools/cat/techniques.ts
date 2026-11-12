@@ -1,28 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════
-// TECHNIQUES (PHASE-5 T4 — relocated from `agent/tools.ts`)
-//
-// The twelve tools `tools/categories.ts` files under "Techniques".
-//
-// RELOCATION, NOT REWRITE. Every body is the body that stood in the switch,
-// byte-faithful, including the per-case `agentRow2` / `agentRow3` / `taRow` /
-// `sfrRow` local names that only existed because twelve cases shared one
-// function scope. They are kept: renaming them would be tidying done during a
-// move, and a diff that renames is a diff a reviewer cannot check by eye.
-//
-// `delete_technique` lets a sensei delete when no live trainer exists, with its own refusal wording.
-//
-// ── THE `techniques/tools.js` LAZY LOADS ARE KEPT, DELIBERATELY ──
-// §T0-PINS P8 pins them SANCTIONED and says they MOVE WITH THEIR HANDLERS: nine
-// `await import('../techniques/tools.js')` calls, unchanged. Re-derived here as
-// the brief requires: `techniques/tools.ts` imports nothing from the toolbox,
-// so no cycle is left for them to break — a measurement handed up, not acted
-// on, because converting them would be an improvement taken during a move.
-//
-// ── THE LAZY LOADS THAT DIED, EACH MEASURED FIRST ──
-// `../techniques/store.js` (×2), `../techniques/versioning.js` and
-// `../config/platform.js` are NOT on the sanctioned list, and none of the three
-// modules imports anything from the toolbox, so none broke a cycle. Static now.
-// ════════════════════════════════════════════════════════════════════════════
+// TECHNIQUES: the twelve tools `tools/categories.ts` files under "Techniques".
+// The bodies are the old switch bodies, unchanged, keeping the per-case row
+// names (`agentRow2`, `taRow`, ...) that only existed because twelve cases
+// shared one function scope.
+// The nine `techniques/tools.js` lazy loads are kept deliberately: that module
+// imports nothing from the toolbox and they belong with their handlers. The
+// other lazy loads became static imports after measuring no cycle existed.
 
 import { getDb } from '../../../db/connection.js';
 import { deleteTechnique, getTechnique, resolveTechniqueRef } from '../../../techniques/store.js';
@@ -45,12 +27,8 @@ export const techniqueHandlers: ToolHandlerMap = {
   },
 
   async use_technique({ agentId, args }) {
-    // v2.5.44, use_technique now redirects to technique_read(outline).
-    // Old behavior dumped the entire TECHNIQUE.md into the result and
-    // truncated past 72K chars, which caused agents to either flounder
-    // on huge techniques or fall back to memory. New behavior returns
-    // the outline + a hint to call technique_read for specific parts.
-    // Existing callers keep working with safer semantics.
+    // Returns the outline plus a hint to technique_read for specific parts,
+    // not the whole document: huge dumps made agents flounder or memorize.
     const { executeTechniqueRead } = await import('../../../techniques/tools.js');
     const agentRow2 = getDb().prepare('SELECT name, group_id FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null } | undefined;
     const content = executeTechniqueRead(
@@ -77,19 +55,15 @@ export const techniqueHandlers: ToolHandlerMap = {
   async list_techniques({ agentId, args }) {
     const { executeListTechniques } = await import('../../../techniques/tools.js');
     const agentRow3 = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
-    // NOTE (relocation): this case set `content` and did NOT set `isError` —
-    // `list_techniques` is the one technique verb whose result is never graded
-    // by prose. Preserved exactly; grading it here would be a new refusal.
+    // The one technique verb whose result is never graded by prose, and
+    // grading it here would be a new refusal. Preserved exactly.
     return { content: executeListTechniques(agentId, agentRow3?.classification ?? 'apprentice', args), isError: false };
   },
 
   async technique_acknowledge({ agentId, args }) {
-    // Pull the current pending-ack from agents.config and dispatch
-    // to the validator. On success, clear the persisted ack so the
-    // gate releases. The runtime in v2/loop.ts re-reads config at
-    // its gate check, so clearing here is sufficient, no need to
-    // mutate state.pendingTechniqueAck directly (we don't have
-    // that state in this scope).
+    // Read the pending-ack from agents.config, dispatch to the validator,
+    // and on success clear the persisted ack so the gate releases. The
+    // runtime re-reads config at its gate check, so clearing there suffices.
     const { executeTechniqueAcknowledge } = await import('../../../techniques/tools.js');
     const taDb = getDb();
     const taRow = taDb.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
@@ -185,9 +159,8 @@ export const techniqueHandlers: ToolHandlerMap = {
     if (!tech) { return { content: `Error: technique "${techRef}" not found.`, isError: true }; }
     let versions = listDiskVersions(tech.directoryPath);
     if (versions.length === 0) {
-      // First call after upgrading to v1.15.97, hydrate disk from the
-      // DB so techniques that pre-date the disk-snapshot system still
-      // expose their history through file_read.
+      // Hydrate the disk from the DB so techniques that pre-date the
+      // disk-snapshot system still expose their history through file_read.
       const written = backfillDiskVersionsFromDb(techName, tech.directoryPath);
       if (written > 0) {
         versions = listDiskVersions(tech.directoryPath);

@@ -1,14 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════
-// READING A KEPT TOOL RESULT (t200, D12 — the owner's own design)
-//
-// A tool result too long for the view is kept whole, and the agent sees its start, its end and
-// a note naming this tool with the result's id (`memory/tool-result-view.ts`). This is the read:
-// a line range, a character offset for a line longer than a page, or a search that lists the
-// matching lines with their numbers. Every answer is one page sized to the view, and its last
-// line says exactly how to read on, so a page is never cut and never itself becomes a pointer.
-//
-// Any of the agent's own tool results can be read by its call id: a long one from the store, any
-// other from the `tool` row it was recorded on (`memory/kept-results.ts`).
+// READING A KEPT TOOL RESULT: a result too long for the view is kept whole, and
+// the agent sees its start, its end and a note naming the tool with the id
+// (`memory/tool-result-view.ts`). This is the read: a line range, a character
+// offset for a line longer than a page, or a search listing matches with their
+// numbers. Every answer is one page sized to the view, and its last line says
+// exactly how to read on, so a page is never cut and never becomes a pointer.
+// Any of the agent's own results reads by call id: a long one from the store,
+// any other from the `tool` row it was recorded on (`memory/kept-results.ts`).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { coerceNumberArg } from '../pagination.js';
@@ -17,10 +15,10 @@ import { RESULT_READ_TOOL, TOOL_RESULT_VIEW_CHARS, charBoundary, readCall, resul
 import type { ToolHandlerMap } from '../handler.js';
 import { fenceRanges, fenceHead, fenceEnd, newFenceCode, type FenceRange } from '../../../tools/external-content.js';
 
-// v3.5 K33 fix round 2 (ruling 3): a kept whole is stored FENCED (the tool door fences before
-// admission). A page shows the lines that lie inside a fence under a FRESH code of the same kind
-// and source, and leaves the stored fence's own marker lines out — so a middle page is fenced too,
-// and the page's own head and foot (this file's) stay outside.
+// A kept whole is stored FENCED (the tool door fences before admission). A page
+// shows lines inside a fence under a FRESH code of the same kind and source and
+// leaves the stored fence's marker lines out: a middle page is fenced too, and
+// the page's own head and foot stay outside the fencing.
 type FenceMap = { inside: Array<FenceRange | null>; marker: boolean[] };
 function fenceMap(text: string, lines: readonly string[]): FenceMap {
   const ranges = fenceRanges(text);
@@ -109,7 +107,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
       const at = lower[i].indexOf(needle);
       if (at === -1) continue;
       const line = lines[i];
-      const start = charBoundary(line, Math.max(0, at - SEARCH_CONTEXT_CHARS), 'back');   // D18 r4: never half a character
+      const start = charBoundary(line, Math.max(0, at - SEARCH_CONTEXT_CHARS), 'back');   // never half a character
       const end = charBoundary(line, Math.min(line.length, at + needle.length + SEARCH_CONTEXT_CHARS), 'forward');
       const shown = `${start > 0 ? '…' : ''}${line.slice(start, end)}${end < line.length ? '…' : ''}`;
       const r = row(i + 1, shown);
@@ -134,7 +132,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
   if (offsetArg !== null) {
     const asked = Math.max(0, Math.floor(offsetArg));
     if (asked >= text.length) return `[Tool result ${id} has ${n(text.length)} characters; offset ${n(asked)} is past its end.]`;
-    // D18 r4: a page opens and ends on a character boundary, never inside an emoji's surrogate pair.
+    // A page opens and ends on a character boundary, never inside a surrogate pair.
     const start = charBoundary(text, asked, 'back');
     const cut = charBoundary(text, Math.min(text.length, start + PAGE_CHARS), 'back');
     const end = cut > start ? cut : charBoundary(text, start + 1, 'forward');
@@ -162,7 +160,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
     }
     if (out.length === 0) {
       // One line longer than a page: its start, and the offset that reads on inside it.
-      const take = charBoundary(lines[i - 1], PAGE_CHARS - width - 1, 'back');   // D18 r4: never half a character
+      const take = charBoundary(lines[i - 1], PAGE_CHARS - width - 1, 'back');   // never half a character
       let lineStart = 0;
       for (let k = 0; k < i - 1; k++) lineStart += lines[k].length + 1;
       return `${presentRows([row(i, lines[i - 1].slice(0, take))], [i], map).join('\n')}\n[Line ${n(i)} is longer than one page; this is its first `
