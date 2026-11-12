@@ -1,5 +1,4 @@
-// Who a running process is: its start time and command, for the boot step that must not
-// signal a process id some unrelated program has since reused (agent/effects/toolbox-ledger.ts).
+// Process identity (start time and command) so boot never signals a reused pid (toolbox-ledger.ts).
 // One fixed program (`ps`), argv form, no shell; the only input is an integer process id.
 import { execFile, execFileSync } from 'node:child_process';
 
@@ -38,7 +37,7 @@ export function membersOfGroupAsync(pgid: number): Promise<string[]> {
   });
 }
 
-/** Every live process's command line, one per line (the same fixed `ps`, no agent input); '' when it cannot be read or `signal` aborts. */
+/** Every process's command line, one per line (fixed `ps`, no agent input); '' if unreadable or aborted. */
 export function processCommandsAsync(signal: AbortSignal): Promise<string> {
   return new Promise((resolve) => {
     try {
