@@ -1,71 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T9b — THE `teardown` STEP
-//
-// The ninth step, and the only one that is not a phase of the LOOP: it is the
-// turn's lifetime boundary. Relocated verbatim from `agent/v2/loop.ts`
-// (`:9330`–`:9677` at `1cbe8bb` — the function-level `catch` and `finally` of
-// `runV2TurnBody`), bounds, wording and log lines unchanged.
-//
-// ── TWO ARMS, ONE PACKAGE, AND WHY IT IS NOT ONE FUNCTION ──
-// A module cannot express `try`/`catch`/`finally` on its caller's behalf, the
-// same way it cannot `break` its caller's loop (CUT 1's finding). So the driver
-// keeps the language construct and delegates each arm's BODY:
-//
-//   `runTurnRecovery`  — the `catch` arm. Runs ONLY when the turn threw.
-//   `runTurnTeardown`  — the `finally` arm. Runs on EVERY exit path.
-//
-// The `catch` "rides with" the `finally` in this tranche because they are one
-// span of the exit path, not because they are one moment.
-//
-// ── THE PHASE, AND THE DECISION IT SETTLES (plan §A, owed by this task) ──
-// `TurnPhase` gained a ninth member, `'teardown'`, and the driver advances into
-// it at the top of the `finally`. The reasons are measured, not asserted:
-//
-//   * THE UNION ALREADY SPANS BEYOND THE LOOP. `'preflight'` is seeded at
-//     `state.ts`'s `initialState` and runs before the main `try` opens, so
-//     "the union is only for loop phases" was already false. A ninth-step
-//     exception would have been an exception to a rule that does not exist.
-//   * NOTHING CAN BE BROKEN BY THE WRITE. `state.phase` has exactly ONE
-//     production read — the `while` head's `!== 'done'` — and the loop has
-//     already ended by the time this runs. Measured, not assumed.
-//   * IT CANNOT THROW FROM A `finally`. `advance` validates, and this
-//     transition changes only `phase`, so `validate()` re-checks fields that
-//     were valid at their own last write. That matters here and nowhere else:
-//     this arm also runs on the throw path, where a new throw would REPLACE
-//     the error the turn was already handling.
-//   * THE PHASE IS ADVANCED IN THE `finally`, NOT THE `catch`, because the
-//     `finally` is the arm whose defining property is "runs on every exit
-//     path" — which is the whole reason the member is worth having.
-//
-// ⚠ WHAT THIS DOES **NOT** CLOSE, said plainly so nobody reads it as closed:
-// T13's gate gets read as *"a per-turn transition record exists, and at least
-// one decision other than the loop head reads it."* The RECORD half is met and
-// is met INSIDE THIS SPAN — `finalizeTurn` writes `turns.exit_reason` +
-// `turns.answered`, and the closeout disposition reads them one statement
-// later (PHASE-2 T6's "the turn record's first reader"). The `state.phase`
-// half is NOT met: nothing but the loop head reads that field, and inventing a
-// reader inside a relocation would be a behaviour change this tranche did not
-// admit to. Owner: T13, or whichever tranche legitimately needs the read.
-//
-// ── INPUTS, MEASURED RATHER THAN GUESSED ──
-// At `1cbe8bb` the span reads TWENTY declarations from the driver, SEVEN of
-// them mutable, and writes exactly ONE: `startAckTimer`. That single crossing
-// migrated to the turn's bag first and alone (RULING P6-R3(1), commit
-// `1cbe8bb`), so it is a live binding on both sides of this boundary. Nothing
-// the span declares is referenced after it (0 escaping declarations — the three
-// that look like it, `err`, `claimed` and `t`, are block-scoped names reused
-// elsewhere, the `nudgeText` class again).
-//
-// Two DRIVER CLOSURES arrive as values on the context rather than as imports:
-// `reArmIfStrandedNoAnswer` and `stopStatusHeartbeat`. A function value keeps
-// the bindings it closed over, so passing it preserves live-read semantics by
-// construction — and importing them would have meant either a cycle back into
-// the driver or moving a function that this tranche has no mandate to move.
-//
-// The logger keeps the component name `v2-loop`: it is what the structured
-// sink records, and a relocation that renames the field its own operators grep
-// by has changed behaviour it did not admit to.
-// ════════════════════════════════════════
+// Teardown: the bodies of the driver's function-level `catch` (runTurnRecovery) and `finally`
+// (runTurnTeardown). Logger component stays `v2-loop`, which operators grep the structured sink by.
 import { createLogger } from '../../../../logger.js';
 import type { getDb } from '../../../../db/connection.js';
 import { abortInFlight } from '../../../shared-state.js';
@@ -83,33 +17,22 @@ import { flushStrandedAttachments } from './attachment-flush.js';
 
 const logger = createLogger('v2-loop');
 
-/** The phase the driver advances into before calling the `finally` arm. */
+/** The `finally` arm's phase; advancing changes only `phase`, so validation cannot throw here. */
 export const TEARDOWN_PHASE: TurnPhase = 'teardown';
 
-/**
- * Everything the span read from the driver, written down once now that it is a
- * function boundary instead of a lexical one. Read-only by construction: the
- * one value the span WRITES is `turnCtx.startAckTimer`, which is a property of
- * the turn's bag and therefore live on both sides.
- */
+/** What the span reads from the driver; read-only except turnCtx.startAckTimer, which lives on the bag. */
 export interface TeardownContext {
   readonly agentId: string;
-  /** The turn's bag. Carries the F10 timer handle and the root/servedWork this
-   *  block's four stamping reads take. */
   readonly turnCtx: TurnContext;
   readonly turnNumber: number;
-  /** The driver's own handle, resolved once at turn start exactly as before.
-   *  Passing it rather than calling `getDb()` here is not plumbing for its own
-   *  sake: a `getDb()` inside these arms would sit OUTSIDE the block's
-   *  best-effort `try`s, adding a throw site to the one block whose own comments
-   *  say three times that "turn teardown must not throw". */
+  /** Passed in: a getDb() here would add a throw site outside the arms' best-effort trys. */
   readonly db: ReturnType<typeof getDb>;
   readonly chosenConvKey: string | null;
   readonly chosenConversationId: string | null;
   readonly lastAssembledAtIso: string | null;
   readonly terminalAnswerRowId: string | null;
   readonly triggerWorkId: string | null;
-  readonly toolPhaseEndedBySpinBrake: boolean; readonly toolLoopCapReached: boolean;   // C2: the cap latched -> the ENGINE ended the turn
+  readonly toolPhaseEndedBySpinBrake: boolean; readonly toolLoopCapReached: boolean;   // cap latched: the engine ended the turn
   readonly turnInjectedTechniqueId: string | null;
   readonly counterparty: TurnCounterparty;
   readonly isA2ATurn: boolean;
@@ -117,18 +40,12 @@ export interface TeardownContext {
   readonly turnStartedAt: string;
   readonly inboundChannel: InboundChannel;
   readonly inboundContext: ChannelInboundContext | null;
-  /** Driver closures — see the header. Values, so their own bindings stay live. */
+  /** Driver closures, passed as values to keep live bindings and avoid an import cycle into the driver. */
   readonly reArmIfStrandedNoAnswer: () => void;
   readonly stopStatusHeartbeat: (agentId: string) => void;
 }
 
-/**
- * THE `catch` ARM. Runs only when the turn threw, before the `finally` arm.
- *
- * It never asks the driver to do anything — a step that runs after the turn has
- * already ended has nothing left to request — so it always `proceed`s, and that
- * is asserted by the contract test on every path.
- */
+/** THE `catch` ARM: runs only when the turn threw, before the `finally` arm. Always `proceed`s. */
 export async function runTurnRecovery(
   state: AgentTurnState,
   ctx: TeardownContext,
@@ -139,68 +56,21 @@ export async function runTurnRecovery(
     turnInjectedTechniqueId, reArmIfStrandedNoAnswer, stopStatusHeartbeat,
   } = ctx;
 
-  // ── t93 — WHAT ENDED THIS TURN, ASKED OF THE THROW, AND ASKED FIRST ──
-  //
-  // Four of the eight unwritten exit reasons live on THIS arm — `stream_idle`, `abort`,
-  // `provider_error`, and the `stop` whose abort surfaced as an ordinary failure — and until
-  // now a thrown turn recorded one of two words, neither of them what happened: `unknown`
-  // when the cascade reached `recordInjury`, and `no_reply_intended` when a cascade tier
-  // handled it and the `finally` derived the reason from the absence of a reply. The second is
-  // the worse one: the ask ladder charges a rung for a silence the model never chose.
-  //
-  // IT RUNS BEFORE `recoverFromError`, and that order is load-bearing: `recordInjury` closes
-  // the row itself (`markTurnDied`, `AND ended_at IS NULL`), so a latch applied afterwards
-  // would be written to a state the row had already stopped listening to. The classifier
-  // returns null for a throw it cannot place and the quarantine value stands.
+  // Ask the throw what ended the turn BEFORE recoverFromError: recordInjury closes the turn row itself,
+  // so a latch applied afterwards would be lost. A throw it cannot place returns null.
   const thrownCut = classifyThrownCut(err, agentId);
   const turnState = thrownCut ? latchEngineCut(state, thrownCut) : state;
 
-  // Best-effort cleanup before recovery so heartbeats / abort controllers
-  // don't keep firing while the recovery cascade does its DB writes.
-  //
-  // T83 — IT ABORTS WHAT IT USED TO FORGET. This was `activeAbortControllers.delete(agentId)`:
-  // a call still genuinely dialling when the turn threw was dropped from the registry and
-  // therefore became un-abortable for the rest of its life — the same hole one turn later.
-  // The turn is over here; anything still on the wire for this agent is owed a cut, not an
-  // amnesty. A call started AFTER this instant registers its own controller and is unaffected.
-  //
-  // A-5 FIX ROUND (review CRITICAL C1) — `scope: 'turn'`, and the word "turn" in this
-  // function's own name is the argument. What is owed a cut here is THIS TURN'S work. Since
-  // A-5 the registry also holds BACKGROUND media jobs — a video poll loop that runs for up to
-  // thirty minutes, a TTS dial the turn deliberately fired and walked away from — and those
-  // are the ones the turn ending is expressly not a reason to kill. MEASURED by the review: a
-  // turn that merely threw cancelled a live video render at the provider and the loop recorded
-  // it as *"the user stopped this agent"*. The enqueue happens INSIDE the turn, so a throw
-  // just after `video_create` killed the job that call had created one statement earlier.
+  // Abort this turn's in-flight calls before recovery's DB writes; `scope: 'turn'` spares background
+  // media jobs (video polls, fired TTS), which outlive the turn on purpose.
   stopStatusHeartbeat(agentId);
   abortInFlight(agentId, 'turn-teardown', { scope: 'turn' });
-  endAgentCommands(agentId); // t224: and a command it left running (children wait on the stop, not in that registry)
+  endAgentCommands(agentId); // and a command it left running (children wait on the stop, not in that registry)
 
-  // C2: a throw anywhere AFTER the pickup-stamp (assembleContext, decideTier,
-  // enforceModelCapabilities, the grounding INSERT, the assistant/tool persists,
-  // all before the model call's own try/catch owns the error) reaches THIS
-  // function-level catch with the human trigger still stamped served at pickup, so
-  // the ask would be silently stranded and never re-served (inv 2 + 6).
-  // recoverFromError does NOT touch conv_key. reArmIfStrandedNoAnswer re-arms the
-  // ask so the drain re-serves it, but ONLY under the clean-retry guard (no reply
-  // delivered AND no tool executed this turn). That guard is deliberately
-  // conservative: it covers the common, dominant case (a transient model/infra
-  // failure on the FIRST call, pre-tool sites like assembleContext / decideTier /
-  // enforceModelCapabilities), which is the one we live-verified. It intentionally
-  // does NOT re-arm the POST-tool throw sites listed above (grounding INSERT,
-  // assistant/tool persists): a turn that already executed a tool may have committed
-  // a non-idempotent side effect (created a task, wrote a file, sent a message), and
-  // re-serving it would DUPLICATE that side effect, the OPEN-12/duplicate-project
-  // class the pickup-stamp exists to prevent. So we accept a narrow residual strand
-  // (a post-tool non-model throw that delivered no reply) rather than risk a
-  // duplicate; those "did work but didn't reply" cases are owned by the
-  // note-then-stopped / going-idle nudges. (The symmetric engine-stamp revert is
-  // intentionally left to C6/C7's loss-over-loop handling for engine events, a
-  // dropped scheduler tick re-fires next cycle; it is not re-armed here.)
+  // Re-serve a trigger stamped served at pickup only on a clean retry (no reply, no send, no
+  // non-idempotent call): re-serving after a side effect would duplicate it.
   reArmIfStrandedNoAnswer();
 
-  // 5a: a turn that died with a technique injected counts as a failure
-  // signal for that technique.
   if (turnInjectedTechniqueId) {
     try {
       const { recordTechniqueOutcome } = await import('../../../../techniques/store.js');
@@ -208,23 +78,9 @@ export async function runTurnRecovery(
     } catch { /* best effort */ }
   }
 
-  // Phase 6 (2026-05-04), v2 now owns its own recovery cascade.
-  // recoverFromError handles all side effects: context-overflow recovery,
-  // recoverable provider 4xx (with streak cap + system note), or generic
-  // injury (recordError + last_error + healer notification + chat:error).
-  //
-  // No re-throw, handleMessage's outer catch is now a no-op for v2 errors,
-  // and any exception escaping recoverFromError is itself logged but
-  // swallowed (the agent is already in a degraded state; throwing further
-  // would double-handle).
   try {
     const { recoverFromError } = await import('../../recovery.js');
-    // T82d (ANSWER-ANYWAY, OWNER RULING R3) — the SAME established predicate
-    // `finalize-record.ts` already uses twice (`counterparty.kind === 'user' && !isA2ATurn &&
-    // !isEngineTurn`): a turn serving a genuine human conversation, not an engine/A2A/scheduled
-    // one with no person on the other end. Computed here, once, from facts the bag already
-    // carries, and handed to `recoverFromError` as a plain boolean so it stays decoupled from
-    // `TurnCounterparty`'s shape.
+    // A genuine human conversation; the same predicate finalize-record.ts uses.
     const isUserFacingTurn = counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn;
     await recoverFromError(turnState, err, { isUserFacingTurn });
   } catch (recovErr) {
@@ -238,28 +94,8 @@ export async function runTurnRecovery(
   return proceed(advance(turnState, { phase: TEARDOWN_PHASE }));
 }
 
-/**
- * T83 FIX ROUND (review IMPORTANT A-3) — THE ONE OWNER OF THE TURN'S END-OF-RUN IDLE.
- *
- * EIGHT in-run checkpoints used to write `idle` themselves — the pre-call gate's stop and
- * preempt arms, the model call's stop and preempt abandons, the assemble empty-context exit,
- * the thrash auto-block, the executor's stopped-mid-batch, and (fix round 2) finalize's own
- * unconditional clean-path write — and every one of them wrote it BEFORE this arm, and long
- * before `runtime.ts` deletes `activeRuns` and runs its awaited tail. That is the same untruth
- * `stopAgent` stopped telling in the first cut of this ticket, just seconds wide instead of
- * four and a half minutes: the row says nobody is home while the turn is still unwinding, and
- * every busy-guard in the platform believes it.
- *
- * This arm is the one place whose defining property is "runs on every exit path" — the same
- * property that made it the right home for the abort sweep — so it is where the turn's status
- * settles, once. The only writers left outside it are preflight's two abandon returns, which
- * happen BEFORE the driver's `try` opens and so cannot reach this arm at all.
- * IT CANNOT CLOBBER A DIAGNOSIS. The write happens ONLY when the row still literally reads
- * `working`. A turn that ended on an injury has already been moved to `error`/`paused` by
- * `recoverFromError` (which runs in the `catch` arm, before this one); a completed agent reads
- * `terminated`; a rate-limited one reads `rate_limited`. Anything that is not the word
- * `working` is somebody else's answer and is left exactly as it stands.
- */
+/** The turn's one end-of-run `idle` writer; the only other in-turn writers are preflight's two abandon
+ *  returns, before the driver's `try`. Writes only over `working`, so any other status stands. */
 function settleStatus(ctx: TeardownContext): void {
   try {
     const row = ctx.db.prepare('SELECT status FROM agents WHERE id = ?').get(ctx.agentId) as
@@ -273,36 +109,19 @@ function settleStatus(ctx: TeardownContext): void {
   }
 }
 
-/**
- * THE `finally` ARM — the block that runs on EVERY exit path (clean reply,
- * decline, MAX_TOOL_LOOPS, a spinning/thrash break, an early return inside the
- * main try, an exception). That property is the language's, not a list's: the
- * contract test asserts the call site rather than sampling arms.
- */
+/** THE `finally` ARM: runs on every exit path (reply, decline, cap, brake, early return, throw). */
 export async function runTurnTeardown(
   state: AgentTurnState,
   ctx: TeardownContext,
 ): Promise<StepOutcome> {
   const { turnCtx } = ctx;
 
-  // F10: the wall-clock start-ack timer must never outlive its turn. The DB
-  // check inside the callback also guards a race where the timer fired just
-  // before this clear, but cancelling here is the primary discipline.
   if (turnCtx.startAckTimer) { clearTimeout(turnCtx.startAckTimer); turnCtx.startAckTimer = null; }
 
   settleStatus(ctx);
 
-  // t141: the C15 late re-tag is DELETED — every own row carries its subject from its INSERT.
   await finalizeTurnRecord(state, ctx);
-  // SWEEP CORE-2 item 7 — DRAFTS ARE NOT ANSWERS. It runs HERE and the ORDER is the whole
-  // mechanism, not a preference: `finalizeTurnRecord` is what stamps `turns.answer_message_id`,
-  // so this is the first instant in the turn's life at which the platform knows WHICH bubble
-  // answered. Called before it, it would have nothing to read and would have to guess.
-  //
-  // Best-effort like every other arm of the `finally` (this block's own comments say three
-  // times that turn teardown must not throw), but LOUD rather than silent: a failure here
-  // leaves the drafting looking like answers on the owner's screen, which is the defect the
-  // module exists to remove, and a silence about that is how it would come back unnoticed.
+  // Must follow finalizeTurnRecord, which stamps turns.answer_message_id. Best-effort but logged loudly.
   try {
     reclassifyTurnDrafts({ agentId: ctx.agentId, turnNumber: ctx.turnNumber });
   } catch (err) {

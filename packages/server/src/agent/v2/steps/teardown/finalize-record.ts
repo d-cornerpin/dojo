@@ -1,24 +1,4 @@
-// ════════════════════════════════════════
-// PHASE-6 T9b — teardown, part 2 of 3: THE TURN RECORD.
-//
-// The P4 turn-record finalize and everything that hangs off it — the closeout
-// disposition, the ONE ticket-stamping point, the strike-0 receipt close, the
-// phone reply binding and the per-ask answer stamp. Relocated verbatim from
-// `agent/v2/loop.ts` (`:9438`–`:9618` at `1cbe8bb`).
-//
-// ⚠ THIS FILE IS WHERE T13's "PER-TURN TRANSITION RECORD" ACTUALLY LIVES, and
-// it is the honest half of this tranche's `TurnPhase` answer. `finalizeTurn`
-// writes `turns.exit_reason` and `turns.answered`; the closeout enumeration and
-// the waiting-on-owner disposition READ them one statement later. That is a
-// recorded transition with a decision reading it — R-0's finding, paid at
-// PHASE-2 T6. What is still NOT true is that anything but the loop head reads
-// `state.phase`; see the entry point's header.
-//
-// The exit-reason ternary's ORDER is the guard, not a style: `brake` is tested
-// BEFORE `answerRow`, so a braked turn that also persisted text never reads as
-// 'answered' (d54cd1f's class). `tracker/__tests__/coerced-reply-not-a-delivery.test.ts`
-// asserts it, and its scan follows the code here.
-// ════════════════════════════════════════
+// Teardown, the turn record: write how the turn ended, then everything that reads it in the same span.
 
 import { createLogger } from '../../../../logger.js';
 import { setAnswerMessageId } from '../../../../memory/message-store.js';
@@ -48,60 +28,26 @@ export async function finalizeTurnRecord(
     inboundChannel, inboundContext, db,
   } = ctx;
 
-  // ── P4 turn record finalize: how this turn ENDED, on every exit path ──
-  // Outcome from durable facts + turn-local flags; answer id = this turn's
-  // plain assistant reply row. The runtime recovery site covers turns that
-  // threw before reaching this finally (outcome='error').
+  // Turns that threw before reaching this `finally` are closed by the runtime recovery site.
   try {
-    // Truthful answer key (2026-07-22): outcome='answered' means a genuine user-facing reply was
-    // DELIVERED this turn, recorded at the delivery sites themselves. The old SELECT counted ANY
-    // non-JSON assistant text (mid-turn captions, narration), which marked silent-ending turns
-    // answered: asks got stamped, the completion ack stood down, and ticket stamps inflated.
+    // Answered means a genuine user-facing reply was delivered, as recorded at the delivery sites.
     const answerRow = terminalAnswerRowId ? { id: terminalAnswerRowId } : undefined;
-    // 1g: the RECEIPT the key points at. `terminalAnswerRowId` names the message row;
-    // `terminalDeliveryForTurn` names the `deliveries` row that proves it left the building —
-    // `result_delivery_id`, the thing the key was an embryo of. Recorded on the finalize log so both
-    // halves of the answered edge read together, and a missing receipt beside a set key is visible.
+    // The deliveries row proving it left; logged beside the key so a missing receipt is visible.
     const terminalDeliveryId = answerRow
       ? terminalDeliveryForTurn(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
       : null;
-    // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, so it had to be
-    // time-bounded and could match another turn's park. The same fact is now a row: the trigger's own
-    // ticket has a join under it. SWEEP-A TB2: that ROW fact is also what the disposition below needs
-    // — read once, used twice, so the exit reason and the waiting-on-owner verdict cannot disagree.
+    // Parked: the trigger ask has a join. Read once so the exit reason and disposition cannot disagree.
     const delegatedThisTurn = triggerWorkId ? joinState(triggerWorkId) !== null : false;
     const parkedRow = !answerRow && delegatedThisTurn ? { parked: 1 } : undefined;
-    // T6: "did this turn hand off to a peer instead of answering?" probed the second physical table
-    // — being IN it WAS the signal. The one-table equivalent is the a2a lane, excluding this agent's
-    // inbound peer traffic (role='user'), which was never in the probe's reach either.
+    // A handoff wrote to the a2a lane; inbound peer rows (role='user') are not a handoff.
     const handoffRow = !answerRow && !parkedRow ? db.prepare(
       `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND lane = 'a2a'
           AND role IN ('assistant','tool') LIMIT 1`,
     ).get(agentId, turnNumber) : undefined;
-    // PHASE-2 T2: the ONE column that meant two things is now two columns that each mean
-    // one. `exitReason` is why the turn ended (17-value enum, CHECKed in the DB);
-    // `answered` is whether a genuine user-facing reply was DELIVERED — the truthful-answer
-    // key, which is `terminalAnswerRowId` and nothing else. A turn can end 'brake' having
-    // answered, and that pair is now representable instead of being flattened to one word.
-    // ⚠ C2 — `iteration_cap` IS WRITTEN HERE NOW AND NEVER WAS BEFORE (0 rows in 10,934 turns): the
-    // cap fell through to `no_reply_intended`, a claim about the MODEL'S INTENT for a turn it never
-    // got to finish, and the ask ladder spends a rung on that word. AFTER `answered` so a
-    // capped-but-answered turn stays representable; before `park`/`handoff` — the cap is WHY it
-    // ended. Meaning: `work/exit-attribution.ts`.
-    // ⚠ t93 — THE ENGINE'S OWN CUT, AND WHY IT SITS WHERE IT SITS. Eight of the seventeen words
-    // had no writer at all (0 rows in 10,934 turns) because this derivation could only see what
-    // teardown could see, and an owner pressing STOP is not visible from here. `engineCutExit` is
-    // the fact, carried by the site that ended the turn (`agent/v2/engine-exit.ts`).
-    //   · BELOW `brake`, which keeps its precedence: that order is d54cd1f's measured class and
-    //     `tracker/__tests__/coerced-reply-not-a-delivery.test.ts` pins it. Costless here — both
-    //     words are in `ENGINE_IMPOSED_EXITS`, so the settlement treats the pair identically.
-    //   · ABOVE `answerRow`, for the same reason `brake` is: the cut is WHY the turn ended, and
-    //     whether a reply was delivered is the SEPARATE `answered` column — the exact pair the
-    //     PHASE-2 split exists to represent instead of flattening to one word.
-    //   · `identical_call` is LAST, above the fallback and below the cap/park/handoff arms,
-    //     because it is not the ending event: it says the engine had been refusing this turn's
-    //     repeated calls, which is the honest alternative to claiming the model chose silence.
-    //     The TERMINAL rung of that same brake is the `brake` arm at the top.
+    // ORDER IS THE GUARD (coerced-reply-not-a-delivery.test.ts): `brake` and the engine's own cut come
+    // before `answerRow` because they are why the turn ended (delivery is the separate `answered` column);
+    // the cap follows `answered` so a capped answer stays representable, and precedes park/handoff;
+    // `identical_call` is last since it is not the ending event. Meanings: work/exit-attribution.ts.
     const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake ? 'brake'
       : state.engineCutExit ? state.engineCutExit
       : answerRow ? 'answered'
@@ -118,59 +64,23 @@ export async function finalizeTurnRecord(
     }
     finalizeTurn(
       agentId, turnNumber, exitReason, answerRow !== undefined, answerRow?.id ?? null,
-      // P3/P6b's counted input, persisted instead of inferred: the claim may be reverted
-      // only when the turn produced no answer AND executed zero non-idempotent calls.
+      // Persisted: the claim may be reverted only with no answer and zero non-idempotent calls.
       state.nonIdempotentCallsThisTurn,
     );
-    // t139 round 2 (I4), PAUSE SIDE ONLY: the multistep classifier judged this turn's request to
-    // be WORK (`inboundClassifiedAsWork`) and the turn performed nothing (zero effectful calls),
-    // so the work it touched is not parked "waiting on the owner" (`pauseDriveWorkWaitingOnOwner`).
-    // A misclassification here only leaves a task unpaused. The SETTLEMENT half of this rule was
-    // reverted in round 3 (R-V333-8, re-review B1: it held genuinely answered asks for ever); the
-    // ask side is now keyed on the turn's recorded exit — see `continuing` below.
+    // Work-classified but nothing effectful: the pause side does not park its work on the owner
+    // (a misclassification only leaves a task unpaused).
     const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
-    // t137 + t139 round 3 (R-V333-8): THE RECORDED EXIT — the engine queued this turn's own
-    // continuation (every engine auto-continue writes the C3 stash, consumed by the next
-    // preflight, so it is THIS turn's; the latch covers the non-human arm; a stop refuses the
-    // wake). The same expression the pause reads (written out there, where t137's census pins it);
-    // here it tells settlement that a continuing turn's held-back opening line is not the answer.
+    // The engine queued this turn's own continuation, so settlement does not take its opening line as
+    // the answer. Same expression as queuedOwnContinuation below.
     const continuing = !isStopFenced(agentId) && (continuationContext.has(agentId) || toolLoopCapReached);
-    // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK ──
-    // Two columns and no judgment, for the marker below.
-    //
-    // ⚠ T64 — `claimed_by_turn` IS NOT READ HERE, AND THAT WAS THE OTHER HALF OF THE ZERO.
-    // The original read took the column from this row and placed itself one statement above
-    // `settleAsksAtTurnFinalize` to beat the NULLing that authority does. It was beaten
-    // already: `transition()` NULLs the column on EVERY move out of `claimed`, and an
-    // ordinary answered ask takes `claimed -> done` MID-TURN, the moment its reply is
-    // delivered — long before teardown. Driven at HEAD (W47, 2026-08-17, probe on t4996):
-    // `claimedByTurn: null` against `turnNumber: 4996`, on the exact shape the marker is for.
-    // The freshness clause therefore failed on every turn that ever ran, alongside the recall
-    // clause below — two independent zeroes, either one of them fatal.
-    // The immutable record is the `claim_turn` EVENT, and `store.ts`'s `claimingTurnOf` is its
-    // one reader (two other modules had already discovered the same thing and each kept a
-    // private copy of that SELECT; there is now one).
+    // `claimed_by_turn` is NULLed when an answered ask leaves `claimed` mid-turn; claim_turn is the record.
     const triggerAsk = triggerWorkId
       ? db.prepare('SELECT kind, requester FROM work WHERE id = ?').get(triggerWorkId) as
         { kind: string; requester: string } | undefined
       : undefined;
     const triggerAskClaimingTurn = triggerWorkId ? claimingTurnOf(triggerWorkId) : null;
-    // ── SWEEP-A TB1 — THE FINAL ADJUDICATOR OF EVERY OWNER ASK THIS TURN TOUCHED ──
-    //
-    // Invocation (b) of the settlement authority (`work/ask-settlement.ts`), and the moment
-    // the structural invariant is made true: NO ASK REMAINS `claimed` BY A FINALIZED TURN.
-    // Its subject is every ask the turn CLAIMED plus every ask that entered its ASSEMBLED
-    // CONTEXT — the set the F9 batch-claim used to write to, now read and handed over. Each
-    // one is closed against the delivery that answered it, HELD when delegated work is still
-    // outstanding, or handed back `open` because the person is still waiting.
-    //
-    // IT RUNS HERE, BEFORE THE ANSWER STAMP BELOW, and the order is load-bearing:
-    // `setAnswerMessageId` keys on `served_by_turn`, and the settlement is what writes that
-    // column for the assembled rows. Adjudicating afterwards would leave those asks with a
-    // receipt on the ticket and no answer stamp on the message.
-    //
-    // Best-effort like everything else on this arm — the turn record is already written — but
-    // LOUD: a failure here is a person's ask left in whatever state the turn abandoned it in.
+    // Settle every ask this turn claimed or assembled (work/ask-settlement.ts). Must precede the answer
+    // stamp below, which keys on the served_by_turn the settlement writes.
     try {
       const assembled = (chosenConvKey && chosenConversationId && lastAssembledAtIso)
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
@@ -181,12 +91,8 @@ export async function finalizeTurnRecord(
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
-    // ── PHASE-2 T6 (C3) — THE TURN RECORD'S FIRST READER, AND THE DISPOSITION ──
-    // R-0's finding paid: `finalizeTurn` has always written the true outcome and nothing
-    // read it. Read here, one statement after it is written. 1c enumerates what is still
-    // claimed (with the identity to escalate); the disposition hands the ball back to the
-    // owner when this turn TALKED and did not ACT. Every input is a record and no prose is
-    // read — the argument, the four keys and the P2 reconciliation are in answered-edge.ts.
+    // Closeout: warn when an unanswered turn leaves work claimed, and hand work back to the owner when a
+    // user turn talked but did not act. Records only, no prose; the rules live in answered-edge.ts.
     try {
       const claimedAtTurnEnd = stillClaimedWork(agentId, { turnNumber });
       if (claimedAtTurnEnd.length > 0 && !answerRow) {
@@ -199,19 +105,14 @@ export async function finalizeTurnRecord(
         pauseDriveWorkWaitingOnOwner(agentId, turnNumber, {
           transitionedThisTurn: state.trackerStatusUpdatedThisTurn,
           conversationId: turnCtx.root?.conversationId ?? null,
-          // A turn that delegated did not hand the ball back to the owner; the work is
-          // waiting on the delegated pieces. See the refusal in `answered-edge.ts`.
+          // A delegating turn waits on the delegated pieces, not on the owner.
           delegatedThisTurn,
-          // t137: every engine auto-continue writes the C3 stash (consumed by the next preflight,
-          // so it is THIS turn's); the latch covers the non-human arm; a stop refuses the wake.
           startLineOnly,
           trackerWriteThisTurn: state.trackerWriteThisTurn,
           servedSourceMessageId: turnCtx.root?.sourceMessageId ?? null,
           queuedOwnContinuation: !isStopFenced(agentId)
             && (continuationContext.has(agentId) || toolLoopCapReached),
-          // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to
-          // the poke ladder ("an in_progress task does not EVER just get ignored"), and
-          // this window is what keeps the disposition from ever reaching it.
+          // Only work this turn touched; untouched backlog belongs to the poke ladder.
           touchedSince: turnStartedAt,
         });
       }
@@ -220,48 +121,14 @@ export async function finalizeTurnRecord(
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
-    // ── UX-REPAIR T1 — AN ANSWERED, DELIVERED TURN PAYS OFF ITS UNTRACKED-WORK DEBT ──
-    //
-    // The >=6 engine floor keys on the CROSS-TURN untracked-work total (RC-19 item 3), whose
-    // only clears were a tracker write, a new session, and the floor's own firing. None of
-    // them is "the turn ended and the person got their answer", so finished, delivered work
-    // stayed on the ledger forever and the 6th call opened a phantom task on whatever trivial
-    // turn came next. Measured: 10 of 35 firings in the current design era reported a
-    // per-turn count BELOW the threshold, which is only reachable via inherited debt.
-    //
-    // RC-19'S REQUIREMENT SURVIVES VERBATIM. Its subject is a turn BREAK — the A2A dodge that
-    // exits WITHOUT answering — and this clear cannot reach that shape, because it demands
-    // BOTH halves of the answered edge: the truthful-answer key AND the delivery receipt that
-    // proves the reply left the building. A turn that talked and delivered nothing keeps its
-    // debt; a turn that broke early to a peer keeps its debt.
-    //
-    // Two RECORDS and no prose, the same doctrine as the disposition above. Scoped to the
-    // conversation that was answered (`answered-edge.ts`'s own narrowing: an email to a third
-    // party is not the owner's answer), so a different conversation's running total is left
-    // exactly where it was.
+    // Answered and delivered: clear this conversation's untracked-work debt; a turn that did not keeps it.
     if (answerRow && terminalDeliveryId && chosenConvKey) {
       try {
         clearUntrackedWorkAcrossTurnsForConversation(agentId, chosenConvKey);
       } catch { /* in-memory map; best effort like the rest of this arm */ }
     }
-    // ── UX-REPAIR T41 (the observability rider) — "THE PERSON WAITED AND HEARD NOTHING" ──
-    //
-    // The mechanism could not report its own failure. "Threshold passed" and "steer injected"
-    // are logged; a turn ENDING with the ack still owed and undelivered — the owner's
-    // 2026-08-12 incident — wrote nothing, so three minutes of dead air on his phone was
-    // diagnosable only from his pasted transcript and countable by nobody.
-    //
-    // Asked of flags that already carry it and nothing else: the ack was OWED (threshold
-    // passed with nothing heard, or a steer armed for it), never DELIVERED, and the turn was
-    // WORK — `anyToolStartedThisTurn` is the F10 gate's own condition ("the ack exists for
-    // WORK, not conversation", `preflight/start-ack.ts`), reused rather than re-invented.
-    // Without that third clause every quick chat reply on a routed channel counts, because
-    // T41's door arms before anyone can know whether the turn will use tools: driven
-    // 2026-08-13, "Hey dude!" answered in 3.0 s wrote a row saying the person heard nothing.
-    //
-    // The durable half rides the person's own ask as an `audit` MARKER — the shape
-    // `work/ask-settlement.ts` already uses for machine-readable observations, so no new event
-    // kind, table or migration. A turn with no ask keeps the log line alone, inventing no row.
+    // Audit: an ack owed and never delivered, logged plus a marker on the trigger ask. Gated on a tool
+    // having started (the start-ack's own work condition), or every quick chat reply would count.
     if ((turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn)
         && !turnCtx.engineStartAckDeliveredThisTurn && turnCtx.anyToolStartedThisTurn) {
       const owedVia = turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed';
@@ -285,72 +152,8 @@ export async function finalizeTurnRecord(
         } catch { /* best effort, like every arm of this boundary */ }
       }
     }
-    // ── UX-REPAIR ROUND 13 T61(b) — "ANSWERED WITH NOTHING CONSULTED" BECOMES COUNTABLE ──
-    //
-    // Round-13 S1: a fresh owner ask answered in 5.2 seconds with ZERO tool calls, seven
-    // factual specifics in the reply (elevation, two distances, a pass requirement, a land
-    // manager, $30/year, $10/day) and — recorder-proven across `messages`, `summaries`,
-    // `vault_entries`, `briefings` and every uploaded file — no source for any of them
-    // anywhere on the box. The turn's own reasoning hedged wider than the reply did and the
-    // two prices appear in neither the reasoning nor any source.
-    //
-    // T61(a) is the conduct sentence, and the plan records honestly that it is the WEAK
-    // surface. THIS is the half that survives being ignored: the class becomes COUNTABLE, so
-    // a later round measures whether it persists instead of re-discovering it from a
-    // transcript. It STEERS NOTHING AND BLOCKS NOTHING — no refusal, no re-prompt, no
-    // change to what the model receives or what the person gets. Measurement only.
-    //
-    // THE SIGNATURE IS STRUCTURAL, EVERY CLAUSE A RECORD, and it must be: classifying "this
-    // ask needed sources" from the ask's text is the standing prose ban, so the engine counts
-    // shapes and never judges content.
-    //   1. an OWNER ASK on a person's turn — `kind='ask'`, `requester='owner'`, a `user`
-    //      counterparty, not a2a and not an engine wake;
-    //   2. FRESH — the ask's `claim_turn` event names THIS turn, i.e. this turn is the one
-    //      that picked the ask up. A redrive of somebody else's ask is a different animal and
-    //      is not counted;
-    //   3. ZERO TOOL ROWS — the F10 first-tool latch never flipped AND the executed-call
-    //      count is 0. Both, because they are written by different spans and a marker that
-    //      disagreed with either would be measuring its own bookkeeping;
-    //   4. ANSWERED — the truthful-answer key, so a silent turn is never counted.
-    // Together: the person asked something new, the agent consulted nothing at all, and
-    // answered. Whether the answer was RIGHT is not knowable here and is not claimed.
-    //
-    // ── UX-REPAIR ROUND 14 / T64 — THE FIFTH CLAUSE IS GONE, AND WHY ─────────────────────
-    // This counter wrote ZERO ROWS EVER, round-14 S1 included — the exact shape it was built
-    // for. The clause that killed it read `!state.recallLaneReachedModelThisTurn` ("no
-    // recalled memory reached the model"), and the defect is a MISATTRIBUTION, not a
-    // threshold: `msg.relevant-memory` is an UNCONDITIONAL ENGINE PUSH. Nothing consults it.
-    // It is retrieved against a 500-char blob of the recent human rows and injected on every
-    // counterparty (`steps/call-llm/pre-call-injections.ts`, the recall-lane block), so "the
-    // lane reached the model" is very nearly a constant — and the clause vetoed the marker on
-    // the ENGINE'S act while claiming to measure the AGENT'S.
-    //
-    // DRIVEN AT HEAD (W47, 2026-08-17, dev box, receipts on for the drive): t4992 "what year
-    // did the Alaskan Way Viaduct come down…" and t4993 "how tall is the Space Needle…" —
-    // both `kind='user'`, `exit_reason='answered'`, `effectful_calls=0`, each on a fresh owner
-    // ask claimed by that very turn. Zero markers. Both iterations of both turns carried
-    // `msg.relevant-memory` ADMITTED at 725 tokens, and in `full` mode its body was three of
-    // the agent's OWN previously-answered questions plus four vault notes — an airport parking
-    // spot, a gym locker code, a phrase to remember, a hosting decision — and the obligations
-    // snapshot. None of it could be the source of the Space Needle's height, and the engine
-    // MAY NOT read prose to say so (the standing ban), which is exactly why no narrower
-    // version of this clause is honest either.
-    //
-    // So the agent's own consulting is its TOOL CALLS — clause 3, already exact — and the
-    // engine's push becomes a PAYLOAD FIELD (`recall_lane_reached`) instead of a veto: the
-    // fact stays countable and sliceable by a later round, which is this marker's whole
-    // charter, rather than silently holding the class at zero. Nothing else moves: no steer,
-    // no block, no change to what the model receives or what the person gets.
-    //
-    // ⚠ HONEST BOUND, MEASURED THE HOUR THIS LANDED. The class now includes ORDINARY CHAT:
-    // driven t4998, "Quick one — say hi.", wrote a marker, because a greeting answered with no
-    // tool call has exactly this shape. Telling a greeting from a factual ask means reading the
-    // ask, which is the standing prose ban, and no length or word threshold would be anything
-    // but invented (#14). So the count is an UPPER BOUND on the unsourced-specifics class and
-    // must be read as one; the reply text sits on the answer row for a human to slice by hand.
-    // The T41 rider two blocks up faced the same problem from the other side and solved it with
-    // `anyToolStartedThisTurn` — the discriminator this marker must have inverted, so it cannot
-    // borrow the same escape.
+    // Audit only (steers and blocks nothing): a fresh owner ask answered with zero tool calls. Clauses are
+    // records, never the ask's text, so plain chat counts too and the count is an upper bound.
     if (triggerWorkId && triggerAsk?.kind === 'ask' && triggerAsk.requester === 'owner'
         && triggerAskClaimingTurn === turnNumber
         && counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn
@@ -369,10 +172,7 @@ export async function finalizeTurnRecord(
           channel: counterparty.channel ?? null,
           exit_reason: exitReason,
           delivered_receipt: terminalDeliveryId !== null,
-          // T64: the engine's own recall push, RECORDED rather than vetoed on. It is what the
-          // engine placed in front of the model unasked, not something the agent consulted;
-          // a later round can slice the class on it without this marker having to pretend it
-          // knows whether the model used it.
+          // The engine's unasked recall push, recorded rather than counted as consulting.
           recall_lane_reached: state.recallLaneReachedModelThisTurn,
           reason: 'this turn answered a fresh owner ask having made no tool call at all, so '
             + "every specific in the reply came from the model's own weights or from whatever "
@@ -381,32 +181,12 @@ export async function finalizeTurnRecord(
         });
       } catch { /* best effort, like every arm of this boundary */ }
     }
-    // ── HL4 STEP 2 — "WRITTEN, NEVER SEEN BY THE MODEL" IS A FACT THE PLATFORM RECORDS ──
-    //
-    // W27's census, finding 4: *"`abandoned` has no reader. The queue records 'written,
-    // never delivered' and nothing reads it. HL3 gave every steer a durable row at
-    // INJECTION; non-delivery is still in-memory-only and dies with the turn state."*
-    //
-    // The queue has known the fact all along — `fired` minus `delivered` is exactly the
-    // thing its own header says the single slot destroyed. What it never had was anywhere
-    // to say it, so every hard investigation this month began by inferring from thinking
-    // dumps which steers had actually landed. This is HL3's mirror, in the same shape as
-    // the T41 rider immediately above: one WARN line, plus a durable `audit` marker on the
-    // person's own ask when there is one. No new event kind, no table, no schema change,
-    // and no second mechanism — this is a READER of state the queue already keeps.
-    //
-    // WHY THE BOUNDARY AND NOT THE DROP SITES. An entry leaves `pending` undelivered three
-    // ways: the delivery-attempt cap abandons it, a give-up rung's family-scoped clear
-    // abandons it, or the turn simply ends with it still waiting at the one-per-call drain
-    // — and the third is the largest class and the one no drop site can observe. One reader
-    // here catches all three and tells them apart; three readers at the drop sites would
-    // catch two and be three copies of one sentence.
+    // Audit: steers filed this turn that never reached the model; only the boundary sees pending-at-end.
     const steerQueue = state.steerQueue;
     const deliveredSeqs = new Set(steerQueue.delivered.map((e) => e.seq));
     const undelivered = steerQueue.fired.filter((e) => !deliveredSeqs.has(e.seq));
     if (undelivered.length > 0) {
-      // The abandoned COPY carries the attempt count (the `fired` copy is the entry as it
-      // was written), so "how" and "attempts" are both read from wherever the truth is.
+      // The abandoned copy carries the attempt count; the fired copy is the entry as written.
       const abandonedBySeq = new Map(steerQueue.abandoned.map((e) => [e.seq, e]));
       const steers = undelivered.map((e) => ({
         floor: e.floor,
@@ -433,9 +213,7 @@ export async function finalizeTurnRecord(
         } catch { /* best effort, like every arm of this boundary */ }
       }
     }
-    // Ticket stamps (owner design 2026-07-22): the ONE stamping point. The
-    // engine writes what it observed onto every ticket this turn's root
-    // touches, so the model reads state instead of guessing it.
+    // The one task-stamping point: what the engine observed goes onto every task this root touched.
     try {
       const { stampTasksAtTurnFinalize } = await import('../../../../tracker/task-stamps.js');
       const stampRoot = turnCtx.root;
@@ -447,16 +225,12 @@ export async function finalizeTurnRecord(
         servedTaskId: turnCtx.servedWork?.taskId ?? null,
       });
     } catch (err) {
-      // PHASE-6 T1: was a BARE `catch {}`. The call used to be handed two nulls, so it
-      // had nothing to fail at; it does real work now. Best-effort decides whether to
-      // CONTINUE, never whether to be findable.
       logger.warn('v2: ticket stamps at turn finalize failed (non-fatal, the turn record is already written)', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
-    // A task opened this turn whose turn answered with a delivery, and which the engine can count as
-    // finished (a file charged to it, or its measure at 0), is finished work whose form the model forgot:
-    // delivered work is never steered back, so the engine hands it in for its worker on its records.
+    // Engine hand-in for a task opened and delivered this turn that it can count as finished (a charged
+    // file, or its measure at 0): delivered work is never steered back to the model.
     if (answerRow && terminalDeliveryForTurn(agentId, turnNumber)) {
       try {
         const { engineHandIn } = await import('../../../../work/done/hand-in.js');
@@ -470,21 +244,14 @@ export async function finalizeTurnRecord(
         }
       } catch { /* best effort; the ladder remains the backup */ }
     }
-    // P8 reply binding for the PHONE lane, riding the P4 answer stamp: the
-    // spoken reply row is bound by id to its voice session with speaker
-    // 'agent' (the dashboard-voice equivalent happens at the TTS burst's
-    // markAssistantMessageVoiced; a call has no burst-side message hook, so
-    // the finalize stamp is its binding point).
+    // Phone lane: a call has no TTS-burst message hook, so this stamp binds the reply to its session.
     if (answerRow && inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
       try {
         const { getVoiceSessionIdForCall, stampSpokenMessage } = await import('../../../../voice/session-record.js');
         stampSpokenMessage(answerRow.id, 'agent', getVoiceSessionIdForCall(inboundContext.phoneCallSid));
       } catch { /* best effort */ }
     }
-    // Per-ask outcome: every row this turn served records the reply that answered
-    // it (sibling rows were stamped served_by_turn by the settlement authority above, as
-    // part of closing them — see the adjudication block and its ordering note).
-    // T6: one call — this was two, once per physical store.
+    // Per-ask outcome: every row this turn served records the reply that answered it.
     if (answerRow) {
       setAnswerMessageId({ agentId, servedByTurn: turnNumber, answerMessageId: answerRow.id });
     }

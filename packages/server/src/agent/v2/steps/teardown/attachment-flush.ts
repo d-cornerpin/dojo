@@ -1,12 +1,3 @@
-// ════════════════════════════════════════
-// PHASE-6 T9b — teardown, part 3 of 3: THE STRANDED-ATTACHMENT NET.
-//
-// FA-TS4, relocated verbatim from `agent/v2/loop.ts` (`:9620`–`:9676` at
-// `1cbe8bb`). The v2.9.20 requirement it holds — queued `show_to_user` files
-// are never silently lost — and the deliberate refusal to re-push to
-// iMessage/voice from a thrown turn are stated in the block's own comments and
-// were not rewritten.
-// ════════════════════════════════════════
 
 import type { Message } from '@dojo/shared';
 import { v4 as uuidv4 } from 'uuid';
@@ -22,29 +13,16 @@ const logger = createLogger('v2-loop');
 export async function flushStrandedAttachments(ctx: TeardownContext): Promise<void> {
   const { agentId, turnNumber, chosenConversationId, counterparty } = ctx;
 
-  // FA-TS4: pending-attachments teardown net. The three normal drain sites
-  // (:~3187 no-reply, :~3365 text-bearing persist) and the end-of-turn safety
-  // net (:~6064) all live INSIDE the main turn try, so a throw before terminal
-  // routing (e.g. a model 429 mid-loop) skips every one of them and strands the
-  // queued show_to_user files in the module-level per-agent buffer. Nothing
-  // clears it, so on the NEXT turn (possibly a different conversation) those
-  // files would drain onto an unrelated reply. Drain-and-flush here, on EVERY
-  // exit path, scoped to THIS turn: surface the files to their own conversation
-  // now, then clear so they can never carry forward.
-  //
-  // A drain marks the rows delivered (`delivered_at`): a clean turn's net has emptied the queue, so only
-  // an error/abort path has content here. t159 G: a PARK is not the job's end either, so nothing is
-  // drained then; the files stay queued and ride the reply of the turn that ends it.
-  // Degraded delivery: a thrown turn has no clean reply row to ride on, so the files go on a minimal assistant
-  // message in this turn's OWN conversation on the dashboard, with the model's show_to_user caption if it left one
-  // (else a "Dojo:" line, and the agent is told). NO iMessage/voice re-push from teardown: the channel context may
-  // be half-resolved and a send is non-idempotent. The v2.9.20 requirement (files never silently lost) is met.
+  // Runs on every exit path: a throw skips the in-turn drains, and queued show_to_user files must not
+  // ride a later, unrelated reply. A park is not the job's end: files wait for the turn that ends it.
+  // Leftovers post as a dashboard-only message in this turn's conversation; no iMessage/voice re-push,
+  // since the channel context may be half-resolved and a send is not idempotent.
   if (turnParkedTheJob(agentId)) return;
   try {
     const { drainPendingAttachmentsWithCaptions } = await import('../../../pending-attachments.js');
     const leftover = drainPendingAttachmentsWithCaptions(agentId);
     if (leftover.attachments.length > 0 && counterparty.kind !== 'agent') {
-      const engineCaption = leftover.captions.length === 0;   // OR-ENGINE-LABELLED: no caption from the agent = the Dojo speaks, labelled
+      const engineCaption = leftover.captions.length === 0;   // no caption from the agent: the Dojo speaks, labelled
       const caption = engineCaption
         ? dojoVoice('the agent prepared these files, but its turn ended early.')
         : leftover.captions.join('\n\n');
