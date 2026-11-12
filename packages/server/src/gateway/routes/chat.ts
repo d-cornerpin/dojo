@@ -22,34 +22,21 @@ function buildContentWithAttachments(text: string, attachments: Array<{ fileId: 
 
   for (const att of attachments) {
     if (att.category === 'text' || att.category === 'unknown') {
-      // Point the agent at the file path — let it use file_read to get the full contents.
-      // Previously we injected content inline with a 50K char cap; this approach has no
-      // size limit and keeps the message layer thin.
+      // Point the agent at the file path; it reads the full contents with file_read (no size cap).
       parts.push(`\n[File attached: ${att.filename} (${att.size} bytes)]\nPath: ${att.path}\nUse file_read with this path to read the file contents.`);
     } else if (att.category === 'office') {
       parts.push(`\n[Office file attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nConvert to PDF or text for better analysis.`);
     } else if (att.category === 'audio') {
-      // Audio attachments aren't injectable as content blocks (no
-      // provider accepts audio in chat completions yet for the
-      // primary agent loop). Surface the fileId so the agent can
-      // route it through transcribe_audio.
+      // No provider takes audio in chat completions, so surface the fileId for transcribe_audio.
       parts.push(`\n[Audio attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nTo hear what the user said, call transcribe_audio with attachment_id="${att.fileId}". Do NOT pass `+'`path`'+` to transcribe_audio; that tool only accepts attachment_id or an https URL. The Path above is for forwarding the file (e.g. imessage_send).`);
     } else if (att.category === 'video') {
-      // Same as audio — surface the fileId so the agent can
-      // transcribe the soundtrack if a video_create-style tool ever
-      // wants to interrogate it. The path lets it forward the file.
+      // Same as audio: surface the fileId so the soundtrack can be transcribed; the path lets it forward the file.
       parts.push(`\n[Video attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nTo transcribe the audio track, call transcribe_audio with attachment_id="${att.fileId}". To forward the file (e.g. imessage_send), use the Path above.`);
     } else if (att.category === 'image') {
-      // This text is PERSISTED into the message row, where the model is not
-      // yet known (and may change before the row is next read), so it must
-      // not assert what the model can perceive. Visibility is owned at
-      // assemble time: vision models get the image block, fallback-captioned
-      // models get a description, capability banners cover the rest. This
-      // pointer only carries what is true on every model: what the file is,
-      // where it lives, and how to act on it.
+      // Persisted into the row before the model is known (it may change), so this text must not assert what
+      // the model can perceive; visibility is decided at assemble time. It carries only what is true on every model.
       parts.push(`\n[Image attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nIf your model supports vision, this image is shown to you in this message; otherwise a text description or notice appears instead. Do not open image files with file_read. To send or forward the file (e.g. imessage_send), use the Path above. To use it as a reference image for video_create, pass attachment_id="${att.fileId}".`);
     } else if (att.category === 'pdf') {
-      // Same persistence constraint as images: no perception claims here.
       parts.push(`\n[PDF attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nIf your model supports PDF input, the contents are shown to you in this message. To read the text yourself — or if no contents appear inline — call pdf_read with this Path (do NOT shell out to pdftotext/python). To forward the file (e.g. imessage_send), use the Path above. Other pdf_* tools (pdf_get_info, pdf_extract_pages, ...) also operate on the Path.`);
     }
   }
@@ -66,12 +53,7 @@ export interface SubmitUserMessageResult {
   status?: number;
 }
 
-/**
- * Core path for posting a user message to an agent. Used by the chat HTTP route
- * and by the voice session (transcript → message). Persists, broadcasts, preempts
- * any inflight model call, and triggers the runtime. Does not block on the agent's
- * response — chat:chunk events will fire as the response streams.
- */
+/** Core path for posting a user message to an agent (chat HTTP route and voice session). */
 type AttachmentCategory = 'unknown' | 'text' | 'image' | 'pdf' | 'office' | 'audio' | 'video';
 type ChatAttachment = { fileId: string; filename: string; mimeType: string; size: number; path: string; category: AttachmentCategory };
 
@@ -85,10 +67,7 @@ export async function submitUserMessage(
     return { ok: false, error: 'Message content is required', status: 400 };
   }
 
-  // FA-G1: guard the attachment shape for EVERY caller (the voice session calls
-  // this directly, bypassing the route's schema). A malformed attachment would
-  // otherwise persist a broken "[File attached: undefined ...] Path: undefined"
-  // pointer that the model then file_reads. Reject before any DB write.
+  // Guard the attachment shape for every caller (voice bypasses the route's schema) before any DB write.
   if (attachments && attachments.length > 0) {
     const bad = attachments.some(
       (a) => !a
@@ -112,29 +91,17 @@ export async function submitUserMessage(
     modelContent = buildContentWithAttachments(content, attachments);
   }
 
-  // I-2 (comms-audit): stamp STRUCTURED origin on dashboard (non-voice) owner
-  // messages. Before, dashboard messages had no inbound_meta, so deriveOrigin fell
-  // back to prose parsing — a user who PASTED a transcript/log starting with a
-  // recognized marker (`[A2A:...]`, `[SOURCE: SCHEDULER]`) had their own message
-  // reclassified as an agent/engine event and HIDDEN from the chat. With structured
-  // meta + the prose-subordination in deriveOrigin, a pasted marker can't hijack the
-  // classification. Voice keeps its own source-based path.
+  // Stamp structured origin on dashboard (non-voice) owner messages, so a pasted marker (`[A2A:...]`,
+  // `[SOURCE: SCHEDULER]`) cannot make deriveOrigin reclassify the message and hide it. Voice has its own path.
   const dashMeta = source === 'voice'
     ? null
     : JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' });
-  // T4/OR4: the ONE channel this ingest is on, named once and then used for BOTH the
-  // conversation identity and the row's own `channel` stamp — never re-derived. The old
-  // `source` column carried only the voice half of that fact; `channel` carries both
-  // (T3-0b §3), and the writer module keeps `source` in step for the compat window.
+  // The one channel this ingest is on, used for both the conversation identity and the row's `channel` stamp.
   const inboundChannel = source === 'voice' ? 'voice' : 'dashboard';
-  // P5: the owner's dashboard (and voice) is one conversation per agent.
   const conversationId = resolveOrCreateConversation(agentId, {
     channel: inboundChannel, provider: null, counterpartyId: 'owner', threadRoot: null,
   });
-  // The routing facts are stamped IN the insert (OR4: at ingest, from this producer's own
-  // meta), so the row is never briefly unstamped: `authorized` is dashMeta's own verdict
-  // (the owner's dashboard/voice session), `senderId` is the counterparty identity the
-  // conversation just resolved on, and `conversationId` lands in the SAME write.
+  // Routing facts are stamped IN the insert, so the row is never briefly unstamped.
   insertInboundMessageIfAbsent({
     id: messageId,
     agentId,
@@ -168,46 +135,21 @@ export async function submitUserMessage(
       latencyMs: null,
       createdAt: createdAtRow?.created_at ?? new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
       source: source ?? null,   // the ?source= query param of THIS request, not a column read
-      // t106 — the SAME binding the insert used, on the wire too. The history route projects
-      // this column (`:370`) so a reloaded feed always had it; the live feed builds its row
-      // from THIS frame, and `lib/working-note-visibility.ts` R4 reads the column to tell a
-      // person's question from an engine trigger. Omitted, the owner's reply stayed collapsed
-      // until he refreshed. One resolve (above), two consumers — never a second resolve.
+      // The same binding the insert used: the live feed builds its row from this frame, and the dashboard
+      // reads the column to tell a person's question from an engine trigger.
       conversationId,
     },
   });
 
   queueEmbedding('message', messageId, agentId, content);
 
-  // ⟨TOMBSTONE⟩ Field fix 3 re-review 2 (S9): a presence flip lived here (a dashboard message while
-  // "away" set presence to in-dojo and broadcast `system:presence`). The owner's words ("if a user
-  // types a message on the dashboard, they get a response on the dashboard") are met by the reply
-  // binding alone (`agent/v2/reply-destination.ts`); the flip went past them. Presence is his switch.
+  // A dashboard message does not flip presence; the reply binding (`agent/v2/reply-destination.ts`) answers it.
 
-  // NOTE (duplicate-work root fix): we deliberately do NOT preempt the running
-  // turn here. preemptAgentForUrgentMessage aborts the in-flight turn so the new
-  // message can run sooner — but the abort lands AFTER the turn has already
-  // committed side effects (created a tracker project, written a deliverable file)
-  // and BEFORE it marks its work served. The re-triggered turn then redid that
-  // work from scratch: duplicate offsite projects, "Here's the plan" delivered
-  // twice, the same question answered twice. Root cause, confirmed via per-turn
-  // LOOP-START/TERMINAL-PERSIST markers: rapid inbound messages preempted a
-  // multi-step turn repeatedly, each retry reusing the same turn_number and
-  // re-running the committed work. The fix is to let the current turn FINISH:
-  // handleMessage's activeRuns guard (below) queues this message as a pending
-  // wakeup, and the end-of-turn drain serves it next — one turn at a time, no
-  // interrupted-and-redone work. Genuine "stop what you're doing" still works via
-  // the explicit stop control (stopAgent), which is the right place for an
-  // intentional interrupt. (Speed tradeoff: a follow-up sent mid-task waits for
-  // the current task to finish instead of interrupting it — correct over fast.)
+  // Deliberately do NOT preempt the running turn: an abort lands after the turn committed side effects and
+  // before it marks its work served, so the retry redid that work. handleMessage's activeRuns guard queues
+  // this message as a pending wakeup and the end-of-turn drain serves it next. Stop is the explicit stopAgent.
 
-  // A fresh user message means the user wants the agent to act. Any
-  // stale stop signal from a prior interrupted turn must be cleared, or
-  // the v2 loop will read the flag on the very first iteration, delete
-  // it, and bail before processing the new message. (2026-06-02 bug
-  // fix: user interrupted an agent mid-task, reset its session, sent a
-  // new prompt — the agent's loop saw the stale stop flag and ended
-  // without doing anything.)
+  // A fresh user message clears any stale stop signal, or the loop would bail on it before processing.
   try {
     const { stoppedAgents } = await import('../../agent/shared-state.js');
     stoppedAgents.delete(agentId);
@@ -224,17 +166,11 @@ export async function submitUserMessage(
   return { ok: true, messageId };
 }
 
-// POST /:agentId/messages
 chatRouter.post('/:agentId/messages', async (c) => {
   const agentId = c.req.param('agentId');
   const body = await c.req.json().catch(() => null);
 
-  // FA-G1 / D-J: this body is untrusted and complex (attachment pointers are
-  // persisted into the immutable store and handed to file_read), so it IS
-  // validated. safeParse keeps the {ok,error} response local (mirrors the
-  // auth route); a malformed shape (e.g. an attachment missing `path`) is
-  // rejected with 400 before any DB write instead of persisting a broken
-  // "Path: undefined" pointer.
+  // Untrusted body (attachment pointers are persisted and handed to file_read): validate, 400 before any write.
   const parsed = SendMessageSchema.safeParse(body);
   if (!parsed.success) {
     const detail = parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ');
@@ -248,18 +184,14 @@ chatRouter.post('/:agentId/messages', async (c) => {
   return c.json({ ok: true, data: { messageId: result.messageId } });
 });
 
-// GET /:agentId/messages
 chatRouter.get('/:agentId/messages', (c) => {
   const agentId = c.req.param('agentId');
   const limit = parseInt(c.req.query('limit') ?? '50', 10);
   const before = c.req.query('before'); // cursor: message ID for pagination
-  // `?wordy=1` is still sent by the dashboard and is deliberately IGNORED here as of T9:
-  // it is a client render mode, not a different served set. See the OWNER_LANE_FILTER
-  // note below for what it used to add and where that content lives now.
+  // `?wordy=1` is still sent by the dashboard and ignored here: it is a client render mode, not a served set.
 
   const db = getDb();
 
-  // Verify agent exists
   const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(agentId);
   if (!agent) {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
@@ -267,61 +199,21 @@ chatRouter.get('/:agentId/messages', (c) => {
 
   let rows: Array<Record<string, unknown>>;
 
-  // Filter out legacy stop marker rows written by v1.10.4's earlier
-  // stopAgent() implementation. The stop marker is now injected only at
-  // context-assembly time and is never persisted, but older production
-  // databases may still contain marker rows that should not appear in
-  // the user-facing chat feed.
+  // Filter out legacy stop marker rows (the marker is now injected only at context-assembly time).
   const STOP_MARKER_FILTER = "content NOT LIKE '[STOPPED BY USER]%'";
 
-  // `retired_at` is DISPLAY SUPPRESSION ONLY (research 07 §2g) and that is all it does
-  // here: migration 102 stamped legacy pre-cutover inter-agent rows so they never
-  // surface on the chat feed. It is NOT the lane filter — it was doing that job by
-  // accident while the lane separation was physical, and T6 gives the job back to the
-  // column that owns it. Both predicates survive because they answer different
-  // questions: `lane` is WHOSE traffic this is, `retired_at` is whether a row the owner
-  // once saw should still be rendered.
+  // `retired_at` is display suppression only: it hides legacy pre-cutover inter-agent rows. `lane` is whose
+  // traffic this is. They answer different questions, so both predicates stay.
   const RETIRED_FILTER = 'retired_at IS NULL';
 
-  // The fail-closed human surface. `chat_messages` IS exactly these two predicates
-  // (`WHERE lane = 'owner' AND retired_at IS NULL`).
-  //
-  // PHASE-1 T9 — THE WORDY ARM IS GONE, and this is the demolition note for it.
-  // Wordy mode used to add `OR (lane = 'a2a' AND role IN ('assistant','tool'))`: the one
-  // place in the platform where a human-facing read stepped outside the fail-closed view,
-  // which this phase's architecture line says is "the only human-facing read surface".
-  // T9 rekeyed the LIVE half of those rows onto `interagent:message`, so leaving the arm
-  // here would have manufactured exactly the defect this task exists to remove — a row
-  // the owner sees after a refresh and never live.
-  //
-  // requirement preserved: "wordy mode shows the agent's own inter-agent coordination
-  // output." It shows it in the dashboard's Inter-Agent lane, which is the surface built
-  // for it: `GET /api/interagent/:agentId` has always served these rows
-  // (`lane IN ('a2a','events')`, no role filter), and as of T9 the lane finally receives
-  // them LIVE too — before, its live view was structurally missing the agent's own half.
-  // Nothing was dropped; one surface stopped duplicating another, badly.
-  //
-  // The consequence is that the three branches collapse to two — cursor and no-cursor —
-  // and `wordy` no longer changes what the server serves. It is a client render mode,
-  // which is what research 17's rule table always described. (The deleted branch also
-  // projected `rowid AS _rowid`; nothing outside this file ever read it —
-  // `git grep -n "_rowid" -- packages/dashboard packages/shared` → 0 — so it went with it.)
+  // The fail-closed human surface: `chat_messages` is exactly these two predicates. Wordy mode does not widen
+  // it (a client render mode); inter-agent output is served by `GET /api/interagent/:agentId`.
   const OWNER_LANE_FILTER = "lane = 'owner'";
 
-  // ⛔ REVERSAL, 2026-07-06 late night, owner correction — DO NOT RE-ATTEMPT (research 16).
-  // The serving contract is the SIMPLE one: `messages` is the conversation, the CLIENT
-  // renders visible rows in regular mode and everything in wordy mode, and infinite
-  // scroll pages straight back to day one on raw-row cursors. A server-side "visible
-  // walk" was briefly added and broke that pagination contract.
-  // T6 NOTE: this is why the display contract's `display_tier` does NOT become a WHERE
-  // clause here. T6's plan step reads "wordy mode becomes SELECT … WHERE with
-  // display_tier per 17"; filtering the SERVED set by tier server-side is the reverted
-  // mechanism wearing a new column's name. T8 owns the write-side classifier and Sweep E
-  // owns what the client does with it; this route's job is one query and one lane
-  // predicate, and that is all that changed.
+  // Serving contract: `messages` is the conversation; the client renders visible rows in regular mode and
+  // everything in wordy mode. Do not filter the served set by display tier: it broke raw-row pagination.
   if (before) {
-    // The cursor is the strictly-monotonic insertion key. A `created_at <` cursor could
-    // skip a same-second sibling, and second-granular ties are the normal case in a burst.
+    // The cursor is the strictly-monotonic insertion key: a `created_at <` cursor could skip a same-second sibling.
     const cursorMsg = db.prepare('SELECT seq AS rowid FROM messages WHERE id = ?').get(before) as { rowid: number } | undefined;
     if (!cursorMsg) {
       return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
@@ -344,7 +236,6 @@ chatRouter.get('/:agentId/messages', (c) => {
     `).all(agentId, Math.min(limit, 200)) as Array<Record<string, unknown>>;
   }
 
-  // Reverse to chronological order
   rows.reverse();
 
   const messages: Message[] = rows.map(rowToMessage);
@@ -363,24 +254,15 @@ function rowToMessage(row: Record<string, unknown>): Message {
     latencyMs: row.latency_ms as number | null,
     createdAt: row.created_at as string,
     reasoningContent: (row.reasoning_content as string | null) ?? null,
-    // SWEEP CORE-2 item 7 — THE RELOAD PATH'S HALF OF THE RE-CLASSIFICATION. At turn end the
-    // engine moves this turn's non-answer bubbles into the working-note lane by moving ONE
-    // COLUMN and nothing else (`content` is untouched: the cache law). So the only way a
-    // refreshed browser can render what the live socket rendered is to be TOLD the stored
-    // kind. Serving it is not a filter — the route's set is unchanged, and the client still
-    // decides what to draw.
+    // Served so a reloaded browser renders the engine's turn-end re-classification of non-answer bubbles
+    // (one column moves; `content` is untouched). Not a filter: the client decides what to draw.
     displayKind: (row.display_kind as Message['displayKind']) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
     source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
-    // The conversation this row belongs to (`conversations.id`). Resolved at ingest on
-    // inbound rows; stamped on the agent's OWN assistant/tool rows at turn end (loop C15).
-    // A background / engine turn (scheduler sync, watcher, tracker-driven surface) leaves it
-    // null. The dashboard reads it to hide background-run tool CHIPS in regular mode while
-    // keeping user-triggered chips (and all surfaced text) visible. PHASE-2 T10I: was
-    // `conv_key`, a composite string that also carried three engine sentinels.
+    // `conversations.id`: resolved at ingest on inbound rows, stamped on the agent's own assistant/tool rows at
+    // turn end, null for a background or engine turn. The dashboard uses it to hide background-run tool chips.
     conversationId: (row.conversation_id as string | null | undefined) ?? null,
-    // Canonical attribution for the dashboard's origin-based classifier
-    // (mirrors the memory store + agents route projection).
+    // Canonical attribution for the dashboard's origin classifier; mirrors the memory store and agents.ts.
     origin: deriveOrigin({
       role: row.role as Message['role'],
       content: (row.content as string | null) ?? null,
@@ -395,68 +277,49 @@ function rowToMessage(row: Record<string, unknown>): Message {
   };
 }
 
-// POST /chat/:agentId/new-session — start a fresh session
 chatRouter.post('/:agentId/new-session', async (c) => {
   const agentId = c.req.param('agentId');
   const db = getDb();
 
-  // Verify agent exists
   const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as { id: string; name: string; status: string } | undefined;
   if (!agent) {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  // Don't allow new session while agent is working
   if (agent.status === 'working') {
     return c.json({ ok: false, error: 'Cannot start new session while agent is working' }, 400);
   }
 
   try {
-    // 1. Archive current conversation to vault (for Dreamer to process later).
-    // force=true (FA-V1): new-session is a session-boundary bump like reset_session,
-    // so always archive the pre-reset tail even if an earlier unprocessed archive exists.
+    // 1. Archive the current conversation to the vault (for the Dreamer); force=true always archives the
+    // pre-reset tail, like reset_session.
     const archiveId = archiveAgentConversation(agentId, true);
     logger.info('Session archived for new session', { agentId, archiveId });
 
-    // 2. Preserve context items (summaries) across session reset.
-    // Summaries are compressed history of what the agent was working on.
-    // Clearing them causes amnesia — the agent loses all project context.
-    // The session_started_at boundary prevents old raw messages from
-    // appearing, but summaries are the ONLY continuity across a reset.
-    // (Previously this called replaceContextItems(agentId, []) which
-    // wiped all summaries, causing post-reset amnesia.)
+    // 2. Keep context items (summaries): with old raw messages hidden they are the only continuity.
 
-    // Forget the per-session scratch: the loaded tool docs (so the API array returns to the
-    // always-loaded head) and the turn-continuity scratch (so a fresh session doesn't treat
-    // pre-reset conversations as already answered). This door was the ONLY one of five doing
-    // both; `agent/session-forget.ts` is now the single owner of that answer.
+    // Forget the per-session scratch: loaded tool docs and turn-continuity scratch (see `agent/session-forget.ts`).
     await (await import('../../agent/session-forget.js')).forgetSessionScratch(agentId);
 
-    // 3. Set session boundary — messages before this are excluded from context
-    //    Use SQLite datetime format (not ISO) to match the messages table format
+    // 3. Set the session boundary (earlier messages are excluded from context), in SQLite datetime format.
     const now = new Date();
     const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    // Clear the session-scoped scratchpad (session-scoped per its tool docs). Matches agents.ts
-    // reset. (t140: the continuity brief this also cleared is gone; migration 187 removed its keys.)
+    // Clear the session-scoped scratchpad. Matches the agents.ts reset.
     db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(boundary, boundary, agentId);
 
-    // Carry a fired-but-undelivered reminder/scheduler event across the reset
-    // boundary so it survives (engine-event queries gate created_at >=
-    // session_started_at). Unclaimed deliverable engine rows only.
+    // Carry fired-but-undelivered reminder/scheduler events across the boundary (queries gate on session_started_at).
     try {
       const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
       rehomeUnclaimedEngineEvents(agentId, boundary);
     } catch { /* best-effort carry-over, never block the reset */ }
 
-    // 4. Insert session marker for the UI divider only. The row's created_at is stamped
-    //    by the writer at insert time, which is at-or-after `boundary` (computed a few
-    //    lines up), so the divider still lands inside the new session for every
-    //    `created_at >= session_started_at` query. The broadcast keeps quoting `boundary`.
+    // 4. Insert the UI divider only. Its created_at is stamped at insert, at or after `boundary`, so it still
+    // lands inside the new session; the broadcast quotes `boundary`.
     const markerId = uuidv4();
 
     insertMessageIfAbsent({ id: markerId, agentId, role: 'system', content: NEW_SESSION_DIVIDER });
 
-    // 5. Broadcast the divider so the chat UI updates in real time
+    // 5. Broadcast the divider so the chat UI updates in real time.
     broadcast({
       type: 'chat:message',
       agentId,
@@ -473,11 +336,7 @@ chatRouter.post('/:agentId/new-session', async (c) => {
       },
     });
 
-    // 6. Inject the reorientation prompt. The helper picks between full
-    // reorient (agent has active tasks → resume) and fresh-start (no
-    // active tasks → clean slate, don't dredge up old work). Pre-2026-04-30
-    // this always inserted the full reorient, which fought the user's
-    // intent when they reset specifically to start over.
+    // 6. Inject the reorientation prompt. The helper picks full reorient (active tasks) or fresh start (none).
     const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
     const reorientId = uuidv4();
     const reorientContent = buildSessionResetMessage(agentId);

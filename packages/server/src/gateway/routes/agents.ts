@@ -3,8 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { liveWork, hasLiveWork, announceLiveWork } from '../../agent/live-work.js';
-// t116 E2: the third fact the stop door asks — see `isRunUnwinding`'s header for why neither
-// of the other two can answer during a turn's unwind.
+// The third fact the stop door asks: a run still unwinding, when neither other fact can answer.
 import { isRunUnwinding } from '../../agent/shared-state.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { stopAgent } from '../../agent/runtime.js';
@@ -25,12 +24,10 @@ import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-help
 import { purgeAgentRows } from '../../agent/purge.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
 import { renameAgent } from '../../prompt/agent-rename.js';
-// UX-ACCESS A2: the owner-side half of the grant door — same resolver, same
-// schema, same merge as `spawn_agent` / `update_agent` use.
+// Owner-side half of the grant door: same resolver, schema and merge as `spawn_agent` / `update_agent`.
 import { resolveSpawnGrants, resolveUpdateGrants, grantsDelta } from '../../agent/access/authorize.js';
-// OWNER RULING 2026-10-05 #4: this door's DEFAULT is the floor plus Conversation Recall.
-// The module carries the ruling, why the shared floor did not move, and the recorded
-// decision NOT to backfill agents that already exist.
+// This door's default grants: the floor plus Conversation Recall. The module records why the shared
+// floor did not move and that agents that already exist are not backfilled.
 import { DASHBOARD_CREATE_DEFAULT_GRANTS } from '../../agent/access/create-defaults.js';
 import { getAccessGrants } from '../../agent/access/read.js';
 import { writeGrants } from '../../agent/access/materialize.js';
@@ -42,8 +39,7 @@ import { noteSmallMainModelOnce } from '../../agent/main-model-notice.js';
 
 const logger = createLogger('agents-routes');
 
-/** Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo and I don't believe it can run effectively
- *  without dreaming."): the main agent's dreaming cannot be switched off. Null when the change is allowed. */
+/** The main agent's dreaming cannot be switched off. Returns null when the change is allowed. */
 export function dreamerIgnoreRefusal(agentId: string, ignore: boolean): string | null {
   return ignore && agentId === getPrimaryAgentId() ? 'The main agent always dreams: the Dreamer reads its conversations, and that cannot be switched off.' : null;
 }
@@ -69,24 +65,10 @@ agentsRouter.get('/:id', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  noteSmallMainModelOnce(id, row.model_id as string | null);   // t202 D10: told once, never stopped
+  noteSmallMainModelOnce(id, row.model_id as string | null);   // told once, never stopped
   const agent = rowToAgentDetail(row);
-  // ── THE EFFECTIVE SCOPE, READABLE ANY TIME (PHASE-5 T5 Step 2) ──
-  // `permissions` is the STORED blob and it is not the answer to "what can this
-  // agent actually do": it is `'{}'` for 40 of 56 agents on the dev body, it is
-  // partial for others, and the platform's own identity rules override it for
-  // the primary. `effectiveScope` is what `getAgentPermissions` actually returns
-  // — defaults filled in, identity applied, the agent's own artifact directory
-  // present — so nobody has to reconstruct it from three files to answer the
-  // question. Additive: `permissions` still carries the stored blob byte for
-  // byte, because a reader that wants to know what was WRITTEN still can.
-  // ── UX-ACCESS A2: the ACCESS half of the same question ──
-  // `effectiveScope` answers "what may this agent do to the box". `effectiveGrants`
-  // answers "what may it REACH" — categories, integrations, credentials, channels
-  // — and it is the object A3's Access panel binds to. It comes from
-  // `getAccessGrants`, so an agent whose row predates the A1 materializer answers
-  // with its measured access rather than with a hole, and the panel never has to
-  // know which of the two it is looking at.
+  // `effectiveScope` is what getAgentPermissions returns (defaults, identity rules and the artifact dir
+  // applied); `permissions` stays the stored blob. `effectiveGrants` is what the agent may reach.
   return c.json({
     ok: true,
     data: { ...agent, effectiveScope: getAgentPermissions(id), effectiveGrants: getAccessGrants(id) },
@@ -110,7 +92,7 @@ agentsRouter.patch('/:id/model', async (c) => {
 
   const { modelId } = body;
 
-  const refused = await refuseUnfitLocalModel(modelId, agent.model_id, 'agent', () => refuseSmallMainModel(modelId, agent.model_id));   // 32K floor (t202 D10), memory fit (v3.5)
+  const refused = await refuseUnfitLocalModel(modelId, agent.model_id, 'agent', () => refuseSmallMainModel(modelId, agent.model_id));   // small-model floor and local memory fit
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (modelId === 'auto') {
@@ -127,7 +109,7 @@ agentsRouter.patch('/:id/model', async (c) => {
 
   // Sanitize tool call messages so the new model doesn't choke on tool_use IDs generated by the previous model
   sanitizeMessagesOnModelChange(id);
-  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);   // t148: a no-fit lock gets another look
+  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);   // a no-fit lock gets another look
   // Keep config-table model keys in sync for persistent agents whose runtime reads from config rather than agents.model_id
   const upsert = db.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -149,7 +131,7 @@ agentsRouter.patch('/:id/model', async (c) => {
   return c.json({ ok: true, data: rowToAgentDetail(row) });
 });
 
-// POST / — create standalone agent from dashboard
+// POST /: create standalone agent from dashboard
 agentsRouter.post('/', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -167,51 +149,27 @@ agentsRouter.post('/', async (c) => {
     const db = getDb();
     const agentId = uuidv4();
 
-    // E21 parked minor: a name that differs from a live agent's name only by capital letters would
-    // mint a second agent the case-insensitive lookup cannot tell apart. Refuse before any write.
+    // A name that differs from a live agent's only by capitals would mint a second agent the
+    // case-insensitive lookup cannot tell apart. Refuse before any write.
     const clash = caseVariantClash(body.name);
     if (clash) return c.json({ ok: false, error: caseVariantClashMessage(clash.name) }, 400);
 
-    // ── THE SAME VALIDATION PATH THE SPAWNER USES (PHASE-5 T5 Step 2) ──
-    // This route used to write `JSON.stringify(body.permissions ?? {})` straight
-    // into the row: no schema, no bound, no reader. A manifest of the wrong shape
-    // was stored happily and silently downgraded to the default by the next
-    // reader, and a manifest claiming more than the platform grants was stored
-    // just as happily. The plan's requirement is that dashboard agent creation
-    // goes through the SAME path, so it does — literally the same function.
-    //
-    // The parent here is the PRIMARY agent's scope, because that is what a
-    // dashboard-created agent is bounded by: the route is the owner acting, and
-    // the owner's own agent is the ceiling. A body that names no manifest gets
-    // the decided default, exactly as a spawn does.
+    // Same validation path as the spawner. The parent scope is the primary agent's, the ceiling for a
+    // dashboard-created agent; a body naming no manifest gets the default.
     const scope = resolveChildScope(
       body.permissions,
       getAgentPermissions(getPrimaryAgentId()),
       agentId,
     );
     if (!scope.ok) {
-      // A REFUSAL, NOT A DOWNGRADE. 400 rather than 500: the caller sent
-      // something the platform will not store, and the message names the field.
+      // A refusal, not a downgrade: 400 with the field named.
       logger.warn('Dashboard agent creation refused an invalid manifest', { reason: scope.reason });
       return c.json({ ok: false, error: `Agent not created, ${scope.reason}` }, 400);
     }
 
-    // ── THE ACCESS GRANTS, THROUGH THE SAME RESOLVER, FROM THIS DOOR'S DEFAULT ──
-    // Owner ruling 2 says ALL new agents start at the most-restrictive object, and
-    // every AGENT-driven spawn still does. OWNER RULING #4 (2026-10-05) moved THIS
-    // door's default one field: a dashboard-created agent holds Conversation
-    // Recall, because the owner pressing Recruit is not an agent handing out its
-    // own access. Everything else in the floor is unchanged — no channels, no
-    // integrations, no credentials, no techniques.
-    //
-    // Still the same resolver, so there is one answer to "what does a new agent
-    // start with" rather than two that drift. The route is the OWNER acting, so it
-    // is judged as the owner (null granter, t267 ruled change): a new agent's
-    // access is never capped at the main agent's own grants. `granterIsPrimary`
-    // true is what lets an owner switch a new agent's human-channel master on
-    // from the dashboard — the one thing a non-primary AGENT may never do. The
-    // box-effects manifest above keeps its own ceiling; that is not a grant.
-    // Agent-initiated spawns keep the no-escalation check (`agent/spawner.ts`).
+    // Grants resolve through the same resolver as spawns, from this door's default. The route is the owner
+    // acting (null granter, granterIsPrimary), so access is not capped at the main agent's own grants and
+    // the owner can switch a new agent's human-channel master on. Agent spawns keep the no-escalation check.
     const grantScope = resolveSpawnGrants(
       body.grants,
       null,
@@ -228,8 +186,8 @@ agentsRouter.post('/', async (c) => {
     const config = JSON.stringify({
       shareUserProfile: body.shareUserProfile || undefined,
     });
-    // A timeout that is present must be a positive finite number: a negative one
-    // expired the agent the moment the reaper ran, and a non-numeric one stored nothing.
+    // A present timeout must be a positive finite number: a negative one would expire the agent at the
+    // next reap, and a non-numeric one would store nothing.
     if (body.timeout !== undefined && body.timeout !== null && body.timeout !== '') {
       const seconds = Number(body.timeout);
       if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -237,8 +195,8 @@ agentsRouter.post('/', async (c) => {
       }
     }
     const timeoutSeconds = body.timeout ? Number(body.timeout) : null;
-    // The space form the spawner writes and the reaper's `datetime('now')` compares
-    // against — a bare `toISOString()`'s 'T' sorts after the space and delays the reap.
+    // The space form the spawner writes and the reaper's `datetime('now')` compares against; a bare
+    // `toISOString()` 'T' sorts after the space and delays the reap.
     const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
     const classification = body.classification === 'ronin' ? 'ronin' : 'apprentice';
@@ -269,19 +227,16 @@ agentsRouter.post('/', async (c) => {
     // Store system prompt as first message (no spawn injection)
     insertMessageIfAbsent({ id: uuidv4(), agentId, role: 'system', content: body.systemPrompt });
 
-    // FA-PT6: persist the charter durably (migration 096) so getSoulContent
-    // reads it directly instead of sniffing the earliest role='system' row.
+    // Persist the charter durably so getSoulContent reads it directly.
     try {
       db.prepare('UPDATE agents SET charter = ? WHERE id = ?').run(body.systemPrompt, agentId);
     } catch { /* charter column may not exist on a very old database */ }
 
-    // Store initial user message — just the task, no IMPORTANT INSTRUCTIONS
+    // Store initial user message (just the task)
     const initMsgId = uuidv4();
     insertMessageIfAbsent({ id: initMsgId, agentId, role: 'user', content: body.systemPrompt });
-    // T9 (research 17 D4): persisted and never broadcast. It is an owner-lane user row
-    // that the chat history route serves, so the agent's first message used to appear
-    // only on reload. The agent:created event below tells the dashboard the agent exists;
-    // it says nothing about this row.
+    // Broadcast the owner-lane user row so the agent's first message shows without a reload; the
+    // agent:created event below says nothing about it.
     broadcast({
       type: 'chat:message',
       agentId,
@@ -338,15 +293,11 @@ agentsRouter.post('/', async (c) => {
   }
 });
 
-// GET /:id/system-prompt — get agent's system prompt
+// GET /:id/system-prompt: get agent's system prompt
 agentsRouter.get('/:id/system-prompt', (c) => {
   const id = c.req.param('id');
 
-  // UX-REPAIR T40: ONE SURFACE. This used to be `SELECT ... role='system' ORDER BY rowid ASC
-  // LIMIT 1` for every non-primary agent — the OLDEST system row, over a history the PM's own
-  // prune deletes from the front. On the owner's box that row was an engine marker, so his
-  // project manager's card showed `[Agent ended turn without replying — conversation closed]`
-  // as its entire soul, while the model was reading `~/.dojo/prompts/PM-SOUL.md`.
+  // One surface: the prompt the model is actually given, not the oldest role='system' row.
   try {
     return c.json({ ok: true, data: { content: readAgentPromptSurface(id) } });
   } catch (err) {
@@ -355,7 +306,7 @@ agentsRouter.get('/:id/system-prompt', (c) => {
   }
 });
 
-// PUT /:id — update agent config (model, system prompt, permissions, tools policy)
+// PUT /:id: update agent config (model, system prompt, permissions, tools policy)
 agentsRouter.put('/:id', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -373,8 +324,8 @@ agentsRouter.put('/:id', async (c) => {
   const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, agent.model_id, 'agent', () => refuseSmallMainModel(body.modelId, agent.model_id)) : null;   // before the rename
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
-  // E21 parked minor: a new name that differs from another live agent's name only by capital
-  // letters is refused here, with the other 400 doors, so a refused Save writes nothing (246).
+  // A new name that differs from another live agent's only by capitals is refused with the other 400
+  // doors, so a refused Save writes nothing.
   const nameClash = typeof body.name === 'string' && body.name.trim() ? caseVariantClash(body.name.trim(), id) : null;
   if (nameClash) return c.json({ ok: false, error: caseVariantClashMessage(nameClash.name) }, 400);
 
@@ -424,12 +375,8 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   if (body.permissions !== undefined) {
-    // UX-ACCESS A1: `permissions` is a JSON DOCUMENT carrying the manifest AND
-    // the access grants. Today's only writer of this field is the permissions
-    // editor, which knows nothing about grants — so a save would have DELETED
-    // them, silently, and every door would fall back to the snapshot. The stored
-    // object is carried forward unless the caller sent one of its own; A3's panel
-    // sends it, and that write wins.
+    // `permissions` is a JSON document carrying the manifest AND the grants. The permissions editor knows
+    // nothing about grants, so carry the stored grants forward unless the caller sent its own (that wins).
     const incoming = (body.permissions ?? {}) as Record<string, unknown>;
     if (incoming.grants === undefined) {
       const prior = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(id) as { permissions: string | null } | undefined;
@@ -442,26 +389,11 @@ agentsRouter.put('/:id', async (c) => {
     params.push(JSON.stringify(incoming));
   }
 
-  // ── UX-ACCESS A2: OWNER-SIDE PARITY WITH THE TOOL DOOR ──
-  // Whatever `update_agent({grants})` can set, this can set — same schema, same
-  // merge-over-current semantics, same audit row. Two differences, both
-  // deliberate: the refusal is a 400 rather than a tool result, and there is no
-  // no-escalation check: this route is the OWNER, judged as the owner (null
-  // granter) — never against any agent's own grants, the main agent's included
-  // (t267 fix round 5). A3's Access panel is the caller.
-  //
-  // Top-level `grants` wins over `permissions.grants` (which A1's carry-forward
-  // above still honours for the old permissions editor), because this is the
-  // validated door and that one is a passthrough.
-  //
-  // ── A3: THE WRITE IS DEFERRED PAST THE COLUMN BATCH, AND THAT IS A FIX ──
-  // It used to happen HERE, before `UPDATE agents SET …` ran at the end of this
-  // handler — and that batch re-writes `permissions` from a value read BEFORE
-  // this write, so a body carrying both `permissions` and `grants` silently
-  // reverted the grant half. The old permissions editor sends `permissions` and
-  // `toolsPolicy` in one body and the Access panel sends `grants`, so the shape
-  // is live, not contrived. Validation and its 400 stay here (nothing is written
-  // when the body is bad); only the WRITE moves after the batch.
+  // Owner-side parity with `update_agent({grants})`: same schema, merge-over-current and audit row. A bad
+  // body is a 400, and there is no no-escalation check: the owner is judged as the owner (null granter).
+  // Top-level `grants` wins over `permissions.grants`: this is the validated door, that one a passthrough.
+  // The WRITE is deferred past the column batch below, which re-writes `permissions` from an earlier read
+  // and would revert the grant half; validation and its 400 stay here.
   let pendingGrants: { grants: AccessGrants; source: string } | null = null;
   if (body.grants !== undefined) {
     const resolution = resolveUpdateGrants(body.grants, getAccessGrants(id), null, true);
@@ -488,17 +420,8 @@ agentsRouter.put('/:id', async (c) => {
   if (body.toolsPolicy !== undefined) {
     updates.push('tools_policy = ?');
     params.push(JSON.stringify(body.toolsPolicy));
-    // ── UX-ACCESS A3: THE FOLD, AND WHY IT IS A LIE BEING FIXED ──
-    // A1 moved the authority for the per-agent tool allow/deny OUT of this
-    // column and INTO the grants object: `surface.ts` filters on
-    // `toolGrantsFor(agentId)` and the executor's FU-4 re-check asks the same
-    // reader. `spawn_agent` was taught to carry its `tools` argument into the
-    // grants for exactly that reason (A2 §5, "a spawn that stores grants must
-    // carry args.tools into them or the argument silently stops working"). This
-    // route — the dashboard's own permissions editor — was not, so its Web
-    // Search / Web Browsing toggles have been writing to a field no door reads.
-    // Same fold, verbatim, same reason; the column keeps its value because it is
-    // still the legacy record other readers display.
+    // Fold the allow/deny into the grants too: tool filtering and the executor re-check read the grants
+    // object, not this column. The column keeps its value as the legacy record other readers display.
     const tp = body.toolsPolicy as { allow?: unknown; deny?: unknown } | null;
     const base = pendingGrants?.grants ?? getAccessGrants(id);
     const folded = cloneGrants(base);
@@ -515,7 +438,7 @@ agentsRouter.put('/:id', async (c) => {
     params.push(JSON.stringify(body.equippedTechniques));
   }
 
-  if (body.silentWindowMinutes !== undefined) { // t143: the per-agent silent window (OR-LONG-JOBS)
+  if (body.silentWindowMinutes !== undefined) { // the per-agent silent window
     const w = SilentWindowMinutesSchema.safeParse(body.silentWindowMinutes);
     if (!w.success) return c.json({ ok: false, error: `silentWindowMinutes: ${w.error.issues[0]?.message ?? 'invalid'} (or null for the 2-hour default)` }, 400);
     updates.push('silent_window_minutes = ?'); params.push(w.data);
@@ -524,29 +447,19 @@ agentsRouter.put('/:id', async (c) => {
   if (body.dreamerIgnore !== undefined) {
     const refused = dreamerIgnoreRefusal(id, body.dreamerIgnore === true);
     if (refused) return c.json({ ok: false, error: refused }, 400);
-    // Boolean toggle. When true, the agent's conversations are skipped
-    // by the vault archive layer entirely — Dreamer never sees them.
+    // When true, the vault archive layer skips this agent's conversations; the Dreamer never sees them.
     updates.push('dreamer_ignore = ?');
     params.push(body.dreamerIgnore ? 1 : 0);
   }
 
-  // ── THE RENAME AND THE PROMPT WRITE, AFTER EVERY 400 DOOR (246) ──
-  // Both used to run before the model-exists, grants and silent-window refusals, so a Save
-  // carrying a new name or soul together with a value a later door refused came back 400 with
-  // half the edit applied. Nothing is written until every check that can answer 400 has passed.
+  // The rename and the prompt write run after every 400 door, so a refused Save writes nothing.
   if (typeof body.name === 'string' && body.name.trim()) {
-    // UX-REPAIR T50: ONE RENAME DOOR. This was an inline `name = ?` in the batch below, one of
-    // THREE places the tree changed a display name — and a stored soul seeded with the old name
-    // stayed stale after every one of them. `renameAgent` writes the row, carries the platform
-    // role name with it (this card's own `saveName` used to make that second call itself, in
-    // the dashboard, where it could drift), and re-fills the souls that named the agent.
+    // One rename door: `renameAgent` writes the row and the platform role name, and re-fills the souls
+    // that named the agent.
     renameAgent(id, body.name.trim());
   }
   if (typeof body.systemPrompt === 'string') {
-    // UX-REPAIR T40: the same door the card READS through, so an edit reaches the prompt the
-    // model is actually given. Before this, a PM/trainer edit landed in a `role='system'`
-    // message row that the assembler's `tailRender` drops on the floor — the owner could
-    // rewrite his project manager's soul and change nothing.
+    // Write through the door the card reads, so the edit reaches the prompt the model is given.
     writeAgentPromptSurface(id, body.systemPrompt);
   }
 
@@ -556,33 +469,27 @@ agentsRouter.put('/:id', async (c) => {
     db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params);
   }
 
-  // ── THE ACCESS WRITE, LAST (UX-ACCESS A3) ──
-  // After the column batch, so nothing above can re-write `permissions` from a
-  // value read before the grant resolution. The delta is computed against the
-  // object as it stands NOW for the same reason — the batch may have carried a
-  // prior grants blob forward — which is also what keeps "a grant change wrote
-  // an audit row" a fact rather than a habit: no delta, no write, no row.
+  // The access write comes last, after the column batch, so nothing above re-writes `permissions` from a
+  // stale read. The delta is computed against the object as it stands now: no delta, no write, no audit row.
   if (pendingGrants) {
     const current = getAccessGrants(id);
     const delta = grantsDelta(current, pendingGrants.grants);
     if (delta) {
       writeGrants(id, pendingGrants.grants);
-      // Ruling 4's audit row, owner-side. `audit_log.agent_id` has a foreign key
-      // to `agents`, and the owner has no agent row — so the row is filed on the
-      // agent whose access moved, which is also where anybody asking "why can
-      // this agent do that" would look, and the ACTOR is named in the detail.
+      // `audit_log.agent_id` references `agents` and the owner has no agent row, so the row is filed on
+      // the agent whose access moved; the actor is named in the detail.
       auditLog(id, 'update_agent', id, 'success', `${pendingGrants.source}: ${delta}`);
     }
   }
 
   logger.info('Agent config updated', { agentId: id, fields: Object.keys(body) });
-  if (body.modelId !== undefined || body.toolsPolicy !== undefined || pendingGrants) await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);   // t148
+  if (body.modelId !== undefined || body.toolsPolicy !== undefined || pendingGrants) await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);   // a no-fit lock gets another look
 
   const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown>;
   return c.json({ ok: true, data: rowToAgentDetail(row) });
 });
 
-// DELETE /:id — terminate agent (cascade)
+// DELETE /:id: terminate agent (cascade)
 agentsRouter.delete('/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -604,7 +511,7 @@ agentsRouter.delete('/:id', (c) => {
   return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
 });
 
-// POST /:id/stop — halt a working agent and set to idle
+// POST /:id/stop: halt a working agent and set to idle
 agentsRouter.post('/:id/stop', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -614,73 +521,36 @@ agentsRouter.post('/:id/stop', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  // ── OWNER RULING 2026-10-05 (#9): *"STOP means stop for anything that agent is doing"* ──
-  //
-  // THE MEASURED DEFECT THIS REPLACES. What stood here was `if (agent.status !== 'working')
-  // return 400`, and `agents.status` answers a DIFFERENT question: is a TURN in flight.
-  // Background work outlives its turn, so the row reads `idle` while a render burns — and
-  // A-5b had just taught the agent card to offer a Stop for exactly that case. Probed at
-  // `7dc71325`: idle row, one live `background` registration, `POST /:id/stop` → `400
-  // {"ok":false,"error":"Agent is not currently working"}`, registration still un-aborted.
-  // The visible button and the working mechanism were separated by this one line.
-  //
-  // The status check SURVIVES inside the predicate (`working` is still stoppable with nothing
-  // registered — a run between dials); it is simply no longer the only way to qualify.
-  // ── t116 E2 — AND THE THIRD DISJUNCT, FOR THE WINDOW BOTH THE OTHERS GO BLIND IN ──
-  //
-  // Ruling #9 moved this guard off the status column alone, and it was right to. But BOTH
-  // facts it now reads are instantaneous, and both go false while a run is still coming
-  // down: teardown writes `idle` before `finalizeTurnRecord`, and the model call releases its
-  // abort registration in its own `finally`. The release blast caught the consequence — a
-  // press inside that window answered `400 … is not currently working`, so nothing latched
-  // the stop and the turn recorded `answered`.
-  //
-  // `isRunUnwinding` is the fact `stopAgent` itself already reads (`activeRuns`), plus the
-  // bound on the drain tail that runs after it is released. Added as a DISJUNCT rather than
-  // by widening either existing one, so neither of their meanings moves: a press accepted
-  // here lands on the same stop fence E1 enforces, and a genuinely quiet agent — no run, no
-  // recent stamp, no jobs — is still refused.
+  // Stop applies to anything the agent is doing: a working turn, live background work, or a run still
+  // unwinding (teardown writes `idle` before the turn record is finalized, and the abort registration is
+  // released early). Refuse only an agent with none of the three, so a stop marker is never left pending
+  // on a turn that never happened.
   const live = liveWork(id);
   if (agent.status !== 'working' && !hasLiveWork(live) && !isRunUnwinding(id)) {
-    // Still a refusal, and the wording now says which question was asked. An agent with
-    // genuinely nothing running has nothing to stop, and saying otherwise would set
-    // `stopMarkerPending` on a turn that never happened.
     return c.json({ ok: false, error: 'Agent is not currently working and has no background jobs running' }, 400);
   }
 
   stopAgent(id);
   noteOwnerStop(id);   // a failed import in flight must not lift the owner's own stop
 
-  // T83 — THE ROUTE NO LONGER WRITES THE ENGINE'S LIE A SECOND TIME. What stood here was a raw
-  // `UPDATE agents SET status = 'idle'` plus an idle broadcast, "so the UI updates right away",
-  // duplicating the cosmetic idle `stopAgent` itself used to write — two writers, one untruth.
-  // `stopAgent` now writes idle only when idle is TRUE (no run in flight) and otherwise leaves
-  // the row saying `working` and broadcasts `stopping: true`. The route reports back whatever
-  // actually happened rather than asserting an outcome it has not checked.
-  // A-5b — THE ZERO IS ANNOUNCED, not waited for. Every job's own exit edge emits too, but a
-  // video row reaches `cancelled` a tick LATER, and the frame that matters most is the one that
-  // takes the stop control away. Said here, the control answers the press itself.
+  // Report what actually happened rather than asserting an outcome: `stopAgent` writes idle only when no
+  // run is in flight, otherwise the row stays `working` and it broadcasts `stopping: true`. The zero is
+  // announced here, not waited for: a job's own exit edge can land a tick later, and this frame is the one
+  // that takes the stop control away.
   announceLiveWork(id);
 
   const after = db.prepare('SELECT status FROM agents WHERE id = ?').get(id) as { status: string };
   logger.info('Agent stopped via dashboard', {
     agentId: id, statusAfter: after.status, cutTurn: live.turn, cutBackground: live.background,
   });
-  // The counts are the ones read BEFORE the stop — what it was asked to cut — and the payload
-  // reports what is left, which is the number the surface's own control reads next.
+  // The counts were read before the stop (what it was asked to cut); the payload reports what is left.
   return c.json({ ok: true, data: {
     agentId: id, status: after.status, stopping: after.status === 'working', inFlight: liveWork(id),
   } });
 });
 
-// POST /:id/reset-session — reset a single agent's session.
-// v2.3.19 (finding #196): pre-spec, dev-test-tools/bin/reset only set
-// session_started_at via raw SQL, skipping the divider, broadcast,
-// archive-to-vault, and reorientation prompt that the agent's
-// reset_session tool does. That made dev resets invisible in the chat
-// and structurally different from real resets. This endpoint mirrors
-// the tool exactly, so dev tooling AND any future UI button get the
-// real behavior.
+// POST /:id/reset-session: mirrors the agent's reset_session tool (divider, broadcast, vault archive,
+// reorientation prompt).
 agentsRouter.post('/:id/reset-session', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -696,30 +566,17 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     const { archiveAgentConversation } = await import('../../vault/archive.js');
     try { archiveAgentConversation(id, true); } catch { /* */ }
 
-    // 1b. Clear any stale runtime signals so the post-reset agent starts
-    //     truly clean. Without this, a previously-stopped agent stays
-    //     "stopped" — the next user message hits the v2 loop's stop check,
-    //     the flag clears, but the loop bails immediately without
-    //     processing the user message. Same risk for queued wakeups and
-    //     preempt flags. (2026-06-02 bug fix.)
-    //
-    //     T83 — AND `stopFencedRuns` IS DELIBERATELY NOT IN THIS LIST. This clear is about the
-    //     NEXT run, which is correct and stays. But on 2026-09-21 a reset landed 2m41s INTO a
-    //     stopped run (04:25:23, stop at 04:22:42) and lifted the flag out from under it; that
-    //     run's turn-budget checkpoint then queued its own continuation at 04:27:10, unrefused,
-    //     and the chain the owner had stopped resumed on turn 73. The fence is the stopped
-    //     RUN's, retired by that run's own exit path in `runtime.ts` and by nothing else, so a
-    //     reset can grant the next run a clean slate without un-stopping the current one.
+    // 1b. Clear stale runtime signals so the post-reset agent starts clean (a stale stop flag would make
+    //     the next user message bail). `stopFencedRuns` is deliberately NOT cleared: that fence belongs to
+    //     the stopped run and is retired by its own exit path in `runtime.ts`, so a reset cannot un-stop it.
     try {
       const { stoppedAgents, preemptedAgents, pendingWakeups } = await import('../../agent/shared-state.js');
       stoppedAgents.delete(id);
       preemptedAgents.delete(id);
-      pendingWakeups.delete(id); (await import('../../work/task-freshness.js')).endJobCarry(id); // a reset session has no job to continue (t143 r7)
+      pendingWakeups.delete(id); (await import('../../work/task-freshness.js')).endJobCarry(id); // a reset session has no job to continue
     } catch { /* best-effort */ }
 
-    // 2. Set session boundary + clear scratchpad. (t140: the continuity brief is gone; migration 187 removed its keys.)
-    //    (Scratchpad is session-scoped: the outline an agent built for the
-    //    prior task isn't relevant once the session resets.)
+    // 2. Set session boundary + clear scratchpad (session-scoped, not relevant after a reset).
     const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     db.prepare(
       "UPDATE agents SET session_started_at = ?, updated_at = ?, " +
@@ -732,9 +589,7 @@ agentsRouter.post('/:id/reset-session', async (c) => {
       const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
       rehomeUnclaimedEngineEvents(id, boundary);
     } catch { /* best-effort carry-over, never block the reset */ }
-    // Forget the per-session scratch. SMALLFRY 2026-09-26: this door cleared the
-    // turn-continuity state and NOT the session-loaded tool docs, so an agent reset from the
-    // agent card kept every tool it had loaded (measurement in `agent/session-forget.ts`).
+    // Forget the per-session scratch, including session-loaded tool docs (see `agent/session-forget.ts`).
     await (await import('../../agent/session-forget.js')).forgetSessionScratch(id);
 
     // 3. Insert UI divider + broadcast.
@@ -788,7 +643,7 @@ agentsRouter.post('/:id/reset-session', async (c) => {
   }
 });
 
-// POST /:id/purge — permanently delete a terminated agent and all its data
+// POST /:id/purge: permanently delete a terminated agent and all its data
 agentsRouter.post('/:id/purge', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -816,7 +671,7 @@ agentsRouter.post('/:id/purge', (c) => {
   return c.json({ ok: true, data: { agentId: id, deleted: true } });
 });
 
-// POST /:id/message — send direct message to agent
+// POST /:id/message: send direct message to agent
 agentsRouter.post('/:id/message', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -844,10 +699,8 @@ agentsRouter.post('/:id/message', async (c) => {
 
   // Persist as user message
   insertMessageIfAbsent({ id: messageId, agentId: id, role: 'user', content });
-  // T9 (research 17 D4): persisted and never broadcast. The dashboard's own send route
-  // (gateway/routes/chat.ts) broadcasts its user row; this one — the API path other
-  // callers use to talk to an agent — did not, so an operator watching the chat saw the
-  // agent start working on a message that was not on screen until they reloaded.
+  // Broadcast the user row so an operator watching the chat sees the message the agent starts on
+  // (the dashboard's own send route in chat.ts does the same).
   broadcast({
     type: 'chat:message',
     agentId: id,
@@ -870,7 +723,7 @@ agentsRouter.post('/:id/message', async (c) => {
   return c.json({ ok: true, data: { messageId, agentId: id } });
 });
 
-// GET /:id/messages — conversation history for this agent
+// GET /:id/messages: conversation history for this agent
 agentsRouter.get('/:id/messages', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -883,13 +736,8 @@ agentsRouter.get('/:id/messages', (c) => {
   const limit = parseInt(c.req.query('limit') ?? '100', 10);
   const offset = parseInt(c.req.query('offset') ?? '0', 10);
 
-  // Two predicates, two different questions (T6). `lane = 'owner'` is WHOSE traffic
-  // this is — the fail-closed replacement for the physical table split, which is what
-  // keeps this dashboard projection human-only now that peer A2A and engine rows live
-  // in the same table. `retired_at IS NULL` is DISPLAY SUPPRESSION ONLY (research
-  // 07 §2g): migration 102 stamped the legacy pre-cutover inter-agent rows so they
-  // never surface again. It was covering for the lane while the split was physical;
-  // it is not doing that job any more.
+  // Two predicates: `lane = 'owner'` is whose traffic this is (human-only, since peer A2A and engine rows
+  // share the table); `retired_at IS NULL` only suppresses display of legacy pre-cutover inter-agent rows.
   const rows = db.prepare(`
     SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? AND retired_at IS NULL AND lane = 'owner'
     ORDER BY created_at ASC
@@ -906,9 +754,8 @@ agentsRouter.get('/:id/messages', (c) => {
     cost: row.cost as number | null,
     latencyMs: row.latency_ms as number | null,
     createdAt: row.created_at as string,
-    // Carried so the dashboard can hide A2A-turn output and badge voice messages on
-    // reload, not just on the live broadcast path. PROJECTED from the stamped lane and
-    // channel — Sweep E re-points the dashboard onto those and deletes this field.
+    // Carried so the dashboard can hide A2A-turn output and badge voice messages on reload, projected
+    // from the stamped lane and channel.
     source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
     // Canonical attribution for the dashboard's origin-based classifier. Same
     // projection the memory store applies; structured columns win, legacy rows
@@ -929,7 +776,7 @@ agentsRouter.get('/:id/messages', (c) => {
   return c.json({ ok: true, data: messages });
 });
 
-// GET /:id/agent-messages — inter-agent messages
+// GET /:id/agent-messages: inter-agent messages
 agentsRouter.get('/:id/agent-messages', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -951,7 +798,7 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
   const agentId = row.id as string;
   let modelId = row.model_id as string | null;
 
-  // Imaginer has no "brain" model — the agent card should show the image
+  // Imaginer has no "brain" model, the agent card should show the image
   // generation model, which is stored in the config table, not agents.model_id.
   if (agentId === getImaginerAgentId()) {
     const cfgRow = db.prepare("SELECT value FROM config WHERE key = 'imaginer_image_model'").get() as { value: string } | undefined;
@@ -998,11 +845,8 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
         costPerMegapixel: modelRow.pricing_unit === 'megapixel' && typeof modelRow.cost_per_megapixel === 'number'
           ? modelRow.cost_per_megapixel
           : null,
-        // priceUnknown (derived, no column): the applicable rate is NULL rather
-        // than an explicit 0. Token rows check input/output $/M; recognized
-        // non-token rows check cost_per_unit (with the megapixel legacy
-        // fallback). Per D-H an unknown rate bills as $0, so this keeps the
-        // "price unknown" state visible instead of silently hidden.
+        // priceUnknown (derived, no column): the applicable rate is NULL rather than an explicit 0 (an
+        // unknown rate bills as $0), so the unknown-price state stays visible.
         priceUnknown: (modelRow.pricing_unit === 'megapixel' || modelRow.pricing_unit === 'second' ||
                        modelRow.pricing_unit === 'character' || modelRow.pricing_unit === 'minute')
           ? !(typeof modelRow.cost_per_unit === 'number' ||
@@ -1057,15 +901,13 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     model,
     dreamerIgnore: row.dreamer_ignore === 1,
     silentWindowMinutes: (row.silent_window_minutes as number | null) ?? null,
-    // A-5b: a READ, never a writer — the registry AND the open job rows, through the one
-    // module that owns the question (`agent/live-work.ts`). Three surfaces, one predicate:
-    // when the card and the stop ROUTE each had their own, the card offered a button the
-    // route then refused with 400.
+    // A read, never a writer: the live-work registry and open job rows, through `agent/live-work.ts`,
+    // the one predicate the card and the stop route share.
     inFlight: liveWork(agentId),
   };
 }
 
-// POST /archive — hide terminated agents older than N days (default 7)
+// POST /archive: hide terminated agents older than N days (default 7)
 agentsRouter.post('/archive', (c) => {
   const db = getDb();
   const days = 7;
