@@ -1,22 +1,5 @@
-// ════════════════════════════════════════
-// Phase 1D, recall strategy classifier
-//
-// Per Part VI #16. When the agent needs to recall something, it has
-// two recall mechanisms: vault_search (semantic, long-term, curated)
-// and history_search (full-text search of conversation history). v1
-// relies on the agent to remember when each applies. The system
-// prompt has 40+ lines of vault guidance trying to teach this; weak
-// models still default to "I don't remember" without searching.
-//
-// v2 classifies the recall query itself:
-//   - vault: conceptual queries ("the project we discussed", "her name")
-//   - grep:  specific recent terms (filenames, exact phrases, dates)
-//   - both:  ambiguous, try both
-//
-// The engine can use this either to suggest a tool to the agent
-// or to pre-execute the recall and inject the result. Phase 4
-// decides which.
-// ════════════════════════════════════════
+// Classify a recall ask as vault, grep, both, or skip, so the choice is made
+// by pattern match rather than by whether the agent happens to try remembering.
 
 export type RecallStrategy = 'vault' | 'grep' | 'both' | 'skip';
 
@@ -38,9 +21,7 @@ const VAULT_PATTERNS: RegExp[] = [
 /** Patterns that suggest grep (specific / recent / textual). */
 const GREP_PATTERNS: RegExp[] = [
   /\bfile\s+["'`]?[\w./-]+["'`]?/i,             // "the file foo.ts"
-  // Quoted phrase, must be balanced double-quote or backtick (single
-  // quotes excluded to avoid catching apostrophes in contractions like
-  // "what's" / "partner's").
+  // Balanced double-quote or backtick only; single quotes would match apostrophes in contractions.
   /"[^"]{4,40}"/,
   /`[^`]{4,40}`/,
   /\b\d{4}-\d{2}-\d{2}\b/,                       // ISO date
@@ -78,7 +59,6 @@ export function recallStrategyClassifier(query: string): RecallStrategyResult {
   }
   if (vaultHits > 0 && grepHits === 0) return { strategy: 'vault', signals };
   if (grepHits > 0 && vaultHits === 0) return { strategy: 'grep', signals };
-  // Both signals present, try both. The engine can run them in parallel
-  // since both are read-only / safe.
+  // Both read-only, so 'both' is safe to run in parallel.
   return { strategy: 'both', signals };
 }

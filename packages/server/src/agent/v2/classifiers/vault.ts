@@ -1,28 +1,12 @@
-// ════════════════════════════════════════
-// Phase 1D — vault prefetch classifier
-//
-// Per Part VI #4 and Part XVIII §C. v1 auto-injects vault entries
-// into context on EVERY turn (assembler.ts:97 retrieveForContext).
-// That cost is paid even on simple turns where the vault isn't useful.
-//
-// v2 promotes the vault to long-term memory (Part XVIII §C):
-//   - Pinned and session_context entries inject ONCE at session start
-//   - Per-turn injection only when the engine decides it's worth it
-//
-// This classifier makes that per-turn decision: given the user query,
-// should we issue a vault retrieval AND inject the result?
-//
-// Pure heuristic — no DB read. Phase 4 wires this into the assembler.
-// ════════════════════════════════════════
+// Vault prefetch classifier: a pure heuristic (no DB read) that decides each
+// turn whether to retrieve and inject vault entries. Session start injects once.
 
 export interface VaultPrefetchInput {
-  /** The triggering user query (or empty for system-triggered turns). */
+  /** The triggering query; empty on system-triggered turns. */
   query: string;
-  /** Whether this is the first turn of a session (vault always injects then). */
   isSessionStart: boolean;
-  /** Whether the agent's last 3 turns already mentioned vault entries. */
+  /** True when the last 3 turns already mentioned vault entries. */
   recentlyUsedVault: boolean;
-  /** Was the trigger a system event (scheduler, A2A, etc.)? Skip vault for those. */
   isSystemTrigger: boolean;
 }
 
@@ -32,7 +16,6 @@ export interface VaultPrefetchResult {
   reason: string;
 }
 
-/** Stop words to exclude from query term extraction. */
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
   'has', 'have', 'he', 'her', 'his', 'i', 'in', 'is', 'it', 'its',
@@ -55,7 +38,7 @@ const RECALL_PATTERNS: RegExp[] = [
 ];
 
 export function vaultPrefetchClassifier(input: VaultPrefetchInput): VaultPrefetchResult {
-  // Session start always fetches (per Part XVIII §C — vault as CLAUDE.md).
+  // Session start always fetches: pinned plus session_context inject once.
   if (input.isSessionStart) {
     return {
       shouldFetch: true,
@@ -64,8 +47,7 @@ export function vaultPrefetchClassifier(input: VaultPrefetchInput): VaultPrefetc
     };
   }
 
-  // System triggers (scheduler, A2A) skip — the agent is reacting to
-  // structured input, not a user request that needs personal context.
+  // System triggers (scheduler, A2A) skip: they react to structured input, not a user ask.
   if (input.isSystemTrigger) {
     return { shouldFetch: false, queryTerms: [], reason: 'system trigger — skip vault' };
   }
@@ -75,7 +57,6 @@ export function vaultPrefetchClassifier(input: VaultPrefetchInput): VaultPrefetc
     return { shouldFetch: false, queryTerms: [], reason: 'empty query — nothing to look up' };
   }
 
-  // Strong recall signals — always fetch
   for (const pat of RECALL_PATTERNS) {
     if (pat.test(trimmed)) {
       return {
@@ -86,8 +67,7 @@ export function vaultPrefetchClassifier(input: VaultPrefetchInput): VaultPrefetc
     }
   }
 
-  // Already used vault recently — skip; the relevant entries are
-  // already in the conversation history.
+  // Recently used vault: skip, its entries are already in the conversation history.
   if (input.recentlyUsedVault) {
     return {
       shouldFetch: false,
@@ -96,7 +76,6 @@ export function vaultPrefetchClassifier(input: VaultPrefetchInput): VaultPrefetc
     };
   }
 
-  // Default: fetch when there are substantive terms to search on.
   const terms = extractTerms(trimmed);
   if (terms.length === 0) {
     return { shouldFetch: false, queryTerms: [], reason: 'no substantive terms in query' };
@@ -109,10 +88,7 @@ export function vaultPrefetchClassifier(input: VaultPrefetchInput): VaultPrefetc
   };
 }
 
-/**
- * Extract substantive terms from a query for vault retrieval. Strips
- * stop words and short tokens. Returns up to 10 terms.
- */
+/** Extract substantive terms for vault retrieval; stop words and short tokens dropped. */
 function extractTerms(query: string, fallbackBroad = false): string[] {
   const terms = query
     .toLowerCase()
@@ -122,7 +98,7 @@ function extractTerms(query: string, fallbackBroad = false): string[] {
     .slice(0, 10);
 
   if (terms.length === 0 && fallbackBroad) {
-    // Session-start fallback (matches assembler.ts behavior at line 109)
+    // Session-start fallback: broad terms used when the query yields none.
     return ['current', 'projects', 'active', 'tasks', 'recent', 'work'];
   }
   return terms;
