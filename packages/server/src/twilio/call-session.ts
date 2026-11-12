@@ -1,25 +1,10 @@
-// ════════════════════════════════════════
-// Twilio Voice call session (v2.9.18)
+// Twilio Voice call session: one instance per active phone call (inbound or outbound), bridging Twilio's
+// Media Streams WebSocket to the agent runtime.
 //
-// One instance per active phone call (inbound or outbound). Owns the
-// per-call state machine that bridges Twilio's Media Streams
-// WebSocket to the agent runtime:
-//
-//   Caller speaks → μ-law frames in → decode/upsample to Float32 16k
-//   → VAD-gated buffering → at utterance end, run STT → submit
-//   transcript to primary agent as `[SOURCE: PHONE CALL FROM <num>]`
-//   → agent responds → Kokoro/Hume TTS → downsample/μ-law encode →
-//   paced 20ms frame send-back over the same WebSocket.
-//
-// Call lifecycle:
-//   - new CallSession(...) on `start` event
-//   - frame() called per inbound media frame
-//   - finish() called on `stop` event or explicit end()
-//   - call log row updated throughout
-//
-// Per-call max-duration cap (Settings → Voice). Tools are NOT
-// recorded - transcripts only.
-// ════════════════════════════════════════
+// Caller μ-law frames are decoded and VAD-gated; each utterance is transcribed and submitted to the primary
+// agent as `[SOURCE: PHONE CALL FROM <num>]`; the reply is synthesized, μ-law encoded and sent back as paced
+// 20 ms frames. Lifecycle: new CallSession on `start`, frame() per media frame, end() on `stop`.
+// A per-call max-duration cap applies (Settings, Voice). Tools are NOT recorded, transcripts only.
 
 import { v4 as uuidv4 } from 'uuid';
 import { startVoiceSessionRecord, endVoiceSessionRecord, bumpVoiceSessionTurnCount, stampSpokenMessage } from '../voice/session-record.js';
@@ -52,15 +37,12 @@ const logger = createLogger('twilio-call-session');
 
 // Simple energy-based VAD constants. Tunable.
 const VAD_FRAME_MS = 20;
-// 600 ms silence (was 800) — phone audio has clean phoneme boundaries
-// from G.711, so we can endpoint more aggressively than dashboard voice
-// mode. Saves 200 ms per turn. Tune up if mid-sentence pauses cut off
-// real phone-style speech ("uh... hold on... yeah").
+// 600 ms of silence ends an utterance: G.711 phone audio has clean phoneme boundaries. Raise it if
+// mid-sentence pauses cut off real speech.
 const VAD_SILENCE_MS_TO_END = 600;
 const VAD_MIN_SPEECH_MS = 250;     // Drop micro-utterances (button noise, breath).
 const VAD_ENERGY_THRESHOLD = 0.01; // RMS in [0,1].
-// ~200 ms of pre-onset context (10 × 20 ms Twilio frames) so STT
-// catches the leading edge of the utterance, not a half-clipped word.
+// ~200 ms of pre-onset context (10 frames) so STT does not get a half-clipped first word.
 const LOOKBACK_FRAMES = 10;
 
 const TWILIO_FRAME_INTERVAL_MS = 20;
@@ -72,9 +54,8 @@ export interface CallSessionInit {
   fromNumber: string;
   toNumber: string;
   send: (msg: string) => void;  // JSON string sender on the WS
-  // v2.9.23 phone-mode context. Optional at construct time — voicemail
-  // is updated when AMD resolves, disclosures are owner policy, purpose
-  // comes from outbound `voice_call(purpose=...)` args.
+  // Phone-mode context: voicemail is set when AMD resolves, disclosures are owner policy, and purpose
+  // comes from the outbound `voice_call` args.
   voicemailDetected?: boolean;
   disclosuresRequired?: string[];
   purpose?: string;
@@ -100,70 +81,49 @@ export class CallSession {
   private agentId: string | null = null;
   private startedAt = Date.now();
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
-  // Per-session caller-utterance counter, used to give every utterance of a
-  // call its own external message id (CA123:1, CA123:2, ...). The unique index
-  // on (agent_id, channel, external_message_id) would silently drop later
-  // utterances if they all shared the bare call sid.
+  // Per-call utterance counter: gives each utterance its own external message id (CA123:1, CA123:2, ...),
+  // since the unique index on (agent_id, channel, external_message_id) would drop later ones.
   private utteranceSeq = 0;
 
-  // Inbound buffering + VAD state.
   private speechBuffer: Float32Array[] = [];
   private speechSamples = 0;
   private hasSpeech = false;
   private silenceMs = 0;
   private speechMs = 0;
 
-  // Diagnostic counters (dev-only). Helpful for figuring out whether
-  // frames are arriving from Twilio and what the VAD energy looks
-  // like for phone-quality audio.
   private framesReceived = 0;
   private framesLogged = 0;
   private peakEnergy = 0;
 
-  // Anti-aliasing lowpass state for the 8 kHz → 16 kHz upsample.
-  // IIR biquad, two-pole, must persist across frames or the 20 ms
-  // frame boundaries introduce audible discontinuities.
+  // Lowpass state for the 8 to 16 kHz upsample; it must persist across frames (no boundary glitches).
   private aaLpState: BiquadState = createBiquadState();
 
-  // Rolling pre-onset lookback so the first phoneme of an utterance
-  // isn't clipped when VAD onset fires mid-word. Fixed-length ring;
-  // entries shift out as new frames come in.
+  // Rolling pre-onset ring so the first phoneme is not clipped when VAD onset fires mid-word.
   private lookbackRing: Float32Array[] = [];
 
-  // Outbound TTS pacing queue.
   private ttsQueue: PendingTtsChunk[] = [];
   private ttsTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsCarry: Buffer = Buffer.alloc(0);
 
-  // v2.10.1 — serial sentence-text queue. Streaming TTS feeds text
-  // here one sentence at a time; a single drain worker pulls texts
-  // in FIFO order, runs synth, and pushes the PCM to ttsQueue
-  // strictly in submission order. Replaces the fire-and-forget
-  // per-sentence IIFE that landed in 2.10.0 and produced
-  // out-of-order audio whenever Hume socket-open jitter delayed
-  // any single sentence.
+  // Serial sentence-text queue: streaming TTS feeds one sentence at a time; one drain worker synthesizes
+  // in FIFO order and pushes PCM to ttsQueue in submission order, so audio never plays out of order.
   private pendingSpeechTexts: Array<{ text: string; generation: number }> = [];
   private speechSynthRunning = false;
-  // Generation counter — incremented on barge-in so any sentence
-  // still being synthesized OR still in pendingSpeechTexts gets
-  // dropped instead of being played seconds after the caller spoke.
+  // Bumped on barge-in: sentences still queued or being synthesized under an older generation are dropped.
   private speechGeneration = 0;
 
   // Running transcript stitched at the end into twilio_call_log.transcript.
   private transcript: Array<{ at: string; speaker: 'caller' | 'agent'; text: string }> = [];
   private voiceSessionRecordId: string | null = null;
 
-  // v2.9.23 phone-mode call context. Mutable: AMD flips voicemailDetected
-  // when the answering-machine result arrives; the rest is set at
-  // construct time (inbound: defaults; outbound: from voice_call args).
+  // Phone-mode call context. AMD flips voicemailDetected when its result arrives; the rest is set
+  // at construct time (inbound: defaults; outbound: from voice_call args).
   voicemailDetected: boolean = false;
   disclosuresRequired: string[] = [];
   purpose: string | null = null;
 
-  // v2.9.23 — soft hangup window. When voice_call_end fires, we don't
-  // disconnect immediately; we set this timer so the closing ritual
-  // (recap → let-you-go → trade goodbyes) can complete. Caller speech
-  // during the window cancels the pending hangup and the call resumes.
+  // Soft hangup window: voice_call_end sets this timer instead of disconnecting at once, so the closing
+  // ritual can finish. Caller speech during the window cancels the hangup.
   private pendingHangupTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingHangupReason: string | null = null;
 
@@ -181,9 +141,8 @@ export class CallSession {
     this.agentId = getPrimaryAgentId();
     this.startedAt = Date.now();
     this.persistInitialLog();
-    // P8: one session identity space for the spoken lane. twilio_call_log
-    // stays the call's own record; this row joins the call to voice identity
-    // (speaker stamps + reply binding key on it).
+    // One session identity space for the spoken lane: this row joins the call to voice identity (speaker
+    // stamps and reply binding key on it); twilio_call_log stays the call's own record.
     this.voiceSessionRecordId = this.agentId ? startVoiceSessionRecord({
       agentId: this.agentId, kind: 'phone', externalId: this.callSid,
     }) : null;
@@ -223,10 +182,8 @@ export class CallSession {
     const ms = Math.max(60_000, cfg.voiceMaxMinutesPerCall * 60_000);
     this.maxDurationTimer = setTimeout(() => {
       logger.warn('Call hit max duration cap, ending', { callSid: this.callSid });
-      // Tear down through the module-level helper so the registry entry
-      // is cleared too (end() alone leaves the map pointing at the dead
-      // session), then tell Twilio to drop the call immediately — the
-      // cap must NOT wait for a goodbye window.
+      // End through the module-level helper so the registry entry is cleared too, then drop the call at
+      // Twilio at once: the cap must not wait for a goodbye window.
       endCallSession(this.callSid, 'max_duration_reached');
       void import('./client.js').then((m) => m.endCall(this.callSid)).catch((err) => logger.warn('Twilio hang-up after the time cap failed', { callSid: this.callSid, error: err instanceof Error ? err.message : String(err) }));
     }, ms);
@@ -235,19 +192,12 @@ export class CallSession {
   /** Twilio `start` event - real audio about to flow. */
   start(): void {
     this.started = true;
-    // Kick the TTS pump in case queueAgentSay was called BEFORE the
-    // WebSocket connected and `start` fired (typical for outbound:
-    // the opening_message lands on the queue immediately, but we
-    // can't pump it out until the actual `send` is bound by
-    // voice-stream.ts on the WS `start` event).
+    // Pump any TTS queued before the WS `start` event bound `send` (the outbound opening_message is
+    // queued immediately).
     if (this.ttsQueue.length > 0 && !this.ttsTimer) this.scheduleTtsPump();
 
-    // v2.9.23 — STT pre-warm. Moonshine takes ~600 ms to load its
-    // ONNX pipeline on first use. Pre-fix we paid that cost on the
-    // FIRST caller utterance, adding a noticeable delay to the
-    // opening turn. Kicking it off here (fire-and-forget) means the
-    // pipeline is hot by the time the caller's first sentence flushes
-    // to STT. No-op if already loaded (engine registry caches).
+    // Pre-warm STT (Moonshine's first load takes ~600 ms) so the first utterance does not pay for it.
+    // Fire-and-forget; a no-op once loaded.
     void (async () => {
       try {
         const { ensureSttReady } = await import('../voice/stt-service.js');
@@ -259,11 +209,8 @@ export class CallSession {
       }
     })();
 
-    // The inbound greeting: a short opener 1.5 s after the WS hands off, so the caller
-    // hears something at once. The inbound phone-mode prompt relies on it ("You already
-    // greeted with Hello there!"), so it is the designed greeting, not a leftover.
-    // Inbound calls only - outbound flows already supply their own
-    // opening_message via voice-outbound.
+    // Inbound greeting 1.5 s after the WS hands off. The inbound phone-mode prompt relies on it ("You
+    // already greeted with Hello there!"). Outbound calls supply their own opening_message instead.
     if (this.direction === 'inbound') {
       setTimeout(() => {
         if (this.ended) return;
@@ -272,36 +219,21 @@ export class CallSession {
     }
   }
 
-  /**
-   * Process one inbound μ-law base64 frame. Decodes, runs VAD, and
-   * once a complete utterance is detected, hands the transcript off
-   * to the agent runtime.
-   */
+  /** Process one inbound μ-law base64 frame: decode, run VAD, hand a finished utterance to the agent. */
   async frame(payloadBase64: string): Promise<void> {
     if (this.ended || !this.started) return;
-    // decodeTwilioFrame produces linearly-interpolated 16 kHz Float32.
-    // The anti-aliasing lowpass strips the spectral images above
-    // ~3.4 kHz that the cheap upsampler creates; without it,
-    // Moonshine refuses to transcribe phone audio (returns empty).
+    // The lowpass strips the spectral images the cheap upsampler creates above ~3.4 kHz; without it
+    // Moonshine returns empty text on phone audio.
     const rawDecoded = decodeTwilioFrame(payloadBase64);
     const float = applyAntiAliasLP(rawDecoded, this.aaLpState);
 
-    // Maintain a small rolling pre-speech ring so the eventual STT
-    // buffer includes ~200 ms of context BEFORE VAD-onset (avoids
-    // clipping the first phoneme). Always update the ring, even when
-    // not in active speech, so the lookback is fresh when onset fires.
     this.lookbackRing.push(float);
     while (this.lookbackRing.length > LOOKBACK_FRAMES) {
       this.lookbackRing.shift();
     }
 
-    // Only buffer into the speech buffer when VAD has detected
-    // speech onset. Pre-onset silence stays in the lookback ring and
-    // gets prepended only on the first speech-frame after onset.
-    // This keeps the STT buffer small and content-dense — pre-fix,
-    // the buffer accumulated every frame since the last flush, so a
-    // 10-second silence between utterances produced a 12-second
-    // buffer with 2 seconds of speech that Moonshine couldn't parse.
+    // Buffer only after VAD onset; pre-onset silence stays in the ring and is prepended on the first
+    // speech frame, keeping the STT buffer small and dense.
     if (this.hasSpeech) {
       this.speechBuffer.push(float);
       this.speechSamples += float.length;
@@ -310,8 +242,6 @@ export class CallSession {
     const energy = rms(float);
     if (energy > this.peakEnergy) this.peakEnergy = energy;
     this.framesReceived++;
-    // Log first frame and then every ~1s of audio (50 frames at 20ms)
-    // to confirm media is flowing without spamming.
     if (this.framesReceived === 1 || this.framesReceived - this.framesLogged >= 50) {
       logger.info('Twilio frames', {
         callSid: this.callSid,
@@ -329,19 +259,9 @@ export class CallSession {
       this.speechMs += VAD_FRAME_MS;
       if (!this.hasSpeech) {
         logger.info('VAD: speech started', { callSid: this.callSid, energy: Number(energy.toFixed(4)) });
-        // v2.9.23 — BARGE-IN. If we were actively pumping TTS to the
-        // caller AND the caller started talking, yield: flush the rest
-        // of our outbound audio and let them go. Pre-fix the agent
-        // talked over the caller until the queue drained, which is the
-        // most robotic-feeling phone behavior possible.
-        //
-        // v2.10.1 — also bump the speech generation counter and clear
-        // pendingSpeechTexts. Any sentence still queued for synth (or
-        // in-flight inside drainSpeechTexts) gets dropped instead of
-        // playing after the caller has gone again. Pre-fix, the model
-        // kept generating sentences into the worker queue and those
-        // played AFTER barge-in completed — caller would speak, brief
-        // silence, then a stale sentence from the prior turn.
+        // Barge-in: the caller started talking, so flush queued outbound audio and pending sentences.
+        // Bumping the generation also drops any sentence already queued or mid-synthesis under the old one,
+        // so a stale sentence never plays after the caller spoke.
         if (
           this.ttsQueue.length > 0 ||
           this.ttsCarry.length > 0 ||
@@ -366,9 +286,7 @@ export class CallSession {
             newGeneration: this.speechGeneration,
           });
         }
-        // v2.9.23 — soft hangup cancellation. If a hangup was pending
-        // (agent said goodbye, engine was waiting for caller's bye),
-        // the caller speaking again means they aren't done — cancel.
+        // Soft hangup pending (agent said goodbye): caller speech means they are not done, so cancel it.
         if (this.pendingHangupTimer) {
           clearTimeout(this.pendingHangupTimer);
           this.pendingHangupTimer = null;
@@ -377,19 +295,12 @@ export class CallSession {
           });
           this.pendingHangupReason = null;
         }
-        // Onset: drain the lookback ring into the speech buffer so
-        // the first phoneme of the utterance isn't clipped. The
-        // current frame (energy > threshold) is appended below by
-        // the hasSpeech=true branch — but the lookback is BEFORE
-        // it, so prepend here.
+        // Onset: prepend the lookback ring (it already ends with the current frame) so the first
+        // phoneme is not clipped.
         for (const c of this.lookbackRing) {
           this.speechBuffer.push(c);
           this.speechSamples += c.length;
         }
-        // Note: current `float` / `rawDecoded` are already in the
-        // lookback (we pushed at the top), so the buffer now ends
-        // with them. No need to re-append. Setting hasSpeech=true
-        // below is what enables future frames to flow in.
       }
       this.hasSpeech = true;
     } else {
@@ -432,19 +343,8 @@ export class CallSession {
     let text = '';
     const t0 = Date.now();
     try {
-      // Wrap as 16k WAV and send to existing STT path. transcribeBuffer
-      // is the lowest-friction entry point - it auto-routes to whichever
-      // engine the user has configured (Moonshine default).
       const wav = floatToWav(pcm16k, 16000);
-      // SECURITY (2026-07-27, PHASE-0 T12b / P553): every caller utterance used
-      // to be written here to `/tmp/dojo-twilio-utterances` as two WAVs — a
-      // world-readable, unbounded, never-cleaned recording of every phone call
-      // the box handled, kept unconditionally in production because a biquad
-      // investigation left its diagnostic behind. It is deleted, along with the
-      // parallel pre-biquad buffer (rawBuffer/rawSamples/lookbackRingRaw/
-      // flushRawBuffer) that existed only to feed it. If a debug capture is
-      // genuinely wanted again it comes back as an opt-in behind the test kit,
-      // never as an always-on write to a shared directory.
+      // Caller audio is never written to disk: only the transcript is kept.
       const { transcribeBuffer } = await import('../voice/stt-service.js');
       const r = await transcribeBuffer(wav, { mime: 'audio/wav' });
       text = r.text.trim();
@@ -473,28 +373,19 @@ export class CallSession {
       logger.warn('No primary agent, dropping utterance', { callSid: this.callSid });
       return;
     }
-    // v2.9.23 — resolve the OTHER party's number (not necessarily
-    // `fromNumber`) to a friendly name. For inbound calls the other
-    // party IS `fromNumber`; for outbound calls the other party is
-    // `toNumber` (Twilio sets webhook From = our Twilio number and
-    // To = the dialed party). The dashboard badge wants "from the owner"
-    // either way; using `fromNumber` blindly surfaced our own Twilio
-    // number on outbound calls (production note 2026-06-07).
+    // The other party is toNumber on outbound calls and fromNumber on inbound (on outbound, Twilio's
+    // webhook From is our own number), so the badge name resolves from that number.
     const otherPartyNumber =
       this.direction === 'outbound' ? this.toNumber : this.fromNumber;
     const otherPartyName = resolveTwilioCallerName(otherPartyNumber);
     const otherPartyDisplay = otherPartyName ?? otherPartyNumber;
     const sourceTag = `[SOURCE: PHONE CALL FROM ${otherPartyDisplay}]`;
-    // The trailer's `To:` is for engine diagnostics only and reflects
-    // the actual technical destination of the leg (which is `toNumber`
-    // for outbound, `fromNumber` for inbound — i.e. the other side of
-    // what the badge shows).
+    // The trailer's `To:` is for engine diagnostics: the leg's technical destination, which is
+    // the opposite side from the badge.
     const trailerToNumber =
       this.direction === 'outbound' ? this.fromNumber : this.toNumber;
-    // v2.9.23 — phone-mode call context lines (parsed by prompt assembler
-    // to drive the inbound-vs-outbound, voicemail, and disclosure prompt
-    // branches per the dojo phone-mode rules doc). Hidden from the user
-    // bubble in non-wordy mode alongside the SID/To trailer.
+    // Phone-mode context lines, parsed by the prompt assembler (inbound/outbound, voicemail and disclosure
+    // branches); hidden from the user bubble in non-wordy mode along with the SID/To trailer.
     const callbackNumber = this.direction === 'outbound' ? this.fromNumber : this.toNumber;
     const trailer =
       `Call SID: ${this.callSid}\n` +
@@ -508,14 +399,11 @@ export class CallSession {
     const content = `${sourceTag}\n\n${callUtteranceText(otherPartyNumber, otherPartyDisplay, text)}\n\n${trailer}`;
     const msgId = uuidv4();
     try {
-      // P5: conversation identity = the caller's number; call sid = external id.
       const conversationId = resolveOrCreateConversation(primaryId, {
         channel: 'phone', provider: 'twilio', counterpartyId: otherPartyNumber ?? null, threadRoot: null,
       });
-      // v3.0.9 — structured routing metadata. Stamped synchronously before
-      // handleMessage runs below so the turn reads it. A live call is already
-      // connected, so the reply is always spoken back via TTS to whoever is
-      // on the line (authorized:true — no safe-sender gate; you answered).
+      // Structured routing metadata, stamped before handleMessage runs so the turn reads it. A live call is
+      // already connected, so the reply is always spoken back (authorized: no safe-sender gate).
       const inboundMetaObj = {
         channel: 'phone' as const,
         accountKind: 'agent' as const,
@@ -525,10 +413,9 @@ export class CallSession {
         phoneFromNumber: otherPartyNumber,
         recipientAddress: otherPartyNumber,
       };
-      // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
-      // the meta this leg already holds — never re-derived. recordInboundMeta below
-      // still records the full blob (call sid, from number, reply address).
-      // insertMessageIfAbsent keeps the call-sid de-duplication of INSERT OR IGNORE.
+      // Channel, sender and the auth verdict are stamped in the write from the meta this leg already
+      // holds, never re-derived. recordInboundMeta below records the full blob; the external message
+      // id (call sid plus utterance number) de-duplicates repeat inserts.
       insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
@@ -540,7 +427,6 @@ export class CallSession {
         senderId: inboundMetaObj.sender,
         authorized: inboundMetaObj.authorized,
       });
-      // P8 speaker stamp on the id we hold (race-free) + session turn count.
       stampSpokenMessage(msgId, 'caller', this.voiceSessionRecordId);
       bumpVoiceSessionTurnCount(this.voiceSessionRecordId);
       recordInboundMeta(msgId, inboundMetaObj);
@@ -550,11 +436,8 @@ export class CallSession {
         message: {
           id: msgId, agentId: primaryId, role: 'user' as const,
           content,
-          // Carry the SAME structured inbound_meta into the live broadcast that
-          // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
-          // attribution live and on refetch (mirrors iMessage OPEN-13).
-          // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
-          // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
+          // Carry the same inbound_meta and conversationId the DB row holds, so attribution
+          // is identical live and on refetch.
           conversationId,
           inboundMeta: JSON.stringify(inboundMetaObj),
           tokenCount: null, modelId: null, cost: null, latencyMs: null,
@@ -577,33 +460,16 @@ export class CallSession {
   // ── Outbound TTS ───────────────────────────────────────────────
 
   /**
-   * Speak text out to the caller using the configured TTS engine.
-   * Stitches audio into 20 ms μ-law frames and paces them out via
-   * the Media Streams WebSocket. Multiple queueAgentSay calls
-   * concatenate; the pacing timer drains the queue at real-time.
+   * Speak text to the caller: sentences are synthesized in order, stitched into 20 ms μ-law frames
+   * and paced out over the Media Streams WebSocket.
    */
   async queueAgentSay(text: string): Promise<void> {
     if (this.ended) return;
     const trimmed = text.trim();
     if (!trimmed) return;
-    // ── THE VOICE CHANNEL GRANT, AT THE DOOR (UX-ACCESS A4) ──
-    // The census found FIVE callers pushing speech into a live call and not one
-    // of them asked anything: the two auto-route arms, the engine ack, the
-    // sentence-by-sentence streaming push in `call-llm/model-call.ts` and the
-    // pre-tool filler in `post-call-classify/persist-assistant.ts`. The last two
-    // reach the caller MID-TURN, ahead of every end-of-turn arm, so a guard on
-    // the arms would have left the loudest two open.
-    //
-    // It belongs here for the same reason the fs broker owns the path check: one
-    // transport, one door. `this.agentId` is `getPrimaryAgentId()` for every
-    // session the platform opens (:174), and the primary holds `voice` after the
-    // A1 migration, so this refuses nobody alive today — the empty-diff half of
-    // the same change whose auto-route half is a measured narrowing.
-    //
-    // A `null` agent is the PLATFORM speaking (a session that has not resolved an
-    // agent yet), not an agent reaching a human on its own account, and a grant
-    // has no opinion about it — the same `null`-means-no-opinion posture
-    // `channelForTool` and `channelForDestination` both take.
+    // The voice channel grant is checked here, the one door all speech into a live call passes
+    // (auto-route arms, engine ack, streaming sentences, pre-tool filler). A null agent is the
+    // platform speaking, not an agent reaching a human, so a grant has no opinion on it.
     if (this.agentId && !mayUseChannel(this.agentId, 'voice')) {
       recordedId(recordHeld({
         agentId: this.agentId, tool: 'speech-out', channel: 'phone',
@@ -615,34 +481,24 @@ export class CallSession {
       return;
     }
     this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: trimmed });
-    // PHASE-2 T5: THE PHONE SPEECH-OUT DOOR. Research 03: "every spoken utterance in
-    // call-session.ts" recorded nothing. Inside an outbound scope (the auto-route reply, the
-    // voice_call tool) the sentences of one reply FOLD INTO ONE ROW — a reply streamed as
-    // four sentences is one thing the caller heard, not four deliveries. Outside a scope (the
-    // call's own opener) it stands as its own row.
+    // Speech-out record: inside an outbound scope the sentences of one reply fold into one row (one thing
+    // the caller heard); outside a scope (the call's own opener) each stands as its own row.
     recordedId(recordAtDoor({
       outcome: 'delivered', channel: 'phone', tool: 'speech-out',
       agentId: this.agentId ?? undefined, recipientId: this.fromNumber,
       detail: `call ${this.callSid}`,
     }), 'twilio: call speech-out', { callSid: this.callSid });
     logger.info('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
-    // v2.10.1 — enqueue text + current generation, then kick the
-    // single-flight drain worker. The worker pulls items in FIFO
-    // order and runs synth serially so the PCM lands in ttsQueue
-    // in submission order. Sentences submitted with an older
-    // generation than the current one (i.e. before a barge-in)
-    // get skipped by the worker.
+    // Enqueue with the current generation and kick the single-flight drain worker, which synthesizes
+    // in FIFO order and skips sentences from before a barge-in.
     this.pendingSpeechTexts.push({ text: trimmed, generation: this.speechGeneration });
     void this.drainSpeechTexts();
   }
 
   /**
-   * Single-flight drain over `pendingSpeechTexts`. Runs synth one
-   * sentence at a time and pushes resulting PCM strictly in order.
-   * Generation gating drops any sentence enqueued before the most
-   * recent barge-in. TTS failures (e.g. Hume socket error) skip
-   * that sentence rather than falling back to a different engine,
-   * to avoid mid-reply voice swaps.
+   * Single-flight drain over `pendingSpeechTexts`: synthesizes one sentence at a time, pushing PCM in order.
+   * Sentences from before the latest barge-in are dropped. A TTS failure skips the sentence instead of
+   * falling back to another engine (no mid-reply voice swap).
    */
   private async drainSpeechTexts(): Promise<void> {
     if (this.speechSynthRunning) return;
@@ -661,18 +517,14 @@ export class CallSession {
           const { synthesizeForTwilio } = await import('./tts-bridge.js');
           const pcm = await synthesizeForTwilio(item.text);
           if (!pcm) {
-            // Engine reported a real failure (Hume socket error,
-            // missing voice config, etc.). Log + skip — do NOT swap
-            // to a different engine for this sentence. Mid-reply
-            // voice swaps are worse than a brief gap.
+            // Real engine failure (socket error, missing voice config): skip the sentence rather than
+            // swap engines, since a mid-reply voice swap is worse than a brief gap.
             logger.warn('TTS produced no audio for sentence (skipped)', {
               callSid: this.callSid, textPreview: item.text.slice(0, 60),
             });
             continue;
           }
-          // Re-check generation AFTER synth — the caller may have
-          // started speaking during synth, in which case we drop
-          // the resulting audio instead of playing it.
+          // Re-check generation after synth: the caller may have spoken meanwhile, so drop the audio.
           if (item.generation < this.speechGeneration) {
             logger.info('TTS dropped post-synth (stale generation)', {
               callSid: this.callSid, textPreview: item.text.slice(0, 60),
@@ -697,17 +549,9 @@ export class CallSession {
     this.ttsTimer = setTimeout(() => this.pumpTts(), TWILIO_FRAME_INTERVAL_MS);
   }
 
-  /**
-   * v2.9.23 — first-frame ship immediate. When new TTS arrives and
-   * the pump isn't running, send the first frame on the current tick
-   * rather than waiting one TWILIO_FRAME_INTERVAL_MS for the timer.
-   * Saves 20 ms on every reply onset, which adds up across a call
-   * full of turns.
-   */
+  /** Send the first frame on the current tick instead of waiting one frame interval for the timer. */
   private kickTtsPump(): void {
     if (this.ttsTimer) return;
-    // Synchronous first pump; pumpTts re-schedules itself when there
-    // is more to send.
     this.pumpTts();
   }
 
@@ -716,9 +560,7 @@ export class CallSession {
       this.ttsTimer = null;
       return;
     }
-    // Convert one chunk at a time into μ-law, prepend any tail from
-    // the prior chunk, slice into 160-byte frames, send one frame
-    // per tick.
+    // Convert one chunk to μ-law, prepend the prior chunk's tail, send one 160-byte frame per tick.
     if (this.ttsCarry.length < 160 && this.ttsQueue.length > 0) {
       const chunk = this.ttsQueue.shift()!;
       const pcm8k = float32ToInt16At8k(chunk.pcm, chunk.sampleRate);
@@ -791,14 +633,8 @@ export class CallSession {
   isEnded(): boolean { return this.ended; }
 
   /**
-   * v2.9.23 — soft hangup. Schedule disconnect after a delay rather
-   * than ending the call instantly when `voice_call_end` fires. The
-   * delay lets the closing ritual finish (caller's "bye"). If the
-   * caller speaks again during the window, the VAD-onset path cancels
-   * the timer and the call resumes.
-   *
-   * Calling this multiple times resets the timer (latest goodbye wins).
-   * If the timer expires without caller speech, `end(reason)` fires.
+   * Schedule the disconnect after a delay instead of ending at once when `voice_call_end` fires, so the
+   * closing ritual can finish. Caller speech cancels it (VAD onset); calling again resets the timer.
    */
   requestSoftHangup(reason: string, delayMs = 6000): void {
     if (this.ended) return;
@@ -813,9 +649,7 @@ export class CallSession {
       this.pendingHangupReason = null;
       if (this.ended) return;
       logger.info('Soft hangup window elapsed; disconnecting', { callSid: this.callSid, reason: r });
-      // Tear down via the module-level helper so the registry entry
-      // is cleared too (end() alone leaves the sessionsByCallSid map
-      // pointing at the dead session).
+      // End via the module-level helper so the registry entry is cleared too.
       endCallSession(this.callSid, r);
     }, delayMs);
   }
@@ -823,9 +657,8 @@ export class CallSession {
   hasPendingHangup(): boolean { return this.pendingHangupTimer !== null; }
 
   /**
-   * Rebind the WS send-back. Used by voice-stream.ts when an
-   * outbound-call's placeholder session (created with a no-op
-   * sender) is connected to the actual WebSocket on `start`.
+   * Rebind the WS send-back: voice-stream.ts connects an outbound call's placeholder session (no-op
+   * sender) to the real WebSocket on `start`.
    */
   bindSend(send: (msg: string) => void, streamSid: string): void {
     this.send = send;
@@ -880,12 +713,7 @@ export function callerIsAllowlisted(fromNumber: string): boolean {
   }
 }
 
-/**
- * Resolve a phone number to the friendly name configured on the Twilio
- * voice safe-callers list. Returns the name if matched, or null when
- * the caller isn't in the list (or the lookup fails). Used to render
- * "from the owner via phone call" instead of "+15551234567".
- */
+/** Friendly name from the Twilio voice safe-callers list, or null when not listed or the lookup fails. */
 export function resolveTwilioCallerName(fromNumber: string): string | null {
   if (!fromNumber || fromNumber === '(unknown)') return null;
   try {
@@ -924,7 +752,6 @@ export function listActiveCallSessions(): Array<{ callSid: string; direction: st
   }));
 }
 
-// Suppress unused-import linting for getOwnerName / encodeForTwilio
-// (used by other modules that import from here later).
+// Suppress unused-import linting for getOwnerName and encodeForTwilio.
 void encodeForTwilio;
 void getOwnerName;

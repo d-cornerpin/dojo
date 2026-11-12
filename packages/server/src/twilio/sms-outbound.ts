@@ -1,8 +1,4 @@
-// ════════════════════════════════════════
-// Twilio SMS outbound handler (v2.9.18)
-// Handler for the agent-facing `sms_send` tool. Mirrors the
-// imessage_send tool's recipient-resolution + allowlist guards.
-// ════════════════════════════════════════
+// Handler for the agent-facing `sms_send` tool; mirrors imessage_send's recipient resolution and allowlist guards.
 
 import { createLogger } from '../logger.js';
 import { sendSms } from './client.js';
@@ -41,10 +37,8 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
     return { ok: false, message: 'SMS NOT sent - body exceeds 1600 characters (carrier limit). Split into multiple sends.' };
   }
 
-  // Recipient allowlist: same shape as imessage_send. Sending to a
-  // number outside the safe-sender list is refused unless the
-  // recipient is on the allowlist (avoids the agent spamming
-  // arbitrary numbers if jailbroken or fooled).
+  // Recipient allowlist, same shape as imessage_send: a number outside the safe-sender list is refused,
+  // so a fooled or jailbroken agent cannot spam arbitrary numbers.
   const safeSenders = getTwilioSmsSafeSenders();
   const approved = resolveRecipient(safeSenders, to);
   if (!approved) {
@@ -64,9 +58,8 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
   // Text the SAVED number, never the text the agent typed.
   to = approved.address;
 
-  // Resolve from-number. Explicit `from` arg wins, then per-number
-  // SMS-enabled flag, then default. Verifies the from-number is one
-  // the user actually owns.
+  // From-number: an explicit `from` wins, else the default; it must be a number the owner configured
+  // with SMS enabled.
   const explicitFrom = (input.from ?? '').trim();
   let from = explicitFrom || getDefaultFromNumber();
   if (!from) {
@@ -80,8 +73,8 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
     return { ok: false, message: `SMS NOT sent - SMS is disabled on ${from}. The owner can re-enable it in Settings → Channels → Twilio.` };
   }
 
-  // t203: the owner's Stop aborts the text while it is still on its way to Twilio. Once Twilio
-  // has accepted it, it cannot be called back; the executor tells the owner which happened.
+  // The owner's Stop aborts the text while it is still on its way to Twilio. Once Twilio has accepted
+  // it, it cannot be called back; the result tells the owner which happened.
   const slot = openAgentCall(agentId, 'turn');
   const result = await sendSms(to, body, from, slot.signal).finally(() => slot.release());
   const stopped = slot.signal.aborted;

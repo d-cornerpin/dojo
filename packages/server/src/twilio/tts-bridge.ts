@@ -1,18 +1,6 @@
-// ════════════════════════════════════════
-// Twilio TTS bridge (v2.9.18)
-//
-// Synthesize a single utterance with whichever TTS engine the user
-// configured in Settings → Voice (local Kokoro or cloud Hume) and
-// return PCM ready for the call session's μ-law encoder. Engine
-// choice is read per-call from the live config so flipping the
-// toggle in Settings takes effect on the next utterance, not just
-// next server start.
-//
-// Cloud (Hume) has a 100-300 ms socket-open latency that's painful
-// on a live phone call, but the user-facing setting wins: if cloud
-// is selected, cloud is what we use. The user can switch back to
-// local for phone-call testing if the cloud latency is intolerable.
-// ════════════════════════════════════════
+// Twilio TTS bridge: synthesizes one utterance with the engine set in Settings, Voice (Kokoro or Hume) and
+// returns PCM for the call session's μ-law encoder. The engine is read per call, so a Settings change applies
+// on the next utterance; the user's choice wins even though Hume's socket open adds 100-300 ms.
 
 import { createLogger } from '../logger.js';
 
@@ -71,17 +59,9 @@ async function loadSettings(): Promise<TtsSettings> {
 }
 
 /**
- * Synthesize one utterance. Returns mono Float32 PCM ready for the
- * call session's μ-law encoder + 8 kHz downsample, or `null` if the
- * configured engine failed for this sentence.
- *
- * v2.10.1 — no cross-engine fallback. Pre-fix, a Hume failure on a
- * single sentence silently fell back to Kokoro, which produced a
- * jarring mid-reply voice swap once we started streaming TTS
- * sentence-by-sentence (every Hume hiccup became an audible Kokoro
- * insert). Now: if the configured engine fails for a sentence we
- * return null and the caller (CallSession.drainSpeechTexts) skips
- * that sentence and moves on. Brief gap is better than mixed voice.
+ * Synthesize one utterance: mono Float32 PCM for the call session's μ-law encoder, or `null` if the
+ * configured engine failed. No cross-engine fallback: CallSession.drainSpeechTexts skips the sentence,
+ * since a brief gap beats a mid-reply voice swap.
  */
 export async function synthesizeForTwilio(
   text: string,
@@ -116,13 +96,9 @@ async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ p
 }
 
 /**
- * Drive a one-shot Hume burst. Opens the streamInput socket, pushes
- * the utterance, collects WAV chunks via onWav, closes when Hume
- * signals `isLastChunk` (or socket close), then stitches the PCM
- * portions of every WAV chunk into a single Float32 buffer at
- * HUME_SAMPLE_RATE (48 kHz).
- *
- * Throws on any failure so the caller can fall back to local.
+ * Drive a one-shot Hume burst: push the utterance, collect WAV chunks until Hume signals `isLastChunk`
+ * (or the socket closes), and stitch their PCM into one Float32 buffer at HUME_SAMPLE_RATE (48 kHz).
+ * Throws on any failure; synthesizeForTwilio then skips the sentence.
  */
 async function synthesizeCloud(text: string, settings: TtsSettings): Promise<{ pcm: Float32Array; sampleRate: number }> {
   if (!settings.cloudVoice) {
@@ -159,9 +135,7 @@ async function synthesizeCloud(text: string, settings: TtsSettings): Promise<{ p
     throw new Error('Hume returned no audio.');
   }
 
-  // Each chunk is a self-contained WAV: 44-byte header + 16-bit PCM
-  // body at HUME_SAMPLE_RATE. Strip headers and stitch PCM bodies
-  // into one Float32 buffer.
+  // Each chunk is a self-contained WAV (44-byte header, 16-bit PCM body): strip headers, stitch bodies.
   const pcmBodies: Buffer[] = chunks.map(c => c.subarray(44));
   const totalBytes = pcmBodies.reduce((a, b) => a + b.length, 0);
   const totalSamples = totalBytes / 2;

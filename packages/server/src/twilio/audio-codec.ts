@@ -1,21 +1,10 @@
-// ════════════════════════════════════════
-// Twilio Media Streams audio codec (v2.9.18)
-//
-// Twilio Media Streams ships and accepts μ-law 8 kHz mono audio, 20 ms
-// per frame (160 samples). Our STT engine (Moonshine) wants 16 kHz
-// mono Float32; Kokoro emits 24 kHz mono Float32. These helpers
-// bridge between the two.
-//
-// μ-law (G.711) is a logarithmic 8-bit codec. Encoding compresses
-// 16-bit linear PCM into 8-bit codewords; decoding does the inverse
-// via a 256-entry lookup table.
-// ════════════════════════════════════════
+// Twilio Media Streams audio codec: μ-law 8 kHz mono in 20 ms frames (160 samples) on the wire,
+// while Moonshine STT wants 16 kHz mono Float32 and Kokoro emits 24 kHz mono Float32.
 
 const MU_LAW_BIAS = 0x84;
 const MU_LAW_CLIP = 32635;
 
-// Decode lookup table: μ-law byte → linear 16-bit signed PCM.
-// Generated once at module load.
+// Decode lookup table: μ-law byte to linear 16-bit signed PCM, built once at module load.
 const MU_LAW_DECODE_TABLE: Int16Array = (() => {
   const table = new Int16Array(256);
   for (let i = 0; i < 256; i++) {
@@ -64,16 +53,7 @@ export function muLawEncode(input: Int16Array): Buffer {
   return out;
 }
 
-// ── Sample-rate conversion ──────────────────────────────────────────
-//
-// Speech is band-limited well below 4 kHz so the simple approaches
-// below are adequate:
-//   - Upsample 8 kHz → 16 kHz: linear interpolation between samples
-//   - Downsample 16 kHz → 8 kHz: average pairs (cheap low-pass)
-//   - Downsample arbitrary → 8 kHz: linear-interpolated decimation
-//
-// Higher-quality SRC would help slightly but isn't worth the latency
-// for telephony.
+// Sample-rate conversion: speech sits well below 4 kHz, so interpolation and pair averaging are enough.
 
 /** Upsample 8 kHz mono Int16 → 16 kHz mono Float32 in [-1, 1]. */
 export function int16At8kToFloat32At16k(input: Int16Array): Float32Array {
@@ -87,24 +67,13 @@ export function int16At8kToFloat32At16k(input: Int16Array): Float32Array {
   return out;
 }
 
-// ── Anti-aliasing lowpass for the 8 kHz → 16 kHz upsample ──────────
-//
-// Twilio sends G.711 μ-law audio at 8 kHz, bandlimited to ~3.4 kHz.
-// Linear interpolation to 16 kHz is cheap but creates spectral
-// images above 4 kHz that confuse Moonshine STT (verified
-// experimentally on 2026-06-07: a captured Twilio utterance returned
-// empty until we ffmpeg-lowpassed it at 3400 Hz, at which point
-// Moonshine transcribed it correctly).
-//
-// Apply this biquad lowpass AFTER int16At8kToFloat32At16k to strip
-// the images. Coefficients are Butterworth (Q=0.707) at fc=3400 Hz
-// for fs=16000 Hz, derived from the standard RBJ cookbook formulas.
-// The IIR is two-pole so the caller must hold a BiquadState across
-// frames to avoid frame-boundary discontinuities.
+// Anti-aliasing lowpass for the 8 kHz to 16 kHz upsample: linear interpolation leaves spectral images above
+// 4 kHz that make Moonshine return empty text. Apply AFTER int16At8kToFloat32At16k. Butterworth (Q=0.707),
+// fc=3400 Hz at fs=16000 Hz (RBJ cookbook). The two-pole IIR needs a BiquadState held across frames,
+// or each frame boundary glitches.
 const BIQUAD_LP_3400_16k = {
   b0: 0.2271, b1: 0.4542, b2: 0.2271,
-  // Sign reflects y[n] = b·x... - a·y form. Applied in the diff
-  // equation below as +0.2767·y[n-1] (because a1 itself is negative).
+  // a1 is negative, so the difference equation applies it as +0.2767·y[n-1].
   a1: -0.2767, a2: 0.1850,
 };
 
@@ -176,10 +145,8 @@ export function encodeForTwilio(input: Float32Array, sourceSampleRate: number): 
 }
 
 /**
- * Twilio expects a steady 20 ms cadence (160 samples / 160 bytes per
- * frame at 8 kHz). Slice an arbitrary-length μ-law payload into
- * 160-byte frames for paced send-back. Tail shorter than 160 is
- * padded with silence (μ-law 0xFF = silence).
+ * Slice a μ-law payload into 160-byte (20 ms at 8 kHz) frames for paced send-back.
+ * A short tail is padded with silence (μ-law 0xFF).
  */
 export function chunkForTwilio(muLaw: Buffer, frameBytes = 160): Buffer[] {
   const frames: Buffer[] = [];

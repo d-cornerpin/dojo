@@ -1,9 +1,5 @@
-// ════════════════════════════════════════
-// Twilio config + auth (v2.9.18)
-// Singleton config record + encrypted auth_token + multi-number
-// roster. Personal Twilio accounts only - no A2P/10DLC registration
-// handling, no recording.
-// ════════════════════════════════════════
+// Twilio config + auth: singleton config record, encrypted auth_token, multi-number roster.
+// Personal Twilio accounts only: no A2P/10DLC registration handling, no recording.
 
 import { getDb } from '../db/connection.js';
 import { sealSecret, openSecret } from '../credentials/at-rest.js';
@@ -55,11 +51,8 @@ interface NumberRow {
 }
 
 // ── Crypto ──
-// PHASE-5 T6C: this file used to carry its own AES-256-GCM pair, byte-identical
-// to the one in `credentials/store.ts` and saying so in its own header. Both are
-// now readers of `credentials/at-rest.ts` — one owner for "how the dojo encrypts
-// a secret at rest". The auth token still lives in `twilio_config`, NOT in the
-// agent-reachable `agent_credentials` table, and that separation is the point.
+// The auth token is sealed via credentials/at-rest.ts and lives in `twilio_config`, NOT in the
+// agent-reachable `agent_credentials` table; keep that separation.
 
 // ── Reads ──
 

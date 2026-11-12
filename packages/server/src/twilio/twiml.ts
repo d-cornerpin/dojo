@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// TwiML response helpers (v2.9.18)
-// Tiny serializers - TwiML is just XML with a fixed root element.
-// ════════════════════════════════════════
+// TwiML response helpers: tiny serializers (TwiML is XML with a fixed root element).
 
 function xmlEscape(s: string): string {
   return s
@@ -17,12 +14,7 @@ export function twimlReject(reason = 'rejected'): string {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Reject reason="${xmlEscape(reason)}"/></Response>`;
 }
 
-/**
- * Voicemail: greet, then record. Twilio sends a status callback
- * with RecordingSid + TranscriptionText (when transcribe=true) once
- * the recording ends. We use transcribe to get the transcript without
- * storing audio - the dashboard sees the transcript only.
- */
+/** Voicemail: greet, then record with transcribe on, so only the transcript (no audio) is stored. */
 export function twimlVoicemail(greeting: string, statusCallback: string, transcribeCallback: string): string {
   return (
     `<?xml version="1.0" encoding="UTF-8"?>` +
@@ -42,16 +34,8 @@ export function twimlVoicemail(greeting: string, statusCallback: string, transcr
 }
 
 /**
- * Hand the call off to our Media Streams WebSocket so the agent can
- * talk in real time. Twilio opens a bidirectional WS to streamUrl
- * and pumps μ-law frames in both directions.
- *
- * The optional From/To get embedded as <Parameter> tags inside
- * <Stream>; Twilio echoes them back to us in the WS `start` event's
- * customParameters bag. Without these, the WS start frame carries
- * no caller identity and CallSession logs / dashboard badges show
- * "(unknown)". The webhook handler already has the values (they
- * arrive in the form-encoded inbound webhook body).
+ * Hand the call to our Media Streams WebSocket (bidirectional μ-law frames). From/To go in as <Parameter>
+ * tags that Twilio echoes in the WS `start` customParameters; without them badges show "(unknown)".
  */
 export function twimlConnectStream(
   streamUrl: string,

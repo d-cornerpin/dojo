@@ -1,16 +1,6 @@
-// ════════════════════════════════════════
-// Twilio Media Streams WebSocket handler (v2.9.18)
-//
-// Twilio opens a bidirectional WebSocket to our voice-stream endpoint
-// for the duration of each call. Wire protocol:
-//   - JSON text frames in both directions
-//   - Inbound: { event: 'connected' | 'start' | 'media' | 'stop' | 'mark' | 'dtmf', ... }
-//   - Outbound: { event: 'media', streamSid, media: { payload: base64 } }
-//                also 'mark' and 'clear' (we mostly use 'media')
-//
-// We instantiate a CallSession on `start`, dispatch `media` frames
-// to it, end on `stop` or socket close.
-// ════════════════════════════════════════
+// Twilio Media Streams WebSocket handler. Twilio opens a bidirectional WS per call carrying JSON text frames:
+// inbound `connected | start | media | stop | mark | dtmf`, outbound `media` (also `mark` and `clear`).
+// A CallSession is created on `start`, fed `media` frames, and ended on `stop` or socket close.
 
 import type { WSContext } from 'hono/ws';
 import { createLogger } from '../logger.js';
@@ -103,20 +93,15 @@ export async function handleVoiceStreamMessage(ws: WSContext, data: string | Arr
       const callSid = startMsg.start.callSid;
       const streamSid = startMsg.streamSid;
       wsToCallSid.set(ws, callSid);
-      // Lookup whether an outbound-call placeholder session already
-      // exists (created by voice-outbound when the agent initiated the
-      // call). If yes, just attach the WS sender and mark started.
-      // Otherwise this is an inbound call - create a new session.
+      // An outbound call already has a placeholder session (from voice-outbound): attach the WS sender
+      // to it. Otherwise this is an inbound call and gets a new session.
       const existing = getCallSession(callSid);
       if (existing) {
         existing.bindSend((m: string) => { try { ws.send(m); } catch { /* dead */ } }, streamSid);
         existing.start();
         return;
       }
-      // Inbound: look up From/To from customParameters if provided
-      // by the TwiML <Parameter>, otherwise fall back to whatever was
-      // captured in the start payload (Twilio sometimes carries
-      // from/to via params, not in the protocol body).
+      // Inbound: From/To come from the TwiML <Parameter> customParameters, else '(unknown)'.
       const params = startMsg.start.customParameters ?? {};
       const fromNumber = params.From ?? params.from ?? '(unknown)';
       const toNumber = params.To ?? params.to ?? '(unknown)';
@@ -135,8 +120,7 @@ export async function handleVoiceStreamMessage(ws: WSContext, data: string | Arr
     case 'media': {
       const frameMsg = msg;
       if (!frameMsg.media) return;
-      // Only process the inbound track (caller's audio). Twilio also
-      // echoes back the outbound track in some configurations; ignore.
+      // Only the caller's inbound track is processed; Twilio may echo the outbound track, which is ignored.
       if (frameMsg.media.track !== 'inbound') return;
       const callSid = wsToCallSid.get(ws);
       if (!callSid) return;

@@ -1,21 +1,7 @@
-// ════════════════════════════════════════
-// Twilio Voice outbound (v2.9.18)
-//
-// Place an outbound call. The flow:
-//
-//   1. Agent calls voice_call(to, opening_message?)
-//   2. Server places the call via Twilio REST. Twilio dials the
-//      recipient.
-//   3. When the recipient answers, Twilio POSTs to our
-//      /webhook/voice endpoint with Direction=outbound-api - we
-//      respond with TwiML that <Connect><Stream> hands the call to
-//      our voice-stream WebSocket.
-//   4. On WS open / `start` event, our handler recognizes the
-//      CallSid as an outbound (placeholder session created in step
-//      1) and attaches the send-back.
-//   5. Agent's opening_message (if provided) gets spoken first by
-//      enqueueing on the placeholder session.
-// ════════════════════════════════════════
+// Outbound call flow: voice_call places the call via Twilio REST. When the callee answers, Twilio
+// POSTs /webhook/voice (Direction=outbound-api) and we answer with TwiML <Connect><Stream>, handing the
+// call to the voice-stream WebSocket, which attaches to the placeholder session created here on `start`.
+// An opening_message, if given, is queued on that session and spoken first.
 
 import { createLogger } from '../logger.js';
 import { placeCall } from './client.js';
@@ -37,7 +23,7 @@ export interface VoiceCallInput {
   opening_message?: string;
   purpose?: string;
   from?: string;
-  /** t203: the agent placing it, so the owner's Stop can abort it on its way to Twilio. */
+  /** The agent placing it, so the owner's Stop can abort it on its way to Twilio. */
   agentId?: string;
 }
 
@@ -98,9 +84,7 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
     return { ok: false, message: `Voice NOT placed - Twilio rejected the call: ${res.error}` };
   }
 
-  // Pre-register a placeholder CallSession so when the WS connects on
-  // call-answer, we can attach the send-back without dropping any
-  // events. The `send` field is updated when the WS arrives.
+  // Placeholder session so the answering WS attaches without dropping events (`send` is rebound then).
   const placeholderSend = (_m: string) => {
     /* no-op until WS attaches */
     void _m;
@@ -116,11 +100,8 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
   });
   registerCallSession(session);
 
-  // Queue the opening message ONLY if explicitly provided. The new
-  // phone-mode rules (see voice_call tool description) say the
-  // agent should leave silence on outbound until the callee says
-  // hello, then respond. If opening_message is set anyway, the
-  // agent has decided on purpose to queue audio at connect time.
+  // Queue the opening message only when provided: by default the agent stays silent on outbound until
+  // the callee says hello (phone-mode rules, voice_call tool description).
   if (input.opening_message?.trim()) {
     void session.queueAgentSay(input.opening_message.trim()).catch(() => { /* swallow */ });
   }
@@ -134,19 +115,15 @@ export function executeVoiceCallEnd(input: { call_id?: string; reason?: string }
   if (!callSid) return { ok: false, message: 'Error: call_id is required.' };
   const session = getCallSession(callSid);
   if (!session) return { ok: false, message: `Error: no active call with sid="${callSid}".` };
-  // v2.9.23 — soft hangup: defer the actual disconnect by 6 s so the
-  // caller's goodbye can land first. If they speak again during the
-  // window the timer cancels and the call continues. Per the dojo
-  // phone-mode rules: never hard-cut after the agent's last word.
+  // Soft hangup: defer the disconnect by 6 s so the caller's goodbye lands first; the caller speaking
+  // again cancels it. Never hard-cut after the agent's last word.
   session.requestSoftHangup(input.reason ?? 'agent_ended');
-  // Also tell Twilio to hang up server-side AFTER the same window, so
-  // their leg stays open during the closing ritual.
+  // Tell Twilio to hang up after the same window, so its leg stays open during the closing ritual.
   setTimeout(() => {
     void (async () => {
       try {
         const { endCall } = await import('./client.js');
-        // If the soft hangup was cancelled (caller spoke), don't tear
-        // down the Twilio leg either.
+        // A cancelled soft hangup (caller spoke) leaves the Twilio leg up too.
         const cur = getCallSession(callSid);
         if (cur && !cur.hasPendingHangup() && !cur.isEnded()) return;
         await endCall(callSid);
@@ -162,7 +139,7 @@ export function executeVoiceCallStatus(input: { call_id?: string }): { ok: boole
     if (!session) return { ok: true, message: `No active call with sid="${input.call_id}".` };
     return { ok: true, message: `Call ${input.call_id} is ${session.isEnded() ? 'ended' : 'active'} (${session.direction}, from ${session.fromNumber} to ${session.toNumber}).` };
   }
-  // No call_id → list all active sessions.
+  // No call_id: list all active sessions.
   const active = listActiveCallSessions();
   if (active.length === 0) return { ok: true, message: 'No active calls.' };
   const lines = active.map(a => `- ${a.callSid} (${a.direction}, ${a.fromNumber} → ${a.toNumber})`);

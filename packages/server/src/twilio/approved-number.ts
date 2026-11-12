@@ -1,9 +1,4 @@
-// The owner's approved-number check for outbound texts and calls.
-// A number is approved only when it is the SAME number as a saved entry once formatting is
-// removed. No substring or partial match: "0198" or "1" never approves anything.
-// The owner's own number(s) are ALWAYS allowed (owner ruling: never block the main agent from reaching the owner),
-// read from the Dojo's one owner rule (`ownerIMessageRecords` in services/safe-senders.ts, the source behind
-// `isOwnerIMessageRecipient`), matched with the same exact rule. The caller then uses the SAVED number, never the text the agent typed.
+// Approved-number check for outbound texts and calls: exact match after formatting, never partial.
 
 import { ownerIMessageRecords } from '../services/safe-senders.js';
 
@@ -14,8 +9,7 @@ export function normalisePhone(raw: string): string | null {
   const s = (raw ?? '').trim();
   if (!/^\+?[\d\s().-]+$/.test(s)) return null;
   let digits = s.replace(/\D/g, '');
-  // International dialling prefixes (00 anywhere, 011 from the US) mean "+". No real number starts with 0,
-  // so stripping them can only turn the typed form into the saved one, never into a different line.
+  // 00/011 dial prefixes mean "+"; no real number starts with 0, so stripping never yields a different line.
   if (!s.startsWith('+')) digits = digits.replace(/^(?:00|011)(?=[1-9])/, '');
   if (digits.length === 10) digits = '1' + digits;
   return digits.length >= 8 ? digits : null;
@@ -27,7 +21,7 @@ export function findApprovedNumber<T extends ApprovedEntry>(list: readonly T[], 
   return list.find((e) => normalisePhone(e.address) === want) ?? null;
 }
 
-/** The approved list first, then the owner's own number(s). Null when neither names exactly this number. */
+/** List first, then the owner's number(s); callers use the returned SAVED entry. Null if no exact match. */
 export function resolveRecipient(list: readonly ApprovedEntry[], typed: string): ApprovedEntry | null {
   const listed = findApprovedNumber(list, typed);
   if (listed) return listed;

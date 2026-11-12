@@ -1,9 +1,5 @@
-// ════════════════════════════════════════
-// Twilio REST client + webhook signature verification (v2.9.18)
-// Thin wrapper over fetch + node:crypto. Avoids the official Twilio
-// SDK (axios-based, large) since we only need three things: send
-// SMS, place outbound call, verify webhook signatures.
-// ════════════════════════════════════════
+// Twilio REST client + webhook signature verification: a thin wrapper over fetch and node:crypto instead
+// of the official SDK (axios-based, large), since we only send SMS, place calls and verify signatures.
 
 import crypto from 'node:crypto';
 import { createLogger } from '../logger.js';
@@ -40,7 +36,7 @@ async function twilioPost<T>(path: string, params: Record<string, string>, signa
         'Accept': 'application/json',
       },
       body,
-      signal, // t203: the caller's slot under the owner's Stop (`sms-outbound.ts`, `voice-outbound.ts`)
+      signal, // the caller's slot under the owner's Stop (`sms-outbound.ts`, `voice-outbound.ts`)
     });
   } catch (err) {
     return { ok: false, error: `Twilio network error: ${err instanceof Error ? err.message : String(err)}`, status: 0 };
@@ -73,12 +69,10 @@ export interface TwilioSmsResponse {
 }
 
 /**
- * Twilio refuses a single Body longer than 1600 characters (error 21617), so a long
- * answer to a person who texted in has to go out as several texts. Cut at the last
- * blank line before the cap, else the last newline, else the last sentence end, else
- * the last space — a hard cut only when the text offers nothing. A hard cut backs off
- * one unit rather than splitting a surrogate pair (a lone half renders as garbage).
- * Parts are trimmed; every non-space character of the input survives, in order.
+ * Twilio refuses a Body over 1600 characters (error 21617), so a long answer goes out as several texts.
+ * Cut at the last blank line, newline, sentence end or space before the cap (a hard cut only when none
+ * exists); a hard cut backs off one unit rather than split a surrogate pair. Parts are trimmed and every
+ * non-space character of the input survives, in order.
  */
 export function splitForSms(text: string, maxLen = 1500): string[] {
   const parts: string[] = [];
@@ -113,10 +107,9 @@ export async function sendSms(
   if (!to.trim() || !body.trim() || !from.trim()) {
     return { ok: false, error: 'to, body, and from are all required.' };
   }
-  // D15: SMS can't render markdown, strip it here at the single SMS chokepoint
-  // so all three send paths (auto-reply, sms_send tool, A2A relay) go out clean.
+  // SMS cannot render markdown: strip it at the single SMS chokepoint so every send path goes out clean.
   const cleaned = formatForPlainTextChannel(body);
-  // 1600 characters or fewer: one POST exactly as before. Only a longer body is split.
+  // Up to 1600 characters goes out as one POST; only a longer body is split.
   const parts = cleaned.length > 1600 ? splitForSms(cleaned) : [cleaned];
   // Several parts go one at a time, awaiting each, so the person reads them in order.
   // Stop at the first refusal and say how far the message got.
@@ -138,16 +131,13 @@ export async function sendSms(
     }
     if (!first) first = res.data;
   }
-  // A single-part send keeps its error verbatim (nothing partial happened); a
-  // multi-part one names the part, so the "split into multiple sends" split never
-  // silently loses an answer to a mid-list failure.
+  // A single-part send keeps its error verbatim; a multi-part one names the failing part, so a
+  // mid-list failure never silently loses part of the answer.
   const error = failed === null
     ? null
     : (parts.length > 1 ? `part ${failedIndex + 1} of ${parts.length} failed: ${failed}` : failed);
-  // PHASE-2 T5: THE DOOR RECORDS. All three SMS paths (auto-reply, the sms_send tool, the
-  // A2A relay) pass through here, and a FAILED send now produces `outcome='failed'` — the
-  // caller-written record was gated on success and could not express one. One door row per
-  // sendSms call even when the message went out as parts: it is one answer to one person.
+  // The door records every send, a FAILED one included; one row per sendSms call even when the
+  // message went out in parts (it is one answer to one person).
   recordedId(recordAtDoor({
     outcome: error === null ? 'delivered' : 'failed',
     channel: 'sms',
@@ -175,9 +165,8 @@ export interface TwilioCallResponse {
 }
 
 /**
- * Place an outbound call. The call connects to Twilio's TwiML URL,
- * which returns instructions (typically a Stream verb pointing at
- * our Media Streams WebSocket so the agent can talk).
+ * Place an outbound call. Twilio connects it to the TwiML URL, which typically returns a Stream verb
+ * pointing at our Media Streams WebSocket so the agent can talk.
  */
 export async function placeCall(
   to: string,
@@ -200,8 +189,7 @@ export async function placeCall(
     params.StatusCallbackEvent = 'initiated ringing answered completed';
   }
   const res = await twilioPost<TwilioCallResponse>('/Calls.json', params, signal);
-  // PHASE-2 T5: placing a call reaches a person. `voice_call` was one of the ten send paths
-  // that recorded nothing.
+  // Placing a call reaches a person, so the door records it.
   recordedId(recordAtDoor({
     outcome: res.ok ? 'delivered' : 'failed',
     channel: 'phone',
@@ -258,15 +246,10 @@ export async function testTwilioCredentials(
 
 // ── Webhook signature verification ──
 //
-// Twilio signs every inbound webhook with HMAC-SHA1(authToken, S)
-// where S is the full URL the request was made to, followed by the
-// POST params sorted alphabetically by key and concatenated as
-// keyN+valueN. The signature is sent in X-Twilio-Signature, base64-
-// encoded.
-//
-// We MUST verify this on every inbound webhook (SMS, voice, status
-// callbacks). Without verification, anyone who knows our public
-// tunnel URL can forge inbound messages and trigger the agent.
+// Twilio signs every inbound webhook: base64 HMAC-SHA1(authToken, full URL followed by the POST params
+// sorted by key and concatenated as keyN+valueN), sent in X-Twilio-Signature. We MUST verify every inbound
+// webhook (SMS, voice, status callbacks), or anyone who knows the public tunnel URL can forge inbound
+// messages and trigger the agent.
 
 export function verifyTwilioSignature(args: {
   signature: string;
