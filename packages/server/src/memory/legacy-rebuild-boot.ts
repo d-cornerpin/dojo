@@ -1,14 +1,5 @@
-// t144 — THE UPDATE'S OWN START OF THE REBUILD OF OLDER MIXED NOTES, once per boot instead of waiting for
-// the first nightly window. SAFE FORM ONLY: just the legacy pass (never the contamination scan), a no-op
-// with nothing queued, never alongside another run (the shared guard), detached after a settle delay so
-// provider init, channel reconnect and the first owner turns are not contended, and a run that throws is
-// logged and swallowed — it holds no state, so a crash cannot repeat at the next boot (no crash loop,
-// update-integrity standard). The nightly job stays the backstop.
-//
-// Field fix Y (orchestrator ruling, round 2): the boot's memory start also RESUMES every open catch-up
-// (`out-of-view.ts`). Its card promises "this finishes on its own", and an update restarts the server,
-// so a catch-up must not wait for the agent's next turn: after the same settle, the background folder is
-// started for each agent whose record is open. It yields to live turns as always.
+// Boot-time start of the legacy pass only (never the contamination scan), delayed so provider init and first
+// turns are not contended. A throw is logged and swallowed: the run holds no state; the nightly job resumes it.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -19,7 +10,6 @@ import { clearOn } from './writer.js';
 
 const logger = createLogger('legacy-rebuild-boot');
 
-/** How long after boot the start waits. */
 export const BOOT_SETTLE_MS = 120_000;
 
 export async function runLegacyRebuildAtBoot(): Promise<LegacyRebuildStats | null> {
@@ -41,7 +31,7 @@ export async function runLegacyRebuildAtBoot(): Promise<LegacyRebuildStats | nul
   }
 }
 
-/** Field fix Y: start the background folder for every agent whose catch-up was open at shutdown. Never throws. */
+/** Start the background folder for every agent whose catch-up was open at shutdown. Never throws. */
 export function resumeCatchUpsAtBoot(): number {
   let started = 0;
   try {

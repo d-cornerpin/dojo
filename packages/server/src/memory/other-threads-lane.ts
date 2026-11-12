@@ -1,58 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE OTHER-THREADS LANE — the engine says out loud that it stripped something.
-//
-// ── THE INCIDENT (the owner, 2026-09-24; `conversation-identity-investigation.md` HEAD 2) ────
-// An agent held two conversation silos for the SAME PERSON. Asked from one about the other, it
-// replied that it had no way to see the other thread. It had every way: the inbound was live, the
-// rows were in its own database, and `history_search` is agent-scoped and unscoped by conversation.
-// It eventually ran `history_get` and answered correctly — so the recovery path existed, was
-// reachable, and worked. THE DEFECT IS ENTIRELY THAT NOTHING PROMPTED IT.
-//
-// ── THE NAMED MECHANISM: SILENT CONVERSATION-SCOPED ELISION WITH NO CAPABILITY DECLARATION ───
-// On a human turn every default-path surface is filtered to the one conversation being served —
-// the fresh tail's inbound half and own-output half (`memory/assembler.ts`), the deliveries ledger
-// (`memory/deliveries-lane.ts`), and `recall_recent_thread`'s
-// default scope (`memory/recall.ts`). Every one of those filters is
-// CORRECT and each has a named incident behind it — a friend's iMessage bleeding into a dashboard
-// turn, and a months-long re-answer ghost. They are not bugs. THEY ARE SILENT.
-//
-// So the model's only in-context evidence about its own reach is the ABSENCE OF ROWS, and absence
-// reads as incapability. That is the W84 shape one surface over
-// (`memory/integration-status-lane.ts`: *"The tool did not fail — it LIED, in a confident
-// sentence… A false memory about a connection is self-sealing."*), and the lane built to cure W84
-// did not cover channels at all. A headwind made it worse: the iMessage framing injects *"Respond
-// to THIS topic only; do not pull in unrelated dashboard conversation context."* Correct for topic
-// hygiene, and a direct push away from "go look at your other threads."
-//
-// ── WHAT THIS LANE IS, AND THE TWO PRECEDENTS IT IS BUILT ON ─────────────────────────────────
-// It publishes the STRIP: the agent's other live human threads, by CHANNEL and PARTY and RECENCY,
-// plus the channels inbound is live on, plus the one sentence naming the unscoped tool. Both
-// precedents were already ruled on in this codebase:
-//
-//   · `work/obligations.ts` — current conversation first, then ≤3 from OTHER conversations, each
-//     tagged `[other conversation]`, each party-labelled, and the elision NEVER SILENT
-//     (*"… and N more open items not shown"*). This lane's row shape and its tail are that shape.
-//   · `memory/integration-status-lane.ts` — a post-budget TAIL lane carrying LIVE PLATFORM TRUTH
-//     under an explicit supersession preamble. This lane's framing is that framing.
-//
-// ⚠ NO MESSAGE CONTENT. NOT ONE BYTE. This is the line that keeps the lane from re-introducing the
-// two incidents the filters exist to prevent: a party label, a channel, an instant, and whether the
-// thread is waiting. If the model wants what was SAID it must call the tool, which is the whole
-// point — the lane's job is to make the tool call occur to it, not to do the tool's job. A lane
-// that quoted the other thread would be the friend-on-iMessage bleed with extra steps.
-//
-// ⚠ CACHE-PREFIX LAW. This is a POST-BUDGET TAIL lane, pushed after `volatileFrom` beside
-// `engine.open-work` and `engine.report-state`. Its content moves whenever any other thread moves,
-// so it may never sit in the cached prefix; `the-tail-holds-still.test.ts` and the cache-prefix
-// golden are the instruments, and the assembled prefix must be byte-identical with this lane
-// present and absent.
-//
-// ── EMPTY MEANS ABSENT ───────────────────────────────────────────────────────────────────────
-// An agent with one thread and nothing else live emits NOTHING — no header, no "you have no other
-// threads" line. A block that fires on every turn to say nothing is the tax that gets lanes deleted,
-// and the negative claim is not even useful: "no other threads" is what the model already infers
-// from absence. The lane exists to contradict that inference when it is WRONG.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Names the agent's other live human threads (party, channel, recency) and live channels: every default surface
+// is filtered to the served conversation, and a silent absence reads as incapability.
+// NO MESSAGE CONTENT: quoting another thread would reintroduce the cross-conversation bleed the filters prevent.
+// A tail lane after `volatileFrom`: it moves whenever any thread moves, so it must never sit in the cached prefix.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -66,48 +15,26 @@ import { layOutInRoom, unlistedThreadsLine } from './other-threads-room.js';
 
 const logger = createLogger('other-threads-lane');
 
-// ── t207 (D6): NO FIXED NUMBERS. The lane used to carry three — 3 rows, a 7-day window and a 40-row read — so
-// a person who wrote eight days ago and was never answered was not named, and a fourth waiting person was a
-// count. What it names now is derivable from stored rows (the owner's no-hard-limits law):
-//   1. every thread where the person spoke last and nothing answered (WAITING), however old;
-//   2. then every thread touched since the agent's last turn in THIS conversation;
-//   3. then a count of the rest, never silent.
-
 export interface OtherThread {
   conversationId: string;
-  /** `conversationLabel`'s output: "a contact (imessage)", the owner's name, "an agent thread". */
   label: string;
   channel: string;
-  /** Epoch ms of the newest message either way in that thread. */
+  /** Epoch ms. */
   lastAtMs: number;
-  /** True when the newest row is INBOUND — they spoke last, so the thread may be waiting. */
   theySpokeLast: boolean;
 }
 
 export interface OtherThreadsRead {
   rows: OtherThread[];
-  /** Threads with nothing waiting and nothing new since the agent's last turn here. Counted, never swallowed. */
   hidden: number;
-  /** Channels the platform receives on right now, for the capability half. */
   channels: Array<{ displayName: string; inboundLive: boolean }>;
-  /** The route sentence, composed from the tools this agent can actually call. */
   route: string;
 }
 
-/**
- * The agent's OTHER human threads that matter now: waiting first, then touched since its last turn here.
- *
- * Excludes: the conversation being served (that is the fresh tail's job) and `a2a` peer threads (agent
- * coordination is not a person waiting, and `party-label.ts` deliberately refuses to name them). Agent-scoped
- * by `c.agent_id`, so no thread of another agent can appear — the W3-4 rule the recall lane applies to its own
- * hits.
- *
- * ⚠ ACTIVITY IS DERIVED FROM `messages`, NOT THE CONVERSATION ROW: `conversations` carries no last-activity
- * column that every door maintains. One grouped read; only the threads that will be NAMED are party-labelled.
- */
+/** Waiting threads first, then those touched since the agent's last turn here, never the served one or a2a.
+ *  Activity comes from `messages`: `conversations` has no last-activity column every door maintains. */
 export function readOtherThreads(agentId: string, currentConversationId: string | null): OtherThreadsRead {
   const db = getDb();
-  // "Since the agent's last turn in THIS conversation": its newest reply here, else when this conversation began.
   let since: number | null = null;
   if (currentConversationId) {
     const anchor = db.prepare(
@@ -137,18 +64,11 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
     const isTouched = since !== null && r.last_at > since;
     if (!isWaiting && !isTouched) { hidden++; continue; }
     const label = conversationLabel(r.conversation_id);
-    // A thread whose party cannot be named is not printed.
-    //
-    // ⚠ AND THE CHECK IS NOT `!label`, WHICH IS WHAT IT WAS FIRST AND WHAT THIS LANE'S OWN CLAUSE
-    // CAUGHT: `conversationLabel` falls back to THE CHANNEL NAME when a conversation carries no
-    // counterparty id and no counterparty name, so the guard let through a row reading
-    // "imessage — last activity …". That tells the model a thread exists and nothing whatsoever
-    // about whose, which is worse than silence because it invites a guess — and a guess about who
-    // is waiting on the other end is the failure this whole lane is repairing.
+    // `conversationLabel` falls back to the bare channel; a row naming only a channel invites a guess at who waits.
     if (!label || label === r.channel) continue;
     (isWaiting ? waiting : touched).push(entry(r, withChannel(label, r.channel)));
   }
-  named.push(...waiting, ...touched);   // each group is already newest first
+  named.push(...waiting, ...touched);
 
   const channels = listChannelStatuses()
     .filter((c) => c.configured)
@@ -160,37 +80,14 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
 export const OTHER_THREADS_HEAD = '═══ YOUR OTHER LIVE THREADS — LIVE PLATFORM TRUTH ═══';
 export const OTHER_THREADS_TAIL = '═══ END OTHER THREADS ═══';
 
-/**
- * THE SUPERSESSION SENTENCE, in the voice `integration-status-lane.ts` established.
- *
- * It has to do three things, and the third is the one the incident turned on: state that these
- * threads EXIST, state that the conversation above was filtered (so absence stops being evidence),
- * and NAME THE TOOL that reaches them. W84's lesson is that publishing live truth without naming
- * the action leaves the model with a fact it cannot use.
- */
 export const OTHER_THREADS_HEADLINE =
   'The conversation above is ONE thread, filtered to it on purpose. These other threads are live on '
   + 'this platform right now, and their messages are in your own history even though they are not '
   + 'shown above — so "I have no way to see that" is FALSE and must never be said. No content is '
   + 'listed here by design';
 
-/**
- * The route sentence, and it names ONLY tools this agent can actually call.
- *
- * ⚠ THIS IS A BUILD-TIME LIVE PROBE FINDING, not a design instinct. The first cut named
- * `history_search`, `history_get` and `recall_recent_thread(scope:"all")` unconditionally. Driven on
- * a scratch agent through the real dashboard door, the lane fired at 769 chars and WORKED — the agent
- * answered correctly out of the other silo instead of denying it — but the receipt showed those three
- * tools were NOT on the call at all (a dashboard-created agent's default grants do not include the
- * Conversation Recall category), and the model reached the rows through nine `exec` calls instead.
- *
- * Naming a tool the agent cannot call is the SAME FAILURE THIS LANE EXISTS TO CURE, pointed the other
- * way: a confident engine sentence that does not match platform truth. W84's whole lesson is that the
- * model then has to decide which of two authorities to believe. So the sentence is composed from what
- * `toolCategoryGranted` says is actually reachable, and when NOTHING in that family is granted it says
- * so plainly rather than instructing toward a locked door — the thread still exists, and that fact is
- * the part the owner's incident turned on.
- */
+/** Names only tools this agent can call: default grants may omit Conversation Recall, and naming an
+ *  ungranted tool would contradict platform truth. */
 export function routeSentence(agentId: string): string {
   let granted: string[] = [];
   try {
@@ -212,22 +109,12 @@ const CHANNELS_LINE = (channels: OtherThreadsRead['channels']): string =>
   'Channels you receive on right now: '
   + channels.map((c) => `${c.displayName}${c.inboundLive ? '' : ' (configured, inbound NOT live)'}`).join(' · ');
 
-/** One row: party, channel, when, and who spoke last. No content, ever. */
 function threadLine(t: OtherThread, n: number): string {
   const who = t.theySpokeLast ? 'they messaged last' : 'you replied last';
   return `${n}. ${t.label} — last activity ${recordedInstant(t.lastAtMs)}, ${who} [other conversation]`;
 }
 
-/**
- * The block, or `null` when there is nothing true to say.
- *
- * A pure function of its read, so the injection site can be tested without a database and so the
- * bytes are derivable by the reserve derivation at maximal caps.
- *
- * The CHANNEL half rides along only when there IS at least one other thread: a channel list on a
- * turn with no other thread is capability trivia, and this lane's licence to spend tail tokens on
- * every human turn comes from contradicting a false inference, not from being informative.
- */
+/** Null when there is nothing true to say; a pure function of its read, testable without a database. */
 export function renderOtherThreads(read: OtherThreadsRead, roomTokens?: number): string | null {
   if (read.rows.length === 0) return null;
   const tail = read.hidden > 0
@@ -239,8 +126,7 @@ export function renderOtherThreads(read: OtherThreadsRead, roomTokens?: number):
     + `${unlistedThreadsLine(read.rows.slice(shown))}${tail}${channels}\n${OTHER_THREADS_TAIL}`);
 }
 
-/** The injection, read + render, never throwing: a lane that cannot build must not cost the turn
- *  its other lanes (`engine.open-work`'s rule, and `engine.report-state` follows it too). */
+/** Never throws: a lane that cannot build must not cost the turn its other lanes. */
 export function buildOtherThreadsInjection(agentId: string, currentConversationId: string | null, roomTokens?: number): string | null {
   try {
     return renderOtherThreads(readOtherThreads(agentId, currentConversationId), roomTokens);
@@ -252,8 +138,7 @@ export function buildOtherThreadsInjection(agentId: string, currentConversationI
   }
 }
 
-/** t211: the room to add to the loop-tail reserve for this turn's block: its rendered size beyond what the
- *  reserve's literal already covers. Zero when the loop will not append the block (no human conversation). */
+/** Rendered size beyond the loop-tail reserve's literal; zero when the loop will not append the block. */
 export function otherThreadsReserveExtra(agentId: string, currentConversationId: string | null, roomTokens?: number): number {
   if (!currentConversationId) return 0;
   const block = buildOtherThreadsInjection(agentId, currentConversationId, roomTokens);

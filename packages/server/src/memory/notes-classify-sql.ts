@@ -1,9 +1,9 @@
-// t144 — migration 192's classification, as the nightly job re-runs it (see the block below).
+// Migration 192's classification, as the nightly job re-runs it (see the block below).
 
 /**
  * The classification rule: migration 192's own statements (its comments stripped), re-run over notes
- * nobody labelled — those a downgraded version wrote. Idempotent by predicate. ONE rule: a test holds
- * this text byte-equal to the migration file's (`t144-migration-192-labels-older-notes.test.ts`).
+ * nobody labelled (those a downgraded version wrote). Idempotent by predicate. ONE rule: a test holds
+ * this text byte-equal to the migration file's (`migration-192-labels-older-notes.test.ts`).
  */
 export const CLASSIFY_SQL = `CREATE TEMP TABLE t192_desc AS
 WITH RECURSIVE d(root, id) AS (

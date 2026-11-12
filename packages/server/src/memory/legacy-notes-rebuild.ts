@@ -1,28 +1,17 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t144 — THE NIGHTLY JOB'S SECOND SELECTION: RECENT MIXED NOTES, REBUILT ONE CONVERSATION EACH.
+// Nightly job, second selection: recent mixed notes (marked `legacy_mixed_rebuild`) are re-condensed
+// one conversation each, FROM THEIR ORIGINAL MESSAGES (never touched), dated, by the writer `pickWriter` picks.
+// Run by `summary-rebuild.ts`. Older mixed notes stay `legacy_mixed`, labelled "older mixed notes".
 //
-// OR-V333-SET (8) with the owner's scope ruling OR-REBUILD-SCOPE (2026-10-12, his words: "Can we just
-// maybe have it do it for like the last week or two of notes instead?"). Migration 192 marked each
-// note from before this release that mixed conversations: `legacy_mixed_rebuild` when every source row
-// is from the 14 days before the update, `legacy_mixed` (never rebuilt, labelled "older mixed notes")
-// otherwise. This module is run by the EXISTING nightly job (`summary-rebuild.ts`), with the same writer
-// resolution as every summary (the Settings compaction model, else the agent's own model, else the Dojo's small
-// writer — nothing after it, t268 round 5: no "cheapest" model). It re-condenses each queued
-// note FROM ITS ORIGINAL MESSAGES, per conversation, dated; original messages are never touched.
+// Staged, then swapped per agent in one transaction: each finished chunk is written to
+// `summary_rebuild_staged` at once (a crash loses no paid call; a resumed run skips it). Only when every
+// queued note of an agent is staged are they swapped in together under its compaction lock, so the
+// agent's cached prefix changes once and the older note stays in view until then.
 //
-// THE SHAPE, and why each part:
-//   · STAGED, THEN SWAPPED PER AGENT IN ONE TRANSACTION. Each finished chunk is written to
-//     `summary_rebuild_staged` at once (a crash loses no paid call; a resumed run skips it). Only when
-//     every queued note of an agent is fully staged are they swapped in together, under the agent's
-//     compaction lock — so the agent's cached prefix changes ONCE (G2), and until then the older note
-//     stays in view, labelled "older mixed notes", so there is never a gap.
-//   · NO COUNT (owner ruling 2026-10-13, no hard limits). The job works through every queued note,
-//     paced only by real signals: a summary writer answering (`writer.ts`, which also
-//     honours the provider's breaker), the agent not mid-turn, and the money guardrail (`checkBudget`).
-//     A hung call is ended by its own transport's patience (t140); this module adds no clock.
-//   · NOTHING INVENTED. A note whose source rows are all gone becomes `lineage_lost` ("conversation
-//     unknown, <dates>"), keeping its content. A refusal leaves the older note in place, labelled.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// No count limit: pacing comes only from real signals (a writer answering, `writer.ts`; the agent not
+// mid-turn and the budget, `rebuild-signals.ts`). This module adds no clock.
+//
+// Nothing invented: a note whose source rows are all gone becomes `lineage_lost`, keeping its content;
+// a refusal leaves the older note in place, labelled.
 
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
@@ -55,7 +44,7 @@ export interface LegacyRebuildStats {
   modelCalls: number;
   /** Input tokens sent (system prompt included), for the cost the run reports. */
   inputTokens: number;
-  /** Why the run left notes queued, per agent — `null` when nothing is left. */
+  /** Why the run left notes queued, per agent; empty when nothing is left. */
   waiting: Record<string, string>;
 }
 
@@ -105,7 +94,7 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     const content = buildLeafSummaryInput(chunk);
     let text = NO_CONVERSATION_PLACEHOLDER;
     if (content.trim().length > 0) {
-      const target = summaryTargetTokens(content, modelCharsPerToken(writer));   // t269: the one target rule, at the writer's density
+      const target = summaryTargetTokens(content, modelCharsPerToken(writer));   // the one target rule, at the writer's density
       const inputTokens = estimateTokens(content) + estimateTokens(getDepthPrompt(0, target, undefined, unit.agentId));
       const wait = waitReason(unit.agentId, writer, inputTokens, target);
       if (wait) return wait;
