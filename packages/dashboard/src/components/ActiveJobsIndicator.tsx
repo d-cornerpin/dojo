@@ -5,7 +5,7 @@ import { engineRoleOf, loadEngineRoleIds } from '../lib/engine-role-ids';
 import { formatElapsed } from '../lib/dates';
 
 // ════════════════════════════════════════
-// ActiveJobsIndicator — in-flight media generation jobs (image / audio /
+// ActiveJobsIndicator: in-flight media generation jobs (image / audio /
 // music / video).
 //
 // Lives in the chat input icon row (next to voice / wordy mode). Hidden
@@ -114,7 +114,7 @@ function KindGlyph({ kind }: { kind: Kind | EngineKind | 'mixed' }) {
     );
   }
   if (kind === 'compaction') {
-    // Archive box — folding memory into summaries.
+    // Archive box: folding memory into summaries.
     return (
       <svg {...common}>
         <polyline points="21 8 21 21 3 21 3 8" />
@@ -124,7 +124,7 @@ function KindGlyph({ kind }: { kind: Kind | EngineKind | 'mixed' }) {
     );
   }
   if (kind === 'dreamer') {
-    // Moon — the dream / distillation cycle.
+    // Moon: the dream / distillation cycle.
     return (
       <svg {...common}>
         <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
@@ -139,7 +139,7 @@ function KindGlyph({ kind }: { kind: Kind | EngineKind | 'mixed' }) {
       </svg>
     );
   }
-  // mixed — generic sparkles.
+  // mixed: generic sparkles.
   return (
     <svg {...common}>
       <path d="M12 3v18" />
@@ -154,7 +154,7 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
   const { subscribe, reconnectCount } = useWebSocket();
   const [jobs, setJobs] = useState<GenJobDto[]>([]);
   const [allEngineItems, setEngineItems] = useState<EngineItem[]>([]);
-  // v3.5 field fix 3 (#10): an agent's memory work shows beside that agent only, so a service agent's
+  // An agent's memory work shows beside that agent only, so a service agent's
   // housekeeping does not read as this agent compacting; the box's own work (no agentId) shows everywhere.
   const engineItems = allEngineItems.filter((it) => it.kind !== 'compaction' || !it.agentId || it.agentId === agentId);
   const [open, setOpen] = useState(false);
@@ -188,7 +188,7 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
     });
     // The Dreamer and the Healer are platform-wide, shown regardless of the selected
     // agent; their `working` status IS the in-flight signal. Compaction (not an agent)
-    // emits engine:activity, and an agent's own shows beside that agent (field fix 3 #10).
+    // emits engine:activity, and an agent's own shows beside that agent only.
     const unsubStatus = subscribe('agent:status', (event) => {
       if (event.type !== 'agent:status') return;
       const kind: EngineKind | null = engineRoleOf(event.agentId);

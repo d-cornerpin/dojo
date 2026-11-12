@@ -1,22 +1,18 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE FOLDED-IN PERMISSION TOGGLES (UX-ACCESS A6).
+// THE FOLDED-IN PERMISSION TOGGLES.
 //
-// These controls were the agent editor's "Permissions" card. The owner's A6
-// design folds them into the Access panel — the two reach toggles into "What it
-// can reach", files / this Mac / other agents into "What it may manage" — and
-// the card is removed, so the agent editor has ONE door onto what an agent may
-// do instead of two that never referred to each other.
+// These controls live in the Access panel: the two reach toggles under "What it
+// can reach", files / this Mac / other agents under "What it may manage". The
+// agent editor has ONE door onto what an agent may do.
 //
-// WHAT MOVED IS THE CONTROL, NOT THE STORAGE. Every switch here still writes the
-// `PermissionManifest` inside `agents.permissions`, the `tools_policy` column,
-// or `config.shareUserProfile`, through the same PUT the old card used. The
-// arithmetic is `lib/manifest-edits.ts`, pure and tested against the old
-// editor's own output; this file only renders and asks.
+// THE STORAGE IS NOT HERE. Every switch writes the `PermissionManifest` inside
+// `agents.permissions`, the `tools_policy` column, or `config.shareUserProfile`,
+// through the agent editor's one PUT. The arithmetic is `lib/manifest-edits.ts`,
+// pure; this file only renders and asks.
 //
-// ── A BUILT-IN AGENT'S MANIFEST IS STILL NOT EDITABLE ──
-// The old card rendered a NOTE instead of the editor for every platform agent,
-// and that rule is carried across exactly: `editable` comes from the parent,
-// which is the thing that knows which agent is the main one. The panel itself
+// ── A BUILT-IN AGENT'S MANIFEST IS NOT EDITABLE ──
+// A NOTE is rendered instead of the editor for every platform agent: `editable`
+// comes from the parent, which knows which agent is the main one. The panel itself
 // never learns a rank, and neither does this file.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -233,7 +229,5 @@ export const ManageManifestItems = ({ state, onChange, editable, note }: Props) 
   );
 };
 
-// ⚰ THE "Network Domains (raw)" ADVANCED FIELD IS GONE. It was a second control
-// over `network_domains`, the field the "Open web pages" scope above already
-// owns, and the two could disagree on screen — one of them had to be lying. The
-// scope is the one that is labelled in words the owner can act on.
+// There is no raw "Network Domains" field: `network_domains` is owned by the "Open web pages"
+// scope above, and a second control over it could disagree on screen.

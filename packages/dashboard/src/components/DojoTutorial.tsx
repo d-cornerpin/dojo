@@ -1,5 +1,5 @@
 /**
- * "How the dojo works" — a navigable, screenshot-led tour shown from the final
+ * "How the dojo works": a navigable, screenshot-led tour shown from the final
  * setup step. Two panes: a chapter list on the left, the selected chapter's
  * content (with a screenshot) on the right. Closeable via the X, a backdrop
  * tap, the final "Got it", or Escape.
@@ -9,7 +9,7 @@
  * inheriting the dojo's tokens + .btn styling.
  *
  * Screenshots live in /public/tutorial/*.png. NOTE: those are captured from a
- * live dojo — review/curate them (the vault especially) before shipping.
+ * live dojo, so review/curate them (the vault especially) before shipping.
  */
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';

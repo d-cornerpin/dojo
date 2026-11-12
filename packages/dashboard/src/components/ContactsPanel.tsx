@@ -4,7 +4,7 @@ import { useToast } from '../hooks/useToast';
 import { ModalShell } from '../components/ModalShell';
 import { formatDate } from '../lib/dates';
 
-// Contacts panel — rendered as a tab on the Vault page. Searchable
+// Contacts panel: rendered as a tab on the Vault page. Searchable
 // list view with sortable columns; clicking a row opens the edit
 // drawer. New contact via the "+ New" button. Same store the
 // contact_* agent tools write to, so observations the agents recorded
@@ -47,7 +47,7 @@ export const ContactsPanel = () => {
     });
     if (result.ok) {
       // A save or delete can shrink the list past the page we are on, and the
-      // server does not clamp the offset — an empty answer here means "step
+      // server does not clamp the offset, so an empty answer here means "step
       // back", not "nothing left". Stay on `loading` and let the retry clear it.
       const lastPage = Math.max(0, Math.ceil(result.data.total / PAGE_SIZE) - 1);
       if (p > lastPage) {

@@ -9,9 +9,9 @@ interface Attachment {
   size: number;
   path: string;
   category: string;
-  /** A canvas-viewable doc the agent showed — gets an "Open in canvas" chip. */
+  /** A canvas-viewable doc the agent showed, gets an "Open in canvas" chip. */
   openInCanvas?: boolean;
-  /** The live screen-share viewer — gets an "Open screen" chip that re-opens it. */
+  /** The live screen-share viewer, gets an "Open screen" chip that re-opens it. */
   screenShare?: boolean;
 }
 
@@ -120,8 +120,8 @@ const ImageLightbox = ({
   // happened to open it. Without the portal, a parent re-render or a
   // CSS ancestor with `transform`/`filter`/`backdrop-filter` could clip
   // or break the fixed positioning, leaving the modal stuck mid-screen
-  // with broken close behavior — the symptom: "I have to refresh the
-  // page to make the image go away."
+  // with broken close behavior (the modal would stay on screen
+  // until the page was refreshed).
   return createPortal(
     <div
       className="fixed inset-0 z-[100] flex flex-col items-center justify-center cursor-pointer"
@@ -283,7 +283,7 @@ const VideoMediaCard = ({ att }: { att: Attachment }) => {
   );
 };
 
-// An agent-produced document the canvas can render — a button that (re)opens it
+// An agent-produced document the canvas can render: a button that (re)opens it
 // in the right dock, so the user can return to it after closing the canvas.
 const CanvasOpenChip = ({ att }: { att: Attachment }) => {
   const { open } = useRightDock();

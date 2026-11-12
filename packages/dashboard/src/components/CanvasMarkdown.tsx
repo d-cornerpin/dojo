@@ -4,8 +4,8 @@ import { InlineMarkdown, CodeBlock } from './Markdown';
 /*
  * Block-level Markdown renderer for the canvas.
  *
- * The chat <Markdown> is deliberately lightweight — inline only (bold, italic,
- * code, links) — because chat messages rarely use document structure. A canvas
+ * The chat <Markdown> is deliberately lightweight (inline only: bold, italic,
+ * code, links) because chat messages rarely use document structure. A canvas
  * document does: headings, lists, blockquotes, tables, rules, fenced code. This
  * renderer parses those block structures and delegates inline formatting back
  * to the shared InlineMarkdown, so both surfaces agree on inline behavior. No
@@ -36,7 +36,7 @@ export function CanvasMarkdown({ content }: { content: string }) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // Blank line — skip (block separators are handled per-block).
+    // Blank line: skip (block separators are handled per-block).
     if (line.trim() === '') { i++; continue; }
 
     // Fenced code block.
@@ -101,7 +101,7 @@ export function CanvasMarkdown({ content }: { content: string }) {
       continue;
     }
 
-    // List (unordered or ordered) — consecutive matching item lines.
+    // List (unordered or ordered): consecutive matching item lines.
     const isUl = UL_RE.test(line);
     const isOl = OL_RE.test(line);
     if (isUl || isOl) {
@@ -120,7 +120,7 @@ export function CanvasMarkdown({ content }: { content: string }) {
       continue;
     }
 
-    // Paragraph — gather consecutive plain lines until a blank or a block start.
+    // Paragraph: gather consecutive plain lines until a blank or a block start.
     const para: string[] = [];
     while (
       i < lines.length &&

@@ -57,9 +57,9 @@ export const CredentialsPanel = () => {
     await ensureRevealed(id);
   };
 
-  // M7 / P362 + P739's class: the edit form is a FULL-DOCUMENT editor, so opening it against
+  // The edit form is a FULL-DOCUMENT editor, so opening it against
   // values that were never loaded binds it to an empty initial state and the next save speaks
-  // for fields it never saw. Editing therefore reveals first, always — "never loaded" and
+  // for fields it never saw. Editing therefore reveals first, always: "never loaded" and
   // "deliberately emptied" are different facts and the form may only ever express the second.
   const handleEdit = async (id: string) => {
     if (editing === id) { setEditing(null); return; }
@@ -227,10 +227,9 @@ const CredentialEditForm = ({ mode, initial, credentialId, onSaved, onCancel }: 
       setSaving(false);
       return;
     }
-    // M7's clear protocol, client side: the server now MERGES a credentials patch, so a field
-    // the owner removed here has to say so out loud. `null` is that sentinel and JSON carries
-    // it — `undefined` is what P706 tried and `JSON.stringify` drops it, which is how a
-    // deliberate clear became an empty body and then a no-op.
+    // Clear protocol: the server MERGES a credentials patch, so a field the owner removed
+    // here has to say so out loud. `null` is that sentinel and JSON carries it;
+    // `undefined` would be dropped by `JSON.stringify`, turning a deliberate clear into a no-op.
     if (mode === 'edit') {
       for (const k of Object.keys(initial?.credentials ?? {})) {
         if (!(k in credentials)) credentials[k] = null;

@@ -3,7 +3,7 @@ import * as api from '../lib/api';
 import { useGuardedLoad } from '../lib/load-guard';
 import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
 
-// v2.7.24 — per-channel safe-sender allowlist (Gmail / Outlook / Teams).
+// Per-channel safe-sender allowlist (Gmail / Outlook / Teams).
 // Mirrors the iMessage safe-sender UX in Settings.tsx but trimmed: no
 // primary/star concept (the dashboard user is implicitly primary), no
 // default-sender, no bridge-running coupling. Backed by a config key

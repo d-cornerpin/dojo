@@ -5,7 +5,7 @@ import { columnKeyForStatus, COLUMN_WORDS, KANBAN_COLUMN_KEYS, type KanbanColumn
 
 // Subtle horizontal scrollbar rendered ABOVE the board. The board itself hides
 // its native scrollbar (scrollbar-width: none), and a native one would sit at
-// the bottom — below the fold when columns are tall. This thin track is always
+// the bottom, below the fold when columns are tall. This thin track is always
 // visible at the top so mouse users (no horizontal trackpad swipe) can drag to
 // scroll the columns. Bidirectionally synced with the board's scrollLeft.
 const KanbanScrollbar = ({ boardRef }: { boardRef: React.RefObject<HTMLDivElement> }) => {

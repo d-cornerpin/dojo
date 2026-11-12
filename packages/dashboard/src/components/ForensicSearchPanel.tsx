@@ -3,7 +3,7 @@ import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
 import { isEnterNotComposing } from '../lib/enter-key';
 
-// Forensic memory search panel — substring search across vault, summaries,
+// Forensic memory search panel: substring search across vault, summaries,
 // projects, tasks, and scratchpads. Operator-grade cleanup tool for the
 // self-reinforcing-memory failure mode: an agent embeds a wrong string in
 // vault/summary "don't do this" reminders, then keeps reading and
