@@ -1,4 +1,3 @@
-// OWNER DECISION 33 lives here, apart from the assembler it calls.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getPMAgentId, getTrainerAgentId, getHealerAgentId, getImaginerAgentId } from '../config/platform.js';
@@ -7,18 +6,8 @@ import { soulFileForAgent, readSoulFile, writeSoulFile } from './assembler.js';
 const logger = createLogger('shipped-souls');
 
 /**
- * OWNER DECISION 33 — DOJO-SUPPLIED SOULS ARE REPLACED ON UPDATE, EVEN IF EDITED.
- *
- * The PM, Trainer, Healer and Imaginer souls are shipped doctrine, not the owner's words. Once
- * per platform version (the stored `shipped_souls_version`), every one that already sits in
- * `~/.dojo/prompts` is overwritten with the shipped template, substituted exactly as at
- * creation (the same `fallback` the first-read seed writes). An absent file is left to that
- * first-read seed. The Dreamer's soul is not file-backed: `vault/maintenance.ts` already
- * rewrites it from its template on every check. THE PRIMARY'S SOUL IS NEVER IN THIS LIST: it is
- * written from the owner's setup answers, and no code path here can reach `SOUL.md`.
- *
- * Returns the file names replaced. An unreadable version stamps and replaces nothing, so a
- * broken manifest cannot make every boot clobber an owner's later edit.
+ * Replaces the PM, Trainer, Healer and Imaginer souls on disk with the shipped template, once per version.
+ * The primary's SOUL.md is never listed; an unreadable version replaces nothing.
  */
 export function refreshShippedSoulsOnce(version: string): string[] {
   if (!/^\d/.test(version)) return [];

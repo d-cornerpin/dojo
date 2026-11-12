@@ -6,11 +6,8 @@ import { getPrimaryAgentId } from '../config/platform.js';
 export interface SoulRerunOutcome { written: boolean; backup: string | null }
 
 /**
- * Setup re-run over an existing primary soul. A soul that is absent or still the shipped default
- * is composed freely. A soul a person has edited is left byte-identical unless the owner changed
- * the style or rules in this run; then the previous text is copied to a dated file beside it
- * first, and its name is returned so the step can say where it went. All file work goes through
- * the soul door (`readSoulFile` / `writeSoulFile`), so this module holds no fs access of its own.
+ * Setup re-run over an existing primary soul: an absent or default soul is composed freely; an edited one
+ * is kept unless the style changed, and then it is first backed up beside itself. File work uses the soul door.
  */
 export function writeSoulOnRerun(soul: AgentSoulFile, composed: string, pastFirstRun: boolean, restyle: boolean): SoulRerunOutcome {
   const stored = readSoulFile(soul);
@@ -23,7 +20,6 @@ export function writeSoulOnRerun(soul: AgentSoulFile, composed: string, pastFirs
   return { written: true, backup };
 }
 
-/** The setup door's whole soul step: compose from the wizard's fields and write it by the rules above. */
 export function writeOobeSoul(fields: { communicationStyle: string; rules: string }, pastFirstRun: boolean, restyle: boolean): { soul: string; backup: string | null } {
   const primarySoul = soulFileForAgent(getPrimaryAgentId());
   const composed = composePrimarySoul(fields, primarySoul?.fallback || DEFAULT_SOUL_MD);

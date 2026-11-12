@@ -1,31 +1,10 @@
-// ════════════════════════════════════════
-// Default Prompt Templates
-// Variables like {{agent_name}} are replaced at runtime
-// ════════════════════════════════════════
+// Default prompt templates; variables like {{agent_name}} are replaced at runtime.
 
-// UX-REPAIR T3 (PREFIX RE-BLESSING, registered) — ONE LINE IN HERE IS NOT
-// UNCONDITIONAL ANY MORE. `## Capabilities`' "You can manage sub-agents for
-// specialized tasks." is a claim this file cannot check: it is true for the
-// primary and false for anything on `DEFAULT_SUBAGENT_PERMISSIONS`. The claim is
-// now answered to the manifest at the point this text becomes a prompt —
-// `applySpawnCapabilityTruth` in `prompt/assembler.ts`, which returns the string
-// BY IDENTITY for a spawn-capable agent, so the line is unchanged for everyone
-// it was ever true for. Edit the wording here and there together, or the
-// conditional stops finding it (`__tests__/spawn-capability-truth.test.ts` is
-// what catches that).
-//
-// UX-ACCESS A4 generalized that into `SOUL_CAPABILITY_CLAIMS`, so THREE of the
-// `## Capabilities` lines below are now conditional: shell commands, sub-agents,
-// and administrator commands. The administrator line's twin lives in
-// `agent/brokers/sudo-claim.ts` (`SOUL_ADMIN_COMMANDS_LINE`) beside the door that
-// answers it; `prompt/__tests__/the-sudo-door-rides-the-soul-register.test.ts`
-// is the census that reds if any of the three drifts by one byte.
-//
-// `## Rules` IS LOAD-BEARING (t111-A2, t107 hand-up 2): `assembler.ts`'s sub-agent
-// carry-through extracts THIS section, so it is the only route the owner's standing rules take
-// to a SPAWNED agent. Until t111 the heading was absent and the carry-through was INERT on
-// every engine-seeded box. Rename or re-level it and it silently empties again —
-// `__tests__/section-extract.test.ts` is the clause that reds if it does.
+// The shell, sub-agent and administrator lines under `## Capabilities` are conditional: `SOUL_CAPABILITY_CLAIMS`
+// and `applySpawnCapabilityTruth` (prompt/assembler.ts) find them by exact text, so edit both together.
+// The administrator line's twin is `SOUL_ADMIN_COMMANDS_LINE` in `agent/brokers/sudo-claim.ts`.
+// `## Rules` is load-bearing: assembler.ts extracts this section to carry the owner's standing rules
+// into spawned agents, so renaming or re-leveling it silently empties that carry-through.
 export const DEFAULT_SOUL_MD = `# {{agent_name}} — System Identity
 
 You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are helpful, direct, and technically competent.
@@ -64,21 +43,8 @@ API keys, OAuth tokens, PATs, passwords, secrets, and any other authentication m
 `;
 
 /**
- * THE UNSET PROFILE, AND IT SAYS SO (fresh-box audit, finding 2).
- *
- * This shipped a `{{owner_name}}` token that NOTHING SUBSTITUTED — `readPromptFile` writes the
- * default verbatim — so a fresh box's model was handed the literal characters
- * `- Name: {{owner_name}}`. Its sibling `templates/USER.md` shipped an invented first name and a
- * job title instead — a fictional person presented as the real owner. Between them a new user's
- * agent could believe its owner was that invention, or was named "{{owner_name}}", or was "User",
- * depending on which slot it read.
- *
- * So the profile now DESCRIBES ITS OWN EMPTINESS and says what to do about it, which is the only
- * honest content for a file nobody has filled in yet. The preference lines went with the name:
- * "prefers concise responses" was invented too, and an invented preference is a standing
- * instruction the owner never gave.
- *
- * `renderUserProfile()` fills the real name in when `ownerNameIsSet()` — one default, one source.
+ * The unset profile: it says nothing is known, because an invented name or preference
+ * would be a false standing instruction.
  */
 export const DEFAULT_USER_MD = `# User Profile
 
@@ -158,13 +124,8 @@ If you find yourself about to call \\\`vault_remember\\\` with a value that look
 `;
 
 /**
- * THE HEALER'S LAST-RESORT STUB — UX-REPAIR ROUND 12 T59.
- *
- * Lifted VERBATIM out of `healer/healer-agent.ts`'s `loadHealerSoulPrompt` fallback, which is
- * where this text lived while the real `templates/HEALER-SOUL.md` (10,948 B) reached no model
- * at all. It keeps the same job it always had and no more: the bytes a box with NO templates
- * directory falls back to. `shippedSoulDefaultFrom` reaches for the shipped template first and
- * says so out loud when it lands here instead.
+ * Last-resort Healer soul for a box with no templates directory;
+ * `shippedSoulDefaultFrom` prefers the shipped template.
  */
 export const DEFAULT_HEALER_SOUL_MD = `# Identity
 
@@ -213,12 +174,7 @@ When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action ne
 - Do NOT reply to agents that respond to your pokes. Log the result with healer_log_action and end your turn.`;
 
 /**
- * THE IMAGINER'S LAST-RESORT STUB — UX-REPAIR ROUND 12 T59.
- *
- * Lifted from `imaginer/imaginer-agent.ts`'s `loadImaginerSoulPrompt` fallback, with ONE change
- * that is the whole point of the move: the name it interpolated as `${imaginerName}` is now the
- * `{{imaginer_agent_name}}` placeholder every other shipped soul uses, so the ONE substituter
- * (`substitutePlatformNames`) fills it. An in-code default that fills names its own way is a
- * second substituting writer, and two of those is the defect W24 and W25 each spent a task on.
+ * Last-resort Imaginer soul; the name is a placeholder so the one substituter
+ * (`substitutePlatformNames`) fills it.
  */
 export const DEFAULT_IMAGINER_SOUL_MD = `You are {{imaginer_agent_name}}, the DOJO's image generation specialist. When another agent calls image_create, the DOJO handles the entire image generation flow programmatically — your LLM does NOT run for those requests, and the DOJO delivers the finished image to the requester via send_to_agent automatically using your name as the sender. Your LLM only runs when someone messages you directly (e.g., follow-up questions about a generation). Be direct, brief, and useful. Do NOT try to call image_generate_internal — you don't have a working image-generation tool.`;
