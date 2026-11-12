@@ -1,23 +1,15 @@
-// ════════════════════════════════════════
-// Tool Categories & Index Generator
-// Produces the lightweight text index that goes into system prompts.
-// ════════════════════════════════════════
+// Tool categories and the compact tool index rendered into system prompts. The index lists tool names
+// grouped by category (no descriptions); `load_tool_docs` fetches the schema of any of them.
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { renderIndexName } from './index-notes.js';
-
-// Tool-index representation (remediation C / tool-index slimming): the index
-// lists tool NAMES grouped by category, dropping per-tool descriptions. The
-// model still knows every tool exists and can load_tool_docs any of them (the
-// two-phase-load design is preserved), at a fraction of the tokens.
 
 // Tool category definitions, order matters, categories are shown in this order
 export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   {
     label: 'Meta',
-    // DOJO-REPORT T3: `dojo_report` joins the category every agent already holds, so
-    // reporting a platform problem is default-granted with no new label and no backfill
-    // (owner ruling D5). Appended, never reordered — the label string is a cached prefix.
+    // `dojo_report` joins the category every agent already holds, so it is default-granted with no new
+    // label. Appended, never reordered: the label string is part of the cached prefix.
     tools: ['load_tool_docs', 'dojo_report'],
   },
   {
@@ -29,15 +21,12 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['web_search', 'web_fetch', 'web_browse'],
   },
   {
-    // Right-dock workspace: slides the dojo aside and shows something next to
-    // the chat. canvas_render renders agent-produced HTML/docs; open_browser
-    // loads a live website. Both are view-together surfaces, not file writes.
+    // Right-dock workspace: view-together surfaces next to the chat, not file writes.
     label: 'Shared Workspace (right dock)',
     tools: ['canvas_render', 'open_browser', 'canvas_read', 'screen_broadcast'],
   },
   {
-    // Platform-capability media generators. Each dispatches to the model
-    // configured for that capability (see set_capability_model).
+    // Each dispatches to the model configured for that capability (see set_capability_model).
     label: 'Media Generation (image / video / music / speech)',
     tools: ['image_create', 'video_create', 'music_create', 'tts_create', 'transcribe_audio'],
   },
@@ -62,59 +51,40 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['recall_recent_thread', 'history_search', 'history_get', 'history_expand'],
   },
   {
-    // PHASE-2 T7: commitments are OBLIGATIONS, not recall. `loop_resolve` sat in the recall
-    // group because the thing it closed was recovered from remembered prose; a promise the
-    // agent makes is not a memory operation, and grouping it as one is what made it feel
-    // optional.
-    // PHASE-2 T8V: both verbs absorbed into work_open / work_close_request. The
-    // group survives as a POINTER so the "what you still owe" framing that made
-    // the promise feel non-optional is not lost in the merge.
+    // Pointer group: commitments are obligations, not recall; work_open / work_close_request carry them.
     label: 'Open Work (what you still owe)',
     tools: ['work_open', 'work_close_request'],
   },
   {
-    // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).
-    // Members of the same group_id can write/read a shared namespace; faster
-    // and lossless compared to A2A handoff messages.
+    // Squad-shared memory: members of one group_id read and write a shared namespace.
     label: 'Squad Coordination',
     tools: ['squad_share', 'squad_recall'],
   },
   {
-    // PHASE-2 T8V: twenty-two names became six verbs. The index lists NAMES, so it
-    // lists six; the operations each verb performs are in its own description,
-    // which `load_tool_docs` fetches.
+    // The index lists names; each verb's operations are in its description (fetched by `load_tool_docs`).
     label: 'Work Tracker (projects, tasks, reminders, promises)',
     tools: ['work_open', 'work_update', 'work_note', 'work_close_request', 'work_validate', 'work_schedule'],
   },
   {
-    // Tools the primary agent uses to create, edit, organize, and communicate
-    // with its sub-agents. Ordered by workflow: discovery → create/end →
-    // edit identity → groups → messaging → session/presence.
+    // Ordered by workflow: discovery, create/end, edit identity, groups, messaging, session.
     label: 'Managing Other Agents',
     tools: [
-      // Discovery, find what's out there before acting on it
       'list_agents',
       'list_groups',
       'list_models',
-      // Creating and ending sub-agents
       'spawn_agent',
       'kill_agent',
       'spawn_timeout_decision',
-      // Reading sub-agent state
       'get_agent_profile',
-      // Editing an existing sub-agent in place (non-destructive)
       'update_agent',
-      // Groups
       'create_agent_group',
       'update_group',
       'assign_to_group',
       'delete_group',
       'get_group_detail',
-      // Messaging between agents
       'send_to_agent',
       'broadcast_to_group',
       'complete_task',
-      // Session management
       'reset_session',
     ],
   },
@@ -127,14 +97,12 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['show_to_user', 'imessage_send', 'imessage_list_contacts', 'share_publicly', 'share_file', 'add_safe_sender'],
   },
   {
-    // Tools the owner-facing primary uses to run the Dojo itself on the
-    // owner's behalf: change platform settings, navigate the dashboard,
-    // toggle channels, and manage updates. See agent-controls.ts.
+    // Tools the owner-facing primary uses to run the Dojo on the owner's behalf (see agent-controls.ts).
     label: 'DOJO Controls (change settings / navigate the dashboard on the owner\'s behalf)',
     tools: ['set_user_presence', 'open_settings', 'dashboard_navigate', 'set_capability_model', 'set_voice', 'set_channel', 'check_for_update', 'apply_update'],
   },
   {
-    // Owner-facing oversight + the engine's self-repair surface.
+    // Owner-facing oversight and the engine's self-repair surface.
     label: 'Oversight & Admin',
     tools: ['cost_summary', 'channel_inspect', 'dojo_inspect', 'dreamer_run_now', 'approve_destructive_action'],
   },
@@ -147,10 +115,8 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['tunnel'],
   },
   {
-    // Merged cross-account reads (F4): one call covers every connected surface
-    // so a weak model can't silently answer from an arbitrary subset. The base
-    // `calendar_agenda` is the merged agenda (listed under Google Calendar);
-    // `email_search` is the merged mailbox search.
+    // Merged cross-account reads: one call covers every connected surface, so an answer is never drawn
+    // from an arbitrary subset. `calendar_agenda` is the merged agenda (listed under Google Calendar).
     label: 'Unified Search (all connected accounts at once)',
     tools: ['email_search'],
   },
@@ -261,26 +227,14 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
 ];
 
-/**
- * Compact tool index for v2: tool names grouped by category (no per-tool
- * descriptions), with the always-loaded set enumerated once at the top instead
- * of marked on every entry. For a primary-class agent (~165 tools) this keeps
- * the index near ~1.4K tokens. The model calls `load_tool_docs` for the full
- * schema of any tool that isn't always-loaded.
- */
+/** Compact tool index: names grouped by category, with the always-loaded set enumerated once at the top. */
 export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: string[]): string {
   const toolMap = new Map(agentTools.map(t => [t.name, t]));
   const alwaysLoadedSet = new Set(alwaysLoaded);
 
   const lines: string[] = [];
   lines.push('## Available Tools', '');
-  // v2.5.42, primary-class agents (the primary agent and equivalents) get the structured
-  // 5-bullet reflex block even in compact mode. Field test showed DeepSeek V4
-  // Pro skimming past the one-paragraph version: the primary agent had file_append,
-  // scratchpad_set, and work_open always-loaded on prod but
-  // never used them on a multi-source flowchart task. The dense paragraph
-  // was technically present; structurally invisible. Sub-agents stay on the
-  // short paragraph since they rarely run the corpus-synthesis pattern.
+  // Primary-class agents get the structured reflex block, sub-agents the short paragraph.
   const isPrimaryClass =
     alwaysLoadedSet.has('work_open') &&
     alwaysLoadedSet.has('file_append') &&
@@ -303,35 +257,17 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   }
   if (toolMap.has('file_append')) lines.push('', '**When an answer deserves to be long** (a report, a document, a story), build it in a file from the start: `file_write` the first part, `file_append` each next part, then hand over the file with a short message. Never attempt one huge reply.');
   lines.push('');
-  // T85 — THIS LINE NAMES WHAT THE CALL CARRIES, AND `alwaysLoaded` IS THAT, NOT THE DECLARATION.
-  // Measured on the release golden (`cache-prefix.primary.txt`): it named 30 always-loaded tools
-  // including `complete_task` while the tools array on the same request held 29 — `getFilteredTools`
-  // strips `complete_task` from any agent that must not self-terminate (`surface.ts:301-309`), the
-  // primary included. Prose promising a tool the primary cannot call, and a model that trusts the
-  // line spends a turn finding out. The caller now passes `partitionToolsForApiCall(...).alwaysLoaded`
-  // — the SAME head `model.ts` puts on the wire, so the two cannot drift again.
-  // KNOCK-ON, RECORDED RATHER THAN DISCOVERED: `isPrimaryClass` above reads this same argument, so
-  // the 7-reflex block now renders for an agent that HOLDS `work_open` + `file_append` +
-  // `scratchpad_set`, not one that merely declares them. Byte-identical for every real primary (all
-  // three survive its filter); an agent that declared them without the permission to hold them was
-  // being taught reflexes it could not perform.
+  // Names what the call carries: `alwaysLoaded` must be the head the transport sends
+  // (`partitionToolsForApiCall`), not the declaration, so the line never promises a tool the agent's
+  // filter stripped (e.g. `complete_task`). `isPrimaryClass` reads the same argument.
   lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);
   lines.push('');
 
-  // Track which tools we've listed so we can report any uncategorized at the end
   const listed = new Set<string>();
 
   for (const category of TOOL_CATEGORIES) {
-    // T80b substitution rule (was: `category.tools.filter(name =>
-    // toolMap.has(name))`, which dropped a whole category — Gmail,
-    // Calendar, etc. — the instant every canonical name was withheld, even
-    // when the agent held all of that category's `user_` twins; a
-    // user-account-only agent, the most-restrictive default, saw its
-    // family vanish and then invented names for it). Per canonical name, in
-    // DECLARED order: render the canonical if held (byte-identical to
-    // pre-T80b — the cache-prefix golden), else its `user_` twin if THAT is
-    // held, else neither. A category is skipped only when neither form of
-    // any of its names is held. No Set/Map iteration order.
+    // Per canonical name in declared order: render it if held, else its `user_` twin, else neither. A
+    // category is skipped only when no form of any name is held. No Set/Map iteration order.
     const rendered: string[] = [];
     for (const canonical of category.tools) {
       if (toolMap.has(canonical)) {
@@ -345,25 +281,16 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     }
     if (rendered.length === 0) continue;
 
-    // One line per category: the names, comma-joined. The model can
-    // load_tool_docs any of them for the full schema. The INDEX_NOTES lookup is
-    // the IDENTITY for every name but its one entry, so an agent that does not
-    // hold that tool gets a byte-identical line — the annotation rides the NAME.
+    // One line per category. The INDEX_NOTES lookup is the identity for every name but its one entry, so
+    // an agent that does not hold that tool gets a byte-identical line.
     lines.push(`**${category.label}:** ${rendered.map(renderIndexName).join(', ')}`);
     rendered.forEach(n => listed.add(n));
     lines.push('');
   }
 
-  // Tools not rendered on any category line above. R6 completeness (every
-  // held tool name must appear literally somewhere in the index) treats two
-  // cases differently: MIRRORED — canonical sibling IS a declared category
-  // name and was rendered above (agent holds both forms; canonical won the
-  // slot) — stays a pattern sentence, locked byte-for-byte by the
-  // cache-prefix golden (PRESERVE 3(a)). ORPHANED — no declared category
-  // lists its canonical base at all — gets a literal `Other` line like any
-  // other uncategorized tool, so a stray `user_` tool can never hide behind
-  // the pattern sentence's 3 examples (the part that makes this a fix for
-  // any future tool family, not a Gmail patch).
+  // Tools not rendered on a category line. MIRRORED (the canonical sibling is a declared name and was
+  // rendered above) stays a pattern sentence, locked by the cache-prefix golden. ORPHANED (no category
+  // lists the canonical base) gets a literal `Other` line, so a stray `user_` tool never hides.
   const uncategorized = agentTools.filter(t => !listed.has(t.name));
   const allCategoryNames = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
   const isMirroredUserVariant = (name: string) =>
@@ -372,12 +299,9 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   const trueOther = uncategorized.filter(t => !isMirroredUserVariant(t.name));
 
   if (mirroredUserVariants.length > 0) {
-    // v3.5 field fix 3, test-2 rank 7: the held twins are NAMED, literally, never covered by a pattern
-    // sentence with three examples. The owner's field test: an agent holding both forms concluded
-    // `user_gmail_list_labels` "doesn't appear to exist" because the index never printed it. Order is
-    // the categories' DECLARED order (category by category, name by name), so the line is a function of
-    // the held names only: stable, sorted the same way every time, nothing volatile. This replaces both
-    // pattern sentences (the "every ... tool above" one and its T80b rewording).
+    // Held twins are named literally, never covered by a pattern sentence: an agent holding both forms
+    // otherwise concluded an unprinted `user_` tool did not exist. Order is the categories' declared
+    // order, so the line depends only on the held names.
     const held = new Set(mirroredUserVariants.map((t) => t.name));
     const ordered: string[] = [];
     for (const category of TOOL_CATEGORIES) {

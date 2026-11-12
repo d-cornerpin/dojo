@@ -1,36 +1,18 @@
-// ════════════════════════════════════════
-// C27 Phase 1: hidden tool aliases (rename/merge migration)
-// ════════════════════════════════════════
-//
-// A rename or merge is a tool-CONTRACT change: agents hold old tool names in
-// vault memory and in in-flight tracker tasks, and prompts/tests reference
-// them. To avoid breaking that on the day a rename lands, every renamed/merged
-// tool keeps a HIDDEN alias here for at least one release. An alias is NOT a
-// tool definition, so it never appears in the tool index or the API tools array
-// (it cannot be selected fresh), but a call to the old name still routes to the
-// new tool (with a param transform where the shape changed) and the result
-// carries a one-line "renamed" note.
-//
-// A deleted tool (no replacement) gets a `tombstone` entry: the old name
-// returns a fixed pointer error telling the agent what to use instead.
-//
-// Resolution hooks (see the wiring in tools.ts / v2/loop.ts):
-//   1. loop ingestion: canonicalize the model's tool-call names before any gate
-//      or classifier reads them (they match on canonical names).
-//   2. executeTool wrapper: safety net for every dispatch path (synthetic
-//      calls, A2A, auto-route) + emits the rename note on the result.
-//   3. load_tool_docs: an old name resolves to the new tool's docs.
-//   4. tools_policy: old allow/deny entries map to the new name.
+// Hidden tool aliases: a renamed or merged tool keeps an old-name entry so agents holding the old name
+// reach the new tool. An alias is not a tool definition: it never appears in the tool index or API
+// tools array. A tombstone marks a deleted tool: the old name returns a fixed pointer error.
+// Each reader of a tool name resolves it first (loop ingestion before any gate, executeTool, load_tool_docs,
+// tools_policy, secret fields): a new dispatch path must resolve too, since gates match canonical names.
 
 export interface AliasRename {
   to: string;
   transform?: (args: Record<string, unknown>) => Record<string, unknown>;
   note?: string;
-  added?: string; // release the alias was added, for the eventual removal pass
+  added?: string;
 }
 
 export interface AliasTombstone {
-  tombstone: string; // the pointer-error message returned for the removed tool
+  tombstone: string;
   added?: string;
 }
 
@@ -40,17 +22,12 @@ export function isTombstone(e: AliasEntry): e is AliasTombstone {
   return 'tombstone' in e;
 }
 
-// The alias table. Populated cluster-by-cluster as renames land.
-// `added` records the pass; removal needs its own approved pass (keep >= 1 release).
 export const TOOL_ALIASES: Record<string, AliasEntry> = {
-  // ── C27 Phase 1: memory / retrieval cluster (substrate in the name) ──
-  // history_* = raw conversation history + summaries; vault_* = curated store.
   memory_grep: { to: 'history_search', added: 'C27p1 2026-07-03' },
   memory_describe: { to: 'history_get', added: 'C27p1 2026-07-03' },
   memory_expand: { to: 'history_expand', added: 'C27p1 2026-07-03' },
   vault_expand: { to: 'vault_get', added: 'C27p1 2026-07-03' },
-  // memory_search was DELETED (self-described wrapper); route to history_search,
-  // renaming its {query} param to history_search's {pattern} and keeping the rest.
+  // memory_search routes to history_search, renaming its {query} param to {pattern}.
   memory_search: {
     to: 'history_search',
     added: 'C27p1 2026-07-03',
@@ -60,15 +37,14 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
     },
   },
 
-  // ── C27 Phase 1: name-collision swap pairs (disambiguate by mechanism) ──
   show_canvas: { to: 'canvas_render', added: 'C27p1 2026-07-03' },
-  view_canvas: { to: 'canvas_read', added: 'C27p1 2026-07-03' },       // path/url/html params dropped
+  // view_canvas's path/url/html args are dropped: canvas_read reads only the current canvas.
+  view_canvas: { to: 'canvas_read', added: 'C27p1 2026-07-03' },
   screen_read: { to: 'screen_screenshot', added: 'C27p1 2026-07-03' },
   screen_share: { to: 'screen_broadcast', added: 'C27p1 2026-07-03' },
   open_page: { to: 'dashboard_navigate', added: 'C27p1 2026-07-03' },
   contact_describe: { to: 'contacts_overview', added: 'C27p1 2026-07-03' },
 
-  // ── C27 Phase 1: mechanical merges (old name -> merged tool + injected discriminator) ──
   tunnel_status: { to: 'tunnel', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'status' }) },
   tunnel_start: { to: 'tunnel', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'start' }) },
   tunnel_stop: { to: 'tunnel', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'stop' }) },
@@ -78,18 +54,8 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
   update_agent_profile: { to: 'update_agent', added: 'C27p1 2026-07-03' },
   update_agent_permissions: { to: 'update_agent', added: 'C27p1 2026-07-03' },
 
-  // ── PHASE-2 T8V (added: dc34dfb): the verb collapse, 24 names -> 6 verbs ──
-  //
-  // Every retired name routes to its verb with the discriminator INJECTED, so a
-  // model still holding the old name in vault memory, in an in-flight task
-  // description, or in a technique step reaches the same operation it always
-  // did. Resolution hook 1 runs at loop ingestion, BEFORE any gate or classifier
-  // reads the call — which is exactly why the engine sites had to be rekeyed in
-  // the same change: after this table runs, a classifier watching for
-  // `tracker_create_task` sees `work_open` and never fires again.
-  //
-  // SWEEP-F T7 removes every row below. The `added:` stamp is the commit these
-  // landed on.
+  // Verb collapse: engine sites must key on the verb, since names are canonicalized before any
+  // gate or classifier reads the call.
   tracker_create_project: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'project' }) },
   tracker_create_task: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'task' }) },
   reminder_create: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'reminder' }) },
@@ -112,12 +78,8 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
 
   tracker_pause_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'pause' }) },
   tracker_resume_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'resume' }) },
-  // THE ONE TRANSFORM THAT IS NOT A BARE INJECTION. The retired verb's own
-  // parameter was called `action`, and one of its values was "pause" — the same
-  // word as a work_schedule action. Left alone, `tracker_resolve_missed_runs({
-  // action: 'pause' })` would canonicalise to "pause the schedule", which is a
-  // DIFFERENT operation that would silently swallow the missed-run alert. The
-  // choice therefore moves to `resolution` and `action` is overwritten.
+  // Not a bare injection: the retired verb's own `action` value "pause" collides with a work_schedule
+  // action and would silently swallow the missed-run alert, so the choice moves to `resolution`.
   tracker_resolve_missed_runs: {
     to: 'work_schedule',
     added: 'T8V dc34dfb 2026-07-29',
@@ -127,30 +89,21 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
     },
   },
 
-  // ── C27 Phase 1: removed dead stubs (tombstones, no replacement tool) ──
-  // Their pointer text names the CURRENT surface, so an agent that still holds
-  // one of these gets told what to call today, not what it should have called
-  // in 2026-07.
+  // Tombstones: the pointer text names the current surface.
   tracker_edit_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_edit_notes was removed. To append a note use work_note({ task_id, notes }); to replace the notes field use work_update({ action: "edit", task_id, notes }).' },
   tracker_clear_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_clear_notes was removed. To append a note use work_note({ task_id, notes }); to replace/clear the notes field use work_update({ action: "edit", task_id, notes: "" }).' },
-  // Retired by C27 into `tracker_validate`, which T8V retired into `work_validate`.
-  // Chained through in one hop so the oldest names still land on the live verb.
+  // Chained in one hop (via tracker_validate) so the oldest names still land on work_validate.
   tracker_validate_complete: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'complete' }) },
 };
 
 export interface ResolvedAlias {
   name: string;
   args: Record<string, unknown>;
-  note?: string;       // engine note to prepend to the tool result, when aliased
-  tombstone?: string;  // set when the old name was removed with no replacement
+  note?: string;
+  tombstone?: string;
 }
 
-/**
- * Resolve a possibly-aliased tool name to its canonical form. Returns the input
- * unchanged when the name is not an alias. For a rename, applies the optional
- * arg transform and attaches the rename note. For a tombstone, returns the
- * pointer error in `tombstone` (the caller returns it as a tool error).
- */
+/** Resolve a possibly-aliased name: a rename applies its arg transform and note, a tombstone sets `tombstone`. */
 export function resolveToolAlias(name: string, args: Record<string, unknown>): ResolvedAlias {
   const entry = Object.hasOwn(TOOL_ALIASES, name) ? TOOL_ALIASES[name] : undefined;
   if (!entry) return { name, args };

@@ -1,108 +1,31 @@
-// ════════════════════════════════════════════════════════════════════════════
-// NAME-HELP (T80a — "a wrong tool name is not a permission problem")
-//
-// THE INCIDENT: an agent guessed five tool names that do not exist
-// (`user_gmail_label_add`, `user_gmail_update`, `user_gmail_modify`,
-// `gmail_label_add`, `gmail_add_label`) while trying to label an email. The
-// engine answered every one of them with a PERMISSION verdict — "this is a
-// permission issue, not a format issue" — plus an instruction to tell the
-// user it was blocked. The agent had full access the whole time; it just
-// never called the one real tool, `user_gmail_label`. It reported itself
-// blocked because the engine told it, confidently, that it was.
-//
-// THIS MODULE exists so every tool-name failure text tells the TRUTH: a name
-// nobody has ever heard of is a NAMING problem (fix the spelling, try again),
-// and a name that is real but withheld from THIS agent is a PERMISSION
-// problem (escalate). Those are different facts and the model needs to know
-// which one it is looking at, because the recovery instructions are opposite:
-// "call load_tool_docs with the right name" vs. "ask the user / escalate".
-//
-// ── A PURE LEAF, DELIBERATELY ──
-// This module imports nothing from the tool registry, the surface, or any
-// handler. Every function takes `allowed` (this agent's advertised tool
-// names) and `known` (the platform's full tool universe) as plain `Set`
-// arguments. That keeps this file cycle-free and trivially testable — no
-// database, no agent id, no I/O — and it means every call site is
-// responsible for sourcing those two sets correctly rather than this module
-// reaching backward for them.
-//
-// WHERE CALLERS GET `known` FROM: `agent/tools/definitions.ts`'s
-// `getAllToolDefinitions()` — the declared union of family arrays
-// (`toolDefinitions` + pdf + Google read/write/slides/forms + Microsoft
-// read/write/office + plaud + credentials + unified) that
-// `agent/tools/surface.ts`'s `getFilteredTools` filters FROM. Not
-// `agent/tools/registry.ts`'s `registryToolDefinitions()` (same name set,
-// deduplicated wrapper for the on-disk docs index) — that pulls in the full
-// handler table, which imports every `cat/*.ts` handler including this
-// module's own callers, and importing it here would manufacture a real
-// import cycle.
-//
-// WHERE CALLERS GET `allowed` FROM: `getFilteredTools(agentId)` — this
-// agent's advertised surface. Suggestions and family listings are drawn
-// ONLY from here, never from `known` (R3/R4 below).
-//
-// ── R5 (OWNER RULING) — GENERIC ACROSS EVERY TOOL, NO FAMILY BRANCHES ──
-// The incident's five names are TEST FIXTURES, not special cases. Nothing
-// below reads "gmail", "google" or "microsoft" as a string to special-case.
-//
-// ── WHY THERE IS NO VERB-SYNONYM TABLE HERE (OWNER RULING, WITHDRAWN) ──
-// An earlier version of this module scored suggestions with a small table of
-// verb near-synonyms (asserting e.g. label ≈ tag ≈ mark ≈ add ≈ update) so
-// that a guessed `user_gmail_update` would rank the real `user_gmail_label`
-// first. The owner withdrew that requirement: encoding "these words mean
-// the same thing" is a SEMANTIC GUESS, not a fact, and it will misfire on a
-// tool family nobody has tested it against — a confidently wrong pointer is
-// exactly the failure class this task exists to end. `suggestToolNames`
-// below is lexical only (containment, shared tokens, edit distance) and
-// returns NOTHING when a guess shares no real signal with anything allowed.
-//
-// The hard cases that scoring alone cannot rescue (`user_gmail_update`,
-// `user_gmail_modify` — verb guesses that share no substring and no token
-// with the real tool's name) are instead rescued by FAMILY ENUMERATION:
-// `describeNameFailure` lists the real tools that share the guess's leading
-// segment (`gmail`, `calendar`, `file`, `work`, whatever it is) whenever
-// scoring finds nothing worth pointing at. That is a FACT ("here is every
-// `user_gmail_*` tool you can call") rather than a guess, and the incident
-// agent would have seen the real name in that list.
-// ════════════════════════════════════════════════════════════════════════════
+// Name-help: a never-real tool name is a NAMING problem (fix the spelling, call `load_tool_docs`); a
+// real name withheld from THIS agent is a PERMISSION problem (escalate). The recoveries are opposite.
+// A pure leaf (no registry, surface or handler imports, so no cycle): callers pass `allowed`
+// (`getFilteredTools(agentId)`) and `known` (`getAllToolDefinitions()`, not `registry.ts`, whose
+// handler table imports this module's own callers). Suggestions come only from `allowed`.
+// Generic across every tool, and no verb-synonym table: synonyms are a guess that misfires on untested
+// families. Suggestions are lexical; family enumeration (a fact) covers the rest.
 
-/** What a requested tool name actually is, relative to one agent. */
 export type ToolNameVerdict = 'allowed' | 'exists_not_allowed' | 'unknown';
 
-/**
- * The one classification every call site needs: is this name something the
- * agent may call right now, something that exists for SOME agent but not
- * this one, or something that was never a real tool at all?
- *
- * `known` must be the global tool universe (see module header); a name
- * present in `allowed` is by construction also present in `known` at any
- * consistent call site, but `allowed` is checked first regardless so a
- * caller that passes a stale/partial `known` set still gets the right
- * answer for names the agent can actually use.
- */
+/** `allowed` is checked first so a stale or partial `known` set still answers right for usable names. */
 export function classifyToolName(requested: string, allowed: Set<string>, known: Set<string>): ToolNameVerdict {
   if (allowed.has(requested)) return 'allowed';
   if (known.has(requested)) return 'exists_not_allowed';
   return 'unknown';
 }
 
-// ── Lexical normalization (no semantic knowledge — see module header) ──────
 
 function normalizeName(name: string): string {
   const lower = name.toLowerCase();
   return lower.startsWith('user_') ? lower.slice('user_'.length) : lower;
 }
 
-/** Genuine abbreviations of the SAME word (not a different word with a
- * similar meaning). Kept tiny and literal on purpose. */
 const ABBREVIATIONS: Readonly<Record<string, string>> = {
   ls: 'list',
   del: 'delete',
 };
 
-/** Strips a trailing plural "s" — "labels" and "label" are the SAME token,
- * not a semantic guess. Conservative: leaves short words and double-s
- * endings ("access", "process") alone. */
 function singularize(token: string): string {
   if (token.length > 4 && token.endsWith('s') && !token.endsWith('ss')) {
     return token.slice(0, -1);
@@ -118,15 +41,10 @@ function rawTokens(name: string): string[] {
   return normalizeName(name).split('_').filter(Boolean).map(canonicalToken);
 }
 
-/** The tool's family/domain: its leading token once "user_" is stripped —
- * `gmail` for `gmail_update` and for `user_gmail_label`, `work` for
- * `work_update`. A fact read off the name, not a guess about it. */
 function familyOf(name: string): string {
   return rawTokens(name)[0] ?? '';
 }
 
-/** Every non-family token — the part of the name that names the specific
- * operation/object, once the family segment is set aside. */
 function significantTokens(name: string): string[] {
   return rawTokens(name).slice(1);
 }
@@ -149,25 +67,14 @@ export function editDistance(a: string, b: string): number {
 
 interface ScoredCandidate {
   name: string;
-  containment: number; // 1 if one normalized form contains the other, else 0
-  sameFamily: number; // 1 if the leading segment matches, else 0
-  sharedSignificant: number; // shared non-family tokens
-  distance: number; // edit distance between normalized forms
+  containment: number;
+  sameFamily: number;
+  sharedSignificant: number;
+  distance: number;
 }
 
-/**
- * Is this candidate's match to `requested` actually EARNED, as opposed to a
- * lexical coincidence? Containment always earns it. Otherwise the candidate
- * must be in the SAME FAMILY as the request AND share at least one
- * significant (non-family) token — sharing only the family segment ("gmail")
- * is not enough on its own (nearly every candidate in a family shares it, so
- * it discriminates nothing), and sharing a significant token ACROSS families
- * (a guessed `gmail_update` coincidentally matching `work_update`'s "update")
- * is exactly the kind of confidently-wrong cross-family pointer this scoring
- * must never produce. A guess with no earned candidate returns no
- * suggestions at all; `describeNameFailure` falls back to family enumeration
- * instead of inventing one.
- */
+/** Is the match earned? Containment, or same family AND a shared non-family token; a token shared across
+ *  families (`gmail_update` vs `work_update`) is the confidently wrong pointer this must never produce. */
 function isEarnedMatch(c: ScoredCandidate): boolean {
   return c.containment === 1 || (c.sameFamily === 1 && c.sharedSignificant > 0);
 }
@@ -186,26 +93,12 @@ function compareScored(a: ScoredCandidate, b: ScoredCandidate): number {
   if (a.containment !== b.containment) return b.containment - a.containment;
   if (a.sharedSignificant !== b.sharedSignificant) return b.sharedSignificant - a.sharedSignificant;
   if (a.distance !== b.distance) return a.distance - b.distance;
-  if (a.name.length !== b.name.length) return a.name.length - b.name.length; // shorter name wins ties
-  return a.name.localeCompare(b.name); // final deterministic tiebreak
+  if (a.name.length !== b.name.length) return a.name.length - b.name.length;
+  return a.name.localeCompare(b.name);
 }
 
-/**
- * Suggest up to `limit` real tool names close to `requested`, drawn ONLY
- * from `allowed` (R3/R4 — never from `known`; a tool that exists globally
- * but this agent cannot use must never be pointed at as the fix for a
- * naming mistake, that would just trade a naming error for a confusing
- * permission error).
- *
- * Purely lexical: (a) substring/superstring containment of the normalized
- * form, then (b) shared significant-token count within the same family,
- * then (c) edit distance, then (d) shorter name. No candidate outside
- * `isEarnedMatch` is ever returned — a guess that shares nothing but a
- * common family segment, or that happens to share a verb with a tool in a
- * DIFFERENT family, gets no suggestion here. Returns `[]` rather than
- * invent a confident-looking wrong pointer; `describeNameFailure` is what
- * falls back to family enumeration for those cases.
- */
+/** Up to `limit` close names drawn only from `allowed` (a tool this agent cannot use is never the fix
+ *  for a misspelling). Lexical, and `[]` rather than a confident-looking wrong pointer. */
 export function suggestToolNames(requested: string, allowed: Set<string>, limit = 3): string[] {
   const requestedNorm = normalizeName(requested);
   const requestedFamily = familyOf(requested);
@@ -223,13 +116,6 @@ export function suggestToolNames(requested: string, allowed: Set<string>, limit 
   return earned.slice(0, limit).map((c) => c.name);
 }
 
-/**
- * Every tool in `allowed` that shares `requested`'s leading family segment
- * (`gmail`, `calendar`, `file`, `work`, …), sorted for determinism. A FACT,
- * not a guess: no scoring, no tie-breaking, just "these are the real tools
- * in the family you were trying to call." Empty when `requested` has no
- * recognizable family segment or nothing in `allowed` shares it.
- */
 export function toolsInSameFamily(requested: string, allowed: Set<string>): string[] {
   const requestedFamily = familyOf(requested);
   if (!requestedFamily) return [];
@@ -243,18 +129,8 @@ export function toolsInSameFamily(requested: string, allowed: Set<string>): stri
 
 const FAMILY_LIST_CAP = 8;
 
-/** Formats a family list capped at `FAMILY_LIST_CAP`, with a "+N more" tail
- * when there are more members than that.
- *
- * FIX-WAVE ITEM 2: the wording claims only a PREFIX, never kinship. `family`
- * is `familyOf()`'s leading token — for a domain name (`gmail`, `calendar`)
- * that token genuinely reads as a domain, but for a verb-first name
- * (`set_capability_model`, `set_channel`, `set_user_presence`, `set_voice`
- * all bucket as family "set") it is nothing but a shared verb, and "the
- * 'set' tools you can call" reads as an invented kinship the tools don't
- * have. Mechanical prefix phrasing is true of every family, verb-first or
- * domain-first alike, and claims nothing else — no per-family branching
- * (R5): every family gets this exact phrasing. */
+/** A family list capped at `FAMILY_LIST_CAP`, "+N more" tail. Wording claims only a shared prefix,
+ *  never kinship ("set" is just a shared verb). */
 function formatFamilyList(family: string, members: string[]): string {
   const shown = members.slice(0, FAMILY_LIST_CAP);
   const rest = members.length - shown.length;
@@ -262,8 +138,6 @@ function formatFamilyList(family: string, members: string[]): string {
   return `no tool by that name; tools whose names start with "${family}_": ${shown.join(', ')}${tail}`;
 }
 
-/** The parenthetical pointer for one unknown name: an earned suggestion,
- * else a family listing, else a plain admission nothing close was found. */
 function pointerFor(name: string, allowed: Set<string>): string {
   const suggestions = suggestToolNames(name, allowed);
   if (suggestions.length > 0) return `did you mean ${suggestions.join(', ')}?`;
@@ -274,32 +148,9 @@ function pointerFor(name: string, allowed: Set<string>): string {
 }
 
 /**
- * The shared sentence(s) every tool-name-failure call site emits. Classifies
- * every name in `requested`, then reports the UNKNOWN group and the
- * EXISTS-BUT-NOT-ALLOWED group SEPARATELY (R5 mixed-case decision — a call
- * that guessed two names and also asked for one real-but-denied tool must
- * not have either group's wording swallow the other's).
- *
- * The UNKNOWN group never carries permission/escalation language: the next
- * action is to call `load_tool_docs` with a correct name, never "tell the
- * user you are blocked" (that instruction is what produced the incident).
- * For each unknown name it points at an EARNED lexical suggestion when one
- * exists, otherwise the real tools sharing its family, otherwise it says
- * plainly that nothing close was found — never a guessed pointer.
- *
- * The EXISTS-BUT-NOT-ALLOWED group keeps the existing permission framing and
- * escalation advice (complete_task when this agent can self-complete,
- * otherwise send_to_agent / tell the user), unchanged from before this task.
- *
- * FIX-WAVE ITEM 3: a name that classifies `allowed` is not a naming or
- * permission failure, but a caller only reaches this function BECAUSE
- * something it dispatched failed — so an all-`allowed` input means the tool
- * really is on this agent's list and STILL failed to dispatch (reachable
- * only at the execute-site else-branch via a second drift defect: the
- * membership routing found no case for a name that IS in the registry).
- * This used to return `""` for that input, which handed the model silence
- * exactly when something the engine itself got wrong. Now it names the
- * tool(s) and gives a concrete next step instead.
+ * The shared text every tool-name-failure call site emits. Unknown and exists-but-not-allowed names
+ * are reported separately; the unknown group never carries permission language. An `allowed` name
+ * here still failed to dispatch, so it is named with a next step, never silence.
  */
 export function describeNameFailure(requested: string[], allowed: Set<string>, known: Set<string>): string {
   const unknownNames: string[] = [];
@@ -338,10 +189,7 @@ export function describeNameFailure(requested: string[], allowed: Set<string>, k
     );
   }
 
-  // FIX-WAVE ITEM 3: every requested name classified `allowed` — nothing to
-  // report as a naming or permission failure, yet the caller only got here
-  // because dispatch itself failed for a name it should have handled. Name
-  // it plainly rather than answering "" and leaving the model with nothing.
+  // Every requested name classified `allowed`: dispatch itself failed, so name it rather than answer "".
   if (sentences.length === 0 && allowedNames.length > 0) {
     const plural = allowedNames.length > 1;
     sentences.push(

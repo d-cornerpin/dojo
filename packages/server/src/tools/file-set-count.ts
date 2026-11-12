@@ -1,36 +1,19 @@
-// v3.5 field fix 3, audit #5: the FILE-SET counter behind a task's measure (work/measure.ts).
-//
-// A measure `{ tool: "file_list", args: { path, pattern } }` names a set of files that is still to do
-// (the PDFs in an inbox folder, the drafts not yet filed). The engine counts the files under `path`
-// whose path relative to it matches the glob `pattern`, by walking the real directory: the count is
-// bounded by what is on disk, never by a number. Glob: `*` and `?` stay within one folder, `**` crosses
-// folders. A pattern without `**` is only walked as deep as it reaches. Symlinked folders are not
-// followed (a loop cannot inflate the count). A top folder that is not there, or cannot be read, is a
-// reading that could not be made, never 0. A SUBFOLDER that cannot be read is named in the reading
-// (`unreadable`); the count of the rest is kept for display, but the task's row stores the whole reading
-// as one that could not be made (`work/ledger-store.ts readingForClose`), so it is never a 0 for any close.
-//
-// Authorization: the measure is checked with `file_list`'s own gates before every count
-// (`agent/tools/cat/measure-door.ts` `refusalFor`), so this walk only ever reads a tree the agent's
-// own read grant covers. It runs on the platform's timing (at the end of a turn, at a close), outside
-// any tool call's capability, which is why it reads the disk directly (see the effect-import list).
+// The file-set counter behind a task's measure (work/measure.ts): counts files under `path` whose
+// relative path matches glob `pattern`, by walking the real directory. `*` and `?` stay within one
+// folder, `**` crosses folders; a pattern without `**` is walked only as deep as it reaches. Symlinked
+// folders are never followed. A top folder that cannot be read is a reading that could not be made,
+// never 0; an unreadable subfolder is named in `unreadable` and the row stores the whole reading as
+// unmade (`work/ledger-store.ts readingForClose`). The walk is registered under the agent's own stop
+// (`openAgentCall`, `turn` scope), and a stopped walk is no reading, never a partial count.
+// Authorization: the measure is checked with `file_list`'s gates before every count
+// (`agent/tools/cat/measure-door.ts` `refusalFor`). The walk runs at turn end and at a close, outside
+// any tool call's capability, which is why it reads the disk directly.
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveHomePath } from '../agent/path-resolve.js';
 import { isFsCaseInsensitive } from '../agent/fs-case.js';
 
-// Re-review 2 (S2, S10) on top of the above:
-//   * CASE: the glob follows the measured folder's OWN volume (a `Scan 12.PDF` matches "*.pdf" exactly
-//     when that volume ignores case). Measured read-only on the folder itself (`volumeIgnoresCase`),
-//     because the boot probe measures only the volume the Dojo's data lives on; it is the fallback
-//     only when no folder name on the path has a letter to flip.
-//   * BOUND: the walk is registered under the agent's own stop (`openAgentCall`, `turn` scope), so the
-//     turn's abort ends it; a stopped walk is no reading, never a partial count. No count or depth limit.
-//   * UNREADABLE: a subfolder that cannot be read is NAMED in the reading (`unreadable`) and the rest is
-//     still counted for display; for any close the reading is one that could not be made (re-review 3, M4).
-//   * SYMLINKS: never followed (a symlinked folder is neither walked nor counted), so no loop.
-
-/** The folder's own case sensitivity: stat it under a case-flipped name and compare the inode. */
+/** The folder's own case sensitivity (the boot probe covers only the data volume): case-flipped inode match. */
 async function volumeIgnoresCase(dir: string): Promise<boolean> {
   let p = dir;
   for (;;) {
@@ -41,7 +24,7 @@ async function volumeIgnoresCase(dir: string): Promise<boolean> {
         const [a, b] = await Promise.all([fs.promises.stat(p), fs.promises.stat(path.join(path.dirname(p), flipped))]);
         return a.dev === b.dev && a.ino === b.ino;
       } catch {
-        return false;   // the flipped name is not there: this volume tells case apart
+        return false;
       }
     }
     const parent = path.dirname(p);
@@ -80,7 +63,7 @@ export async function countFileSet(args: { path?: string; pattern?: string }, ag
   try {
     if (slot?.refused) return { ok: false, error: 'stopped before the count started' };
     const match = globMatcher(pattern, await volumeIgnoresCase(base));
-    // How deep the pattern can reach: unlimited with `**`, else one level per `/`.
+
     const maxDepth = pattern.includes('**') ? Infinity : pattern.split('/').length;
     let count = 0;
     const unreadable: string[] = [];
@@ -96,7 +79,7 @@ export async function countFileSet(args: { path?: string; pattern?: string }, ag
       }
       for (const e of entries) {
         const relPath = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) {   // a symlink is neither a directory nor a file here: never followed
+        if (e.isDirectory()) {
           if (depth + 1 < maxDepth) await walk(path.join(dir, e.name), relPath, depth + 1);   // eslint-disable-line no-await-in-loop -- one folder at a time
         } else if (e.isFile() && match.test(relPath)) {
           count += 1;

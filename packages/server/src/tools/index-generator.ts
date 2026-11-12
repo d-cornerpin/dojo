@@ -1,14 +1,5 @@
-// ════════════════════════════════════════
-// Tool Doc Generator
-// Writes full tool documentation to ~/.dojo/tools/*.md
-// Runs on startup so load_tool_docs can read them.
-// ════════════════════════════════════════
-//
-// PHASE-5 T8 Step 3 (RULING P5-R15 part 2): this module used to hold the READER
-// too, which meant one `node:fs` import served both a boot job and a tool call.
-// The reader is now `./tool-doc-read.ts` and reaches the disk through the
-// facade; what is left here runs ONCE at boot, from `index.ts`, before any agent
-// exists — so this import is platform-internal and says so.
+// Boot-time writer of ~/.dojo/tools/*.md, which `load_tool_docs` reads back via ./tool-doc-read.ts. It
+// runs once from `index.ts` before any agent exists, so its `node:fs` import is platform-internal.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,18 +12,11 @@ import { recordToolDocsGeneration } from './doc-freshness.js';
 
 const logger = createLogger('tool-docs-generator');
 
-// Source directory for hand-written tool doc overrides. When a file named
-// `<tool-name>.md` exists here, it's copied verbatim into ~/.dojo/tools/
-// instead of generating one from the tool definition. Used when a tool
-// needs a longer prompting guide than can reasonably live in the
-// `description` field (e.g. image_create's "how to write good
-// descriptions" section).
+// Hand-written overrides: a `<tool-name>.md` in the docs source directory is copied verbatim instead of
+// generating one, for a tool that needs a longer prompting guide than its description can hold.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOOL_DOCS_SOURCE_DIR = path.resolve(__dirname, './docs');
 
-/**
- * Format a tool definition as a Markdown documentation file.
- */
 export function formatToolDoc(tool: ToolDefinition): string {
   const lines: string[] = [];
   lines.push(`# ${tool.name}`);
@@ -67,28 +51,14 @@ export function formatToolDoc(tool: ToolDefinition): string {
   return lines.join('\n');
 }
 
-/**
- * Generate .md files for all tool definitions.
- * Called on platform startup.
- */
 export async function generateToolDocs(): Promise<{ count: number; expected: number; written: number; pruned: number }> {
-  // Ensure directory exists
   fs.mkdirSync(TOOLS_DIR, { recursive: true });
 
-  // Single source of truth: the REGISTRY owns the complete tool surface, so any
-  // tool family agents can be granted is documented here too. (Replaces a
-  // hand-maintained import list that drifted: forms/pdf/credentials/plaud were
-  // loadable but undocumented, so load_tool_docs dead-ended on them.) PHASE-5
-  // T1: this was `await import('../agent/tools.js')` — the seventh of the seven
-  // dynamic-import hacks §T0-PINS P8 pinned. Nothing here imports this module
-  // from inside the toolbox, so the loop it was breaking did not exist.
+  // The registry owns the complete tool surface, so every grantable tool family is documented here.
   const allTools: ToolDefinition[] = registryToolDefinitions();
 
-  // Deduplicate by name (Google calendar_agenda vs Microsoft calendar_agenda_ms, etc.)
-  // `seen` IS the expected surface: one manual is owed per unique registered name, so its
-  // size is the number the written count has to be compared against. Before the
-  // installed-box audit this number was computed and then thrown away, which is why a box
-  // that wrote nothing could report `count: 0` as success.
+  // Dedupe by name. `seen` is the expected surface (one manual owed per unique name); the recorder
+  // compares it with the written count.
   const seen = new Set<string>();
   let count = 0;
   /** The first real write failure, carried out to the freshness record. */
@@ -97,8 +67,7 @@ export async function generateToolDocs(): Promise<{ count: number; expected: num
     if (seen.has(tool.name)) continue;
     seen.add(tool.name);
 
-    // If there's a hand-written override in src/tools/docs/<name>.md, use
-    // it verbatim. Otherwise generate from the tool definition.
+    // A hand-written override is used verbatim, else the doc is generated from the definition.
     let doc: string;
     const overridePath = path.join(TOOL_DOCS_SOURCE_DIR, `${tool.name}.md`);
     if (fs.existsSync(overridePath)) {
@@ -116,22 +85,15 @@ export async function generateToolDocs(): Promise<{ count: number; expected: num
       fs.writeFileSync(filePath, doc, 'utf-8');
       count++;
     } catch (err) {
-      // Per-tool warn KEPT: it names which manual failed, which the aggregate
-      // cannot. What changes is that the failure is no longer the ONLY record —
-      // `firstWriteError` carries it out to the freshness recorder, so a box
-      // that failed every write can say so once, at ERROR, with a number.
+      // The per-tool warn names which manual failed; `firstWriteError` carries the first one to the recorder.
       const message = err instanceof Error ? err.message : String(err);
       if (firstWriteError === null) firstWriteError = message;
       logger.warn(`Failed to write tool doc for ${tool.name}`, { error: message });
     }
   }
 
-  // Prune ghost docs: the dir is written but historically never cleaned, so
-  // renamed/removed tools left stale `<name>.md` files behind (e.g.
-  // audio_create.md after that tool became tts_create). A stale doc is mostly
-  // inert — there's no executor and it's in no category — but load_tool_docs
-  // could still return it, and it clutters the dir. Delete any `.md` whose
-  // tool name isn't in the current definition set.
+  // Prune ghost docs: delete any `.md` whose tool name is not in the current definition set (a renamed or
+  // removed tool leaves a stale manual that `load_tool_docs` could still return).
   let pruned = 0;
   try {
     for (const file of fs.readdirSync(TOOLS_DIR)) {
@@ -147,12 +109,9 @@ export async function generateToolDocs(): Promise<{ count: number; expected: num
         });
       }
     }
-  } catch { /* dir read failed — non-fatal, nothing to prune */ }
+  } catch { /* dir read failed: non-fatal, nothing to prune */ }
 
-  // THE COMPARISON, and it is not made here: the recorder owns it, so it happens on every
-  // boot by construction rather than at a call site somebody can forget. It also owns the
-  // level — a shortfall is an ERROR, a complete set is the INFO line this function used to
-  // write unconditionally (including when it had written nothing at all).
+  // The recorder owns the comparison and the log level, so it runs on every boot, not at a call site.
   recordToolDocsGeneration({
     expected: seen.size,
     written: count,
@@ -161,7 +120,6 @@ export async function generateToolDocs(): Promise<{ count: number; expected: num
     pruned,
   });
 
-  // `count` is kept as the historical name for the written total; `written` is the same
-  // number under the name the freshness contract uses, so a caller reads whichever it means.
+  // `count` and `written` are the same number (the older name and the freshness contract's name).
   return { count, expected: seen.size, written: count, pruned };
 }
