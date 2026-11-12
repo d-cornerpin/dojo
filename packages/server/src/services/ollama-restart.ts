@@ -95,9 +95,13 @@ export async function restartBrewService(host: OllamaHost, baseUrl: string): Pro
 }
 
 /** A takeover that cannot end in a kind that lasts (an owner's job that starts Ollama again, another user's Ollama, the
- *  fallback serve) is settled for that listener, so no later look stops it again. */
-export const settleTakeover = (l: { pid: number; path: string }): void => noteUpkeep({ settled: { pid: l.pid, path: l.path } });
-export function takeoverSettled(l: { pid: number; path: string }): boolean { const v = upkeepRecord().settled; return !!v && v.pid === l.pid && v.path === l.path; }
+ *  fallback serve) is settled for that listener at the limit it runs with, so no later look stops it again while that
+ *  limit is at least the one wanted; with no limit (another user's Ollama) it holds for good. */
+export const settleTakeover = (l: { pid: number; path: string }, limit?: number): void => noteUpkeep({ settled: { pid: l.pid, path: l.path, limit } });
+export function takeoverSettled(l: { pid: number; path: string }, want: number): boolean {
+  const v = upkeepRecord().settled;
+  return !!v && v.pid === l.pid && v.path === l.path && (v.limit === undefined || v.limit >= want);
+}
 
 /** Homebrew's service, or, when it cannot start, the program on disk as a detached `ollama serve` with the limit in its
  *  own environment, recorded as settled: Ollama is never left down while a program that runs is on disk. */
@@ -110,11 +114,12 @@ export async function startLasting(host: OllamaHost, baseUrl: string, residentCo
   }
   if (!await host.cliRuns()) return 'dead';
   const launchd = await host.getenv(LIMIT_VAR);
-  const pid = host.startServe({ [LIMIT_VAR]: raisedLoadedLimit(launchd, desiredLoaded(residentCount)) ?? (launchd as string).trim() });
+  const limit = raisedLoadedLimit(launchd, desiredLoaded(residentCount)) ?? (launchd as string).trim();
+  const pid = host.startServe({ [LIMIT_VAR]: limit });
   if (pid === null) return 'dead';
   const started = await waitForStart(host, baseUrl, () => host.alive(pid));
   const l = await host.listener(portOf(baseUrl));
-  if (started !== 'dead') settleTakeover(l ?? { pid, path: 'ollama' });
+  if (started !== 'dead') settleTakeover(l ?? { pid, path: 'ollama' }, Number(limit));
   return started;
 }
 
@@ -236,6 +241,6 @@ export async function upkeepServe(
   const again = await during('stop', () => stopServe(host, portOf(local.baseUrl), found.pid));
   if (!again) return during('start', () => startLasting(host, local.baseUrl, residentCount));
   if (!meets(await readOllamaVersion(local.baseUrl))) throw new StepFailed('again', `pid ${again.pid} (${again.path}) took the port again on an old version`);
-  settleTakeover(again);   // a supervisor of the owner's runs the new program: kept, and never stopped again for this
+  settleTakeover(again, desiredLoaded(residentCount));   // a supervisor of the owner's respawned it with launchd's limit: kept
   return 'answering';
 }

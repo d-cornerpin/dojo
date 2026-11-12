@@ -45,7 +45,7 @@ export const plainPullError = (error: string, why?: string | null): string =>
 
 /** The upkeep's one record (`ollama-upkeep.ts`), a JSON config row of what it could not finish. */
 export interface UpkeepRecord {
-  held?: string; starting?: 'app' | 'service' | 'serve'; limitOwed?: boolean; settled?: { pid: number; path: string }; triedAt?: number;
+  held?: string; starting?: 'app' | 'service' | 'serve'; limitOwed?: boolean; settled?: { pid: number; path: string; limit?: number }; triedAt?: number;
 }
 const RECORD = 'ollama_upkeep';
 export function upkeepRecord(): UpkeepRecord {

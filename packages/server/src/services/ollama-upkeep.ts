@@ -16,7 +16,7 @@ import { childFailureText } from '../update/child-failure.js';
 import { type OllamaHost, getOllamaHost } from './ollama-host.js';
 import { heldOllamaVersion, noteUpkeep, upkeepRecord, isUnknownBuild, isVersionRefusal, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
 import {
-  StepFailed, classifyOllama, endStuckStart, portOf, restartWithLimit, setLaunchdLimit, settleTakeover,
+  StepFailed, classifyOllama, desiredLoaded, endStuckStart, portOf, restartWithLimit, setLaunchdLimit, settleTakeover,
   startInstalled, startingNow, takeoverSettled, upkeepApp, upkeepServe, type Start,
 } from './ollama-restart.js';
 import {
@@ -207,7 +207,7 @@ async function keepCurrent(host: OllamaHost | null, local: { id: string; baseUrl
   const found = here;
   if (found.kind === 'not-ollama') return cannot(`the program answering on Ollama's port is not Ollama (${found.path.split('/').pop()}), so the Dojo leaves it alone.`);
   const lasts = found.kind === 'app' || found.kind === 'brew-service';
-  if (!stale && (lasts || isUnknownBuild(before) || takeoverSettled(found))) return ok();
+  if (!stale && (lasts || isUnknownBuild(before) || takeoverSettled(found, desiredLoaded(RESIDENT)))) return ok();
   if (!await host.hasBrew()) return cannot('Homebrew is not installed on this Mac.');
   let started: Start;
   try {
