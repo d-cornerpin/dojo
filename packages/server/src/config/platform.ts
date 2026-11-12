@@ -1,18 +1,12 @@
-// ════════════════════════════════════════
-// Platform Configuration Lookups
-// De-hardcoded agent names and platform identity
-// ════════════════════════════════════════
+// Platform config lookups: agent ids, names and identity, read from the config table and cached.
 
 import { getDb } from '../db/connection.js';
 
-// ── Cached lookups (invalidated on set) ──
 
 let cache: Record<string, string> = {};
 let cacheLoaded = false;
 
-// D-A household vault-sharing: memoized union(stored household ids, dreamer id).
-// Invalidated alongside the main config cache (clearPlatformConfigCache), so a
-// setPlatformConfig write to household_agent_ids is picked up on the next read.
+// Memoized household ids; cleared with the main cache in clearPlatformConfigCache.
 let householdCache: string[] | null = null;
 
 function loadCache(): void {
@@ -40,49 +34,31 @@ export function clearPlatformConfigCache(): void {
   householdCache = null;
 }
 
-// ── Sudo policy (owner ruling 2026-09-26, ships v3.2.2) ──
 
 /**
- * The RAW `sudo_policy` row, or `null` when the box has never set one.
- *
- * Deliberately raw and deliberately here: this module owns config reads and the CACHE, and
- * `agent/brokers/sudo-policy.ts` owns what the word MEANS — including that an unrecognised value
- * reads as the shipped default rather than as `free`. Splitting it that way keeps the widening
- * decision in the broker, where the floor argument lives, instead of in a config getter.
+ * The raw `sudo_policy` row, or null when never set. What the value means (an unrecognised one never
+ * reads as `free`) is decided in agent/brokers/sudo-policy.ts, not here.
  */
 export function getSudoPolicyRaw(): string | null {
   if (!cacheLoaded) loadCache();
   return cache['sudo_policy'] ?? null;
 }
 
-// ── Owner ──
 
-/**
- * THE ONE DEFAULT FOR THE OWNER'S NAME (fresh-box audit, finding 2).
- *
- * There used to be two: this `'User'`, and a `- Name: Alex` line in the shipped `templates/USER.md`
- * — so a fresh box's agent could be told its owner was "Alex, a developer" in one prompt slot and
- * "User" in another. The template no longer names anybody; this is the only fallback, and
- * `ownerNameIsSet()` is how a caller tells the fallback from a real answer.
- */
+/** The only default for the owner's name; ownerNameIsSet() tells this fallback from a real answer. */
 export const OWNER_NAME_FALLBACK = 'User';
 
 export function getOwnerName(): string {
   return get('owner_name', OWNER_NAME_FALLBACK);
 }
 
-/**
- * Has the owner actually told us their name? Asked of the ROW, not of the value — a user really
- * called "User" is a person, not a missing setting, and comparing against the fallback string
- * would erase them. `Setup.tsx` writes this row from the wizard's name field.
- */
+/** Asked of the row, not the value: an owner really named "User" must not read as unset. */
 export function ownerNameIsSet(): boolean {
   if (!cacheLoaded) loadCache();
   const v = cache['owner_name'];
   return typeof v === 'string' && v.trim() !== '';
 }
 
-// ── Primary Agent ──
 
 export function getPrimaryAgentId(): string {
   return get('primary_agent_id', 'primary');
@@ -92,7 +68,6 @@ export function getPrimaryAgentName(): string {
   return get('primary_agent_name', 'Agent');
 }
 
-// ── PM Agent ──
 
 export function getPMAgentId(): string {
   return get('pm_agent_id', 'pm');
@@ -102,7 +77,6 @@ export function getPMAgentName(): string {
   return get('pm_agent_name', 'PM');
 }
 
-// ── Trainer Agent ──
 
 export function getTrainerAgentId(): string {
   return get('trainer_agent_id', 'trainer');
@@ -112,7 +86,6 @@ export function getTrainerAgentName(): string {
   return get('trainer_agent_name', 'Trainer');
 }
 
-// ── Imaginer Agent ──
 
 export function getImaginerAgentId(): string {
   return get('imaginer_agent_id', 'imaginer');
@@ -122,17 +95,13 @@ export function getImaginerAgentName(): string {
   return get('imaginer_agent_name', 'Imaginer');
 }
 
-// ── Setup ──
 
-// "Did OOBE finish?" — the SPAWN gate (healer/imaginer/trainer/PM/dreamer and
-// the boot ensures). Absent flag → false → don't spawn, which is the right
-// fail-safe here. Do NOT use it to decide what the network may reach: that
-// question fails the other way and lives in ./setup-state.ts (isPastFirstRun).
+// The spawn gate: an absent flag reads false, so nothing spawns. Not for deciding what the network may
+// reach; that question fails the other way and lives in ./setup-state.ts (isPastFirstRun).
 export function isSetupCompleted(): boolean {
   return get('setup_completed', 'false') === 'true';
 }
 
-// ── Setters ──
 
 export function setPlatformConfig(key: string, value: string): void {
   const db = getDb();
@@ -143,14 +112,12 @@ export function setPlatformConfig(key: string, value: string): void {
   clearPlatformConfigCache();
 }
 
-// ── Bulk getter for dashboard ──
 
 export function getAllPlatformConfig(): Record<string, string> {
   if (!cacheLoaded) loadCache();
   return { ...cache };
 }
 
-// ── Helper: is this agent the primary or PM? ──
 
 export function isPrimaryAgent(agentId: string): boolean {
   return agentId === getPrimaryAgentId();
@@ -168,7 +135,6 @@ export function isImaginerAgent(agentId: string): boolean {
   return agentId === getImaginerAgentId();
 }
 
-// ── Healer Agent ──
 
 export function getHealerAgentId(): string {
   return get('healer_agent_id', 'healer');
@@ -182,7 +148,6 @@ export function isHealerAgent(agentId: string): boolean {
   return agentId === getHealerAgentId();
 }
 
-// ── Dreamer Agent ──
 
 export function getDreamerAgentId(): string {
   return get('dreamer_agent_id', 'dreamer');
@@ -196,29 +161,13 @@ export function isDreamerAgent(agentId: string): boolean {
   return agentId === getDreamerAgentId();
 }
 
-// ── Household (D-A vault-sharing allow-list) ──
 
 export const HOUSEHOLD_AGENT_IDS_KEY = 'household_agent_ids';
 
-/**
- * The allow-list of agent ids whose DISTILLED vault memory is shared across the
- * household (decision D-A: sharing wins). Union of:
- *   - the stored `household_agent_ids` JSON array (the primary user-facing agent,
- *     plus any second household user's primary once onboarding appends it), and
- *   - the Dreamer id (it authors the distilled long-term memory ON BEHALF of the
- *     primaries, so a member must be able to recall what the Dreamer filed).
- *
- * Falls back to [primary] when the config row is absent/empty/unparseable, so a
- * box that predates the seed still resolves correctly (recall stays right on the
- * boot before the seed-ensure runs). Every OTHER agent (spawned worker, harness
- * probe, legacy duplicate service agent) is simply never in this set, which is
- * how the W3-4 harness-peer leak stays closed by EXCLUSION.
- *
- * Cached; invalidated on any platform-config set via clearPlatformConfigCache.
- * Note: OWNER_VAULT_AGENT_ID ('manual') is NOT in this set. Owner-authored
- * entries are appended separately by the recall scope (visible to every agent),
- * so folding them in here would wrongly make a non-member's own scope household.
- */
+// Agent ids whose distilled vault memory is shared across the household: the stored list (or the primary
+// alone when it is absent or invalid), plus the Dreamer, which files memory on the primaries' behalf.
+// Every other agent is excluded. OWNER_VAULT_AGENT_ID is not here: the recall scope adds owner entries
+// separately, and folding them in would make a non-member's own scope household.
 export function getHouseholdAgentIds(): string[] {
   if (householdCache) return householdCache;
   const ids = new Set<string>();
@@ -235,25 +184,14 @@ export function getHouseholdAgentIds(): string[] {
       /* malformed row -> fall back to the primary below */
     }
   }
-  // No stored list (or empty/invalid): the primary alone is the household.
   if (ids.size === 0) ids.add(getPrimaryAgentId());
-  // The Dreamer files distilled memory on behalf of the primaries; always in.
   ids.add(getDreamerAgentId());
   householdCache = [...ids];
   return householdCache;
 }
 
-/**
- * Service agents whose conversations are pure platform mechanics — system
- * prompts, cycle messages, recovery pokes, image-gen requests — and contain
- * zero memory-worthy content. Their archives must NEVER enter the Dreamer
- * pipeline; doing so is a recursive token-burn loop (the Dreamer was being
- * fed its own past cycle messages, each of which already enumerated all
- * unprocessed archives… growing the next cycle's input every time).
- *
- * The primary agent is intentionally NOT in this set — primary chat is
- * exactly the user content the Dreamer should curate.
- */
+// Service agents whose conversations are pure platform mechanics. Their archives must never reach the
+// Dreamer, which would re-ingest its own cycle messages in a growing loop. The primary is not one.
 export function isSystemServiceAgent(agentId: string): boolean {
   return isDreamerAgent(agentId)
     || isTrainerAgent(agentId)
@@ -273,21 +211,8 @@ export function getSystemServiceAgentIds(): string[] {
   ];
 }
 
-/**
- * Agents whose tasks are hidden from the dashboard tracker view by default
- * because their roles are meta (PM monitors tasks; Healer/Dreamer run
- * platform mechanics). v2.9.22 closes the loop where send_to_agent(ASSIGN)
- * auto-created tracker rows for these agents — those rows then became
- * invisible to the user but kept triggering PM validation loops. The
- * autoCreateAssignTask path now refuses to create rows for these agents,
- * and the dashboard's tracker view carves out an exception to SHOW
- * disputed tasks assigned to them (so the user can intervene if any
- * legacy or future code path drops one in).
- *
- * Trainer and Imaginer are intentionally NOT in this set — Trainer tasks
- * (technique builds) ARE user-visible in the tracker, and Imaginer never
- * uses the tracker at all.
- */
+// Meta-role agents (PM, Healer, Dreamer) whose tasks are hidden from the tracker view by default, and
+// for whom autoCreateAssignTask creates no tracker rows. Trainer and Imaginer are deliberately not here.
 export function getDashboardHiddenAgentIds(): Set<string> {
   const ids = new Set<string>();
   try {
@@ -298,28 +223,8 @@ export function getDashboardHiddenAgentIds(): Set<string> {
     for (const r of rows) {
       if (r.value) ids.add(r.value);
     }
-    // ⚠ THE LEGACY NAME ARM IS GONE (2026-09-26, review H2), AND IT IS A DROP RATHER THAN A RE-KEY.
-    //
-    // It read `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`, described as a catch for
-    // historical agents whose ids are no longer current. What it actually did was hide a USER's own
-    // agent merely CALLED Healer or Dreamer: its tracker tasks vanished from the owner's view, with no
-    // error anywhere. This module is the rename-safe accessor every other caller routes through, so a
-    // display-name comparison here was the worst place in the tree for one.
-    //
-    // I looked for an honest re-key and there is none, which is why this says DROP out loud. There is
-    // no column that records "this row used to be the Healer": the service agents' classification is
-    // `sensei`, and so are the primary's, the Trainer's and the Imaginer's — and the docstring above
-    // says Trainer and Imaginer are deliberately NOT in this set, so classification cannot carry it.
-    // Comparing against `getHealerAgentName()` instead of a literal would satisfy the letter of the
-    // rule and reintroduce the exact defect, because a user's agent called by the configured name
-    // would be hidden again.
-    //
-    // WHAT THE DROP COSTS, measured rather than waved at: a historical service-agent row whose id is
-    // no longer in `config` stops being hidden. On the owner's box the number of rows in that state is
-    // ZERO (`SELECT … WHERE name IN ('Dreamer','Healer') AND id NOT IN (SELECT value FROM config …)`
-    // returns nothing), the path that used to create such rows refuses to now
-    // (`autoCreateAssignTask`), and the dashboard's tracker view already carves out an exception to
-    // SHOW disputed tasks assigned to these agents so the owner can intervene if one ever appears.
+    // Matched by configured id only, never by display name: a user's own agent named Healer or Dreamer
+    // must stay visible.
   } catch {
     /* DB may not be ready; return empty set so nothing gets hidden */
   }

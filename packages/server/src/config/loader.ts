@@ -11,11 +11,7 @@ const PLATFORM_DIR = path.join(homeDir(), '.dojo');
 const SECRETS_PATH = path.join(PLATFORM_DIR, 'secrets.yaml');
 
 let cachedSecrets: SecretsData | null = null;
-// v2.3.19 — also track the mtime of the secrets file so we can detect
-// out-of-band edits (user opens secrets.yaml in a text editor and saves)
-// and invalidate the cache automatically. Pre-spec, the cache stayed
-// stale until a full server restart, which meant agents kept failing
-// 401 with the OLD api key even after the user fixed it.
+// The file's mtime at the last read or write; a newer mtime means an out-of-band edit and drops the cache.
 let cachedSecretsMtimeMs: number | null = null;
 
 function ensurePlatformDir(): void {
@@ -28,21 +24,9 @@ function ensurePlatformDir(): void {
  *  names as one of this file's two protections. */
 const SECRETS_MODE = 0o600;
 
-/**
- * PHASE-5 T6C — re-assert owner-only permissions on the secrets file.
- *
- * `fs.writeFileSync(path, data, { mode })` applies the mode only when it
- * CREATES the file; a rewrite inherits whatever the file already carried. The
- * installer sets 0600 at creation and `migration/import.ts` re-asserts it after
- * a machine migration, but between those two nothing did — so a file that was
- * ever restored, copied or re-saved by another tool stayed as open as that tool
- * left it, and the deny row's stated protection was an intention rather than a
- * fact. This is the one writer of the file, so this is where it is made true.
- *
- * Best-effort by design: a volume that cannot chmod must not take the boot
- * down. Tightening only — a file the owner made stricter than 0600 is left
- * alone.
- */
+// Re-asserts owner-only mode: writeFileSync's mode applies only when it creates the file, so a rewrite
+// keeps whatever mode the file carried. Best-effort (a volume without chmod must not stop boot) and
+// tighten-only (a stricter mode is left alone).
 function enforceSecretsMode(): void {
   try {
     const current = fs.statSync(SECRETS_PATH).mode & 0o777;
@@ -52,14 +36,11 @@ function enforceSecretsMode(): void {
       from: current.toString(8), to: SECRETS_MODE.toString(8),
     });
   } catch {
-    /* unreadable, missing, or a filesystem without chmod — never fatal */
+    /* unreadable, missing, or a filesystem without chmod; never fatal */
   }
 }
 
-/**
- * v2.3.19 — invalidate the cache if secrets.yaml has been edited
- * out-of-band since we last read it. Cheap stat call on every access.
- */
+/** Drops the cache when secrets.yaml was edited on disk since the last read; one stat per access. */
 function invalidateIfStale(): void {
   if (!cachedSecrets || cachedSecretsMtimeMs === null) return;
   try {
@@ -71,8 +52,7 @@ function invalidateIfStale(): void {
       });
       cachedSecrets = null;
       cachedSecretsMtimeMs = null;
-      // Also clear the model-client cache so the next call rebuilds with
-      // the fresh credential. Avoids the "stale 401 after key fix" loop.
+      // Also clear the model-client cache so the next call uses the fresh credential.
       try {
         // Dynamic to avoid an import cycle (config → model → config).
         import('../agent/model.js').then((m) => {
@@ -80,7 +60,7 @@ function invalidateIfStale(): void {
         }).catch(() => { /* */ });
       } catch { /* */ }
     }
-  } catch { /* file missing or unreadable — let the loader handle it */ }
+  } catch { /* file missing or unreadable: the loader handles it */ }
 }
 
 export function loadSecrets(): SecretsData {
@@ -104,15 +84,14 @@ export function loadSecrets(): SecretsData {
     const stat = fs.statSync(SECRETS_PATH);
     const content = fs.readFileSync(SECRETS_PATH, 'utf-8');
     const parsed = yaml.parse(content) ?? {};
-    // YAML parses empty values as null — convert nulls to undefined for Zod
+    // YAML parses empty values as null; Zod wants them absent.
     for (const key of Object.keys(parsed)) {
       if (parsed[key] === null) delete parsed[key];
     }
     const validated = SecretsSchema.parse(parsed);
     cachedSecrets = validated;
     cachedSecretsMtimeMs = stat.mtimeMs;
-    // Runs on the first load and on every cache invalidation, not per access —
-    // a box found open does not stay open until its next write.
+    // Runs on first load and every invalidation, so an open file does not stay open until its next write.
     enforceSecretsMode();
     return cachedSecrets;
   } catch (err) {
@@ -130,8 +109,7 @@ export function saveSecrets(data: SecretsData): void {
   // The mode argument above only bites when this call CREATED the file.
   enforceSecretsMode();
   cachedSecrets = data;
-  // Record post-write mtime so the staleness check doesn't trigger on
-  // our own write.
+  // Record the post-write mtime so our own write does not read as an out-of-band edit.
   try { cachedSecretsMtimeMs = fs.statSync(SECRETS_PATH).mtimeMs; } catch { /* */ }
 }
 
@@ -165,10 +143,8 @@ export function getJwtSecret(): string {
   return secrets.jwt_secret;
 }
 
-// v2.7.21 - master key for agent_credentials AES-256-GCM encryption.
-// Auto-generates on first call if missing. 32 random bytes hex-encoded.
-// Rotating this in secrets.yaml will invalidate every stored credential
-// (decryption will fail with auth-tag mismatch on every read).
+// Master key for agent_credentials AES-256-GCM encryption, generated on first use (32 random bytes, hex).
+// Rotating it in secrets.yaml makes every stored credential fail to decrypt.
 export function getCredentialMasterKey(): Buffer {
   const secrets = loadSecrets();
   if (!secrets.credential_master_key) {
@@ -180,9 +156,8 @@ export function getCredentialMasterKey(): Buffer {
   return Buffer.from(secrets.credential_master_key, 'hex');
 }
 
-// The ONE meaning of "no password": an absent, empty or blank hash is null. Every
-// reader (login, the first-run gate, /api/setup/*, import) tests this result, so an
-// installer that once wrote `dashboard_password_hash: ""` cannot make them disagree.
+// The one meaning of "no password": an absent, empty or blank hash is null. Login, the first-run gate,
+// /api/setup/* and import all test this result, so a blank hash cannot make them disagree.
 export function getDashboardPasswordHash(): string | null {
   const secrets = loadSecrets();
   const hash = secrets.dashboard_password_hash;

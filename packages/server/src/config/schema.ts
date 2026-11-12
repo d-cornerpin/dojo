@@ -5,13 +5,10 @@ import {
   PREFILL_THROUGHPUT_MIN_TOK_PER_SEC, PREFILL_THROUGHPUT_MAX_TOK_PER_SEC,
 } from '../agent/stream-patience.js';
 
-// ── Secrets.yaml Schema ──
 export const SecretsSchema = z.object({
   jwt_secret: z.string().optional(),
   dashboard_password_hash: z.string().optional(),
-  // v2.7.21 - master key for agent_credentials encryption (AES-256-GCM).
-  // 32 random bytes, hex-encoded (64 chars). Auto-generated on first
-  // read if missing. Rotating this invalidates every stored credential.
+  // agent_credentials encryption key (32 bytes, hex), made on first use; rotating it voids every credential.
   credential_master_key: z.string().optional(),
   providers: z.record(z.string(), z.object({
     api_key: z.string().optional(),
@@ -25,11 +22,8 @@ export const SecretsSchema = z.object({
 
 export type SecretsData = z.infer<typeof SecretsSchema>;
 
-// ── The declarable patience pair (T64b), shared by both write doors ──
-//
-// One definition, used by the create schema and the edit schema, so the two doors cannot
-// disagree about what a legal bound is. The message names the seconds a person would think in
-// rather than the milliseconds the column stores, because it is the text a user reads.
+// The patience pair, shared by the create and edit schemas so both doors agree on a legal bound.
+// Messages speak seconds and minutes, not the stored milliseconds, because a person reads them.
 const patienceMs = (what: string): z.ZodOptional<z.ZodNullable<z.ZodNumber>> =>
   z.number()
     .int(`\`${what}\` must be a whole number of milliseconds`)
@@ -43,14 +37,9 @@ const streamPatienceFields = {
   streamIdleTimeoutMs: patienceMs('streamIdleTimeoutMs'),
 };
 
-// ── The declarable prefill throughput (NO-DOOMED-DIALS T81b), shared by both write doors ──
-//
-// Tokens per second — the unit a benchmark reports, and the unit `providers.prefill_tokens_per_sec`
-// (migration 166) stores. There is no "0 means no cap" exception here: throughput answers how
-// FAST a box is, and zero tokens/sec is not a real speed for a machine that answers requests at all — see the
-// migration's own header. Bounds imported from `agent/stream-patience.ts`, the one module
-// `resolveDoomCeiling` also imports them from, so a value that can be stored can always be
-// honoured.
+// Declared prefill throughput in tokens/sec; zero is not a real speed, so there is no "0 means no cap".
+// Bounds come from agent/stream-patience.ts, where resolveDoomCeiling checks the same ones,
+// so a stored value is honoured.
 const prefillTokensPerSec: z.ZodOptional<z.ZodNullable<z.ZodNumber>> =
   z.number()
     .int('`prefillTokensPerSec` must be a whole number of tokens per second')
@@ -61,7 +50,6 @@ const prefillTokensPerSec: z.ZodOptional<z.ZodNullable<z.ZodNumber>> =
 
 const prefillThroughputFields = { prefillTokensPerSec };
 
-// ── Provider Creation Schema ──
 export const CreateProviderSchema = z.object({
   id: z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/, 'ID must be lowercase alphanumeric with hyphens/underscores'),
   name: z.string().min(1).max(128),
@@ -69,30 +57,16 @@ export const CreateProviderSchema = z.object({
   baseUrl: z.string().url().optional().nullable(),
   authType: z.enum(['api_key', 'oauth', 'none', 'agent-sdk']),
   credential: z.string().optional(),
-  // T63: the dialect the owner declares this endpoint speaks. Validated against the contract
-  // profile list itself, so a name that cannot be resolved can never be stored — the manual
-  // picker's whole value is that this field is TRUE about the server behind the URL.
+  // The dialect this endpoint speaks, limited to the contract profile list so it always resolves.
   behavesLike: z.enum(BEHAVES_LIKE_PROFILES).optional().nullable(),
-  // T64b: how long this endpoint is worth waiting for. Validated against the SAME bounds
-  // `resolveStreamPatience` honours, imported from the one module that owns them, so a value
-  // that can be stored can always be honoured. Whole milliseconds only — a fractional
-  // timeout is a unit mistake, not a preference.
+  // Inside what resolveStreamPatience honours (it has no floor); whole ms only, a fraction is a unit mistake.
   ...streamPatienceFields,
-  // T81b: how fast this box's owner says it chews through a prompt. See `prefillTokensPerSec`
-  // above for the bounds.
   ...prefillThroughputFields,
 });
 
 
-// ── Provider Response-Patience Schema (T64b) ──
-//
-// The edit door, in the shape `PATCH /providers/:id/host-ram` already established: ONE
-// property, changed on a provider that already exists. It has to be narrow. `POST /providers`
-// over an existing id is a full replace of the identity fields (T63 recorded that as
-// deliberate), so editing a timeout through it would mean re-sending name, type, base URL,
-// auth type and dialect — and getting any of them wrong would silently rewrite the provider.
-// `.strict()` refuses a body carrying anything else, so a caller cannot smuggle an identity
-// field through the narrow door either.
+// Narrow edit doors: POST /providers over an existing id replaces every identity field, so a one-field edit
+// through it could rewrite the provider. `.strict()` refuses any field a door does not own.
 export const ProviderPatienceSchema = z.object(streamPatienceFields).strict()
   .refine(
     b => b.firstChunkTimeoutMs !== undefined || b.streamIdleTimeoutMs !== undefined,
@@ -100,12 +74,7 @@ export const ProviderPatienceSchema = z.object(streamPatienceFields).strict()
   );
 
 
-// ── Provider Prefill-Throughput Schema (NO-DOOMED-DIALS T81b) ──
-//
-// The same narrow-door shape as the patience schema above, for the same reason: the
-// owner's local box is already a configured provider, and `POST /providers` over an existing
-// id is a full replace that would clear every OTHER identity field an edit form did not happen
-// to re-send. `.strict()` refuses a body carrying anything else.
+// The same narrow door, for declared prefill throughput.
 export const ProviderPrefillThroughputSchema = z.object(prefillThroughputFields).strict()
   .refine(
     b => b.prefillTokensPerSec !== undefined,
@@ -113,25 +82,8 @@ export const ProviderPrefillThroughputSchema = z.object(prefillThroughputFields)
   );
 
 
-// ── Provider Edit Schema (T66b) ──
-//
-// The identity fields, editable in place, in the same narrow shape as the two doors above.
-// Every field is OPTIONAL and only what the body names is written — which is the whole point:
-// `POST /providers` over an existing id is a FULL REPLACE (W45 recorded it, T64b built around
-// it), so an edit form routed through it would clear the base URL of anyone who opened it to
-// change a name. `.strict()` refuses a body carrying a field this door does not own, so a
-// caller aiming at the patience pair is told to use the patience door rather than having the
-// value silently dropped.
-//
-// `credential` is a rotation, not a column: it goes to `setProviderCredential`, the same
-// writer the create door uses. Blank means KEEP — a form that (rightly) cannot pre-fill a
-// password field must not read as an instruction to erase one. `.min(1)` refuses only the
-// empty-string-as-the-whole-request case, which is a caller mistake rather than a keep.
-//
-// NOT here, deliberately: `type`, `id` and `authType`. A provider that speaks a different API
-// or authenticates a different way is a different provider — the route refuses those three by
-// name, with a message that says delete-and-re-add, because `.strict()`'s "unrecognized key"
-// is true but useless to the person reading it.
+// Narrow identity edit: only named fields are written. `credential` is a rotation; omitted keeps the stored
+// key. The route refuses type, id and authType by name, since changing them makes a different provider.
 export const EditProviderSchema = z.object({
   name: z.string().min(1, '`name` cannot be empty').max(128, '`name` must be at most 128 characters').optional(),
   baseUrl: z.string().url('`baseUrl` must be a URL').nullable().optional(),
@@ -144,7 +96,6 @@ export const EditProviderSchema = z.object({
   );
 
 
-// ── Model Schema ──
 export const ModelDataSchema = z.object({
   id: z.string(),
   providerId: z.string(),
@@ -158,23 +109,17 @@ export const ModelDataSchema = z.object({
 });
 
 
-// ── Login Schema ──
 export const LoginSchema = z.object({
   password: z.string().min(1),
 });
 
-// ── Change Password Schema ──
 export const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(8),
 });
 
-// ── Send Message Schema ──
-// The attachment shape is validated (not just Array.isArray'd) because these
-// pointers are persisted into the immutable message store and handed to the
-// model's file_read: a missing path/filename/size used to interpolate a literal
-// "Path: undefined" the model then dutifully tried to read (FA-G1). `category`
-// is the closed upload set (matches AttachmentCategory in chat.ts).
+// Attachments are fully validated: they persist into the immutable store and reach the model's file_read.
+// `category` is the closed upload set (AttachmentCategory in gateway/routes/chat.ts).
 export const SendMessageSchema = z.object({
   content: z.string().min(1),
   attachments: z.array(z.object({
@@ -187,10 +132,10 @@ export const SendMessageSchema = z.object({
   })).optional(),
 });
 
-// ── Enable/Disable Models Schema ──
 export const EnableModelsSchema = z.object({
   modelIds: z.array(z.string()).min(1),
 });
 
-// ── Per-agent silent window (t143, OR-LONG-JOBS): whole minutes, 1 or more; null = the default (2 h). No upper bound: a known-slow agent may be given as long as its owner wants.
+// Per-agent silent window in whole minutes, 1 or more; null = the default (120 minutes).
+// No upper bound on purpose: a known-slow agent may get as long as its owner wants.
 export const SilentWindowMinutesSchema = z.number().int('a whole number of minutes').min(1, 'at least 1 minute').nullable();

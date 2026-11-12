@@ -10,11 +10,7 @@ export function refuseBadClockTime(value: unknown): string | null {
   return `"${String(value)}" is not a time of day. Use HH:MM on a 24-hour clock, for example 04:00 or 23:30.`;
 }
 
-/**
- * The delay until the next daily run at `timeText` ("HH:MM", 24-hour, local), strictly later than
- * `now`. A stored text that is not a valid time (hand-edited, or older than the save-door check)
- * uses `fallbackText` instead and says so, so the delay is never NaN and never fires at once.
- */
+// Delay to the next local daily run strictly after `now`; an invalid stored text uses `fallbackText`.
 export function nextDailyRunDelayMs(
   timeText: unknown,
   fallbackText: string,
