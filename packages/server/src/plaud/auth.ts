@@ -1,11 +1,5 @@
-// ════════════════════════════════════════
-// Plaud Auth + Connection State
-// Owns the "is Plaud connected?" question for the rest of the platform.
-// The actual OAuth tokens live in ~/.plaud/tokens.json (managed by the
-// Plaud CLI itself). We track connection status + account email in the
-// config table so the dashboard and agent prompts don't have to shell
-// out for every check.
-// ════════════════════════════════════════
+// Plaud auth and connection state: owns the "is Plaud connected?" question. The OAuth tokens live in
+// ~/.plaud/tokens.json (managed by the CLI); status and email are cached in the config table.
 
 import { plaudExpiredText } from '../agent/engine-lines.js';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -23,19 +17,11 @@ const CONFIG_KEY_CONNECTED_AT = 'plaud_connected_at';
 
 export interface PlaudStatus {
   connected: boolean;
-  /**
-   * UX-REPAIR T38: the card needs THREE states, not two. "Never connected" and
-   * "was connected, the login expired" are different things to say to a person,
-   * and only the second one is an instruction. Derived, not stored: a
-   * `plaud_connected_at` stamp with `plaud_connected` false is a login that
-   * used to work — which is exactly `notePlaudReauthRequired`'s transition.
-   */
+  /** Derived: a connect stamp with `plaud_connected` false means the login expired. */
   reauthRequired: boolean;
   email: string | null;
   connectedAt: string | null;
-  /** True while an interactive `plaud login` subprocess is running. */
   loginInProgress: boolean;
-  /** The auth URL the CLI emitted, if a login is in progress. */
   loginUrl: string | null;
 }
 
@@ -57,9 +43,7 @@ function writeConfigValue(key: string, value: string): void {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `)
     .run(key, value);
-  // FA-TS1: connect/disconnect flips isPlaudConnected(), which gates the Plaud
-  // tool block in getFilteredTools. All connect/disconnect paths funnel the
-  // connected flag through here, so one guard covers them.
+  // Connect state gates the Plaud tools in getFilteredTools; every path funnels through here.
   if (key === CONFIG_KEY_CONNECTED) bumpToolConfigGeneration();
 }
 
@@ -86,47 +70,16 @@ export function getPlaudStatus(): PlaudStatus {
 }
 
 /**
- * UX-REPAIR T38 — THE ONE OWNER OF THE EXPIRY TRANSITION.
- *
- * OWNER REPORT: when the Plaud login expires, nothing tells the user. The
- * expiry was always DETECTED — `runPlaudCommand` computes `needsReauth` from
- * the CLI's exit code 2 — and then thrown away: the eight `plaud_*` tools
- * turned it into a sentence for the MODEL and returned, so the stored
- * `plaud_connected` flag stayed `true`, the card kept saying "Connected as
- * … since 25 May", the tool gate kept offering the tools, and the person who
- * had to go and renew the login heard nothing. The only path that flipped the
- * flag, `refreshPlaudAccountInfo`, is reachable only from a route no UI calls.
- *
- * THE STORED FLAG IS THE EPISODE LATCH. No new state, no timer, no counter:
- * the first failing call flips `plaud_connected` to false and speaks; every
- * later call in the same episode sees it already false and says nothing (T27's
- * lesson — once per episode, not once per call). A reconnect sets it true
- * again, which arms the next episode.
- *
- * IT SPEAKS THROUGH THE EXISTING TOAST PATH AND NO OTHER (owner directive):
- * `chat:error` → `Chat.tsx`'s severity switch, at severity `error`, which that
- * switch defines as "stays until dismissed". A login the user must go and renew
- * is not something to auto-dismiss out from under them. The `AUTH_INVALID` code
- * already exists for exactly this class ("the engine can't proceed and the user
- * needs to act"), so no code is invented either.
- *
- * `agentId` is the agent whose tool call hit the expiry — the toast lane is
- * per-agent (`Chat.tsx` filters on it), and that agent's conversation is where
- * the failure just happened. Null when nothing agent-shaped is in hand (the
- * status/refresh route): the state still moves and the card is still told; only
- * the toast is skipped, because addressing one to an invented agent would put it
- * in a chat where nothing happened.
- *
- * @returns true if this call was the transition (and therefore spoke).
+ * The one owner of the expiry transition. The stored `plaud_connected` flag is the episode latch: the
+ * first failing call flips it to false and speaks, later calls see it false and stay silent.
+ * Speaks via the `chat:error` toast (stays until dismissed) to `agentId`; with none, only state and card move.
+ * @returns true if this call was the transition.
  */
 export function notePlaudReauthRequired(agentId?: string | null): boolean {
   if (!isPlaudConnected()) return false;
   writeConfigValue(CONFIG_KEY_CONNECTED, 'false');
-  // The email and the connect stamp DELIBERATELY survive: they describe the
-  // account whose login expired, which is what the card needs to name so the
-  // user knows WHICH login to renew. `plaud_connected` is the only authority on
-  // connectedness (it is what `isPlaudConnected` reads), so keeping the address
-  // changes no gate. A real `logout` still wipes both.
+  // The email and connect stamp survive so the card can name the expired account;
+  // `plaud_connected` alone decides connectedness. A real `logout` wipes both.
   logger.info('Plaud login expired (reauth required)', { agentId: agentId ?? null });
   try { broadcast({ type: 'plaud:disconnected' }); } catch { /* best effort */ }
   if (agentId) {
@@ -134,11 +87,11 @@ export function notePlaudReauthRequired(agentId?: string | null): boolean {
       broadcast({
         type: 'chat:error',
         agentId,
-        // Field fix 3 audit round (#6, OR-ENGINE-LABELLED): the Dojo speaking, never "I"; the agent is told.
+        // The Dojo speaks, never "I"; the agent is told.
         error: plaudExpiredText(),
         code: 'AUTH_INVALID',
         severity: 'error',
-        cardClass: 'action',   // he signs in again
+        cardClass: 'action',   // the user signs in again
         retryable: false,
       });
       void import('../agent/dojo-voice.js').then(({ tellAgentWhatDojoSent }) => tellAgentWhatDojoSent({
@@ -150,15 +103,10 @@ export function notePlaudReauthRequired(agentId?: string | null): boolean {
 }
 
 /**
- * Refresh the connection state by calling `plaud me`. Returns:
- *   - { connected: true, email }  - tokens are valid, email parsed
- *   - { connected: true, email: null } - tokens are valid but the email
- *     couldn't be extracted from the CLI output (shape unknown). Caller
- *     should still treat this as connected; the email is just unavailable.
- *   - { connected: false } - tokens missing/expired, reauth required.
+ * Refresh the connection state by calling `plaud me`. Connected with a null email means the output
+ * shape was unknown; treat it as connected. Not connected means tokens are missing or expired.
  */
 export async function refreshPlaudAccountInfo(): Promise<{ connected: boolean; email: string | null }> {
-  // Try JSON form first.
   const jsonResult = await runPlaudJson<Record<string, unknown>>(['me', '--json'], { timeoutMs: 15_000 });
   if (jsonResult.ok) {
     const email = extractEmailFromJson(jsonResult.data);
@@ -179,10 +127,7 @@ export async function refreshPlaudAccountInfo(): Promise<{ connected: boolean; e
   }
   // Both failed - probably actually disconnected (no tokens, expired, etc).
   if (plainResult.needsReauth || jsonResult.needsReauth) {
-    // T38: one owner for this transition. This branch used to write the flag
-    // and wipe the email itself — a second copy of the same state change, and
-    // the copy that nothing was listening to. The email now survives (see
-    // `notePlaudReauthRequired`) so the card can name the expired account.
+    // Single owner of the expiry transition; the email survives so the card can name the account.
     notePlaudReauthRequired(null);
   } else {
     logger.warn('Plaud `me` command failed (both --json and plain)', {
@@ -226,25 +171,15 @@ function persistConnectedState(email: string | null): void {
   }
 }
 
-// ── Login subprocess management ───────────────────────────────────────
-// One login at a time. The Plaud CLI's `login` subcommand opens a browser
-// or prints an OAuth URL the user must visit. We spawn it as a long-
-// running child process, scan stdout for the URL, broadcast that to the
-// dashboard, and watch for the process to exit (success → connected;
-// non-zero → failed).
+// One login at a time: `login` prints an OAuth URL the user must visit. We spawn it, scan its output for the
+// URL and broadcast it; exit 0 means connected, non-zero means failed.
 
 let loginProcess: ChildProcess | null = null;
 let pendingLoginUrl: string | null = null;
 
 /**
- * Start the Plaud login flow. Spawns `npx -y @plaud-ai/cli login` and
- * captures the auth URL from stdout. The URL is broadcast over WebSocket
- * as `plaud:auth_url` so the dashboard can render a "Click here to
- * authorize" link. The subprocess's exit fires `plaud:connected` (or
- * `plaud:login_failed`).
- *
- * Returns immediately with `{ alreadyRunning: true }` if a login is
- * already in flight.
+ * Start the Plaud login flow and broadcast the auth URL as `plaud:auth_url`; exit fires `plaud:connected`
+ * or `plaud:login_failed`. Returns `{ alreadyRunning: true }` if a login is in flight.
  */
 export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunning?: boolean }> {
   if (loginProcess !== null) {
@@ -256,9 +191,7 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
     env: {
       ...process.env,
       PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}`,
-      // Discourage the CLI from trying to open a browser locally - in a
-      // headless server context that just confuses the OAuth flow. The
-      // CLI should fall back to printing the URL.
+      // Keep the CLI from opening a browser on a headless server; it then prints the URL.
       BROWSER: 'none',
       NO_OPEN: '1',
     },
@@ -266,8 +199,7 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
   });
   loginProcess = child;
 
-  // Watch both stdout and stderr for the auth URL. Plaud CLI is not
-  // strict about which stream the URL prints on, so scan both.
+  // The URL may print on either stream, so scan both.
   const urlPattern = /(https?:\/\/[^\s)]+)/;
   const handleChunk = (source: 'stdout' | 'stderr') => (buf: Buffer) => {
     const text = buf.toString('utf8');
@@ -294,11 +226,8 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
     pendingLoginUrl = null;
 
     if (wasSuccessful) {
-      // Login subprocess exited cleanly - the OAuth flow finished and
-      // tokens were written. Mark connected immediately. The follow-up
-      // `me` call is a best-effort email fetch; if it doesn't work, the
-      // user is still connected (agent tools will function), the
-      // dashboard just won't display their email.
+      // Exit 0 means the tokens were written: mark connected now. The `me` call after is a best-effort
+      // email fetch; without it the user is still connected.
       writeConfigValue(CONFIG_KEY_CONNECTED, 'true');
       writeConfigValue(CONFIG_KEY_CONNECTED_AT, new Date().toISOString());
       const info = await refreshPlaudAccountInfo();
@@ -313,8 +242,7 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
 
   child.on('error', (err) => {
     logger.error('Plaud login subprocess error', { error: err.message });
-    // Same guard as the exit handler: a cancelled or replaced child's error
-    // must not clear the current login's state or report a failure.
+    // Same stale-child guard as the exit handler.
     if (loginProcess !== child) return;
     loginProcess = null;
     pendingLoginUrl = null;
@@ -324,10 +252,7 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
   return { started: true };
 }
 
-/**
- * Cancel an in-flight login subprocess. Used when the user clicks
- * "Cancel" on the Connect modal before completing the OAuth flow.
- */
+/** Cancel an in-flight login subprocess (the Connect modal's Cancel button). */
 export function cancelPlaudLogin(): { cancelled: boolean } {
   if (loginProcess === null) return { cancelled: false };
   try { loginProcess.kill('SIGTERM'); } catch { /* best effort */ }
@@ -336,17 +261,13 @@ export function cancelPlaudLogin(): { cancelled: boolean } {
   return { cancelled: true };
 }
 
-/**
- * Log out of Plaud - runs `plaud logout` which clears
- * ~/.plaud/tokens.json. Also clears our config-table connection state.
- */
+/** Run `plaud logout` and clear our config-table connection state. */
 export async function plaudLogout(): Promise<{ ok: boolean; error?: string }> {
   if (loginProcess !== null) {
     cancelPlaudLogin();
   }
   const result = await runPlaudCommand(['logout'], { timeoutMs: 15_000 });
-  // Even if the CLI fails (e.g., no session), wipe our state so the UI
-  // shows disconnected. The user can re-Connect cleanly.
+  // Wipe our state even if the CLI fails, so the UI shows disconnected.
   writeConfigValue(CONFIG_KEY_CONNECTED, 'false');
   deleteConfigValue(CONFIG_KEY_EMAIL);
   deleteConfigValue(CONFIG_KEY_CONNECTED_AT);

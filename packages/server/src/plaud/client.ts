@@ -1,15 +1,5 @@
-// ════════════════════════════════════════
-// Plaud CLI Client
-// All Plaud agent tools shell out through here. The Plaud CLI (npm package
-// @plaud-ai/cli) is the source of truth for auth, transport, and refresh.
-// We never store tokens ourselves - the CLI owns ~/.plaud/tokens.json.
-//
-// Why CLI and not MCP: Plaud's MCP server requires a long-lived stdio
-// subprocess + JSON-RPC client + dynamic schema translation. The CLI fits
-// our existing "tool function → shell call → parse JSON" pattern with no
-// new subsystems. See the integration audit (2026-05-25) for the full
-// comparison.
-// ════════════════════════════════════════
+// Plaud CLI client: every Plaud agent tool shells out through here. The CLI (@plaud-ai/cli) owns auth,
+// transport and refresh; tokens stay in ~/.plaud/tokens.json and are never stored by us.
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -19,28 +9,17 @@ import { openAgentCall } from '../agent/abortable-call.js';
 const execFileAsync = promisify(execFile);
 const logger = createLogger('plaud-client');
 
-// `npx -y @plaud-ai/cli@latest <cmd>` - no global install required.
-// npx caches the package after first invocation, so subsequent calls are
-// fast. The `-y` flag skips the "install package?" prompt.
 const PLAUD_NPM_PACKAGE = '@plaud-ai/cli@latest';
 
 export interface PlaudCommandResult {
   ok: boolean;
   stdout: string;
   stderr: string;
-  /** Exit code 2 from the CLI means re-auth required. */
   needsReauth: boolean;
   error?: string;
 }
 
-/**
- * Run a Plaud CLI command. Captures stdout/stderr, surfaces exit-code-2
- * (re-auth required) as a distinct flag so callers can route the user
- * back to the Settings → Integrations → Plaud reconnect button.
- *
- * Default timeout is 30s - generous for individual queries but bounded
- * so a hung CLI doesn't pin the request thread forever.
- */
+/** Run a Plaud CLI command; exit code 2 is surfaced as `needsReauth`. The 30s default timeout bounds a hung CLI. */
 export async function runPlaudCommand(
   args: string[],
   options: { timeoutMs?: number; agentId?: string | null } = {},
@@ -48,7 +27,7 @@ export async function runPlaudCommand(
   const timeoutMs = options.timeoutMs ?? 30_000;
   const fullArgs = ['-y', PLAUD_NPM_PACKAGE, ...args];
 
-  // t203: a call made for an agent is cut by that agent's Stop (execFile kills the CLI on abort).
+  // A call made for an agent is cut by that agent's Stop (execFile kills the CLI on abort).
   const slot = options.agentId ? openAgentCall(options.agentId, 'turn') : null;
   try {
     const { stdout, stderr } = await execFileAsync('npx', fullArgs, {
@@ -69,19 +48,9 @@ export async function runPlaudCommand(
 
     if (needsReauth) {
       logger.warn('Plaud command needs reauth', { args: args[0], exitCode });
-      // ── UX-REPAIR T38: THE ONE PLACE THE EXPIRY IS NOTICED ──
-      // `needsReauth` is computed here and nowhere else, so this is where the
-      // transition gets recorded and the user gets told — once per episode, by
-      // `notePlaudReauthRequired`. Before this, every caller turned the flag
-      // into a sentence for the model and dropped it on the floor.
-      //
-      // `logout` is EXCLUDED: `plaudLogout` runs it, and a CLI that answers
-      // "not logged in" to an intentional logout is agreeing with the user, not
-      // reporting an expiry.
-      //
-      // Dynamic import, deliberately: `plaud/auth.ts` imports this module
-      // statically, so a static import back would be a cycle. Same shape the
-      // runtime already uses for `a2a-transport`.
+      // `needsReauth` is computed only here, so the expiry is recorded here via `notePlaudReauthRequired`.
+      // `logout` is excluded: a "not logged in" answer to an intentional logout is not an expiry.
+      // Dynamic import: `plaud/auth.ts` imports this module statically, so a static import back is a cycle.
       if (args[0] !== 'logout') {
         try {
           const { notePlaudReauthRequired } = await import('./auth.js');
@@ -114,13 +83,9 @@ export async function runPlaudCommand(
 }
 
 /**
- * Run a Plaud command and try to parse the stdout as JSON. The CLI's
- * structured commands (`files`, `file`, `me`, etc.) output JSON; the
- * narrative ones (`transcript`, `summary`) output Markdown or plain text
- * - those callers should use runPlaudCommand directly.
- *
- * Returns the parsed JSON OR a normalized error string suitable for
- * direct return to the agent as a tool result.
+ * Run a Plaud command and parse stdout as JSON (for the structured commands such as `files`, `me`).
+ * Callers of the Markdown/plain-text commands (`transcript`, `summary`) use runPlaudCommand directly.
+ * Returns the parsed JSON or a normalized error string suitable as a tool result.
  */
 export async function runPlaudJson<T = unknown>(
   args: string[],

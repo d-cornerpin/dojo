@@ -1,10 +1,5 @@
-// ════════════════════════════════════════
-// Plaud Tools (read-only)
-// Plaud is a meeting-recording service: device + app capture audio,
-// Plaud's cloud transcribes + summarizes. Agents read recordings,
-// transcripts, summaries, and AI notes through this tool surface.
-// There is no upload/delete API; those happen in the Plaud app/device.
-// ════════════════════════════════════════
+// Plaud tools (read-only): agents read recordings, transcripts, summaries and AI notes from Plaud's cloud.
+// There is no upload/delete API; those happen in the Plaud app or device.
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { runPlaudCommand } from './client.js';
@@ -122,8 +117,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// Register concurrency/cap overrides for the v2 partitioner. Mirrors the
-// pattern in google/tools-read.ts and microsoft/tools-read.ts.
+// Register concurrency and result-size overrides, as google/tools-read.ts and microsoft/tools-read.ts do.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
 import { outsideSpan } from '../tools/external-content.js';
 for (const def of plaudReadToolDefinitions) {
@@ -145,9 +139,7 @@ function plaudWord(value: unknown, what: string): { ok: true; word: string } | {
 export async function executePlaudTool(
   name: string,
   args: Record<string, unknown>,
-  /** UX-REPAIR T38: whose turn hit the door. Threaded to `runPlaudCommand` so
-   *  an expiry noticed here is told to THAT agent's conversation — the toast
-   *  lane is per-agent. Optional so internal callers stay valid. */
+  /** The agent whose turn made the call; an expiry noticed here is told to that agent's conversation. */
   agentId?: string | null,
 ): Promise<string> {
 
@@ -195,7 +187,7 @@ export async function executePlaudTool(
       if (!result.ok) return result.error ?? 'Plaud file command failed.';
       // The `file` command outputs human-readable key:value pairs. Pass
       // through with a header so the agent sees it cleanly.
-      return `Recording ${id.word}:\n\n${outsideSpan(result.stdout.trim())}`;   // v3.5 K33: only the CLI's output is outside text
+      return `Recording ${id.word}:\n\n${outsideSpan(result.stdout.trim())}`;   // only the CLI's output is outside text
     }
 
     case 'plaud_get_transcript': {
@@ -252,23 +244,9 @@ export async function executePlaudTool(
 }
 
 // ── Plain-text list parser ──
-// Plaud CLI's `files`, `recent`, and `search` commands output a fixed-
-// width text table where each row is:
-//
-//   [optional "N. " index]<id>  <title>  <YYYY-MM-DD>  <duration>
-//
-// Columns are separated by 2+ spaces. Header/footer lines like
-// "Matched 50 of 100 scanned", "Searching for X...", the `files` table's
-// "ID NAME DATE DURATION" row and its box-drawing rule are all skipped
-// because none of them open with an id.
-//
-// ── UX-REPAIR T75b: THE ID CARRIES A TYPE PREFIX ──
-// Every id the CLI prints is `of_` + 32 hex — `of_38cd455de5582b16fbded77bda37572a`.
-// This pattern used to demand bare hex from the first character, so on
-// 2026-09-16 not one row of a 23-row table matched, all three list tools
-// returned an empty array, and the agent told the owner his account was empty
-// while the same command in a shell printed the meetings. The prefix is
-// optional here so a bare-hex id keeps parsing too.
+// `files`, `recent` and `search` print a fixed-width table: [optional "N. " index]<id>  <title>  <date>  <duration>,
+// columns separated by 2+ spaces. Header and footer lines are skipped because none opens with an id.
+// Ids are `of_` + hex; the prefix is optional so a bare-hex id parses too.
 
 interface ParsedRecording {
   id: string;
@@ -293,14 +271,8 @@ function parsePlaudListOutput(text: string): ParsedRecording[] {
 
 // ── Output formatter ──
 
-// ── UX-REPAIR T75b: AN EMPTY PARSE IS NOT AN EMPTY ACCOUNT ──
-// `raw` is the CLI's own stdout, and when nothing parsed out of it the agent
-// gets THOSE WORDS rather than a sentence we made up. A genuinely empty result
-// already reads well — the CLI prints "No recordings matched X in 500 scanned."
-// — and a table shape this parser has not learned stays visible instead of
-// being flattened into a confident, wrong "No recordings found." That flattening
-// is what made the `of_` prefix cost a day: the tool did not fail, it lied, and
-// nothing downstream could tell an empty account from an unread one.
+// An empty parse is not an empty account: when nothing parses, the agent gets the CLI's own words
+// (or the raw table), never an invented "No recordings found." that hides an unparsed shape.
 function formatRecordingList(records: ParsedRecording[], raw: string, header?: string): string {
   if (records.length === 0) {
     const cliSaid = raw.trim();
